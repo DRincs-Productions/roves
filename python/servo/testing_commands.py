@@ -129,7 +129,6 @@ class MachCommands(CommandBase):
             "servo-background-hang-monitor",
             "servo-base",
             "servo-constellation",
-            "servo-devtools",
             "servo-fonts",
             "servo-hyper-serde",
             "servo-layout",

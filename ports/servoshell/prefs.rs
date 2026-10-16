@@ -408,10 +408,6 @@ struct CmdArgs {
     #[bpaf(argument("1.0"))]
     device_pixel_ratio: Option<f32>,
 
-    /// Start remote devtools server on port listening on this address. <address>:<port> and <port> are valid values.
-    #[bpaf(argument("127.0.0.1:7000"))]
-    devtools: Option<String>,
-
     ///
     ///  Whether or not to enable experimental web platform features.
     #[bpaf(long)]
@@ -568,11 +564,6 @@ fn update_preferences_from_command_line_arguments(
     preferences: &mut Preferences,
     cmd_args: &CmdArgs,
 ) {
-    if let Some(listen_address) = &cmd_args.devtools {
-        preferences.devtools_server_enabled = true;
-        preferences.devtools_server_listen_address = listen_address.clone();
-    }
-
     if cmd_args.enable_experimental_web_platform_features {
         for pref in EXPERIMENTAL_PREFS {
             preferences.set_value(pref, PrefValue::Bool(true));

@@ -34,10 +34,6 @@ use background_hang_monitor_api::{
 use chrono::{DateTime, Local};
 use crossbeam_channel::unbounded;
 use data_url::mime::Mime;
-use devtools_traits::{
-    CSSError, DevtoolScriptControlMsg, DevtoolsPageInfo, NavigationState,
-    ScriptToDevtoolsControlMsg, WorkerId,
-};
 use embedder_traits::user_contents::{UserContentManagerId, UserContents, UserScript};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, EmbedderMsg, FocusSequenceNumber,
@@ -91,8 +87,7 @@ use servo_config::{pref, prefs};
 use servo_constellation_traits::{
     LoadData, LoadOrigin, NavigationHistoryBehavior, RemoteFocusOperation,
     ScreenshotReadinessResponse, ScriptToConstellationChan, ScriptToConstellationMessage,
-    ScrollStateUpdate, StructuredSerializedData, TargetSnapshotParams, TraversalDirection,
-    WindowSizeType,
+    ScrollStateUpdate, StructuredSerializedData, TargetSnapshotParams, WindowSizeType,
 };
 use servo_url::{ImmutableOrigin, MutableOrigin, OriginSnapshot, ServoUrl};
 use storage_traits::StorageThreads;
@@ -109,13 +104,9 @@ use url::Position;
 #[cfg(feature = "webgpu")]
 use webgpu_traits::{WebGPUDevice, WebGPUMsg};
 
-use crate::devtools;
-use crate::devtools::DevtoolsState;
 use crate::document_collection::DocumentCollection;
 use crate::document_loader::DocumentLoader;
-use crate::dom::bindings::codegen::Bindings::DocumentBinding::{
-    DocumentMethods, DocumentReadyState,
-};
+use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentReadyState;
 use crate::dom::bindings::codegen::Bindings::NavigatorBinding::NavigatorMethods;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::conversions::{
@@ -136,9 +127,8 @@ use crate::dom::document::{
 use crate::dom::element::Element;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmliframeelement::{HTMLIFrameElement, IframeContext, ProcessingMode};
-use crate::dom::node::{Node, NodeTraits};
+use crate::dom::node::NodeTraits;
 use crate::dom::servoparser::{ParserContext, ServoParser};
-use crate::dom::types::DebuggerGlobalScope;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::window::Window;
@@ -402,15 +392,9 @@ pub struct ScriptThread {
     /// change that requires a rendering update.
     needs_rendering_update: Arc<AtomicBool>,
 
-    debugger_global: Dom<DebuggerGlobalScope>,
-
-    debugger_paused: Cell<bool>,
-
     /// A list of URLs that can access privileged internal APIs.
     #[no_trace]
     privileged_urls: Vec<ServoUrl>,
-
-    devtools_state: DevtoolsState,
 }
 
 struct BHMExitSignal {
@@ -777,7 +761,6 @@ impl ScriptThread {
                         storage_threads: script_thread.storage_threads.clone(),
                         mem_profiler_chan: script_thread.senders.memory_profiler_sender.clone(),
                         time_profiler_chan: script_thread.senders.time_profiler_sender.clone(),
-                        devtools_chan: script_thread.senders.devtools_server_sender.clone(),
                         script_to_constellation_sender: script_thread
                             .senders
                             .pipeline_to_constellation_sender
@@ -870,7 +853,7 @@ impl ScriptThread {
 
         // SAFETY: We ensure that only one JSContext exists in this thread.
         // This is the first one and the only one
-        let mut cx = unsafe { runtime.cx() };
+        let cx = unsafe { runtime.cx() };
 
         unsafe {
             SetWindowProxyClass(&cx, GetWindowProxyClass());
@@ -880,11 +863,6 @@ impl ScriptThread {
         let constellation_receiver = state
             .constellation_to_script_receiver
             .route_preserving_errors();
-
-        // Ask the router to proxy IPC messages from the devtools to us.
-        let devtools_server_sender = state.devtools_server_sender;
-        let (ipc_devtools_sender, ipc_devtools_receiver) = generic_channel::channel().unwrap();
-        let devtools_server_receiver = ipc_devtools_receiver.route_preserving_errors();
 
         let task_queue = TaskQueue::new(self_receiver, self_sender.clone());
 
@@ -908,7 +886,6 @@ impl ScriptThread {
         let receivers = ScriptThreadReceivers {
             constellation_receiver,
             image_cache_receiver,
-            devtools_server_receiver,
             // Initialized to `never` until WebGPU is initialized.
             #[cfg(feature = "webgpu")]
             webgpu_receiver: RefCell::new(crossbeam_channel::never()),
@@ -925,30 +902,11 @@ impl ScriptThread {
             image_cache_sender,
             time_profiler_sender: state.time_profiler_sender,
             memory_profiler_sender: state.memory_profiler_sender,
-            devtools_server_sender,
-            devtools_client_to_script_thread_sender: ipc_devtools_sender,
         };
 
         let microtask_queue = runtime.microtask_queue.clone();
         #[cfg(feature = "webgpu")]
         let gpu_id_hub = Arc::new(IdentityHub::default());
-
-        let debugger_global = DebuggerGlobalScope::new(
-            PipelineId::new(),
-            senders.devtools_server_sender.clone(),
-            senders.devtools_client_to_script_thread_sender.clone(),
-            senders.memory_profiler_sender.clone(),
-            senders.time_profiler_sender.clone(),
-            senders.pipeline_to_constellation_sender.clone(),
-            senders.pipeline_to_embedder_sender.clone(),
-            state.resource_threads.clone(),
-            state.storage_threads.clone(),
-            #[cfg(feature = "webgpu")]
-            gpu_id_hub.clone(),
-            &mut cx,
-        );
-
-        debugger_global.execute(&mut cx);
 
         let shared_style_locks = Default::default();
         let user_contents_for_manager_id =
@@ -1004,11 +962,8 @@ impl ScriptThread {
                     layout_factory,
                     scheduled_update_the_rendering: Default::default(),
                     needs_rendering_update: Arc::new(AtomicBool::new(false)),
-                    debugger_global: debugger_global.as_traced(),
-                    debugger_paused: Cell::new(false),
                     privileged_urls: state.privileged_urls,
                     this: weak_script_thread.clone(),
-                    devtools_state: Default::default(),
                 }
             }),
             cx,
@@ -1478,9 +1433,6 @@ impl ScriptThread {
                             MixedMessage::FromScript(inner_msg) => {
                                 self.handle_msg_from_script(inner_msg, $cx)
                             },
-                            MixedMessage::FromDevtools(inner_msg) => {
-                                self.handle_msg_from_devtools(inner_msg, $cx)
-                            },
                             MixedMessage::FromImageCache(inner_msg) => {
                                 self.handle_msg_from_image_cache(inner_msg, $cx)
                             },
@@ -1560,7 +1512,6 @@ impl ScriptThread {
                 ScriptThreadMessage::SendInputEvent(..) => ScriptThreadEventCategory::InputEvent,
                 _ => ScriptThreadEventCategory::ConstellationMsg,
             },
-            MixedMessage::FromDevtools(_) => ScriptThreadEventCategory::DevtoolsMsg,
             MixedMessage::FromImageCache(_) => ScriptThreadEventCategory::ImageCacheMsg,
             MixedMessage::FromScript(ref inner_msg) => match *inner_msg {
                 MainThreadScriptMsg::Common(CommonScriptMsg::Task(category, ..)) => category,
@@ -1610,9 +1561,6 @@ impl ScriptThread {
                     profiler_chan,
                     f
                 ),
-                ScriptThreadEventCategory::DevtoolsMsg => {
-                    time_profile!(ProfilerCategory::ScriptDevtoolsMsg, None, profiler_chan, f)
-                },
                 ScriptThreadEventCategory::DocumentEvent => time_profile!(
                     ProfilerCategory::ScriptDocumentEvent,
                     None,
@@ -1888,9 +1836,6 @@ impl ScriptThread {
             ) => {
                 self.handle_storage_event(pipeline_id, storage, url, key, old_value, new_value, cx)
             },
-            ScriptThreadMessage::ReportCSSError(pipeline_id, filename, line, column, msg) => {
-                self.handle_css_error_reporting(pipeline_id, filename, line, column, msg)
-            },
             ScriptThreadMessage::Reload(pipeline_id) => self.handle_reload(pipeline_id, cx),
             ScriptThreadMessage::Resize(id, size, size_type) => {
                 self.handle_resize_message(id, size, size_type);
@@ -2125,211 +2070,6 @@ impl ScriptThread {
         }
     }
 
-    fn handle_msg_from_devtools(
-        &self,
-        msg: DevtoolScriptControlMsg,
-        cx: &mut js::context::JSContext,
-    ) {
-        let documents = self.documents.borrow();
-        match msg {
-            DevtoolScriptControlMsg::GetEventListenerInfo(id, node, reply) => {
-                devtools::handle_get_event_listener_info(&self.devtools_state, id, &node, reply)
-            },
-            DevtoolScriptControlMsg::GetRootNode(id, reply) => {
-                devtools::handle_get_root_node(cx, &self.devtools_state, &documents, id, reply)
-            },
-            DevtoolScriptControlMsg::GetDocumentElement(id, reply) => {
-                devtools::handle_get_document_element(
-                    cx,
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    reply,
-                )
-            },
-            DevtoolScriptControlMsg::GetStyleSheets(id, reply) => {
-                devtools::handle_get_stylesheets(cx, &documents, id, reply);
-            },
-            DevtoolScriptControlMsg::GetStyleSheetText(id, index, reply) => {
-                devtools::handle_get_stylesheet_text(cx, &documents, id, index, reply);
-            },
-            DevtoolScriptControlMsg::GetChildren(id, node_id, reply) => {
-                devtools::handle_get_children(cx, &self.devtools_state, id, &node_id, reply)
-            },
-            DevtoolScriptControlMsg::GetAttributeStyle(id, node_id, reply) => {
-                devtools::handle_get_attribute_style(cx, &self.devtools_state, id, &node_id, reply)
-            },
-            DevtoolScriptControlMsg::GetStylesheetStyle(id, node_id, matched_rule, reply) => {
-                devtools::handle_get_stylesheet_style(
-                    cx,
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    &node_id,
-                    matched_rule,
-                    reply,
-                )
-            },
-            DevtoolScriptControlMsg::GetSelectors(id, node_id, reply) => {
-                devtools::handle_get_selectors(
-                    cx,
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    &node_id,
-                    reply,
-                )
-            },
-            DevtoolScriptControlMsg::GetComputedStyle(id, node_id, reply) => {
-                devtools::handle_get_computed_style(cx, &self.devtools_state, id, &node_id, reply)
-            },
-            DevtoolScriptControlMsg::GetLayout(id, node_id, reply) => {
-                devtools::handle_get_layout(cx, &self.devtools_state, id, &node_id, reply)
-            },
-            DevtoolScriptControlMsg::GetXPath(id, node_id, reply) => {
-                devtools::handle_get_xpath(&self.devtools_state, id, &node_id, reply)
-            },
-            DevtoolScriptControlMsg::GetInnerOrOuterHTML(id, node_id, reply, html_type) => {
-                devtools::handle_get_inner_or_outer_html(
-                    cx,
-                    &self.devtools_state,
-                    id,
-                    &node_id,
-                    reply,
-                    html_type,
-                )
-            },
-            DevtoolScriptControlMsg::ModifyAttribute(id, node_id, modifications) => {
-                devtools::handle_modify_attribute(
-                    cx,
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    &node_id,
-                    modifications,
-                )
-            },
-            DevtoolScriptControlMsg::ModifyRule(id, node_id, modifications) => {
-                devtools::handle_modify_rule(
-                    cx,
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    &node_id,
-                    modifications,
-                )
-            },
-            DevtoolScriptControlMsg::WantsLiveNotifications(id, to_send) => {
-                match documents.find_window(id) {
-                    Some(window) => {
-                        window.set_devtools_wants_updates(to_send);
-                    },
-                    None => warn!("Message sent to closed pipeline {}.", id),
-                }
-            },
-            DevtoolScriptControlMsg::SetTimelineMarkers(id, marker_types, reply) => {
-                devtools::handle_set_timeline_markers(&documents, id, marker_types, reply)
-            },
-            DevtoolScriptControlMsg::DropTimelineMarkers(id, marker_types) => {
-                devtools::handle_drop_timeline_markers(&documents, id, marker_types)
-            },
-            DevtoolScriptControlMsg::RequestAnimationFrame(id, name) => {
-                devtools::handle_request_animation_frame(&documents, id, name)
-            },
-            DevtoolScriptControlMsg::NavigateTo(pipeline_id, url) => {
-                self.handle_navigate_to(pipeline_id, url)
-            },
-            DevtoolScriptControlMsg::GoBack(pipeline_id) => {
-                self.handle_traverse_history(pipeline_id, TraversalDirection::Back(1))
-            },
-            DevtoolScriptControlMsg::GoForward(pipeline_id) => {
-                self.handle_traverse_history(pipeline_id, TraversalDirection::Forward(1))
-            },
-            DevtoolScriptControlMsg::Reload(id) => self.handle_reload(id, cx),
-            DevtoolScriptControlMsg::GetCssDatabase(reply) => {
-                devtools::handle_get_css_database(reply)
-            },
-            DevtoolScriptControlMsg::SimulateColorScheme(id, theme) => {
-                match documents.find_window(id) {
-                    Some(window) => {
-                        window.set_theme(theme);
-                    },
-                    None => warn!("Message sent to closed pipeline {}.", id),
-                }
-            },
-            DevtoolScriptControlMsg::HighlightDomNode(id, node_id) => {
-                devtools::handle_highlight_dom_node(
-                    &self.devtools_state,
-                    &documents,
-                    id,
-                    node_id.as_deref(),
-                )
-            },
-            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
-                self.debugger_global
-                    .fire_eval(cx, code.into(), id, None, frame_actor_id, reply);
-            },
-            DevtoolScriptControlMsg::GetPossibleBreakpoints(spidermonkey_id, result_sender) => {
-                self.debugger_global.fire_get_possible_breakpoints(
-                    cx,
-                    spidermonkey_id,
-                    result_sender,
-                );
-            },
-            DevtoolScriptControlMsg::SetBreakpoint(spidermonkey_id, script_id, offset) => {
-                self.debugger_global
-                    .fire_set_breakpoint(cx, spidermonkey_id, script_id, offset);
-            },
-            DevtoolScriptControlMsg::ClearBreakpoint(spidermonkey_id, script_id, offset) => {
-                self.debugger_global
-                    .fire_clear_breakpoint(cx, spidermonkey_id, script_id, offset);
-            },
-            DevtoolScriptControlMsg::Interrupt => {
-                self.debugger_global.fire_interrupt(cx);
-            },
-            DevtoolScriptControlMsg::ListFrames(pipeline_id, start, count, result_sender) => {
-                self.debugger_global
-                    .fire_list_frames(cx, pipeline_id, start, count, result_sender);
-            },
-            DevtoolScriptControlMsg::GetEnvironment(request, result_sender) => {
-                self.debugger_global
-                    .fire_get_environment(cx, request, result_sender);
-            },
-            DevtoolScriptControlMsg::Resume(resume_limit_type, frame_actor_id) => {
-                self.debugger_global
-                    .fire_resume(cx, resume_limit_type, frame_actor_id);
-                self.debugger_paused.set(false);
-            },
-            DevtoolScriptControlMsg::Blackbox(spidermonkey_id, coverage) => {
-                self.debugger_global
-                    .fire_blackbox(cx, spidermonkey_id, coverage);
-            },
-            DevtoolScriptControlMsg::Unblackbox(spidermonkey_id, coverage) => {
-                self.debugger_global
-                    .fire_unblackbox(cx, spidermonkey_id, coverage);
-            },
-        }
-    }
-
-    /// Enter a nested event loop for debugger pause.
-    /// TODO: This should also be called when manual pause is triggered.
-    pub(crate) fn enter_debugger_pause_loop(&self) {
-        self.debugger_paused.set(true);
-
-        #[allow(unsafe_code)]
-        let mut cx = unsafe { js::context::JSContext::from_ptr(js::rust::Runtime::get().unwrap()) };
-
-        while self.debugger_paused.get() {
-            match self.receivers.devtools_server_receiver.recv() {
-                Ok(Ok(msg)) => self.handle_msg_from_devtools(msg, &mut cx),
-                _ => {
-                    self.debugger_paused.set(false);
-                    break;
-                },
-            }
-        }
-    }
-
     fn handle_msg_from_image_cache(
         &self,
         response: ImageCacheResponseMessage,
@@ -2417,9 +2157,6 @@ impl ScriptThread {
             ScriptThreadEventCategory::SpawnPipeline,
             Some(new_pipeline_info.new_pipeline_id),
             || {
-                self.devtools_state
-                    .notify_pipeline_created(new_pipeline_info.new_pipeline_id);
-
                 // Kick off the fetch for the new resource.
                 self.pre_page_load(cx, InProgressLoad::new(new_pipeline_info));
             },
@@ -2918,8 +2655,6 @@ impl ScriptThread {
         self.paint_api
             .pipeline_exited(webview_id, pipeline_id, PipelineExitSource::Script);
 
-        self.devtools_state.notify_pipeline_exited(pipeline_id);
-
         debug!("{pipeline_id}: Finished pipeline exit");
     }
 
@@ -3146,11 +2881,8 @@ impl ScriptThread {
             self.senders.bluetooth_sender.clone(),
             self.senders.memory_profiler_sender.clone(),
             self.senders.time_profiler_sender.clone(),
-            self.senders.devtools_server_sender.clone(),
             self.senders.pipeline_to_constellation_sender.clone(),
             self.senders.pipeline_to_embedder_sender.clone(),
-            self.senders.constellation_sender.clone(),
-            incomplete.pipeline_id,
             incomplete.parent_info,
             incomplete.viewport_details,
             origin.clone(),
@@ -3174,14 +2906,6 @@ impl ScriptThread {
             incomplete.theme,
             self.this.clone(),
         );
-        if self.senders.devtools_server_sender.is_some() {
-            self.debugger_global.fire_add_debuggee(
-                cx,
-                window.upcast(),
-                incomplete.pipeline_id,
-                None,
-            );
-        }
 
         let mut realm = enter_auto_realm(cx, &*window);
         let cx = &mut realm;
@@ -3330,21 +3054,6 @@ impl ScriptThread {
             ))
             .unwrap();
 
-        // Notify devtools that a new script global exists.
-        let incomplete_browsing_context_id: BrowsingContextId = incomplete.webview_id.into();
-        let is_top_level_global = incomplete_browsing_context_id == incomplete.browsing_context_id;
-        self.notify_devtools(
-            document.Title(),
-            final_url.clone(),
-            is_top_level_global,
-            (
-                incomplete.browsing_context_id,
-                incomplete.pipeline_id,
-                None,
-                incomplete.webview_id,
-            ),
-        );
-
         document.set_navigation_start(incomplete.navigation_start);
 
         if is_html_document == IsHTMLDocument::NonHTMLDocument {
@@ -3377,40 +3086,6 @@ impl ScriptThread {
         }
 
         document.get_current_parser().unwrap()
-    }
-
-    fn notify_devtools(
-        &self,
-        title: DOMString,
-        url: ServoUrl,
-        is_top_level_global: bool,
-        (browsing_context_id, pipeline_id, worker_id, webview_id): (
-            BrowsingContextId,
-            PipelineId,
-            Option<WorkerId>,
-            WebViewId,
-        ),
-    ) {
-        if let Some(ref chan) = self.senders.devtools_server_sender {
-            let page_info = DevtoolsPageInfo {
-                title: String::from(title),
-                url,
-                is_top_level_global,
-                is_service_worker: false,
-            };
-            chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
-                (browsing_context_id, pipeline_id, worker_id, webview_id),
-                self.senders.devtools_client_to_script_thread_sender.clone(),
-                page_info.clone(),
-            ))
-            .unwrap();
-
-            let state = NavigationState::Stop(pipeline_id, page_info);
-            let _ = chan.send(ScriptToDevtoolsControlMsg::Navigate(
-                browsing_context_id,
-                state,
-            ));
-        }
     }
 
     /// Queue input events for later dispatching as part of a `update_the_rendering` task.
@@ -3853,66 +3528,6 @@ impl ScriptThread {
         );
     }
 
-    fn handle_css_error_reporting(
-        &self,
-        pipeline_id: PipelineId,
-        filename: String,
-        line: u32,
-        column: u32,
-        msg: String,
-    ) {
-        let Some(ref sender) = self.senders.devtools_server_sender else {
-            return;
-        };
-
-        if let Some(window) = self.documents.borrow().find_window(pipeline_id) &&
-            window.live_devtools_updates()
-        {
-            let css_error = CSSError {
-                filename,
-                line,
-                column,
-                msg,
-            };
-            let message = ScriptToDevtoolsControlMsg::ReportCSSError(pipeline_id, css_error);
-            sender.send(message).unwrap();
-        }
-    }
-
-    fn handle_navigate_to(&self, pipeline_id: PipelineId, url: ServoUrl) {
-        // The constellation only needs to know the WebView ID for navigation,
-        // but actors don't keep track of it. Infer WebView ID from pipeline ID instead.
-        if let Some(document) = self.documents.borrow().find_document(pipeline_id) {
-            self.senders
-                .pipeline_to_constellation_sender
-                .send((
-                    document.webview_id(),
-                    pipeline_id,
-                    ScriptToConstellationMessage::LoadUrl(
-                        LoadData::new_for_new_unrelated_webview(url),
-                        NavigationHistoryBehavior::Push,
-                        TargetSnapshotParams::default(),
-                    ),
-                ))
-                .unwrap();
-        }
-    }
-
-    fn handle_traverse_history(&self, pipeline_id: PipelineId, direction: TraversalDirection) {
-        // The constellation only needs to know the WebView ID for navigation,
-        // but actors don't keep track of it. Infer WebView ID from pipeline ID instead.
-        if let Some(document) = self.documents.borrow().find_document(pipeline_id) {
-            self.senders
-                .pipeline_to_constellation_sender
-                .send((
-                    document.webview_id(),
-                    pipeline_id,
-                    ScriptToConstellationMessage::TraverseHistory(direction),
-                ))
-                .unwrap();
-        }
-    }
-
     fn handle_reload(&self, pipeline_id: PipelineId, cx: &mut js::context::JSContext) {
         let window = self.documents.borrow().find_window(pipeline_id);
         if let Some(window) = window {
@@ -4076,14 +3691,6 @@ impl ScriptThread {
         };
 
         window.maybe_update_visual_viewport(cx, pinch_zoom_infos);
-    }
-
-    pub(crate) fn devtools_want_updates_for_node(pipeline: PipelineId, node: &Node) -> bool {
-        with_script_thread(|script_thread| {
-            script_thread
-                .devtools_state
-                .wants_updates_for_node(pipeline, node)
-        })
     }
 }
 

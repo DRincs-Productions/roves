@@ -2,9 +2,7 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-use std::borrow::ToOwned;
 use std::cell::{Cell, RefCell, RefMut};
-use std::collections::HashSet;
 use std::collections::hash_map::Entry;
 use std::default::Default;
 use std::ffi::c_void;
@@ -19,7 +17,6 @@ use content_security_policy::Violation;
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::{Sender, unbounded};
 use cssparser::SourceLocation;
-use devtools_traits::{ScriptToDevtoolsControlMsg, TimelineMarker, TimelineMarkerType};
 use dom_struct::dom_struct;
 use embedder_traits::user_contents::UserScript;
 use embedder_traits::{
@@ -70,11 +67,11 @@ use script_bindings::dom::UnrootedDom;
 use script_bindings::interfaces::{HasOrigin, WindowHelpers};
 use script_bindings::like::Setlike;
 use script_bindings::reflector::DomObject;
-use script_traits::{ConstellationInputEvent, ScriptThreadMessage};
+use script_traits::ConstellationInputEvent;
 use selectors::attr::CaseSensitivity;
 use servo_arc::Arc as ServoArc;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::generic_channel::{self, GenericCallback, GenericSender};
+use servo_base::generic_channel;
 use servo_base::id::{BrowsingContextId, PipelineId, WebViewId};
 #[cfg(feature = "bluetooth")]
 use servo_bluetooth_traits::BluetoothRequest;
@@ -314,13 +311,6 @@ pub(crate) struct Window {
     /// <https://w3c.github.io/ServiceWorker/#global-caches-attribute>
     caches: MutNullableDom<CacheStorage>,
 
-    /// For sending timeline markers. Will be ignored if
-    /// no devtools server
-    #[no_trace]
-    devtools_markers: DomRefCell<HashSet<TimelineMarkerType>>,
-    #[no_trace]
-    devtools_marker_sender: DomRefCell<Option<GenericSender<Option<TimelineMarker>>>>,
-
     /// Most recent unhandled resize event, if any.
     #[no_trace]
     unhandled_resize_event: DomRefCell<Option<(ViewportDetails, WindowSizeType)>>,
@@ -474,10 +464,6 @@ pub(crate) struct Window {
     /// <https://html.spec.whatwg.org/multipage/#last-activation-timestamp>
     #[no_trace]
     last_activation_timestamp: Cell<UserActivationTimestamp>,
-
-    /// A flag to indicate whether the developer tools has requested
-    /// live updates from the window.
-    devtools_wants_updates: Cell<bool>,
 }
 
 impl Window {
@@ -2585,11 +2571,6 @@ impl Window {
         }
 
         debug!("script: performing reflow for goal {reflow_goal:?}");
-        let marker = if self.need_emit_timeline_marker(TimelineMarkerType::Reflow) {
-            Some(TimelineMarker::start("Reflow".to_owned()))
-        } else {
-            None
-        };
 
         let restyle_reason = document.restyle_reason(cx.no_gc());
         document.clear_restyle_reasons();
@@ -2656,7 +2637,6 @@ impl Window {
             animation_timeline_value: document.current_animation_timeline_value(),
             animations: document.animations().sets.clone(),
             animating_images: document.image_animation_manager().animating_images(),
-            highlighted_dom_node: document.highlighted_dom_node().map(|node| node.to_opaque()),
             document_context,
             accessibility_damage,
             rooted_nodes_for_accessibility_integrity_check,
@@ -2667,9 +2647,6 @@ impl Window {
         };
 
         debug!("script: layout complete");
-        if let Some(marker) = marker {
-            self.emit_timeline_marker(marker.end());
-        }
 
         self.handle_new_or_removed_web_fonts_post_reflow(cx, reflow_result.changed_web_fonts);
 
@@ -3370,36 +3347,6 @@ impl Window {
         self.Document().title_changed();
     }
 
-    pub(crate) fn need_emit_timeline_marker(&self, timeline_type: TimelineMarkerType) -> bool {
-        let markers = self.devtools_markers.borrow();
-        markers.contains(&timeline_type)
-    }
-
-    pub(crate) fn emit_timeline_marker(&self, marker: TimelineMarker) {
-        let sender = self.devtools_marker_sender.borrow();
-        let sender = sender.as_ref().expect("There is no marker sender");
-        sender.send(Some(marker)).unwrap();
-    }
-
-    pub(crate) fn set_devtools_timeline_markers(
-        &self,
-        markers: Vec<TimelineMarkerType>,
-        reply: GenericSender<Option<TimelineMarker>>,
-    ) {
-        *self.devtools_marker_sender.borrow_mut() = Some(reply);
-        self.devtools_markers.borrow_mut().extend(markers);
-    }
-
-    pub(crate) fn drop_devtools_timeline_markers(&self, markers: Vec<TimelineMarkerType>) {
-        let mut devtools_markers = self.devtools_markers.borrow_mut();
-        for marker in markers {
-            devtools_markers.remove(&marker);
-        }
-        if devtools_markers.is_empty() {
-            *self.devtools_marker_sender.borrow_mut() = None;
-        }
-    }
-
     pub(crate) fn is_alive(&self) -> bool {
         self.current_state.get() == WindowState::Alive
     }
@@ -3754,11 +3701,8 @@ impl Window {
         #[cfg(feature = "bluetooth")] bluetooth_thread: GenericSender<BluetoothRequest>,
         mem_profiler_chan: MemProfilerChan,
         time_profiler_chan: TimeProfilerChan,
-        devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
         script_to_constellation_sender: ScriptToConstellationSender,
         embedder_chan: ScriptToEmbedderChan,
-        control_chan: GenericSender<ScriptThreadMessage>,
-        pipeline_id: PipelineId,
         parent_info: Option<PipelineId>,
         viewport_details: ViewportDetails,
         origin: MutableOrigin,
@@ -3777,15 +3721,9 @@ impl Window {
         theme: Theme,
         weak_script_thread: Weak<ScriptThread>,
     ) -> DomRoot<Self> {
-        let error_reporter = CSSErrorReporter {
-            pipelineid: pipeline_id,
-            script_chan: control_chan,
-        };
-
         let win = Box::new(Self {
             webview_id,
             globalscope: GlobalScope::new_inherited(
-                devtools_chan,
                 mem_profiler_chan,
                 time_profiler_chan,
                 script_to_constellation_sender,
@@ -3829,9 +3767,7 @@ impl Window {
             viewport_details: Cell::new(viewport_details),
             layout_blocker: Cell::new(LayoutBlocker::WaitingForParse),
             current_state: Cell::new(WindowState::Alive),
-            devtools_marker_sender: Default::default(),
-            devtools_markers: Default::default(),
-            error_reporter,
+            error_reporter: CSSErrorReporter,
             media_query_lists: DOMTracker::new(),
             #[cfg(feature = "bluetooth")]
             test_runner: Default::default(),
@@ -3866,7 +3802,6 @@ impl Window {
             has_changed_visual_viewport_dimension: Default::default(),
             pending_media_query_evaluation: Default::default(),
             last_activation_timestamp: Cell::new(UserActivationTimestamp::PositiveInfinity),
-            devtools_wants_updates: Default::default(),
         });
 
         WindowBinding::Wrap::<crate::DomTypeHolder>(cx, &origin, win)
@@ -3878,14 +3813,6 @@ impl Window {
 
     pub(crate) fn pipeline_id(&self) -> PipelineId {
         self.Document().pipeline_id()
-    }
-
-    pub(crate) fn live_devtools_updates(&self) -> bool {
-        self.devtools_wants_updates.get()
-    }
-
-    pub(crate) fn set_devtools_wants_updates(&self, value: bool) {
-        self.devtools_wants_updates.set(value);
     }
 
     /// Create a new cached instance of the given value.
@@ -3986,11 +3913,9 @@ impl Window {
     }
 }
 
+/// Logs CSS parse errors at the `info` level.
 #[derive(Clone, MallocSizeOf)]
-pub(crate) struct CSSErrorReporter {
-    pub(crate) pipelineid: PipelineId,
-    pub(crate) script_chan: GenericSender<ScriptThreadMessage>,
-}
+pub(crate) struct CSSErrorReporter;
 unsafe_no_jsmanaged_fields!(CSSErrorReporter);
 
 impl ParseErrorReporter for CSSErrorReporter {
@@ -4009,15 +3934,6 @@ impl ParseErrorReporter for CSSErrorReporter {
                 error
             )
         }
-
-        // TODO: report a real filename
-        let _ = self.script_chan.send(ScriptThreadMessage::ReportCSSError(
-            self.pipelineid,
-            url.0.to_string(),
-            location.line,
-            location.column,
-            error.to_string(),
-        ));
     }
 }
 

@@ -6,7 +6,6 @@ use std::cell::Cell;
 use std::default::Default;
 
 use bitflags::bitflags;
-use devtools_traits::{TimelineMarker, TimelineMarkerType};
 use dom_struct::dom_struct;
 use embedder_traits::InputEventResult;
 use js::context::JSContext;
@@ -554,9 +553,6 @@ impl Event {
                     .and_then(|activatable| activatable.legacy_pre_activation_behavior(cx));
             }
 
-            let timeline_window = DomRoot::downcast::<Window>(target.global())
-                .filter(|window| window.need_emit_timeline_marker(TimelineMarkerType::DOMEvent));
-
             // Step 6.13. For each struct in event’s path, in reverse order:
             for (index, segment) in self.path.borrow().iter().enumerate().rev() {
                 // Step 6.13.1. If struct’s shadow-adjusted target is non-null, then set event’s
@@ -576,7 +572,6 @@ impl Event {
                     index,
                     self,
                     ListenerPhase::Capturing,
-                    timeline_window.as_deref(),
                     legacy_output_did_listeners_throw,
                 )
             }
@@ -606,7 +601,6 @@ impl Event {
                     index,
                     self,
                     ListenerPhase::Bubbling,
-                    timeline_window.as_deref(),
                     legacy_output_did_listeners_throw,
                 );
             }
@@ -1250,7 +1244,6 @@ fn invoke(
     segment_index_in_path: usize,
     event: &Event,
     phase: ListenerPhase,
-    timeline_window: Option<&Window>,
     legacy_output_did_listeners_throw: Option<&Cell<bool>>,
 ) {
     // Step 1. Set event’s target to the shadow-adjusted target of the last struct in event’s path,
@@ -1291,7 +1284,6 @@ fn invoke(
         &listeners,
         phase,
         invocation_target_in_shadow_tree,
-        timeline_window,
         legacy_output_did_listeners_throw,
     );
 
@@ -1321,7 +1313,6 @@ fn invoke(
             &listeners,
             phase,
             invocation_target_in_shadow_tree,
-            timeline_window,
             legacy_output_did_listeners_throw,
         );
 
@@ -1337,7 +1328,6 @@ fn inner_invoke(
     listeners: &EventListeners,
     phase: ListenerPhase,
     invocation_target_in_shadow_tree: bool,
-    timeline_window: Option<&Window>,
     legacy_output_did_listeners_throw: Option<&Cell<bool>>,
 ) -> bool {
     // Step 1. Let found be false.
@@ -1404,16 +1394,12 @@ fn inner_invoke(
         //     Step 2.10.1 Report exception for listener’s callback’s corresponding JavaScript object’s
         //     associated realm’s global object.
         //     Step 2.10.2 Set legacyOutputDidListenersThrowFlag if given.
-        let marker = TimelineMarker::start("DOMEvent".to_owned());
         if compiled_listener
             .call_or_handle_event(cx, &event_target, event, ExceptionHandling::Report)
             .is_err() &&
             let Some(flag) = legacy_output_did_listeners_throw
         {
             flag.set(true);
-        }
-        if let Some(window) = timeline_window {
-            window.emit_timeline_marker(marker.end());
         }
 
         // Step 2.12 Unset event’s in passive listener flag.

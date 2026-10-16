@@ -5,7 +5,6 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use devtools_traits::WorkerId;
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use net_traits::request::Referrer;
@@ -16,7 +15,6 @@ use script_bindings::reflector::reflect_dom_object_with_cx;
 use servo_base::id::ServiceWorkerRegistrationId;
 use servo_constellation_traits::{ScopeThings, WorkerScriptLoadOrigin};
 use servo_url::ServoUrl;
-use uuid::Uuid;
 
 use crate::dom::bindings::codegen::Bindings::ServiceWorkerRegistrationBinding::{
     ServiceWorkerRegistrationMethods, ServiceWorkerUpdateViaCache,
@@ -127,24 +125,11 @@ impl ServiceWorkerRegistration {
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
-        let worker_id = WorkerId(Uuid::new_v4());
-        let devtools_chan = global.devtools_chan().cloned();
-        let init = prepare_workerscope_init(global, None, Some(worker_id), webgl_chan);
-        let browsing_context_id = global
-            .downcast::<Window>()
-            .map(|w: &Window| w.window_proxy().browsing_context_id())
-            .expect("Service worker must be registered from a Window global");
-        let webview_id = global
-            .webview_id()
-            .expect("Service worker must have a WebViewId");
+        let init = prepare_workerscope_init(global, webgl_chan);
         ScopeThings {
             script_url,
             init,
             worker_load_origin,
-            devtools_chan,
-            worker_id,
-            browsing_context_id,
-            webview_id,
         }
     }
 

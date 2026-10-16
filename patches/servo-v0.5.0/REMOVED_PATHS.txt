@@ -114,3 +114,27 @@ components/webdriver_server
 ports/servoshell/webdriver.rs
 components/script/webdriver_handlers.rs
 components/shared/embedder/webdriver.rs
+
+# Devtools (Firefox Remote Debugging Protocol), deleted entirely (see CUSTOMIZATIONS.md, 2026-10-15
+# "Remove devtools" entry; the matching edits to the files that referenced it are patch 0224).
+# Roves never starts the devtools server, and the debugger script needs SpiderMonkey's
+# Debugger API, which V8 does not have: the server crate, the shared message types, the
+# network and script-thread producers, the debugger global and its events, and debugger.js.
+components/devtools
+components/shared/devtools
+components/net/devtools.rs
+components/script/devtools.rs
+components/script/dom/debugger
+components/default-resources/resources/debugger.js
+components/script_bindings/webidls/DebuggerAddDebuggeeEvent.webidl
+components/script_bindings/webidls/DebuggerBlackboxEvent.webidl
+components/script_bindings/webidls/DebuggerClearBreakpointEvent.webidl
+components/script_bindings/webidls/DebuggerEvalEvent.webidl
+components/script_bindings/webidls/DebuggerFrameEvent.webidl
+components/script_bindings/webidls/DebuggerGetEnvironmentEvent.webidl
+components/script_bindings/webidls/DebuggerGetPossibleBreakpointsEvent.webidl
+components/script_bindings/webidls/DebuggerGlobalScope.webidl
+components/script_bindings/webidls/DebuggerInterruptEvent.webidl
+components/script_bindings/webidls/DebuggerResumeEvent.webidl
+components/script_bindings/webidls/DebuggerSetBreakpointEvent.webidl
+components/script_bindings/webidls/DebuggerUnblackboxEvent.webidl

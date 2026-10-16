@@ -13,7 +13,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::{self, JoinHandle};
 
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
-use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg};
 use fonts::FontContext;
 use ipc_channel::ipc;
 use ipc_channel::router::ROUTER;
@@ -712,7 +711,7 @@ impl ServiceWorkerManager {
 fn update_serviceworker(
     own_sender: GenericSender<ServiceWorkerMsg>,
     scope_url: ServoUrl,
-    mut scope_things: ScopeThings,
+    scope_things: ScopeThings,
     font_context: Arc<FontContext>,
 ) -> (
     ServiceWorker,
@@ -722,30 +721,6 @@ fn update_serviceworker(
     Arc<AtomicBool>,
 ) {
     let (sender, receiver) = unbounded();
-    let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
-    scope_things.init.from_devtools_sender = Some(devtools_sender);
-
-    if let Some(ref chan) = scope_things.devtools_chan &&
-        let Some(ref sender) = scope_things.init.from_devtools_sender
-    {
-        let page_info = DevtoolsPageInfo {
-            title: format!("Service Worker for {}", scope_things.script_url),
-            url: scope_things.script_url.clone(),
-            is_top_level_global: false,
-            is_service_worker: true,
-        };
-        let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
-            (
-                scope_things.browsing_context_id,
-                scope_things.init.pipeline_id,
-                Some(scope_things.worker_id),
-                scope_things.webview_id,
-            ),
-            sender.clone(),
-            page_info,
-        ));
-    }
-
     let worker_id = ServiceWorkerId::new();
 
     let (control_sender, control_receiver) = unbounded();
@@ -756,7 +731,6 @@ fn update_serviceworker(
         scope_things.clone(),
         sender.clone(),
         receiver,
-        devtools_receiver,
         own_sender,
         scope_url,
         control_receiver,

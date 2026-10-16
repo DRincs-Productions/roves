@@ -11,7 +11,6 @@ use std::time::{Duration, SystemTime};
 
 use async_recursion::async_recursion;
 use content_security_policy::percent_encoding::{AsciiSet, CONTROLS, utf8_percent_encode};
-use devtools_traits::ChromeToDevtoolsControlMsg;
 use embedder_traits::{AuthenticationResponse, GenericEmbedderProxy};
 use futures::{TryFutureExt, TryStreamExt, future};
 use headers::authorization::Basic;
@@ -64,7 +63,7 @@ use profile_traits::trace_span;
 use rustc_hash::FxHashMap;
 use servo_base::cross_process_instant::CrossProcessInstant;
 use servo_base::generic_channel::GenericSharedMemory;
-use servo_base::id::{BrowsingContextId, HistoryStateId, PipelineId};
+use servo_base::id::HistoryStateId;
 use servo_config::pref;
 use servo_url::{ImmutableOrigin, ServoUrl};
 use tokio::sync::mpsc::{
@@ -82,9 +81,6 @@ use crate::connector::{
 use crate::cookie::ServoCookie;
 use crate::cookie_storage::CookieStorage;
 use crate::decoder::Decoder;
-use crate::devtools::{
-    prepare_devtools_request, send_request_to_devtools, send_response_values_to_devtools,
-};
 use crate::embedder::NetToEmbedderMsg;
 use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::FetchParams;
@@ -510,17 +506,10 @@ async fn obtain_response(
     request_headers: &mut HeaderMap,
     body_sender: Option<StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>>,
     source_is_null: bool,
-    pipeline_id: &Option<PipelineId>,
-    request_id: Option<&str>,
-    destination: Destination,
-    is_xhr: bool,
     context: &FetchContext,
     fetch_terminated: UnboundedSender<bool>,
-    browsing_context_id: Option<BrowsingContextId>,
-) -> Result<(HyperResponse<Decoder>, Option<ChromeToDevtoolsControlMsg>), NetworkError> {
+) -> Result<HyperResponse<Decoder>, NetworkError> {
     let mut headers = request_headers.clone();
-
-    let devtools_bytes = StdArc::new(Mutex::new(vec![]));
 
     // https://url.spec.whatwg.org/#percent-encoded-bytes
     let encoded_url = utf8_percent_encode(url.as_str(), FRAGMENT).to_string();
@@ -544,12 +533,7 @@ async fn obtain_response(
             (BodySink::Buffered(sender), BodyStream::Buffered(receiver))
         };
 
-        obtain_response_setup_router_callback(
-            devtools_bytes.clone(),
-            chunk_requester,
-            sink,
-            fetch_terminated,
-        )?;
+        obtain_response_setup_router_callback(chunk_requester, sink, fetch_terminated)?;
 
         let body = match stream {
             BodyStream::Chunked(receiver) => {
@@ -614,15 +598,8 @@ async fn obtain_response(
         .timing
         .set_attribute(ResourceAttribute::ConnectEnd(connect_end));
 
-    let request_id = request_id.map(|v| v.to_owned());
-    let pipeline_id = *pipeline_id;
-    let closure_url = url.clone();
-    let method = method.clone();
-    let send_start = CrossProcessInstant::now();
-
     let host = request.uri().host().unwrap_or("").to_owned();
     let override_manager = context.state.override_manager.clone();
-    let headers = headers.clone();
     let is_secure_scheme = url.is_secure_scheme();
 
     // Generally, we use a persistent connection, so we will also set other PerformanceResourceTiming
@@ -635,46 +612,10 @@ async fn obtain_response(
     let client_future = client
         .request(request)
         .and_then(move |res| {
-            let send_end = CrossProcessInstant::now();
-
             // TODO(#21271) response_start: immediately after receiving first byte of response
-
-            let msg = if let Some(request_id) = request_id {
-                if let Some(pipeline_id) = pipeline_id {
-                    if let Some(browsing_context_id) = browsing_context_id {
-                        Some(prepare_devtools_request(
-                            request_id,
-                            closure_url,
-                            method.clone(),
-                            headers,
-                            Some(devtools_bytes.lock().clone()),
-                            pipeline_id,
-                            (connect_end - connect_start).unsigned_abs(),
-                            (send_end - send_start).unsigned_abs(),
-                            destination,
-                            is_xhr,
-                            browsing_context_id,
-                        ))
-                    } else {
-                        debug!("Not notifying devtools (no browsing_context_id)");
-                        None
-                    }
-                    // TODO: ^This is not right, connect_start is taken before contructing the
-                    // request and connect_end at the end of it. send_start is takend before the
-                    // connection too. I'm not sure it's currently possible to get the time at the
-                    // point between the connection and the start of a request.
-                } else {
-                    debug!("Not notifying devtools (no pipeline_id)");
-                    None
-                }
-            } else {
-                debug!("Not notifying devtools (no request_id)");
-                None
-            };
-
-            future::ready(Ok((
-                Decoder::detect(res.map(|r| r.boxed()), is_secure_scheme),
-                msg,
+            future::ready(Ok(Decoder::detect(
+                res.map(|r| r.boxed()),
+                is_secure_scheme,
             )))
         })
         .map_err(move |error| {
@@ -698,7 +639,6 @@ async fn obtain_response(
 
 /// Setup the callback mechanism to forward chunks from the request received to the `chunk_requester`.
 fn obtain_response_setup_router_callback(
-    devtools_bytes: StdArc<Mutex<Vec<u8>>>,
     chunk_requester: StdArc<Mutex<Option<IpcSender<BodyChunkRequest>>>>,
     sink: BodySink,
     fetch_terminated: UnboundedSender<bool>,
@@ -774,8 +714,6 @@ fn obtain_response_setup_router_callback(
                     return;
                 },
             };
-
-            devtools_bytes.lock().extend_from_slice(&bytes);
 
             // Step 5.1.2.2, transmit chunk over the network,
             // currently implemented by sending the bytes to the fetch worker.
@@ -2132,18 +2070,12 @@ async fn http_network_fetch(
     // given request.
 
     let url = request.current_url();
-    let request_id = request.id.0.to_string();
     if log_enabled!(log::Level::Info) {
         info!("{:?} request for {}", request.method, url);
         for header in request.headers.iter() {
             debug!(" - {:?}", header);
         }
     }
-
-    // XHR uses the default destination; other kinds of fetches (which haven't been implemented yet)
-    // do not. Once we support other kinds of fetches we'll need to be more fine grained here
-    // since things like image fetches are classified differently by devtools
-    let is_xhr = request.destination == Destination::None;
 
     // The receiver will receive true if there has been an error streaming the request body.
     let (fetch_terminated_sender, mut fetch_terminated_receiver) = unbounded_channel();
@@ -2158,12 +2090,10 @@ async fn http_network_fetch(
         let _ = fetch_terminated_sender.send(false);
     }
 
-    let browsing_context_id = request.target_webview_id.map(Into::into);
-
     // Step 6. Let newConnection be "yes" if forceNewConnection is true; otherwise "no".
 
     // Step 7. Switch on request’s mode:
-    let (res, msg) = match &request.mode {
+    let res = match &request.mode {
         // Let connection be the result of obtaining a WebSocket connection, given request’s current URL.
         RequestMode::WebSocket {
             protocols,
@@ -2210,7 +2140,7 @@ async fn http_network_fetch(
                     .map_err(|_| unreachable!())
                     .boxed(),
             });
-            (Decoder::detect(response, url.is_secure_scheme()), None)
+            Decoder::detect(response, url.is_secure_scheme())
         },
         // Let connection be the result of obtaining a connection, given networkPartitionKey,
         // request’s current URL, includeCredentials, and newConnection.
@@ -2225,21 +2155,15 @@ async fn http_network_fetch(
                     .body
                     .as_ref()
                     .is_some_and(|body| body.source_is_null()),
-                &request.pipeline_id,
-                Some(&request_id),
-                request.destination,
-                is_xhr,
                 context,
                 fetch_terminated_sender,
-                browsing_context_id,
             );
 
             // This will only get the headers, the body is read later
-            let (res, msg) = match response_future.await {
-                Ok(wrapped_response) => wrapped_response,
+            match response_future.await {
+                Ok(response) => response,
                 Err(error) => return Response::network_error(error),
-            };
-            (res, msg)
+            }
         },
     };
 
@@ -2302,7 +2226,6 @@ async fn http_network_fetch(
     let (done_sender, done_receiver) = unbounded_channel();
     *done_chan = Some((done_sender.clone(), done_receiver));
 
-    let devtools_sender = context.devtools_chan.clone();
     let cancellation_listener = context.cancellation_listener.clone();
     if cancellation_listener.cancelled() {
         return Response::network_error(NetworkError::LoadCancelled);
@@ -2311,23 +2234,12 @@ async fn http_network_fetch(
     *res_body.lock() = ResponseBody::Receiving(vec![]);
     let res_body2 = res_body.clone();
 
-    if let Some(ref sender) = devtools_sender &&
-        let Some(m) = msg
-    {
-        send_request_to_devtools(m, sender);
-    }
-
     let done_sender2 = done_sender.clone();
     let done_sender3 = done_sender.clone();
     let timing_ptr2 = context.timing.clone();
     let timing_ptr3 = context.timing.clone();
-    let devtools_request = request.clone();
-    let url1 = devtools_request.url();
+    let url1 = request.url();
     let url2 = url1.clone();
-
-    let status = response.status.clone();
-    let headers = response.headers.clone();
-    let devtools_chan = context.devtools_chan.clone();
 
     if let Some(possible_length) = res
         .headers()
@@ -2364,19 +2276,10 @@ async fn http_network_fetch(
                     ResponseBody::Receiving(ref mut body) => std::mem::take(body),
                     _ => vec![],
                 };
-                let devtools_response_body = completed_body.clone();
                 if let Some(disk_store) = disk_store {
                     spawn_task(disk_store.write(completed_body.clone()));
                 }
                 *body = ResponseBody::Done(completed_body);
-                send_response_values_to_devtools(
-                    Some(headers),
-                    status,
-                    Some(devtools_response_body),
-                    CacheState::None,
-                    &devtools_request,
-                    devtools_chan,
-                );
                 timing_ptr2.set_attribute(ResourceAttribute::ResponseEnd);
                 let _ = done_sender2.send(Data::Done);
                 future::ready(Ok(()))

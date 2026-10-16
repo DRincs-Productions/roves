@@ -76,8 +76,6 @@ accesskit = { workspace = true }
 bitflags = { workspace = true }
 cookie = { workspace = true }
 crossbeam-channel = { workspace = true }
-devtools = { workspace = true }
-devtools_traits = { workspace = true }
 dpi = { workspace = true }
 embedder_traits = { workspace = true }
 env_logger = { workspace = true }

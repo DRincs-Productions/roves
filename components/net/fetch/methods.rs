@@ -9,8 +9,6 @@ use std::{io, mem, str};
 use base64::Engine as _;
 use base64::engine::general_purpose;
 use content_security_policy as csp;
-use crossbeam_channel::Sender;
-use devtools_traits::DevtoolsControlMsg;
 use embedder_traits::resources::{self, Resource};
 use headers::{AccessControlExposeHeaders, ContentType, HeaderMapExt};
 use http::header::{self, HeaderMap, HeaderName, RANGE};
@@ -46,9 +44,6 @@ use tokio::sync::Mutex as TokioMutex;
 use tokio::sync::mpsc::{UnboundedReceiver as TokioReceiver, UnboundedSender as TokioSender};
 
 use crate::connector::CACertificates;
-use crate::devtools::{
-    send_early_httprequest_to_devtools, send_response_to_devtools, send_security_info_to_devtools,
-};
 use crate::fetch::cors_cache::CorsCache;
 use crate::fetch::fetch_params::{
     ConsumePreloadedResources, FetchParams, SharedPreloadedResources,
@@ -99,7 +94,6 @@ pub type SharedInflightKeepAliveRecords =
 pub struct FetchContext {
     pub state: Arc<HttpState>,
     pub user_agent: String,
-    pub devtools_chan: Option<Sender<DevtoolsControlMsg>>,
     pub filemanager: FileManager,
     pub file_token: FileTokenCheck,
     pub request_interceptor: Arc<TokioMutex<RequestInterceptor>>,
@@ -407,7 +401,6 @@ pub async fn main_fetch(
 ) -> Response {
     // Step 1: Let request be fetchParam's request.
     let request = &mut fetch_params.request;
-    send_early_httprequest_to_devtools(request, context);
     // Step 2: Let response be null.
     let mut response = None;
 
@@ -823,7 +816,7 @@ pub async fn main_fetch(
     let mut response_loaded = false;
     let mut response = if !response.is_network_error() && !request.integrity_metadata.is_empty() {
         // Step 19.1.
-        wait_for_response(request, &mut response, target, done_chan, context).await;
+        wait_for_response(request, &mut response, target, done_chan).await;
         response_loaded = true;
 
         // Step 19.2.
@@ -845,7 +838,7 @@ pub async fn main_fetch(
         // by sync fetch, but we overload it here for simplicity
         target.process_response(request, &response);
         if !response_loaded {
-            wait_for_response(request, &mut response, target, done_chan, context).await;
+            wait_for_response(request, &mut response, target, done_chan).await;
         }
         // overloaded similarly to process_response
         target.process_response_eof(request, &response);
@@ -863,21 +856,14 @@ pub async fn main_fetch(
 
     // Step 22.
     target.process_response(request, &response);
-    // Send Response to Devtools
-    send_response_to_devtools(request, context, &response, None);
-    send_security_info_to_devtools(request, context, &response);
 
     // Step 23.
     if !response_loaded {
-        wait_for_response(request, &mut response, target, done_chan, context).await;
+        wait_for_response(request, &mut response, target, done_chan).await;
     }
 
     // Step 24.
     target.process_response_eof(request, &response);
-    // Send Response to Devtools
-    // This is done after process_response_eof to ensure that the body is fully
-    // processed before sending the response to Devtools.
-    send_response_to_devtools(request, context, &response, None);
 
     context
         .state
@@ -895,19 +881,14 @@ async fn wait_for_response(
     response: &mut Response,
     target: Target<'_>,
     done_chan: &mut DoneChannel,
-    context: &FetchContext,
 ) {
     if let Some(ref mut ch) = *done_chan {
-        let mut devtools_body = context.devtools_chan.as_ref().map(|_| Vec::new());
         loop {
             match ch.1.recv().await {
                 Some(Data::ContentLength(length)) => {
                     target.process_response_length_hint(request, length);
                 },
                 Some(Data::Payload(vec)) => {
-                    if let Some(body) = devtools_body.as_mut() {
-                        body.extend(&vec);
-                    }
                     target.process_response_chunk(request, vec);
                 },
                 Some(Data::Error(network_error)) => {
@@ -919,7 +900,6 @@ async fn wait_for_response(
                     break;
                 },
                 Some(Data::Done) => {
-                    send_response_to_devtools(request, context, response, devtools_body);
                     break;
                 },
                 Some(Data::Cancelled) => {
@@ -939,11 +919,6 @@ async fn wait_for_response(
                 // obtained synchronously via scheme_fetch for data/file/about/etc
                 // We should still send the body across as a chunk
                 target.process_response_chunk(request, vec.clone());
-                if context.devtools_chan.is_some() {
-                    // Now that we've replayed the entire cached body,
-                    // notify the DevTools server with the full Response.
-                    send_response_to_devtools(request, context, response, Some(vec.clone()));
-                }
             },
             ResponseBody::Done(_) | ResponseBody::Empty => {},
             _ => unreachable!(),

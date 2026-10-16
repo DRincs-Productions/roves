@@ -6,7 +6,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use crossbeam_channel::{Sender, unbounded};
-use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg, WorkerId};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::rust::HandleObject;
@@ -14,7 +13,6 @@ use malloc_size_of_derive::MallocSizeOf;
 use net_traits::pub_domains::reg_suffix;
 use net_traits::request::{CredentialsMode, Referrer};
 use script_bindings::reflector::reflect_dom_object_with_proto;
-use servo_base::generic_channel;
 use servo_constellation_traits::{MessagePortImpl, WorkerScriptLoadOrigin};
 use servo_url::{Host, ImmutableOrigin, ServoUrl};
 use uuid::Uuid;
@@ -560,36 +558,7 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             pipeline_id: global.pipeline_id(),
         };
 
-        let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
-        let worker_id = WorkerId(Uuid::new_v4());
-        if let Some(chan) = global.devtools_chan() {
-            let webview_id = global
-                .webview_id()
-                .expect("Window global must have a WebViewId");
-            let page_info = DevtoolsPageInfo {
-                title: format!("SharedWorker for {}", worker_url.url()),
-                url: worker_url.url(),
-                is_top_level_global: false,
-                is_service_worker: false,
-            };
-            let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
-                (
-                    window.window_proxy().browsing_context_id(),
-                    global.pipeline_id(),
-                    Some(worker_id),
-                    webview_id,
-                ),
-                devtools_sender.clone(),
-                page_info,
-            ));
-        }
-
-        let init = prepare_workerscope_init(
-            global,
-            Some(devtools_sender),
-            Some(worker_id),
-            window.webgl_chan_value(),
-        );
+        let init = prepare_workerscope_init(global, window.webgl_chan_value());
 
         let (setup_sender, setup_receiver) = unbounded();
         let (registered_sender, registered_receiver) = unbounded();
@@ -604,7 +573,6 @@ impl SharedWorkerMethods<crate::DomTypeHolder> for SharedWorker {
             worker_url,
             worker_addr.clone(),
             parent_event_loop_sender,
-            devtools_receiver,
             sender.clone(),
             receiver,
             worker_load_origin,

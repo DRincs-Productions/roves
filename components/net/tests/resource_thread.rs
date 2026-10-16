@@ -25,7 +25,6 @@ fn test_exit() {
     let (mtx, _mrx) = generic_channel::channel().unwrap();
     let (sender, receiver) = generic_channel::oneshot().unwrap();
     let (resource_thread, _private_resource_thread) = new_core_resource_thread(
-        None,
         ProfilerChan(Some(tx)),
         MemProfilerChan(mtx),
         create_generic_embedder_proxy(),

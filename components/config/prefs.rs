@@ -120,10 +120,6 @@ pub struct Preferences {
     /// If this value is less than or equal to zero, then caret blink is disabled.
     pub editing_caret_blink_time: i64,
     pub css_animations_testing_enabled: bool,
-    /// Start the devtools server at startup
-    pub devtools_server_enabled: bool,
-    /// The address:port the devtools server listens to, default to 127.0.0.1:7000.
-    pub devtools_server_listen_address: String,
     // feature: WebGPU | #24706 | Web/API/WebGPU_API
     pub dom_webgpu_enabled: bool,
     /// List of comma-separated backends to be used by wgpu.
@@ -254,8 +250,6 @@ pub struct Preferences {
     pub gfx_texture_swizzling_enabled: bool,
     /// The amount of image keys we request per batch for the image cache.
     pub image_key_batch_size: i64,
-    /// Whether or not the DOM inspector should show shadow roots of user-agent shadow trees
-    pub inspector_show_servo_internal_shadow_roots: bool,
     /// A locale tag (eg. es-ES) to use for language negotiation instead of the system locale.
     /// An empty string represents no override.
     /// TODO: Option<> support in PrefValue
@@ -403,8 +397,6 @@ impl Preferences {
         Self {
             css_animations_testing_enabled: false,
             editing_caret_blink_time: 600,
-            devtools_server_enabled: false,
-            devtools_server_listen_address: String::new(),
             dom_abort_controller_enabled: true,
             dom_adoptedstylesheet_enabled: false,
             dom_allow_preloading_module_descendants: false,
@@ -517,7 +509,6 @@ impl Preferences {
             gfx_subpixel_text_antialiasing_enabled: true,
             gfx_texture_swizzling_enabled: true,
             image_key_batch_size: 10,
-            inspector_show_servo_internal_shadow_roots: false,
             intl_locale_override: String::new(),
             js_asmjs_enabled: true,
             js_baseline_interpreter_enabled: true,

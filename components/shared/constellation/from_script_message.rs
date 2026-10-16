@@ -7,7 +7,6 @@
 use std::fmt;
 
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
-use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg, WorkerId};
 use embedder_traits::user_contents::UserContentManagerId;
 use embedder_traits::{
     AnimationState, FocusSequenceNumber, JSValue, JavaScriptEvaluationError,
@@ -223,14 +222,6 @@ pub struct ScopeThings {
     pub worker_load_origin: WorkerScriptLoadOrigin,
     /// base resources required to create worker global scopes
     pub init: WorkerGlobalScopeInit,
-    /// the port to receive devtools message from
-    pub devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
-    /// service worker id
-    pub worker_id: WorkerId,
-    /// the browsing context id of the page that registered the service worker
-    pub browsing_context_id: BrowsingContextId,
-    /// the webview id of the page that registered the service worker
-    pub webview_id: WebViewId,
 }
 
 /// Message that gets passed to service worker scope on postMessage
@@ -519,16 +510,10 @@ pub struct WorkerGlobalScopeInit {
     pub mem_profiler_chan: mem::ProfilerChan,
     /// Chan to the time profiler
     pub time_profiler_chan: profile_time::ProfilerChan,
-    /// To devtools sender
-    pub to_devtools_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
-    /// From devtools sender
-    pub from_devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
     /// Messages to send to constellation
     pub script_to_constellation_chan: ScriptToConstellationSender,
     /// Messages to send to the Embedder
     pub script_to_embedder_chan: ScriptToEmbedderChan,
-    /// The worker id
-    pub worker_id: WorkerId,
     /// The pipeline id
     pub pipeline_id: PipelineId,
     /// The origin

@@ -9,7 +9,6 @@ use std::option::Option;
 use std::result::Result;
 
 use crossbeam_channel::{Receiver, Select, SelectedOperation, SendError, Sender};
-use devtools_traits::{DevtoolScriptControlMsg, ScriptToDevtoolsControlMsg};
 use embedder_traits::{EmbedderControlId, EmbedderControlResponse, ScriptToEmbedderChan};
 use net_traits::FetchResponseMsg;
 use net_traits::image_cache::ImageCacheResponseMessage;
@@ -17,7 +16,7 @@ use profile_traits::mem::{self as profile_mem, OpaqueSender, ReportsChan};
 use profile_traits::time::{self as profile_time};
 use rustc_hash::FxHashSet;
 use script_traits::{Painter, ScriptThreadMessage};
-use servo_base::generic_channel::{GenericCallback, GenericSender, RoutedReceiver};
+use servo_base::generic_channel::{GenericSender, RoutedReceiver};
 use servo_base::id::{PipelineId, WebViewId};
 #[cfg(feature = "bluetooth")]
 use servo_bluetooth_traits::BluetoothRequest;
@@ -44,7 +43,6 @@ use crate::task_source::TaskSourceName;
 pub(crate) enum MixedMessage {
     FromConstellation(ScriptThreadMessage),
     FromScript(MainThreadScriptMsg),
-    FromDevtools(DevtoolScriptControlMsg),
     FromImageCache(ImageCacheResponseMessage),
     #[cfg(feature = "webgpu")]
     FromWebGPUServer(WebGPUMsg),
@@ -89,7 +87,6 @@ impl MixedMessage {
                     child: _,
                 } => Some(*id),
                 ScriptThreadMessage::DispatchStorageEvent(id, ..) => Some(*id),
-                ScriptThreadMessage::ReportCSSError(id, ..) => Some(*id),
                 ScriptThreadMessage::Reload(id, ..) => Some(*id),
                 ScriptThreadMessage::PaintMetric(id, ..) => Some(*id),
                 ScriptThreadMessage::ExitFullScreen(id, ..) => Some(*id),
@@ -137,7 +134,7 @@ impl MixedMessage {
                     Some(response.pipeline_id)
                 },
             },
-            MixedMessage::FromDevtools(_) | MixedMessage::TimerFired => None,
+            MixedMessage::TimerFired => None,
             #[cfg(feature = "webgpu")]
             MixedMessage::FromWebGPUServer(..) => None,
         }
@@ -402,13 +399,6 @@ pub(crate) struct ScriptThreadSenders {
     /// For providing contact with the memory profiler.
     #[no_trace]
     pub(crate) memory_profiler_sender: profile_mem::ProfilerChan,
-
-    /// For providing instructions to an optional devtools server.
-    #[no_trace]
-    pub(crate) devtools_server_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
-
-    #[no_trace]
-    pub(crate) devtools_client_to_script_thread_sender: GenericSender<DevtoolScriptControlMsg>,
 }
 
 #[derive(JSTraceable)]
@@ -420,11 +410,6 @@ pub(crate) struct ScriptThreadReceivers {
     /// The [`Receiver`] which receives incoming messages from the `ImageCache`.
     #[no_trace]
     pub(crate) image_cache_receiver: Receiver<ImageCacheResponseMessage>,
-
-    /// For receiving commands from an optional devtools server. Will be ignored if no such server
-    /// exists. When devtools are not active this will be [`crossbeam_channel::never()`].
-    #[no_trace]
-    pub(crate) devtools_server_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
 
     /// Receiver to receive commands from optional WebGPU server. When there is no active
     /// WebGPU context, this will be [`crossbeam_channel::never()`].
@@ -447,7 +432,6 @@ impl ScriptThreadReceivers {
         let task_recv = task_queue.select();
         let task_index = select.recv(task_recv);
         let constellation_index = select.recv(&self.constellation_receiver);
-        let devtools_index = select.recv(&self.devtools_server_receiver);
         let image_cache_index = select.recv(&self.image_cache_receiver);
 
         #[cfg(feature = "webgpu")]
@@ -468,13 +452,6 @@ impl ScriptThreadReceivers {
                 MixedMessage::FromConstellation(
                     operation
                         .recv(&self.constellation_receiver)
-                        .unwrap()
-                        .unwrap(),
-                )
-            } else if index == devtools_index {
-                MixedMessage::FromDevtools(
-                    operation
-                        .recv(&self.devtools_server_receiver)
                         .unwrap()
                         .unwrap(),
                 )
@@ -523,9 +500,6 @@ impl ScriptThreadReceivers {
         }
         if let Ok(message) = task_queue.take_tasks_and_recv(fully_active) {
             return MixedMessage::FromScript(message).into();
-        }
-        if let Ok(message) = self.devtools_server_receiver.try_recv() {
-            return MixedMessage::FromDevtools(message.unwrap()).into();
         }
         if let Ok(message) = self.image_cache_receiver.try_recv() {
             return MixedMessage::FromImageCache(message).into();

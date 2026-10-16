@@ -20,7 +20,6 @@ webgpu = ["dep:webgpu_traits", "dep:wgpu-core"]
 [dependencies]
 base64 = { workspace = true }
 content-security-policy = { workspace = true }
-devtools_traits = { workspace = true }
 embedder_traits = { workspace = true }
 encoding_rs = { workspace = true }
 euclid = { workspace = true }

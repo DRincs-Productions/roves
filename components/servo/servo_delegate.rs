@@ -4,16 +4,13 @@
 use embedder_traits::{ConsoleLogLevel, Notification};
 use servo_base::generic_channel;
 
-use crate::webview_delegate::{AllowOrDenyRequest, WebResourceLoad};
+use crate::webview_delegate::WebResourceLoad;
 
 #[derive(Debug)]
 pub enum ServoError {
     /// The channel to the off-the-main-thread web engine has been lost. No further
     /// attempts to communicate will happen. This is an unrecoverable error in Servo.
     LostConnectionWithBackend,
-    /// The devtools server, used to expose pages to remote web inspectors has failed
-    /// to start.
-    DevtoolsFailedToStart,
     /// Failed to send response to delegate request.
     ResponseFailedToSend(generic_channel::SendError),
 }
@@ -21,12 +18,6 @@ pub enum ServoError {
 pub trait ServoDelegate {
     /// Notification that Servo has received a major error.
     fn notify_error(&self, _error: ServoError) {}
-    /// Report that the DevTools server has started on the given `port`. The `token` that
-    /// be used to bypass the permission prompt from the DevTools client.
-    fn notify_devtools_server_started(&self, _port: u16, _token: String) {}
-    /// Request a DevTools connection from a DevTools client. Typically an embedder application
-    /// will show a permissions prompt when this happens to confirm a connection is allowed.
-    fn request_devtools_connection(&self, _request: AllowOrDenyRequest) {}
     /// Triggered when Servo will load a web (HTTP/HTTPS) resource. The load may be
     /// intercepted and alternate contents can be loaded by the client by calling
     /// [`WebResourceLoad::intercept`]. If not handled, the load will continue as normal.

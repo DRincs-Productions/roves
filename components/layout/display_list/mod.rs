@@ -29,7 +29,6 @@ use style::computed_values::text_decoration_style::{
     T as ComputedTextDecorationStyle, T as TextDecorationStyle,
 };
 use style::computed_values::text_decoration_thickness::T as TextDecorationThickness;
-use style::dom::OpaqueNode;
 use style::properties::ComputedValues;
 use style::properties::longhands::visibility::computed_value::T as Visibility;
 use style::properties::style_structs::Border;
@@ -61,9 +60,9 @@ use crate::display_list::conversions::FilterToWebRender;
 pub(crate) use crate::display_list::conversions::ToWebRender;
 use crate::display_list::paint_traversal::{PaintTraversal, PaintTraversalHandler, TraversalState};
 use crate::fragment_tree::{
-    BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle, ContainingBlockCalculation,
-    Fragment, FragmentFlags, FragmentStatus, FragmentTree, IFrameFragment, ImageFragment,
-    PositioningFragment, SpecificLayoutInfo, Tag, TextFragment,
+    BackgroundMode, BaseFragment, BoxFragment, BoxFragmentWithStyle, Fragment, FragmentFlags,
+    FragmentStatus, FragmentTree, IFrameFragment, ImageFragment, PositioningFragment,
+    SpecificLayoutInfo, Tag, TextFragment,
 };
 use crate::geom::{
     LengthPercentageOrAuto, PhysicalPoint, PhysicalRect, PhysicalSides, PhysicalSize,
@@ -102,12 +101,6 @@ pub(crate) struct DisplayListBuilder<'a> {
     /// The [`PaintDisplayListInfo`] used to collect display list items and metadata.
     pub paint_info: &'a mut PaintDisplayListInfo,
 
-    /// Data about the fragments that are highlighted by the inspector, if any.
-    ///
-    /// This data is collected during the traversal of the fragment tree and used
-    /// to paint the highlight at the very end.
-    inspector_highlight: Option<InspectorHighlight>,
-
     /// Whether or not the `<body>` element should be painted. This is false if the root `<html>`
     /// element inherits the `<body>`'s background to paint the page canvas background.
     /// See <https://drafts.csswg.org/css-backgrounds/#body-background>.
@@ -130,52 +123,12 @@ pub(crate) struct DisplayListBuilder<'a> {
     reflow_statistics: &'a mut ReflowStatistics,
 }
 
-struct InspectorHighlight {
-    /// The node that should be highlighted
-    tag: Tag,
-
-    /// Accumulates information about the fragments that belong to the highlighted node.
-    ///
-    /// This information is collected as the fragment tree is traversed to build the
-    /// display list.
-    state: Option<HighlightTraversalState>,
-}
-
-struct HighlightTraversalState {
-    /// The smallest rectangle that fully encloses all fragments created by the highlighted
-    /// dom node, if any.
-    content_box: Rect<Au, StyloCSSPixel>,
-
-    spatial_id: SpatialId,
-
-    clip_chain_id: ClipChainId,
-
-    /// When the highlighted fragment is a box fragment we remember the information
-    /// needed to paint padding, border and margin areas.
-    maybe_box_fragment: Option<Arc<BoxFragment>>,
-}
-
-impl InspectorHighlight {
-    fn for_node(node: OpaqueNode) -> Self {
-        Self {
-            tag: Tag {
-                node,
-                // TODO: Support highlighting pseudo-elements.
-                pseudo_element_chain: Default::default(),
-            },
-            state: None,
-        }
-    }
-}
-
 impl DisplayListBuilder<'_> {
-    #[expect(clippy::too_many_arguments)]
     pub(crate) fn build(
         stacking_context_tree: &mut StackingContextTree,
         fragment_tree: &FragmentTree,
         image_resolver: Arc<ImageResolver>,
         device_pixel_ratio: Scale<f32, StyloCSSPixel, StyloDevicePixel>,
-        highlighted_dom_node: Option<OpaqueNode>,
         debug: &DiagnosticsLogging,
         paint_timing_handler: &mut PaintTimingHandler,
         reflow_statistics: &mut ReflowStatistics,
@@ -201,7 +154,6 @@ impl DisplayListBuilder<'_> {
             current_reference_frame_scroll_node_id: paint_info.root_reference_frame_id,
             webrender_display_list_builder: &mut webrender_display_list_builder,
             paint_info,
-            inspector_highlight: highlighted_dom_node.map(InspectorHighlight::for_node),
             paint_body_background: true,
             clip_map: Default::default(),
             image_resolver,
@@ -233,7 +185,6 @@ impl DisplayListBuilder<'_> {
         );
 
         PaintTraversal::traverse(&stacking_context_tree.root_stacking_context, &mut builder);
-        builder.paint_dom_inspector_highlight();
 
         webrender_display_list_builder.end().1
     }
@@ -517,115 +468,6 @@ impl DisplayListBuilder<'_> {
         }
     }
 
-    /// Draw highlights around the node that is currently hovered in the devtools.
-    fn paint_dom_inspector_highlight(&mut self) {
-        let Some(highlight) = self
-            .inspector_highlight
-            .take()
-            .and_then(|highlight| highlight.state)
-        else {
-            return;
-        };
-
-        const CONTENT_BOX_HIGHLIGHT_COLOR: webrender_api::ColorF = webrender_api::ColorF {
-            r: 0.23,
-            g: 0.7,
-            b: 0.87,
-            a: 0.5,
-        };
-
-        const PADDING_BOX_HIGHLIGHT_COLOR: webrender_api::ColorF = webrender_api::ColorF {
-            r: 0.49,
-            g: 0.3,
-            b: 0.7,
-            a: 0.5,
-        };
-
-        const BORDER_BOX_HIGHLIGHT_COLOR: webrender_api::ColorF = webrender_api::ColorF {
-            r: 0.2,
-            g: 0.2,
-            b: 0.2,
-            a: 0.5,
-        };
-
-        const MARGIN_BOX_HIGHLIGHT_COLOR: webrender_api::ColorF = webrender_api::ColorF {
-            r: 1.,
-            g: 0.93,
-            b: 0.,
-            a: 0.5,
-        };
-
-        // Highlight content box
-        let content_box = highlight.content_box.to_webrender();
-        let properties = wr::CommonItemProperties {
-            clip_rect: content_box,
-            spatial_id: highlight.spatial_id,
-            clip_chain_id: highlight.clip_chain_id,
-            flags: wr::PrimitiveFlags::default(),
-        };
-
-        self.wr()
-            .push_rect(&properties, content_box, CONTENT_BOX_HIGHLIGHT_COLOR);
-
-        // Highlight margin, border and padding
-        if let Some(box_fragment) = highlight.maybe_box_fragment {
-            let mut paint_highlight =
-                |color: webrender_api::ColorF,
-                 fragment_relative_bounds: PhysicalRect<Au>,
-                 widths: webrender_api::units::LayoutSideOffsets| {
-                    if widths.is_zero() {
-                        return;
-                    }
-
-                    let bounds = box_fragment
-                        .offset_by_containing_block(
-                            &fragment_relative_bounds,
-                            ContainingBlockCalculation::AlreadyDoneWithStackingContextTree,
-                        )
-                        .to_webrender();
-
-                    // We paint each highlighted area as if it was a border for simplicity
-                    let border_style = wr::BorderSide {
-                        color,
-                        style: wr::BorderStyle::Solid,
-                    };
-
-                    let details = wr::BorderDetails::Normal(wr::NormalBorder {
-                        top: border_style,
-                        right: border_style,
-                        bottom: border_style,
-                        left: border_style,
-                        radius: webrender_api::BorderRadius::default(),
-                        do_aa: true,
-                    });
-
-                    let common = wr::CommonItemProperties {
-                        clip_rect: bounds,
-                        spatial_id: highlight.spatial_id,
-                        clip_chain_id: highlight.clip_chain_id,
-                        flags: wr::PrimitiveFlags::default(),
-                    };
-                    self.wr().push_border(&common, bounds, widths, details)
-                };
-
-            paint_highlight(
-                PADDING_BOX_HIGHLIGHT_COLOR,
-                box_fragment.padding_rect(),
-                box_fragment.padding.to_webrender(),
-            );
-            paint_highlight(
-                BORDER_BOX_HIGHLIGHT_COLOR,
-                box_fragment.border_rect(),
-                box_fragment.border.to_webrender(),
-            );
-            paint_highlight(
-                MARGIN_BOX_HIGHLIGHT_COLOR,
-                box_fragment.margin_rect(),
-                box_fragment.margin.to_webrender(),
-            );
-        }
-    }
-
     fn check_if_paintable(&mut self, bounds: LayoutRect, clip_rect: LayoutRect, opacity: f32) {
         // From <https://www.w3.org/TR/paint-timing/#paintable>:
         // An element el is paintable when all of the following apply:
@@ -751,13 +593,6 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
 
     fn visit_box(&mut self, state: &TraversalState, fragment: &BoxFragmentWithStyle<'_>) {
         fragment.base.visit_fragment(self);
-
-        if let Some(mut inspector_highlight) = self.inspector_highlight.take() &&
-            fragment.base.tag == Some(inspector_highlight.tag)
-        {
-            inspector_highlight.register_fragment_of_highlighted_dom_node(self, state, fragment);
-            self.inspector_highlight = Some(inspector_highlight);
-        }
 
         if fragment.style().get_inherited_box().visibility != Visibility::Visible {
             return;
@@ -975,45 +810,6 @@ impl PaintTraversalHandler for DisplayListBuilder<'_> {
         };
         BuilderForBoxFragment::new(fragment, state.origin)
             .build_collapsed_table_borders(self, state)
-    }
-}
-
-impl InspectorHighlight {
-    fn register_fragment_of_highlighted_dom_node(
-        &mut self,
-        builder: &DisplayListBuilder,
-        traversal_state: &TraversalState,
-        fragment: &Arc<BoxFragment>,
-    ) {
-        let spatial_id = builder.spatial_id(traversal_state.spatial_id);
-        let clip_chain_id = builder.clip_chain_id(traversal_state.clip_id);
-        let state = self.state.get_or_insert_with(|| HighlightTraversalState {
-            content_box: Rect::zero(),
-            spatial_id,
-            clip_chain_id,
-            maybe_box_fragment: Some(fragment.clone()),
-        });
-
-        // We only need to highlight the first `SpatialId`. Typically this will include the bottommost
-        // fragment for a node, which generally surrounds the entire content.
-        if spatial_id != state.spatial_id {
-            return;
-        }
-
-        if clip_chain_id != ClipChainId::INVALID && state.clip_chain_id != ClipChainId::INVALID {
-            debug_assert_eq!(
-                clip_chain_id, state.clip_chain_id,
-                "Fragments of the same node must either have no clip chain or the same one"
-            );
-        }
-
-        state.maybe_box_fragment = Some(fragment.clone());
-        state.content_box = state.content_box.union(
-            &fragment
-                .base
-                .rect()
-                .translate(traversal_state.origin.to_vector()),
-        );
     }
 }
 

@@ -61,7 +61,6 @@ impl DissimilarOriginWindow {
     ) -> DomRoot<Self> {
         let win = Box::new(Self {
             globalscope: GlobalScope::new_inherited(
-                global_to_clone_from.devtools_chan().cloned(),
                 global_to_clone_from.mem_profiler_chan().clone(),
                 global_to_clone_from.time_profiler_chan().clone(),
                 global_to_clone_from.script_to_constellation_chan().sender,

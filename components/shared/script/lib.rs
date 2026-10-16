@@ -12,7 +12,6 @@
 use std::fmt;
 
 use crossbeam_channel::RecvTimeoutError;
-use devtools_traits::ScriptToDevtoolsControlMsg;
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
     EmbedderControlId, EmbedderControlResponse, FocusSequenceNumber, InputEventAndId,
@@ -33,7 +32,7 @@ use rustc_hash::FxHashMap;
 use serde::{Deserialize, Serialize};
 use servo_base::Epoch;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::generic_channel::{GenericCallback, GenericReceiver, GenericSender};
+use servo_base::generic_channel::{GenericReceiver, GenericSender};
 use servo_base::id::{
     BrowsingContextId, HistoryStateId, PipelineId, PipelineNamespaceId, PipelineNamespaceRequest,
     ScriptEventLoopId, WebViewId,
@@ -273,8 +272,6 @@ pub enum ScriptThreadMessage {
         Option<String>,
         Option<String>,
     ),
-    /// Report an error from a CSS parser for the given pipeline
-    ReportCSSError(PipelineId, String, u32, u32, String),
     /// Reload the given page.
     Reload(PipelineId),
     /// Notifies the script thread about a new recorded paint metric.
@@ -398,8 +395,6 @@ pub struct InitialScriptState {
     pub time_profiler_sender: profile_traits::time::ProfilerChan,
     /// A channel to the memory profiler thread.
     pub memory_profiler_sender: mem::ProfilerChan,
-    /// A channel to the developer tools, if applicable.
-    pub devtools_server_sender: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
     /// The ID of the pipeline namespace for this script thread.
     pub pipeline_namespace_id: PipelineNamespaceId,
     /// A channel to the WebGL thread used in this pipeline.

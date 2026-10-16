@@ -515,10 +515,6 @@ pub enum EmbedderMsg {
     /// with the user's decision, which resolves or rejects the pending promise
     /// without blocking the script thread.
     RequestWakeLockPermission(WebViewId, GenericCallback<AllowOrDeny>, WakeLockType),
-    /// Report the status of Devtools Server with a token that can be used to bypass the permission prompt.
-    OnDevtoolsStarted(Result<u16, ()>, String),
-    /// Ask the user to allow a devtools client to connect.
-    RequestDevtoolsConnection(GenericSender<AllowOrDeny>),
     /// Request to play a haptic effect on a connected gamepad.
     #[cfg(feature = "gamepad")]
     PlayGamepadHapticEffect(

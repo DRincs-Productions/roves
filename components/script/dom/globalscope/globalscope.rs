@@ -18,7 +18,6 @@ use std::time::{Duration, Instant};
 
 use content_security_policy::CspList;
 use crossbeam_channel::Sender;
-use devtools_traits::{PageError, ScriptToDevtoolsControlMsg, get_time_stamp};
 use dom_struct::dom_struct;
 use embedder_traits::{
     ConsoleLogLevel, EmbedderMsg, JavaScriptEvaluationError, ScriptToEmbedderChan,
@@ -136,7 +135,7 @@ use crate::dom::sharedworkerglobalscope::SharedWorkerGlobalScope;
 use crate::dom::stream::underlyingsourcecontainer::UnderlyingSourceType;
 use crate::dom::stream::writablestream::CrossRealmTransformWritable;
 use crate::dom::transformstream::CrossRealmTransform;
-use crate::dom::types::{AbortSignal, DebuggerGlobalScope, MessageEvent};
+use crate::dom::types::{AbortSignal, MessageEvent};
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::gpudevice::GPUDevice;
 #[cfg(feature = "webgpu")]
@@ -253,10 +252,6 @@ pub(crate) struct GlobalScope {
     /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
     #[ignore_malloc_size_of = "mozjs"]
     module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
-
-    /// For providing instructions to an optional devtools server.
-    #[no_trace]
-    devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
 
     /// For sending messages to the memory profiler.
     #[no_trace]
@@ -779,7 +774,6 @@ impl GlobalScope {
 
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new_inherited(
-        devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
         mem_profiler_chan: profile_mem::ProfilerChan,
         time_profiler_chan: profile_time::ProfilerChan,
         script_to_constellation_sender: ScriptToConstellationSender,
@@ -804,7 +798,6 @@ impl GlobalScope {
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             console_timers: DomRefCell::new(Default::default()),
             module_map: DomRefCell::new(Default::default()),
-            devtools_chan,
             mem_profiler_chan,
             time_profiler_chan,
             script_to_constellation_sender,
@@ -2495,12 +2488,6 @@ impl GlobalScope {
             .map(|start| (Instant::now() - start).as_millis() as u64)
     }
 
-    /// Get an `&IpcSender<ScriptToDevtoolsControlMsg>` to send messages
-    /// to the devtools thread when available.
-    pub(crate) fn devtools_chan(&self) -> Option<&GenericCallback<ScriptToDevtoolsControlMsg>> {
-        self.devtools_chan.as_ref()
-    }
-
     /// Get a sender to the memory profiler thread.
     pub(crate) fn mem_profiler_chan(&self) -> &profile_mem::ProfilerChan {
         &self.mem_profiler_chan
@@ -2534,8 +2521,6 @@ impl GlobalScope {
             worker.pipeline_id()
         } else if let Some(window) = self.downcast::<Window>() {
             window.pipeline_id()
-        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
-            debugger.pipeline_id()
         } else if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
             worklet.pipeline_id()
         } else if let Some(dissimilar) = self.downcast::<DissimilarOriginWindow>() {
@@ -2583,8 +2568,6 @@ impl GlobalScope {
             worklet.origin()
         } else if let Some(dissimilar_window) = self.downcast::<DissimilarOriginWindow>() {
             dissimilar_window.origin()
-        } else if let Some(debugger) = self.downcast::<DebuggerGlobalScope>() {
-            debugger.origin()
         } else {
             unreachable!("Unexpected origin check against global")
         }
@@ -2697,9 +2680,6 @@ impl GlobalScope {
             // https://drafts.css-houdini.org/worklets/#script-settings-for-worklets
             return worklet.base_url();
         }
-        if let Some(_debugger_global) = self.downcast::<DebuggerGlobalScope>() {
-            return self.creation_url();
-        }
         unreachable!();
     }
 
@@ -2714,9 +2694,6 @@ impl GlobalScope {
         if let Some(worklet) = self.downcast::<WorkletGlobalScope>() {
             // TODO: is this the right URL to return?
             return worklet.base_url();
-        }
-        if let Some(_debugger_global) = self.downcast::<DebuggerGlobalScope>() {
-            return self.creation_url();
         }
         unreachable!();
     }
@@ -2885,21 +2862,9 @@ impl GlobalScope {
             // https://html.spec.whatwg.org/multipage/#runtime-script-errors-2
             if let Some(dedicated) = self.downcast::<DedicatedWorkerGlobalScope>() {
                 dedicated.forward_error_to_worker_object(error_info);
-            } else if self.is::<Window>() {
-                // Step 7.3. Otherwise, the user agent may report exception to a developer console.
-                if let Some(ref chan) = self.devtools_chan {
-                    let _ = chan.send(ScriptToDevtoolsControlMsg::ReportPageError(
-                        self.pipeline_id(),
-                        PageError {
-                            error_message: error_info.message.clone(),
-                            source_name: error_info.filename.clone(),
-                            line_number: error_info.lineno,
-                            column_number: error_info.column,
-                            time_stamp: get_time_stamp(),
-                        },
-                    ));
-                }
             }
+            // Step 7.3. Otherwise, the user agent may report exception to a developer console.
+            // The error was already sent to the embedder as a console message above.
         }
     }
 

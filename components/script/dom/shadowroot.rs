@@ -704,12 +704,3 @@ impl<'dom> LayoutDom<'dom, ShadowRoot> {
         }
     }
 }
-
-impl Convert<devtools_traits::ShadowRootMode> for ShadowRootMode {
-    fn convert(self) -> devtools_traits::ShadowRootMode {
-        match self {
-            ShadowRootMode::Open => devtools_traits::ShadowRootMode::Open,
-            ShadowRootMode::Closed => devtools_traits::ShadowRootMode::Closed,
-        }
-    }
-}

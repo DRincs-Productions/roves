@@ -29,7 +29,6 @@ impl ResourceReaderMethods for DefaultResourceReader {
                 &include_bytes!("resources/directory-listing.html")[..]
             },
             Resource::AboutMemoryHTML => &include_bytes!("resources/about-memory.html")[..],
-            Resource::DebuggerJS => &include_bytes!("resources/debugger.js")[..],
             Resource::JsonViewerHTML => &include_bytes!("resources/json-viewer.html")[..],
         }
         .to_owned()

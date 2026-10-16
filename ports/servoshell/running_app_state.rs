@@ -11,9 +11,9 @@ use std::rc::Rc;
 use image::{DynamicImage, ImageFormat};
 #[cfg(all(any(coverage, llvm_pgo), target_os = "android"))]
 use libc::c_char;
-use log::{error, info};
+use log::error;
 use servo::{
-    AllowOrDenyRequest, AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
+    AuthenticationRequest, BluetoothDeviceSelectionRequest, ConsoleLogLevel,
     CreateNewWebViewRequest, DeviceIntPoint, DeviceIntSize, EmbedderControl, EmbedderControlId,
     InputEventId, InputEventResult, LoadStatus, MediaSessionEvent, PermissionRequest, Servo,
     ServoDelegate, ServoError, UserContentManager, WebView, WebViewDelegate, WebViewId,
@@ -594,14 +594,6 @@ impl WebViewDelegate for RunningAppState {
 
 struct ServoShellServoDelegate;
 impl ServoDelegate for ServoShellServoDelegate {
-    fn notify_devtools_server_started(&self, port: u16, _token: String) {
-        info!("Devtools Server running on port {port}");
-    }
-
-    fn request_devtools_connection(&self, request: AllowOrDenyRequest) {
-        request.allow();
-    }
-
     fn notify_error(&self, error: ServoError) {
         error!("Saw Servo error: {error:?}!");
     }

@@ -12,11 +12,10 @@ use std::time::{Duration, SystemTime};
 
 use content_security_policy as csp;
 use crossbeam_channel::{Sender, unbounded};
-use devtools_traits::{HttpRequest as DevtoolsHttpRequest, HttpResponse as DevtoolsHttpResponse};
 use headers::{
     AccessControlAllowCredentials, AccessControlAllowHeaders, AccessControlAllowMethods,
     AccessControlAllowOrigin, AccessControlMaxAge, CacheControl, ContentLength, ContentType, ETag,
-    Expires, HeaderMapExt, IfNoneMatch, LastModified, Pragma, StrictTransportSecurity, UserAgent,
+    Expires, HeaderMapExt, IfNoneMatch, LastModified, Pragma, StrictTransportSecurity,
 };
 use http::header::{self, HeaderMap, HeaderName, HeaderValue};
 use http::{Method, StatusCode};
@@ -34,21 +33,19 @@ use net::protocols::ProtocolRegistry;
 use net::request_interceptor::RequestInterceptor;
 use net_traits::blob_url_store::{BlobTokenCommunicator, UrlWithBlobClaim};
 use net_traits::filemanager_thread::FileTokenCheck;
-use net_traits::http_status::HttpStatus;
 use net_traits::request::{
     Destination, RedirectMode, Referrer, Request, RequestBuilder, RequestMode,
 };
 use net_traits::response::{CacheState, Response, ResponseBody, ResponseType};
 use net_traits::{
     FetchTaskTarget, IncludeSubdomains, NetworkError, ReferrerPolicy, ResourceFetchTiming,
-    ResourceTimingType, get_current_locale,
+    ResourceTimingType,
 };
 use servo_base::id::{TEST_PIPELINE_ID, TEST_WEBVIEW_ID};
 use servo_url::{ImmutableOrigin, ServoUrl};
 use tokio::sync::Mutex as TokioMutex;
 use uuid::Uuid;
 
-use crate::http_loader::{devtools_response_with_body, expect_devtools_http_request};
 use crate::{
     DEFAULT_USER_AGENT, create_generic_embedder_proxy, create_generic_embedder_proxy_and_receiver,
     create_http_state, fetch, fetch_with_context, fetch_with_cors_cache, make_body, make_server,
@@ -71,7 +68,7 @@ fn test_fetch_response_is_not_network_error() {
         .origin(url.origin())
         .policy_container(Default::default())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     if fetch_response.is_network_error() {
@@ -90,7 +87,7 @@ fn test_fetch_on_bad_port_is_network_error() {
     .origin(url.origin())
     .policy_container(Default::default())
     .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     assert!(fetch_response.is_network_error());
     let fetch_error = fetch_response.get_network_error().unwrap();
     assert_eq!(fetch_error, &NetworkError::InvalidPort)
@@ -110,7 +107,7 @@ fn test_fetch_response_body_matches_const_message() {
         .origin(url.origin())
         .policy_container(Default::default())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -136,7 +133,7 @@ fn test_fetch_aboutblank() {
     .policy_container(Default::default())
     .build();
 
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     // We should see an opaque-filtered response.
     assert_eq!(fetch_response.response_type, ResponseType::Opaque);
     assert!(!fetch_response.is_network_error());
@@ -178,7 +175,7 @@ fn test_fetch_blob() {
         fn process_response_length_hint(&mut self, _: &Request, _: usize) {}
     }
 
-    let context = new_fetch_context(None, None);
+    let context = new_fetch_context(None);
 
     let bytes = b"content";
     let blob_buf = BlobBuf {
@@ -249,7 +246,7 @@ fn test_file() {
     .policy_container(Default::default())
     .build();
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
     let fetch_response = fetch_with_context(request, &mut context);
 
     // We should see an opaque-filtered response.
@@ -302,7 +299,7 @@ fn test_fetch_ftp() {
     .origin(url.origin())
     .policy_container(Default::default())
     .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     assert!(fetch_response.is_network_error());
 }
 
@@ -317,7 +314,7 @@ fn test_fetch_bogus_scheme() {
     .origin(url.origin())
     .policy_container(Default::default())
     .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     assert!(fetch_response.is_network_error());
 }
 
@@ -381,7 +378,7 @@ fn test_cors_preflight_fetch() {
     request.referrer_policy = ReferrerPolicy::Origin;
     request.use_cors_preflight = true;
     request.mode = RequestMode::CorsMode;
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -513,7 +510,7 @@ fn test_cors_preflight_fetch_network_error() {
     request.method = Method::from_bytes(b"CHICKEN").unwrap();
     request.use_cors_preflight = true;
     request.mode = RequestMode::CorsMode;
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(fetch_response.is_network_error());
@@ -542,7 +539,7 @@ fn test_fetch_response_is_basic_filtered() {
         .origin(url.origin())
         .policy_container(Default::default())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -611,7 +608,7 @@ fn test_fetch_response_is_cors_filtered() {
         .origin(mock_origin())
         .build();
     request.mode = RequestMode::CorsMode;
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -649,7 +646,7 @@ fn test_fetch_response_is_opaque_filtered() {
         .policy_container(Default::default())
         .origin(ImmutableOrigin::new_opaque())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -701,7 +698,7 @@ fn test_fetch_response_is_opaque_redirect_filtered() {
         .policy_container(Default::default())
         .build();
     request.redirect_mode = RedirectMode::Manual;
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
 
     assert!(!fetch_response.is_network_error());
@@ -742,7 +739,7 @@ fn test_fetch_with_local_urls_only() {
         // Set the flag.
         request.local_urls_only = true;
 
-        fetch(request, None)
+        fetch(request)
     };
 
     let local_url = UrlWithBlobClaim::new(ServoUrl::parse("about:blank").unwrap(), None);
@@ -777,7 +774,6 @@ fn test_fetch_with_hsts() {
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
         user_agent: DEFAULT_USER_AGENT.into(),
-        devtools_chan: None,
         filemanager: FileManager::new(
             embedder_proxy.clone(),
             BlobTokenCommunicator::stub_for_testing(),
@@ -841,7 +837,6 @@ fn test_load_adds_host_to_hsts_list_when_url_is_https() {
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
         user_agent: DEFAULT_USER_AGENT.into(),
-        devtools_chan: None,
         filemanager: FileManager::new(
             embedder_proxy.clone(),
             BlobTokenCommunicator::stub_for_testing(),
@@ -910,7 +905,6 @@ fn test_fetch_self_signed() {
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
         user_agent: DEFAULT_USER_AGENT.into(),
-        devtools_chan: None,
         filemanager: FileManager::new(
             embedder_proxy.clone(),
             BlobTokenCommunicator::stub_for_testing(),
@@ -986,7 +980,7 @@ fn test_fetch_with_sri_network_error() {
     // Set the flag.
     request.local_urls_only = false;
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
     assert!(response.is_network_error());
@@ -1013,7 +1007,7 @@ fn test_fetch_with_sri_sucess() {
     // Set the flag.
     request.local_urls_only = false;
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
     assert_eq!(response_is_done(&response), true);
@@ -1050,7 +1044,7 @@ fn test_fetch_blocked_nosniff() {
             .destination(destination)
             .policy_container(Default::default())
             .build();
-        let fetch_response = fetch(request, None);
+        let fetch_response = fetch(request);
         let _ = server.close();
 
         assert_eq!(fetch_response.is_network_error(), should_error);
@@ -1097,7 +1091,7 @@ fn setup_server_and_fetch(message: &'static [u8], redirect_cap: u32) -> Response
         .origin(url.origin())
         .policy_container(Default::default())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
     let _ = server.close();
     fetch_response
 }
@@ -1190,7 +1184,7 @@ fn test_fetch_redirect_updates_method_runner(
         .policy_container(Default::default())
         .build();
 
-    let _ = fetch(request, None);
+    let _ = fetch(request);
     let _ = server.close();
 }
 
@@ -1274,7 +1268,7 @@ fn test_fetch_async_returns_complete_response() {
         .origin(url.origin())
         .policy_container(Default::default())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
 
     let _ = server.close();
     assert_eq!(response_is_done(&fetch_response), true);
@@ -1300,7 +1294,7 @@ fn test_response_cache_status_is_local() {
         .build();
 
     // Use the same HttpCache for both fetches.
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     // Cold request - response should come from the server.
     let initial_response = fetch_with_context(request.clone(), &mut context);
@@ -1341,7 +1335,7 @@ fn test_response_cache_status_is_validated() {
         .build();
 
     // Use the same HttpCache for both fetches.
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     // Cold request - response should come from the server.
     let initial_response = fetch_with_context(request.clone(), &mut context);
@@ -1372,7 +1366,7 @@ fn test_opaque_filtered_fetch_async_returns_complete_response() {
         .policy_container(Default::default())
         .origin(ImmutableOrigin::new_opaque())
         .build();
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
 
     let _ = server.close();
 
@@ -1411,104 +1405,12 @@ fn test_opaque_redirect_filtered_fetch_async_returns_complete_response() {
         .policy_container(Default::default())
         .build();
 
-    let fetch_response = fetch(request, None);
+    let fetch_response = fetch(request);
 
     let _ = server.close();
 
     assert_eq!(fetch_response.response_type, ResponseType::OpaqueRedirect);
     assert_eq!(response_is_done(&fetch_response), true);
-}
-
-#[test]
-fn test_fetch_with_devtools() {
-    static MESSAGE: &'static [u8] = b"Yay!";
-    let handler =
-        move |_: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            *response.body_mut() = make_body(MESSAGE.to_vec());
-        };
-
-    let (server, url) = make_server(handler);
-
-    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), url.clone(), Referrer::NoReferrer)
-        .origin(url.origin())
-        .redirect_mode(RedirectMode::Manual)
-        .pipeline_id(Some(TEST_PIPELINE_ID))
-        .policy_container(Default::default())
-        .build();
-
-    let (devtools_chan, devtools_port) = unbounded();
-
-    let _ = fetch(request, Some(devtools_chan));
-    let _ = server.close();
-
-    // notification received from devtools
-    let devhttprequests = expect_devtools_http_request(&devtools_port);
-    let mut devhttpresponse = devtools_response_with_body(&devtools_port);
-
-    // Creating default headers for request
-    let mut headers = HeaderMap::new();
-
-    headers.insert(header::ACCEPT, HeaderValue::from_static("*/*"));
-
-    headers.insert(header::ACCEPT_LANGUAGE, get_current_locale().1.clone());
-
-    headers.typed_insert::<UserAgent>(DEFAULT_USER_AGENT.parse().unwrap());
-
-    headers.insert(
-        header::ACCEPT_ENCODING,
-        HeaderValue::from_static("gzip, deflate, br, zstd"),
-    );
-
-    // Append fetch metadata headers
-    headers.insert(
-        HeaderName::from_static("sec-fetch-dest"),
-        HeaderValue::from_static("empty"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-mode"),
-        HeaderValue::from_static("no-cors"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-site"),
-        HeaderValue::from_static("same-origin"),
-    );
-
-    let httprequest = DevtoolsHttpRequest {
-        url: url.url(),
-        method: Method::GET,
-        headers: headers,
-        body: Some(vec![].into()),
-        pipeline_id: TEST_PIPELINE_ID,
-        started_date_time: devhttprequests.1.started_date_time,
-        time_stamp: devhttprequests.1.time_stamp,
-        connect_time: devhttprequests.1.connect_time,
-        send_time: devhttprequests.1.send_time,
-        destination: Destination::None,
-        is_xhr: true,
-        browsing_context_id: TEST_WEBVIEW_ID.into(),
-    };
-
-    let content = "Yay!";
-    let mut response_headers = HeaderMap::new();
-    response_headers.typed_insert(ContentLength(content.len() as u64));
-    devhttpresponse
-        .headers
-        .as_mut()
-        .unwrap()
-        .remove(header::DATE);
-
-    let httpresponse = DevtoolsHttpResponse {
-        headers: Some(response_headers),
-        status: HttpStatus::default(),
-        body: Some(content.as_bytes().to_vec().into()),
-        from_cache: false,
-        pipeline_id: TEST_PIPELINE_ID,
-        browsing_context_id: TEST_WEBVIEW_ID.into(),
-    };
-
-    assert_eq!(devhttprequests.1, httprequest);
-    assert_eq!(devhttpresponse, httpresponse);
 }
 
 #[test]
@@ -1557,7 +1459,6 @@ fn test_fetch_request_intercepted() {
     let mut context = FetchContext {
         state: Arc::new(create_http_state(None)),
         user_agent: DEFAULT_USER_AGENT.into(),
-        devtools_chan: None,
         filemanager: FileManager::new(
             embedder_proxy.clone(),
             BlobTokenCommunicator::stub_for_testing(),

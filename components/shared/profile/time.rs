@@ -73,7 +73,6 @@ pub enum ProfilerCategory {
     ImageSaving = 0x51,
     ScriptSpawnPipeline = 0x60,
     ScriptConstellationMsg = 0x61,
-    ScriptDevtoolsMsg = 0x62,
     ScriptDocumentEvent = 0x63,
 
     /// Rust tracing only: the script thread is executing a script.
@@ -135,7 +134,6 @@ impl ProfilerCategory {
             ProfilerCategory::ScriptSpawnPipeline => "ScriptSpawnPipeline",
             ProfilerCategory::ScriptConstellationMsg => "ScriptConstellationMsg",
             ProfilerCategory::ScriptDatabaseAccessEvent => "ScriptDatabaseAccessEvent",
-            ProfilerCategory::ScriptDevtoolsMsg => "ScriptDevtoolsMsg",
             ProfilerCategory::ScriptDocumentEvent => "ScriptDocumentEvent",
             ProfilerCategory::ScriptEvaluate => "ScriptEvaluate",
             ProfilerCategory::ScriptEvent => "ScriptEvent",

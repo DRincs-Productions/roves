@@ -420,10 +420,6 @@ pub unsafe fn DumpJSStack(cx: *mut JSContext, _show_args: bool, _show_locals: bo
     eprintln!("{text}");
 }
 
-pub unsafe fn JS_DefineDebuggerObject(_cx: *mut JSContext, _obj: HandleObject) -> bool {
-    true
-}
-
 // --- Saved stacks ----------------------------------------------------------------------------
 
 pub unsafe fn JS_StackCapture_AllFrames(capture: *mut StackCapture) {

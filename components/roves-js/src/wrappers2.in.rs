@@ -97,7 +97,6 @@ wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
 wrap!(jsapi: pub fn JS_SetGCCallback(cx: &JSContext, cb: JSGCCallback, data: *mut ::std::os::raw::c_void));
 wrap!(jsapi: pub fn JS_SetGCParameter(cx: &mut JSContext, key: JSGCParamKey, value: u32));
 wrap!(jsapi: pub fn JS_GetGCParameter(cx: &JSContext, key: JSGCParamKey) -> u32);
-wrap!(jsapi: pub fn JS_DefineDebuggerObject(cx: &mut JSContext, obj: HandleObject) -> bool);
 wrap!(jsapi: pub fn JS_GetPendingException(cx: &mut JSContext, vp: MutableHandleValue) -> bool);
 wrap!(jsapi: pub fn JS_SetPendingException(cx: &mut JSContext, v: HandleValue, behavior: ExceptionStackBehavior));
 wrap!(jsapi: pub fn JS_ErrorFromException(cx: &JSContext, obj: HandleObject) -> *mut JSErrorReport);

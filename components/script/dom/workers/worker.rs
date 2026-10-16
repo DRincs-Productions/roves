@@ -7,7 +7,6 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use crossbeam_channel::{Sender, unbounded};
-use devtools_traits::{DevtoolsPageInfo, ScriptToDevtoolsControlMsg, WorkerId};
 use dom_struct::dom_struct;
 use js::context::JSContext;
 use js::jsapi::{Heap, JSObject};
@@ -16,9 +15,7 @@ use js::rust::{CustomAutoRooter, CustomAutoRooterGuard, HandleObject, HandleValu
 use net_traits::request::Referrer;
 use script_bindings::cell::DomRefCell;
 use script_bindings::reflector::reflect_dom_object_with_proto;
-use servo_base::generic_channel;
 use servo_constellation_traits::{StructuredSerializedData, WorkerScriptLoadOrigin};
-use uuid::Uuid;
 
 use crate::dom::abstractworker::{MessageData, SimpleWorkerErrorHandler, WorkerScriptMsg};
 use crate::dom::bindings::codegen::Bindings::MessagePortBinding::StructuredSerializeOptions;
@@ -220,31 +217,10 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
                     })
             });
 
-        let (devtools_sender, devtools_receiver) = generic_channel::channel().unwrap();
-        let worker_id = WorkerId(Uuid::new_v4());
-        if let Some(chan) = global.devtools_chan() {
-            let pipeline_id = global.pipeline_id();
-            let title = format!("Worker for {}", worker_url.url());
-            if let Some(browsing_context) = browsing_context {
-                let page_info = DevtoolsPageInfo {
-                    title,
-                    url: worker_url.url(),
-                    is_top_level_global: false,
-                    is_service_worker: false,
-                };
-                let _ = chan.send(ScriptToDevtoolsControlMsg::NewGlobal(
-                    (browsing_context, pipeline_id, Some(worker_id), webview_id),
-                    devtools_sender.clone(),
-                    page_info,
-                ));
-            }
-        }
-
         let webgl_chan = global
             .downcast::<Window>()
             .and_then(|window| window.webgl_chan_value());
-        let init =
-            prepare_workerscope_init(global, Some(devtools_sender), Some(worker_id), webgl_chan);
+        let init = prepare_workerscope_init(global, webgl_chan);
 
         let (control_sender, control_receiver) = unbounded();
         let (context_sender, context_receiver) = unbounded();
@@ -256,7 +232,6 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
             init,
             webview_id,
             worker_url,
-            devtools_receiver,
             worker_ref,
             event_loop_sender,
             sender,

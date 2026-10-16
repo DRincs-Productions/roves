@@ -15,7 +15,6 @@ use std::{cmp, fmt, iter};
 
 use app_units::Au;
 use bitflags::bitflags;
-use devtools_traits::NodeInfo;
 use dom_struct::dom_struct;
 use embedder_traits::UntrustedNodeAddress;
 use euclid::default::Size2D;
@@ -41,7 +40,6 @@ use script_bindings::reflector::{
     reflect_weak_referenceable_dom_object_with_proto,
 };
 use script_traits::DocumentActivity;
-use servo_config::pref;
 use smallvec::SmallVec;
 use style::Atom;
 use style::context::QuirksMode;
@@ -52,12 +50,10 @@ use style_traits::CSSPixel;
 use uuid::Uuid;
 use xml5ever::{local_name, serialize as xml_serialize};
 
-use crate::conversions::Convert;
 use crate::document_loader::DocumentLoader;
 use crate::dom::ChildrenMutation;
 use crate::dom::attr::Attr;
 use crate::dom::bindings::codegen::Bindings::AttrBinding::AttrMethods;
-use crate::dom::bindings::codegen::Bindings::CSSStyleDeclarationBinding::CSSStyleDeclarationMethods;
 use crate::dom::bindings::codegen::Bindings::CharacterDataBinding::CharacterDataMethods;
 use crate::dom::bindings::codegen::Bindings::DocumentBinding::DocumentMethods;
 use crate::dom::bindings::codegen::Bindings::HTMLCollectionBinding::HTMLCollectionMethods;
@@ -65,11 +61,8 @@ use crate::dom::bindings::codegen::Bindings::HTMLElementBinding::HTMLElementMeth
 use crate::dom::bindings::codegen::Bindings::NodeBinding::{
     GetRootNodeOptions, NodeConstants, NodeMethods,
 };
-use crate::dom::bindings::codegen::Bindings::NodeListBinding::NodeListMethods;
 use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::ShadowRoot_Binding::ShadowRootMethods;
-use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::{
-    ShadowRootMode, SlotAssignmentMode,
-};
+use crate::dom::bindings::codegen::Bindings::ShadowRootBinding::SlotAssignmentMode;
 use crate::dom::bindings::codegen::Bindings::WindowBinding::WindowMethods;
 use crate::dom::bindings::codegen::UnionTypes::NodeOrString;
 use crate::dom::bindings::conversions::DerivedFrom;
@@ -1812,17 +1805,6 @@ impl Node {
         }
     }
 
-    /// Returns the node's `unique_id` if it has been computed before and `None` otherwise.
-    pub(crate) fn unique_id_if_already_present(&self) -> Option<String> {
-        Ref::filter_map(self.rare_data.borrow(), |rare_data| {
-            rare_data
-                .as_ref()
-                .and_then(|rare_data| rare_data.unique_id.as_ref())
-        })
-        .ok()
-        .map(|unique_id| unique_id.borrow().simple().to_string())
-    }
-
     pub(crate) fn unique_id(&self) -> String {
         let mut rare_data = self.ensure_rare_data();
 
@@ -1836,82 +1818,6 @@ impl Node {
             .borrow()
             .simple()
             .to_string()
-    }
-
-    pub(crate) fn summarize(&self, cx: &mut JSContext) -> NodeInfo {
-        let USVString(base_uri) = self.BaseURI();
-        let node_type = self.NodeType();
-
-        let maybe_shadow_root = self.downcast::<ShadowRoot>();
-        let shadow_root_mode = maybe_shadow_root
-            .map(ShadowRoot::Mode)
-            .map(ShadowRootMode::convert);
-        let host = maybe_shadow_root
-            .map(ShadowRoot::Host)
-            .map(|host| host.upcast::<Node>().unique_id());
-        let is_shadow_host = self.downcast::<Element>().is_some_and(|potential_host| {
-            let Some(root) = potential_host.shadow_root() else {
-                return false;
-            };
-            !root.is_user_agent_widget() || pref!(inspector_show_servo_internal_shadow_roots)
-        });
-
-        let num_children = if is_shadow_host {
-            // Shadow roots count as children
-            self.ChildNodes(cx).Length() as usize + 1
-        } else {
-            self.ChildNodes(cx).Length() as usize
-        };
-
-        let window = self.owner_window();
-        let element = self.downcast::<Element>();
-        let display = element
-            .map(|elem| window.GetComputedStyle(cx, elem, None))
-            .map(|style| style.Display().into());
-
-        // It is not entirely clear when this should be set to false.
-        // Firefox considers nodes with "display: contents" to be displayed.
-        // The doctype node is displayed despite being `display: none`.
-        //
-        // TODO: Should this be false if the node is in a `display: none` subtree?
-        let is_displayed =
-            element.is_none_or(|element| !element.is_display_none()) || self.is::<DocumentType>();
-        let attrs = element.map(Element::summarize).unwrap_or_default();
-
-        NodeInfo {
-            unique_id: self.unique_id(),
-            host,
-            base_uri,
-            parent: self
-                .GetParentNode()
-                .map_or("".to_owned(), |node| node.unique_id()),
-            node_type,
-            is_top_level_document: node_type == NodeConstants::DOCUMENT_NODE,
-            node_name: String::from(self.NodeName()),
-            node_value: self.GetNodeValue().map(|v| v.into()),
-            num_children,
-            attrs,
-            is_shadow_host,
-            shadow_root_mode,
-            display,
-            is_displayed,
-            doctype_name: self
-                .downcast::<DocumentType>()
-                .map(DocumentType::name)
-                .cloned()
-                .map(String::from),
-            doctype_public_identifier: self
-                .downcast::<DocumentType>()
-                .map(DocumentType::public_id)
-                .cloned()
-                .map(String::from),
-            doctype_system_identifier: self
-                .downcast::<DocumentType>()
-                .map(DocumentType::system_id)
-                .cloned()
-                .map(String::from),
-            has_event_listeners: self.upcast::<EventTarget>().has_handlers(),
-        }
     }
 
     /// Used by `HTMLTableSectionElement::InsertRow` and `HTMLTableRowElement::InsertCell`
@@ -4443,7 +4349,7 @@ pub(crate) enum NodeDamage {
     Other,
 }
 
-/// A node's unique ID, for devtools.
+/// A node's unique ID, used to identify elements in `evaluate_javascript` results.
 pub(crate) struct UniqueId {
     cell: UnsafeCell<Option<Box<Uuid>>>,
 }

@@ -19,7 +19,6 @@ use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use content_security_policy::{CspList, Policy as CspPolicy, PolicyDisposition};
 use cookie::Cookie;
 use data_url::mime::Mime;
-use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
 use embedder_traits::{AllowOrDeny, AnimationState, EmbedderMsg, Image, LoadStatus};
 use encoding_rs::{Encoding, UTF_8};
@@ -607,8 +606,6 @@ pub(crate) struct Document {
     /// The lifetime of an intersection observer is specified at
     /// <https://github.com/w3c/IntersectionObserver/issues/525>.
     intersection_observers: DomRefCell<Vec<Dom<IntersectionObserver>>>,
-    /// The node that is currently highlighted by the devtools
-    highlighted_dom_node: MutNullableDom<Node>,
     /// Resolved LCP candidate elements, keyed by their [LCPCandidateID].
     lcp_candidates: DomRefCell<HashMapTracedValues<LCPCandidateID, Dom<Element>>>,
     /// The constructed stylesheet that is adopted by this [Document].
@@ -1400,14 +1397,8 @@ impl Document {
             self.window
                 .send_to_constellation(ScriptToConstellationMessage::TitleChanged(
                     self.window.pipeline_id(),
-                    title.clone(),
-                ));
-            if let Some(chan) = self.window.as_global_scope().devtools_chan() {
-                let _ = chan.send(ScriptToDevtoolsControlMsg::TitleChanged(
-                    self.window.pipeline_id(),
                     title,
                 ));
-            }
         }
     }
 
@@ -1775,7 +1766,7 @@ impl Document {
         for _ in 0..num_callbacks {
             let (_, maybe_callback) = self.animation_frame_list.borrow_mut().pop_front().unwrap();
             if let Some(callback) = maybe_callback {
-                callback.call(cx, self, *timing);
+                callback.call(cx, *timing);
             }
         }
         self.running_animation_callbacks.set(false);
@@ -3838,7 +3829,6 @@ impl Document {
             has_trustworthy_ancestor_origin: Cell::new(has_trustworthy_ancestor_origin),
             intersection_observer_task_queued: Cell::new(false),
             intersection_observers: Default::default(),
-            highlighted_dom_node: Default::default(),
             lcp_candidates: DomRefCell::new(Default::default()),
             adopted_stylesheets: Default::default(),
             adopted_stylesheets_frozen_types: CachedFrozenArray::new(),
@@ -4865,15 +4855,6 @@ impl Document {
     pub(crate) fn has_trustworthy_ancestor_or_current_origin(&self) -> bool {
         self.has_trustworthy_ancestor_origin.get() ||
             self.origin().immutable().is_potentially_trustworthy()
-    }
-
-    pub(crate) fn highlight_dom_node(&self, node: Option<&Node>) {
-        self.highlighted_dom_node.set(node);
-        self.add_restyle_reason(RestyleReason::HighlightedDOMNodeChanged);
-    }
-
-    pub(crate) fn highlighted_dom_node(&self) -> Option<DomRoot<Node>> {
-        self.highlighted_dom_node.get()
     }
 
     pub(crate) fn custom_element_reaction_stack(&self) -> Rc<CustomElementReactionStack> {
@@ -6729,9 +6710,6 @@ fn update_with_current_instant(marker: &Cell<Option<CrossProcessInstant>>) {
 
 #[derive(JSTraceable, MallocSizeOf)]
 pub(crate) enum AnimationFrameCallback {
-    DevtoolsFramerateTick {
-        actor_name: String,
-    },
     FrameRequestCallback {
         #[conditional_malloc_size_of]
         callback: Rc<FrameRequestCallback>,
@@ -6739,13 +6717,8 @@ pub(crate) enum AnimationFrameCallback {
 }
 
 impl AnimationFrameCallback {
-    fn call(&self, cx: &mut JSContext, document: &Document, now: f64) {
+    fn call(&self, cx: &mut JSContext, now: f64) {
         match *self {
-            AnimationFrameCallback::DevtoolsFramerateTick { ref actor_name } => {
-                let msg = ScriptToDevtoolsControlMsg::FramerateTick(actor_name.clone(), now);
-                let devtools_sender = document.window().as_global_scope().devtools_chan().unwrap();
-                devtools_sender.send(msg).unwrap();
-            },
             AnimationFrameCallback::FrameRequestCallback { ref callback } => {
                 // TODO(jdm): The spec says that any exceptions should be suppressed:
                 // https://github.com/servo/servo/issues/6928

@@ -18,7 +18,6 @@ pub enum ScriptHangAnnotation {
     SpawnPipeline,
     ConstellationMsg,
     DatabaseAccessEvent,
-    DevtoolsMsg,
     DocumentEvent,
     FileRead,
     FontLoading,

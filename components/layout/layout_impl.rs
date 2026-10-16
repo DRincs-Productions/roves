@@ -55,7 +55,7 @@ use style::context::{
 };
 use style::device::Device;
 use style::device::servo::FontMetricsProvider;
-use style::dom::{OpaqueNode, ShowSubtreeDataAndPrimaryValues, TDocument, TElement, TNode};
+use style::dom::{ShowSubtreeDataAndPrimaryValues, TDocument, TElement, TNode};
 use style::font_metrics::FontMetrics;
 use style::global_style_data::GLOBAL_STYLE_DATA;
 use style::invalidation::element::restyle_hints::RestyleHint;
@@ -209,11 +209,6 @@ pub struct LayoutThread {
     /// Debug options, copied from configuration to this `LayoutThread` in order
     /// to avoid having to constantly access the thread-safe global options.
     debug: DiagnosticsLogging,
-
-    /// Tracks the node that was highlighted by the devtools during the last reflow.
-    ///
-    /// If this changed, then we need to create a new display list.
-    previously_highlighted_dom_node: Cell<Option<OpaqueNode>>,
 
     /// Handler for all Paint Timings
     paint_timing_handler: RefCell<Option<PaintTimingHandler>>,
@@ -817,7 +812,6 @@ impl LayoutThread {
             stylist: Stylist::new(device, QuirksMode::NoQuirks),
             resolved_images_cache: Default::default(),
             debug: opts::get().debug.clone(),
-            previously_highlighted_dom_node: Cell::new(None),
             paint_timing_handler: Default::default(),
             user_stylesheets: config.user_stylesheets,
             accessibility_active: Cell::new(false),
@@ -1186,12 +1180,6 @@ impl LayoutThread {
             .invalidation_set
             .process_style(dangerous_root_element, Some(&snapshot_map));
 
-        if self.previously_highlighted_dom_node.get() != reflow_request.highlighted_dom_node {
-            // Need to manually force layout to build a new display list regardless of whether the box tree
-            // changed or not.
-            self.need_new_display_list.set(true);
-        }
-
         let layout_context = LayoutContext {
             style_context: self.build_shared_style_context(
                 guards,
@@ -1482,7 +1470,6 @@ impl LayoutThread {
             fragment_tree,
             image_resolver.clone(),
             self.device().device_pixel_ratio(),
-            reflow_request.highlighted_dom_node,
             &self.debug,
             paint_timing_handler,
             reflow_statistics,
@@ -1513,8 +1500,6 @@ impl LayoutThread {
         self.last_display_list_was_empty.set(false);
         self.have_ever_generated_display_list.set(true);
         self.need_new_display_list.set(false);
-        self.previously_highlighted_dom_node
-            .set(reflow_request.highlighted_dom_node);
         true
     }
 

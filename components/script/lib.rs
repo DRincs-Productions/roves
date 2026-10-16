@@ -27,7 +27,6 @@ mod script_window_proxies;
 mod task;
 mod body;
 pub(crate) mod conversions;
-mod devtools;
 pub(crate) mod document_loader;
 #[macro_use]
 mod dom;

@@ -91,7 +91,6 @@ impl EventLoop {
             script_to_constellation_sender: constellation.script_sender.clone(),
             script_to_embedder_sender,
             namespace_request_sender: constellation.namespace_ipc_sender.clone(),
-            devtools_server_sender: constellation.script_to_devtools_callback(),
             #[cfg(feature = "bluetooth")]
             bluetooth_sender: constellation.bluetooth_ipc_sender.clone(),
             system_font_service: constellation.system_font_service.to_sender(),

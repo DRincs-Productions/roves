@@ -6,7 +6,6 @@ use std::borrow::Cow;
 use std::sync::Arc;
 
 use crossbeam_channel::Sender;
-use devtools_traits::ScriptToDevtoolsControlMsg;
 use dom_struct::dom_struct;
 use embedder_traits::{JavaScriptEvaluationError, ScriptToEmbedderChan};
 use js::context::JSContext;
@@ -14,7 +13,6 @@ use net_traits::ResourceThreads;
 use net_traits::image_cache::ImageCache;
 use profile_traits::{mem, time};
 use script_traits::Painter;
-use servo_base::generic_channel::GenericCallback;
 use servo_base::id::PipelineId;
 use servo_constellation_traits::ScriptToConstellationSender;
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
@@ -105,7 +103,6 @@ impl WorkletGlobalScope {
     ) -> Self {
         Self {
             globalscope: GlobalScope::new_inherited(
-                init.devtools_chan.clone(),
                 init.mem_profiler_chan.clone(),
                 init.time_profiler_chan.clone(),
                 init.script_to_constellation_sender.clone(),
@@ -211,8 +208,6 @@ pub(crate) struct WorkletGlobalScopeInit {
     pub(crate) mem_profiler_chan: mem::ProfilerChan,
     /// Channel to the time profiler
     pub(crate) time_profiler_chan: time::ProfilerChan,
-    /// Channel to devtools
-    pub(crate) devtools_chan: Option<GenericCallback<ScriptToDevtoolsControlMsg>>,
     /// Messages to send to the Embedder
     pub(crate) to_embedder_sender: ScriptToEmbedderChan,
     /// The image cache

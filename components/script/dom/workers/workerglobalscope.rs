@@ -10,14 +10,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use content_security_policy::CspList;
-use devtools_traits::{DevtoolScriptControlMsg, WorkerId};
 use dom_struct::dom_struct;
 use encoding_rs::UTF_8;
 use fonts::FontContext;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
 use js::context::JSContext;
-use js::conversions::ToJSValConvertible;
-use js::jsapi::{Heap, JSContext as RawJSContext, Value};
+use js::jsapi::JSContext as RawJSContext;
 use js::realm::CurrentRealm;
 use js::rust::{HandleValue, MutableHandleValue, ParentRuntime};
 use mime::Mime;
@@ -29,18 +27,14 @@ use net_traits::request::{
 use net_traits::{FetchMetadata, Metadata, NetworkError, ReferrerPolicy, ResourceFetchTiming};
 use profile_traits::mem::{ProcessReports, perform_memory_report};
 use script_bindings::cell::{DomRefCell, Ref};
-use script_bindings::conversions::root_from_handlevalue;
-use script_bindings::reflector::DomObject;
-use script_bindings::root::rooted_heap_handle;
 use script_bindings::trace::CustomTraceable;
 use servo_base::cross_process_instant::CrossProcessInstant;
-use servo_base::generic_channel::{GenericSend, GenericSender, RoutedReceiver};
+use servo_base::generic_channel::GenericSend;
 use servo_base::id::{PipelineId, PipelineNamespace};
 use servo_canvas_traits::webgl::WebGLChan;
 use servo_constellation_traits::WorkerGlobalScopeInit;
 use servo_url::{MutableOrigin, ServoUrl};
 use timers::TimerScheduler;
-use uuid::Uuid;
 
 use crate::dom::bindings::codegen::Bindings::ImageBitmapBinding::{
     ImageBitmapOptions, ImageBitmapSource,
@@ -65,7 +59,6 @@ use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::bindings::utils::define_all_exposed_interfaces;
 use crate::dom::crypto::Crypto;
 use crate::dom::csp::{GlobalCspReporting, Violation, parse_csp_list_from_metadata};
-use crate::dom::debugger::debuggerglobalscope::DebuggerGlobalScope;
 use crate::dom::dedicatedworkerglobalscope::DedicatedWorkerGlobalScope;
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::{ErrorReporting, RethrowErrors};
@@ -99,20 +92,15 @@ use crate::timers::{IsInterval, OneshotTimers, TimerCallback};
 
 pub(crate) fn prepare_workerscope_init(
     global: &GlobalScope,
-    devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
-    worker_id: Option<WorkerId>,
     webgl_chan: Option<WebGLChan>,
 ) -> WorkerGlobalScopeInit {
     WorkerGlobalScopeInit {
         resource_threads: global.resource_threads().clone(),
         storage_threads: global.storage_threads().clone(),
         mem_profiler_chan: global.mem_profiler_chan().clone(),
-        to_devtools_sender: global.devtools_chan().cloned(),
         time_profiler_chan: global.time_profiler_chan().clone(),
-        from_devtools_sender: devtools_sender,
         script_to_constellation_chan: global.script_to_constellation_chan().sender,
         script_to_embedder_chan: global.script_to_embedder_chan().clone(),
-        worker_id: worker_id.unwrap_or_else(|| WorkerId(Uuid::new_v4())),
         pipeline_id: global.pipeline_id(),
         origin: global.origin().immutable().clone(),
         inherited_secure_context: Some(global.is_secure_context()),
@@ -282,8 +270,6 @@ pub(crate) struct WorkerGlobalScope {
     worker_type: WorkerType,
 
     #[no_trace]
-    worker_id: WorkerId,
-    #[no_trace]
     worker_url: DomRefCell<ServoUrl>,
     #[conditional_malloc_size_of]
     closing: Arc<AtomicBool>,
@@ -296,17 +282,6 @@ pub(crate) struct WorkerGlobalScope {
     #[no_trace]
     /// <https://html.spec.whatwg.org/multipage/#the-workerglobalscope-common-interface:policy-container>
     policy_container: DomRefCell<PolicyContainer>,
-
-    #[ignore_malloc_size_of = "Defined in base"]
-    #[no_trace]
-    /// A `Sender` for sending messages to devtools. This is unused but is stored here to
-    /// keep the channel alive.
-    _devtools_sender: Option<GenericSender<DevtoolScriptControlMsg>>,
-
-    #[ignore_malloc_size_of = "Defined in base"]
-    #[no_trace]
-    /// A `Receiver` for receiving messages from devtools.
-    devtools_receiver: Option<RoutedReceiver<DevtoolScriptControlMsg>>,
 
     #[no_trace]
     navigation_start: CrossProcessInstant,
@@ -335,13 +310,6 @@ pub(crate) struct WorkerGlobalScope {
     #[no_trace]
     endpoints_list: DomRefCell<Vec<ReportingEndpoint>>,
 
-    /// The debugger global object associated with this worker global.
-    /// All traced members of DOM objects must be same-compartment with the
-    /// realm being traced, so this is the debugger global object wrapped into
-    /// this global's compartment.
-    #[ignore_malloc_size_of = "Measured by the JS engine"]
-    debugger_global: Heap<Value>,
-
     #[no_trace]
     pipeline_id: PipelineId,
 
@@ -364,7 +332,6 @@ impl WorkerGlobalScope {
         worker_type: WorkerType,
         worker_url: ServoUrl,
         runtime: Runtime,
-        devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
         closing: Arc<AtomicBool>,
         #[cfg(feature = "webgpu")] gpu_id_hub: Arc<IdentityHub>,
         insecure_requests_policy: InsecureRequestsPolicy,
@@ -374,14 +341,8 @@ impl WorkerGlobalScope {
         // Install a pipeline-namespace in the current thread.
         PipelineNamespace::auto_install();
 
-        let devtools_receiver = match init.from_devtools_sender {
-            Some(..) => Some(devtools_receiver),
-            None => None,
-        };
-
         Self {
             globalscope: GlobalScope::new_inherited(
-                init.to_devtools_sender,
                 init.mem_profiler_chan,
                 init.time_profiler_chan,
                 init.script_to_constellation_chan,
@@ -398,7 +359,6 @@ impl WorkerGlobalScope {
             ),
             caches: Default::default(),
             microtask_queue: runtime.microtask_queue.clone(),
-            worker_id: init.worker_id,
             worker_name,
             worker_type,
             worker_url: DomRefCell::new(worker_url),
@@ -409,8 +369,6 @@ impl WorkerGlobalScope {
             navigator: Default::default(),
             crypto: Default::default(),
             policy_container: Default::default(),
-            devtools_receiver,
-            _devtools_sender: init.from_devtools_sender,
             navigation_start: CrossProcessInstant::now(),
             performance: Default::default(),
             timer_scheduler: RefCell::default(),
@@ -420,7 +378,6 @@ impl WorkerGlobalScope {
             reporting_observer_list: Default::default(),
             report_list: Default::default(),
             endpoints_list: Default::default(),
-            debugger_global: Default::default(),
             pipeline_id: init.pipeline_id,
             task_manager: Rc::new(TaskManager::new(
                 event_loop_sender,
@@ -472,10 +429,6 @@ impl WorkerGlobalScope {
             .prepare_for_new_child()
     }
 
-    pub(crate) fn devtools_receiver(&self) -> Option<&RoutedReceiver<DevtoolScriptControlMsg>> {
-        self.devtools_receiver.as_ref()
-    }
-
     pub(crate) fn is_closing(&self) -> bool {
         self.closing.load(Ordering::SeqCst)
     }
@@ -494,10 +447,6 @@ impl WorkerGlobalScope {
 
     pub(crate) fn worker_name(&self) -> DOMString {
         self.worker_name.clone()
-    }
-
-    pub(crate) fn worker_id(&self) -> WorkerId {
-        self.worker_id
     }
 
     pub(crate) fn pipeline_id(&self) -> PipelineId {
@@ -1104,45 +1053,6 @@ impl WorkerGlobalScope {
             factory.abort_pending_upgrades_and_close_databases();
         }
     }
-
-    pub(crate) fn init_debugger_global(
-        &self,
-        debugger_global: &DebuggerGlobalScope,
-        cx: &mut JSContext,
-    ) {
-        let mut realm = enter_auto_realm(cx, self);
-        let cx = &mut realm.current_realm();
-
-        // Convert the debugger global’s reflector to a Value, wrapping it from its originating realm (debugger realm)
-        // into the active realm (debuggee realm) so that it can be passed across compartments.
-        rooted!(&in(cx) let mut wrapped_global: Value);
-        debugger_global
-            .reflector()
-            .safe_to_jsval(cx, wrapped_global.handle_mut());
-        self.debugger_global.set(*wrapped_global);
-    }
-
-    pub(crate) fn handle_devtools_message(&self, msg: DevtoolScriptControlMsg, cx: &mut JSContext) {
-        match msg {
-            DevtoolScriptControlMsg::WantsLiveNotifications(_pipe_id, _wants_updates) => {},
-            DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
-                let debugger_global_handle = rooted_heap_handle(self, |this| &this.debugger_global);
-                let debugger_global =
-                    root_from_handlevalue::<DebuggerGlobalScope>(cx, debugger_global_handle)
-                        .expect("must be a debugger global scope");
-
-                debugger_global.fire_eval(
-                    cx,
-                    code.into(),
-                    id,
-                    Some(self.worker_id()),
-                    frame_actor_id,
-                    reply,
-                );
-            },
-            _ => debug!("got an unusable devtools control message inside the worker!"),
-        }
-    }
 }
 
 #[expect(unsafe_code)]
@@ -1153,7 +1063,6 @@ unsafe extern "C" fn interrupt_callback(cx: *mut RawJSContext) -> bool {
 
     let global = GlobalScope::from_current_realm(&mut realm);
 
-    // If we are running the debugger script, just exit immediately.
     let Some(worker) = global.downcast::<WorkerGlobalScope>() else {
         return false;
     };

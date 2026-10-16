@@ -10,17 +10,12 @@ use std::time::{Duration, Instant};
 
 use content_security_policy as csp;
 use cookie::Cookie as CookiePair;
-use crossbeam_channel::{Receiver, unbounded};
-use devtools_traits::{
-    ChromeToDevtoolsControlMsg, DevtoolsControlMsg, HttpRequest as DevtoolsHttpRequest,
-    HttpResponse as DevtoolsHttpResponse, NetworkEvent,
-};
 use embedder_traits::AuthenticationResponse;
 use flate2::Compression;
 use flate2::write::{GzEncoder, ZlibEncoder};
 use headers::authorization::Basic;
 use headers::{
-    Authorization, ContentLength, Date, HeaderMapExt, Host, StrictTransportSecurity, UserAgent,
+    Authorization, ContentLength, HeaderMapExt, Host, StrictTransportSecurity, UserAgent,
 };
 use http::header::{self, HeaderMap, HeaderValue, WWW_AUTHENTICATE};
 use http::uri::Authority;
@@ -35,7 +30,6 @@ use net::http_loader::{determine_requests_referrer, serialize_origin};
 use net::resource_thread::AuthCacheEntry;
 use net::test::DECODER_BUFFER_SIZE;
 use net_traits::blob_url_store::UrlWithBlobClaim;
-use net_traits::http_status::HttpStatus;
 use net_traits::request::{
     CredentialsMode, Destination, Referrer, Request, RequestBuilder, RequestMode,
     TraversableForUserPrompts, create_request_body_with_content,
@@ -49,8 +43,8 @@ use url::Url;
 
 use crate::{
     create_generic_embedder_proxy_and_receiver, fetch, fetch_with_context, make_body, make_server,
-    make_ssl_server, mock_origin, new_fetch_context, receive_credential_prompt_msgs,
-    replace_host_table, spawn_blocking_task,
+    mock_origin, new_fetch_context, receive_credential_prompt_msgs, replace_host_table,
+    spawn_blocking_task,
 };
 
 fn assert_cookie_for_domain(
@@ -62,113 +56,6 @@ fn assert_cookie_for_domain(
     let url = ServoUrl::parse(&*domain).unwrap();
     let cookies = cookie_jar.cookies_for_url(&url, CookieSource::HTTP);
     assert_eq!(cookies.as_ref().map(|c| &**c), cookie);
-}
-
-fn recv_http_request(devtools_port: &Receiver<DevtoolsControlMsg>) -> DevtoolsHttpRequest {
-    match devtools_port.recv().unwrap() {
-        DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::NetworkEvent(_, net_event)) => {
-            match net_event {
-                NetworkEvent::HttpRequest(req) => req,
-                NetworkEvent::HttpRequestUpdate(req) => req,
-                other => panic!("Expected HttpRequest but got: {:?}", other),
-            }
-        },
-        other => panic!("Expected NetworkEvent but got: {:?}", other),
-    }
-}
-
-fn recv_all_network_events(devtools_port: Receiver<DevtoolsControlMsg>) -> Vec<NetworkEvent> {
-    let mut events = vec![];
-    while let Ok(msg) = devtools_port.recv() {
-        match msg {
-            DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::NetworkEvent(
-                _,
-                net_event,
-            )) => events.push(net_event),
-            other => panic!("Expected NetworkEvent but got: {:?}", other),
-        }
-    }
-    events
-}
-
-pub fn expect_devtools_http_request(
-    devtools_port: &Receiver<DevtoolsControlMsg>,
-) -> (DevtoolsHttpRequest, DevtoolsHttpRequest) {
-    (
-        recv_http_request(devtools_port),
-        recv_http_request(devtools_port),
-    )
-}
-
-fn pluck<F: Fn(&NetworkEvent) -> bool>(events: &mut Vec<NetworkEvent>, f: F) -> NetworkEvent {
-    let Some(idx) = events.iter().position(f) else {
-        panic!("No matching network event")
-    };
-    events.remove(idx)
-}
-
-#[track_caller]
-fn expect_request(events: &mut Vec<NetworkEvent>) -> DevtoolsHttpRequest {
-    let event = pluck(events, |event| {
-        matches!(event, NetworkEvent::HttpRequest(_))
-    });
-    match event {
-        NetworkEvent::HttpRequest(req) => req,
-        _ => unreachable!(),
-    }
-}
-
-#[track_caller]
-fn expect_request_update(events: &mut Vec<NetworkEvent>) -> DevtoolsHttpRequest {
-    let event = pluck(events, |event| {
-        matches!(event, NetworkEvent::HttpRequestUpdate(_))
-    });
-    match event {
-        NetworkEvent::HttpRequestUpdate(req) => req,
-        _ => unreachable!(),
-    }
-}
-
-#[track_caller]
-fn expect_response(events: &mut Vec<NetworkEvent>) -> DevtoolsHttpResponse {
-    let event = pluck(events, |event| {
-        matches!(event, NetworkEvent::HttpResponse(_))
-    });
-    match event {
-        NetworkEvent::HttpResponse(resp) => resp,
-        _ => unreachable!(),
-    }
-}
-
-pub fn expect_devtools_http_response(
-    devtools_port: &Receiver<DevtoolsControlMsg>,
-) -> DevtoolsHttpResponse {
-    loop {
-        match devtools_port.recv().unwrap() {
-            DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::NetworkEvent(
-                _,
-                net_event_response,
-            )) => match net_event_response {
-                NetworkEvent::HttpResponse(httpresponse) => return httpresponse,
-                NetworkEvent::SecurityInfo(_) => continue,
-                other => panic!("Expected HttpResponse but got: {:?}", other),
-            },
-            other => panic!("Expected NetworkEvent but got: {:?}", other),
-        }
-    }
-}
-
-pub fn devtools_response_with_body(
-    devtools_port: &Receiver<DevtoolsControlMsg>,
-) -> DevtoolsHttpResponse {
-    let devhttpresponses = vec![
-        expect_devtools_http_response(devtools_port),
-        expect_devtools_http_response(devtools_port),
-    ];
-    return devhttpresponses
-        .into_iter()
-        .find(|resp| resp.body.is_some())
-        .expect("One of the responses should have a body");
 }
 
 #[test]
@@ -235,7 +122,7 @@ fn test_check_default_headers_loaded_in_every_request() {
         .policy_container(Default::default())
         .build();
 
-    let response = dbg!(fetch(request, None));
+    let response = dbg!(fetch(request));
     assert!(
         response
             .internal_response
@@ -264,7 +151,7 @@ fn test_check_default_headers_loaded_in_every_request() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
     assert!(
         response
             .internal_response
@@ -298,7 +185,7 @@ fn test_load_when_request_is_not_get_or_head_and_there_is_no_body_content_length
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
     assert!(
         response
             .internal_response
@@ -309,216 +196,6 @@ fn test_load_when_request_is_not_get_or_head_and_there_is_no_body_content_length
     );
 
     let _ = server.close();
-}
-
-#[test]
-fn test_request_and_response_data_with_network_messages() {
-    let handler =
-        move |_: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            response
-                .headers_mut()
-                .typed_insert(Host::from("foo.bar".parse::<Authority>().unwrap()));
-            *response.body_mut() = make_body(b"Yay!".to_vec());
-        };
-    let (server, url) = make_server(handler);
-
-    let mut request_headers = HeaderMap::new();
-    request_headers.typed_insert(Host::from("bar.foo".parse::<Authority>().unwrap()));
-    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), url.clone(), Referrer::NoReferrer)
-        .method(Method::GET)
-        .headers(request_headers)
-        .body(None)
-        .destination(Destination::Document)
-        .origin(mock_origin())
-        .pipeline_id(Some(TEST_PIPELINE_ID))
-        .policy_container(Default::default())
-        .build();
-
-    let (devtools_chan, devtools_port) = unbounded();
-    let response = fetch(request, Some(devtools_chan));
-    assert!(
-        response
-            .internal_response
-            .unwrap()
-            .status
-            .code()
-            .is_success()
-    );
-
-    let _ = server.close();
-
-    // notification received from devtools
-    let devhttprequests = expect_devtools_http_request(&devtools_port);
-    let devhttpresponse = devtools_response_with_body(&devtools_port);
-
-    // Creating default headers for request
-    let mut headers = HeaderMap::new();
-
-    headers.insert(
-        header::ACCEPT,
-        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
-    );
-
-    headers.insert(header::ACCEPT_LANGUAGE, get_current_locale().1.clone());
-
-    headers.typed_insert::<UserAgent>(crate::DEFAULT_USER_AGENT.parse().unwrap());
-
-    headers.insert(
-        header::ACCEPT_ENCODING,
-        HeaderValue::from_static("gzip, deflate, br, zstd"),
-    );
-
-    // Append fetch metadata headers
-    headers.insert(
-        HeaderName::from_static("sec-fetch-dest"),
-        HeaderValue::from_static("document"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-mode"),
-        HeaderValue::from_static("no-cors"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-site"),
-        HeaderValue::from_static("cross-site"),
-    );
-    headers.insert(
-        HeaderName::from_static("sec-fetch-user"),
-        HeaderValue::from_static("?1"),
-    );
-
-    let httprequest = DevtoolsHttpRequest {
-        url: url.url(),
-        method: Method::GET,
-        headers: headers,
-        body: Some(vec![].into()),
-        pipeline_id: TEST_PIPELINE_ID,
-        started_date_time: devhttprequests.1.started_date_time,
-        time_stamp: devhttprequests.1.time_stamp,
-        connect_time: devhttprequests.1.connect_time,
-        send_time: devhttprequests.1.send_time,
-        destination: Destination::Document,
-        is_xhr: false,
-        browsing_context_id: TEST_WEBVIEW_ID.into(),
-    };
-
-    let content = "Yay!";
-    let mut response_headers = HeaderMap::new();
-    response_headers.typed_insert(ContentLength(content.len() as u64));
-    response_headers.typed_insert(Host::from("foo.bar".parse::<Authority>().unwrap()));
-    response_headers.typed_insert(
-        devhttpresponse
-            .headers
-            .as_ref()
-            .unwrap()
-            .typed_get::<Date>()
-            .unwrap()
-            .clone(),
-    );
-
-    let httpresponse = DevtoolsHttpResponse {
-        headers: Some(response_headers),
-        status: HttpStatus::default(),
-        body: Some(content.as_bytes().to_vec().into()),
-        from_cache: false,
-        pipeline_id: TEST_PIPELINE_ID,
-        browsing_context_id: TEST_WEBVIEW_ID.into(),
-    };
-
-    assert_eq!(devhttprequests.1, httprequest);
-    assert_eq!(devhttpresponse, httpresponse);
-}
-
-#[test]
-fn test_request_and_response_message_from_devtool_without_pipeline_id() {
-    let handler =
-        move |_: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            response
-                .headers_mut()
-                .typed_insert(Host::from("foo.bar".parse::<Authority>().unwrap()));
-            *response.body_mut() = make_body(b"Yay!".to_vec());
-        };
-    let (server, url) = make_server(handler);
-
-    let request = RequestBuilder::new(None, url.clone(), Referrer::NoReferrer)
-        .method(Method::GET)
-        .destination(Destination::Document)
-        .origin(mock_origin())
-        .pipeline_id(None)
-        .policy_container(Default::default())
-        .build();
-
-    let (devtools_chan, devtools_port) = unbounded();
-    let response = fetch(request, Some(devtools_chan));
-    assert!(response.actual_response().status.code().is_success());
-
-    let _ = server.close();
-
-    // notification received from devtools
-    assert!(devtools_port.try_recv().is_err());
-}
-
-#[test]
-fn test_redirected_request_to_devtools() {
-    let post_handler =
-        move |request: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            assert_eq!(request.method(), Method::GET);
-            *response.body_mut() = make_body(b"Yay!".to_vec());
-        };
-    let (post_server, post_url) = make_server(post_handler);
-
-    let post_redirect_url = post_url.clone();
-    let pre_handler =
-        move |request: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            assert_eq!(request.method(), Method::POST);
-            response.headers_mut().insert(
-                header::LOCATION,
-                HeaderValue::from_str(&post_redirect_url.to_string()).unwrap(),
-            );
-            *response.status_mut() = StatusCode::MOVED_PERMANENTLY;
-        };
-    let (pre_server, pre_url) = make_server(pre_handler);
-
-    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), pre_url.clone(), Referrer::NoReferrer)
-        .method(Method::POST)
-        .destination(Destination::Document)
-        .pipeline_id(Some(TEST_PIPELINE_ID))
-        .origin(mock_origin())
-        .policy_container(Default::default())
-        .build();
-
-    let (devtools_chan, devtools_port) = unbounded();
-    fetch(request, Some(devtools_chan));
-
-    let _ = pre_server.close();
-    let _ = post_server.close();
-
-    let mut events = recv_all_network_events(devtools_port);
-    let first_request = expect_request(&mut events);
-    let first_request_update = expect_request_update(&mut events);
-    let first_response = expect_response(&mut events);
-
-    assert_eq!(first_request.method, Method::POST);
-    assert_eq!(first_request.url, pre_url.url());
-    assert_eq!(
-        first_response.status,
-        HttpStatus::from(StatusCode::MOVED_PERMANENTLY)
-    );
-    assert_eq!(first_request.method, first_request_update.method);
-    assert_eq!(first_request.url, first_request_update.url);
-
-    let second_request = expect_request(&mut events);
-    let second_request_update = expect_request_update(&mut events);
-    let second_response = expect_response(&mut events);
-
-    assert_eq!(second_request.method, Method::GET);
-    assert_eq!(second_request.url, post_url.url());
-    assert_eq!(second_response.status, HttpStatus::default());
-    assert_eq!(second_request.method, second_request_update.method);
-    assert_eq!(second_request.url, second_request_update.url);
 }
 
 #[test]
@@ -552,7 +229,7 @@ fn test_load_when_redirecting_from_a_post_should_rewrite_next_request_as_get() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = pre_server.close();
     let _ = post_server.close();
@@ -586,7 +263,7 @@ fn test_load_should_decode_the_response_as_deflate_when_response_headers_have_co
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -622,7 +299,7 @@ fn test_load_should_decode_the_response_as_gzip_when_response_headers_have_conte
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -670,7 +347,7 @@ fn test_load_doesnt_send_request_body_on_any_redirect() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = pre_server.close();
     let _ = post_server.close();
@@ -701,7 +378,7 @@ fn test_load_doesnt_add_host_to_hsts_list_when_url_is_http_even_if_hsts_headers_
         .policy_container(Default::default())
         .build();
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
     let response = fetch_with_context(request, &mut context);
 
     let _ = server.close();
@@ -737,7 +414,7 @@ fn test_load_sets_cookies_in_the_resource_manager_when_it_get_set_cookie_header_
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     assert_cookie_for_domain(&context.state.cookie_jar, url.as_str(), None);
 
@@ -784,7 +461,7 @@ fn test_load_sets_requests_cookies_header_for_url_by_getting_cookies_from_the_re
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     {
         let mut cookie_jar = context.state.cookie_jar.write();
@@ -834,7 +511,7 @@ fn test_load_sends_cookie_if_nonhttp() {
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     {
         let mut cookie_jar = context.state.cookie_jar.write();
@@ -884,7 +561,7 @@ fn test_cookie_set_with_httponly_should_not_be_available_using_getcookiesforurl(
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     assert_cookie_for_domain(&context.state.cookie_jar, url.as_str(), None);
 
@@ -937,7 +614,7 @@ fn test_when_cookie_received_marked_secure_is_ignored_for_http() {
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     assert_cookie_for_domain(&context.state.cookie_jar, url.as_str(), None);
 
@@ -987,7 +664,7 @@ fn test_load_sets_content_length_to_length_of_request_body() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1030,7 +707,7 @@ fn test_load_uses_explicit_accept_from_headers_in_load_data() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1070,7 +747,7 @@ fn test_load_sets_default_accept_to_html_xhtml_xml_and_then_anything_else() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1113,7 +790,7 @@ fn test_load_uses_explicit_accept_encoding_from_load_data_headers() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1153,7 +830,7 @@ fn test_load_sets_default_accept_encoding_to_gzip_and_deflate() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1205,7 +882,7 @@ fn test_load_errors_when_there_a_redirect_loop() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server_a.close();
     let _ = server_b.close();
@@ -1259,7 +936,7 @@ fn test_load_succeeds_with_a_redirect_loop() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server_a.close();
     let _ = server_b.close();
@@ -1303,7 +980,7 @@ fn test_load_follows_a_redirect() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = pre_server.close();
     let _ = post_server.close();
@@ -1360,7 +1037,7 @@ fn test_redirect_from_x_to_y_provides_y_cookies_from_y() {
     let url_y = ServoUrl::parse(&format!("http://mozilla.org:{}/org/", port)).unwrap();
     *shared_url_y_clone.lock() = Some(url_y.clone());
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
     {
         let mut cookie_jar = context.state.cookie_jar.write();
         let cookie_x = ServoCookie::new_wrapped(
@@ -1450,7 +1127,7 @@ fn test_redirect_from_x_to_x_provides_x_with_cookie_from_first_response() {
     .policy_container(Default::default())
     .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1486,7 +1163,7 @@ fn test_if_auth_creds_not_in_url_but_in_cache_it_sets_it() {
         .policy_container(Default::default())
         .build();
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     let auth_entry = AuthCacheEntry {
         user_name: "username".to_owned(),
@@ -1534,7 +1211,7 @@ fn test_auth_ui_needs_www_auth() {
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     let _ = server.close();
 
@@ -1626,7 +1303,7 @@ fn test_fetch_compressed_response_update_count() {
         update_count: 0,
     };
     let response_update_count = spawn_blocking_task::<_, Response>(async move {
-        methods::fetch(request, &mut target, &mut new_fetch_context(None, None)).await;
+        methods::fetch(request, &mut target, &mut new_fetch_context(None)).await;
         receiver.await.unwrap()
     });
 
@@ -1699,7 +1376,7 @@ fn test_user_credentials_prompt_when_proxy_authentication_is_required() {
         }),
     );
 
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
@@ -1756,7 +1433,7 @@ fn test_prompt_credentials_when_client_receives_unauthorized_response() {
             password: "test".into(),
         }),
     );
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
@@ -1812,7 +1489,7 @@ fn test_dont_prompt_credentials_when_unauthorized_response_contains_no_www_authe
             }
         }
     });
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
@@ -1859,7 +1536,7 @@ fn test_prompt_credentials_user_cancels_dialog_input() {
 
     let (embedder_proxy, embedder_receiver) = create_generic_embedder_proxy_and_receiver();
     let _ = receive_credential_prompt_msgs(embedder_receiver, None);
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
@@ -1912,7 +1589,7 @@ fn test_prompt_credentials_user_input_incorrect_credentials() {
             password: "test".into(),
         }),
     );
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
@@ -1965,154 +1642,13 @@ fn test_prompt_credentials_user_input_incorrect_mode() {
             password: "test".into(),
         }),
     );
-    let mut context = new_fetch_context(None, Some(embedder_proxy));
+    let mut context = new_fetch_context(Some(embedder_proxy));
 
     let response = fetch_with_context(request, &mut context);
 
     server.close();
 
     assert!(response.internal_response.is_none());
-}
-
-/// Collects all network events from the devtools channel.
-/// Drains all available events after the fetch has completed.
-fn collect_all_network_events(devtools_port: &Receiver<DevtoolsControlMsg>) -> Vec<NetworkEvent> {
-    let mut events = Vec::new();
-
-    // Drain all available events from the channel.
-    // Since fetch has already completed, all events should be queued.
-    while let Ok(msg) = devtools_port.try_recv() {
-        if let DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::NetworkEvent(
-            _,
-            net_event,
-        )) = msg
-        {
-            events.push(net_event);
-        }
-    }
-    events
-}
-
-#[test]
-fn test_security_info_for_https_connection() {
-    let handler =
-        move |_: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            *response.body_mut() = make_body(b"Hello HTTPS!".to_vec());
-        };
-
-    let (server, mut url) = make_ssl_server(handler);
-    url.as_mut_url().set_scheme("https").unwrap();
-
-    let (devtools_sender, devtools_receiver) = unbounded();
-
-    let mut context = new_fetch_context(Some(devtools_sender), None);
-
-    // The server certificate is self-signed, so we need to add an override
-    // so that the connection works properly.
-    for certificate in server.certificates.as_ref().unwrap().iter() {
-        context.state.override_manager.add_override(certificate);
-    }
-
-    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), url.clone(), Referrer::NoReferrer)
-        .method(Method::GET)
-        .body(None)
-        .destination(Destination::Document)
-        .origin(url.clone().origin())
-        .pipeline_id(Some(TEST_PIPELINE_ID))
-        .policy_container(Default::default())
-        .build();
-
-    let response = fetch_with_context(request, &mut context);
-    server.close();
-
-    assert!(response.status.code().is_success());
-
-    let events = collect_all_network_events(&devtools_receiver);
-    let security_info_event = events.iter().find_map(|event| {
-        if let NetworkEvent::SecurityInfo(info) = event {
-            Some(info)
-        } else {
-            None
-        }
-    });
-
-    assert!(
-        security_info_event.is_some(),
-        "Expected to receive a SecurityInfo event for HTTPS connection"
-    );
-
-    let security_info = security_info_event.unwrap();
-    assert!(
-        security_info.security_info.is_some(),
-        "Expected security_info to contain TLS details for HTTPS connection"
-    );
-
-    let tls_info = security_info.security_info.as_ref().unwrap();
-    assert!(
-        tls_info.protocol_version.is_some(),
-        "Expected protocol_version to be set for HTTPS connection"
-    );
-
-    let protocol = tls_info.protocol_version.as_ref().unwrap();
-    assert!(
-        protocol.starts_with("TLS"),
-        "Expected TLS protocol version, got: {}",
-        protocol
-    );
-
-    assert!(
-        tls_info.cipher_suite.is_some(),
-        "Expected cipher_suite to be set for HTTPS connection"
-    );
-}
-
-#[test]
-fn test_no_security_info_for_http_connection() {
-    let handler =
-        move |_: HyperRequest<Incoming>,
-              response: &mut HyperResponse<BoxBody<Bytes, hyper::Error>>| {
-            *response.body_mut() = make_body(b"Hello HTTP!".to_vec());
-        };
-
-    let (server, url) = make_server(handler);
-
-    let (devtools_sender, devtools_receiver) = unbounded();
-
-    let request = RequestBuilder::new(Some(TEST_WEBVIEW_ID), url.clone(), Referrer::NoReferrer)
-        .method(Method::GET)
-        .body(None)
-        .destination(Destination::Document)
-        .origin(url.clone().origin())
-        .pipeline_id(Some(TEST_PIPELINE_ID))
-        .policy_container(Default::default())
-        .build();
-
-    let mut context = new_fetch_context(Some(devtools_sender), None);
-
-    let response = fetch_with_context(request, &mut context);
-    server.close();
-
-    assert!(response.status.code().is_success());
-
-    let events = collect_all_network_events(&devtools_receiver);
-    let security_info_events: Vec<_> = events
-        .iter()
-        .filter_map(|event| {
-            if let NetworkEvent::SecurityInfo(info) = event {
-                Some(info)
-            } else {
-                None
-            }
-        })
-        .collect();
-
-    for security_info in &security_info_events {
-        assert!(
-            security_info.security_info.is_none(),
-            "HTTP connection should not have TLS security info"
-        );
-    }
 }
 
 #[test]
@@ -2131,7 +1667,7 @@ fn test_stale_while_revalidate_serves_cached_and_revalidates_in_background() {
         };
     let (server, url) = make_server(handler);
 
-    let mut context = new_fetch_context(None, None);
+    let mut context = new_fetch_context(None);
 
     let build_request = || {
         RequestBuilder::new(None, url.clone(), Referrer::NoReferrer)

@@ -3,7 +3,6 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use crossbeam_channel::{Receiver, select};
-use devtools_traits::DevtoolScriptControlMsg;
 use rustc_hash::FxHashSet;
 use script_bindings::reflector::DomObject;
 
@@ -27,7 +26,6 @@ pub(crate) trait WorkerEventLoopMethods {
     ) -> Option<AutoWorkerReset<'_>>;
     fn from_control_msg(msg: Self::ControlMsg) -> Self::Event;
     fn from_worker_msg(msg: Self::WorkerMsg) -> Self::Event;
-    fn from_devtools_msg(msg: DevtoolScriptControlMsg) -> Self::Event;
     fn from_timer_msg() -> Self::Event;
     fn control_receiver(&self) -> &Receiver<Self::ControlMsg>;
 }
@@ -47,9 +45,6 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
     let scope = worker_scope.upcast::<WorkerGlobalScope>();
     let task_queue = worker_scope.task_queue();
 
-    let never = crossbeam_channel::never();
-    let devtools_receiver = scope.devtools_receiver().unwrap_or(&never);
-
     let event = select! {
         recv(worker_scope.control_receiver()) -> msg => match msg {
             Ok(msg) => Some(T::from_control_msg(msg)),
@@ -60,10 +55,6 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
                 task_queue.take_tasks(msg, &FxHashSet::default());
                 task_queue.recv().ok().map(T::from_worker_msg)
             },
-            Err(_) => None,
-        },
-        recv(devtools_receiver) -> msg => match msg {
-            Ok(msg) => msg.ok().map(T::from_devtools_msg),
             Err(_) => None,
         },
         recv(scope.timer_scheduler().wait_channel()) -> _ => Some(T::from_timer_msg()),
@@ -89,10 +80,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
         // Batch all events that are ready.
         // The task queue will throttle non-priority tasks if necessary.
         match task_queue.take_tasks_and_recv(&FxHashSet::default()) {
-            Err(_) => match devtools_receiver.try_recv() {
-                Ok(message) => sequential.push(T::from_devtools_msg(message.unwrap())),
-                Err(_) => break,
-            },
+            Err(_) => break,
             Ok(ev) => sequential.push(T::from_worker_msg(ev)),
         }
     }

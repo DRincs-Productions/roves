@@ -11,8 +11,8 @@ mod data_loader;
 mod decoder;
 mod fetch;
 
-fn fetch(request: Request, dc: Option<Sender<DevtoolsControlMsg>>) -> Response {
-    fetch_with_context(request, &mut new_fetch_context(dc, None))
+fn fetch(request: Request) -> Response {
+    fetch_with_context(request, &mut new_fetch_context(None))
 }
 mod file_loader;
 mod filemanager_thread;
@@ -25,8 +25,7 @@ mod subresource_integrity;
 use std::sync::Arc;
 
 use content_security_policy as csp;
-use crossbeam_channel::{Receiver, Sender, unbounded};
-use devtools_traits::DevtoolsControlMsg;
+use crossbeam_channel::{Receiver, unbounded};
 use embedder_traits::{AuthenticationResponse, EmbedderMsg, EmbedderProxy, GenericEmbedderProxy};
 use net::async_runtime::spawn_blocking_task;
 use net::connector::{CACertificates, create_http_client, create_tls_config};
@@ -126,16 +125,12 @@ fn create_http_state(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> Http
     }
 }
 
-fn new_fetch_context(
-    devtools_chan: Option<Sender<DevtoolsControlMsg>>,
-    fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>,
-) -> FetchContext {
+fn new_fetch_context(fc: Option<GenericEmbedderProxy<NetToEmbedderMsg>>) -> FetchContext {
     let sender = fc.unwrap_or_else(|| create_generic_embedder_proxy());
 
     FetchContext {
         state: Arc::new(create_http_state(Some(sender.clone()))),
         user_agent: DEFAULT_USER_AGENT.into(),
-        devtools_chan,
         filemanager: FileManager::new(sender.clone(), BlobTokenCommunicator::stub_for_testing()),
         file_token: FileTokenCheck::NotRequired,
         request_interceptor: Arc::new(TokioMutex::new(RequestInterceptor::new(sender))),
@@ -178,7 +173,7 @@ fn fetch_with_cors_cache(request: Request, cache: &mut CorsCache) -> Response {
     let mut target = FetchResponseCollector {
         sender: Some(sender),
     };
-    let mut fetch_context = new_fetch_context(None, None);
+    let mut fetch_context = new_fetch_context(None);
     spawn_blocking_task::<_, Response>(async move {
         methods::fetch_with_cors_cache(request, cache, &mut target, &mut fetch_context).await;
         receiver.await.unwrap()

@@ -136,8 +136,6 @@ pub enum Resource {
     DirectoryListingHTML,
     /// A HTML page that is used for the about:memory url.
     AboutMemoryHTML,
-    /// RPC script for the Debugger API on behalf of devtools.
-    DebuggerJS,
     /// A HTML page to display a pretty printed view of a json document.
     JsonViewerHTML,
 }
@@ -154,7 +152,6 @@ impl Resource {
             Resource::CrashHTML => "crash.html",
             Resource::DirectoryListingHTML => "directory-listing.html",
             Resource::AboutMemoryHTML => "about-memory.html",
-            Resource::DebuggerJS => "debugger.js",
             Resource::JsonViewerHTML => "json-viewer.html",
         }
     }

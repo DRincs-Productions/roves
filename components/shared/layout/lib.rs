@@ -603,7 +603,6 @@ bitflags! {
         const StylesheetsChanged = 1 << 0;
         const DOMChanged = 1 << 1;
         const PendingRestyles = 1 << 2;
-        const HighlightedDOMNodeChanged = 1 << 3;
         const ThemeChanged = 1 << 4;
         const ViewportChanged = 1 << 5;
         const PaintWorkletLoaded = 1 << 6;
@@ -725,8 +724,6 @@ pub struct ReflowRequest {
     pub animations: DocumentAnimationSet,
     /// An [`AnimatingImages`] struct used to track images that are animating.
     pub animating_images: Arc<RwLock<AnimatingImages>>,
-    /// The node highlighted by the devtools, if any
-    pub highlighted_dom_node: Option<OpaqueNode>,
     /// The current font context.
     pub document_context: WebFontDocumentContext,
     /// Damage to the accessibility tree from DOM mutations.

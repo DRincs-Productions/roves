@@ -8,7 +8,7 @@ use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
-use crossbeam_channel::{Receiver, Sender, unbounded};
+use crossbeam_channel::{Receiver, unbounded};
 pub use embedder_traits::*;
 use env_logger::Builder as EnvLoggerBuilder;
 use fonts::SystemFontService;
@@ -605,25 +605,6 @@ impl ServoInner {
                         .request_permission(webview, permission_request);
                 }
             },
-            EmbedderMsg::OnDevtoolsStarted(port, token) => match port {
-                Ok(port) => self
-                    .delegate
-                    .borrow()
-                    .notify_devtools_server_started(port, token),
-                Err(()) => self
-                    .delegate
-                    .borrow()
-                    .notify_error(ServoError::DevtoolsFailedToStart),
-            },
-            EmbedderMsg::RequestDevtoolsConnection(response_sender) => {
-                self.delegate
-                    .borrow()
-                    .request_devtools_connection(AllowOrDenyRequest::new(
-                        response_sender,
-                        AllowOrDeny::Deny,
-                        self.servo_errors.sender(),
-                    ));
-            },
             #[cfg(feature = "gamepad")]
             EmbedderMsg::PlayGamepadHapticEffect(
                 webview_id,
@@ -917,15 +898,6 @@ impl Servo {
         );
         let mem_profiler_chan = profile_mem::Profiler::create();
 
-        let devtools_sender = if pref!(devtools_server_enabled) {
-            Some(devtools::start_server(
-                embedder_proxy.clone(),
-                mem_profiler_chan.clone(),
-            ))
-        } else {
-            None
-        };
-
         // Important that this call is done in a single-threaded fashion, we
         // can't defer it after `create_constellation` has started.
         let js_engine_setup = if !opts.multiprocess {
@@ -966,7 +938,6 @@ impl Servo {
         let protocols = Arc::new(protocols);
         let (public_resource_threads, private_resource_threads, async_runtime) =
             new_resource_threads(
-                devtools_sender.clone(),
                 time_profiler_chan.clone(),
                 mem_profiler_chan.clone(),
                 net_embedder_proxy,
@@ -990,7 +961,6 @@ impl Servo {
             paint_proxy,
             time_profiler_chan,
             mem_profiler_chan,
-            devtools_sender,
             protocols,
             public_resource_threads.clone(),
             private_resource_threads.clone(),
@@ -1195,7 +1165,6 @@ fn create_constellation(
     paint_proxy: PaintProxy,
     time_profiler_chan: time::ProfilerChan,
     mem_profiler_chan: mem::ProfilerChan,
-    devtools_sender: Option<Sender<devtools_traits::DevtoolsControlMsg>>,
     protocols: Arc<ProtocolRegistry>,
     public_resource_threads: ResourceThreads,
     private_resource_threads: ResourceThreads,
@@ -1224,7 +1193,6 @@ fn create_constellation(
         paint_proxy,
         embedder_proxy,
         constellation_to_embedder_proxy,
-        devtools_sender,
         #[cfg(feature = "bluetooth")]
         bluetooth_thread,
         system_font_service,

@@ -124,8 +124,9 @@ errors.
   normal and JIT-less V8. JIT-less V8 has no WebAssembly (rusty_v8's prebuilt V8 has no Wasm
   interpreter).
 - Phase 6 started: SpiderMonkey build features and options removed (`--debug-mozjs` kept as a
-  deprecated no-op); the SpiderMonkey devtools debugger script is not run.
-  Remaining: devtools on V8's inspector; cross-origin window proxy traps; immutable
+  deprecated no-op); the SpiderMonkey devtools debugger script is not run. Devtools were then
+  removed entirely (2026-10-15, patch 0224), so devtools on V8's inspector is no longer planned.
+  Remaining: cross-origin window proxy traps; immutable
   prototypes; realms live as long as the runtime (navigated-away pages are not collected); `eval` of `TrustedScript`; script/module privates and per-realm callable
   class boxes still live as long as the runtime; WPT-scale coverage; the permanent swap.
 

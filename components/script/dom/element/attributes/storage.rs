@@ -4,7 +4,6 @@
 
 use std::cell::Ref;
 
-use devtools_traits::AttrInfo;
 use html5ever::{LocalName, Namespace, Prefix};
 use js::context::JSContext;
 use script_bindings::cell::DomRefCell;
@@ -135,15 +134,6 @@ impl<'a> AttrRef<'a> {
     /// Returns the attribute value as a `DOMString`, equivalent to `Attr::Value()`.
     pub(crate) fn to_dom_string(self) -> DOMString {
         DOMString::from(&**self.value())
-    }
-
-    /// Returns a summary for devtools.
-    pub(crate) fn summarize(&self) -> AttrInfo {
-        AttrInfo {
-            namespace: (**self.namespace()).to_owned(),
-            name: (**self.name()).to_owned(),
-            value: (**self.value()).to_owned(),
-        }
     }
 
     /// Returns the `AttrIdentifier` for this attribute.

@@ -32,7 +32,7 @@ fn assert_parse(
         .policy_container(Default::default())
         .build();
 
-    let response = fetch(request, None);
+    let response = fetch(request);
 
     match data {
         Some(data) => {

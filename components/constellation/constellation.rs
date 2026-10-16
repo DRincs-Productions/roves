@@ -49,7 +49,6 @@
 //! * The font cache, image cache, and resource manager, which load
 //!   and cache shared fonts, images, or other resources.
 //! * The service worker manager.
-//! * The devtools server.
 //!
 //! The constellation passes messages between the threads, and updates its state
 //! to track the evolving state of the browsing context tree.
@@ -100,10 +99,6 @@ use background_hang_monitor_api::{
 };
 use content_security_policy::sandboxing_directive::SandboxingFlagSet;
 use crossbeam_channel::{Receiver, Select, Sender, unbounded};
-use devtools_traits::{
-    ChromeToDevtoolsControlMsg, DevtoolsControlMsg, DevtoolsPageInfo, NavigationState,
-    ScriptToDevtoolsControlMsg,
-};
 use embedder_traits::resources::{self, Resource};
 use embedder_traits::user_contents::{UserContentManagerId, UserContents};
 use embedder_traits::{
@@ -367,14 +362,6 @@ pub struct Constellation<STF, SWF> {
     /// cache thread.
     pub(crate) system_font_service: Arc<SystemFontServiceProxy>,
 
-    /// A channel for the constellation to send messages to the
-    /// devtools thread.
-    pub(crate) devtools_sender: Option<Sender<DevtoolsControlMsg>>,
-
-    /// A (potentially) IPC-based channel to the developer tools, if enabled. This allows
-    /// `EventLoop`s to send messages to then. Shared with all `EventLoop`s.
-    pub script_to_devtools_callback: OnceCell<Option<GenericCallback<ScriptToDevtoolsControlMsg>>>,
-
     /// An IPC channel for the constellation to send messages to the
     /// bluetooth thread.
     #[cfg(feature = "bluetooth")]
@@ -531,9 +518,6 @@ pub struct InitialConstellationState {
     /// A channel through which messages can be sent to `Paint` in-process.
     pub paint_proxy: PaintProxy,
 
-    /// A channel to the developer tools, if applicable.
-    pub devtools_sender: Option<Sender<DevtoolsControlMsg>>,
-
     /// A channel to the bluetooth thread.
     #[cfg(feature = "bluetooth")]
     pub bluetooth_thread: GenericSender<BluetoothRequest>,
@@ -675,8 +659,6 @@ where
                     constellation_to_embedder_proxy: state.constellation_to_embedder_proxy,
                     paint_proxy: state.paint_proxy,
                     webviews: Default::default(),
-                    devtools_sender: state.devtools_sender,
-                    script_to_devtools_callback: Default::default(),
                     #[cfg(feature = "bluetooth")]
                     bluetooth_ipc_sender: state.bluetooth_thread,
                     public_resource_threads: state.public_resource_threads,
@@ -2778,14 +2760,6 @@ where
             warn!("Exit resource thread failed ({})", e);
         }
 
-        if let Some(ref chan) = self.devtools_sender {
-            debug!("Exiting devtools.");
-            let msg = DevtoolsControlMsg::FromChrome(ChromeToDevtoolsControlMsg::ServerExitMsg);
-            if let Err(e) = chan.send(msg) {
-                warn!("Exit devtools failed ({:?})", e);
-            }
-        }
-
         debug!("Exiting public client storage thread.");
         if let Err(e) = generic_channel::GenericSend::send(
             &self.public_storage_threads,
@@ -3872,13 +3846,6 @@ where
                 },
             };
 
-        if let Some(ref chan) = self.devtools_sender {
-            let state = NavigationState::Start(load_data.url.clone());
-            let _ = chan.send(DevtoolsControlMsg::FromScript(
-                ScriptToDevtoolsControlMsg::Navigate(browsing_context_id, state),
-            ));
-        }
-
         match parent_pipeline_id {
             Some(parent_pipeline_id) => {
                 // Find the script thread for the pipeline containing the iframe
@@ -4280,23 +4247,6 @@ where
         self.unload_document(old_pipeline_id);
 
         if let Some(new_pipeline) = self.pipelines.get(&new_pipeline_id) {
-            if let Some(ref chan) = self.devtools_sender {
-                let state = NavigationState::Start(new_pipeline.url.clone());
-                let _ = chan.send(DevtoolsControlMsg::FromScript(
-                    ScriptToDevtoolsControlMsg::Navigate(browsing_context_id, state),
-                ));
-                let page_info = DevtoolsPageInfo {
-                    title: new_pipeline.title.clone(),
-                    url: new_pipeline.url.clone(),
-                    is_top_level_global: webview_id == browsing_context_id,
-                    is_service_worker: false,
-                };
-                let state = NavigationState::Stop(new_pipeline.id, page_info);
-                let _ = chan.send(DevtoolsControlMsg::FromScript(
-                    ScriptToDevtoolsControlMsg::Navigate(browsing_context_id, state),
-                ));
-            }
-
             new_pipeline.set_throttled(false);
             self.notify_focus_state(new_pipeline_id);
         }
@@ -5920,37 +5870,6 @@ where
         {
             warn!("Could not send pinch zoom update to pipeline: {pipeline_id:?}: {error:?}");
         }
-    }
-
-    pub(crate) fn script_to_devtools_callback(
-        &self,
-    ) -> Option<GenericCallback<ScriptToDevtoolsControlMsg>> {
-        self.script_to_devtools_callback
-            .get_or_init(|| {
-                self.devtools_sender.as_ref().and_then(|devtools_sender| {
-                    let devtools_sender = devtools_sender.clone();
-                    let callback = GenericCallback::new(move |message| match message {
-                        Err(error) => {
-                            error!("Cast to ScriptToDevtoolsControlMsg failed ({error}).")
-                        },
-                        Ok(message) => {
-                            if let Err(error) =
-                                devtools_sender.send(DevtoolsControlMsg::FromScript(message))
-                            {
-                                warn!("Sending to devtools failed ({error:?})")
-                            }
-                        },
-                    });
-                    match callback {
-                        Ok(callback) => Some(callback),
-                        Err(error) => {
-                            error!("Could not create Devtools communication channel: {error}");
-                            None
-                        },
-                    }
-                })
-            })
-            .clone()
     }
 }
 

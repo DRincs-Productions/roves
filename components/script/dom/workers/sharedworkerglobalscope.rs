@@ -10,7 +10,6 @@ use std::thread::{self, JoinHandle};
 
 use content_security_policy::Violation;
 use crossbeam_channel::{Receiver, Sender, unbounded};
-use devtools_traits::DevtoolScriptControlMsg;
 use dom_struct::dom_struct;
 use fonts::FontContext;
 use js::context::JSContext;
@@ -25,7 +24,6 @@ use net_traits::request::{
 };
 use script_bindings::cell::DomRefCell;
 use script_bindings::interfaces::HasOrigin;
-use servo_base::generic_channel::{GenericReceiver, RoutedReceiver};
 use servo_base::id::{BrowsingContextId, ScriptEventLoopId, WebViewId};
 use servo_constellation_traits::{MessagePortImpl, WorkerGlobalScopeInit, WorkerScriptLoadOrigin};
 use servo_url::{ImmutableOrigin, MutableOrigin, ServoUrl};
@@ -52,7 +50,6 @@ use crate::dom::globalscope::GlobalScope;
 use crate::dom::html::htmlscriptelement::Script;
 use crate::dom::messageport::MessagePort;
 use crate::dom::sharedworker::{SharedWorker, SharedWorkerStorageKey, TrustedSharedWorkerAddress};
-use crate::dom::types::DebuggerGlobalScope;
 #[cfg(feature = "webgpu")]
 use crate::dom::webgpu::identityhub::IdentityHub;
 use crate::dom::workerglobalscope::WorkerGlobalScope;
@@ -76,7 +73,6 @@ pub(crate) enum SharedWorkerControlMsg {
 
 pub(crate) enum MixedMessage {
     SharedWorker(SharedWorkerScriptMsg),
-    Devtools(DevtoolScriptControlMsg),
     Control(SharedWorkerControlMsg),
     Timer,
 }
@@ -175,7 +171,6 @@ pub(crate) struct SharedWorkerGlobalScope {
     pending_connect: DomRefCell<VecDeque<Dom<MessagePort>>>,
     #[no_trace]
     control_receiver: Receiver<SharedWorkerControlMsg>,
-    debugger_global: Dom<DebuggerGlobalScope>,
     // A `SharedWorkerGlobalScope` object has associated constructor origin (an origin), constructor URL (a URL record), and credentials (a credentials mode), and extended lifetime (a boolean).
     #[no_trace]
     storage_key: SharedWorkerStorageKey,
@@ -218,10 +213,6 @@ impl WorkerEventLoopMethods for SharedWorkerGlobalScope {
         MixedMessage::SharedWorker(msg)
     }
 
-    fn from_devtools_msg(msg: DevtoolScriptControlMsg) -> MixedMessage {
-        MixedMessage::Devtools(msg)
-    }
-
     fn from_timer_msg() -> MixedMessage {
         MixedMessage::Timer
     }
@@ -241,7 +232,6 @@ impl SharedWorkerGlobalScope {
         worker_url: ServoUrl,
         worker: TrustedSharedWorkerAddress,
         parent_event_loop_sender: ScriptEventLoopSender,
-        from_devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
         runtime: Runtime,
         own_sender: Sender<SharedWorkerScriptMsg>,
         receiver: Receiver<SharedWorkerScriptMsg>,
@@ -252,7 +242,6 @@ impl SharedWorkerGlobalScope {
         control_receiver: Receiver<SharedWorkerControlMsg>,
         insecure_requests_policy: InsecureRequestsPolicy,
         font_context: Option<Arc<FontContext>>,
-        debugger_global: &DebuggerGlobalScope,
         storage_key: SharedWorkerStorageKey,
         constructor_origin: ImmutableOrigin,
         constructor_url: ServoUrl,
@@ -267,7 +256,6 @@ impl SharedWorkerGlobalScope {
                 worker_type,
                 worker_url,
                 runtime,
-                from_devtools_receiver,
                 closing,
                 #[cfg(feature = "webgpu")]
                 gpu_id_hub,
@@ -284,7 +272,6 @@ impl SharedWorkerGlobalScope {
             browsing_context,
             pending_connect: DomRefCell::new(VecDeque::new()),
             control_receiver,
-            debugger_global: Dom::from_ref(debugger_global),
             storage_key,
             constructor_origin,
             constructor_url,
@@ -303,7 +290,6 @@ impl SharedWorkerGlobalScope {
         worker_url: ServoUrl,
         worker: TrustedSharedWorkerAddress,
         parent_event_loop_sender: ScriptEventLoopSender,
-        from_devtools_receiver: RoutedReceiver<DevtoolScriptControlMsg>,
         runtime: Runtime,
         own_sender: Sender<SharedWorkerScriptMsg>,
         receiver: Receiver<SharedWorkerScriptMsg>,
@@ -314,7 +300,6 @@ impl SharedWorkerGlobalScope {
         control_receiver: Receiver<SharedWorkerControlMsg>,
         insecure_requests_policy: InsecureRequestsPolicy,
         font_context: Option<Arc<FontContext>>,
-        debugger_global: &DebuggerGlobalScope,
         storage_key: SharedWorkerStorageKey,
         constructor_origin: ImmutableOrigin,
         constructor_url: ServoUrl,
@@ -331,7 +316,6 @@ impl SharedWorkerGlobalScope {
             worker_url,
             worker,
             parent_event_loop_sender,
-            from_devtools_receiver,
             runtime,
             own_sender,
             receiver,
@@ -343,7 +327,6 @@ impl SharedWorkerGlobalScope {
             control_receiver,
             insecure_requests_policy,
             font_context,
-            debugger_global,
             storage_key,
             constructor_origin,
             constructor_url,
@@ -366,7 +349,6 @@ impl SharedWorkerGlobalScope {
         worker_url: UrlWithBlobClaim,
         worker: TrustedSharedWorkerAddress,
         parent_event_loop_sender: ScriptEventLoopSender,
-        from_devtools_receiver: GenericReceiver<DevtoolScriptControlMsg>,
         own_sender: Sender<SharedWorkerScriptMsg>,
         receiver: Receiver<SharedWorkerScriptMsg>,
         worker_load_origin: WorkerScriptLoadOrigin,
@@ -405,11 +387,7 @@ impl SharedWorkerGlobalScope {
                 thread_state::initialize(ThreadState::SCRIPT | ThreadState::IN_WORKER);
                 ScriptEventLoopId::install(event_loop_id);
 
-                let WorkerScriptLoadOrigin {
-                    referrer_url,
-                    pipeline_id,
-                    ..
-                } = worker_load_origin;
+                let WorkerScriptLoadOrigin { referrer_url, .. } = worker_load_origin;
 
                 let referrer = referrer_url.map(Referrer::ReferrerUrl).unwrap_or(referrer);
 
@@ -433,28 +411,7 @@ impl SharedWorkerGlobalScope {
                 // because it will never outlive it (runtime destruction happens at the end of this function)
                 let mut cx = unsafe { runtime.cx() };
                 let cx = &mut cx;
-                let debugger_global = DebuggerGlobalScope::new(
-                    pipeline_id,
-                    init.to_devtools_sender.clone(),
-                    init.from_devtools_sender
-                        .clone()
-                        .expect("Guaranteed by SharedWorker::Constructor"),
-                    init.mem_profiler_chan.clone(),
-                    init.time_profiler_chan.clone(),
-                    init.script_to_constellation_chan.clone(),
-                    init.script_to_embedder_chan.clone(),
-                    init.resource_threads.clone(),
-                    init.storage_threads.clone(),
-                    #[cfg(feature = "webgpu")]
-                    gpu_id_hub.clone(),
-                    cx,
-                );
-                debugger_global.execute(cx);
 
-                let devtools_mpsc_port = from_devtools_receiver.route_preserving_errors();
-
-                let worker_id = init.worker_id;
-                let devtools_enabled = init.to_devtools_sender.is_some();
                 // Step 3. Let origin be a unique opaque origin if worker global scope's url's scheme is "data"; otherwise outside settings's origin.
                 if worker_url.scheme() == "data" {
                     if is_secure_context {
@@ -473,7 +430,6 @@ impl SharedWorkerGlobalScope {
                     worker_url.url(),
                     worker,
                     parent_event_loop_sender,
-                    devtools_mpsc_port,
                     runtime,
                     own_sender,
                     receiver,
@@ -485,7 +441,6 @@ impl SharedWorkerGlobalScope {
                     control_receiver,
                     insecure_requests_policy,
                     font_context,
-                    &debugger_global,
                     storage_key,
                     constructor_origin,
                     constructor_url,
@@ -498,14 +453,6 @@ impl SharedWorkerGlobalScope {
                 let global_scope = global.upcast::<GlobalScope>();
                 // Step 11.5.2. Let workerIsSecureContext be true if insideSettings is a secure context; otherwise, false.
                 let worker_is_secure_context = global_scope.is_secure_context();
-                if devtools_enabled {
-                    debugger_global.fire_add_debuggee(
-                        cx,
-                        global_scope,
-                        pipeline_id,
-                        Some(worker_id),
-                    );
-                }
 
                 if setup_sender.send(worker_is_secure_context).is_err() {
                     scope.clear_js_runtime();
@@ -551,7 +498,7 @@ impl SharedWorkerGlobalScope {
                     },
                 }
 
-                let reporter_name = format!("shared-worker-reporter-{}", worker_id);
+                let reporter_name = format!("shared-worker-reporter-{}", Uuid::new_v4());
                 scope
                     .upcast::<GlobalScope>()
                     .mem_profiler_chan()
@@ -752,20 +699,6 @@ impl SharedWorkerGlobalScope {
         }
 
         match msg {
-            MixedMessage::Devtools(msg) => match msg {
-                DevtoolScriptControlMsg::WantsLiveNotifications(_pipe_id, _bool_val) => {},
-                DevtoolScriptControlMsg::Eval(code, id, frame_actor_id, reply) => {
-                    self.debugger_global.fire_eval(
-                        cx,
-                        code.into(),
-                        id,
-                        Some(self.upcast::<WorkerGlobalScope>().worker_id()),
-                        frame_actor_id,
-                        reply,
-                    );
-                },
-                _ => debug!("got an unusable devtools control message inside the worker!"),
-            },
             MixedMessage::SharedWorker(msg) => {
                 self.handle_script_event(msg, cx);
             },
