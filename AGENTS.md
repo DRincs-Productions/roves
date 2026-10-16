@@ -10,6 +10,15 @@
   parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
   aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
 
+### Valutazione obbligatoria prima di ogni modifica
+
+Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle
+già presenti nel progetto, possono coprire l'implementazione. L'obiettivo è ridurre il codice
+gestito da Roves: preferisci riuso e integrazione, conserva solo il codice di collegamento
+necessario e rimuovi il codice sostituito. Valuta manutenzione, licenza, compatibilità con le
+piattaforme e impatto su CPU, RAM e GPU. Non aggiungere dipendenze senza un uso concreto;
+se nessuna libreria è adatta, spiega brevemente il motivo prima di implementare codice nostro.
+
 ## Active work: autonomous V8 migration
 
 Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing the migration.

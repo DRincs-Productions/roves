@@ -100,7 +100,7 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 
 ### Prestazioni CPU e librerie dei giochi
 
-Baseline, limiti e ordine degli interventi sono in [ROVES_PERFORMANCE.md](./ROVES_PERFORMANCE.md).
+Baseline, limiti e ordine degli interventi sono in [ROVES_PERFORMANCE.md](./docs/ROVES_PERFORMANCE.md).
 Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manchino strumenti.
 
 - [ ] Ripetere il confronto visibile con Chrome su pagina production, stessa risoluzione,

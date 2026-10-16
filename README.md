@@ -401,7 +401,7 @@ size, warm-up and sampling interval in Roves and Chrome. The static PixiJS fixtu
 frame and stops its ticker; unlike the normal diagnostic page, these fixtures omit gamepad
 polling, FPS probes, Steam checks and other page-level timers that would contaminate an idle
 measurement. The measurement plan and current findings are tracked in
-[`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
+[`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md).
 
 The current development tree caches actual WebGL drawing-buffer dimensions between resizes
 to avoid repeated synchronous thread queries. Its performance impact still needs measurement.
@@ -410,7 +410,7 @@ The development tree also delegates Web Audio frequency analysis to RealFFT/Rust
 replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible
 API benchmarks live in [`support/perf`](./support/perf/README.md), with results and scope in
-[`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md). These measurements do not establish whole-game parity with Chrome.
+[`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md). These measurements do not establish whole-game parity with Chrome.
 
 An experimental `./mach build --features mimalloc` swaps the global allocator for mimalloc (default:
 system allocator on Windows, jemalloc elsewhere) for allocator A/B measurements. The `perf-ab.yml`

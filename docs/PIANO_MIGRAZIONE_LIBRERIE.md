@@ -4,7 +4,7 @@ Aggiornato il 16 ottobre 2026. Destinatario: Codex che implementerà modifiche n
 
 V8, SDL3 e la selezione sperimentale mimalloc sono già integrati. La presentazione diretta A è
 predefinita dalla v0.7.4; RealFFT sostituisce la DFT manuale di AnalyserNode nel ramo di sviluppo.
-Risultati e verifiche residue sono in [`ROVES_PERFORMANCE.md`](../ROVES_PERFORMANCE.md).
+Risultati e verifiche residue sono in [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 Per motion si riusano Stylo/WebRender; AudioWorklet JavaScript resta da collegare al grafo
 audio e a V8. Le procedure sotto sono criteri di verifica, non lavori da ripetere da zero.
 

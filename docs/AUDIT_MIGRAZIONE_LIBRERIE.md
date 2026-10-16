@@ -11,7 +11,7 @@ Il codice di analisi spettrale Web Audio delega ora a RealFFT 3.5/RustFFT: la DF
 rimossa, con test numerici CI e misure locali su build scaricate. API di frequenza, finestra,
 normalizzazione e smoothing restano quelle Web Audio. AudioWorklet JavaScript resta assente:
 una libreria con worklet Rust non fornisce da sola i binding e l'esecuzione V8 necessari.
-Misure attuali e limiti: [`ROVES_PERFORMANCE.md`](../ROVES_PERFORMANCE.md).
+Misure attuali e limiti: [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 
 ## SDL3 e `winit`
 

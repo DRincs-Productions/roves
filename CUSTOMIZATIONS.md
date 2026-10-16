@@ -1,3 +1,12 @@
+## 2026-10-16 - Consolidate performance documentation and library selection guidance
+
+Move `ROVES_PERFORMANCE.md` to `docs/ROVES_PERFORMANCE.md` and update active links,
+benchmark instructions, workflow documentation and the wiki. Historical patch contents and
+changelog references retain their original paths. Require a maintained-library evaluation
+in `AGENTS.md` before every change, prioritizing reuse and removal of replaced custom code,
+with platform, license and resource-cost considerations. Documentation-only change; no
+engine patch or build is required.
+
 ## 2026-10-16 - Cache actual WebGL dimensions and repair comparison fixtures
 
 **Files:** `components/script/dom/webgl/webglrenderingcontext.rs`,

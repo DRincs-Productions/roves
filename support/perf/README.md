@@ -12,7 +12,7 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.
-Keep foreground and headless samples separate. Results are in `ROVES_PERFORMANCE.md`.
+Keep foreground and headless samples separate. Results are in [`ROVES_PERFORMANCE.md`](../../docs/ROVES_PERFORMANCE.md).
 
 Roves can run the audio test from a terminal with `play.exe -z http://127.0.0.1:48762/audio-analysis-bench.html?auto=1`.
 On PowerShell, pipe stdout to `Out-File` to wait for the GUI-subsystem executable and retain the

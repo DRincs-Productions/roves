@@ -6,7 +6,7 @@ Revisione del 16 ottobre 2026. Lo storico degli aggiornamenti completati è in
 Il desktop usa il motore Servo personalizzato con V8 tramite roves-js. La migrazione da
 SpiderMonkey e quella finestra/input a SDL3 sono completate: non sono più candidati futuri.
 WebRender resta il renderer completo. I risultati prestazionali sono in
-[ROVES_PERFORMANCE.md](../ROVES_PERFORMANCE.md), senza dedurre vantaggi dalla lingua Rust.
+[ROVES_PERFORMANCE.md](./ROVES_PERFORMANCE.md), senza dedurre vantaggi dalla lingua Rust.
 
 ## Direzione
 
