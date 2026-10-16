@@ -97,25 +97,24 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **Steam avanzato, opzionale:** valutare classifiche e ulteriori servizi richiesti dai giochi. Obiettivi, statistiche, DLC, overlay e Steam Cloud sono già implementati: concentrare il backlog sulle capability mancanti e sui test reali.
 - [ ] **Aggiornamenti contenuti, opzionali:** progettare aggiornamento/versionamento dei contenuti senza ricreare sempre il bundle, con integrità, rollback e coerenza della cache. Decidere prima se serve un updater completo o basta il meccanismo di aggiornamento della piattaforma store.
 - [ ] **Verificare che la GPU venga usata correttamente** (no fallback software): confermare che questa build di Servo usi effettivamente l'accelerazione hardware per il rendering (WebGL/WebGPU) su una build reale di ciascuna piattaforma della matrice CI (Windows/macOS/Linux) — non ancora fatto. `../test-page/` ha già i pulsanti "Test PixiJS render"/"Test Three.js render" (con fps a schermo) e `GpuInfoPanel` (legge `WEBGL_debug_renderer_info`, mostra renderer/vendor GPU effettivo ed euristica "software renderer") pronti per questa verifica.
-- [ ] **Collegare `embedded.yml` al build patchato invece del binario Servo stock:** `../.github/workflows/embedded.yml` scarica oggi il binario `servoshell` ufficiale precompilato da `servo/servo` (vedi `SERVO_TAG`), non il fork patchato in questa cartella. Finché resta così, ogni release "embedded" mostra ancora la UI browser stock che le patch in `CUSTOMIZATIONS.md` rimuovono solo nel codice, non nel binario distribuito. Opzioni: pubblicare `servo/` come repo standalone e far scaricare a `embedded.yml` i suoi artifact di build, oppure integrare uno step di build-from-source direttamente dentro `embedded.yml`.
 
-### Ottimizzazione prestazioni — punto di partenza per la prossima sessione
+### Prestazioni CPU e librerie dei giochi
 
-Richiesta esplicita dell'utente (2026-09-22): valutare ottimizzazioni concrete, partendo dal
-presupposto che Rust/questo stack (rispetto a un motore C++ come Chromium) *dovrebbe* poter
-competere almeno sull'uso di memoria, anche se Chrome ha vent'anni di ottimizzazione in più sulla
-pipeline grafica. Nessun profiling reale è ancora stato fatto (nessun hardware/tool di profiling
-GPU/CPU disponibile in questa sessione) — punti da investigare quando sarà possibile:
+Baseline, limiti e ordine degli interventi sono in [ROVES_PERFORMANCE.md](./ROVES_PERFORMANCE.md).
+Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manchino strumenti.
 
-- [ ] Profilare con strumenti reali (non solo lettura del codice) dove va il tempo/la memoria in
-  un caso concreto (es. `visual-novel-template` con PixiJS), confrontando con lo stesso contenuto
-  in Chrome, per capire se il gap è nella pipeline di compositing di Servo (webrender/surfman),
-  nell'architettura offscreen-render-poi-blit di `headed_window.rs` (`rendering_context`/
-  `window_rendering_context`, vedi i loro doc comment), o altrove.
-- [ ] Verificare se Tracy/Perfetto (già integrati, vedi sotto) possono essere accesi su una build
-  reale per ottenere dati concreti invece di ipotesi.
-- [ ] Valutare se il fast path wgpu per WebView singola fullscreen (vedi sezione dedicata sotto)
-  è la stessa ottimizzazione che risolverebbe questo gap, o se è un problema distinto.
+- [ ] Ripetere il confronto visibile con Chrome su pagina production, stessa risoluzione,
+  warm-up e durata; raccogliere CPU per processo, memoria privata/residente, GPU e VRAM.
+- [ ] Validare la cache delle dimensioni WebGL su creazione, resize e canvas offscreen;
+  misurare il costo dei getter e della validazione del framebuffer prima/dopo.
+- [ ] Correlare gli scatti typewriter con GC e layout, prima di modificare il GC.
+- [ ] Completare Web Animations per motion riusando Stylo/WebRender: timing, riproduzione,
+  promise/eventi e campionamento; poi valutare compositing di transform/opacity.
+- [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
+- [ ] Valutare AudioWorklet sul grafo servo-media esistente: isolate V8 dedicato, moduli,
+  MessagePort e processori audio; nessun callback sul thread DOM per ogni blocco audio.
+- [ ] Verificare howler.js e Tone.js con playback reale, automazione, loop, sospensione,
+  ripresa e rilascio risorse; la sola presenza delle API non certifica compatibilità.
 
 ## Diagnostica prestazioni: Tracy e Perfetto
 
@@ -192,7 +191,6 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 ## Dipendenze, release e manutenzione
 
 - [ ] **GStreamer dal sito ufficiale:** da ottobre 2026 `gstreamer.freedesktop.org` tronca i download dopo circa 1 MiB e spesso risponde 503. Per questo le build Windows/macOS e `mach bootstrap` scaricano gli installer di GStreamer dalla copia verificata nella release `deps-gstreamer-<versione>` di questo repo (`.github/workflows/gstreamer-mirror.yml`, `support/gstreamer_mirror.py`, `python/servo/platform/{macos,windows}.py`), e usano il sito ufficiale solo come ripiego. Quando il sito ufficiale torna affidabile, rimettere il link ufficiale come fonte principale, oppure decidere di tenere la copia come cache; a ogni nuova versione di GStreamer, rilanciare il mirror con un tag `deps-gstreamer-<versione>`.
-- [ ] **Aggiornamenti mirati:** valutare mozjs nella serie attuale e runtime nativo GStreamer, poi prove coordinate egui/ANGLE/zstd/allocatore. Analisi separata nella [PR #9](https://github.com/DRincs-Productions/roves/pull/9); nessun bump è già stato applicato.
 - [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
 - [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il pin `roves-ref`/`TARGET_SHELL_VERSION`, va bumped a ogni release rilevante (vedi `AGENTS.md`).
 - [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.

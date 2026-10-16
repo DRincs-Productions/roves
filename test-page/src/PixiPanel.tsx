@@ -7,7 +7,7 @@ import { useEffect, useRef, useState } from "react";
  * (`@drincs/pixi-vn`, built on PixiJS) depends on — if this doesn't render or
  * throws, Servo's canvas/WebGL support is the first thing to suspect.
  */
-export default function PixiPanel({ animated = true }: { animated?: boolean }) {
+export default function PixiPanel({ animated = true, diagnostics = true }: { animated?: boolean; diagnostics?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Not started.");
   const [fps, setFps] = useState<number | null>(null);
@@ -18,6 +18,7 @@ export default function PixiPanel({ animated = true }: { animated?: boolean }) {
 
     let app: Application | undefined;
     let cancelled = false;
+    let initialized = false;
     let fpsInterval: number | undefined;
 
     (async () => {
@@ -29,7 +30,9 @@ export default function PixiPanel({ animated = true }: { animated?: boolean }) {
           background: "#111",
           antialias: true,
           autoStart: animated,
+          preference: "webgl",
         });
+        initialized = true;
         if (cancelled) {
           app.destroy(true);
           return;
@@ -58,20 +61,22 @@ export default function PixiPanel({ animated = true }: { animated?: boolean }) {
         // Rendering without throwing doesn't rule out a crawling software
         // fallback (see TODO.md's GPU-verification item) — surface the
         // actual frame rate too, not just "it worked".
-        if (animated) {
+        if (animated && diagnostics) {
           fpsInterval = window.setInterval(() => setFps(app?.ticker.FPS ?? null), 500);
         }
       } catch (error) {
-        setStatus(`FAILED — ${String(error)}`);
+        if (!cancelled) setStatus(`FAILED — ${String(error)}`);
       }
     })();
 
     return () => {
       cancelled = true;
       if (fpsInterval !== undefined) window.clearInterval(fpsInterval);
-      app?.destroy(true);
+      // init() installs the renderer and plugins asynchronously. Its continuation
+      // owns cleanup if React unmounts before initialization completes.
+      if (initialized) app?.destroy(true);
     };
-  }, [animated]);
+  }, [animated, diagnostics]);
 
   return (
     <div>

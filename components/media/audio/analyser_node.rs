@@ -7,6 +7,8 @@ use std::f32::consts::PI;
 use std::sync::{Arc, OnceLock};
 
 use malloc_size_of_derive::MallocSizeOf;
+use realfft::num_complex::Complex32;
+use realfft::{RealFftPlanner, RealToComplex};
 use servo_base::generic_channel::GenericCallback;
 
 use crate::audio_node::{
@@ -80,6 +82,12 @@ pub struct AnalysisEngine {
     /// The windowed time domain data
     /// Used during FFT computation
     windowed: Vec<f32>,
+    #[ignore_malloc_size_of = "Shared external FFT plan"]
+    fft: Arc<dyn RealToComplex<f32>>,
+    #[ignore_malloc_size_of = "External complex buffer"]
+    spectrum: Vec<Complex32>,
+    #[ignore_malloc_size_of = "External FFT scratch buffer"]
+    scratch: Vec<Complex32>,
 }
 
 impl AnalysisEngine {
@@ -94,6 +102,9 @@ impl AnalysisEngine {
         debug_assert!(fft_size & (fft_size - 1) == 0);
         debug_assert!((0. ..=1.).contains(&smoothing_constant));
         debug_assert!(max_decibels > min_decibels);
+        let fft = RealFftPlanner::new().plan_fft_forward(fft_size);
+        let spectrum = fft.make_output_vec();
+        let scratch = fft.make_scratch_vec();
         Self {
             fft_size,
             smoothing_constant,
@@ -106,6 +117,9 @@ impl AnalysisEngine {
             computed_fft_data: Vec::with_capacity(fft_size / 2),
             smoothed_fft_data: Vec::with_capacity(fft_size / 2),
             windowed: Vec::with_capacity(fft_size),
+            fft,
+            spectrum,
+            scratch,
         }
     }
 
@@ -113,7 +127,12 @@ impl AnalysisEngine {
         debug_assert!((32..=32768).contains(&fft_size));
         // must be a power of two
         debug_assert!(fft_size & (fft_size - 1) == 0);
-        self.fft_size = fft_size;
+        if self.fft_size != fft_size {
+            self.fft = RealFftPlanner::new().plan_fft_forward(fft_size);
+            self.spectrum = self.fft.make_output_vec();
+            self.scratch = self.fft.make_scratch_vec();
+            self.fft_size = fft_size;
+        }
         self.fft_computed = false;
     }
 
@@ -203,8 +222,8 @@ impl AnalysisEngine {
         self.blackman_windows.resize(self.fft_size, 0.);
         let coeff = PI * 2. / self.fft_size as f32;
         for n in 0..self.fft_size {
-            self.blackman_windows[n] = ALPHA_0 - ALPHA_1 * (coeff * n as f32).cos() +
-                ALPHA_2 * (2. * coeff * n as f32).cos();
+            self.blackman_windows[n] = ALPHA_0 - ALPHA_1 * (coeff * n as f32).cos()
+                + ALPHA_2 * (2. * coeff * n as f32).cos();
         }
     }
 
@@ -228,19 +247,14 @@ impl AnalysisEngine {
         self.computed_fft_data.resize(self.fft_size / 2, 0.);
         self.smoothed_fft_data.resize(self.fft_size / 2, 0.);
 
+        self.fft
+            .process_with_scratch(&mut self.windowed, &mut self.spectrum, &mut self.scratch)
+            .expect("FFT buffers must match the configured fftSize");
         for k in 0..(self.fft_size / 2) {
-            let mut sum_real = 0.;
-            let mut sum_imaginary = 0.;
-            let factor = -2. * PI * k as f32 / self.fft_size as f32;
-            for n in 0..(self.fft_size) {
-                sum_real += self.windowed[n] * (factor * n as f32).cos();
-                sum_imaginary += self.windowed[n] * (factor * n as f32).sin();
-            }
-            let sum_real = sum_real / self.fft_size as f32;
-            let sum_imaginary = sum_imaginary / self.fft_size as f32;
-            let magnitude = (sum_real * sum_real + sum_imaginary * sum_imaginary).sqrt();
-            self.smoothed_fft_data[k] = (self.smoothing_constant * self.smoothed_fft_data[k] as f64 +
-                (1. - self.smoothing_constant) * magnitude as f64)
+            // Web Audio scales the forward transform by 1/N and omits Nyquist.
+            let magnitude = self.spectrum[k].norm() / self.fft_size as f32;
+            self.smoothed_fft_data[k] = (self.smoothing_constant * self.smoothed_fft_data[k] as f64
+                + (1. - self.smoothing_constant) * magnitude as f64)
                 as f32;
             self.computed_fft_data[k] = 20. * self.smoothed_fft_data[k].log(10.);
         }
@@ -289,5 +303,67 @@ fn clamp_255(val: f32) -> u8 {
         0
     } else {
         val as u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fft_matches_direct_transform_and_preserves_smoothing_and_cache() {
+        let mut engine = AnalysisEngine::new(32, 0.0, -100.0, -30.0);
+        // Exercise both directions of resizing, and the largest permitted FFT.
+        for size in [32, 128, 64, MAX_FFT_SIZE] {
+            engine.set_fft_size(size);
+            engine.set_smoothing_constant(0.0);
+            for (i, value) in engine.data.iter_mut().enumerate() {
+                *value = ((i * 73 % 257) as f32 - 128.0) / 128.0;
+            }
+            engine.apply_blackman_window();
+            let input = engine.windowed.clone();
+            let mut output = vec![0.0; size / 2];
+            engine.fill_frequency_data(&mut output);
+            // Compare representative bins against an independent f64 DFT.
+            for k in [0, 1, size / 8, size / 2 - 1] {
+                let mut re = 0.0;
+                let mut im = 0.0;
+                for (n, &sample) in input.iter().enumerate() {
+                    let angle = -2.0 * std::f64::consts::PI * k as f64 * n as f64 / size as f64;
+                    re += sample as f64 * angle.cos();
+                    im += sample as f64 * angle.sin();
+                }
+                let expected = re.hypot(im) / size as f64;
+                let actual = 10.0_f64.powf(output[k] as f64 / 20.0);
+                assert!(
+                    (actual - expected).abs() < 2e-6,
+                    "size={size}, bin={k}: {actual} vs {expected}"
+                );
+            }
+            let previous = engine.smoothed_fft_data.clone();
+            let cached = output.clone();
+            engine.fill_frequency_data(&mut output);
+            assert_eq!(output, cached);
+            // The next window is silence. Smoothing must use the prior magnitudes.
+            engine.data.fill(0.0);
+            engine.set_smoothing_constant(0.5);
+            engine.fill_frequency_data(&mut output);
+            for (actual, prior) in engine.smoothed_fft_data.iter().zip(previous) {
+                assert_eq!(*actual, prior * 0.5);
+            }
+        }
+    }
+
+    #[test]
+    fn fft_silence_and_frequency_output_length() {
+        let mut engine = AnalysisEngine::new(32, 0.0, -100.0, -30.0);
+        let mut floats = [123.0; 20];
+        engine.fill_frequency_data(&mut floats);
+        assert!(floats[..16].iter().all(|&v| v == f32::NEG_INFINITY));
+        assert_eq!(&floats[16..], &[123.0; 4]);
+        let mut bytes = [123; 20];
+        engine.fill_byte_frequency_data(&mut bytes);
+        assert_eq!(&bytes[..16], &[0; 16]);
+        assert_eq!(&bytes[16..], &[123; 4]);
     }
 }

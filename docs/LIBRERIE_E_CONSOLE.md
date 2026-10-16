@@ -4,18 +4,7 @@ Obiettivo a lungo termine: Roves come assemblaggio di librerie mantenute da altr
 codice necessario a farle lavorare insieme. Questo documento elenca cosa si può togliere o
 sostituire, in ordine di rapporto guadagno/rischio.
 
-## Fatto
-
-- Presentazione diretta predefinita (v0.7.4): niente egui per frame quando il gioco riempie la
-  finestra.
-- Codice morto di servoshell: toolbar e schede del browser, stato mai letto (−251 righe).
-- WebXR tolto dalla shell (v0.7.5).
-- GPU dedicata sui portatili Windows ibridi: export `NvOptimusEnablement` e
-  `AmdPowerXpressRequestHighPerformance` (v0.7.5).
-- WebDriver tolto del tutto: server, opzione `--webdriver`, comandi in constellation e script
-  (circa −9,5k righe; patch 0222).
-- Tastiera: il campo DOM `code` viene dalla tabella USB HID di Chromium (crate `keycode`) invece
-  di una mappatura scritta a mano (patch 0223).
+Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
 
 ## Prossimi passi, codice e librerie
 
@@ -23,7 +12,6 @@ sostituire, in ordine di rapporto guadagno/rischio.
 | --- | --- | --- |
 | Shader WebRender | Ricompilati a ogni avvio | Cache su disco dei program binary (`ProgramCache` di WebRender con un observer): meno tempo al primo frame e meno scatti |
 | WebGPU | Attivo per default (wgpu + naga, binario e thread in più) | Tenerlo: serve ai giochi. Valutare l'avvio pigro del thread |
-| devtools | Sempre compilato | Metterlo dietro una feature cargo: meno codice nel binario dei giochi |
 | `mach bundle` (`post_build_commands.py`, ~1,7k righe nostre) | Packaging scritto a mano | Valutare `cargo-packager` per msi/dmg/deb; tenere solo la logica Roves (contenuti, icone, Steam) |
 | Tastiera e gamepad | `code` dal crate `keycode`; `key` e gamepad mappati a mano | Restano come glue: usare il più possibile i tipi del crate `sdl3` |
 | roves-js (~22k righe) | Emula l'API mozjs sopra V8 | Ridurlo spostando il codegen dei binding verso il crate `v8` diretto (ArrayBuffer, ValueSerializer per structured clone), togliendo l'emulazione jsapi pezzo per pezzo |

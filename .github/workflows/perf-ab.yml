@@ -148,6 +148,13 @@ jobs:
           CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
         run: ./mach build --release ${{ matrix.build_features }}
 
+      - name: verify Web Audio spectrum against a direct transform
+        shell: bash
+        timeout-minutes: 10
+        env:
+          CARGO_PROFILE_RELEASE_DEBUG: line-tables-only
+        run: cargo test --release -p servo-media-audio --lib
+
       - name: assemble bundle
         shell: bash
         run: ./mach bundle --release --content-dir test-page/dist --output release --diagnostic-script

@@ -200,6 +200,9 @@ pub(crate) struct WebGLRenderingContext {
     current_clear_color: Cell<(f32, f32, f32, f32)>,
     #[no_trace]
     size: Cell<Size2D<u32>>,
+    // Actual backend dimensions, which may differ from the requested canvas size.
+    #[no_trace]
+    drawing_buffer_size: Cell<Option<Size2D<i32>>>,
     extension_manager: WebGLExtensions,
     capabilities: Capabilities,
     default_vao: DomOnceCell<WebGLVertexArrayObjectOES>,
@@ -268,6 +271,7 @@ impl WebGLRenderingContext {
                 // FIXME(#21718) The backend is allowed to choose a size smaller than
                 // what was requested
                 size: Cell::new(size),
+                drawing_buffer_size: Cell::new(None),
                 current_clear_color: Cell::new((0.0, 0.0, 0.0, 0.0)),
                 extension_manager: WebGLExtensions::new(
                     webgl_version,
@@ -594,6 +598,24 @@ impl WebGLRenderingContext {
             // The window system framebuffer is bound
             None => Some((self.DrawingBufferWidth(), self.DrawingBufferHeight())),
         }
+    }
+
+    fn drawing_buffer_size(&self) -> Size2D<i32> {
+        if let Some(size) = self.drawing_buffer_size.get() {
+            return size;
+        }
+        // Ask the backend once per allocation rather than synchronizing the script
+        // and WebGL threads on every dimension read (including draw validation).
+        let (width_sender, width_receiver) = webgl_channel().unwrap();
+        let (height_sender, height_receiver) = webgl_channel().unwrap();
+        self.send_command(WebGLCommand::DrawingBufferWidth(width_sender));
+        self.send_command(WebGLCommand::DrawingBufferHeight(height_sender));
+        let size = Size2D::new(
+            width_receiver.recv().unwrap(),
+            height_receiver.recv().unwrap(),
+        );
+        self.drawing_buffer_size.set(Some(size));
+        size
     }
 
     pub(crate) fn get_texture_packing_alignment(&self) -> u8 {
@@ -2040,6 +2062,7 @@ impl CanvasContext for WebGLRenderingContext {
     }
 
     fn resize(&self) {
+        self.drawing_buffer_size.set(None);
         let size = self.size().cast();
         let (sender, receiver) = webgl_channel().unwrap();
         self.droppable
@@ -2184,16 +2207,12 @@ impl WebGLRenderingContextMethods<crate::DomTypeHolder> for WebGLRenderingContex
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.1>
     fn DrawingBufferWidth(&self) -> i32 {
-        let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::DrawingBufferWidth(sender));
-        receiver.recv().unwrap()
+        self.drawing_buffer_size().width
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.1>
     fn DrawingBufferHeight(&self) -> i32 {
-        let (sender, receiver) = webgl_channel().unwrap();
-        self.send_command(WebGLCommand::DrawingBufferHeight(sender));
-        receiver.recv().unwrap()
+        self.drawing_buffer_size().height
     }
 
     /// <https://www.khronos.org/registry/webgl/specs/latest/1.0/#5.14.5>

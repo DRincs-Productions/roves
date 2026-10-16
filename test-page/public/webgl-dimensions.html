@@ -1,0 +1,38 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebGL dimensions regression</title>
+<style>body { background: #111; color: #eee; font: 20px monospace; white-space: pre-wrap; }</style>
+<body>Running WebGL dimensions regression...
+<script>
+try {
+  for (const kind of ["webgl", "webgl2"]) {
+    const canvases = [document.createElement("canvas")];
+    if (typeof OffscreenCanvas === "function") canvases.push(new OffscreenCanvas(17, 19));
+    for (const c of canvases) {
+      c.width = 17; c.height = 19;
+      const gl = c.getContext(kind);
+      if (!gl) throw new Error(kind + " unavailable");
+      for (const [width, height] of [[17, 19], [23, 29], [11, 7], [17, 19]]) {
+        c.width = width; c.height = height;
+        for (let i = 0; i < 4; i++) {
+          if (gl.drawingBufferHeight !== height || gl.drawingBufferWidth !== width)
+            throw new Error(kind + " stale dimensions after resize");
+        }
+        gl.clearColor(0, 1, 0, 1);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        const pixel = new Uint8Array(4);
+        gl.readPixels(width - 1, height - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
+        if (pixel[1] !== 255 || gl.getError() !== gl.NO_ERROR)
+          throw new Error(kind + " invalid resized framebuffer");
+      }
+    }
+  }
+  document.body.textContent = "PASS WebGL 1/2 dimensions, resize and pixel readback";
+  document.body.style.color = "#5f5";
+  console.log("WEBGL-DIMENSIONS PASS");
+} catch (error) {
+  document.body.textContent = "FAIL " + error.stack;
+  document.body.style.color = "#f55";
+  console.log("WEBGL-DIMENSIONS FAIL " + error.stack);
+}
+</script>

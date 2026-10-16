@@ -1,3 +1,43 @@
+## 2026-10-16 - Cache actual WebGL dimensions and repair comparison fixtures
+
+**Files:** `components/script/dom/webgl/webglrenderingcontext.rs`,
+`test-page/public/webgl-dimensions.html`, `test-page/src/{PixiPanel,PerformanceFixture}.tsx`,
+`README.md`, `ROVES_PERFORMANCE.md`, `TODO.md`, and the dependency/rendering/library plans.
+**Patch:** `0226-webgl-dimensions-and-performance-audit.patch` (incremental after 0225).
+
+Cache actual backend drawing-buffer dimensions until canvas resize. Previously every getter,
+including default-framebuffer validation, created a channel and waited for the WebGL thread.
+The first read queries both actual dimensions; never substitute the requested canvas size.
+Invalidate before resize, including failed resize attempts. Add smoke coverage for repeated
+reads, resize and pixel readback in WebGL 1 and 2 (HTMLCanvas and OffscreenCanvas).
+Runtime and CPU validation remain pending; no speedup claim.
+
+Wait for Pixi initialization before destruction when React unmounts, explicitly select WebGL,
+and disable FPS polling in isolated fixtures. Refresh performance plans, remove obsolete
+completed dependency/migration proposals, and distinguish codec detection from real playback.
+TypeScript checking, Rust formatting and patch applicability are the local checks; no engine
+build was run. The wiki describes the change as development-only until released and measured.
+
+## 2026-10-16 - Delegate Web Audio frequency analysis to RealFFT
+
+**Files:** root/audio Cargo manifests and lockfile, `components/media/audio/analyser_node.rs`,
+`.github/workflows/perf-ab.yml`, performance/dependency notes, README and wiki.
+**Patch:** `0227-webaudio-realfft.patch` after 0226 (runtime files only).
+
+Replace the hand-written quadratic direct Fourier transform with RealFFT 3.5 / RustFFT.
+Keep Web Audio's Blackman window, forward 1/N normalization, N/2 output bins, smoothing,
+decibel conversion, byte output and per-window cache. Reuse the plan, output and scratch
+buffers between analyses; recreate them only when fftSize changes. This affects frequency
+analysis through AnalyserNode, not all Tone.js functions and not typewriter-only workloads.
+
+Numerical tests compare representative bins against an independent f64 direct transform,
+including fftSize changes and 32768 samples, plus silence, smoothing, repeated reads and
+output truncation. The existing Windows perf workflow runs audio unit tests after the release
+build. No build/bundle flag or downstream version pin changes; roves-action's invocation
+remains compatible. web-audio-api-rs supplies native Rust worklets but does not by itself
+implement Servo's JavaScript AudioWorklet; document that candidate rather than add an unused
+second audio graph to the shipped binary.
+
 ## 2026-10-04 - V8 migration Phase 3/4: DomObject exposes native identity (CP37 complete)
 
 **Servo files:** `components/script_bindings/reflector.rs`, `components/dom_struct/domobject.rs`,

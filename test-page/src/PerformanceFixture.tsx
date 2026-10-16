@@ -53,7 +53,7 @@ export default function PerformanceFixture({ mode }: { mode: PerformanceFixtureM
         fontFamily: "sans-serif",
       }}
     >
-      {mode === "blank" ? null : <PixiPanel animated={mode === "pixi-animated"} />}
+      {mode === "blank" ? null : <PixiPanel animated={mode === "pixi-animated"} diagnostics={false} />}
     </main>
   );
 }

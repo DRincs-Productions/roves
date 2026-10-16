@@ -403,6 +403,12 @@ polling, FPS probes, Steam checks and other page-level timers that would contami
 measurement. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 
+The current development tree caches actual WebGL drawing-buffer dimensions between resizes
+to avoid repeated synchronous thread queries. Its performance impact still needs measurement.
+Pixi comparison fixtures explicitly select WebGL and disable their FPS polling timer.
+The development tree also delegates Web Audio frequency analysis to RealFFT/RustFFT,
+replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.
+
 An experimental `./mach build --features mimalloc` swaps the global allocator for mimalloc (default:
 system allocator on Windows, jemalloc elsewhere) for allocator A/B measurements. The `perf-ab.yml`
 workflow publishes Windows release builds of both to the `perf-ab` pre-release.

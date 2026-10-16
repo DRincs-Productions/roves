@@ -115,8 +115,8 @@ fallback, non impone soglie temporali sui runner condivisi.
 1. Estendere i contatori per distinguere frame diretti e composti. **Completato.**
 2. Estrarre una decisione pura per il fast path con test unitari. **Completato.**
 3. Implementare il fast path A dietro `ROVES_DIRECT_PRESENT=1` per misure A/B. **Completato.**
-4. Misurare se il painter egui incide materialmente su CPU/GPU frame time. Strumentazione pronta
-   (`[roves-perf-time]`); mancano le misure su hardware reale.
+4. Misurazione A completata: CPU da 98,6% a 91,1% di un core al menu (v0.7.4).
+   Le attese in present sono tempi wall-clock, non consumo CPU puro.
 5. Solo con un risultato positivo, prototipare il contesto a presentazione differita del fast
    path B.
 6. Rendere predefinito un percorso soltanto dopo smoke test completi e misure su hardware reale.

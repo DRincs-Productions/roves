@@ -132,9 +132,9 @@ ripetute 3 volte, le operazioni DOM costano dal 13% al 27% in meno (`createEleme
 meno tempo (patch 0213), ma il grosso del costo resta nel codice DOM di Servo: serve un profilo
 con i simboli.
 
-Il JavaScript puro è in linea con Chrome. Il collo di bottiglia è la creazione del wrapper JS
-di ogni nodo DOM in roves-js (circa 7 µs a oggetto) e, in misura minore, il costo di ogni
-chiamata ai setter.
+Il JavaScript puro è in linea con Chrome. Il microbenchmark evidenziava il costo dei wrapper
+DOM (circa 7 µs a oggetto) e dei setter; il profilo successivo del typewriter non li identifica
+come costo dominante. Non generalizzare il risultato del microbenchmark alla scena completa.
 
 ## Profilo del thread di script (15 ottobre 2026)
 
@@ -203,8 +203,8 @@ test le misurano.
   debole.
 - **Latenza audio:** buffer di uscita portato da 200 a 40 ms (v0.7.8). Da verificare a orecchio
   aprendo le impostazioni del gioco.
-- **Formati audio:** `canPlayType` risponde vuoto per AAC, M4A e WebM. Probabilmente mancano
-  plugin GStreamer nel pacchetto.
+- **Playback audio:** il rilevamento dei codec è stato corretto in v0.7.8. Resta da verificare
+  il playback dei file reali con i plugin inclusi nel bundle.
 - **Gamepad:** sostituire il polling hot-plug residuo (1 Hz) con gli eventi SDL.
 - **Steam:** rendere adattivo il polling delle callback nelle build `steam`.
 
@@ -217,3 +217,41 @@ Fatto il 13 ottobre (v0.7.7):
 - cache HTTP su disco: al secondo avvio nessuna richiesta di rete per l'audio remoto.
 
 Interventi già fatti e relative misure: `CUSTOMIZATIONS.md`.
+
+## Audit CPU e compatibilità del 16 ottobre 2026
+
+I campioni preliminari CPU (Roves 115% di un core, Chrome 97%) e memoria privata
+(651/352 MB) non costituiscono una baseline convalidata: mancavano conferma visiva e GPU
+per processo. Non usarli come prova di regressione né come obiettivo già raggiunto.
+
+Il codice WebGL sincronizzava ogni lettura di drawingBufferWidth/Height con il thread
+WebGL; anche la validazione del framebuffer predefinito usa questi getter. La nuova cache
+legge le dimensioni effettive del backend una volta per allocazione e si invalida al resize.
+Non usa le dimensioni richieste dal canvas, che possono differire da quelle allocate.
+La modifica è implementata, ma il guadagno e la verifica runtime sono ancora da misurare.
+
+La fixture Pixi ora attende init prima di distruggere l'applicazione, evitando cleanup
+prematuro in StrictMode, forza WebGL e omette il timer FPS nelle fixture prestazionali.
+Questo corregge due fonti di errore nel confronto; non dimostra la causa di ogni pagina bianca.
+
+Web Animations non è un semplice flag: Element.animate non avvia l'animazione, Animation
+non implementa playback e KeyframeEffect ignora le opzioni del costruttore. Riutilizzare
+Stylo per interpolazione e WebRender per compositing è la direzione; servono anche timing,
+promise/eventi, cancellazione e gestione delle proprietà non compositabili. Rimane disattivato.
+
+AudioWorkletNode e AudioWorkletGlobalScope non sono implementati. Tone.js va verificato per
+funzione, distinguendo i nodi Web Audio presenti dai processori worklet assenti. Il lavoro
+richiede integrazione col grafo servo-media e V8 audio dedicato; nessuna equivalenza con Chrome
+è dimostrata dalla sola riuscita del caricamento della libreria.
+
+Ordine operativo: confronto production valido; verifica cache WebGL; correlazione GC/layout;
+WAAPI motion; traffico Pixi/three e presentazione B solo secondo i profili; AudioWorklet.
+
+### Libreria integrata: RealFFT
+
+L'analisi di frequenza Web Audio usava una DFT manuale O(N²), con trigonometria per ogni
+coppia campione/bin. Il ramo di sviluppo usa RealFFT 3.5 / RustFFT, O(N log N), conservando
+finestra Blackman, scala 1/N e smoothing. Piano e buffer sono riusati tra letture.
+Questo beneficia AnalyserNode e le funzioni delle librerie audio che lo usano; non costituisce
+un miglioramento misurato della scena typewriter o di tutto Tone.js. Conformità numerica e
+impatto runtime vanno verificati sulla build CI prima di pubblicare risultati prestazionali.
