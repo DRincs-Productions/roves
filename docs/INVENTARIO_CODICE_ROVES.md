@@ -1,0 +1,112 @@
+# Inventario del codice specifico di Roves
+
+Ricognizione informativa aggiornata al 16 ottobre 2026. Descrive le aree implementate o
+modificate direttamente da Roves, le librerie già coinvolte e i punti in cui una libreria
+esterna potrebbe assorbire altro codice.
+
+## Come leggere le stime
+
+Le righe indicate sono stime, non misure di codice eseguibile o di peso nel binario.
+
+- Per i crate Roves isolati sono contate le righe dei sorgenti presenti, inclusi test,
+  dichiarazioni generate e script di build quando specificato.
+- Per i file Servo modificati, il numero di righe del file completo non rappresenta il
+  contributo Roves. In quei casi si riportano, quando utili, le aggiunte e rimozioni viste
+  nelle patch `patches/servo-v0.5.0/`.
+- Le aggiunte e le rimozioni nelle patch possono includere riscritture e successive modifiche
+  allo stesso file. Non sono quindi conteggi di codice attuale e non vanno sommati alle righe
+  correnti.
+- Le stime di gruppi diversi possono sovrapporsi. Le righe di test sono indicate quando
+  incidono materialmente sul totale.
+
+La distinzione centrale è tra **comportamento del motore Servo**, che Roves in gran parte
+riusa, e **adattamenti o funzioni di prodotto** aggiunti per distribuire giochi come
+applicazioni. DOM, CSS, layout, rete, WebGL e WebGPU sono in prevalenza codice Servo e
+dipendenze del workspace, non implementazioni Roves da rimpiazzare una per una.
+
+## Aree di codice e opportunità di delega
+
+| Area | Dimensione indicativa | Implementazione specifica di Roves | Librerie già usate e possibile ulteriore delega |
+| --- | ---: | --- | --- |
+| Adapter mozjs sopra V8, [`components/roves-js`](../components/roves-js) | Circa **21.300 righe** di sorgente, inclusi test e tipi compatibili con mozjs. | Presenta a Servo l'API JavaScript che si aspettava da mozjs, realizzandone le operazioni su V8: valori, oggetti, GC, moduli, proxy, conversioni e callback. | Usa V8 tramite il crate `v8` (`rusty_v8`) e `roves-v8`. Non è un wrapper generico sostituibile con poche righe: gran parte del costo deriva dal mantenere compatibile la superficie API richiesta da Servo. La riduzione più sostanziale richiederebbe spostare parti di Servo verso API V8 dirette. |
+| Runtime V8, [`components/roves-v8`](../components/roves-v8) | Circa **11.400 righe** correnti, inclusi test e build script; il file principale contiene circa 10.800 righe. | Collega l'isolate V8 al modello Servo e implementa i meccanismi WebIDL necessari agli oggetti nativi esposti a JavaScript. | Il motore è la libreria V8; il codice proprio è l'integrazione. Il `Cargo.toml` contiene una descrizione obsoleta che dice che il crate non è collegato alla produzione: il workspace usa `roves-js`, che dipende da `roves-v8`. |
+| Generazione dei binding V8, `components/script_bindings/codegen` | Le patch aggiungono circa **2.700 righe** al generatore e circa **1.400** ai test V8. | Estende il generatore WebIDL di Servo per sperimentare la generazione V8 e misurarne la copertura. | Riusa il generatore Servo, evitando di riscrivere i binding. La parte specifica per V8 è un percorso pilota: la copertura del generatore non equivale a una sostituzione completa dei binding di produzione. |
+| Shell desktop e input, [`ports/servoshell/desktop`](../ports/servoshell/desktop) | Circa **14.400 righe Rust** nell'intera directory, che comprende sia Servo sia Roves. Le patch mostrano circa **18.400 aggiunte e 15.200 rimozioni** nella shell, con riscritture incluse. | Collega finestra, event loop, tastiera, gamepad, touch, IME, cursori, DPI, minimizzazione e rendering ai contratti del motore. | SDL3 fornisce finestra ed eventi; egui, AccessKit e altre crate forniscono componenti UI/accessibilità. Rimane glue per tradurre gli eventi SDL nel modello di Servo e per comporre la UI. Il totale di directory non è una stima del solo codice Roves. |
+| Gamepad, `desktop/gamepad.rs` | Circa **770 righe** nel file attuale; patch con circa 330 aggiunte e 190 rimozioni. | Traduce lo stato e gli eventi dei controller SDL in eventi gamepad della pagina. | SDL3 fornisce accesso al dispositivo; conversioni e integrazione con Servo restano locali. |
+| Tastiera, `desktop/keyutils.rs` | Circa **270 righe** correnti. Il file ha avuto molto churn nelle patch, perciò le aggiunte storiche non equivalgono al codice attuale. | Traduce gli eventi SDL in `key`, `code`, modificatori ed eventi DOM. | Il campo DOM `code` usa la tabella USB HID del crate `keycode`; mapping di `key` e glue eventi restano in parte locali. |
+| Protocolli nativi per il gioco, `ports/servoshell/{desktop/,}protocols/` | Circa **1.300 righe** complessive nei gestori `roves:`, `saves:`, `steam:`, `game:`, `file:` e nel supporto ai contenuti impacchettati. | Espone alla pagina comandi dell'app, salvataggi su disco e sincronizzazione Steam Cloud, achievement e un'origine virtuale per i file del gioco. | Riusa il `ProtocolHandler` di Servo. `steamworks` copre l'API Steam; i comandi e la semantica Roves di salvataggi e controllo app sono propri. Un framework di bridge potrebbe standardizzare il trasporto, ma non definirebbe automaticamente quelle API. |
+| Creazione ed estrazione degli archivi, [`support/content-packer`](../support/content-packer) | Circa **1.300 righe**, test inclusi. | Seleziona i file di avvio, suddivide il resto in archivi, crea il manifest e implementa estrazione e cache dei contenuti lazy. | Usa `tar`, `zstd`, `walkdir`, `serde` e `sha2`: compressione e operazioni di base sono delegate. La politica di suddivisione e caricamento è specifica. Un packager di applicazioni potrebbe coprire gli installer, ma non necessariamente questo formato e l'estrazione su richiesta. |
+| Packaging con `mach bundle`, `python/servo/post_build_commands.py` | Circa **2.000 righe** nel file corrente; le patch aggiungono circa 1.700 righe e ne rimuovono alcune decine. | Compone bundle, contenuti, icone, librerie native e integrazioni Steam. | `cargo-packager` è un candidato già individuato per MSI, DMG e DEB. Andrebbero verificati supporto ai bundle portabili e compatibilità con la logica Roves per contenuti e Steam. |
+| Cache HTTP su disco, [`components/net/http_disk_cache.rs`](../components/net/http_disk_cache.rs) | Circa **170 righe** nel modulo dedicato, oltre a modifiche d'integrazione e test. | Collega la cache HTTP di Servo a una cache persistente. | `http-cache-semantics` fornisce le regole HTTP e `cacache` l'archiviazione su disco. È un esempio in cui la logica è già divisa tra librerie e glue d'integrazione. |
+| Cache shader WebRender, [`components/paint/shader_cache.rs`](../components/paint/shader_cache.rs) | Circa **210 righe**. | Salva e ricarica i program binary per ridurre compilazione e scatti all'avvio. | Si appoggia a `ProgramCache` e `ProgramCacheObserver` di WebRender e a `postcard` per la serializzazione. La persistenza e la policy della cache sono glue locale; il renderer è WebRender. |
+| UI shell, `desktop/gui.rs` e `desktop/dialog.rs` | I file contengono codice condiviso e non consentono di attribuire tutto il totale a Roves. | Include splash, UI minimale, schermate d'errore e dialoghi per operazioni native, come il salvataggio di un file. | egui e `egui-file-dialog` coprono widget e selettore. La UI e i flussi Roves restano specifici. Dialoghi nativi SDL e splash disegnata direttamente sono possibili direzioni per ridurre egui, con impatto su accessibilità e comportamento multipiattaforma. |
+| Marker di embed, `desktop/app.rs` | Piccola aggiunta. | Inietta `window.__ROVES__` affinché la pagina possa rilevare il runtime. | Usa l'iniezione di script già disponibile; una libreria aggiuntiva non sembra necessaria per questo compito. |
+| Wrapper Android/iOS, [`support/android`](../support/android) e [`support/ios`](../support/ios) | Circa **600 righe** tra Kotlin/helper Android conteggiati e circa **500 righe** Swift e packaging iOS. | Avvia la WebView, instrada input e lifecycle e integra bundle e splash. | Il rendering è delegato alle WebView del sistema: Android WebView e WKWebView. Il codice Roves è principalmente glue di piattaforma. |
+| Allocator, [`components/allocator`](../components/allocator) | Componente di alcune centinaia di righe, comprendente logica condivisa e modalità di configurazione. | Seleziona e configura l'allocator; Windows usa `mimalloc` come default secondo le misure del progetto. | L'allocator stesso è una libreria esterna. L'ulteriore scelta riguarda quale allocator usare per piattaforma e come verificare le prestazioni, non la riscrittura dell'allocator. |
+
+## Altre modifiche dirette a Servo
+
+Sono modifiche più piccole o distribuite, ma fanno parte del lavoro specifico di Roves:
+
+- **`ResizeObserver`:** ottimizzazione per effettuare un flush del layout per raccolta, invece
+  che uno per ogni elemento osservato. È un intervento puntuale sul codice Servo, non una feature
+  da sostituire con un crate esterno.
+- **Presentazione e avvio:** fast path di presentazione, splash durante caricamento ed
+  estrazione, cache shader e gestione della visibilità quando la finestra è minimizzata o
+  coperta. Gli interventi sono distribuiti tra shell, paint e rendering.
+- **Media:** configurazione GStreamer, rilevamento dei codec e latenza Web Audio. GStreamer è
+  esterno; Roves mantiene configurazione, distribuzione e adattamenti di comportamento.
+- **Branding e piattaforme:** titolo e identità dell'app, icone e segnalazione a Windows della
+  preferenza per la GPU dedicata. Sono modifiche specifiche di piattaforma, non sottosistemi
+  generici.
+- **Diagnostica e misure:** smoke suite V8, verifiche SDL, benchmark, opzioni d'ambiente per
+  diagnostica e workflow CI. Aiutano sviluppo e distribuzione, ma non sono feature runtime che
+  una libreria debba necessariamente sostituire.
+- **Preferenze web platform:** alcune preferenze Servo vengono rese attive per impostazione
+  predefinita quando utili ai giochi. È configurazione di capability, non un motore Roves
+  separato.
+
+## Funzionalità già rimosse
+
+Queste aree non fanno parte del codice runtime attuale; sono esempi di funzionalità eliminate
+per ridurre la shell o i costi di manutenzione:
+
+- **Devtools:** il commit più recente rimuove server, debugger, produttori di messaggi console
+  e opzione `--devtools`; il messaggio del commit stima circa **18.000 righe eliminate**.
+- **WebDriver:** rimossi server, opzione e comandi associati; stima del commit circa
+  **9.500 righe eliminate**.
+- **WebXR:** rimosso dopo che la shell aveva smesso di esporre la feature.
+- **OpenHarmony:** rimosso il port e i crate associati.
+- **Tooling `mach` inutilizzato:** rimossi i comandi che richiedevano la copia locale dei test
+  WPT e tooling non necessario per build, bundle e test-unit mantenuti.
+
+Queste rimozioni mostrano che in alcuni casi il risparmio maggiore viene dall'eliminare una
+feature non necessaria, non dal sostituirla con una dipendenza.
+
+## Direzioni da valutare
+
+1. **Installer desktop:** confrontare `cargo-packager` con i formati MSI/DMG/DEB e identificare
+   quale logica Roves per portabilità, contenuti, icone e Steam resterebbe.
+2. **UI shell:** misurare la parte di egui effettivamente usata e distinguere splash e dialoghi
+   dal codice di UI residuo da browser; poi valutare API native SDL e costi di accessibilità.
+3. **Packer:** confrontare il formato e la logica lazy con strumenti esistenti. Tar e zstd sono
+   già delegati, quindi il punto è la policy di boot set, suddivisione, manifest ed estrazione.
+4. **Input SDL3:** cercare conversioni manuali sostituibili da tipi o crate dedicati. `keycode`
+   copre già il mapping DOM `code`; il mapping degli eventi verso Servo resta il confine da
+   analizzare.
+5. **Adapter V8:** è il maggiore blocco di codice Roves, ma una riduzione sostanziale dipende
+   dall'evoluzione del confine tra Servo e motore JavaScript, non da una sostituzione locale.
+
+La shell SDL3 è l'area con la stima meno isolabile: i sorgenti sono stati riscritti insieme al
+codice Servo upstream. Il numero totale delle righe e il churn delle patch non sono quindi il
+conteggio del solo codice Roves.
+
+## Riferimenti
+
+- [`docs/LIBRERIE_E_CONSOLE.md`](LIBRERIE_E_CONSOLE.md): piano sintetico delle librerie,
+  rendering e console.
+- [`docs/AUDIT_MIGRAZIONE_LIBRERIE.md`](AUDIT_MIGRAZIONE_LIBRERIE.md): audit delle dipendenze
+  e dei consumatori nel grafo Cargo.
+- [`docs/V8_MIGRATION.md`](V8_MIGRATION.md): stato e architettura della migrazione V8.
+- [`CUSTOMIZATIONS.md`](../CUSTOMIZATIONS.md): cronologia delle modifiche rispetto a Servo
+  upstream.

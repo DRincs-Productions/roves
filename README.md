@@ -36,6 +36,10 @@ JavaScript debugging is not available on V8 yet. The migration plan and its stat
 explains what the engine means for your game. Shared agent instructions live in
 [AGENTS.md](./AGENTS.md).
 
+For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
+maps the Roves-specific code areas, their approximate size, existing library dependencies and
+possible opportunities to delegate more work to external libraries.
+
 [CUSTOMIZATIONS.md]: ./CUSTOMIZATIONS.md
 
 ## Naming: "Roves" vs. "Servo" vs. `servoshell`

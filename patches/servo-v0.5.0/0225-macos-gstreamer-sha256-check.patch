@@ -1,0 +1,71 @@
+diff --git a/python/servo/platform/macos.py b/python/servo/platform/macos.py
+index 1e793160832..cb05d4a5019 100644
+--- a/python/servo/platform/macos.py
++++ b/python/servo/platform/macos.py
+@@ -7,6 +7,7 @@
+ # option. This file may not be copied, modified, or distributed
+ # except according to those terms.
+ 
++import hashlib
+ import os
+ import subprocess
+ import tempfile
+@@ -26,6 +27,14 @@ GSTREAMER_URL = f"{URL_BASE}/{GSTREAMER_FILENAME}"
+ GSTREAMER_DEVEL_FILENAME = f"gstreamer-1.0-devel-{GSTREAMER_PLUGIN_VERSION}-universal.pkg"
+ GSTREAMER_DEVEL_URL = f"{URL_BASE}/{GSTREAMER_DEVEL_FILENAME}"
+ GSTREAMER_ROOT = "/Library/Frameworks/GStreamer.framework/Versions/1.0"
++# SHA-256 of the unmodified installers published by the GStreamer project (their `.sha256sum`
++# files), checked after every download, whichever server it came from. The `.pkg` files are not
++# signed in a way `pkgutil --check-signature` accepts, so that check cannot tell a complete file
++# from a truncated one.
++PACKAGE_SHA256 = {
++    "gstreamer-1.0-1.28.7-universal.pkg": "529fdf4a4027d942e59b5b3564f6400adaa008f63ce5f3fed4ffe35d73911994",
++    "gstreamer-1.0-devel-1.28.7-universal.pkg": "72a44870cf02472cbf6e9a84bcc25ee6807dd1c26659a112066373544d365e7a",
++}
+ # Roves keeps verified copies of these installers in its own release (gstreamer-mirror.yml),
+ # because gstreamer.freedesktop.org cuts responses after ~1 MiB and often answers 503.
+ MIRROR_BASE = f"https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-{GSTREAMER_PLUGIN_VERSION}"
+@@ -39,15 +48,26 @@ def _download_complete(url: str, path: str) -> bool:
+     return bool(lengths) and os.path.getsize(path) >= int(lengths[-1])
+ 
+ 
++def _sha256_matches(path: str) -> bool:
++    expected = PACKAGE_SHA256.get(os.path.basename(path))
++    if expected is None:
++        return False
++    digest = hashlib.sha256()
++    with open(path, "rb") as package:
++        for block in iter(lambda: package.read(1024 * 1024), b""):
++            digest.update(block)
++    return digest.hexdigest() == expected
++
++
+ def download_pkg(description: str, url: str, destination_path: str, attempts: int = 5) -> None:
+     """Download a macOS installer package, retrying when the server hands back something that is
+-    not a complete one (gstreamer.freedesktop.org sometimes cuts the body short). `pkgutil
+-    --check-signature` reads the whole archive, so unlike a header check it catches truncation."""
++    not a complete one (gstreamer.freedesktop.org sometimes cuts the body short): the SHA-256 of
++    the whole file is checked, so truncation cannot slip through."""
+     mirror_url = f"{MIRROR_BASE}/{os.path.basename(url)}"
+     if subprocess.run(["curl", "-sSfL", "-o", destination_path, mirror_url]).returncode == 0:
+-        if subprocess.run(["pkgutil", "--check-signature", destination_path], capture_output=True).returncode == 0:
++        if _sha256_matches(destination_path):
+             return
+-        print(f"{description}: mirror copy invalid, falling back to {url}")
++        print(f"{description}: mirror copy does not match the published SHA-256, falling back to {url}")
+     for attempt in range(1, attempts + 1):
+         if os.path.exists(destination_path):
+             os.remove(destination_path)
+@@ -58,10 +78,9 @@ def download_pkg(description: str, url: str, destination_path: str, attempts: in
+             result = subprocess.run(["curl", "-sSL", "-C", "-", "-o", destination_path, url])
+             if result.returncode == 0 and _download_complete(url, destination_path):
+                 break
+-        check = subprocess.run(["pkgutil", "--check-signature", destination_path], capture_output=True)
+-        if check.returncode == 0:
++        if _sha256_matches(destination_path):
+             return
+-        print(f"{description}: downloaded package is incomplete or invalid (attempt {attempt}/{attempts})")
++        print(f"{description}: downloaded package does not match the published SHA-256 (attempt {attempt}/{attempts})")
+         time.sleep(10 * attempt)
+     raise RuntimeError(f"Could not download a valid package from {url}")
+ 

@@ -13796,3 +13796,32 @@ passes (4 tests).
 
 Applying the series to the pristine archive gives `keyutils.rs` and both manifests
 byte-identical to this tree (see the WebDriver entry above for the `Cargo.lock` hunks).
+
+
+## 2026-10-16 - Roves code inventory (documentation)
+
+**File in the Servo overlay:** `docs/INVENTARIO_CODICE_ROVES.md`. **Patch:**
+`0225-roves-code-inventory-docs.patch` after 0224. The repository README also links to the
+inventory; it is a repository-level entry point and is not part of the reconstructed Servo
+source overlay.
+
+Added a maintainer-facing inventory of Roves-specific implementation areas, approximate source
+sizes, existing library dependencies, and possible opportunities to delegate more work to
+external libraries. The estimates distinguish current source line counts from patch churn and
+note where files mix Roves changes with upstream Servo code. The README links to the inventory;
+the Roves wiki has a corresponding architecture overview.
+
+This is documentation only; it changes no runtime behavior or build flags.
+
+## 2026-10-16 - macOS GStreamer packages: verify the published SHA-256, not the signature
+
+**Servo file:** `python/servo/platform/macos.py`. **Patch:** `0225-macos-gstreamer-sha256-check.patch`
+after 0224.
+
+The first CI run with Roves' own copy of the installers (0220) failed on macOS with "mirror copy
+invalid": `download_pkg` accepted a package only if `pkgutil --check-signature` succeeded, but
+GStreamer's `.pkg` files are not signed in a way that check accepts, so it also rejected the
+complete, correct copy. `download_pkg` now compares the SHA-256 of the whole file with the value
+GStreamer publishes for it (`PACKAGE_SHA256`, 1.28.7 runtime and devel); that catches truncation
+just as well. Update the table when `GSTREAMER_PLUGIN_VERSION` changes.
+
