@@ -1,0 +1,23 @@
+<!doctype html><meta charset="utf-8"><title>WebGL getters benchmark</title>
+<style>body{background:#111;color:#ddd;font:20px monospace}</style><pre id="results">Running...</pre>
+<script>
+setTimeout(()=>{try {
+ const results=[];
+ for(const type of ['webgl','webgl2']) {
+  const c=document.createElement('canvas');c.width=300;c.height=200;const gl=c.getContext(type);
+  if(!gl) throw Error(type+' absent');
+  const runs=[];let total=0;
+  for(let r=0;r<6;r++) {
+   const start=performance.now();
+   for(let n=0;n<2000;n++) total+=gl.drawingBufferWidth+gl.drawingBufferHeight;
+   const ms=performance.now()-start;if(r)runs.push(ms);
+  }
+  if(total!==6000000)throw Error('Invalid dimensions');
+  runs.sort((a,b)=>a-b);
+  const report={type,pairs:2000,p50_ms:runs[2],max_ms:runs[4]};results.push(report);
+  console.log('WEBGLGETTERSTATS '+JSON.stringify(report));
+ }
+ document.getElementById('results').textContent=JSON.stringify(results,null,2)+'\nPASS';
+ if(new URLSearchParams(location.search).has('auto')) window.close();
+}catch(e){document.getElementById('results').textContent='FAIL '+e.stack;console.log('WEBGLGETTERS FAIL '+e.stack);if(new URLSearchParams(location.search).has('auto'))window.close();}},1000);
+</script>

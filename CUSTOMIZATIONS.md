@@ -10,7 +10,7 @@ including default-framebuffer validation, created a channel and waited for the W
 The first read queries both actual dimensions; never substitute the requested canvas size.
 Invalidate before resize, including failed resize attempts. Add smoke coverage for repeated
 reads, resize and pixel readback in WebGL 1 and 2 (HTMLCanvas and OffscreenCanvas).
-Runtime and CPU validation remain pending; no speedup claim.
+Downloaded CI bundles pass the runtime checks; isolated dimension-getter timings improve.
 
 Wait for Pixi initialization before destruction when React unmounts, explicitly select WebGL,
 and disable FPS polling in isolated fixtures. Refresh performance plans, remove obsolete
@@ -37,6 +37,16 @@ build. No build/bundle flag or downstream version pin changes; roves-action's in
 remains compatible. web-audio-api-rs supplies native Rust worklets but does not by itself
 implement Servo's JavaScript AudioWorklet; document that candidate rather than add an unused
 second audio graph to the shipped binary.
+
+**Validation completed:** source commit `20f899dcfbb`; desktop runs 38911113970 and 38911122483,
+V8 run 38911122489, optimized Windows run 38911122549, Android and iOS are green. Downloaded
+debug and both optimized Windows bundles; verified optimized ZIP SHA-256 digests. Both
+optimized variants pass local WebGL resize/readback and audio spectrum checks. Matched
+headless spectrum p50 improves from 26.82/432.38 ms (2048/8192 samples) to about 0.03/0.09 ms.
+Getter batches improve from about 4.4 ms to 0.7 ms. These are API microbenchmarks, not whole-game
+CPU/GPU/RAM measurements; allocator defaults and released downstream pins remain unchanged.
+Reproduction pages are in `support/perf/`; detailed results and limitations are in
+`ROVES_PERFORMANCE.md`. Remove obsolete completed work from the linked plans and backlog.
 
 ## 2026-10-04 - V8 migration Phase 3/4: DomObject exposes native identity (CP37 complete)
 

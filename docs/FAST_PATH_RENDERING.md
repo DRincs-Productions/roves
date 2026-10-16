@@ -14,9 +14,9 @@ Cambiare toolkit riscriverebbe queste funzioni e il relativo bridge SDL3 senza r
 costo dominante del frame Web. La scelta resta quindi: conservare egui come piano overlay e
 saltarlo quando il gioco non sta mostrando UI native.
 
-## Percorso corrente
+## Percorso composto (fallback)
 
-Per ogni frame visibile della pagina desktop:
+Quando overlay o altre condizioni richiedono il percorso composto:
 
 1. Servo/WebRender dipinge nel `OffscreenRenderingContext` posseduto da `HeadedWindow`.
 2. `Gui::update` esegue comunque un frame egui e registra un `PaintCallback` sul layer di sfondo.
@@ -37,7 +37,7 @@ Implementato e attivo per default dalla shell v0.7.4 (prima solo con `ROVES_DIRE
 Misura sulla visual novel al menu, 60 fps: CPU da 98,6% a 91,1% di un core, `shell_paint` da
 ~128 a ~77 µs per frame, nessuna tassellazione egui.
 
-Primo esperimento, a rischio contenuto:
+Comportamento già implementato:
 
 - Servo continua a usare l'attuale `OffscreenRenderingContext`.
 - Il normale `Gui::update` continua inizialmente a drenare input e AccessKit.
@@ -86,7 +86,7 @@ rimane disponibile come fallback finché il prototipo non supera i test.
 
 ## Metriche A/B
 
-I contatori `[roves-perf]` vanno estesi con:
+I contatori `[roves-perf]` già disponibili misurano:
 
 - `direct_presents` e `composited_presents`;
 - `egui_runs`, `egui_tessellations` e `egui_paints`;
@@ -110,16 +110,13 @@ fallback, non impone soglie temporali sui runner condivisi.
 - PixiJS statico senza ticker e PixiJS animato;
 - Windows portable/MSI, macOS portable/DMG e Linux portable/DEB.
 
-## Sequenza di implementazione
+## Lavoro restante
 
-1. Estendere i contatori per distinguere frame diretti e composti. **Completato.**
-2. Estrarre una decisione pura per il fast path con test unitari. **Completato.**
-3. Implementare il fast path A dietro `ROVES_DIRECT_PRESENT=1` per misure A/B. **Completato.**
-4. Misurazione A completata: CPU da 98,6% a 91,1% di un core al menu (v0.7.4).
+1. Misurare il costo residuo di offscreen/blit separandolo dal render WebRender.
    Le attese in present sono tempi wall-clock, non consumo CPU puro.
-5. Solo con un risultato positivo, prototipare il contesto a presentazione differita del fast
+2. Solo con evidenze favorevoli, prototipare il contesto a presentazione differita del fast
    path B.
-6. Rendere predefinito un percorso soltanto dopo smoke test completi e misure su hardware reale.
+3. Rendere predefinito il percorso B soltanto dopo smoke test completi e misure su hardware reale.
 
 I contatori aggiunti sono inattivi insieme al resto della diagnostica quando
 `ROVES_PERF_LOG_INTERVAL_MS` non è impostata; non introducono quindi timer o logging nelle build

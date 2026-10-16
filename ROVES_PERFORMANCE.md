@@ -228,7 +228,7 @@ Il codice WebGL sincronizzava ogni lettura di drawingBufferWidth/Height con il t
 WebGL; anche la validazione del framebuffer predefinito usa questi getter. La nuova cache
 legge le dimensioni effettive del backend una volta per allocazione e si invalida al resize.
 Non usa le dimensioni richieste dal canvas, che possono differire da quelle allocate.
-La modifica è implementata, ma il guadagno e la verifica runtime sono ancora da misurare.
+La modifica è verificata nelle build CI e localmente: risultati ripetibili riportati sotto.
 
 La fixture Pixi ora attende init prima di distruggere l'applicazione, evitando cleanup
 prematuro in StrictMode, forza WebGL e omette il timer FPS nelle fixture prestazionali.
@@ -253,5 +253,63 @@ L'analisi di frequenza Web Audio usava una DFT manuale O(N²), con trigonometria
 coppia campione/bin. Il ramo di sviluppo usa RealFFT 3.5 / RustFFT, O(N log N), conservando
 finestra Blackman, scala 1/N e smoothing. Piano e buffer sono riusati tra letture.
 Questo beneficia AnalyserNode e le funzioni delle librerie audio che lo usano; non costituisce
-un miglioramento misurato della scena typewriter o di tutto Tone.js. Conformità numerica e
-impatto runtime vanno verificati sulla build CI prima di pubblicare risultati prestazionali.
+un miglioramento misurato della scena typewriter o di tutto Tone.js. I test numerici CI e
+le verifiche runtime locali sono passati; i tempi misurati sono riportati sotto.
+
+### Riferimenti ripetibili prima di RealFFT
+
+Windows 11 10.0.26200, i7-8700 (6 core/12 thread), Chrome 155.0.8059.84,
+12 letture per fftSize su sinusoide con uscita silenziosa.
+Benchmark in `support/perf/audio-analysis-bench.html`. Chrome misurato dall'utente nella
+stessa pagina; v0.7.11 verificata visivamente prima della prova.
+
+| fftSize | v0.7.11 p50 / p95 | Chrome p50 / p95 |
+| --- | --- | --- |
+| 2048 | 27,35 / 67,55 ms | 0,20 / 3,10 ms |
+| 8192 | 425,49 / 428,63 ms | 0,90 / 1,30 ms |
+
+Entrambi trovano il bin 32 a circa −13,5556 dB e terminano con PASS. Con soli 12 campioni
+il p95 è il massimo della corsa, non una stima robusta delle code di latenza.
+Una prova Roves separata headless dà 31,82 / 64,56 ms e 448,55 / 588,78 ms: non mescolarla
+con quella visibile.
+
+Il benchmark dei getter WebGL (`support/perf/webgl-getters-bench.html`) sulla v0.7.11 visibile
+dà 4,67 ms (WebGL 1) e 4,37 ms (WebGL 2) per 2000 coppie width/height. Il test funzionale
+di resize e readback (`test-page/public/webgl-dimensions.html`) passa anche headless.
+
+Durante una corsa typewriter visibile v0.7.11 è comparsa una GC completa di 62 ms
+(heap JS 16 MB usati su 56 MB); RAFSTATS riporta 9 frame oltre 33 ms in 20 s dopo 5 s
+di warm-up. Questo conferma una pausa GC reale, ma non attribuisce al GC tutti i frame lunghi.
+
+### Build CI ottimizzate, commit 20f899dcfbb
+
+CI verdi: [desktop e patch, 13 job](https://github.com/DRincs-Productions/roves/actions/runs/38911122483),
+[V8, 10 job](https://github.com/DRincs-Productions/roves/actions/runs/38911122489),
+[Windows ottimizzato e test numerici](https://github.com/DRincs-Productions/roves/actions/runs/38911122549).
+Anche Android/iOS e la CI desktop sul ramo main sono verdi. Nessuna build locale del motore.
+
+Scaricati entrambi gli ZIP `perf-ab`, verificati SHA-256 pubblicati da GitHub e commit sorgente.
+Prove locali sulla stessa pagina in modalità headless:
+
+| API / carico | v0.7.11 | System + RealFFT | mimalloc + RealFFT |
+| --- | --- | --- | --- |
+| Spettro, fftSize 2048: p50 | 26,82 ms | circa 0,03 ms | circa 0,03 ms |
+| Spettro, fftSize 8192: p50 | 432,38 ms | circa 0,09 ms | circa 0,09 ms |
+| 2000 coppie getter dimensioni WebGL 1: p50 | 4,47 ms | 0,67 ms | 0,74 ms |
+| 2000 coppie getter dimensioni WebGL 2: p50 | 4,34 ms | 0,73 ms | 0,75 ms |
+
+Tre processi nuovi per variante/carico; tabella con la mediana dei tre p50. Per l'audio v0.7.11
+la corsa immediatamente precedente è una sola (12 letture per fftSize), coerente con quelle
+precedenti. Per i getter anche la baseline ha tre corse. Variabilità iniziale System:
+WebGL 1 1,55/0,67/0,67 ms; WebGL 2 1,39/0,73/0,70 ms. Non scartare la prima corsa dal report.
+
+Tutte le prove audio trovano il bin 32 a circa −13,5556 dB e riportano PASS. Entrambe le
+build passano resize ripetuti e readback pixel di WebGL 1/2, HTMLCanvas e OffscreenCanvas.
+Anche il pacchetto debug scaricato passa i controlli funzionali; i suoi tempi non sono
+usati in tabella. Log e screenshot locali: `target/perf-local-20261016/`.
+
+Il beneficio riguarda spettro audio e getter WebGL. Non misura CPU totale del gioco, GPU o
+RAM, né risolve WAAPI o AudioWorklet. Chrome è stato misurato visibile dall'utente e la nuova
+build headless: non dedurne un vantaggio generale su Chrome. Queste prove non giustificano
+un cambio dell'allocatore predefinito. Le build `perf-ab` sono sperimentali, non una release
+versionata consumata da roves-action o Packmaster.

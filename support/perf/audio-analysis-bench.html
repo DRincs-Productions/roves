@@ -1,0 +1,35 @@
+﻿<!doctype html><meta charset="utf-8"><title>Audio analysis benchmark</title>
+<style>body{background:#111;color:#ddd;font:20px monospace}pre{white-space:pre-wrap}</style>
+<button id="start">Start audio analysis benchmark (silent output)</button><pre id="results"></pre>
+<script>
+document.getElementById('start').onclick = async function () {
+  this.disabled = true;
+  const view = document.getElementById('results');
+  let ctx;
+  try {
+    ctx = new AudioContext(); await ctx.resume();
+    const osc = ctx.createOscillator(), analyser = ctx.createAnalyser(), mute = ctx.createGain();
+    analyser.smoothingTimeConstant = 0; mute.gain.value = 0;
+    osc.connect(analyser); analyser.connect(mute); mute.connect(ctx.destination); osc.start();
+    for (const size of [2048, 8192]) {
+      analyser.fftSize = size;
+      osc.frequency.value = ctx.sampleRate * 32 / size;
+      await new Promise(r=>setTimeout(r,300));
+      const out = new Float32Array(analyser.frequencyBinCount), timings=[];
+      for (let n=0;n<12;n++) {
+        await new Promise(requestAnimationFrame);
+        const begin = performance.now(); analyser.getFloatFrequencyData(out);
+        timings.push(performance.now()-begin);
+      }
+      timings.sort((a,b)=>a-b);
+      let peak=0; for(let k=1;k<out.length;k++) if(out[k]>out[peak]) peak=k;
+      const report = {size,p50_ms:timings[6],p95_ms:timings[11],peak,peak_db:out[peak],finite: Number.isFinite(out[peak])};
+      view.textContent += JSON.stringify(report)+'\n'; console.log('ANALYSERSTATS '+JSON.stringify(report));
+      if(Math.abs(peak-32)>1 || !report.finite) throw Error('Unexpected tone spectrum');
+    }
+    osc.stop(); view.textContent += 'PASS\n'; console.log('ANALYSERBENCH PASS');
+  } catch(e) { view.textContent += 'FAIL '+e.stack; console.log('ANALYSERBENCH FAIL '+e.stack); }
+  finally { if(ctx) await ctx.close(); if(new URLSearchParams(location.search).has("auto")) window.close(); }
+};
+if(new URLSearchParams(location.search).has("auto")) document.getElementById("start").click();</script>
+

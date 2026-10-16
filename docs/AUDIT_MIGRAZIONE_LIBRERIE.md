@@ -1,8 +1,17 @@
 # Audit delle migrazioni di librerie
 
-Aggiornato il 27 settembre 2026. Questo audit registra usi trovati nei manifest e nel codice
+Inventario iniziale del 27 settembre 2026, corretto il 16 ottobre per le rimozioni e le
+librerie ora integrate. Questo audit registra usi trovati nei manifest e nel codice
 del checkout corrente. Un nome assente dal grafo della shell non implica che sia eliminabile dal
 workspace o dagli altri target Servo.
+
+V8 tramite roves-js e SDL3 sono già integrati. WebXR, OpenHarmony e devtools sono stati
+rimossi. Non pianificare una nuova migrazione da SpiderMonkey o una feature devtools.
+Il codice di analisi spettrale Web Audio delega ora a RealFFT 3.5/RustFFT: la DFT manuale è
+rimossa, con test numerici CI e misure locali su build scaricate. API di frequenza, finestra,
+normalizzazione e smoothing restano quelle Web Audio. AudioWorklet JavaScript resta assente:
+una libreria con worklet Rust non fornisce da sola i binding e l'esecuzione V8 necessari.
+Misure attuali e limiti: [`ROVES_PERFORMANCE.md`](../ROVES_PERFORMANCE.md).
 
 ## SDL3 e `winit`
 
@@ -27,16 +36,15 @@ manifest mostrano un uso condiviso, non limitato alla finestra desktop.
 | Shell desktop | `servoshell`, `headed_window.rs`, `headless_window.rs`, `accelerated_gl_media.rs` | Contesti GL, rendering offscreen, present/blit e display nativo per media accelerati | Tracciare thread, surface e costo del passaggio finale; prototipo sostituibile e test su driver reali |
 | Compositore e paint | `servo-paint`, `servo-paint-api`, `components/paint` | Swap chain, surface texture, condivisione con WebRender ed immagini esterne | Parità di composizione, screenshot, resize, sincronizzazione e teardown |
 | WebGL e canvas | `servo-webgl`, `components/webgl`, `webgl_thread.rs` | Creazione dei context, FBO, swap chain e rendering WebGL | Test WebGL/canvas, perdita del context e backend ANGLE/GL per piattaforma |
-| WebXR | `servo-webxr`, `surfman_layer_manager.rs`, backend OpenXR | Layer/surface XR e adapter grafico OpenXR | Dispositivo/runtime XR disponibile e verifica di ogni backend |
-| Mobile e headless | paint API condivisa e contesto software Servo | Context software/offscreen oltre ai backend desktop | Build e smoke test per Android/OHOS e modalità headless |
+| Mobile e headless | paint API condivisa e contesto software Servo | Context software/offscreen oltre ai backend desktop | Build e smoke test per Android e modalità headless |
 
 Il grafo Cargo Windows (`cargo tree --locked -i surfman -p servoshell --target
 x86_64-pc-windows-msvc`) conferma i consumer `servo-paint`, `servo-paint-api`, `servo-webgl`,
-`servo-webxr` e `servoshell`. La dipendenza diretta desktop di `servoshell` non è ridondante:
+e `servoshell`. La dipendenza diretta desktop di `servoshell` non è ridondante:
 `desktop/accelerated_gl_media.rs` legge il context EGL e il display nativo di surfman per inizializzare
 i media accelerati su Windows/Linux; su macOS il bridge è un no-op. La CI ora protegge esplicitamente
-questa interop e la feature raw-window-handle del manifest. La dipendenza Android/OHOS è in una sezione target separata.
-La patch 0045 restringe `surfman/sm-x11` a Linux, inclusi paint e WebXR; il controllo `cargo tree` della matrice desktop verifica che Linux lo mantenga e che Windows/macOS non lo abilitino. `surfman` resta nel grafo dei target che usano i context grafici e non viene rimosso.
+questa interop e la feature raw-window-handle del manifest. La dipendenza Android è in una sezione target separata.
+La patch 0045 restringe `surfman/sm-x11` a Linux, incluso paint; il controllo `cargo tree` della matrice desktop verifica che Linux lo mantenga e che Windows/macOS non lo abilitino. `surfman` resta nel grafo dei target che usano i context grafici e non viene rimosso.
 
 L'audit non identifica un consumatore isolato che possa perdere la dipendenza senza cambiare
 prima l'interfaccia condivisa di rendering. La shell registra ora i tempi per fase WebView paint, egui, shell paint e present
@@ -57,7 +65,7 @@ gira su ANGLE (EGL su D3D11).
 | Consumatore | Oggetti surfman | Thread | Formato / tipo surface | Condivisione | Lifetime / resize | Perdita contesto | Test |
 |---|---|---|---|---|---|---|---|
 | `SurfmanRenderingContext` (`components/shared/paint/rendering_context.rs`) | `Device`, `Context`, surface GPUOnly, `create_surface_texture` | Main (non `Send`) | ALPHA\|DEPTH\|STENCIL, GLES 3.0 / GL 3.2 | Surface → `SurfaceTexture` → texture GL; espone `connection()` | `Drop` distrugge il contesto; resize < 1x1 → `Err` | Nessuna gestione; `unwrap` su texture | `test_read_pixels`, `test_minimum_size_error`: ora in CI (step paint-api) |
-| `WindowRenderingContext` | Connection da display handle, widget surface, `take_window`/`set_window` (mobile) | Main/UI | Come sopra, framebuffer del widget | Contesto padre dell'off-screen; `create_texture` per WebGL | Resize su evento SDL; su Android/OHOS pausa/ripresa ricreano la surface | Errori solo `warn!` | Smoke desktop (Xvfb con resize, macOS, Windows) |
+| `WindowRenderingContext` | Connection da display handle, widget surface, `take_window`/`set_window` (mobile) | Main/UI | Come sopra, framebuffer del widget | Contesto padre dell'off-screen; `create_texture` per WebGL | Resize su evento SDL; su Android pausa/ripresa ricreano la surface | Errori solo `warn!` | Smoke desktop (Xvfb con resize, macOS, Windows) |
 | `OffscreenRenderingContext` (shell desktop) | Nessuna surface propria: FBO GL sul contesto padre | Main | Texture **RGBA8** + renderbuffer **DEPTH_COMPONENT24, senza stencil**; `present()` vuoto | `render_to_parent_callback` → clear + `glBlitFramebuffer` | Resize crea un nuovo FBO e copia il contenuto vecchio | Nessuna | Smoke desktop, `direct_presents>0` |
 | `SoftwareRenderingContext` (headless, C API) | Adapter software, surface Generic + `SwapChain` | Main | Come sopra, GL software | Come sopra | `swap_chain.resize` | Nessuna | Unit test sopra (ora in CI); nessuno smoke headless |
 | Paint/Painter (compositore) | `connection().create_adapter()` per painter, handle `SwapChains` WebGL | Main | Disegna nel framebuffer legato da `prepare_for_rendering` | Handler immagini esterne WebGL/WebGPU/media | `remove_painter` libera anche i device WebGL | Errori `make_current` solo loggati | Smoke desktop |
@@ -71,7 +79,7 @@ gira su ANGLE (EGL su D3D11).
 e framebuffer della finestra, esclusi i target interni di WebRender e le texture egui), 2 clear
 (sfondo off-screen, clear a forbice della destinazione), **1 `glBlitFramebuffer`** a piena finestra
 in entrambi i percorsi A e composto, 1 present (quello off-screen è vuoto), nessun fence o flush
-esplicito nel codice del repository. Un resize aggiunge una copia. Android/OHOS non hanno lo stadio
+esplicito nel codice del repository. Un resize aggiunge una copia. Android non hanno lo stadio
 off-screen: WebRender disegna direttamente nel `WindowRenderingContext`, a conferma che il contratto
 Servo supporta già il rendering diretto che il fast path B vuole portare su desktop.
 
@@ -79,7 +87,7 @@ Servo supporta già il rendering diretto che il fast path B vuole portare su des
 RGBA8+D24, un clear e un blit a piena finestra per frame; va misurato con `[roves-perf-time]`
 (`shell_paint`) prima di decidere. (2) Nessun consumatore gestisce oggi la perdita del contesto o il
 reset del device: il criterio di accettazione "test di perdita contesto" del piano non ha una
-baseline da preservare e un backend alternativo non deve dichiararla come parità. (3) WebXR, media
+baseline da preservare e un backend alternativo non deve dichiararla come parità. (3) Media
 GL e `SoftwareRenderingContext` non sono esercitati da nessuno smoke test: non rimuovere o
 modificare quei percorsi basandosi sulla sola CI verde.
 
@@ -113,9 +121,8 @@ implementazione Unicode perché una divergenza qui può alterare testo Web osser
 ## Allocatore e logging
 
 - `servo-allocator` usa jemalloc per statistiche heap (`mallctl`, `usable_size`) e per l'ABI
-  `malloc/realloc/free` su alcuni target. Windows/OHOS hanno già percorsi `System`; non esiste
+  `malloc/realloc/free` su alcuni target. Windows hanno già percorsi `System`; non esiste
   in questo checkout una misura che attribuisca un problema di memoria o frame time a jemalloc.
-  Non aggiungere mimalloc senza workload misurato e test dell'ownership FFI.
   **Aggiornamento 2026-09-28:** su richiesta del maintainer la fase 5 è avviata come opzione di
   build `--features mimalloc` (patch 0048), spenta per default. Sostituisce l'intera superficie
   (`usable_size`, `libc_compat`, `heap_reports` via `mi_process_info`) e resta mutuamente
@@ -134,8 +141,7 @@ implementazione Unicode perché una divergenza qui può alterare testo Web osser
 | `Servo::setup_logging` (`BothLogger` env_logger + `FromEmbedderLogger`) | `components/servo/servo.rs`, chiamato da `desktop/app.rs` e `ffi/capi` | Processo principale; su desktop è no-op se `RovesLogger` è già installato (fallimento di `set_boxed_logger` ignorato, patch del fork) | `RUST_LOG` senza default: solo `error` se non impostato | stderr + inoltro Warn+ al constellation |
 | `set_logger` (`BothLogger` + `FromScriptLogger`) | `components/servo/servo.rs`, `run_content_process` | Solo processi di contenuto multiprocesso (`-M`) | `RUST_LOG` passato dal constellation | stderr + IPC al constellation |
 | `android_logger` | `ports/servoshell/egl/android/mod.rs` | Android, solo se il flag JNI `log` è vero | Moduli Debug fissi + `logStr` da Java | logcat, tag `servoshell` |
-| `hilog::Logger` | `ports/servoshell/egl/ohos/mod.rs` | OHOS | Moduli fissi, `--log-filter`/pref `log_filter` | hilog, opzionale `servo.log` |
-| `init_tracing` (`tracing_subscriber` registry) | `ports/servoshell/lib.rs` | Feature `tracing` (+ `tracing-perfetto`, `tracing-hitrace`, `tracing-tracy`) | `--tracing-filter` o `SERVO_TRACING`, default OFF; **non legge `RUST_LOG`** | Solo layer Perfetto (`servo.pftrace`), HiTrace, Tracy; nessun layer fmt |
+| `init_tracing` (`tracing_subscriber` registry) | `ports/servoshell/lib.rs` | Feature `tracing` (+ `tracing-perfetto`, `tracing-tracy`) | `--tracing-filter` o `SERVO_TRACING`, default OFF; **non legge `RUST_LOG`** | Solo layer Perfetto (`servo.pftrace`), Tracy; nessun layer fmt |
 
 `env_logger` è usato solo da `servoshell` e da `components/servo` (dipendenza non opzionale).
 `servo_tracing::instrument` e le macro di `profile_traits` si espandono in `tracing::instrument`

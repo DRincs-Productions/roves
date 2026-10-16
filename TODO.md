@@ -105,9 +105,8 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
 
 - [ ] Ripetere il confronto visibile con Chrome su pagina production, stessa risoluzione,
   warm-up e durata; raccogliere CPU per processo, memoria privata/residente, GPU e VRAM.
-- [ ] Validare la cache delle dimensioni WebGL su creazione, resize e canvas offscreen;
-  misurare il costo dei getter e della validazione del framebuffer prima/dopo.
-- [ ] Correlare gli scatti typewriter con GC e layout, prima di modificare il GC.
+- [ ] Correlare gli scatti typewriter con GC e layout: una pausa GC di 62 ms è confermata,
+  ma non è ancora attribuita al GC l'intera distribuzione dei frame lunghi.
 - [ ] Completare Web Animations per motion riusando Stylo/WebRender: timing, riproduzione,
   promise/eventi e campionamento; poi valutare compositing di transform/opacity.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
