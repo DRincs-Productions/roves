@@ -12,7 +12,11 @@ export function useFramePacingProbe(label: string, seconds = 20, warmupSeconds =
     let handle = requestAnimationFrame(function frame(now) {
       if (!start) start = now;
       // Page load, first shader compiles and the first GC are not steady-state frame pacing.
-      if (last && now - start > warmupSeconds * 1000) intervals.push(now - last);
+      if (last && now - start > warmupSeconds * 1000) {
+        intervals.push(now - last);
+        // Long frames, with their time since page start, so they can be matched against a GC trace.
+        if (now - last > 33) console.log(`RAFLONG t=${Math.round(now)}ms dt=${(now - last).toFixed(0)}ms`);
+      }
       last = now;
       if (now - start < (warmupSeconds + seconds) * 1000) {
         handle = requestAnimationFrame(frame);

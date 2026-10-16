@@ -172,6 +172,23 @@ rumore. Restano circa 8 frame lunghi ogni 30 s; non è ancora chiaro se siano pa
 picchi di layout. GSAP e motion su PixiJS hanno 0-1 frame sopra 33 ms. Prossimo passo, solo se
 serve: un nuovo profilo (vedi sopra) a scena ferma sui frame lunghi.
 
+## Frame lunghi del typewriter: non è il GC (16 ottobre 2026)
+
+La scena `?perf=typewriter-pixi` ora scrive `RAFLONG t=… dt=…` per ogni frame sopra i 33 ms, con
+l'istante dal caricamento. Con `ROVES_V8_FLAGS=--trace-gc` su v0.7.11 (30 s):
+
+- 7 frame lunghi (da 41 a 129 ms). Uno solo coincide con una GC: una Mark-Compact da 110 ms a
+  t=26,6 s. Le altre 14 GC sono scavenge da 0,6 a 6,3 ms.
+- Gli altri 6 non coincidono con nessuna GC né con un picco di disegno del thread principale (a
+  regime `webview_paint` massimo 23 ms). I picchi da 128-215 ms di `webview_paint` cadono nei primi
+  5 s, fuori dalla finestra di misura.
+- Heap iniziale più grande (`--initial-old-space-size=256 --max-semi-space-size=32`): 6 e 5 frame
+  sopra 33 ms, come senza (8, 6, 5, 8). Non migliora e non diventa predefinito.
+
+Quindi la causa dei frame lunghi sta nel lavoro del thread di script o nel layout durante la
+costruzione del dialogo, non nel GC. Per trovarla serve un profilo mirato ai frame lunghi
+(samply, con prompt UAC).
+
 ## Librerie dei giochi
 
 Ogni gioco usa motion o GSAP per l'interfaccia, PixiJS o three.js per la scena, Tone.js o
