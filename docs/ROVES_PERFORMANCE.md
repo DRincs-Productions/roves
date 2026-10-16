@@ -241,7 +241,11 @@ la memoria è limitata anche senza letture. Va confrontata con il precedente bac
 Correttezza: i blocchi silenziosi ora azzerano la porzione del buffer; l'indice iniziale
 include l'ultimo campione disponibile. Test aggiunti per overflow e ordine dei campioni,
 silenzio dopo suono e invalidazione/cache dello spettro: 4/4 test audio locali in release
-passati. Build integrate in corso.
+passati. Il commit `605d486b079` supera la validazione della serie patch e tutti i job CI
+desktop, Windows, macOS, Linux, Android e iOS:
+[workflow desktop](https://github.com/DRincs-Productions/roves/actions/runs/38952244417).
+L'archivio portable Windows del job è stato scaricato; l'avvio runtime locale non ha prodotto
+log o codice d'uscita, quindi non lo considero una verifica funzionale post-modifica.
 
 Le fixture typewriter/GSAP/motion ora disattivano anche il contatore FPS dei pannelli di
 sfondo, che prima aggiornava React ogni 500 ms. Il pannello three.js rilascia geometria,
@@ -251,8 +255,11 @@ le baseline sulla nuova pagina, senza attribuire al motore il risparmio dei time
 Fixture ripetibile: `support/perf/analyser-transport-bench.html?nodes=8`, senza letture;
 `&read=1` aggiunge letture a circa 60 Hz. Dopo warm-up di 2 s, finestra di 12 s e un secondo
 di script occupato, controlla la storia audio completa. Il secondo occupato va escluso dalla
-misura CPU. Prima della migrazione, Chrome MCP passa con 8 nodi a 48 kHz (visibile), e Roves
-20f899dcfbb passa a 44,1 kHz (headless). Sono prove funzionali, non un confronto di CPU.
+misura CPU. Chrome 155.0.8059.84, visibile con viewport 929×861, passa via Chrome DevTools
+MCP sia senza letture (`reads: 0`, 13.008 ms) sia con letture (`reads: 6824`, 13.022 ms), a
+48 kHz. Sono prove funzionali, non un confronto di CPU. La build Roves post-modifica non ha
+ancora una verifica runtime valida; il precedente pass Roves 20f899dcfbb (44,1 kHz, headless)
+è pre-modifica e non va usato come prova della nuova coda.
 
 Typewriter: una corsa Chrome MCP visibile (viewport 929×861, canvas 300×200, GTX 1050 via
 ANGLE/D3D11) dà p99 17,4 ms e 6 frame sopra 33 ms in 20 s dopo 5 s di warm-up. Roves
