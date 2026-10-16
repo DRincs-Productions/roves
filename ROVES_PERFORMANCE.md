@@ -157,6 +157,21 @@ Per ripetere il profilo: `samply record --save-only --unstable-presymbolicate -o
 play.exe <url>` da un PowerShell amministratore (richiede il Windows Performance Toolkit), poi i
 nomi dal `.pdb` con `llvm-symbolizer`.
 
+## Stato alla v0.7.11 (16 ottobre 2026)
+
+Typewriter + PixiJS (`markdown-typewriter/react`), 30 s a regime, due corse per versione:
+
+| Versione | Frame sopra 33 ms | p99 |
+| --- | --- | --- |
+| v0.7.10 | 8 e 6 | 20,8 e 19,2 ms |
+| v0.7.11 | 8 e 5 | 20,3 e 21,8 ms |
+| Chrome | circa 2 | 17,1 ms |
+
+La correzione del ResizeObserver (patch 0221) non cambia la scena in modo misurabile: sta nel
+rumore. Restano circa 8 frame lunghi ogni 30 s; non è ancora chiaro se siano pause del GC di V8 o
+picchi di layout. GSAP e motion su PixiJS hanno 0-1 frame sopra 33 ms. Prossimo passo, solo se
+serve: un nuovo profilo (vedi sopra) a scena ferma sui frame lunghi.
+
 ## Librerie dei giochi
 
 Ogni gioco usa motion o GSAP per l'interfaccia, PixiJS o three.js per la scena, Tone.js o
