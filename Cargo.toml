@@ -73,6 +73,7 @@ content-security-policy = { version = "0.8.1", features = ["serde"] }
 cookie = { package = "cookie", version = "0.18" }
 criterion = "0.8"
 crossbeam-channel = "0.5"
+crossbeam-queue = "0.3"
 crypto-bigint = "0.7"
 cshake = "0.2"
 cssparser = { version = "0.37", features = ["serde"] }

@@ -26,7 +26,7 @@ export default function TypewriterFixture({ scene }: { scene: TypewriterScene })
   return (
     <main style={{ position: "relative", minHeight: "100vh", background: "#000", color: "#eee" }}>
       <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
-        {scene === "pixi" ? <PixiPanel animated /> : <ThreePanel />}
+        {scene === "pixi" ? <PixiPanel animated diagnostics={false} /> : <ThreePanel diagnostics={false} />}
       </div>
       <motion.div
         animate={{ x: [0, 300, 0], rotate: [0, 180, 360] }}

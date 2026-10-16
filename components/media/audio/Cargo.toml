@@ -15,6 +15,7 @@ path = "lib.rs"
 
 [dependencies]
 byte-slice-cast = { workspace = true }
+crossbeam-queue = { workspace = true }
 euclid = { workspace = true }
 log = { workspace = true }
 malloc_size_of = { workspace = true }

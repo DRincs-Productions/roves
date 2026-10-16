@@ -6,6 +6,7 @@ use std::cmp;
 use std::f32::consts::PI;
 use std::sync::{Arc, OnceLock};
 
+use crossbeam_queue::ArrayQueue;
 use malloc_size_of_derive::MallocSizeOf;
 use realfft::num_complex::Complex32;
 use realfft::{RealFftPlanner, RealToComplex};
@@ -60,6 +61,9 @@ pub const MAX_BLOCK_COUNT: usize = MAX_FFT_SIZE / FRAMES_PER_BLOCK_USIZE;
 /// just has to do basic shimming
 #[derive(MallocSizeOf)]
 pub struct AnalysisEngine {
+    /// Preserve the complete maximum analysis window without scheduling DOM tasks.
+    #[ignore_malloc_size_of = "Shared bounded audio-block queue"]
+    pending: Arc<ArrayQueue<Block>>,
     /// The number of past sample-frames to consider in the FFT
     fft_size: usize,
     smoothing_constant: f64,
@@ -106,6 +110,7 @@ impl AnalysisEngine {
         let spectrum = fft.make_output_vec();
         let scratch = fft.make_scratch_vec();
         Self {
+            pending: Arc::new(ArrayQueue::new(MAX_BLOCK_COUNT)),
             fft_size,
             smoothing_constant,
             min_decibels,
@@ -185,11 +190,11 @@ impl AnalysisEngine {
     /// the backing array
     fn convert_index(&self, index: usize) -> usize {
         let offset = self.fft_size - index;
-        let last_element = (1 + self.current_block) * FRAMES_PER_BLOCK_USIZE - 1;
-        if offset > last_element {
-            MAX_FFT_SIZE - offset + last_element
+        let end = (1 + self.current_block) * FRAMES_PER_BLOCK_USIZE;
+        if offset > end {
+            MAX_FFT_SIZE - offset + end
         } else {
-            last_element - offset
+            end - offset
         }
     }
 
@@ -201,11 +206,24 @@ impl AnalysisEngine {
         }
     }
 
-    pub fn push(&mut self, mut block: Block) {
+    /// The callback only keeps sample history; no DOM object is rooted by the producer.
+    pub fn input_queue(&self) -> Arc<ArrayQueue<Block>> {
+        self.pending.clone()
+    }
+
+    fn drain_pending(&mut self) {
+        while let Some(block) = self.pending.pop() {
+            self.push(block);
+        }
+    }
+
+    fn push(&mut self, mut block: Block) {
         debug_assert!(block.chan_count() == 1);
         self.advance();
         if !block.is_silence() {
             self.curent_block_mut().copy_from_slice(block.data_mut());
+        } else {
+            self.curent_block_mut().fill(0.0);
         }
         self.fft_computed = false;
     }
@@ -239,6 +257,7 @@ impl AnalysisEngine {
     }
 
     fn compute_fft(&mut self) {
+        self.drain_pending();
         if self.fft_computed {
             return;
         }
@@ -260,7 +279,8 @@ impl AnalysisEngine {
         }
     }
 
-    pub fn fill_time_domain_data(&self, dest: &mut [f32]) {
+    pub fn fill_time_domain_data(&mut self, dest: &mut [f32]) {
+        self.drain_pending();
         let mut data_idx = self.convert_index(0);
         let end = cmp::min(self.fft_size, dest.len());
         for entry in &mut dest[0..end] {
@@ -269,7 +289,8 @@ impl AnalysisEngine {
         }
     }
 
-    pub fn fill_byte_time_domain_data(&self, dest: &mut [u8]) {
+    pub fn fill_byte_time_domain_data(&mut self, dest: &mut [u8]) {
+        self.drain_pending();
         let mut data_idx = self.convert_index(0);
         let end = cmp::min(self.fft_size, dest.len());
         for entry in &mut dest[0..end] {
@@ -309,6 +330,52 @@ fn clamp_255(val: f32) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_transport_preserves_recent_history_and_silence() {
+        let mut engine = AnalysisEngine::new(MAX_FFT_SIZE, 0.0, -100.0, -30.0);
+        let pending = engine.input_queue();
+        let blocks = MAX_BLOCK_COUNT * 3 + 7;
+        for n in 0..blocks {
+            drop(pending.force_push(Block::for_vec(vec![n as f32; FRAMES_PER_BLOCK_USIZE])));
+        }
+        assert_eq!(pending.len(), MAX_BLOCK_COUNT);
+        let mut output = vec![0.0; MAX_FFT_SIZE];
+        engine.fill_time_domain_data(&mut output);
+        assert!(pending.is_empty());
+        for (n, block) in output.chunks_exact(FRAMES_PER_BLOCK_USIZE).enumerate() {
+            assert!(
+                block
+                    .iter()
+                    .all(|&v| v == (blocks - MAX_BLOCK_COUNT + n) as f32)
+            );
+        }
+        // Every ring slot previously held non-zero samples: implicit silence must erase it.
+        for _ in 0..MAX_BLOCK_COUNT {
+            drop(pending.force_push(Block::default()));
+        }
+        engine.fill_time_domain_data(&mut output);
+        assert!(output.iter().all(|&v| v == 0.0));
+        let mut bytes = [0; 32];
+        engine.fill_byte_time_domain_data(&mut bytes);
+        assert_eq!(bytes, [128; 32]);
+    }
+
+    #[test]
+    fn transport_invalidates_spectrum_only_when_new_samples_arrive() {
+        let mut engine = AnalysisEngine::new(32, 0.5, -100.0, -30.0);
+        let pending = engine.input_queue();
+        drop(pending.force_push(Block::for_vec(vec![0.5; FRAMES_PER_BLOCK_USIZE])));
+        let mut output = [0.0; 16];
+        engine.fill_frequency_data(&mut output);
+        assert!(output[0].is_finite());
+        let previous = output;
+        engine.fill_frequency_data(&mut output);
+        assert_eq!(output, previous);
+        drop(pending.force_push(Block::default()));
+        engine.fill_frequency_data(&mut output);
+        assert!(output[0] < previous[0]);
+    }
 
     #[test]
     fn fft_matches_direct_transform_and_preserves_smoothing_and_cache() {

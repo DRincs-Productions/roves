@@ -25,7 +25,6 @@ use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
 };
 use crate::dom::bindings::error::{Error, Fallible};
 use crate::dom::bindings::num::Finite;
-use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::window::Window;
 
@@ -51,9 +50,9 @@ impl AnalyserNode {
                 .parent
                 .unwrap_or(2, ChannelCountMode::Max, ChannelInterpretation::Speakers);
 
-        if options.fftSize > 32768 ||
-            options.fftSize < 32 ||
-            (options.fftSize & (options.fftSize - 1) != 0)
+        if options.fftSize > 32768
+            || options.fftSize < 32
+            || (options.fftSize & (options.fftSize - 1) != 0)
         {
             return Err(Error::IndexSize(None));
         }
@@ -107,20 +106,13 @@ impl AnalyserNode {
         let callback_oncelock = Arc::new(OnceLock::new());
         let node =
             AnalyserNode::new_inherited(cx, window, context, options, callback_oncelock.clone())?;
+        let pending = node.engine.borrow().input_queue();
         let object = reflect_dom_object_with_proto_and_cx(Box::new(node), window, proto, cx);
-        let task_source = window
-            .as_global_scope()
-            .task_manager()
-            .dom_manipulation_task_source()
-            .to_sendable();
-        let this = Trusted::new(&*object);
-
         let callback = GenericCallback::new(move |block| {
-            let this = this.clone();
-            task_source.queue(task!(append_analysis_block: move || {
-                let this = this.root();
-                this.push_block(block.unwrap())
-            }));
+            if let Ok(block) = block {
+                // Keep all 32768 recent samples, replacing only expired history.
+                drop(pending.force_push(block));
+            }
         })
         .unwrap();
         if callback_oncelock.set(callback).is_err() {
@@ -128,10 +120,6 @@ impl AnalyserNode {
         }
 
         Ok(object)
-    }
-
-    pub(crate) fn push_block(&self, block: Block) {
-        self.engine.borrow_mut().push(block)
     }
 }
 
@@ -173,7 +161,7 @@ impl AnalyserNodeMethods<crate::DomTypeHolder> for AnalyserNode {
         // run whilst we're writing to it
         let dest = array.as_mut_slice_safe(no_gc);
         self.engine
-            .borrow()
+            .borrow_mut()
             .fill_time_domain_data(dest.unwrap_or(&mut []));
     }
 
@@ -183,7 +171,7 @@ impl AnalyserNodeMethods<crate::DomTypeHolder> for AnalyserNode {
         // run whilst we're writing to it
         let dest = array.as_mut_slice_safe(no_gc);
         self.engine
-            .borrow()
+            .borrow_mut()
             .fill_byte_time_domain_data(dest.unwrap_or(&mut []));
     }
 

@@ -1,0 +1,59 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Analyser transport benchmark</title>
+<style>body{background:#111;color:#ddd;font:18px monospace}pre{white-space:pre-wrap}</style>
+<button id="start">Start silent analyser transport benchmark</button><pre id="results"></pre>
+<script>
+const params = new URLSearchParams(location.search);
+const count = Math.min(32, Math.max(0, Number(params.get('nodes') || 8)));
+const read = params.get('read') === '1';
+const wait = ms => new Promise(resolve => setTimeout(resolve, ms));
+const view = document.getElementById('results');
+function report(value) { view.textContent += value + '\n'; console.log(value); }
+document.getElementById('start').onclick = async function () {
+  this.disabled = true;
+  let context;
+  try {
+    context = new AudioContext();
+    await context.resume();
+    if (context.state !== 'running') throw Error('AudioContext is not running');
+    const oscillator = context.createOscillator(), mute = context.createGain();
+    oscillator.frequency.value = context.sampleRate / 64;
+    mute.gain.value = 0;
+    mute.connect(context.destination);
+    const nodes = Array.from({length: count}, () => {
+      const node = context.createAnalyser();
+      node.fftSize = 32768;
+      node.smoothingTimeConstant = 0;
+      oscillator.connect(node); node.connect(mute);
+      return node;
+    });
+    if (!count) oscillator.connect(mute);
+    oscillator.start();
+    const output = new Float32Array(32768);
+    let reads = 0;
+    const timer = read ? setInterval(() => {
+      for (const node of nodes) { node.getFloatTimeDomainData(output); reads++; }
+    }, 1000 / 60) : null;
+    await wait(2000);
+    report('TRANSPORT READY ' + JSON.stringify({nodes: count, read, sampleRate: context.sampleRate,
+      visibility: document.visibilityState, viewport: [innerWidth, innerHeight]}));
+    const begin = performance.now();
+    await wait(12000);
+    if (timer !== null) clearInterval(timer);
+    // No reads for longer than the complete history, exercising bounded backlog handling.
+    const stalled = performance.now();
+    while (performance.now() - stalled < 1000) {}
+    for (const node of nodes) {
+      node.getFloatTimeDomainData(output);
+      const energy = output.reduce((sum, value) => sum + value * value, 0) / output.length;
+      if (!output.every(Number.isFinite) || energy < 0.1 || energy > 0.9)
+        throw Error('Missing or invalid sample history: ' + energy);
+    }
+    report('TRANSPORT PASS ' + JSON.stringify({nodes: count, read, reads,
+      elapsed_ms: performance.now() - begin, audio_seconds: context.currentTime}));
+  } catch (error) { report('TRANSPORT FAIL ' + String(error)); }
+  finally { if (context) await context.close(); if (params.has('auto')) window.close(); }
+};
+if (params.has('auto')) document.getElementById('start').click();
+</script>

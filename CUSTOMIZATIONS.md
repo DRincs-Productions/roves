@@ -1,3 +1,23 @@
+## 2026-10-16 - Delegate analyser transport to Crossbeam ArrayQueue
+
+**Files:** workspace/audio manifests and lockfile, `components/media/audio/analyser_node.rs`,
+`components/script/dom/audio/analysernode.rs`, `support/perf/`, README and performance notes.
+**Patch:** `0228-webaudio-bounded-analysis-transport.patch` after 0227 (runtime files only).
+
+Replace one DOM task and Trusted root per 128-sample block with Crossbeam ArrayQueue 0.3.
+Retain 256 mono blocks (the full 32768-sample maximum history), atomically replacing only
+expired history on overflow. Import pending samples on analysis reads; keep FFT caching when
+no new samples arrive. The audio graph, downmix and GenericCallback infrastructure remain.
+Fix implicit silence retaining old ring samples and the one-sample error in the start index.
+Add tests for complete ordered history after overflow, silence, spectrum invalidation and
+repeated-read caching. Add a silent multi-analyser browser fixture with backlog recovery.
+No whole-game CPU reduction is claimed before matched runtime measurements. Local CPU
+sampling via a background launch is still rejected by automatic policy review.
+Disable FPS polling in the typewriter/GSAP/motion fixtures as well as the plain Pixi fixtures.
+The Three.js diagnostic panel now disposes its geometry/material and removes its canvas on
+unmount, using the library's resource APIs. Keep these fixture corrections separate from
+engine performance claims. Local optimized audio tests: 4/4 passed.
+
 ## 2026-10-16 - Audit analyser transport CPU costs
 
 Document the per-128-frame analyser callback and DOM-task path, distinguish code-derived

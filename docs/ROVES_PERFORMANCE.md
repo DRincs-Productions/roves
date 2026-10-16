@@ -205,7 +205,7 @@ test le misurano.
 
 ## Ulteriore audit CPU: trasporto dei campioni audio (16 ottobre 2026)
 
-Lettura del codice, non una misura di CPU: `components/media/audio/analyser_node.rs`
+Audit della build precedente (20f899dcfbb), non una misura di CPU: `components/media/audio/analyser_node.rs`
 clona e miscela il blocco di ingresso, poi invia un callback per ogni quantum di 128 campioni.
 `components/script/dom/audio/analysernode.rs` accoda per ogni callback un task DOM
 `append_analysis_block`, che aggiorna il ring buffer dell'analizzatore. Il percorso resta
@@ -226,6 +226,40 @@ Priorità: misurare il costo con 0/1/più analizzatori prima di implementare il 
 Il tentativo di avviare la nuova prova locale è stato respinto dal controllo automatico con
 `blocked by policy`; non sono disponibili nuovi risultati CPU o confronti Chrome da questa
 sessione e il runtime non è stato modificato sulla base di questa sola ipotesi.
+
+### Migrazione del trasporto in sviluppo
+
+Il successivo intervento sostituisce i task DOM con `crossbeam-queue::ArrayQueue` 0.3.14:
+256 blocchi mono conservano gli ultimi 32768 campioni, indipendentemente da fftSize.
+`force_push` sostituisce atomicamente il blocco più vecchio quando la coda è piena; i getter
+importano i campioni nel motore di analisi. Non introduce una coda o primitive unsafe nostre.
+Rimuove anche la radice DOM `Trusted` dal callback. Il grafo audio, il downmix e il callback
+per blocco restano: la CPU audio non scompare. Il buffer pendente aggiunge fino a circa
+128 KiB di payload mono per nodo, oltre al buffer storico esistente e ai metadati della coda;
+la memoria è limitata anche senza letture. Va confrontata con il precedente backlog di task.
+
+Correttezza: i blocchi silenziosi ora azzerano la porzione del buffer; l'indice iniziale
+include l'ultimo campione disponibile. Test aggiunti per overflow e ordine dei campioni,
+silenzio dopo suono e invalidazione/cache dello spettro: 4/4 test audio locali in release
+passati. Build integrate in corso.
+
+Le fixture typewriter/GSAP/motion ora disattivano anche il contatore FPS dei pannelli di
+sfondo, che prima aggiornava React ogni 500 ms. Il pannello three.js rilascia geometria,
+materiale e canvas allo smontaggio. Sono correzioni della pagina di misura: ripetere entrambe
+le baseline sulla nuova pagina, senza attribuire al motore il risparmio dei timer rimossi.
+
+Fixture ripetibile: `support/perf/analyser-transport-bench.html?nodes=8`, senza letture;
+`&read=1` aggiunge letture a circa 60 Hz. Dopo warm-up di 2 s, finestra di 12 s e un secondo
+di script occupato, controlla la storia audio completa. Il secondo occupato va escluso dalla
+misura CPU. Prima della migrazione, Chrome MCP passa con 8 nodi a 48 kHz (visibile), e Roves
+20f899dcfbb passa a 44,1 kHz (headless). Sono prove funzionali, non un confronto di CPU.
+
+Typewriter: una corsa Chrome MCP visibile (viewport 929×861, canvas 300×200, GTX 1050 via
+ANGLE/D3D11) dà p99 17,4 ms e 6 frame sopra 33 ms in 20 s dopo 5 s di warm-up. Roves
+20f899dcfbb visibile dà p99 22,7 ms e 7 frame sopra 33 ms. Le finestre non erano affiancate e
+le risoluzioni non erano normalizzate: dati esplorativi, non una nuova baseline convalidata.
+Il tentativo headless typewriter termina invece con `SurfaceImportFailed(BadAttribute)`:
+non usarlo per misurare rendering o dedurre una regressione del percorso visibile.
 
 ## Aperto
 

@@ -72,7 +72,7 @@ export default function DomAnimationFixture({ library }: { library: DomAnimation
   return (
     <main style={{ position: "relative", minHeight: "100vh", background: "#000", overflow: "hidden" }}>
       <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}>
-        <PixiPanel animated />
+        <PixiPanel animated diagnostics={false} />
       </div>
       {library === "gsap" ? <GsapBoxes /> : <MotionBoxes />}
     </main>

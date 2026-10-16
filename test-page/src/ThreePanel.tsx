@@ -8,7 +8,7 @@ import * as THREE from "three";
  * apart "WebGL itself is broken in this Servo build" from "something specific
  * to PixiJS is broken".
  */
-export default function ThreePanel() {
+export default function ThreePanel({ diagnostics = true }: { diagnostics?: boolean }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [status, setStatus] = useState("Not started.");
   const [fps, setFps] = useState<number | null>(null);
@@ -20,6 +20,7 @@ export default function ThreePanel() {
     let renderer: THREE.WebGLRenderer | undefined;
     let frameId: number | undefined;
     let fpsInterval: number | undefined;
+    let disposeScene: (() => void) | undefined;
     let frameCount = 0;
 
     try {
@@ -39,22 +40,28 @@ export default function ThreePanel() {
         new THREE.MeshNormalMaterial(),
       );
       scene.add(cube);
+      disposeScene = () => {
+        cube.geometry.dispose();
+        cube.material.dispose();
+      };
 
       const animate = () => {
         cube.rotation.x += 0.02;
         cube.rotation.y += 0.03;
         renderer!.render(scene, camera);
-        frameCount += 1;
+        if (diagnostics) frameCount += 1;
         frameId = requestAnimationFrame(animate);
       };
       animate();
 
       // Same rationale as PixiPanel's FPS readout: rendering without
       // throwing doesn't rule out a crawling software fallback.
-      fpsInterval = window.setInterval(() => {
-        setFps(frameCount * 2);
-        frameCount = 0;
-      }, 500);
+      if (diagnostics) {
+        fpsInterval = window.setInterval(() => {
+          setFps(frameCount * 2);
+          frameCount = 0;
+        }, 500);
+      }
 
       setStatus("ok — WebGLRenderer created, render loop running");
     } catch (error) {
@@ -64,9 +71,11 @@ export default function ThreePanel() {
     return () => {
       if (frameId !== undefined) cancelAnimationFrame(frameId);
       if (fpsInterval !== undefined) window.clearInterval(fpsInterval);
+      disposeScene?.();
       renderer?.dispose();
+      renderer?.domElement.remove();
     };
-  }, []);
+  }, [diagnostics]);
 
   return (
     <div>
