@@ -550,3 +550,72 @@ tabella serializzata e li copia in un nuovo buffer in lettura. Il distacco del m
 dimostra quindi un trasferimento senza copie. Un futuro percorso nello stesso processo deve
 riusare BackingStore V8 e preservare ownership, errori, cleanup e il percorso multiprocesso;
 non aggiungere una tabella globale di buffer senza gestione completa del ciclo di vita.
+
+### Messaggi Worker: riferimento e rimozione delle copie intermedie
+
+`support/perf/worker-messaging-bench.html?auto=1`, Windows/i7-8700, finestra visibile
+1024×740, build ottimizzata mimalloc `1e9c7dcfea2`, Chrome 155.0.8059.84 via DevTools MCP.
+Tre processi nuovi Roves e tre navigazioni nello stesso browser/contesto MCP Chrome;
+quattro iterazioni iniziali e 16 misurate per dimensione/modalità. Tutte le sei corse passano
+distacco e controllo degli estremi del payload. Il p95 di 16 campioni è il massimo.
+
+| Buffer 4 MiB, mediana dei tre p50 | Roves prima | Chrome |
+| --- | --- | --- |
+| Clona: round-trip | 5,44 ms | 3,60 ms |
+| Trasferisci: round-trip | 5,77 ms | circa 0,10 ms |
+| Clona: tempo sincrono di postMessage | 1,03 ms | 0,80 ms |
+| Trasferisci: tempo sincrono di postMessage | 1,34 ms | sotto la risoluzione di circa 0,1 ms |
+
+Round-trip trasferimento Roves: 4,70/6,47/5,77 ms; Chrome circa 0,10 ms in tutte e tre.
+Non dedurre CPU nulla da un tempo Chrome arrotondato a zero. Le prime corse esplorative
+con la fixture priva del campo constructor_ms sono conservate separatamente.
+Il costruttore blocca il parent per 2,03/2,62/2,12 ms in Roves, circa 0,1–0,2 ms in Chrome;
+il tempo totale fino al messaggio ready è 26,43/30,72/30,38 contro 14,9/19,6/25,7 ms.
+L'attesa sincrona del contesto nel costruttore è un candidato successivo: renderla asincrona
+richiede preservare terminate() immediato e chiusura del parent durante l'avvio.
+
+La patch 0231 elimina due ulteriori copie del vettore serializzato al confine roves-js/DOM:
+le conversioni standard From e mem::take trasferiscono la proprietà del Vec prodotto da V8.
+Rimuove tre helper di copia raw e l'inizializzazione manuale di Vec con set_len: circa 19 righe
+di implementazione in meno. Restano il serializer V8, il formato bytes-only e le copie dei
+payload trasferiti descritte sopra: non è ancora un trasferimento ArrayBuffer senza copie.
+
+Test locali: 33 passati e due microbenchmark ignorati; i due test structured clone passano,
+incluso il nuovo controllo che indirizzo/capacità dell'allocazione non cambino. La riproduzione
+delle patch sui file pristine passa. Compilazione DOM e confronto runtime prima/dopo restano
+in CI/sugli artefatti scaricati; non anticipare un guadagno misurato della patch 0231.
+Log: `target/perf-local-20261017/worker-messaging-baseline-*.stdout.log` e
+`chrome-worker-messaging-baseline-*.json`.
+
+Per il codice dei giochi, valutare un pool piccolo e riusato, coda limitata e batch di messaggi.
+[workerpool](https://github.com/josdejong/workerpool) offre un pool per browser/Node con licenza
+Apache-2.0; [Comlink](https://github.com/GoogleChromeLabs/comlink) semplifica RPC, non sostituisce
+la gestione delle copie nel motore. Non aggiunti a Roves: qui non esiste un pool applicativo
+scritto a mano da rimpiazzare, e le fixture devono misurare le API Worker direttamente.
+
+### Build ottimizzata aggiornata e confronto allocatori
+
+La CI [39034634597](https://github.com/DRincs-Productions/roves/actions/runs/39034634597)
+è verde (entrambe le build, test numerici, avvio bundle e confronto). ZIP scaricati, commit
+`1e9c7dcfea2` confermato nelle note e SHA-256 verificati: System `295199c4…0203e9`, mimalloc
+`8ff1680b…1d60d9`. Queste build precedono le patch worker 0230/0231. La pagina diagnostica
+normale con App lazy passa anche in Roves: i pulsanti Tone sono presenti.
+
+Typewriter/Pixi sulla fixture corretta, CPU e memoria da 60 a 80 s, contatori GPU spenti:
+
+| Allocatore/corsa | CPU di un core | CPU totale macchina | Picco privato | Frame >33 ms / p99 |
+| --- | --- | --- | --- | --- |
+| System 1 | 50,85% | 65,36% | 518,7 MiB | 9 / 29,62 ms |
+| System 2 | 94,72% | 25,3% circa | 514,3 MiB | 10 / 26,02 ms |
+| System 3 | 34,27% | 17,83% | 519,8 MiB | 1 / 19,22 ms |
+| mimalloc 1 | 34,40% | 17,04% | 635,9 MiB | 1 / 19,77 ms |
+| mimalloc 2 | 37,87% | 20,05% | 625,5 MiB | 1 / 18,43 ms |
+| mimalloc 3 | 34,13% | 16,36% | 625,0 MiB | 3 / 19,38 ms |
+
+La prima System è contaminata dal forte carico esterno e rimane visibile nel report.
+La variabilità della CPU System non consente di attribuire una percentuale di risparmio
+all'allocatore. Il suo consumo privato è inferiore nelle tre corse; mantenere il default
+mimalloc mentre si approfondisce il compromesso CPU/memoria. I riferimenti Chrome sopra
+provengono da momenti e stati di processo diversi: nessuna parità globale con Chrome è
+dimostrata. I frame da 60 a 80 s non sono confrontabili direttamente con i vecchi test da
+5 a 25 s o da 30 s; non attribuire la differenza alla rimozione dei task audio.

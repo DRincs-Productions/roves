@@ -1,0 +1,85 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker messaging benchmark</title>
+<link rel="icon" href="data:,">
+<button id="start">Start worker messaging benchmark</button>
+<pre id="output"></pre>
+<script>
+const output = document.querySelector("#output");
+const log = (value) => {
+  const line = "WORKERBENCH " + JSON.stringify(value);
+  output.textContent += line + "\n";
+  console.log(line);
+};
+let started = false;
+async function start() {
+  if (started) return;
+  started = true;
+  document.querySelector("#start").disabled = true;
+  let worker;
+  let url;
+  let pending;
+  const fail = (error) => { if (pending) pending.reject(error); };
+  try {
+    url = URL.createObjectURL(new Blob([
+      `onmessage = ({data}) => {
+        const {buffer, transfer} = data;
+        const bytes = new Uint8Array(buffer);
+        if (bytes[0] !== 7 || bytes[bytes.length-1] !== 9) throw Error('corrupt input');
+        postMessage(buffer, transfer ? [buffer] : []);
+      }; postMessage('ready');`
+    ], { type: "text/javascript" }));
+    const request = (send) => new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { pending = null; reject(Error("message timed out")); }, 15000);
+      pending = { resolve: (data) => { clearTimeout(timer); pending = null; resolve(data); },
+                  reject: (error) => { clearTimeout(timer); pending = null; reject(error); } };
+      try { send(); } catch (error) { pending.reject(error); }
+    });
+    const beginning = performance.now();
+    let constructorMs;
+    await request(() => {
+      const constructorStart = performance.now();
+      worker = new Worker(url);
+      constructorMs = performance.now() - constructorStart;
+      worker.onerror = (event) => fail(Error(event.message));
+      worker.onmessage = ({data}) => { if (pending) pending.resolve(data); };
+    });
+    log({ phase: "ready", startup_ms: performance.now() - beginning, constructor_ms: constructorMs });
+    for (const size of [1024, 128 * 1024, 4 * 1024 * 1024]) {
+      for (const transfer of [false, true]) {
+        let buffer = new ArrayBuffer(size);
+        const bytes = new Uint8Array(buffer);
+        bytes[0] = 7; bytes[size - 1] = 9;
+        const roundtrip = [], enqueue = [];
+        for (let i = 0; i < 20; i++) {
+          let sendMs;
+          const startMs = performance.now();
+          const received = await request(() => {
+            const sendStart = performance.now();
+            worker.postMessage({ buffer, transfer }, transfer ? [buffer] : []);
+            sendMs = performance.now() - sendStart;
+            if (buffer.byteLength !== (transfer ? 0 : size)) throw Error("incorrect detachment");
+          });
+          const elapsed = performance.now() - startMs;
+          const view = new Uint8Array(received);
+          if (view.length !== size || view[0] !== 7 || view[size - 1] !== 9) throw Error("corrupt reply");
+          buffer = received;
+          if (i >= 4) { roundtrip.push(elapsed); enqueue.push(sendMs); }
+        }
+        roundtrip.sort((a,b) => a-b); enqueue.sort((a,b) => a-b);
+        log({ size, transfer, samples: roundtrip.length,
+              roundtrip_p50_ms: roundtrip[8], roundtrip_p95_ms: roundtrip[15],
+              enqueue_p50_ms: enqueue[8], enqueue_p95_ms: enqueue[15] });
+      }
+    }
+    log({ phase: "PASS" });
+  } catch (error) {
+    log({ phase: "FAIL", error: String(error) });
+  } finally {
+    if (worker) worker.terminate();
+    if (url) URL.revokeObjectURL(url);
+  }
+}
+document.querySelector("#start").onclick = start;
+if (new URLSearchParams(location.search).get("auto") === "1") start();
+</script>

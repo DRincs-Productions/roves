@@ -421,6 +421,9 @@ CPU, with about 1.2 MiB more private memory; conditions and variability are in t
 Worker lifecycle diagnostics also check that terminating idle workers releases their threads;
 the development fix wakes the existing Crossbeam event loop, with post-change CI/runtime
 verification tracked in the performance notes. No worker scheduler dependency is added.
+The development structured-clone bridge also moves V8's serialized byte vector through Rust
+ownership instead of copying it twice; full ArrayBuffer transfer still has separate payload
+copies. Worker messaging benchmarks and pending runtime comparisons are in the same notes.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

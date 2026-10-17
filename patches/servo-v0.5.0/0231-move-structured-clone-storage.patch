@@ -1,0 +1,153 @@
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+index 6c8bd0465fd..800e426fac9 100644
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -35,8 +35,7 @@ pub use crate::script_impl::{
+ pub use crate::values_impl::JS_GetPromiseResult;
+ pub use crate::modules_impl::JS_GetModulePrivate;
+ pub use crate::structured_clone_impl::{
+-    CopyJSStructuredCloneData, DeleteJSAutoStructuredCloneBuffer, GetLengthOfJSStructuredCloneData,
+-    NewJSAutoStructuredCloneBuffer, WriteBytesToJSStructuredCloneData,
++    DeleteJSAutoStructuredCloneBuffer, NewJSAutoStructuredCloneBuffer,
+ };
+ pub use crate::proxy::{
+     CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,
+diff --git a/components/roves-js/src/structured_clone_impl.rs b/components/roves-js/src/structured_clone_impl.rs
+index 5c31fcc9221..601202f245e 100644
+--- a/components/roves-js/src/structured_clone_impl.rs
++++ b/components/roves-js/src/structured_clone_impl.rs
+@@ -32,6 +32,18 @@ pub struct JSStructuredCloneData {
+     pub(crate) bytes: Vec<u8>,
+ }
+ 
++impl From<Vec<u8>> for JSStructuredCloneData {
++    fn from(bytes: Vec<u8>) -> Self {
++        Self { bytes }
++    }
++}
++
++impl From<JSStructuredCloneData> for Vec<u8> {
++    fn from(data: JSStructuredCloneData) -> Self {
++        data.bytes
++    }
++}
++
+ /// SpiderMonkey's `JSAutoStructuredCloneBuffer`: data plus the version.
+ pub struct JSAutoStructuredCloneBuffer {
+     pub data_: JSStructuredCloneData,
+@@ -47,24 +59,6 @@ pub unsafe fn DeleteJSAutoStructuredCloneBuffer(buffer: *mut JSAutoStructuredClo
+     drop(unsafe { Box::from_raw(buffer) });
+ }
+ 
+-pub unsafe fn GetLengthOfJSStructuredCloneData(data: *mut JSStructuredCloneData) -> usize {
+-    // SAFETY: callers pass valid data.
+-    unsafe { &*data }.bytes.len()
+-}
+-
+-pub unsafe fn CopyJSStructuredCloneData(src: *mut JSStructuredCloneData, dest: *mut u8) {
+-    // SAFETY: `dest` has room for the data (`GetLengthOfJSStructuredCloneData`).
+-    let bytes = unsafe { &(*src).bytes };
+-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dest, bytes.len()) };
+-}
+-
+-pub unsafe fn WriteBytesToJSStructuredCloneData(src: *const u8, len: usize, dest: *mut JSStructuredCloneData) -> bool {
+-    // SAFETY: callers pass `len` readable bytes and valid data.
+-    let bytes = if len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(src, len) } };
+-    unsafe { &mut *dest }.bytes.extend_from_slice(bytes);
+-    true
+-}
+-
+ // Markers of embedder objects in the stream.
+ const HOST_OBJECT: u32 = 0;
+ const HOST_TRANSFERRED: u32 = 1;
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index e11b1ffb985..5c2d93ebb34 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1790,7 +1790,6 @@ mod structured_clone {
+     use super::{describe, eval};
+     use crate::jsapi::*;
+     use crate::jsval::*;
+-    use crate::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData};
+     use crate::rust::{JSAutoStructuredCloneBufferWrapper, JSEngineHandle, Runtime};
+ 
+     static CLASS: JSClass = JSClass {
+@@ -1878,6 +1877,22 @@ mod structured_clone {
+         value.to_int32()
+     }
+ 
++    #[test]
++    fn structured_clone_storage_moves_without_copying() {
++        let bytes = vec![1, 2, 3, 4];
++        let pointer = bytes.as_ptr();
++        let capacity = bytes.capacity();
++        let mut data: JSStructuredCloneData = bytes.into();
++        let bytes: Vec<u8> = std::mem::take(&mut data).into();
++        assert_eq!(bytes.as_ptr(), pointer);
++        assert_eq!(bytes.capacity(), capacity);
++        assert!(Vec::<u8>::from(data).is_empty());
++        let received: JSStructuredCloneData = bytes.into();
++        let bytes: Vec<u8> = received.into();
++        assert_eq!(bytes.as_ptr(), pointer);
++        assert_eq!(bytes, [1, 2, 3, 4]);
++    }
++
+     #[test]
+     fn structured_clone_round_trips_values_host_objects_and_transfers() {
+         let runtime = Runtime::new(JSEngineHandle::for_tests());
+@@ -1905,11 +1920,10 @@ mod structured_clone {
+         assert!(eval(&runtime, "buffer.byteLength === 0").to_boolean(), "transferred buffers are detached");
+ 
+         // Bytes only: as if they crossed a process boundary.
+-        let mut bytes = vec![0u8; unsafe { GetLengthOfJSStructuredCloneData(data) }];
+-        unsafe { CopyJSStructuredCloneData(data, bytes.as_mut_ptr()) };
++        let bytes: Vec<u8> = std::mem::take(data).into();
+         let received = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+         let received_data = unsafe { &mut (*received.as_raw_ptr()).data_ };
+-        assert!(unsafe { WriteBytesToJSStructuredCloneData(bytes.as_ptr(), bytes.len(), received_data) });
++        *received_data = bytes.into();
+         rooted!(in(cx) let mut copy = UndefinedValue());
+         assert!(unsafe {
+             JS_ReadStructuredClone(cx, received_data, JS_STRUCTURED_CLONE_VERSION, StructuredCloneScope::DifferentProcess, copy.handle_mut().into(), &policy, &CALLBACKS, ptr::null_mut())
+diff --git a/components/script/dom/bindings/structuredclone.rs b/components/script/dom/bindings/structuredclone.rs
+index b05fa370afd..746a10a8bad 100644
+--- a/components/script/dom/bindings/structuredclone.rs
++++ b/components/script/dom/bindings/structuredclone.rs
+@@ -11,9 +11,6 @@ use std::ptr::{self, NonNull};
+ use js::context::{JSContext, NoGC};
+ use js::conversions::ToJSValConvertible;
+ use js::gc::RootedVec;
+-use js::glue::{
+-    CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData,
+-};
+ use js::jsapi::{
+     CloneDataPolicy, HandleObject as RawHandleObject, Heap, JS_ReadUint32Pair,
+     JS_STRUCTURED_CLONE_VERSION, JS_WriteUint32Pair, JSContext as RawJSContext, JSObject,
+@@ -773,13 +770,8 @@ pub(crate) fn write(
+             return Err(error);
+         }
+ 
+-        let nbytes = GetLengthOfJSStructuredCloneData(scdata);
+-        let mut data = Vec::with_capacity(nbytes);
+-        CopyJSStructuredCloneData(scdata, data.as_mut_ptr());
+-        data.set_len(nbytes);
+-
+         let data = StructuredSerializedData {
+-            serialized: data,
++            serialized: std::mem::take(scdata).into(),
+             ports: sc_writer.ports.take(),
+             transform_streams: sc_writer.transform_streams_port.take(),
+             points: sc_writer.points.take(),
+@@ -842,11 +834,7 @@ pub(crate) fn read(
+         );
+         let scdata = &mut ((*scbuf.as_raw_ptr()).data_);
+ 
+-        WriteBytesToJSStructuredCloneData(
+-            data.serialized.as_mut_ptr() as *const u8,
+-            data.serialized.len(),
+-            scdata,
+-        );
++        *scdata = std::mem::take(&mut data.serialized).into();
+ 
+         let result = JS_ReadStructuredClone(
+             cx,

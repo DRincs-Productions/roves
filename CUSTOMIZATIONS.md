@@ -13999,3 +13999,24 @@ These are diagnostic headless observations, not a CPU comparison with Chrome. Po
 runtime verification is pending CI. The two upstream v0.5.0 files were downloaded fresh;
 replaying their prior 0224 hunks and then 0230 passes and reproduces this checkout exactly
 apart from line endings. Full ordered patch replay and platform compilation remain CI checks.
+
+## 2026-10-17 - Move structured-clone byte storage across the DOM bridge
+
+**Servo/engine files:** `components/script/dom/bindings/structuredclone.rs`,
+`components/roves-js/src/structured_clone_impl.rs`, `glue.rs`, `tests.rs`.
+**Patch:** `0231-move-structured-clone-storage.patch`, after 0230. Repository diagnostics:
+`support/perf/worker-messaging-bench.html`, support README, performance notes and wiki.
+
+Reuse V8 ValueSerializer/ValueDeserializer and standard Rust From/mem::take to move the
+owned serialized Vec into the transport and back into the clone reader. Remove the three raw
+copy/length helpers, the redundant import/export glue and manual Vec::set_len initialization.
+The wire format and host-object/transfer callbacks are unchanged. This removes two intermediate
+full-stream copies and about 19 implementation lines; it does not eliminate the separate payload
+copies of transferred ArrayBuffers or add a new dependency.
+
+The pre-change optimized runtime passes three visible messaging runs; 4 MiB transfer round-trip
+medians are 4.70/6.47/5.77 ms versus about 0.10 ms in three Chrome DevTools MCP runs. These are
+baselines, not post-change gains. Local roves-js tests: 33 passed, two ignored microbenchmarks;
+both structured-clone tests pass, including allocation-address/capacity preservation. Fresh-file
+ordered patch replay reproduces all four changed files. DOM compilation and downloaded artifact
+runtime checks remain CI responsibilities.

@@ -35,8 +35,7 @@ pub use crate::script_impl::{
 pub use crate::values_impl::JS_GetPromiseResult;
 pub use crate::modules_impl::JS_GetModulePrivate;
 pub use crate::structured_clone_impl::{
-    CopyJSStructuredCloneData, DeleteJSAutoStructuredCloneBuffer, GetLengthOfJSStructuredCloneData,
-    NewJSAutoStructuredCloneBuffer, WriteBytesToJSStructuredCloneData,
+    DeleteJSAutoStructuredCloneBuffer, NewJSAutoStructuredCloneBuffer,
 };
 pub use crate::proxy::{
     CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,

@@ -11,9 +11,6 @@ use std::ptr::{self, NonNull};
 use js::context::{JSContext, NoGC};
 use js::conversions::ToJSValConvertible;
 use js::gc::RootedVec;
-use js::glue::{
-    CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData,
-};
 use js::jsapi::{
     CloneDataPolicy, HandleObject as RawHandleObject, Heap, JS_ReadUint32Pair,
     JS_STRUCTURED_CLONE_VERSION, JS_WriteUint32Pair, JSContext as RawJSContext, JSObject,
@@ -773,13 +770,8 @@ pub(crate) fn write(
             return Err(error);
         }
 
-        let nbytes = GetLengthOfJSStructuredCloneData(scdata);
-        let mut data = Vec::with_capacity(nbytes);
-        CopyJSStructuredCloneData(scdata, data.as_mut_ptr());
-        data.set_len(nbytes);
-
         let data = StructuredSerializedData {
-            serialized: data,
+            serialized: std::mem::take(scdata).into(),
             ports: sc_writer.ports.take(),
             transform_streams: sc_writer.transform_streams_port.take(),
             points: sc_writer.points.take(),
@@ -842,11 +834,7 @@ pub(crate) fn read(
         );
         let scdata = &mut ((*scbuf.as_raw_ptr()).data_);
 
-        WriteBytesToJSStructuredCloneData(
-            data.serialized.as_mut_ptr() as *const u8,
-            data.serialized.len(),
-            scdata,
-        );
+        *scdata = std::mem::take(&mut data.serialized).into();
 
         let result = JS_ReadStructuredClone(
             cx,

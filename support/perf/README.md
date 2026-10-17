@@ -21,6 +21,11 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
   Browsers with reusable thread pools may retain threads. Memory can remain cached by allocators.
   `workers=1..8` and `mib=1..16` control the load. The page remains open for external sampling;
   its completion marker alone is not evidence that worker runtimes were released.
+- `worker-messaging-bench.html?auto=1`: worker startup/constructor time and sequential
+  round-trips of 1 KiB, 128 KiB and 4 MiB ArrayBuffers, cloned or transferred both ways.
+  Checks detachment and payload endpoints. Four warm-up iterations precede 16 timed samples;
+  their p95 is the maximum, not a robust tail estimate. Report enqueue time separately from
+  round-trip latency. Repeat in new Roves processes and record Chrome MCP browser/context state.
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.

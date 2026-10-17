@@ -32,6 +32,18 @@ pub struct JSStructuredCloneData {
     pub(crate) bytes: Vec<u8>,
 }
 
+impl From<Vec<u8>> for JSStructuredCloneData {
+    fn from(bytes: Vec<u8>) -> Self {
+        Self { bytes }
+    }
+}
+
+impl From<JSStructuredCloneData> for Vec<u8> {
+    fn from(data: JSStructuredCloneData) -> Self {
+        data.bytes
+    }
+}
+
 /// SpiderMonkey's `JSAutoStructuredCloneBuffer`: data plus the version.
 pub struct JSAutoStructuredCloneBuffer {
     pub data_: JSStructuredCloneData,
@@ -45,24 +57,6 @@ pub unsafe fn NewJSAutoStructuredCloneBuffer(_scope: StructuredCloneScope, _call
 pub unsafe fn DeleteJSAutoStructuredCloneBuffer(buffer: *mut JSAutoStructuredCloneBuffer) {
     // SAFETY: buffers come from `NewJSAutoStructuredCloneBuffer`.
     drop(unsafe { Box::from_raw(buffer) });
-}
-
-pub unsafe fn GetLengthOfJSStructuredCloneData(data: *mut JSStructuredCloneData) -> usize {
-    // SAFETY: callers pass valid data.
-    unsafe { &*data }.bytes.len()
-}
-
-pub unsafe fn CopyJSStructuredCloneData(src: *mut JSStructuredCloneData, dest: *mut u8) {
-    // SAFETY: `dest` has room for the data (`GetLengthOfJSStructuredCloneData`).
-    let bytes = unsafe { &(*src).bytes };
-    unsafe { std::ptr::copy_nonoverlapping(bytes.as_ptr(), dest, bytes.len()) };
-}
-
-pub unsafe fn WriteBytesToJSStructuredCloneData(src: *const u8, len: usize, dest: *mut JSStructuredCloneData) -> bool {
-    // SAFETY: callers pass `len` readable bytes and valid data.
-    let bytes = if len == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(src, len) } };
-    unsafe { &mut *dest }.bytes.extend_from_slice(bytes);
-    true
 }
 
 // Markers of embedder objects in the stream.

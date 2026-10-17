@@ -1790,7 +1790,6 @@ mod structured_clone {
     use super::{describe, eval};
     use crate::jsapi::*;
     use crate::jsval::*;
-    use crate::glue::{CopyJSStructuredCloneData, GetLengthOfJSStructuredCloneData, WriteBytesToJSStructuredCloneData};
     use crate::rust::{JSAutoStructuredCloneBufferWrapper, JSEngineHandle, Runtime};
 
     static CLASS: JSClass = JSClass {
@@ -1879,6 +1878,22 @@ mod structured_clone {
     }
 
     #[test]
+    fn structured_clone_storage_moves_without_copying() {
+        let bytes = vec![1, 2, 3, 4];
+        let pointer = bytes.as_ptr();
+        let capacity = bytes.capacity();
+        let mut data: JSStructuredCloneData = bytes.into();
+        let bytes: Vec<u8> = std::mem::take(&mut data).into();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes.capacity(), capacity);
+        assert!(Vec::<u8>::from(data).is_empty());
+        let received: JSStructuredCloneData = bytes.into();
+        let bytes: Vec<u8> = received.into();
+        assert_eq!(bytes.as_ptr(), pointer);
+        assert_eq!(bytes, [1, 2, 3, 4]);
+    }
+
+    #[test]
     fn structured_clone_round_trips_values_host_objects_and_transfers() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();
@@ -1905,11 +1920,10 @@ mod structured_clone {
         assert!(eval(&runtime, "buffer.byteLength === 0").to_boolean(), "transferred buffers are detached");
 
         // Bytes only: as if they crossed a process boundary.
-        let mut bytes = vec![0u8; unsafe { GetLengthOfJSStructuredCloneData(data) }];
-        unsafe { CopyJSStructuredCloneData(data, bytes.as_mut_ptr()) };
+        let bytes: Vec<u8> = std::mem::take(data).into();
         let received = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
         let received_data = unsafe { &mut (*received.as_raw_ptr()).data_ };
-        assert!(unsafe { WriteBytesToJSStructuredCloneData(bytes.as_ptr(), bytes.len(), received_data) });
+        *received_data = bytes.into();
         rooted!(in(cx) let mut copy = UndefinedValue());
         assert!(unsafe {
             JS_ReadStructuredClone(cx, received_data, JS_STRUCTURED_CLONE_VERSION, StructuredCloneScope::DifferentProcess, copy.handle_mut().into(), &policy, &CALLBACKS, ptr::null_mut())
