@@ -1,3 +1,14 @@
+## 2026-10-17 - Verify authorized analyser runtime and isolated CPU measurements
+
+Update README, TODO, performance notes and wiki after the supported escalation request successfully
+launched the verified Windows CI build. All twelve before/after debug headless checks passed,
+using three fresh processes per variant at zero/eight unread analyzers, alternating order.
+At eight analyzers the median process CPU dropped from 42.6% to 24.4% of one logical core;
+median peak private memory increased by 1.2 MiB. Preserve individual runs, zero-node controls,
+software-renderer conditions and scope: no whole-game, GPU or Chrome performance claim.
+No runtime source changes or new dependencies. Temporary measurement code and logs remain
+under target/perf-local-20261017; the process sampler uses maintained .NET system APIs.
+
 ## 2026-10-17 - Record native animation evidence and refine CPU follow-up
 
 Update performance notes, TODO and wiki with Chrome DevTools MCP observations: Chrome

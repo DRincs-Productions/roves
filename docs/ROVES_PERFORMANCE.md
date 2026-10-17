@@ -271,9 +271,40 @@ Fixture ripetibile: `support/perf/analyser-transport-bench.html?nodes=8`, senza 
 di script occupato, controlla la storia audio completa. Il secondo occupato va escluso dalla
 misura CPU. Chrome 155.0.8059.84, visibile con viewport 929×861, passa via Chrome DevTools
 MCP sia senza letture (`reads: 0`, 13.008 ms) sia con letture (`reads: 6824`, 13.022 ms), a
-48 kHz. Sono prove funzionali, non un confronto di CPU. La build Roves post-modifica non ha
-ancora una verifica runtime valida; il precedente pass Roves 20f899dcfbb (44,1 kHz, headless)
-è pre-modifica e non va usato come prova della nuova coda.
+48 kHz. Sono prove funzionali, non un confronto di CPU con Chrome. Il precedente pass Roves
+20f899dcfbb (44,1 kHz, headless) è pre-modifica; la verifica post-modifica è ora riportata
+nella prova autorizzata del 17 ottobre qui sotto.
+
+### Prova autorizzata del trasporto audio, 17 ottobre 2026
+
+Passando alla modalità con approvazione, la richiesta `require_escalated` consente finalmente
+`Start-Process` e la cattura di CPU/RAM/log. La build `1e9c7dcfea2` supera il benchmark con
+argomenti corretti. Il precedente panic non si ripresenta in questa prova; la sua causa
+originaria non è stata accertata. I rifiuti di policy riportati sopra descrivono i tentativi
+precedenti, non un blocco attuale di questa via di esecuzione.
+
+Confronto preliminare: artefatto debug precedente conservato come `ci-debug-20f899d` e nuovo
+portable CI `1e9c7dcfea2`, stessa pagina HTTP locale, modalità headless, 44,1 kHz, viewport
+1024×740. Tre processi nuovi per variante e numero di nodi (12 prove), ordine alternato.
+Campioni del processo ogni circa 200 ms: finestra centrale di circa 9,8 s dopo `TRANSPORT
+READY`, escludendo avvio e busy loop finale. Tutte le prove riportano `TRANSPORT PASS`.
+
+| Analizzatori non letti | CPU prima / dopo, mediana (% di un core) | Picco memoria privata prima / dopo, mediana |
+| --- | --- | --- |
+| 0 | 16,1 / 14,9 | 194,6 / 194,5 MiB |
+| 8 | 42,6 / 24,4 | 200,1 / 201,3 MiB |
+
+Con 8 nodi la CPU mediana scende del 42,8%, con circa 1,2 MiB privati in più. Singole corse
+CPU prima: 52,4 / 42,6 / 38,4%; dopo: 24,4 / 23,2 / 27,0%. Il controllo a 0 nodi varia da
+13,2 a 18,9% fra le due build: non sottrarre le baseline per dedurre un costo preciso per nodo.
+100% corrisponde a un core logico, non all'intera CPU. I picchi di working set con 8 nodi
+sono 167,3 / 168,6 MiB (mediane). Non è una verifica di crescita memoria su lunghe sessioni.
+
+Sono artefatti debug conservati, senza una ricostruzione A/B ottimizzata in questo esperimento.
+Il renderer headless è Microsoft Basic Render Driver via ANGLE: questi dati non misurano GPU,
+rendering visibile, analizzatori letti a ogni frame o CPU totale del gioco e non confrontano
+Chrome. Non attribuire il risultato al typewriter, che non usa questi analizzatori.
+Log e campioni: `target/perf-local-20261017/transport-comparison/`, incluse statistiche JSON.
 
 Typewriter: una corsa Chrome MCP visibile (viewport 929×861, canvas 300×200, GTX 1050 via
 ANGLE/D3D11) dà p99 17,4 ms e 6 frame sopra 33 ms in 20 s dopo 5 s di warm-up. Roves

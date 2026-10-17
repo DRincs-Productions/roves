@@ -414,6 +414,8 @@ The development tree also delegates Web Audio frequency analysis to RealFFT/Rust
 replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.
 The development analyser transport uses Crossbeam's bounded queue to retain the latest audio
 window without per-block DOM tasks; whole-game CPU savings remain to be measured.
+An isolated debug/headless test with eight unread analyzers measured about 43% lower process
+CPU, with about 1.2 MiB more private memory; conditions and variability are in the performance notes.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

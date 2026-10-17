@@ -113,9 +113,10 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
   verificando stacking context, hit testing e memoria GPU. Chrome MCP osserva fino a 120
   animazioni native nella fixture typewriter; il risparmio CPU ottenibile non è misurato.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
-- [ ] Misurare CPU e memoria del nuovo trasporto AnalyserNode Crossbeam con 0/1/più nodi,
-  letti e non letti, usando `support/perf/analyser-transport-bench.html`. Verificare la build
-  integrata e l'effetto sul gioco; la rimozione dei task DOM non misura il guadagno totale.
+- [ ] Estendere la misura AnalyserNode Crossbeam a build ottimizzate, letture per frame,
+  più carichi e sessioni lunghe, poi verificare l'effetto sul gioco. La verifica runtime e
+  le 12 prove debug/headless con 0/8 nodi non letti sono passate: CPU mediana a 8 nodi
+  −42,8%, memoria privata +1,2 MiB. Condizioni e variabilità in `docs/ROVES_PERFORMANCE.md`.
 - [ ] Valutare AudioWorklet sul grafo servo-media esistente: isolate V8 dedicato, moduli,
   MessagePort e processori audio; nessun callback sul thread DOM per ogni blocco audio.
 - [ ] Verificare howler.js e Tone.js con playback reale, automazione, loop, sospensione,
