@@ -22,3 +22,6 @@ Keep foreground and headless samples separate. Results are in [`ROVES_PERFORMANC
 Roves can run the audio test from a terminal with `play.exe -z http://127.0.0.1:48762/audio-analysis-bench.html?auto=1`.
 On PowerShell, pipe stdout to `Out-File` to wait for the GUI-subsystem executable and retain the
 `ANALYSERSTATS` / `ANALYSERBENCH PASS` results. Use a new output file for each run.
+Quote URLs containing `&` in PowerShell. Do not add `-x` to the audio benchmarks: it exits
+when the image becomes stable, before the timed audio checks finish. `-o` requires an image
+filename and is not needed for these tests; the benchmark's `auto=1` closes the window.

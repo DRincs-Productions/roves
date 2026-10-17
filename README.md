@@ -379,6 +379,9 @@ so Xvfb startup time does not consume the page-load window.
 
 ### Diagnosing a launch that appears to do nothing
 
+The development panic handler writes the message, thread and source location to `roves.log`
+before hard-fail termination, so that exit path preserves its cause.
+
 `mach bundle --diagnostic-script` ships a `diagnose.bat` (Windows) / `diagnose.sh`
 (macOS/Linux) next to the game binary — in the installable packages too, not just the
 portable one (not `--deb`, where a terminal already shows the same output directly). Running

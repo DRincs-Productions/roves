@@ -245,7 +245,13 @@ passati. Il commit `605d486b079` supera la validazione della serie patch e tutti
 desktop, Windows, macOS, Linux, Android e iOS:
 [workflow desktop](https://github.com/DRincs-Productions/roves/actions/runs/38952244417).
 L'archivio portable Windows del job è stato scaricato; l'avvio runtime locale non ha prodotto
-log o codice d'uscita, quindi non lo considero una verifica funzionale post-modifica.
+stdout o codice d'uscita. Il log in `%LOCALAPPDATA%\roves\roves.log` contiene soltanto
+`Panic hook called`: non è una verifica funzionale post-modifica. Il gestore panic perdeva
+il dettaglio nel percorso `hard_fail`, terminando prima del record di errore; la patch 0229
+anticipa quel record. La causa del panic resta da individuare. Inoltre il tentativo con
+`-x -o URL` era invalido per questo benchmark: `-o` richiede un filename, mentre `-x` può
+chiudere la pagina prima dei controlli audio. Non attribuire quel tentativo a una regressione
+della coda. La cattura locale stdout/stderr con attesa è stata rifiutata dalla policy.
 
 Le fixture typewriter/GSAP/motion ora disattivano anche il contatore FPS dei pannelli di
 sfondo, che prima aggiornava React ogni 500 ms. Il pannello three.js rilascia geometria,

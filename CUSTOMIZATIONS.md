@@ -1,3 +1,16 @@
+## 2026-10-17 - Persist panic details before hard-fail termination
+
+**Files:** `ports/servoshell/panic_hook.rs`, README, diagnostics wiki and performance notes.
+**Patch:** `0229-persist-hard-fail-panic.patch` after 0228.
+
+Move the existing error record before the hard-fail branch exits or raises a signal.
+Previously the only file record could be "Panic hook called", losing the message, thread
+and source location. Reuse the existing log/env_logger backend, whose error path flushes
+the file; no dependency or hot-path work is added. Preserve suppression for caught image
+decoder panics. This improves diagnosis, not CPU performance, and does not identify the
+cause of the failed local runtime attempt. Rustfmt and ordered replay against pristine
+Servo v0.5.0 passed; cross-platform CI remains the compilation authority.
+
 ## 2026-10-16 - Delegate analyser transport to Crossbeam ArrayQueue
 
 **Files:** workspace/audio manifests and lockfile, `components/media/audio/analyser_node.rs`,
