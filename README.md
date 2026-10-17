@@ -429,6 +429,9 @@ from 5.72 to 3.88 ms for cloning and 6.37 to 4.15 ms for transfer. These are API
 not whole-game CPU savings; the Chrome transfer reference remains about 0.10 ms.
 Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
 distinguishes this from working OffscreenCanvas contexts on the DOM thread.
+Development after the v0.7.12 tag removes redundant standard-class hooks from worker globals,
+delegating intrinsic lookups to V8. Generator tests pass; runtime performance verification
+is pending CI artifacts. The fixed-work compute probe includes a cached-function control.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

@@ -1,0 +1,56 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index f3b590523ab..efb51be2d07 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -2665,10 +2665,9 @@ class CGDOMJSClass(CGThing):
+                 args["enumerateHook"] = "Some(enumerate_window::<D>)"
+                 args["resolveHook"] = "Some(resolve_window::<D>)"
+                 args["mayResolveHook"] = "Some(may_resolve_window::<D>)"
+-            else:
+-                args["enumerateHook"] = "Some(enumerate_global)"
+-                args["resolveHook"] = "Some(resolve_global)"
+-                args["mayResolveHook"] = "Some(may_resolve_global)"
++            # V8 eagerly provides standard classes. Non-Window globals need no
++            # standard-class hooks: even no-op hooks install an interceptor that
++            # prevents fast native global loads (for example Math in worker loops).
+             args["traceHook"] = "js::jsapi::JS_GlobalObjectTraceHook"
+         return f"""
+ static CLASS_OPS: ThreadUnsafeOnceLock<JSClassOps> = ThreadUnsafeOnceLock::new();
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+index 5afc6b690ec..69242c808f3 100644
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -2,11 +2,33 @@
+ from pathlib import Path
+ import tempfile
+ import unittest
++from types import SimpleNamespace
++from unittest.mock import patch
+ 
+ from run_v8 import ROOT, generate
+ 
+ 
+ class V8GeneratorTests(unittest.TestCase):
++    def test_worker_globals_leave_intrinsic_lookup_to_v8(self):
++        from codegen import CGDOMJSClass
++
++        for needs_resolve in (False, True):
++            interface = SimpleNamespace(
++                identifier=SimpleNamespace(name="Window" if needs_resolve else "DedicatedWorkerGlobalScope"),
++                getExtendedAttribute=lambda name: needs_resolve if name == "NeedResolve" else None,
++            )
++            descriptor = SimpleNamespace(
++                interface=interface, weakReferenceable=False,
++                getParentName=lambda: "EventTarget", isGlobal=lambda: True,
++            )
++            with patch("codegen.DOMClass", return_value="DOMClass {}"):
++                source = CGDOMJSClass(descriptor).define()
++            for hook in ("enumerate", "resolve", "may_resolve"):
++                value = f"Some({hook}_window::<D>)" if needs_resolve else "None"
++                self.assertIn(f"{hook}_hook: {value}", source)
++            self.assertIn("JSCLASS_IS_GLOBAL", source)
++            self.assertIn("js::jsapi::JS_GlobalObjectTraceHook", source)
++
+     def test_real_webidl_generation_is_deterministic_and_has_every_attribute(self):
+         with tempfile.TemporaryDirectory() as directory:
+             output = Path(directory)

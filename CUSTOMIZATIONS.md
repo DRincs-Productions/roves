@@ -1,3 +1,25 @@
+## 2026-10-17 - Delegate worker intrinsic lookup directly to V8
+
+**Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.
+**Patch:** `0232-worker-native-intrinsics.patch`, after 0231. Diagnostic:
+`support/perf/worker-compute-bench.html`; README, TODO, performance notes and wiki updated.
+
+Non-Window globals inherited three SpiderMonkey standard-class hooks, which are no-ops in
+roves-js because V8 creates its standard classes eagerly. Remove their generator assignments
+so these globals no longer acquire a named-property interceptor for existing intrinsics.
+Retain Window's real lazy DOM interface hooks and global tracing/reserved-slot flags.
+Use V8's normal native property lookup, without a new dependency or custom caching layer.
+This is separate from release tag v0.7.12, which was already building when this issue was found.
+
+Before-change optimized 8db6eab: 64 worker jobs of 1048576 deterministic integer iterations
+take 8551.32 ms with Math.imul read inside the loop, versus 74.13 ms with a captured function.
+Chrome DevTools MCP on the direct-lookup case takes 69 ms. All check results pass; these are
+single diagnostic runs, not a measured engine improvement or game CPU savings. The larger
+1024-job Roves attempt times out at 60 s; retain it as a failure, not a timing result.
+All 74 generator tests pass locally, including the new class-hook regression. Fresh upstream
+selected-file replay of 72 ordered patches passes and reproduces both files exactly.
+Post-change browser runtime verification requires the new CI artifact; do not anticipate gains.
+
 ## 2026-10-17 - Record optimized audio transport verification
 
 Update performance notes with twelve passing optimized before/after mimalloc tests at zero/eight

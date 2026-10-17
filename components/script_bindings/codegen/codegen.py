@@ -2665,10 +2665,9 @@ class CGDOMJSClass(CGThing):
                 args["enumerateHook"] = "Some(enumerate_window::<D>)"
                 args["resolveHook"] = "Some(resolve_window::<D>)"
                 args["mayResolveHook"] = "Some(may_resolve_window::<D>)"
-            else:
-                args["enumerateHook"] = "Some(enumerate_global)"
-                args["resolveHook"] = "Some(resolve_global)"
-                args["mayResolveHook"] = "Some(may_resolve_global)"
+            # V8 eagerly provides standard classes. Non-Window globals need no
+            # standard-class hooks: even no-op hooks install an interceptor that
+            # prevents fast native global loads (for example Math in worker loops).
             args["traceHook"] = "js::jsapi::JS_GlobalObjectTraceHook"
         return f"""
 static CLASS_OPS: ThreadUnsafeOnceLock<JSClassOps> = ThreadUnsafeOnceLock::new();

@@ -583,6 +583,36 @@ dimostra quindi un trasferimento senza copie. Un futuro percorso nello stesso pr
 riusare BackingStore V8 e preservare ownership, errori, cleanup e il percorso multiprocesso;
 non aggiungere una tabella globale di buffer senza gestione completa del ciclo di vita.
 
+### Accessi ai globali nei worker: costo evitabile dei binding
+
+Nuova fixture `support/perf/worker-compute-bench.html?workers=1`: 64 job da 1048576 iterazioni
+di un calcolo intero deterministico, controllo del risultato di ogni job e warm-up separato.
+`&cached=1` conserva Math.imul in una variabile locale al worker; il controllo separa il
+calcolo V8 dall'accesso ripetuto al globale. Finestra visibile 1024×740, Windows, stesso HTTP.
+
+| Prova diagnostica singola | Tempo del lavoro fisso |
+| --- | --- |
+| Roves mimalloc ottimizzato `8db6eab`, Math.imul nel ciclo | 8551,32 ms |
+| Stesso Roves, funzione conservata in variabile locale | 74,13 ms |
+| Chrome 155 via DevTools MCP, Math.imul nel ciclo | 69 ms |
+
+Il tentativo più grande (1024 job da 8388608 iterazioni) supera il timeout Roves di 60 s;
+non è un risultato completo. Chrome passa quel carico con 1/2/4/8 worker in
+8176,5/4089,5/2061,2/1085,2 ms. Aumentare i worker riduce la latenza occupando più core:
+questi tempi non dimostrano meno CPU totale. Una pausa rAF Chrome da 213,8 ms nella corsa
+a due worker resta registrata; nessuna attribuzione causale a questo carico da una sola corsa.
+
+Il generatore assegnava anche ai globali non-Window tre hook delle classi standard SpiderMonkey.
+In roves-js sono già no-op perché V8 crea quelle classi; la loro presenza installa comunque un
+interceptor sul globale. La patch 0232 rimuove le tre assegnazioni e riusa gli accessi nativi
+V8. Restano gli hook reali di Window per le interfacce DOM lazy. Nessuna cache scritta a mano
+o dipendenza aggiunta. I 74 test del generatore e la riproduzione di 72 patch sui due file
+pristine passano. Verifica runtime post-modifica ancora da eseguire sull'artefatto CI;
+non attribuire alla patch il guadagno del controllo JavaScript con funzione locale.
+Questo intervento è successivo al tag v0.7.12, già in compilazione.
+Log: `worker-compute-small-{global,local}.stdout.log`, `worker-compute-8db6eab-1.stdout.log`,
+`chrome-worker-compute-1024.json`, sotto `target/perf-local-20261017/`.
+
 ### Rendering nei worker: limite funzionale verificato
 
 `support/perf/worker-canvas-probe.html`, build ottimizzata `1e9c7dcfea2` e Chrome

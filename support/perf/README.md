@@ -34,6 +34,11 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
 - `worker-queue-probe.html`: check 128 FIFO replies, a later message after the burst, canceled
   timers and a final ping. Empty wake-ups must not terminate a still-live worker. This is a
   functional regression probe, not a throughput benchmark.
+- `worker-compute-bench.html?workers=1`: fixed 64 jobs of 1048576 integer iterations across
+  1/2/4/8 workers, with a warm-up and deterministic result checks. `&cached=1` uses a captured
+  Math.imul function as a control for global-lookup overhead. Startup is reported separately.
+  More workers can improve completion time while saturating more cores; this is not a whole-game
+  CPU saving. Short fast runs do not provide enough rAF samples for frame-percentile claims.
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.

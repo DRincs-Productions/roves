@@ -2,11 +2,33 @@
 from pathlib import Path
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from run_v8 import ROOT, generate
 
 
 class V8GeneratorTests(unittest.TestCase):
+    def test_worker_globals_leave_intrinsic_lookup_to_v8(self):
+        from codegen import CGDOMJSClass
+
+        for needs_resolve in (False, True):
+            interface = SimpleNamespace(
+                identifier=SimpleNamespace(name="Window" if needs_resolve else "DedicatedWorkerGlobalScope"),
+                getExtendedAttribute=lambda name: needs_resolve if name == "NeedResolve" else None,
+            )
+            descriptor = SimpleNamespace(
+                interface=interface, weakReferenceable=False,
+                getParentName=lambda: "EventTarget", isGlobal=lambda: True,
+            )
+            with patch("codegen.DOMClass", return_value="DOMClass {}"):
+                source = CGDOMJSClass(descriptor).define()
+            for hook in ("enumerate", "resolve", "may_resolve"):
+                value = f"Some({hook}_window::<D>)" if needs_resolve else "None"
+                self.assertIn(f"{hook}_hook: {value}", source)
+            self.assertIn("JSCLASS_IS_GLOBAL", source)
+            self.assertIn("js::jsapi::JS_GlobalObjectTraceHook", source)
+
     def test_real_webidl_generation_is_deterministic_and_has_every_attribute(self):
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory)
