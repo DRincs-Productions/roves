@@ -1,0 +1,91 @@
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index be2a9ea093b..36f25557cd0 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -324,8 +324,13 @@ fn global_property_getter<'s>(
+     let id = crate::jsapi_impl::key_id(scope, key.into());
+     crate::rooted!(in(cx) let object = obj);
+     crate::rooted!(in(cx) let id = id);
++    // Access through another same-origin global must create interface objects in
++    // their owner's realm, then restore the caller even when resolution fails.
++    let old_realm = unsafe { crate::realm_impl::EnterRealm(cx, obj) };
+     let mut resolved = false;
+     let ok = unsafe { resolve(cx, object.handle().into_handle(), id.handle().into_handle(), &mut resolved) };
++    let value = if ok && resolved { resolved_value(scope, holder, key, holder) } else { None };
++    unsafe { crate::realm_impl::LeaveRealm(cx, old_realm) };
+     if !ok {
+         if holder.has_real_named_property(scope, key) == Some(false) {
+             install_global_property(scope, holder, key, args.data());
+@@ -333,10 +338,8 @@ fn global_property_getter<'s>(
+         crate::native::rethrow_pending(scope, JSContext::current());
+         return;
+     }
+-    if resolved {
+-        if let Some(value) = resolved_value(scope, holder, key, holder) {
+-            retval.set(value);
+-        }
++    if let Some(value) = value {
++        retval.set(value);
+     }
+ }
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 800b83151c4..e6f60c641fa 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1104,6 +1104,7 @@ mod lazy_globals {
+     thread_local! {
+         static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
+         static ALL_RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
++        static LAST_RESOLVE_REALM: Cell<*mut Realm> = const { Cell::new(ptr::null_mut()) };
+         static FAIL_RESOLVE_ONCE: Cell<bool> = const { Cell::new(false) };
+         static ENUMERATE_PHANTOM: Cell<bool> = const { Cell::new(false) };
+         static DEFINE_ALIAS: Cell<bool> = const { Cell::new(false) };
+@@ -1129,6 +1130,7 @@ mod lazy_globals {
+ 
+     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
+         ALL_RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
++        LAST_RESOLVE_REALM.set(unsafe { GetCurrentRealmOrNull(cx) });
+         if is_phantom(id.get()) {
+             // Reports success without defining anything (Servo does for disabled interfaces).
+             unsafe { *resolved = true };
+@@ -1321,6 +1323,27 @@ mod lazy_globals {
+         DEFINE_ALIAS.set(false);
+         unsafe { LeaveRealm(cx, old) };
+     }
++
++    #[test]
++    fn native_global_resolution_uses_the_owners_realm() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let caller_realm = unsafe { GetCurrentRealmOrNull(cx) };
++        rooted!(in(cx) let owner = unsafe {
++            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, owner.handle().into_handle()) });
++        let owner_realm = unsafe { GetObjectRealmOrNull(owner.get()) };
++        rooted!(in(cx) let caller = unsafe { CurrentGlobalOrNull(cx) });
++        rooted!(in(cx) let value = ObjectValue(owner.get()));
++        assert!(unsafe { JS_SetProperty(cx, caller.handle().into_handle(), c"otherGlobal".as_ptr(), value.handle().into_handle()) });
++        FAIL_RESOLVE_ONCE.set(true);
++        assert!(eval(&runtime, "(() => { try { otherGlobal.LazyThing; return false } catch(e) { return e === 13 } })()").to_boolean());
++        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
++        assert_eq!(eval(&runtime, "otherGlobal.LazyThing").to_int32(), 42);
++        assert_eq!(LAST_RESOLVE_REALM.get(), owner_realm);
++        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
++    }
+ }
+ 
+ mod runtime_hooks {
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index 5b58dca5b17..81e336e664d 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -69,6 +69,7 @@ use profile_traits::time::ProfilerCategory;
+ use profile_traits::time_profile;
+ use rustc_hash::{FxHashMap, FxHashSet};
+ use script_bindings::cell::DomRefCell;
++use script_bindings::reflector::DomObject;
+ use script_traits::{
+     ConstellationInputEvent, DiscardBrowsingContext, DocumentActivity, InitialScriptState,
+     NewPipelineInfo, Painter, ProgressiveWebMetricType, ScriptThreadMessage,

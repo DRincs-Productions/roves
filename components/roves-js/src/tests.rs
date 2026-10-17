@@ -1104,6 +1104,7 @@ mod lazy_globals {
     thread_local! {
         static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
         static ALL_RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
+        static LAST_RESOLVE_REALM: Cell<*mut Realm> = const { Cell::new(ptr::null_mut()) };
         static FAIL_RESOLVE_ONCE: Cell<bool> = const { Cell::new(false) };
         static ENUMERATE_PHANTOM: Cell<bool> = const { Cell::new(false) };
         static DEFINE_ALIAS: Cell<bool> = const { Cell::new(false) };
@@ -1129,6 +1130,7 @@ mod lazy_globals {
 
     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
         ALL_RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
+        LAST_RESOLVE_REALM.set(unsafe { GetCurrentRealmOrNull(cx) });
         if is_phantom(id.get()) {
             // Reports success without defining anything (Servo does for disabled interfaces).
             unsafe { *resolved = true };
@@ -1320,6 +1322,27 @@ mod lazy_globals {
         assert_eq!(ALL_RESOLVE_CALLS.with(Cell::get), all_before + 1, "defining an alias must not invoke its placeholder");
         DEFINE_ALIAS.set(false);
         unsafe { LeaveRealm(cx, old) };
+    }
+
+    #[test]
+    fn native_global_resolution_uses_the_owners_realm() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let caller_realm = unsafe { GetCurrentRealmOrNull(cx) };
+        rooted!(in(cx) let owner = unsafe {
+            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, owner.handle().into_handle()) });
+        let owner_realm = unsafe { GetObjectRealmOrNull(owner.get()) };
+        rooted!(in(cx) let caller = unsafe { CurrentGlobalOrNull(cx) });
+        rooted!(in(cx) let value = ObjectValue(owner.get()));
+        assert!(unsafe { JS_SetProperty(cx, caller.handle().into_handle(), c"otherGlobal".as_ptr(), value.handle().into_handle()) });
+        FAIL_RESOLVE_ONCE.set(true);
+        assert!(eval(&runtime, "(() => { try { otherGlobal.LazyThing; return false } catch(e) { return e === 13 } })()").to_boolean());
+        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
+        assert_eq!(eval(&runtime, "otherGlobal.LazyThing").to_int32(), 42);
+        assert_eq!(LAST_RESOLVE_REALM.get(), owner_realm);
+        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
     }
 }
 

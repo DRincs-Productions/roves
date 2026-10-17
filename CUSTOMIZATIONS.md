@@ -1,3 +1,16 @@
+## 2026-10-17 - Complete native-global callback integration
+
+**Files:** `components/roves-js/src/object.rs`, tests and `components/script/script_thread.rs`.
+**Patch:** `0234-native-global-integration.patch`, after 0233.
+
+Enter the owning global's realm around lazy interface resolution and restore the caller on
+both success and failure. A same-origin cross-global regression first reproduced the wrong
+realm, then passed after the change. Import the DomObject trait used by ScriptThread's new
+reflector call; the first full CI build exposed the missing method import (E0599).
+Reuse the existing realm API; no dependency or new scheduling/cache mechanism.
+Local suite:38 passed, two ignored. Fresh ordered replay of30 patches matches all three files.
+Final browser compilation, startup and performance verification remain CI responsibilities.
+
 ## 2026-10-17 - Release v0.7.12 and synchronize consumers
 
 Tag 0d89099fa9d as v0.7.12. All six release builds pass and all six plain/Steam platform

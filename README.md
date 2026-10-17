@@ -434,7 +434,8 @@ delegating intrinsic lookups to V8. All desktop/V8 CI checks and the downloaded 
 the fixed-work direct-lookup probe takes 93 ms in the new debug build, versus 8551 ms in the
 previous optimized build. This diagnostic comparison is not a matched-profile CPU percentage.
 A subsequent development change uses V8 native data properties for Window's lazy interfaces,
-with 37 engine-layer tests passing; browser verification is pending CI artifacts.
+with 38 engine-layer tests passing, including cross-global ownership and exception recovery;
+browser verification is pending CI artifacts.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

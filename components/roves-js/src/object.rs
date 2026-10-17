@@ -324,8 +324,13 @@ fn global_property_getter<'s>(
     let id = crate::jsapi_impl::key_id(scope, key.into());
     crate::rooted!(in(cx) let object = obj);
     crate::rooted!(in(cx) let id = id);
+    // Access through another same-origin global must create interface objects in
+    // their owner's realm, then restore the caller even when resolution fails.
+    let old_realm = unsafe { crate::realm_impl::EnterRealm(cx, obj) };
     let mut resolved = false;
     let ok = unsafe { resolve(cx, object.handle().into_handle(), id.handle().into_handle(), &mut resolved) };
+    let value = if ok && resolved { resolved_value(scope, holder, key, holder) } else { None };
+    unsafe { crate::realm_impl::LeaveRealm(cx, old_realm) };
     if !ok {
         if holder.has_real_named_property(scope, key) == Some(false) {
             install_global_property(scope, holder, key, args.data());
@@ -333,10 +338,8 @@ fn global_property_getter<'s>(
         crate::native::rethrow_pending(scope, JSContext::current());
         return;
     }
-    if resolved {
-        if let Some(value) = resolved_value(scope, holder, key, holder) {
-            retval.set(value);
-        }
+    if let Some(value) = value {
+        retval.set(value);
     }
 }
 

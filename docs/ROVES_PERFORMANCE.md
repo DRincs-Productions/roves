@@ -645,10 +645,14 @@ I resolver esistenti definiscono il descrittore definitivo. Il flag JSPROP_RESOL
 che le definizioni di alias avviino altri getter; nessun registro o cache aggiunto.
 L'alternativa SetLazyDataProperty non è usata: fallisce quando la callback Servo modifica
 la proprietà che V8 vuole sostituire automaticamente. Il prototipo è stato corretto localmente.
-Passano 37 test V8 locali (due microbenchmark ignorati), inclusi override, cancellazione,
+Passano 38 test V8 locali (due microbenchmark ignorati), inclusi override, cancellazione,
 alias, errori/ritentativi, interfacce disabilitate, precedenza sui prototipi e GC.
 La riproduzione ordinata di 31 patch sui sette file passa. Verifica browser post-modifica
 ancora necessaria; non dichiarare misurato il guadagno del nuovo percorso Window.
+Il controllo fra globali ha trovato che il callback usava il realm chiamante: la patch 0234
+entra nel realm proprietario e ripristina il chiamante anche dopo un'eccezione. Corregge inoltre
+l'import DomObject richiesto da ScriptThread, mancante nella prima compilazione CI (E0599).
+Riproduzione selezionata di 30 patch sui tre file PASS; nuova verifica CI necessaria.
 
 ### Rendering nei worker: limite funzionale verificato
 
