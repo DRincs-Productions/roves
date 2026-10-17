@@ -1,0 +1,50 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker queue probe</title>
+<link rel="icon" href="data:,">
+<pre id="output">Checking message bursts and idle wake-ups...</pre>
+<script>
+const output = document.querySelector("#output");
+const log = (data) => {
+  const line = "WORKERQUEUE " + JSON.stringify(data);
+  output.textContent += "\n" + line;
+  console.log(line);
+};
+const url = URL.createObjectURL(new Blob([`
+  onmessage = ({data}) => {
+    if (data === "after-burst") {
+      const timers = [];
+      for (let i = 0; i < 32; i++) timers.push(setTimeout(() => {}, 0));
+      for (const timer of timers) clearTimeout(timer);
+      setTimeout(() => postMessage("after-timers"), 20);
+    } else postMessage(data);
+  };
+  postMessage("ready");
+`], { type: "text/javascript" }));
+const worker = new Worker(url);
+const received = new Set();
+let completed = false;
+const finish = (data) => {
+  if (completed) return;
+  completed = true;
+  clearTimeout(timeout);
+  log(data);
+  worker.terminate();
+  URL.revokeObjectURL(url);
+};
+const timeout = setTimeout(() => finish({ phase: "FAIL", received: received.size, error: "timeout" }), 10000);
+worker.onerror = (event) => finish({ phase: "FAIL", error: event.message });
+worker.onmessage = ({data}) => {
+  if (data === "ready") {
+    for (let i = 0; i < 128; i++) worker.postMessage(i);
+  } else if (data === "after-timers") {
+    worker.postMessage("final");
+  } else if (data === "final") {
+    finish({ phase: "PASS", received: received.size });
+  } else if (Number.isInteger(data) && data >= 0 && data < 128) {
+    if (data !== received.size) return finish({ phase: "FAIL", error: "message order" });
+    received.add(data);
+    if (received.size === 128) setTimeout(() => worker.postMessage("after-burst"), 100);
+  } else finish({ phase: "FAIL", error: "unexpected message" });
+};
+</script>

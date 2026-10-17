@@ -1,16 +1,54 @@
 diff --git a/components/script/dom/workers/abstractworkerglobalscope.rs b/components/script/dom/workers/abstractworkerglobalscope.rs
-index fa52317300a..c7d08d61793 100644
+index fa52317300a..c0a872b6f4a 100644
 --- a/components/script/dom/workers/abstractworkerglobalscope.rs
 +++ b/components/script/dom/workers/abstractworkerglobalscope.rs
-@@ -64,6 +64,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
-     // explicit close/exit Sharedworker path). Treat that as a clean shutdown signal rather
-     // than panicking on RecvError.
-     let Some(event) = event else {
-+        scope.close();
-         return;
+@@ -46,25 +46,28 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
+     let task_queue = worker_scope.task_queue();
+ 
+     let event = select! {
+-        recv(worker_scope.control_receiver()) -> msg => match msg {
+-            Ok(msg) => Some(T::from_control_msg(msg)),
+-            Err(_) => None,
+-        },
+-        recv(task_queue.select()) -> msg => match msg {
+-            Ok(msg) => {
+-                task_queue.take_tasks(msg, &FxHashSet::default());
+-                task_queue.recv().ok().map(T::from_worker_msg)
+-            },
+-            Err(_) => None,
+-        },
+-        recv(scope.timer_scheduler().wait_channel()) -> _ => Some(T::from_timer_msg()),
++        recv(worker_scope.control_receiver()) -> msg => msg.map(|msg| Some(T::from_control_msg(msg))),
++        recv(task_queue.select()) -> msg => msg.map(|msg| {
++            task_queue.take_tasks(msg, &FxHashSet::default());
++            task_queue.recv().ok().map(T::from_worker_msg)
++        }),
++        recv(scope.timer_scheduler().wait_channel()) -> _ => Ok(Some(T::from_timer_msg())),
      };
  
-@@ -91,6 +92,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
+-    // Worker channels can be closed during teardown (for example, after an
+-    // explicit close/exit Sharedworker path). Treat that as a clean shutdown signal rather
+-    // than panicking on RecvError.
+-    let Some(event) = event else {
+-        return;
++    // A normal wake-up may leave no runnable task. Only a disconnected receiver
++    // means shutdown; selecting that receiver again would otherwise spin.
++    let event = match event {
++        Ok(Some(event)) => event,
++        Ok(None) => {
++            if scope.is_closing() {
++                scope.close();
++            }
++            return;
++        },
++        Err(_) => {
++            scope.close();
++            return;
++        },
+     };
+ 
+     scope.timer_scheduler().dispatch_completed_timers();
+@@ -91,6 +94,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
          let cx = &mut realm.current_realm();
          if !worker_scope.handle_event(event, cx) {
              // Shutdown

@@ -424,6 +424,8 @@ verification tracked in the performance notes. No worker scheduler dependency is
 The development structured-clone bridge also moves V8's serialized byte vector through Rust
 ownership instead of copying it twice; full ArrayBuffer transfer still has separate payload
 copies. Worker messaging benchmarks and pending runtime comparisons are in the same notes.
+Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
+distinguishes this from working OffscreenCanvas contexts on the DOM thread.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

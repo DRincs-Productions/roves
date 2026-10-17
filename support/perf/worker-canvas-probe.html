@@ -1,0 +1,18 @@
+<!doctype html><meta charset="utf-8"><title>Worker canvas probe</title><link rel="icon" href="data:,"><pre id="out">Checking worker canvas APIs...</pre><script>
+const source = `
+const result={offscreenCanvas:typeof OffscreenCanvas,requestAnimationFrame:typeof requestAnimationFrame};
+for(const kind of ['webgl','webgl2']){
+ try{
+  const canvas=new OffscreenCanvas(16,16);const gl=canvas.getContext(kind);
+  if(!gl){result[kind]={available:false};continue;}
+  const pixel=new Uint8Array(4);gl.clearColor(1,0,0,1);gl.clear(gl.COLOR_BUFFER_BIT);
+  gl.readPixels(0,0,1,1,gl.RGBA,gl.UNSIGNED_BYTE,pixel);
+  result[kind]={available:true,pixel:Array.from(pixel),correct:pixel[0]===255&&pixel[1]===0&&pixel[2]===0&&pixel[3]===255};
+  gl.getExtension('WEBGL_lose_context')?.loseContext();
+ }catch(error){result[kind]={available:false,error:String(error)};}
+}
+postMessage(result);close();`;
+const url=URL.createObjectURL(new Blob([source],{type:'text/javascript'}));const worker=new Worker(url);
+worker.onmessage=({data})=>{console.log('WORKERCAPS '+JSON.stringify(data));document.querySelector('#out').textContent=JSON.stringify(data,null,2);URL.revokeObjectURL(url);};
+worker.onerror=event=>console.log('WORKERCAPS '+JSON.stringify({error:event.message}));
+</script>

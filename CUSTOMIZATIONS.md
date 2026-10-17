@@ -13990,6 +13990,10 @@ Reuse the existing Crossbeam sender and WakeUp message after requesting V8 inter
 Worker.terminate(). An isolate interrupt alone does not wake a worker blocked in select!.
 Also close the worker scope on a disconnected channel or an explicit event-handler shutdown
 so the outer loop cannot repeatedly select a permanently ready disconnected channel.
+Preserve Result versus Option at selection: an empty queue after a normal WakeUp is not a
+disconnected channel. A separate queue probe covers bursts, canceled timers and later messages;
+its pre-change baseline passes in Roves and Chrome. This distinction was corrected during
+review before accepting the post-change artifact.
 No dependency, custom queue, or scheduler is added.
 
 The optimized pre-change artifact (1e9c7dcfea2) retains all four newly created idle-worker
@@ -14020,3 +14024,14 @@ baselines, not post-change gains. Local roves-js tests: 33 passed, two ignored m
 both structured-clone tests pass, including allocation-address/capacity preservation. Fresh-file
 ordered patch replay reproduces all four changed files. DOM compilation and downloaded artifact
 runtime checks remain CI responsibilities.
+
+## 2026-10-17 - Distinguish worker canvas exposure from rendering support
+
+**Repository-only diagnostic:** `support/perf/worker-canvas-probe.html`, support README,
+performance notes, main README and wiki. No Servo runtime change or source-overlay patch.
+
+The visible optimized pre-change runtime exposes OffscreenCanvas in workers, but its WebGL1/2
+context creation returns null and requestAnimationFrame is absent. Chrome DevTools MCP verifies
+both context types and red-pixel readback on the same page. Record this limitation separately
+from working DOM-thread OffscreenCanvas tests. The probe does not test presentation into a
+transferred DOM canvas; it prevents suggesting worker rendering before the platform path exists.

@@ -199,7 +199,7 @@ test le misurano.
 | --- | --- | --- |
 | motion | Web Animations (`element.animate`), altrimenti stili scritti da JavaScript a ogni frame | Funziona via JavaScript. Le Web Animations di Servo sono incomplete: accese, motion si blocca (il typewriter si ferma alla prima lettera), quindi restano spente |
 | GSAP | Stili scritti da JavaScript a ogni frame | Funziona; paint della pagina sotto gli 8 ms con 48 elementi |
-| PixiJS, three.js | WebGL 2 | Funzionano; ogni chiamata WebGL è un messaggio verso il thread WebGL |
+| PixiJS, three.js | WebGL 2 | Funzionano sul thread DOM; WebGL nei worker non ancora disponibile. Ogni chiamata WebGL è un messaggio verso il thread WebGL |
 | Tone.js | Web Audio, AudioWorklet | `AudioWorkletNode` assente |
 | howler.js | Web Audio, `<audio>`, `canPlayType` | Dalla v0.7.8 sono riconosciuti WAV, MP3, OGG Vorbis e Opus, WebM, AAC, MP4/M4A (`audio/x-m4a`) e FLAC. Prima Opus, AAC e MP4 risultavano "" per un errore di rilevamento dei codec |
 
@@ -472,7 +472,7 @@ con import eager sono esplorative: rifare le baseline con la stessa pagina corre
 i browser. Questa modifica alla fixture non è un guadagno del motore.
 
 La CI ottimizzata [39034634597](https://github.com/DRincs-Productions/roves/actions/runs/39034634597)
-ricostruisce il runtime `1e9c7dcfea2` con entrambi gli allocatori. Le misure nuove devono
+ha ricostruito e verificato il runtime `1e9c7dcfea2` con entrambi gli allocatori. Le misure devono
 registrare commit, versione, viewport 1024×740, DPR 1, visibilità, GPU, riscaldamento e intervallo;
 separare i contatori GPU dalle corse CPU per limitare l'interferenza del campionamento.
 
@@ -538,6 +538,12 @@ richiede lo shutdown, così il chiamante non ripete l'attesa su un canale già c
 La verifica post-modifica è ancora necessaria: non dichiarare recuperati thread o memoria
 sulla sola base dell'ispezione del codice. Nessuna nuova dipendenza o scheduler personalizzato.
 
+La revisione distingue gli errori di ricezione da una coda temporaneamente vuota dopo WakeUp:
+quest'ultima deve mantenere attivo il worker. Il probe `support/perf/worker-queue-probe.html`
+controlla 128 risposte FIFO, messaggi dopo la raffica, timer cancellati e un ping finale.
+Il riferimento passa in Chrome MCP e nel runtime precedente. Verificare anche il nuovo artefatto;
+le sole prove sequenziali di messaggistica non coprono la gestione dei risvegli senza task.
+
 Fixture: `support/perf/worker-lifecycle-bench.html?auto=1`. Registra fasi baseline, ready,
 terminated e after, lasciando aperto il parent per il campionamento esterno. Gli oggetti Worker
 rimangono referenziati; la liberazione degli isolate non deve dipendere dal GC del parent.
@@ -550,6 +556,26 @@ tabella serializzata e li copia in un nuovo buffer in lettura. Il distacco del m
 dimostra quindi un trasferimento senza copie. Un futuro percorso nello stesso processo deve
 riusare BackingStore V8 e preservare ownership, errori, cleanup e il percorso multiprocesso;
 non aggiungere una tabella globale di buffer senza gestione completa del ciclo di vita.
+
+### Rendering nei worker: limite funzionale verificato
+
+`support/perf/worker-canvas-probe.html`, build ottimizzata `1e9c7dcfea2` e Chrome
+155.0.8059.84 via DevTools MCP, entrambi visibili su Windows/GTX 1050:
+
+| API nel dedicated worker | Roves | Chrome |
+| --- | --- | --- |
+| Costruttore OffscreenCanvas | presente | presente |
+| requestAnimationFrame | assente | presente |
+| OffscreenCanvas WebGL 1 | null | contesto e pixel rosso corretti |
+| OffscreenCanvas WebGL 2 | null | contesto e pixel rosso corretti |
+
+Il codice di creazione dei contesti fa downcast a Window: il solo costruttore OffscreenCanvas
+non dimostra supporto al rendering WebGL nei worker. Le precedenti prove di dimensioni/readback
+OffscreenCanvas sul thread DOM restano valide, ma non provano questo percorso. Il probe non
+verifica la presentazione su un canvas DOM trasferito; anche quel collegamento ha TODO nel
+ricevitore del trasferimento. Non suggerire di spostare PixiJS/three.js nei worker come soluzione
+già disponibile. Prima usare worker per calcoli/preparazione dati, con concorrenza e code limitate;
+spostare lavoro tra thread non ne riduce automaticamente la CPU complessiva.
 
 ### Messaggi Worker: riferimento e rimozione delle copie intermedie
 

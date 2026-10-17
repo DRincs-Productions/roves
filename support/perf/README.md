@@ -26,6 +26,12 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
   Checks detachment and payload endpoints. Four warm-up iterations precede 16 timed samples;
   their p95 is the maximum, not a robust tail estimate. Report enqueue time separately from
   round-trip latency. Repeat in new Roves processes and record Chrome MCP browser/context state.
+- `worker-canvas-probe.html`: report worker OffscreenCanvas/requestAnimationFrame exposure
+  and attempt WebGL 1/2 contexts with a red-pixel readback. API existence alone does not mean
+  worker rendering works. This probe does not validate presentation into a transferred DOM canvas.
+- `worker-queue-probe.html`: check 128 FIFO replies, a later message after the burst, canceled
+  timers and a final ping. Empty wake-ups must not terminate a still-live worker. This is a
+  functional regression probe, not a throughput benchmark.
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.
