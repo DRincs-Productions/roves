@@ -1,3 +1,12 @@
+## 2026-10-17 - Verify consumer builds and refresh the visible reference
+
+roves-action run 39067409866 passes all nine jobs and publishes all nine expected assets.
+Repair the visual-novel-template optional native dependency graph using npm-generated
+lock metadata (7df7c23, f8f459c), preserving all existing package versions. No engine
+runtime change. Update performance notes with one visible v0.7.12/Chrome155 pair:
+88.03/89.49 percent of one core, 661.4/399.6 MiB private peak, 9/6 long frames.
+Single runs and different host load do not establish parity or a native-global gain.
+
 ## 2026-10-17 - Complete native-global callback integration
 
 **Files:** `components/roves-js/src/object.rs`, tests and `components/script/script_thread.rs`.

@@ -398,6 +398,9 @@ location per platform, and a real incident this was built to catch).
 
 ### Repeatable performance fixtures
 
+The v0.7.12 consumer CI passes on all platforms. Updated visible Chrome/Roves reference
+measurements and their limits are recorded in [the performance notes](docs/ROVES_PERFORMANCE.md).
+
 The bundled diagnostic page also exposes deliberately minimal comparison workloads through
 `?perf=blank`, `?perf=pixi-static`, and `?perf=pixi-animated`. Run the same built page, window
 size, warm-up and sampling interval in Roves and Chrome. The static PixiJS fixture renders one

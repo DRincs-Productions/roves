@@ -654,6 +654,32 @@ entra nel realm proprietario e ripristina il chiamante anche dopo un'eccezione. 
 l'import DomObject richiesto da ScriptThread, mancante nella prima compilazione CI (E0599).
 Riproduzione selezionata di 30 patch sui tre file PASS; nuova verifica CI necessaria.
 
+### Riferimento visibile aggiornato del 17 ottobre, v0.7.12
+
+Una nuova coppia sulla stessa `perf-measured.html?perf=typewriter-pixi`, visibile,
+1024×740, DPR 1, canvas 300×200. Piano Windows Risparmio di energia invariato;
+campionamento CPU/RAM da 60 a 80 s, contatori GPU disattivati.
+
+| Browser | CPU di un core | Picco privato | CPU totale macchina | Frame >33 ms / p99 |
+| --- | --- | --- | --- | --- |
+| Roves v0.7.12, release `0d89099` | 88,03% | 661,4 MiB | 22,93% | 9 / 21,04 ms |
+| Chrome 155.0.8059.84 | 89,49% | 399,6 MiB | 19,27% | 6 / 17,10 ms |
+
+Chrome: pagina/console via DevTools MCP, CPU/RAM dai contatori Windows dell'albero
+del browser MCP PID 10020; escluso il browser personale. Entrambi 1187 intervalli rAF.
+Una sola coppia, carico esterno e stati dei processi differenti: nessuna prova di parità
+o di risparmio dovuto alle patch successive al tag. Log in
+`target/perf-local-20261017/visible/*current-baseline-1*`.
+Il controllo breve di nove comportamenti DOM, alias Image/Audio/Option e realm degli
+iframe passa in Chrome e nella release v0.7.12; resta da ripeterlo sul nuovo binario CI.
+
+La CI consumer [39067409866](https://github.com/DRincs-Productions/roves-action/actions/runs/39067409866)
+passa tutti i nove job al terzo tentativo e pubblica i nove asset attesi. Il blocco era
+il lock npm del template: commit `7df7c23` e `f8f459c` ripristinano i pacchetti nativi
+opzionali multipiattaforma. Per il secondo intervento npm genera 150 record aggiunti,
+conservando identici i 1047 record precedenti; dry-run Linux x64/macOS arm64 e build CI
+reali passano. Nessuna dipendenza runtime aggiunta al motore.
+
 ### Rendering nei worker: limite funzionale verificato
 
 `support/perf/worker-canvas-probe.html`, build ottimizzata `1e9c7dcfea2` e Chrome
