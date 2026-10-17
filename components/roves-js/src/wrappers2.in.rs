@@ -144,6 +144,7 @@ wrap!(jsapi: pub fn JS_WrapValue(cx: &mut JSContext, vp: MutableHandleValue) -> 
 wrap!(jsapi: pub fn JS_TransplantObject(cx: &mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject);
 wrap!(jsapi: pub fn JS_ResolveStandardClass(cx: &mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool);
 wrap!(jsapi: pub fn JS_NewEnumerateStandardClasses(cx: &mut JSContext, obj: HandleObject, properties: MutableHandleIdVector, enumerableOnly: bool) -> bool);
+wrap!(jsapi: pub fn JS_InitGlobalInterfaceProperties(cx: &mut JSContext, obj: HandleObject) -> bool);
 wrap!(jsapi: pub fn JS_IdToValue(cx: &JSContext, id: jsid, vp: MutableHandle<Value>) -> bool);
 wrap!(jsapi: pub fn JS_LinkConstructorAndPrototype(cx: &mut JSContext, ctor: Handle<*mut JSObject>, proto: Handle<*mut JSObject>) -> bool);
 wrap!(jsapi: pub fn JS_NewObject(cx: &mut JSContext, clasp: *const JSClass) -> *mut JSObject);

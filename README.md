@@ -408,21 +408,21 @@ fixtures also avoid their module side effects, including Tone.js initialization.
 browsers after this fixture correction; it is not an engine speedup. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md).
 
-The current development tree caches actual WebGL drawing-buffer dimensions between resizes
+Roves [v0.7.12](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.12) caches actual WebGL drawing-buffer dimensions between resizes
 to avoid repeated synchronous thread queries. Isolated getter benchmarks show lower latency;
 the effect on whole-game CPU still needs measurement.
 Pixi comparison fixtures explicitly select WebGL and disable their FPS polling timer.
-The development tree also delegates Web Audio frequency analysis to RealFFT/RustFFT,
+It also delegates Web Audio frequency analysis to RealFFT/RustFFT,
 replacing the quadratic direct transform while preserving Web Audio scaling and smoothing.
-The development analyser transport uses Crossbeam's bounded queue to retain the latest audio
+The analyser transport uses Crossbeam's bounded queue to retain the latest audio
 window without per-block DOM tasks; whole-game CPU savings remain to be measured.
 An isolated debug/headless test with eight unread analyzers measured about 43% lower process
 CPU, with about 1.2 MiB more private memory; conditions and variability are in the performance notes.
 Worker lifecycle diagnostics also check that terminating idle workers releases their threads;
-the development fix wakes the existing Crossbeam event loop. Three repeated CI-artifact
+the release fix wakes the existing Crossbeam event loop. Three repeated CI-artifact
 runtime cycles release all four worker threads, with no progressive private-memory growth
 observed in those cycles. The FIFO/timer regression probe also passes. No scheduler is added.
-The development structured-clone bridge also moves V8's serialized byte vector through Rust
+The release structured-clone bridge also moves V8's serialized byte vector through Rust
 ownership instead of copying it twice; full ArrayBuffer transfer still has separate payload
 copies. In an alternating optimized-build benchmark, median 4 MiB round-trip latency falls
 from 5.72 to 3.88 ms for cloning and 6.37 to 4.15 ms for transfer. These are API timings,
@@ -430,8 +430,11 @@ not whole-game CPU savings; the Chrome transfer reference remains about 0.10 ms.
 Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
 distinguishes this from working OffscreenCanvas contexts on the DOM thread.
 Development after the v0.7.12 tag removes redundant standard-class hooks from worker globals,
-delegating intrinsic lookups to V8. Generator tests pass; runtime performance verification
-is pending CI artifacts. The fixed-work compute probe includes a cached-function control.
+delegating intrinsic lookups to V8. All desktop/V8 CI checks and the downloaded runtime pass;
+the fixed-work direct-lookup probe takes 93 ms in the new debug build, versus 8551 ms in the
+previous optimized build. This diagnostic comparison is not a matched-profile CPU percentage.
+A subsequent development change uses V8 native data properties for Window's lazy interfaces,
+with 37 engine-layer tests passing; browser verification is pending CI artifacts.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

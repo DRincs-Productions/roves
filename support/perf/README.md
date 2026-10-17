@@ -39,6 +39,10 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
   Math.imul function as a control for global-lookup overhead. Startup is reported separately.
   More workers can improve completion time while saturating more cores; this is not a whole-game
   CPU saving. Short fast runs do not provide enough rAF samples for frame-percentile claims.
+- `main-intrinsics-bench.html`: warm-up and three alternating direct/captured Math.imul
+  runs on the main thread, 8388608 integer iterations each, checking identical results.
+  Logs WORKERBENCH with scene=main-intrinsics for the shared terminal runner. This isolates
+  global-lookup overhead, not whole-game performance; the page remains open after completion.
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.

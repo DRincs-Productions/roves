@@ -227,6 +227,16 @@ pub unsafe extern "C" fn JS_GlobalObjectTraceHook(_trc: *mut crate::jsapi::JSTra
 
 pub unsafe fn JS_FireOnNewGlobalObject(_cx: *mut JSContext, _global: crate::jsapi::HandleObject) {}
 
+/// Install DOM interface placeholders only once the embedder's global and document
+/// are ready for exposure checks (the new-global notification is too early).
+pub unsafe fn JS_InitGlobalInterfaceProperties(cx: *mut JSContext, global: crate::jsapi::HandleObject) -> bool {
+    // SAFETY: callers initialize the global before requesting its interface names.
+    let old = unsafe { EnterRealm(cx, global.get()) };
+    let initialized = crate::object::initialize_global_properties(unsafe { &*cx }, global.get());
+    unsafe { LeaveRealm(cx, old) };
+    initialized
+}
+
 /// V8 contexts are created with every standard class already defined: nothing to resolve.
 pub unsafe extern "C" fn JS_ResolveStandardClass(_cx: *mut JSContext, _obj: crate::jsapi::HandleObject, _id: crate::jsapi::HandleId, resolved: *mut bool) -> bool {
     // SAFETY: callers pass a valid out pointer.

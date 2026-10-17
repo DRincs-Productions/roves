@@ -1103,6 +1103,10 @@ mod lazy_globals {
 
     thread_local! {
         static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
+        static ALL_RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
+        static FAIL_RESOLVE_ONCE: Cell<bool> = const { Cell::new(false) };
+        static ENUMERATE_PHANTOM: Cell<bool> = const { Cell::new(false) };
+        static DEFINE_ALIAS: Cell<bool> = const { Cell::new(false) };
     }
 
     fn is_lazy_name(id: jsid) -> bool {
@@ -1124,6 +1128,7 @@ mod lazy_globals {
     }
 
     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
+        ALL_RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
         if is_phantom(id.get()) {
             // Reports success without defining anything (Servo does for disabled interfaces).
             unsafe { *resolved = true };
@@ -1133,15 +1138,24 @@ mod lazy_globals {
             unsafe { *resolved = false };
             return true;
         }
+        if FAIL_RESOLVE_ONCE.replace(false) {
+            crate::rooted!(in(cx) let error = Int32Value(13));
+            unsafe { JS_SetPendingException(cx, error.handle(), ExceptionStackBehavior::DoNotCapture) };
+            return false;
+        }
         RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
         // A lookup of the same property from inside the hook does not recurse.
         crate::rooted!(in(cx) let mut existing = UndefinedValue());
         if !unsafe { JS_GetPropertyById(cx, obj, id, existing.handle_mut().into_handle()) } {
             return false;
         }
-        assert!(existing.get().is_undefined());
+        assert!(existing.get().is_undefined() || (existing.get().is_int32() && existing.get().to_int32() == 99),
+            "recursive resolution may read the inherited test value");
         crate::rooted!(in(cx) let value = Int32Value(42));
         if !unsafe { JS_DefinePropertyById2(cx, obj, id, value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
+            return false;
+        }
+        if DEFINE_ALIAS.with(Cell::get) && !unsafe { JS_DefineProperty(cx, obj, c"AliasThing".as_ptr(), value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
             return false;
         }
         unsafe { *resolved = true };
@@ -1156,7 +1170,18 @@ mod lazy_globals {
         let name = unsafe { JS_AtomizeAndPinString(cx, c"LazyThing".as_ptr()) };
         crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
         unsafe { RUST_INTERNED_STRING_TO_JSID(cx, name, id.handle_mut().into_handle()) };
-        unsafe { AppendToIdVector(props, id.handle().into_handle()) }
+        if !unsafe { AppendToIdVector(props, id.handle().into_handle()) } { return false }
+        if DEFINE_ALIAS.with(Cell::get) {
+            let alias = unsafe { JS_AtomizeAndPinString(cx, c"AliasThing".as_ptr()) };
+            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, alias, id.handle_mut().into_handle()) };
+            if !unsafe { AppendToIdVector(props, id.handle().into_handle()) } { return false }
+        }
+        if ENUMERATE_PHANTOM.with(Cell::get) {
+            let phantom = unsafe { JS_AtomizeAndPinString(cx, c"Phantom".as_ptr()) };
+            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, phantom, id.handle_mut().into_handle()) };
+            return unsafe { AppendToIdVector(props, id.handle().into_handle()) };
+        }
+        true
     }
 
     static OPS: JSClassOps = JSClassOps {
@@ -1202,6 +1227,98 @@ mod lazy_globals {
         assert!(eval(&runtime, "'LazyThing' in globalThis && globalThis.hasOwnProperty('LazyThing')").to_boolean());
         assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1, "the hook runs once; later lookups find the property");
         assert_eq!(describe(&runtime, eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')")), "true");
+        unsafe { LeaveRealm(cx, old) };
+    }
+
+    static DOM_CLASS: JSClass = JSClass {
+        name: c"NativeLazyGlobal".as_ptr(),
+        flags: CLASS.flags | crate::object::JSCLASS_USERBIT1,
+        ..CLASS
+    };
+
+    #[test]
+    fn dom_globals_use_native_lazy_properties_without_intrinsic_interceptors() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        let before = RESOLVE_CALLS.with(Cell::get);
+        assert!(eval(&runtime, "!Object.hasOwn(globalThis, 'LazyThing')").to_boolean());
+        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
+        assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "registration must not create interfaces");
+        assert!(eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')").to_boolean());
+        assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "enumeration must stay lazy");
+        eval(&runtime, "Object.setPrototypeOf(Object.getPrototypeOf(globalThis), new Proxy({LazyThing: 99}, {}))");
+        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
+        assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
+        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
+        assert!(eval(&runtime, "const d = Object.getOwnPropertyDescriptor(globalThis, 'LazyThing'); d.value === 42 && d.writable && d.configurable && !d.enumerable").to_boolean());
+        assert!(eval(&runtime, "Math.imul(3, 4) === 12 && Array.isArray([]) && typeof Phantom === 'undefined'").to_boolean());
+        unsafe { LeaveRealm(cx, old) };
+    }
+
+    #[test]
+    fn native_lazy_globals_preserve_assignment_deletion_and_gc() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        for action in ["assign", "delete", "child"] {
+            rooted!(in(cx) let global = unsafe {
+                JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
+            });
+            assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
+            let old = unsafe { EnterRealm(cx, global.get()) };
+            let before = RESOLVE_CALLS.with(Cell::get);
+            runtime.gc_for_testing();
+            match action {
+                "assign" => assert!(eval(&runtime, "'use strict'; globalThis.LazyThing = 77; LazyThing === 77").to_boolean()),
+                "delete" => assert!(eval(&runtime, "delete globalThis.LazyThing; typeof LazyThing === 'undefined' && !Object.hasOwn(globalThis, 'LazyThing')").to_boolean()),
+                _ => assert!(eval(&runtime, "const child = Object.create(globalThis); child.LazyThing = 5; child.LazyThing === 5 && Object.hasOwn(child, 'LazyThing')").to_boolean()),
+            }
+            assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "{action} must not instantiate interfaces");
+            if action == "child" {
+                assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
+                assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
+            }
+            unsafe { LeaveRealm(cx, old) };
+        }
+    }
+
+    #[test]
+    fn native_lazy_globals_retry_errors_and_discard_disabled_interfaces() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        ENUMERATE_PHANTOM.set(true);
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
+        });
+        ENUMERATE_PHANTOM.set(false);
+        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        FAIL_RESOLVE_ONCE.set(true);
+        assert!(eval(&runtime, "(() => { try { LazyThing; return false } catch(e) { return e === 13 } })()").to_boolean());
+        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42, "failed resolution must remain retryable");
+        assert!(eval(&runtime, "typeof Phantom === 'undefined' && !Object.hasOwn(globalThis, 'Phantom')").to_boolean());
+        unsafe { LeaveRealm(cx, old) };
+    }
+
+    #[test]
+    fn native_global_aliases_do_not_trigger_nested_initialization() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        DEFINE_ALIAS.set(true);
+        rooted!(in(cx) let global = unsafe {
+            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
+        });
+        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
+        let old = unsafe { EnterRealm(cx, global.get()) };
+        let before = RESOLVE_CALLS.with(Cell::get);
+        let all_before = ALL_RESOLVE_CALLS.with(Cell::get);
+        assert_eq!(eval(&runtime, "LazyThing + AliasThing").to_int32(), 84);
+        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
+        assert_eq!(ALL_RESOLVE_CALLS.with(Cell::get), all_before + 1, "defining an alias must not invoke its placeholder");
+        DEFINE_ALIAS.set(false);
         unsafe { LeaveRealm(cx, old) };
     }
 }

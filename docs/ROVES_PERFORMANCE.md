@@ -1,5 +1,14 @@
 # Roves — Prestazioni
 
+## Stato corrente, 17 ottobre 2026
+
+Pubblicata [v0.7.12](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.12), sorgente
+`0d89099fa9d`: sei build release verdi e sei archivi presenti. Portable Windows verificato
+con SHA256 `f77cc2e1686cbaafb44fea4913f2ee6999ec937a1197da6a022202779a75ef0b` e commit
+incorporato. FIFO/timer e rilascio dei quattro worker passano sul binario pubblicato.
+Pin aggiornati in roves-action `eaadbcb` e Packmaster `31554fa`; controllo Biome passato.
+Le ottimizzazioni successive degli accessi globali descritte sotto non sono nella v0.7.12.
+
 ## Obiettivo
 
 Ridurre CPU e memoria dei giochi eseguiti con Roves fino a un comportamento comparabile a
@@ -253,7 +262,7 @@ oltre ad Android e iOS. Scaricato il portable Windows aggiornato, verificato con
 SHA-256 pubblicato da GitHub (`79cc181d…68df4cb`). Dopo il blocco iniziale della policy,
 le prove autorizzate sotto forniscono PASS runtime e dati CPU sul trasporto audio.
 Evidenze locali: `target/perf-local-20261017/verification.json`. La release versionata rimane
-v0.7.11; questi controlli riguardano il ramo di sviluppo.
+v0.7.12 dal 17 ottobre; i risultati seguenti conservano versioni e condizioni delle singole prove.
 
 Le fixture typewriter/GSAP/motion ora disattivano anche il contatore FPS dei pannelli di
 sfondo, che prima aggiornava React ogni 500 ms. Il pannello three.js rilascia geometria,
@@ -594,7 +603,7 @@ calcolo V8 dall'accesso ripetuto al globale. Finestra visibile 1024×740, Window
 | --- | --- |
 | Roves mimalloc ottimizzato `8db6eab`, Math.imul nel ciclo | 8551,32 ms |
 | Stesso Roves, funzione conservata in variabile locale | 74,13 ms |
-| Chrome 155 via DevTools MCP, Math.imul nel ciclo | 69 ms |
+| Chrome 155 via DevTools MCP, Math.imul nel ciclo | 69 ms; ripetizione 104,5 ms |
 
 Il tentativo più grande (1024 job da 8388608 iterazioni) supera il timeout Roves di 60 s;
 non è un risultato completo. Chrome passa quel carico con 1/2/4/8 worker in
@@ -607,11 +616,39 @@ In roves-js sono già no-op perché V8 crea quelle classi; la loro presenza inst
 interceptor sul globale. La patch 0232 rimuove le tre assegnazioni e riusa gli accessi nativi
 V8. Restano gli hook reali di Window per le interfacce DOM lazy. Nessuna cache scritta a mano
 o dipendenza aggiunta. I 74 test del generatore e la riproduzione di 72 patch sui due file
-pristine passano. Verifica runtime post-modifica ancora da eseguire sull'artefatto CI;
-non attribuire alla patch il guadagno del controllo JavaScript con funzione locale.
-Questo intervento è successivo al tag v0.7.12, già in compilazione.
+pristine passano. La verifica runtime post-modifica è riportata sotto; non attribuire alla
+patch il guadagno del solo controllo JavaScript con funzione locale.
+Questo intervento è successivo al tag v0.7.12, all'epoca in compilazione.
 Log: `worker-compute-small-{global,local}.stdout.log`, `worker-compute-8db6eab-1.stdout.log`,
 `chrome-worker-compute-1024.json`, sotto `target/perf-local-20261017/`.
+
+Verifica worker post-modifica: tutti i 13 job desktop e i 10 V8 passano su `1edef828eea`.
+Portable debug scaricato con SHA256 `2f6227d2fd13fbffabf80a62297e505fc1387f3014fc78a59cdd26ea367840be`
+e commit incorporato `1edef82` verificati. Stesso calcolo da 64 job, accesso Math.imul diretto:
+93,05 ms e controllo FIFO/timer PASS. È una build debug contro la precedente ottimizzata:
+il risultato conferma la rimozione del costo diagnostico, senza una percentuale comparabile
+fra profili o una misura di CPU del gioco. Log `worker-compute-native-after-1edef82.stdout.log`.
+
+### Accessi globali sul thread principale
+
+`support/perf/main-intrinsics-bench.html`: 8388608 iterazioni, warm-up, tre alternanze di
+accesso Math.imul diretto e funzione locale nello stesso processo. Tutti i risultati coincidono.
+Roves ottimizzato `8db6eab`: diretto 1017,11/1033,59/1020,40 ms; locale 7,87/7,84/7,84 ms.
+Chrome 155 via MCP: diretto 7,8/7,8/7,9 ms; locale circa 7,8–8,0 ms. Visibile 1024×740,
+GTX1050/ANGLE. Questi microbenchmark non quantificano il tempo speso nei globali dal gioco.
+
+La patch 0233 usa [SetNativeDataProperty di V8](https://v8.github.io/api/head/classv8_1_1Object.html)
+per i nomi delle interfacce DOM enumerati e abilitati. Registrazione dopo window.init_document:
+alcuni predicati leggono l'URL del Document e l'hook globale iniziale è troppo presto.
+Costruzione ancora lazy; nessun interceptor globale per gli intrinseci.
+I resolver esistenti definiscono il descrittore definitivo. Il flag JSPROP_RESOLVING evita
+che le definizioni di alias avviino altri getter; nessun registro o cache aggiunto.
+L'alternativa SetLazyDataProperty non è usata: fallisce quando la callback Servo modifica
+la proprietà che V8 vuole sostituire automaticamente. Il prototipo è stato corretto localmente.
+Passano 37 test V8 locali (due microbenchmark ignorati), inclusi override, cancellazione,
+alias, errori/ritentativi, interfacce disabilitate, precedenza sui prototipi e GC.
+La riproduzione ordinata di 31 patch sui sette file passa. Verifica browser post-modifica
+ancora necessaria; non dichiarare misurato il guadagno del nuovo percorso Window.
 
 ### Rendering nei worker: limite funzionale verificato
 

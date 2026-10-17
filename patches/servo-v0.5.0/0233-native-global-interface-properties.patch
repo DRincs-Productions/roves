@@ -1,0 +1,375 @@
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index cb7a2ee8a26..5f3ab59a987 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -13,7 +13,7 @@ pub use crate::gc::Heap;
+ pub use crate::realm_impl::{
+     CurrentGlobal, CurrentGlobalOrNull, EnterRealm, GetCurrentRealmOrNull, GetObjectRealmOrNull,
+     GetRealmGlobalOrNull, GetRealmPrincipals, JS_FireOnNewGlobalObject, JS_GlobalObjectTraceHook,
+-    JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
++    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
+     JS_ResolveStandardClass, LeaveRealm,
+ };
+ pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index db5c2517c67..3436c40f8b2 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -192,6 +192,13 @@ fn define(cx: &JSContext, obj: *mut JSObject, key: impl for<'s, 'i> FnOnce(&mut
+         let target = object(scope, obj)?;
+         let key = key(scope)?;
+         let data = value(scope, value_of);
++        if attrs & crate::jsapi::JSPROP_RESOLVING as u32 != 0 &&
++            crate::object::class_box(obj).is_some_and(|class_box| crate::object::uses_native_global_properties(class_box.class)) {
++            // Interface aliases can be defined together before their cache is
++            // populated. Replacing a native placeholder must not invoke its getter.
++            // A non-configurable property still goes through V8's normal rejection.
++            target.delete(scope, key.into());
++        }
+         target.define_own_property(scope, key, data, crate::api::property_attributes(attrs))
+     })
+     .unwrap_or(false)
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index f2d9b91a43f..be2a9ea093b 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -240,12 +240,11 @@ impl ClassTemplates {
+             let data = v8::External::new(scope, class as *mut c_void);
+             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
+         }
+-        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
+-            // SpiderMonkey's lazy properties: the resolve hook runs during the object's own
+-            // property lookup, before the prototype chain. A non-masking V8 interceptor would
+-            // only run after the whole chain, which a proxy on the chain (a Window's named
+-            // properties object) answers first; so the interceptor runs first and steps aside
+-            // for properties the object already has.
++        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) &&
++            !uses_native_global_properties(class) {
++            // Fallback for class hooks that cannot enumerate DOM interface names.
++            // Resolution precedes the prototype chain, then steps aside for existing
++            // own properties. DOM globals use per-property V8 callbacks instead.
+             let data = v8::External::new(scope, class as *mut c_void);
+             let configuration = v8::NamedPropertyHandlerConfiguration::new()
+                 .getter(resolve_getter)
+@@ -260,6 +259,98 @@ impl ClassTemplates {
+     }
+ }
+ 
++/// Servo's DOM globals enumerate their lazy interface data properties. V8 can own
++/// their initialization without intercepting every access to standard intrinsics.
++pub(crate) fn uses_native_global_properties(class: *const JSClass) -> bool {
++    // SAFETY: classes are static.
++    let class = unsafe { &*class };
++    class.flags & (JSCLASS_IS_GLOBAL | JSCLASS_USERBIT1) == (JSCLASS_IS_GLOBAL | JSCLASS_USERBIT1) &&
++        unsafe { class.cOps.as_ref() }.is_some_and(|ops| ops.resolve.is_some() && ops.newEnumerate.is_some())
++}
++
++/// Called only after the embedder initializes a DOM global's reserved slots.
++pub(crate) fn initialize_global_properties(cx: &JSContext, obj: *mut JSObject) -> bool {
++    let Some(class_box) = class_box(obj) else { return true };
++    let class = class_box.class;
++    if !uses_native_global_properties(class) {
++        return true;
++    }
++    cx.catching(|scope| {
++        // SAFETY: the class owns static callbacks and `obj` is its live global.
++        let enumerate = unsafe { (*(*class).cOps).newEnumerate }?;
++        let raw_cx = cx as *const JSContext as *mut JSContext;
++        crate::rooted!(in(raw_cx) let object = obj);
++        let mut ids = unsafe { crate::rust::IdVector::new(raw_cx) };
++        if !unsafe { enumerate(raw_cx, object.handle().into_handle(), ids.handle_mut(), false) } {
++            crate::native::rethrow_pending(scope, cx);
++            return None;
++        }
++        let global = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, obj as *mut c_void) }).ok()?;
++        let data = v8::External::new(scope, class as *mut c_void);
++        for id in ids.iter() {
++            let key = v8::Local::<v8::Name>::try_from(crate::jsapi_impl::id_key(scope, *id)?).ok()?;
++            if global.has_real_named_property(scope, key)? {
++                continue;
++            }
++            install_global_property(scope, global, key, data.into())?.then_some(())?;
++        }
++        Some(())
++    }).is_some()
++}
++
++fn install_global_property(
++    scope: &v8::PinScope, global: v8::Local<v8::Object>, key: v8::Local<v8::Name>, data: v8::Local<v8::Value>,
++) -> Option<bool> {
++    global.set_accessor_with_configuration(scope, key,
++        v8::AccessorConfiguration::new(global_property_getter)
++            .setter(global_property_setter).data(data)
++            .property_attribute(v8::PropertyAttribute::DONT_ENUM))
++}
++
++fn global_property_getter<'s>(
++    scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>,
++    args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Value>,
++) {
++    let Some(external) = v8::Local::<v8::External>::try_from(args.data()).ok() else { return };
++    let class = external.value() as *const JSClass;
++    // SAFETY: registration only uses DOM classes with a static resolve hook.
++    let Some(resolve) = (unsafe { (*(*class).cOps).resolve }) else { return };
++    let holder = args.holder();
++    let Some(obj) = interceptor_object(scope, holder) else { return };
++    // Existing resolve callbacks define the final descriptor themselves. A native
++    // data property permits this; V8's auto-replacing lazy property does not.
++    if holder.delete(scope, key.into()) != Some(true) { return }
++    let cx = JSContext::current() as *const JSContext as *mut JSContext;
++    let id = crate::jsapi_impl::key_id(scope, key.into());
++    crate::rooted!(in(cx) let object = obj);
++    crate::rooted!(in(cx) let id = id);
++    let mut resolved = false;
++    let ok = unsafe { resolve(cx, object.handle().into_handle(), id.handle().into_handle(), &mut resolved) };
++    if !ok {
++        if holder.has_real_named_property(scope, key) == Some(false) {
++            install_global_property(scope, holder, key, args.data());
++        }
++        crate::native::rethrow_pending(scope, JSContext::current());
++        return;
++    }
++    if resolved {
++        if let Some(value) = resolved_value(scope, holder, key, holder) {
++            retval.set(value);
++        }
++    }
++}
++
++fn global_property_setter<'s>(
++    scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, value: v8::Local<'s, v8::Value>,
++    args: v8::PropertyCallbackArguments<'s>, _retval: v8::ReturnValue<()>,
++) {
++    if args.holder().delete(scope, key.into()) != Some(true) { return }
++    if args.holder().define_own_property(scope, key, value, v8::PropertyAttribute::DONT_ENUM) == Some(false) &&
++        args.should_throw_on_error() {
++        crate::native::throw_type_error(scope, "cannot replace lazy global property");
++    }
++}
++
+ thread_local! {
+     /// The (object, key) pairs whose resolve hook is running: lookups of the same property
+     /// from inside the hook must not resolve it again (SpiderMonkey's `JSPROP_RESOLVING`).
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index cc7505500b9..e457eb04fe5 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -227,6 +227,16 @@ pub unsafe extern "C" fn JS_GlobalObjectTraceHook(_trc: *mut crate::jsapi::JSTra
+ 
+ pub unsafe fn JS_FireOnNewGlobalObject(_cx: *mut JSContext, _global: crate::jsapi::HandleObject) {}
+ 
++/// Install DOM interface placeholders only once the embedder's global and document
++/// are ready for exposure checks (the new-global notification is too early).
++pub unsafe fn JS_InitGlobalInterfaceProperties(cx: *mut JSContext, global: crate::jsapi::HandleObject) -> bool {
++    // SAFETY: callers initialize the global before requesting its interface names.
++    let old = unsafe { EnterRealm(cx, global.get()) };
++    let initialized = crate::object::initialize_global_properties(unsafe { &*cx }, global.get());
++    unsafe { LeaveRealm(cx, old) };
++    initialized
++}
++
+ /// V8 contexts are created with every standard class already defined: nothing to resolve.
+ pub unsafe extern "C" fn JS_ResolveStandardClass(_cx: *mut JSContext, _obj: crate::jsapi::HandleObject, _id: crate::jsapi::HandleId, resolved: *mut bool) -> bool {
+     // SAFETY: callers pass a valid out pointer.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 5c2d93ebb34..800b83151c4 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1103,6 +1103,10 @@ mod lazy_globals {
+ 
+     thread_local! {
+         static RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
++        static ALL_RESOLVE_CALLS: Cell<u32> = const { Cell::new(0) };
++        static FAIL_RESOLVE_ONCE: Cell<bool> = const { Cell::new(false) };
++        static ENUMERATE_PHANTOM: Cell<bool> = const { Cell::new(false) };
++        static DEFINE_ALIAS: Cell<bool> = const { Cell::new(false) };
+     }
+ 
+     fn is_lazy_name(id: jsid) -> bool {
+@@ -1124,6 +1128,7 @@ mod lazy_globals {
+     }
+ 
+     unsafe extern "C" fn resolve(cx: *mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool {
++        ALL_RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
+         if is_phantom(id.get()) {
+             // Reports success without defining anything (Servo does for disabled interfaces).
+             unsafe { *resolved = true };
+@@ -1133,17 +1138,26 @@ mod lazy_globals {
+             unsafe { *resolved = false };
+             return true;
+         }
++        if FAIL_RESOLVE_ONCE.replace(false) {
++            crate::rooted!(in(cx) let error = Int32Value(13));
++            unsafe { JS_SetPendingException(cx, error.handle(), ExceptionStackBehavior::DoNotCapture) };
++            return false;
++        }
+         RESOLVE_CALLS.with(|calls| calls.set(calls.get() + 1));
+         // A lookup of the same property from inside the hook does not recurse.
+         crate::rooted!(in(cx) let mut existing = UndefinedValue());
+         if !unsafe { JS_GetPropertyById(cx, obj, id, existing.handle_mut().into_handle()) } {
+             return false;
+         }
+-        assert!(existing.get().is_undefined());
++        assert!(existing.get().is_undefined() || (existing.get().is_int32() && existing.get().to_int32() == 99),
++            "recursive resolution may read the inherited test value");
+         crate::rooted!(in(cx) let value = Int32Value(42));
+         if !unsafe { JS_DefinePropertyById2(cx, obj, id, value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
+             return false;
+         }
++        if DEFINE_ALIAS.with(Cell::get) && !unsafe { JS_DefineProperty(cx, obj, c"AliasThing".as_ptr(), value.handle().into_handle(), JSPROP_RESOLVING as u32) } {
++            return false;
++        }
+         unsafe { *resolved = true };
+         true
+     }
+@@ -1156,7 +1170,18 @@ mod lazy_globals {
+         let name = unsafe { JS_AtomizeAndPinString(cx, c"LazyThing".as_ptr()) };
+         crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
+         unsafe { RUST_INTERNED_STRING_TO_JSID(cx, name, id.handle_mut().into_handle()) };
+-        unsafe { AppendToIdVector(props, id.handle().into_handle()) }
++        if !unsafe { AppendToIdVector(props, id.handle().into_handle()) } { return false }
++        if DEFINE_ALIAS.with(Cell::get) {
++            let alias = unsafe { JS_AtomizeAndPinString(cx, c"AliasThing".as_ptr()) };
++            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, alias, id.handle_mut().into_handle()) };
++            if !unsafe { AppendToIdVector(props, id.handle().into_handle()) } { return false }
++        }
++        if ENUMERATE_PHANTOM.with(Cell::get) {
++            let phantom = unsafe { JS_AtomizeAndPinString(cx, c"Phantom".as_ptr()) };
++            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, phantom, id.handle_mut().into_handle()) };
++            return unsafe { AppendToIdVector(props, id.handle().into_handle()) };
++        }
++        true
+     }
+ 
+     static OPS: JSClassOps = JSClassOps {
+@@ -1204,6 +1229,98 @@ mod lazy_globals {
+         assert_eq!(describe(&runtime, eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')")), "true");
+         unsafe { LeaveRealm(cx, old) };
+     }
++
++    static DOM_CLASS: JSClass = JSClass {
++        name: c"NativeLazyGlobal".as_ptr(),
++        flags: CLASS.flags | crate::object::JSCLASS_USERBIT1,
++        ..CLASS
++    };
++
++    #[test]
++    fn dom_globals_use_native_lazy_properties_without_intrinsic_interceptors() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        let before = RESOLVE_CALLS.with(Cell::get);
++        assert!(eval(&runtime, "!Object.hasOwn(globalThis, 'LazyThing')").to_boolean());
++        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
++        assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "registration must not create interfaces");
++        assert!(eval(&runtime, "Object.getOwnPropertyNames(globalThis).includes('LazyThing')").to_boolean());
++        assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "enumeration must stay lazy");
++        eval(&runtime, "Object.setPrototypeOf(Object.getPrototypeOf(globalThis), new Proxy({LazyThing: 99}, {}))");
++        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
++        assert_eq!(eval(&runtime, "LazyThing + LazyThing").to_int32(), 84);
++        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
++        assert!(eval(&runtime, "const d = Object.getOwnPropertyDescriptor(globalThis, 'LazyThing'); d.value === 42 && d.writable && d.configurable && !d.enumerable").to_boolean());
++        assert!(eval(&runtime, "Math.imul(3, 4) === 12 && Array.isArray([]) && typeof Phantom === 'undefined'").to_boolean());
++        unsafe { LeaveRealm(cx, old) };
++    }
++
++    #[test]
++    fn native_lazy_globals_preserve_assignment_deletion_and_gc() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        for action in ["assign", "delete", "child"] {
++            rooted!(in(cx) let global = unsafe {
++                JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
++            });
++            assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
++            let old = unsafe { EnterRealm(cx, global.get()) };
++            let before = RESOLVE_CALLS.with(Cell::get);
++            runtime.gc_for_testing();
++            match action {
++                "assign" => assert!(eval(&runtime, "'use strict'; globalThis.LazyThing = 77; LazyThing === 77").to_boolean()),
++                "delete" => assert!(eval(&runtime, "delete globalThis.LazyThing; typeof LazyThing === 'undefined' && !Object.hasOwn(globalThis, 'LazyThing')").to_boolean()),
++                _ => assert!(eval(&runtime, "const child = Object.create(globalThis); child.LazyThing = 5; child.LazyThing === 5 && Object.hasOwn(child, 'LazyThing')").to_boolean()),
++            }
++            assert_eq!(RESOLVE_CALLS.with(Cell::get), before, "{action} must not instantiate interfaces");
++            if action == "child" {
++                assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42);
++                assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
++            }
++            unsafe { LeaveRealm(cx, old) };
++        }
++    }
++
++    #[test]
++    fn native_lazy_globals_retry_errors_and_discard_disabled_interfaces() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        ENUMERATE_PHANTOM.set(true);
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
++        });
++        ENUMERATE_PHANTOM.set(false);
++        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        FAIL_RESOLVE_ONCE.set(true);
++        assert!(eval(&runtime, "(() => { try { LazyThing; return false } catch(e) { return e === 13 } })()").to_boolean());
++        assert_eq!(eval(&runtime, "LazyThing").to_int32(), 42, "failed resolution must remain retryable");
++        assert!(eval(&runtime, "typeof Phantom === 'undefined' && !Object.hasOwn(globalThis, 'Phantom')").to_boolean());
++        unsafe { LeaveRealm(cx, old) };
++    }
++
++    #[test]
++    fn native_global_aliases_do_not_trigger_nested_initialization() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        DEFINE_ALIAS.set(true);
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &DOM_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, ptr::null())
++        });
++        assert!(unsafe { JS_InitGlobalInterfaceProperties(cx, global.handle().into_handle()) });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        let before = RESOLVE_CALLS.with(Cell::get);
++        let all_before = ALL_RESOLVE_CALLS.with(Cell::get);
++        assert_eq!(eval(&runtime, "LazyThing + AliasThing").to_int32(), 84);
++        assert_eq!(RESOLVE_CALLS.with(Cell::get), before + 1);
++        assert_eq!(ALL_RESOLVE_CALLS.with(Cell::get), all_before + 1, "defining an alias must not invoke its placeholder");
++        DEFINE_ALIAS.set(false);
++        unsafe { LeaveRealm(cx, old) };
++    }
+ }
+ 
+ mod runtime_hooks {
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index d46de09093d..28926ccc80e 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -144,6 +144,7 @@ wrap!(jsapi: pub fn JS_WrapValue(cx: &mut JSContext, vp: MutableHandleValue) ->
+ wrap!(jsapi: pub fn JS_TransplantObject(cx: &mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject);
+ wrap!(jsapi: pub fn JS_ResolveStandardClass(cx: &mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewEnumerateStandardClasses(cx: &mut JSContext, obj: HandleObject, properties: MutableHandleIdVector, enumerableOnly: bool) -> bool);
++wrap!(jsapi: pub fn JS_InitGlobalInterfaceProperties(cx: &mut JSContext, obj: HandleObject) -> bool);
+ wrap!(jsapi: pub fn JS_IdToValue(cx: &JSContext, id: jsid, vp: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_LinkConstructorAndPrototype(cx: &mut JSContext, ctor: Handle<*mut JSObject>, proto: Handle<*mut JSObject>) -> bool);
+ wrap!(jsapi: pub fn JS_NewObject(cx: &mut JSContext, clasp: *const JSClass) -> *mut JSObject);
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index b976f5e8072..5b58dca5b17 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -3008,6 +3008,15 @@ impl ScriptThread {
+ 
+         window.init_document(&document);
+ 
++        // Exposure predicates can inspect the document URL, so initialize lazy
++        // interface properties after attaching the document and before page script.
++        assert!(unsafe {
++            js::rust::wrappers2::JS_InitGlobalInterfaceProperties(
++                cx,
++                window.reflector().get_jsobject(),
++            )
++        });
++
+         // Initialize the browsing context for the window.
+         let window_proxy = self.window_proxies.local_window_proxy(
+             cx,

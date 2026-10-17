@@ -13,7 +13,7 @@ pub use crate::gc::Heap;
 pub use crate::realm_impl::{
     CurrentGlobal, CurrentGlobalOrNull, EnterRealm, GetCurrentRealmOrNull, GetObjectRealmOrNull,
     GetRealmGlobalOrNull, GetRealmPrincipals, JS_FireOnNewGlobalObject, JS_GlobalObjectTraceHook,
-    JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
+    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
     JS_ResolveStandardClass, LeaveRealm,
 };
 pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};

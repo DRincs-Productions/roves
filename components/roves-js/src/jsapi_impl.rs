@@ -192,6 +192,13 @@ fn define(cx: &JSContext, obj: *mut JSObject, key: impl for<'s, 'i> FnOnce(&mut 
         let target = object(scope, obj)?;
         let key = key(scope)?;
         let data = value(scope, value_of);
+        if attrs & crate::jsapi::JSPROP_RESOLVING as u32 != 0 &&
+            crate::object::class_box(obj).is_some_and(|class_box| crate::object::uses_native_global_properties(class_box.class)) {
+            // Interface aliases can be defined together before their cache is
+            // populated. Replacing a native placeholder must not invoke its getter.
+            // A non-configurable property still goes through V8's normal rejection.
+            target.delete(scope, key.into());
+        }
         target.define_own_property(scope, key, data, crate::api::property_attributes(attrs))
     })
     .unwrap_or(false)

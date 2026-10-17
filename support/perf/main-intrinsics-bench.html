@@ -1,0 +1,15 @@
+﻿<!doctype html><meta charset="utf-8"><title>Main intrinsic lookup diagnostic</title><link rel="icon" href="data:,"><script>
+setTimeout(()=>{
+ const imul=Math.imul;
+ const direct=n=>{let x=7;for(let i=0;i<n;i++)x=(Math.imul(x,1664525)+1013904223)|0;return x};
+ const cached=n=>{let x=7;for(let i=0;i<n;i++)x=(imul(x,1664525)+1013904223)|0;return x};
+ direct(1024*1024);cached(1024*1024);
+ const results=[];
+ for(let trial=0;trial<3;trial++)for(const kind of (trial===1?['cached','direct']:['direct','cached'])){
+  const start=performance.now();const value=(kind==='direct'?direct:cached)(8*1024*1024);
+  results.push({trial,kind,elapsed_ms:performance.now()-start,value});
+ }
+ window.results=results;
+ console.log('WORKERBENCH '+JSON.stringify({phase:results.every(r=>r.value===results[0].value)?'PASS':'FAIL',scene:'main-intrinsics',results,visibility:document.visibilityState,viewport:[innerWidth,innerHeight]}));
+},1000);
+</script>

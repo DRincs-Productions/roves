@@ -3008,6 +3008,15 @@ impl ScriptThread {
 
         window.init_document(&document);
 
+        // Exposure predicates can inspect the document URL, so initialize lazy
+        // interface properties after attaching the document and before page script.
+        assert!(unsafe {
+            js::rust::wrappers2::JS_InitGlobalInterfaceProperties(
+                cx,
+                window.reflector().get_jsobject(),
+            )
+        });
+
         // Initialize the browsing context for the window.
         let window_proxy = self.window_proxies.local_window_proxy(
             cx,

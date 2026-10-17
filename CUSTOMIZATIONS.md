@@ -1,3 +1,38 @@
+## 2026-10-17 - Release v0.7.12 and synchronize consumers
+
+Tag 0d89099fa9d as v0.7.12. All six release builds pass and all six plain/Steam platform
+archives are published. Download Windows, verify SHA256
+f77cc2e1686cbaafb44fea4913f2ee6999ec937a1197da6a022202779a75ef0b and embedded prefix 0d89099.
+Published-binary FIFO/timer and idle-worker cleanup probes pass (four added, zero retained
+thread IDs). Pin roves-action's checkout/download literals (eaadbcb) and Packmaster's
+TARGET_SHELL_VERSION (31554fa) to v0.7.12; Biome checks pass. No build flags change.
+The later native-global lookup changes are not in this release.
+
+## 2026-10-17 - Use V8 native data properties for lazy Window interfaces
+
+**Engine files:** `components/roves-js/src/object.rs`, `realm_impl.rs`, `jsapi_impl.rs`, API
+exports/wrappers/tests and `components/script/script_thread.rs`.
+**Patch:** `0233-native-global-interface-properties.patch`, after 0232. Reproducible diagnostic:
+`support/perf/main-intrinsics-bench.html`; README, performance notes and wiki updated.
+
+Reuse V8 SetNativeDataProperty (rusty_v8 Object::set_accessor_with_configuration) to register
+the existing enumeration of enabled DOM interface names after window.init_document. Exposure
+predicates can inspect the document URL, so the initial new-global notification is too early.
+Existing resolvers create the final descriptors at first access; standard intrinsic reads no
+longer pass through a global interceptor. Preserve the fallback for other class resolve hooks.
+Reuse JSPROP_RESOLVING when replacing interface aliases, avoiding nested construction without
+adding a registry. Preserve pre-access writes/deletes, child writes, disabled interfaces,
+exception retry, prototype precedence and GC rooting. The new-global notification is unchanged.
+
+An initial SetLazyDataProperty prototype failed V8's accessor replacement check because Servo's
+callback changes the property itself; it is not used. Native data properties permit that model.
+Five focused lazy-global tests and the full engine-layer suite pass: 37 passed, two ignored.
+Fresh ordered replay of 31 patches reproduces all seven files, including pristine ScriptThread.
+Before-change main-thread Math.imul direct lookup takes 1017/1034/1020 ms for 8388608 iterations;
+captured-function control and Chrome MCP take about 7.8 ms. These diagnose lookup overhead;
+post-change browser verification and whole-game CPU measurements still require CI artifacts.
+No new dependency or custom cache is introduced; the added runtime code is V8 integration.
+
 ## 2026-10-17 - Delegate worker intrinsic lookup directly to V8
 
 **Servo files:** `components/script_bindings/codegen/codegen.py`, `test_v8.py`.
@@ -18,7 +53,11 @@ single diagnostic runs, not a measured engine improvement or game CPU savings. T
 1024-job Roves attempt times out at 60 s; retain it as a failure, not a timing result.
 All 74 generator tests pass locally, including the new class-hook regression. Fresh upstream
 selected-file replay of 72 ordered patches passes and reproduces both files exactly.
-Post-change browser runtime verification requires the new CI artifact; do not anticipate gains.
+All 13 desktop and 10 V8 jobs subsequently pass on 1edef828eea. Downloaded Windows debug portable
+SHA256 2f6227d2fd13fbffabf80a62297e505fc1387f3014fc78a59cdd26ea367840be and embedded prefix 1edef82
+are verified. The same 64-job direct-lookup worker probe now passes in 93.05 ms, with FIFO128/
+canceled timers also passing. The pre-change artifact is optimized, the new one debug: do not
+derive a matched-profile percentage or whole-game CPU saving from this diagnostic comparison.
 
 ## 2026-10-17 - Record optimized audio transport verification
 

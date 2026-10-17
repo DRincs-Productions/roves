@@ -240,12 +240,11 @@ impl ClassTemplates {
             let data = v8::External::new(scope, class as *mut c_void);
             template.set_call_as_function_handler(call_class_hook, Some(data.into()));
         }
-        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) {
-            // SpiderMonkey's lazy properties: the resolve hook runs during the object's own
-            // property lookup, before the prototype chain. A non-masking V8 interceptor would
-            // only run after the whole chain, which a proxy on the chain (a Window's named
-            // properties object) answers first; so the interceptor runs first and steps aside
-            // for properties the object already has.
+        if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) &&
+            !uses_native_global_properties(class) {
+            // Fallback for class hooks that cannot enumerate DOM interface names.
+            // Resolution precedes the prototype chain, then steps aside for existing
+            // own properties. DOM globals use per-property V8 callbacks instead.
             let data = v8::External::new(scope, class as *mut c_void);
             let configuration = v8::NamedPropertyHandlerConfiguration::new()
                 .getter(resolve_getter)
@@ -257,6 +256,98 @@ impl ClassTemplates {
         }
         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
         template
+    }
+}
+
+/// Servo's DOM globals enumerate their lazy interface data properties. V8 can own
+/// their initialization without intercepting every access to standard intrinsics.
+pub(crate) fn uses_native_global_properties(class: *const JSClass) -> bool {
+    // SAFETY: classes are static.
+    let class = unsafe { &*class };
+    class.flags & (JSCLASS_IS_GLOBAL | JSCLASS_USERBIT1) == (JSCLASS_IS_GLOBAL | JSCLASS_USERBIT1) &&
+        unsafe { class.cOps.as_ref() }.is_some_and(|ops| ops.resolve.is_some() && ops.newEnumerate.is_some())
+}
+
+/// Called only after the embedder initializes a DOM global's reserved slots.
+pub(crate) fn initialize_global_properties(cx: &JSContext, obj: *mut JSObject) -> bool {
+    let Some(class_box) = class_box(obj) else { return true };
+    let class = class_box.class;
+    if !uses_native_global_properties(class) {
+        return true;
+    }
+    cx.catching(|scope| {
+        // SAFETY: the class owns static callbacks and `obj` is its live global.
+        let enumerate = unsafe { (*(*class).cOps).newEnumerate }?;
+        let raw_cx = cx as *const JSContext as *mut JSContext;
+        crate::rooted!(in(raw_cx) let object = obj);
+        let mut ids = unsafe { crate::rust::IdVector::new(raw_cx) };
+        if !unsafe { enumerate(raw_cx, object.handle().into_handle(), ids.handle_mut(), false) } {
+            crate::native::rethrow_pending(scope, cx);
+            return None;
+        }
+        let global = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, obj as *mut c_void) }).ok()?;
+        let data = v8::External::new(scope, class as *mut c_void);
+        for id in ids.iter() {
+            let key = v8::Local::<v8::Name>::try_from(crate::jsapi_impl::id_key(scope, *id)?).ok()?;
+            if global.has_real_named_property(scope, key)? {
+                continue;
+            }
+            install_global_property(scope, global, key, data.into())?.then_some(())?;
+        }
+        Some(())
+    }).is_some()
+}
+
+fn install_global_property(
+    scope: &v8::PinScope, global: v8::Local<v8::Object>, key: v8::Local<v8::Name>, data: v8::Local<v8::Value>,
+) -> Option<bool> {
+    global.set_accessor_with_configuration(scope, key,
+        v8::AccessorConfiguration::new(global_property_getter)
+            .setter(global_property_setter).data(data)
+            .property_attribute(v8::PropertyAttribute::DONT_ENUM))
+}
+
+fn global_property_getter<'s>(
+    scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>,
+    args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Value>,
+) {
+    let Some(external) = v8::Local::<v8::External>::try_from(args.data()).ok() else { return };
+    let class = external.value() as *const JSClass;
+    // SAFETY: registration only uses DOM classes with a static resolve hook.
+    let Some(resolve) = (unsafe { (*(*class).cOps).resolve }) else { return };
+    let holder = args.holder();
+    let Some(obj) = interceptor_object(scope, holder) else { return };
+    // Existing resolve callbacks define the final descriptor themselves. A native
+    // data property permits this; V8's auto-replacing lazy property does not.
+    if holder.delete(scope, key.into()) != Some(true) { return }
+    let cx = JSContext::current() as *const JSContext as *mut JSContext;
+    let id = crate::jsapi_impl::key_id(scope, key.into());
+    crate::rooted!(in(cx) let object = obj);
+    crate::rooted!(in(cx) let id = id);
+    let mut resolved = false;
+    let ok = unsafe { resolve(cx, object.handle().into_handle(), id.handle().into_handle(), &mut resolved) };
+    if !ok {
+        if holder.has_real_named_property(scope, key) == Some(false) {
+            install_global_property(scope, holder, key, args.data());
+        }
+        crate::native::rethrow_pending(scope, JSContext::current());
+        return;
+    }
+    if resolved {
+        if let Some(value) = resolved_value(scope, holder, key, holder) {
+            retval.set(value);
+        }
+    }
+}
+
+fn global_property_setter<'s>(
+    scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, value: v8::Local<'s, v8::Value>,
+    args: v8::PropertyCallbackArguments<'s>, _retval: v8::ReturnValue<()>,
+) {
+    if args.holder().delete(scope, key.into()) != Some(true) { return }
+    if args.holder().define_own_property(scope, key, value, v8::PropertyAttribute::DONT_ENUM) == Some(false) &&
+        args.should_throw_on_error() {
+        crate::native::throw_type_error(scope, "cannot replace lazy global property");
     }
 }
 
