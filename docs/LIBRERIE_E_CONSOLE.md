@@ -10,7 +10,7 @@ Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
 
 | Area | Oggi | Direzione |
 | --- | --- | --- |
-| WebGPU | Attivo per default (wgpu + naga, binario e thread in più) | Tenerlo: serve ai giochi. Valutare l'avvio pigro del thread |
+| WebGPU | Attivo per default (wgpu + naga); thread già avviati su richiesta e poller sospeso quando inattivo | Tenerlo: serve ai giochi. Misurare il lavoro effettivo prima di proporre altre modifiche |
 | `mach bundle` (`post_build_commands.py`, ~1,7k righe nostre) | Packaging scritto a mano | Valutare `cargo-packager` per msi/dmg/deb; tenere solo la logica Roves (contenuti, icone, Steam) |
 | Tastiera e gamepad | `code` dal crate `keycode`; `key` e gamepad mappati a mano | Restano come glue: usare il più possibile i tipi del crate `sdl3` |
 | roves-js (~22k righe) | Emula l'API mozjs sopra V8 | Ridurlo spostando il codegen dei binding verso il crate `v8` diretto (ArrayBuffer, ValueSerializer per structured clone), togliendo l'emulazione jsapi pezzo per pezzo |

@@ -303,6 +303,9 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         if let Some(cx) = self.context_for_interrupt.borrow().as_ref() {
             cx.request_interrupt_callback()
         }
+
+        // A V8 interrupt cannot wake the event loop while it is blocked on channels.
+        let _ = self.sender.send(DedicatedWorkerScriptMsg::WakeUp);
     }
 
     // https://html.spec.whatwg.org/multipage/#handler-worker-onmessage

@@ -1,0 +1,76 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Worker lifecycle benchmark</title>
+<link rel="icon" href="data:,">
+<button id="start">Start worker lifecycle probe</button>
+<pre id="output"></pre>
+<script>
+const query = new URLSearchParams(location.search);
+const clamp = (key, fallback, max) => {
+  const value = Number(query.get(key) ?? fallback);
+  return Number.isFinite(value) ? Math.min(max, Math.max(1, Math.floor(value))) : fallback;
+};
+const count = clamp("workers", 4, 8);
+const payloadMiB = clamp("mib", 8, 16);
+const output = document.querySelector("#output");
+const workers = [];
+// Retain the main-thread Worker objects: terminate() must release the worker runtimes
+// without relying on main-thread garbage collection or closing the parent page.
+window.workerLifecycleWorkers = workers;
+let started = false;
+function log(phase, extra = {}) {
+  const data = { phase, workers: count, payloadMiB, time_ms: performance.now(), ...extra };
+  const line = "WORKERLIFECYCLE " + JSON.stringify(data);
+  output.textContent += line + "\n";
+  console.log(line);
+}
+function start() {
+  if (started) return;
+  started = true;
+  document.querySelector("#start").disabled = true;
+  let ready = 0;
+  let failed = false;
+  let url;
+  const fail = (message) => {
+    if (failed) return;
+    failed = true;
+    for (const worker of workers) worker.terminate();
+    if (url) URL.revokeObjectURL(url);
+    log("error", { message });
+  };
+  const timeout = setTimeout(() => fail("worker startup timed out"), 30000);
+  setTimeout(() => {
+    log("baseline");
+    setTimeout(() => {
+      if (failed) return;
+      url = URL.createObjectURL(new Blob([
+        `self.payload = new Uint8Array(${payloadMiB} * 1024 * 1024);
+         self.payload.fill(7);
+         postMessage("ready");`
+      ], { type: "text/javascript" }));
+      try {
+        for (let i = 0; i < count; i++) {
+          const worker = new Worker(url);
+          workers.push(worker);
+          worker.onerror = (event) => fail(event.message);
+          worker.onmessage = (event) => {
+            if (failed || event.data !== "ready" || ++ready !== count) return;
+            clearTimeout(timeout);
+            URL.revokeObjectURL(url);
+            log("ready");
+            setTimeout(() => {
+              for (const current of workers) current.terminate();
+              log("terminated");
+              setTimeout(() => log("after"), 5000);
+            }, 4000);
+          };
+        }
+      } catch (error) {
+        fail(String(error));
+      }
+    }, 1500);
+  }, 3500);
+}
+document.querySelector("#start").onclick = start;
+if (query.get("auto") === "1") start();
+</script>

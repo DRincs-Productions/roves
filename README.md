@@ -418,6 +418,9 @@ The development analyser transport uses Crossbeam's bounded queue to retain the 
 window without per-block DOM tasks; whole-game CPU savings remain to be measured.
 An isolated debug/headless test with eight unread analyzers measured about 43% lower process
 CPU, with about 1.2 MiB more private memory; conditions and variability are in the performance notes.
+Worker lifecycle diagnostics also check that terminating idle workers releases their threads;
+the development fix wakes the existing Crossbeam event loop, with post-change CI/runtime
+verification tracked in the performance notes. No worker scheduler dependency is added.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible

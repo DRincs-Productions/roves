@@ -13974,3 +13974,28 @@ fixture does not fetch App or initialize Tone, while normal diagnostics still lo
 buttons. Previous visible runs with eager imports require rebaselining; this is a measurement
 correction, not a claimed engine speedup. Update the library plan to reflect the already-shipped
 Windows mimalloc default rather than proposing its promotion again.
+
+The library roadmap also records the existing lazy WebGPU thread startup in
+`Constellation::handle_wgpu_request` and the parked idle poller; no new runtime change is
+needed to provide those behaviors.
+
+## 2026-10-17 - Wake idle dedicated workers on termination
+
+**Servo files:** `components/script/dom/workers/worker.rs` and
+`components/script/dom/workers/abstractworkerglobalscope.rs`. **Patch:**
+`0230-worker-shutdown-wakeup.patch`, after 0229. Repository diagnostics:
+`support/perf/worker-lifecycle-bench.html` and its README; performance notes and wiki updated.
+
+Reuse the existing Crossbeam sender and WakeUp message after requesting V8 interruption in
+Worker.terminate(). An isolate interrupt alone does not wake a worker blocked in select!.
+Also close the worker scope on a disconnected channel or an explicit event-handler shutdown
+so the outer loop cannot repeatedly select a permanently ready disconnected channel.
+No dependency, custom queue, or scheduler is added.
+
+The optimized pre-change artifact (1e9c7dcfea2) retains all four newly created idle-worker
+thread IDs five seconds after terminate(), while parent Worker objects remain referenced.
+Private memory is 125.6 MiB before creation, 195.7 MiB ready and 195.5 MiB after termination.
+These are diagnostic headless observations, not a CPU comparison with Chrome. Post-change
+runtime verification is pending CI. The two upstream v0.5.0 files were downloaded fresh;
+replaying their prior 0224 hunks and then 0230 passes and reproduces this checkout exactly
+apart from line endings. Full ordered patch replay and platform compilation remain CI checks.

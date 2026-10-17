@@ -1,0 +1,34 @@
+diff --git a/components/script/dom/workers/abstractworkerglobalscope.rs b/components/script/dom/workers/abstractworkerglobalscope.rs
+index fa52317300a..c7d08d61793 100644
+--- a/components/script/dom/workers/abstractworkerglobalscope.rs
++++ b/components/script/dom/workers/abstractworkerglobalscope.rs
+@@ -64,6 +64,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
+     // explicit close/exit Sharedworker path). Treat that as a clean shutdown signal rather
+     // than panicking on RecvError.
+     let Some(event) = event else {
++        scope.close();
+         return;
+     };
+ 
+@@ -91,6 +92,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
+         let cx = &mut realm.current_realm();
+         if !worker_scope.handle_event(event, cx) {
+             // Shutdown
++            scope.close();
+             return;
+         }
+         // Step 6
+diff --git a/components/script/dom/workers/worker.rs b/components/script/dom/workers/worker.rs
+index 9b3225a29ff..ed60981a238 100644
+--- a/components/script/dom/workers/worker.rs
++++ b/components/script/dom/workers/worker.rs
+@@ -303,6 +303,9 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
+         if let Some(cx) = self.context_for_interrupt.borrow().as_ref() {
+             cx.request_interrupt_callback()
+         }
++
++        // A V8 interrupt cannot wake the event loop while it is blocked on channels.
++        let _ = self.sender.send(DedicatedWorkerScriptMsg::WakeUp);
+     }
+ 
+     // https://html.spec.whatwg.org/multipage/#handler-worker-onmessage

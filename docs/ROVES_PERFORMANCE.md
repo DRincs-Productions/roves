@@ -480,3 +480,73 @@ Il campionatore usa `Date.now() - performance.now()` per allineare il riscaldame
 restituisce attualmente `performance.timeOrigin` nell'epoca monotona interna, anziché Unix.
 È un problema di compatibilità da correggere separatamente, non una causa dimostrata dei
 frame lunghi. Non mescolare tempi assoluti dei due browser senza questa correzione di misura.
+
+### Corse esplorative sulla fixture corretta
+
+Windows 11, i7-8700, GTX 1050/ANGLE D3D11, viewport 1024×740, DPR 1, canvas Pixi
+300×200, finestra visibile. Campionamento da 60 a 80 s dal caricamento. Chrome 155.0.8059.84
+è pilotato via DevTools MCP; CPU e memoria provengono dai contatori di processo Windows
+letti da terminale, non dal profiler MCP. Si sommano soltanto il browser MCP e i suoi processi
+figli, escludendo il Chrome personale. Ogni corsa Roves usa un processo nuovo.
+
+| Corsa CPU senza contatori GPU | CPU (% di un core logico) | Picco memoria privata |
+| --- | --- | --- |
+| Chrome, contesto usato nelle prove precedenti | 61,8% | 535,0 MiB |
+| Chrome, nuovo contesto isolato | 67,0% | 365,6 MiB |
+| Roves ottimizzato `20f899dcfbb` | 46,4% | 639,5 MiB |
+| Roves `20f899dcfbb`, diagnosi aggiuntiva per thread | 29,4% | 664,2 MiB |
+| Roves `20f899dcfbb`, statistiche mimalloc e chiusura regolare | 37,6% | 656,1 MiB |
+
+Queste corse non dimostrano parità o superiorità CPU: la variabilità è elevata, i contesti
+Chrome differiscono e il runtime Roves è quello ottimizzato precedente alla coda audio.
+La diagnosi per thread non ha ottenuto i nomi: non attribuire le percentuali a script o layout.
+Non confrontare la somma dei working set Chrome con il singolo working set Roves come RAM
+fisica equivalente, perché le pagine condivise possono essere contate più volte.
+
+Una corsa GPU Chrome separata, con nuovo contesto isolato, registra cinque osservazioni:
+motore 3D 2/3/2/2/3%, memoria dedicata 30,6 MiB e condivisa 4,9–5,2 MiB. L'interferenza del
+campionamento CIM esclude quella corsa dal confronto CPU. Il probe rAF da 60 a 80 s registra
+1198 intervalli, p99 17,0 ms e un intervallo sopra 33 ms; non è una misura GPU dettagliata.
+
+`MIMALLOC_SHOW_STATS=1`, riusando la diagnostica della libreria e chiudendo regolarmente
+Roves, riporta un picco di 251 MiB impegnati nelle arene mimalloc e 656 MiB privati nel
+processo. Il GiB riservato dalle arene è spazio virtuale, non RAM residente. I picchi non
+sono necessariamente simultanei: non sottrarli per ricavare una ripartizione precisa.
+Il solo `mi_process_info` descrive il processo, non tutte e sole le allocazioni Rust.
+
+Dati grezzi locali: `target/perf-local-20261017/visible/`, nomi `*-clean-*`;
+le corse precedenti senza `clean` usano gli import eager e non sono la nuova baseline.
+
+## Web Worker: gestione e verifica del ciclo di vita (17 ottobre 2026)
+
+Prima priorità: rilasciare thread e isolate quando il gioco termina un worker. Ogni dedicated
+worker usa già un thread e un runtime V8 propri; l'attesa usa `crossbeam_channel::select!`,
+senza polling continuo. Un pool Rayon/Tokio non sostituisce automaticamente questi event loop
+JavaScript con stato e affinità di thread. Si riusano Crossbeam e le API V8 già integrate.
+
+Problema riprodotto sulla build ottimizzata mimalloc `1e9c7dcfea2`: quattro worker inattivi
+allocano e toccano ciascuno 8 MiB, poi il parent chiama `terminate()` conservando gli oggetti
+Worker. Cinque secondi dopo, tutti e quattro gli ID dei thread aggiunti sono ancora presenti.
+I thread totali passano da 61 a 65 e poi 64: il thread scomparso non è uno dei quattro nuovi.
+Memoria privata: 125,6 MiB prima, 195,7 MiB con worker pronti, 195,5 MiB dopo terminate.
+È una singola prova diagnostica headless, non un confronto prestazionale con Chrome.
+
+`terminate()` impostava il flag e richiedeva un interrupt V8, che non risveglia il `select!`
+quando il worker è inattivo. La patch 0230 invia anche il messaggio WakeUp già esistente sul
+canale Crossbeam. Il loop usa inoltre `close()` quando un canale è disconnesso o l'handler
+richiede lo shutdown, così il chiamante non ripete l'attesa su un canale già chiuso.
+La verifica post-modifica è ancora necessaria: non dichiarare recuperati thread o memoria
+sulla sola base dell'ispezione del codice. Nessuna nuova dipendenza o scheduler personalizzato.
+
+Fixture: `support/perf/worker-lifecycle-bench.html?auto=1`. Registra fasi baseline, ready,
+terminated e after, lasciando aperto il parent per il campionamento esterno. Gli oggetti Worker
+rimangono referenziati; la liberazione degli isolate non deve dipendere dal GC del parent.
+La memoria dell'allocatore può restare in cache: gli ID dei thread sono un controllo separato.
+
+Seconda priorità: misurare avvio, ping-pong di messaggi piccoli, trasferimenti di ArrayBuffer
+e calcolo CPU, con 1/2/4/8 worker e scene uguali in Chrome/Roves. Il backend usa già
+ValueSerializer/ValueDeserializer di V8, ma per gli ArrayBuffer trasferiti scrive i byte nella
+tabella serializzata e li copia in un nuovo buffer in lettura. Il distacco del mittente non
+dimostra quindi un trasferimento senza copie. Un futuro percorso nello stesso processo deve
+riusare BackingStore V8 e preservare ownership, errori, cleanup e il percorso multiprocesso;
+non aggiungere una tabella globale di buffer senza gestione completa del ciclo di vita.

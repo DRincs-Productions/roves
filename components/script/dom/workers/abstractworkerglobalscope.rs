@@ -64,6 +64,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
     // explicit close/exit Sharedworker path). Treat that as a clean shutdown signal rather
     // than panicking on RecvError.
     let Some(event) = event else {
+        scope.close();
         return;
     };
 
@@ -91,6 +92,7 @@ pub(crate) fn run_worker_event_loop<T, WorkerMsg, Event>(
         let cx = &mut realm.current_realm();
         if !worker_scope.handle_event(event, cx) {
             // Shutdown
+            scope.close();
             return;
         }
         // Step 6
