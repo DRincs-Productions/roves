@@ -44,6 +44,10 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
   Logs WORKERBENCH with scene=main-intrinsics for the shared terminal runner. This isolates
   global-lookup overhead, not whole-game performance; the page remains open after completion.
 
+- `native-globals-probe.html`: nine functional checks for standard intrinsics, DOM constructors,
+  Image/Audio/Option aliases, an initialized property descriptor and iframe constructor realms.
+  Logs WORKERBENCH with scene=native-globals. This is not a performance benchmark.
+
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.
 Keep foreground and headless samples separate. Results are in [`ROVES_PERFORMANCE.md`](../../docs/ROVES_PERFORMANCE.md).

@@ -1,0 +1,19 @@
+<!doctype html><meta charset="utf-8"><title>Native DOM global integration</title><link rel="icon" href="data:,"><script>
+addEventListener('load', async () => {
+ const checks=[];
+ const check=(name,fn)=>{try{if(!fn())throw Error('false');checks.push({name,pass:true})}catch(e){checks.push({name,pass:false,error:String(e)})}};
+ check('standard intrinsics',()=>Math.imul(7,9)===63 && JSON.parse('{"a":1}').a===1);
+ check('Image alias',()=>new Image() instanceof HTMLImageElement);
+ check('Audio alias',()=>new Audio() instanceof HTMLAudioElement);
+ check('Option alias',()=>new Option('text','value').value==='value');
+ check('DOM constructor identity',()=>document.createElement('div') instanceof HTMLDivElement);
+ check('URL constructor',()=>new URL('/test','https://example.com').pathname==='/test');
+ check('own constructor descriptor',()=>Object.getOwnPropertyDescriptor(window,'HTMLDivElement').value===HTMLDivElement);
+ const frame=document.createElement('iframe');document.body.append(frame);
+ await new Promise(resolve=>setTimeout(resolve,100));
+ check('iframe constructor realm',()=>{const child=frame.contentWindow;const C=child.HTMLButtonElement;return child.document.createElement('button') instanceof C && !(document.createElement('button') instanceof C)});
+ check('iframe Image alias realm',()=>{const child=frame.contentWindow;return new child.Image() instanceof child.HTMLImageElement});
+ frame.remove();
+ console.log('WORKERBENCH '+JSON.stringify({phase:checks.every(x=>x.pass)?'PASS':'FAIL',scene:'native-globals',checks}));
+});
+</script><body>DOM global integration probe</body>

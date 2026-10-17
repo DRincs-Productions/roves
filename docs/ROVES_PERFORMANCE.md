@@ -670,7 +670,7 @@ del browser MCP PID 10020; escluso il browser personale. Entrambi 1187 intervall
 Una sola coppia, carico esterno e stati dei processi differenti: nessuna prova di parità
 o di risparmio dovuto alle patch successive al tag. Log in
 `target/perf-local-20261017/visible/*current-baseline-1*`.
-Il controllo breve di nove comportamenti DOM, alias Image/Audio/Option e realm degli
+`support/perf/native-globals-probe.html`, controllo di nove comportamenti DOM, alias Image/Audio/Option e realm degli
 iframe passa in Chrome e nella release v0.7.12; resta da ripeterlo sul nuovo binario CI.
 
 La CI consumer [39067409866](https://github.com/DRincs-Productions/roves-action/actions/runs/39067409866)

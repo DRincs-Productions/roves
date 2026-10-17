@@ -6,6 +6,8 @@ lock metadata (7df7c23, f8f459c), preserving all existing package versions. No e
 runtime change. Update performance notes with one visible v0.7.12/Chrome155 pair:
 88.03/89.49 percent of one core, 661.4/399.6 MiB private peak, 9/6 long frames.
 Single runs and different host load do not establish parity or a native-global gain.
+Track the dependency-free nine-check native-globals probe in support/perf; baseline
+Chrome MCP and released Roves pass. Final development-browser verification remains pending.
 
 ## 2026-10-17 - Complete native-global callback integration
 
