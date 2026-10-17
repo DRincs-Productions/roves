@@ -1,3 +1,11 @@
+## 2026-10-17 - Save the requested overnight handoff
+
+The user pauses work until tomorrow. Update V8_MIGRATION_HANDOFF.md, TODO.md and
+performance notes with source 1e0f4764378, CI run IDs, pending verification, artifact
+identity checks and the next functional/optimized measurements. Leave existing CI
+running; no new release or expensive build. Documentation-only push preserves the
+source already being built. Do not treat in-progress CI as verified.
+
 ## 2026-10-17 - Verify consumer builds and refresh the visible reference
 
 roves-action run 39067409866 passes all nine jobs and publishes all nine expected assets.

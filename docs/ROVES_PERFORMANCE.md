@@ -652,7 +652,11 @@ ancora necessaria; non dichiarare misurato il guadagno del nuovo percorso Window
 Il controllo fra globali ha trovato che il callback usava il realm chiamante: la patch 0234
 entra nel realm proprietario e ripristina il chiamante anche dopo un'eccezione. Corregge inoltre
 l'import DomObject richiesto da ScriptThread, mancante nella prima compilazione CI (E0599).
-Riproduzione selezionata di 30 patch sui tre file PASS; nuova verifica CI necessaria.
+Riproduzione selezionata di 30 patch sui tre file PASS. Alla pausa richiesta dall'utente
+il 17 ottobre, desktop `39069276284` è a 10/13 job verdi e V8 `39069276329` a 7/10;
+Android e iOS passano. Windows ha completato la compilazione e assembla il bundle.
+Attendere gli esiti finali, scaricare il portable e verificare hash/commit `1e0f476`
+prima dei test browser. Piano di ripresa in `V8_MIGRATION_HANDOFF.md`.
 
 ### Riferimento visibile aggiornato del 17 ottobre, v0.7.12
 

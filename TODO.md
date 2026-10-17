@@ -113,7 +113,8 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
   verificando stacking context, hit testing e memoria GPU. Chrome MCP osserva fino a 120
   animazioni native nella fixture typewriter; il risparmio CPU ottenibile non è misurato.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
-- [ ] Confermare sul browser CI la patch 0233 per i globali Window, poi ripetere CPU/RAM della
+- [ ] Confermare sul browser CI le patch 0233/0234 per i globali Window (sorgente `1e0f4764378`,
+  run desktop `39069276284`, V8 `39069276329`), poi ripetere CPU/RAM della
   scena reale su build ottimizzate. La correzione worker 0232 passa già il test di calcolo
   senza variabile locale; non riavviare l'indagine da zero sui globali.
 - [ ] Estendere la misura AnalyserNode Crossbeam a letture per frame, più carichi e sessioni

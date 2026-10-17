@@ -1,4 +1,53 @@
-# V8 migration - handoff (2026-10-04, fine giornata)
+# V8 migration - handoff
+
+## Pausa richiesta dall'utente — 17 ottobre 2026, ripresa domani
+
+**Questo checkpoint prevale sulle note storiche sotto.** Non proseguire nella notte:
+l'utente ha chiesto di fermare il lavoro e lasciare terminare le CI già avviate.
+
+- Sorgente engine da verificare: **`1e0f4764378`**, patch 0232–0234. I commit successivi
+  `2d502653163`/`e0cf75fa08a` aggiornano documentazione e fixture; non cambiano il motore.
+- CI desktop: [39069276284](https://github.com/DRincs-Productions/roves/actions/runs/39069276284),
+  10/13 job verdi alla pausa. Windows portable/MSI hanno finito di compilare e assemblano;
+  Linux portable esegue gli ultimi test. Non ancora dichiarata tutta verde.
+- CI V8: [39069276329](https://github.com/DRincs-Productions/roves/actions/runs/39069276329),
+  7/10 verdi, Windows build e Linux normal/jitless smoke ancora attivi.
+  Android `39069276221` e iOS `39069276232` già verdi.
+- **v0.7.12 pubblicata e fissata nei due consumer.** Le ottimizzazioni dei globali non sono
+  in quel tag. Nessun tag v0.7.13 creato. roves-action `39067409866`, tentativo 3: tutti i nove
+  job verdi e nove asset presenti. Template corretto nei commit `7df7c23` e `f8f459c`:
+  metadati npm nativi opzionali ripristinati, nessun cambio delle versioni precedenti.
+- 38 test locali V8 passano, due ignorati. Replay pristine selezionati delle patch passa.
+  **Non ricompilare tutto localmente.** Non attribuire al nuovo Window un guadagno non misurato.
+
+### Prima attività alla ripresa
+
+1. Leggere lo stato finale delle due CI sopra e correggere eventuali errori.
+2. Scaricare l'asset `servoshell-test_windows-portable.zip` dalla release rolling `test`.
+   Verificare digest SHA256 pubblicato e commit incorporato **`1e0f476`**. Il vecchio ZIP
+   `1edef82` già presente localmente non contiene la modifica Window; la rolling release
+   può ancora servirlo finché il nuovo upload non termina.
+3. Avviare il server locale da root:
+   `python -m http.server 48761 --bind 127.0.0.1 --directory test-page/dist`.
+   Copiare le fixture da `support/perf` nel dist se mancanti. Un rebuild del dist le cancella.
+4. Sul nuovo binario eseguire `native-globals-probe.html` (nove verifiche),
+   `main-intrinsics-bench.html`, `worker-queue-probe.html` e il calcolo worker, poi la App
+   normale/typewriter-Pixi. Controllare console e roves.log per panic/errori. I nove controlli
+   DOM passano già in Chrome MCP e v0.7.12: sono il riferimento, non la verifica post-fix.
+   Runner esistente `target/perf-local-20261017/run-worker-messaging.ps1` accetta `-Exe`,
+   `-Run` e `-Url`; log con marker WORKERBENCH PASS.
+5. Solo dopo la verifica funzionale usare build ottimizzate con profilo uguale per misurare
+   CPU/RAM e frame; annunciare prima misure/build costose. Debug contro release non permette
+   percentuali attendibili. Eventuale nuova release richiede poi entrambi i pin e asset verificati.
+
+Ultimo riferimento visibile v0.7.12/Chrome155: CPU 88,03/89,49% di un core, picco privato
+661,4/399,6 MiB, frame >33 ms 9/6, p99 21,04/17,10 ms. Singola coppia con carichi host
+diversi: nessuna parità dimostrata. Dati e limiti in `ROVES_PERFORMANCE.md`; log in
+`target/perf-local-20261017/visible/*current-baseline-1*`.
+Chrome MCP pagina 4, contesto `perf-host-20261017`, ora sulla fixture DOM inattiva.
+Nessuna finestra Roves aperta. Nessun agente o build locale completa avviati.
+
+## Archivio del precedente handoff (4 ottobre 2026)
 
 Punto di ripresa operativo sintetico. L'utente autorizza a proseguire autonomamente: implementare,
 testare localmente, avviare e attendere CI, correggere e continuare senza fermarsi ai checkpoint.
