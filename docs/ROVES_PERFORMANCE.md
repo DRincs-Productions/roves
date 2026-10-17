@@ -222,10 +222,8 @@ deve preservare gli ultimi 32768 campioni, ordine, downmix, silenzio, fftSize e 
 senza bloccare il thread audio. Non basta scartare blocchi o conservare solo l'ultimo:
 altererebbe lo spettro. Verificare anche backlog durante script occupato e distruzione del nodo.
 
-Priorità: misurare il costo con 0/1/più analizzatori prima di implementare il batching.
-Il tentativo di avviare la nuova prova locale è stato respinto dal controllo automatico con
-`blocked by policy`; non sono disponibili nuovi risultati CPU o confronti Chrome da questa
-sessione e il runtime non è stato modificato sulla base di questa sola ipotesi.
+Il blocco iniziale della policy è stato superato con l'esecuzione autorizzata del 17 ottobre:
+risultati prima/dopo e limiti sono nella sezione dedicata sotto.
 
 ### Migrazione del trasporto in sviluppo
 
@@ -244,20 +242,16 @@ silenzio dopo suono e invalidazione/cache dello spettro: 4/4 test audio locali i
 passati. Il commit `605d486b079` supera la validazione della serie patch e tutti i job CI
 desktop, Windows, macOS, Linux, Android e iOS:
 [workflow desktop](https://github.com/DRincs-Productions/roves/actions/runs/38952244417).
-L'archivio portable Windows del job è stato scaricato; l'avvio runtime locale non ha prodotto
-stdout o codice d'uscita. Il log in `%LOCALAPPDATA%\roves\roves.log` contiene soltanto
-`Panic hook called`: non è una verifica funzionale post-modifica. Il gestore panic perdeva
-il dettaglio nel percorso `hard_fail`, terminando prima del record di errore; la patch 0229
-anticipa quel record. La causa del panic resta da individuare. Inoltre il tentativo con
-`-x -o URL` era invalido per questo benchmark: `-o` richiede un filename, mentre `-x` può
-chiudere la pagina prima dei controlli audio. Non attribuire quel tentativo a una regressione
-della coda. La cattura locale stdout/stderr con attesa è stata rifiutata dalla policy.
+Il primo tentativo locale con `-x -o URL` era invalido: `-o` richiede un filename e `-x`
+può chiudere la pagina prima dei controlli audio. Un log riportava soltanto `Panic hook called`;
+la patch 0229 conserva il dettaglio prima dell'uscita `hard_fail`. Il panic non si è riprodotto
+nelle successive dodici prove autorizzate con argomenti corretti: non attribuirlo alla coda.
 
 La correzione diagnostica `1e9c7dcfea2` passa tutti i 13 job
 [desktop/patch/test](https://github.com/DRincs-Productions/roves/actions/runs/39022147447),
 oltre ad Android e iOS. Scaricato il portable Windows aggiornato, verificato contro il digest
-SHA-256 pubblicato da GitHub (`79cc181d…68df4cb`). Il nuovo tentativo locale con gli argomenti
-corretti è stato bloccato prima dell'avvio: nessun nuovo PASS runtime o dato CPU.
+SHA-256 pubblicato da GitHub (`79cc181d…68df4cb`). Dopo il blocco iniziale della policy,
+le prove autorizzate sotto forniscono PASS runtime e dati CPU sul trasporto audio.
 Evidenze locali: `target/perf-local-20261017/verification.json`. La release versionata rimane
 v0.7.11; questi controlli riguardano il ramo di sviluppo.
 
@@ -463,3 +457,26 @@ RAM, né risolve WAAPI o AudioWorklet. Chrome è stato misurato visibile dall'ut
 build headless: non dedurne un vantaggio generale su Chrome. Queste prove non giustificano
 un cambio dell'allocatore predefinito. Le build `perf-ab` sono sperimentali, non una release
 versionata consumata da roves-action o Packmaster.
+
+## 17 ottobre: isolamento della pagina di confronto
+
+Il ramo `?perf=` veniva scelto dentro `App`, dopo gli import statici dei pannelli diagnostici.
+Questi caricavano anche Tone.js: Chrome emetteva il banner Tone e avvisi di AudioContext
+senza interazione. La selezione avviene ora nell'entry point; React.lazy/Suspense e lo splitting
+ESM di Vite caricano `App` soltanto nella pagina diagnostica normale. Nessuna dipendenza nuova.
+
+`npm run build` passa. Chrome DevTools MCP verifica che typewriter/Pixi non scarichi il chunk
+App né emetta il banner Tone; la pagina normale carica App e conserva i pulsanti Tone.
+L'utente ha confermato testo e scena in movimento in Roves. Le precedenti corse visibili
+con import eager sono esplorative: rifare le baseline con la stessa pagina corretta in entrambi
+i browser. Questa modifica alla fixture non è un guadagno del motore.
+
+La CI ottimizzata [39034634597](https://github.com/DRincs-Productions/roves/actions/runs/39034634597)
+ricostruisce il runtime `1e9c7dcfea2` con entrambi gli allocatori. Le misure nuove devono
+registrare commit, versione, viewport 1024×740, DPR 1, visibilità, GPU, riscaldamento e intervallo;
+separare i contatori GPU dalle corse CPU per limitare l'interferenza del campionamento.
+
+Il campionatore usa `Date.now() - performance.now()` per allineare il riscaldamento: Roves
+restituisce attualmente `performance.timeOrigin` nell'epoca monotona interna, anziché Unix.
+È un problema di compatibilità da correggere separatamente, non una causa dimostrata dei
+frame lunghi. Non mescolare tempi assoluti dei due browser senza questa correzione di misura.

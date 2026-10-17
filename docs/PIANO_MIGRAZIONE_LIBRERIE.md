@@ -1,8 +1,8 @@
 # Piano operativo per le migrazioni delle librerie di Roves
 
-Aggiornato il 16 ottobre 2026. Destinatario: Codex che implementerà modifiche nel fork. Ambito: librerie e infrastruttura di Roves, non dipendenze delle applicazioni ospitate.
+Aggiornato il 17 ottobre 2026. Destinatario: Codex che implementerà modifiche nel fork. Ambito: librerie e infrastruttura di Roves, non dipendenze delle applicazioni ospitate.
 
-V8, SDL3 e la selezione sperimentale mimalloc sono già integrati. La presentazione diretta A è
+V8, SDL3 e mimalloc sono già integrati; mimalloc è predefinito su Windows dalla v0.7.11. La presentazione diretta A è
 predefinita dalla v0.7.4; RealFFT sostituisce la DFT manuale di AnalyserNode nel ramo di sviluppo.
 Risultati e verifiche residue sono in [`ROVES_PERFORMANCE.md`](./ROVES_PERFORMANCE.md).
 Per motion si riusano Stylo/WebRender; AudioWorklet JavaScript resta da collegare al grafo
@@ -22,7 +22,7 @@ Il contratto da conservare è un runtime desktop embedded basato sul fork Servo 
 | `surfman` | Ancora usato per contesti GL, offscreen, WebGL/media e shell; WebXR rimosso | Studiare rimozione per componenti dopo prova di parità |
 | Componenti i18n/Unicode → ICU4X | Manifest include già `icu_locid`, `icu_properties`, `icu_segmenter` 1.5 | Inventariare chiamate; migrazione selettiva solo con equivalenza |
 | Percorsi GL → wgpu | WebGPU usa componenti wgpu; WebRender e la shell mantengono percorsi GL | Fast path misurato, non sostituzione globale |
-| jemalloc → mimalloc | Feature opzionale già presente; Windows usa System di default, OHOS rimosso | Misurare A/B prima di cambiare il default |
+| jemalloc → mimalloc | Windows usa mimalloc dalla v0.7.11; `system-allocator` conserva il controllo A/B, OHOS rimosso | Validare CPU e memoria del gioco completo, oltre ai microbenchmark DOM |
 | `log`/`env_logger` → `tracing` | Entrambi coesistono; Tracy/Perfetto sono opzionali | Consolidamento locale solo se riduce duplicazione reale |
 
 ## 1. SDL3: chiudere la migrazione già fatta
@@ -81,14 +81,15 @@ Il contratto da conservare è un runtime desktop embedded basato sul fork Servo 
 
 ## 5. Allocatore: confronto condizionale jemalloc/mimalloc
 
-La selezione opzionale mimalloc è implementata; le build Windows A/B sono prodotte da
+mimalloc è già predefinito su Windows dalla v0.7.11, sulla base dei microbenchmark DOM
+registrati in `CUSTOMIZATIONS.md` il 14 ottobre. Le build Windows A/B sono prodotte da
 `.github/workflows/perf-ab.yml`. Restano misure comparative, non l'aggiunta della dipendenza.
 Conservare statistiche, interoperabilità FFI e proprietà delle allocazioni.
 
 1. Aprire l'esperimento soltanto se profili indicano contesa, frammentazione, RSS o pause p99 attribuibili **all'allocatore Rust**. Registrare workload riproducibili: avvio, caricamento asset, sessione prolungata, teardown e gioco continuo. Separare heap JS, memoria GPU e librerie native dal consumo gestito dall'allocatore Rust.
 2. Usare le varianti già disponibili mantenendo uguali motore, contenuto e impostazioni; verificare che malloc/realloc/free attraversino FFI con lo stesso proprietario.
 3. Confrontare N run sugli stessi OS/hardware, build release, contenuto e impostazioni. Misurare RSS, picco, heap attivo, frammentazione, CPU, frame p95/p99, startup e stabilità. Riportare intervalli/variabilità, non solo una media favorevole.
-4. Promuovere mimalloc a default **solo** se un miglioramento materiale è riproducibile senza regressioni di stabilità, memoria o distribuzione. Se non emerge, rimuovere l'esperimento e lasciare jemalloc/System come prima.
+4. Conservare il default attuale durante la verifica. Valutare una modifica solo con confronti ripetibili sul gioco completo che dimostrino un beneficio materiale senza regressioni di stabilità, memoria o distribuzione. I soli getter WebGL o FFT non giustificano un cambio.
 
 **Accettazione:** miglioramento documentato e test di allocazione/FFI superati su ogni target coinvolto. **Rollback:** ripristinare la selezione precedente; mai liberare memoria con un allocatore diverso da quello che l'ha creata.
 

@@ -13958,3 +13958,19 @@ complete, correct copy. `download_pkg` now compares the SHA-256 of the whole fil
 GStreamer publishes for it (`PACKAGE_SHA256`, 1.28.7 runtime and devel); that catches truncation
 just as well. Update the table when `GSTREAMER_PLUGIN_VERSION` changes.
 
+
+## 2026-10-17 - Isolate performance fixtures from diagnostic module side effects
+
+**Repository-only files:** `test-page/src/main.tsx`, `test-page/src/App.tsx`, README, and
+performance/library planning notes. No Servo source or build interface changes; no upstream
+Servo patch is required for this test application.
+
+Select the performance fixture before loading App. Reuse React.lazy/Suspense and Vite's ESM
+splitting to keep normal diagnostic imports, including Tone.js initialization, out of graphic
+comparison runs. Remove the redundant selector from App. No dependency was added.
+
+The TypeScript/Vite production build passes. Chrome DevTools MCP confirms the typewriter/Pixi
+fixture does not fetch App or initialize Tone, while normal diagnostics still load the Tone
+buttons. Previous visible runs with eager imports require rebaselining; this is a measurement
+correction, not a claimed engine speedup. Update the library plan to reflect the already-shipped
+Windows mimalloc default rather than proposing its promotion again.

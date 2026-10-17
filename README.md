@@ -403,7 +403,9 @@ The bundled diagnostic page also exposes deliberately minimal comparison workloa
 size, warm-up and sampling interval in Roves and Chrome. The static PixiJS fixture renders one
 frame and stops its ticker; unlike the normal diagnostic page, these fixtures omit gamepad
 polling, FPS probes, Steam checks and other page-level timers that would contaminate an idle
-measurement. The measurement plan and current findings are tracked in
+measurement. The entry point loads the normal diagnostic panels lazily, so performance
+fixtures also avoid their module side effects, including Tone.js initialization. Rebaseline both
+browsers after this fixture correction; it is not an engine speedup. The measurement plan and current findings are tracked in
 [`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md).
 
 The current development tree caches actual WebGL drawing-buffer dimensions between resizes
