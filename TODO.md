@@ -113,10 +113,16 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
   verificando stacking context, hit testing e memoria GPU. Chrome MCP osserva fino a 120
   animazioni native nella fixture typewriter; il risparmio CPU ottenibile non è misurato.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
-- [ ] Estendere la misura AnalyserNode Crossbeam a build ottimizzate, letture per frame,
-  più carichi e sessioni lunghe, poi verificare l'effetto sul gioco. La verifica runtime e
-  le 12 prove debug/headless con 0/8 nodi non letti sono passate: CPU mediana a 8 nodi
-  −42,8%, memoria privata +1,2 MiB. Condizioni e variabilità in `docs/ROVES_PERFORMANCE.md`.
+- [ ] Estendere la misura AnalyserNode Crossbeam a letture per frame, più carichi e sessioni
+  lunghe, poi verificare l'effetto sul gioco. Prove debug e ottimizzate con 0/8 nodi non letti
+  già completate; condizioni e variabilità in `docs/ROVES_PERFORMANCE.md`.
+- [ ] Rimuovere le copie del payload ArrayBuffer trasferito fra worker nello stesso processo,
+  riusando BackingStore/serializer V8 con ownership e cleanup espliciti. La rimozione delle due
+  copie del vettore esterno e il rilascio dei thread inattivi sono già verificati. Preservare
+  il percorso IPC/serializzabile, errori di clone, terminate immediato e chiusura del parent.
+- [ ] Confrontare calcolo e messaggi con 1/2/4/8 worker: throughput, CPU totale, memoria e
+  fluidità del thread principale. Per i giochi valutare un pool riusato con coda e batch limitati;
+  non equiparare più thread a meno CPU. WebGL/rAF nei worker richiedono ancora supporto del motore.
 - [ ] Valutare AudioWorklet sul grafo servo-media esistente: isolate V8 dedicato, moduli,
   MessagePort e processori audio; nessun callback sul thread DOM per ogni blocco audio.
 - [ ] Verificare howler.js e Tone.js con playback reale, automazione, loop, sospensione,

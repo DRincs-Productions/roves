@@ -300,6 +300,26 @@ rendering visibile, analizzatori letti a ogni frame o CPU totale del gioco e non
 Chrome. Non attribuire il risultato al typewriter, che non usa questi analizzatori.
 Log e campioni: `target/perf-local-20261017/transport-comparison/`, incluse statistiche JSON.
 
+### Trasporto audio: verifica con build ottimizzate
+
+Ripetizione con mimalloc ottimizzato `20f899d` prima e `1e9c7dc` dopo: stessa fixture,
+headless 1024×740, 44,1 kHz, renderer Microsoft Basic Render Driver, tre processi nuovi per
+combinazione e ordine alternato (12 PASS). CPU nella finestra centrale di circa 9,8 s;
+esclusi warm-up e busy loop finale. Non è una misura della GPU o della CPU del gioco.
+
+| Analizzatori non letti | CPU prima / dopo, mediana (% di un core) | Picco privato prima / dopo, mediana |
+| --- | --- | --- |
+| 0 | 10,35 / 9,65 | 190,06 / 189,70 MiB |
+| 8 | 15,07 / 10,68 | 194,78 / 195,63 MiB |
+
+Con otto nodi, singole CPU prima 14,25/15,07/15,68%; dopo 10,68/12,06/6,96%.
+L'ultima corsa dopo ha CPU host circa 27%, contro circa 9–12% nelle altre: conservarla,
+senza attribuire causalmente al trasporto tutto il calo mediano del 29,1%. Escludendo l'intera
+terza coppia, il calo delle mediane è circa 22,5%. Alle 18:20/18:23 era attivo il profilo
+Windows Risparmio di energia, non modificato: la frequenza CPU è una possibile variabile,
+non una causa dimostrata. Nessuna misura di parità con Chrome o di assenza di glitch audio.
+Log e campioni: `target/perf-local-20261017/transport-comparison-release/`.
+
 Typewriter: una corsa Chrome MCP visibile (viewport 929×861, canvas 300×200, GTX 1050 via
 ANGLE/D3D11) dà p99 17,4 ms e 6 frame sopra 33 ms in 20 s dopo 5 s di warm-up. Roves
 20f899dcfbb visibile dà p99 22,7 ms e 7 frame sopra 33 ms. Le finestre non erano affiancate e
@@ -535,13 +555,19 @@ Memoria privata: 125,6 MiB prima, 195,7 MiB con worker pronti, 195,5 MiB dopo te
 quando il worker è inattivo. La patch 0230 invia anche il messaggio WakeUp già esistente sul
 canale Crossbeam. Il loop usa inoltre `close()` quando un canale è disconnesso o l'handler
 richiede lo shutdown, così il chiamante non ripete l'attesa su un canale già chiuso.
-La verifica post-modifica è ancora necessaria: non dichiarare recuperati thread o memoria
-sulla sola base dell'ispezione del codice. Nessuna nuova dipendenza o scheduler personalizzato.
+Verifica post-modifica sulla portable debug CI `56957e15df8`: tre cicli nello stesso parent,
+conservando tutti gli oggetti Worker, creano quattro thread e ne rilasciano quattro ogni volta.
+Memoria privata baseline/ready/after (MiB): 142,59/204,02/166,63;
+166,63/203,83/166,01; 166,18/203,79/166,26. Nessuna crescita progressiva osservata nei tre
+cicli; il residuo rispetto alla prima baseline non è stato attribuito a uno specifico componente.
+La fixture automatica nasconde il DOM e scrive solo in console per evitare nuovi thread di
+rendering del testo diagnostico. Non confrontare questi valori debug con la RAM ottimizzata
+precedente per stimare un risparmio percentuale. Nessuna nuova dipendenza o scheduler.
 
 La revisione distingue gli errori di ricezione da una coda temporaneamente vuota dopo WakeUp:
 quest'ultima deve mantenere attivo il worker. Il probe `support/perf/worker-queue-probe.html`
 controlla 128 risposte FIFO, messaggi dopo la raffica, timer cancellati e un ping finale.
-Il riferimento passa in Chrome MCP e nel runtime precedente. Verificare anche il nuovo artefatto;
+Il riferimento passa in Chrome MCP, nel runtime precedente e nell'artefatto finale `56957e15df8`;
 le sole prove sequenziali di messaggistica non coprono la gestione dei risvegli senza task.
 
 Fixture: `support/perf/worker-lifecycle-bench.html?auto=1`. Registra fasi baseline, ready,
@@ -608,8 +634,31 @@ payload trasferiti descritte sopra: non è ancora un trasferimento ArrayBuffer s
 
 Test locali: 33 passati e due microbenchmark ignorati; i due test structured clone passano,
 incluso il nuovo controllo che indirizzo/capacità dell'allocazione non cambino. La riproduzione
-delle patch sui file pristine passa. Compilazione DOM e confronto runtime prima/dopo restano
-in CI/sugli artefatti scaricati; non anticipare un guadagno misurato della patch 0231.
+delle patch sui file pristine passa. Le dieci verifiche V8 multipiattaforma su `8db6eab`
+passano; le build ottimizzate System/mimalloc della CI `39046530793` passano entrambe.
+Scaricato il mimalloc `8db6eab`, verificati SHA256 pubblicato
+`f3dc275c0a75857d1b25a0f16cf6fb2d1af6dc8ccd62f766db1764921e5eb517`
+e prefisso commit incorporato nel binario. Questa build precede la correzione finale dei
+risvegli `56957e1`: usarla per misurare le copie, non per certificare quella correzione.
+
+Tre prove iniziali dopo passano (4 MiB clone p50 4,71/4,81/3,72 ms; transfer
+5,41/4,39/3,82 ms). Segue confronto alternato prima/dopo, tre processi nuovi per versione,
+stessa fixture e finestra; ordine prima/dopo, dopo/prima, prima/dopo, tutti sei PASS:
+
+| 4 MiB, mediana dei tre p50 | Prima `1e9c7dc` | Dopo `8db6eab` |
+| --- | --- | --- |
+| Clona: round-trip | 5,72 ms | 3,88 ms |
+| Trasferisci: round-trip | 6,37 ms | 4,15 ms |
+| Clona: postMessage sincrono | 1,06 ms | 0,60 ms |
+| Trasferisci: postMessage sincrono | 1,26 ms | 0,84 ms |
+
+Round-trip clone prima 5,87/5,72/5,43, dopo 3,88/4,03/3,69 ms; transfer prima
+6,92/6,21/6,37, dopo 3,78/4,15/4,16 ms. Riduzioni delle mediane circa 32%/35%, limitate
+a questa API e dimensione: non sono percentuali di CPU risparmiata nel gioco. Chrome resta
+circa 0,10 ms per il trasferimento nel riferimento MCP precedente; serve ancora rimuovere
+le copie del payload. La prima apertura di una build mostra avvio più lento (fino a 183 ms):
+non dedurre miglioramenti di startup da queste corse. Il profilo energetico non è stato cambiato.
+Log confronto: `target/perf-local-20261017/worker-messaging-paired-*.stdout.log`.
 Log: `target/perf-local-20261017/worker-messaging-baseline-*.stdout.log` e
 `chrome-worker-messaging-baseline-*.json`.
 

@@ -1,3 +1,12 @@
+## 2026-10-17 - Record optimized audio transport verification
+
+Update performance notes with twelve passing optimized before/after mimalloc tests at zero/eight
+unread analyzers. At eight nodes median process CPU is 15.07/10.68% of one logical core and
+median peak private memory 194.78/195.63 MiB. Retain individual trials, host-load variability,
+Power saver conditions and sensitivity excluding the final pair (about 22.5% versus 29.1%
+median reduction). These are headless software-renderer component measurements, not Chrome
+or whole-game parity. No runtime changes or new dependencies; reuse .NET sampling APIs.
+
 ## 2026-10-17 - Verify authorized analyser runtime and isolated CPU measurements
 
 Update README, TODO, performance notes and wiki after the supported escalation request successfully
@@ -14000,7 +14009,12 @@ The optimized pre-change artifact (1e9c7dcfea2) retains all four newly created i
 thread IDs five seconds after terminate(), while parent Worker objects remain referenced.
 Private memory is 125.6 MiB before creation, 195.7 MiB ready and 195.5 MiB after termination.
 These are diagnostic headless observations, not a CPU comparison with Chrome. Post-change
-runtime verification is pending CI. The two upstream v0.5.0 files were downloaded fresh;
+debug artifact 56957e15df8 releases all four new worker threads in each of three cycles in one
+parent, retaining all parent Worker objects. Private memory after each cycle is 166.63,
+166.01 and 166.26 MiB, with no progressive growth observed. FIFO/canceled-timer regression
+also passes. Automatic lifecycle diagnostics hide the DOM and log only to console to avoid
+glyph-rendering threads contaminating worker identification; reuse browser APIs, no dependency.
+The two upstream v0.5.0 files were downloaded fresh;
 replaying their prior 0224 hunks and then 0230 passes and reproduces this checkout exactly
 apart from line endings. Full ordered patch replay and platform compilation remain CI checks.
 
@@ -14022,8 +14036,13 @@ The pre-change optimized runtime passes three visible messaging runs; 4 MiB tran
 medians are 4.70/6.47/5.77 ms versus about 0.10 ms in three Chrome DevTools MCP runs. These are
 baselines, not post-change gains. Local roves-js tests: 33 passed, two ignored microbenchmarks;
 both structured-clone tests pass, including allocation-address/capacity preservation. Fresh-file
-ordered patch replay reproduces all four changed files. DOM compilation and downloaded artifact
-runtime checks remain CI responsibilities.
+ordered patch replay reproduces all four changed files. All ten cross-platform V8 checks and
+both optimized allocator builds pass on 8db6eab. Verify the downloaded mimalloc archive SHA256
+and embedded source prefix before testing. Six alternating fresh-process runs pass; median
+4 MiB clone round-trip is 5.72/3.88 ms before/after, transfer 6.37/4.15 ms. These API latencies
+do not establish game CPU savings; Chrome's earlier transfer reference remains about 0.10 ms.
+This optimized artifact predates the final 56957e1 wake-up guard; the latter is separately
+verified on the final debug CI artifact, including FIFO/canceled timers and repeated termination.
 
 ## 2026-10-17 - Distinguish worker canvas exposure from rendering support
 

@@ -6,6 +6,7 @@
 <pre id="output"></pre>
 <script>
 const query = new URLSearchParams(location.search);
+const automatic = query.get("auto") === "1";
 const clamp = (key, fallback, max) => {
   const value = Number(query.get(key) ?? fallback);
   return Number.isFinite(value) ? Math.min(max, Math.max(1, Math.floor(value))) : fallback;
@@ -21,13 +22,14 @@ let started = false;
 function log(phase, extra = {}) {
   const data = { phase, workers: count, payloadMiB, time_ms: performance.now(), ...extra };
   const line = "WORKERLIFECYCLE " + JSON.stringify(data);
-  output.textContent += line + "\n";
+  if (!automatic) output.textContent += line + "\n";
   console.log(line);
 }
 function start() {
   if (started) return;
   started = true;
   document.querySelector("#start").disabled = true;
+  if (automatic) document.body.hidden = true;
   let ready = 0;
   let failed = false;
   let url;
@@ -72,5 +74,5 @@ function start() {
   }, 3500);
 }
 document.querySelector("#start").onclick = start;
-if (query.get("auto") === "1") start();
+if (automatic) start();
 </script>

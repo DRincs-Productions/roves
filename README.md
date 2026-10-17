@@ -419,11 +419,14 @@ window without per-block DOM tasks; whole-game CPU savings remain to be measured
 An isolated debug/headless test with eight unread analyzers measured about 43% lower process
 CPU, with about 1.2 MiB more private memory; conditions and variability are in the performance notes.
 Worker lifecycle diagnostics also check that terminating idle workers releases their threads;
-the development fix wakes the existing Crossbeam event loop, with post-change CI/runtime
-verification tracked in the performance notes. No worker scheduler dependency is added.
+the development fix wakes the existing Crossbeam event loop. Three repeated CI-artifact
+runtime cycles release all four worker threads, with no progressive private-memory growth
+observed in those cycles. The FIFO/timer regression probe also passes. No scheduler is added.
 The development structured-clone bridge also moves V8's serialized byte vector through Rust
 ownership instead of copying it twice; full ArrayBuffer transfer still has separate payload
-copies. Worker messaging benchmarks and pending runtime comparisons are in the same notes.
+copies. In an alternating optimized-build benchmark, median 4 MiB round-trip latency falls
+from 5.72 to 3.88 ms for cloning and 6.37 to 4.15 ms for transfer. These are API timings,
+not whole-game CPU savings; the Chrome transfer reference remains about 0.10 ms.
 Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
 distinguishes this from working OffscreenCanvas contexts on the DOM thread.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
