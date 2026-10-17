@@ -105,10 +105,13 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
 
 - [ ] Ripetere il confronto visibile con Chrome su pagina production, stessa risoluzione,
   warm-up e durata; raccogliere CPU per processo, memoria privata/residente, GPU e VRAM.
-- [ ] Correlare gli scatti typewriter con GC e layout: una pausa GC di 62 ms è confermata,
-  ma non è ancora attribuita al GC l'intera distribuzione dei frame lunghi.
+- [ ] Profilare script/layout sui frame lunghi del typewriter: il trace GC già eseguito
+  trova una coincidenza su sette frame lunghi; aumentare l'heap iniziale non ha migliorato
+  il pacing. La causa dei restanti frame resta aperta.
 - [ ] Completare Web Animations per motion riusando Stylo/WebRender: timing, riproduzione,
-  promise/eventi e campionamento; poi valutare compositing di transform/opacity.
+  promise/eventi e campionamento; integrare i binding dinamici WebRender per transform/opacity
+  verificando stacking context, hit testing e memoria GPU. Chrome MCP osserva fino a 120
+  animazioni native nella fixture typewriter; il risparmio CPU ottenibile non è misurato.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
 - [ ] Misurare CPU e memoria del nuovo trasporto AnalyserNode Crossbeam con 0/1/più nodi,
   letti e non letti, usando `support/perf/analyser-transport-bench.html`. Verificare la build

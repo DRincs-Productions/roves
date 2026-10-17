@@ -1,3 +1,14 @@
+## 2026-10-17 - Record native animation evidence and refine CPU follow-up
+
+Update performance notes, TODO and wiki with Chrome DevTools MCP observations: Chrome
+155.0.8059.84 exposes 1-120 native opacity/transform animations on the visible typewriter
+fixture at 1024x740. Record WebRender's existing caret-only dynamic property integration
+as the reuse point for future animation compositing, without claiming measured CPU savings.
+Replace the overbroad "not GC" conclusion with the measured one-in-seven correlation.
+Record trace export access denial and the policy rejection of corrected local runtime capture.
+The new Windows CI archive was downloaded and its published SHA-256 verified; this is not a
+runtime benchmark PASS. No additional engine changes or dependencies are introduced here.
+
 ## 2026-10-17 - Persist panic details before hard-fail termination
 
 **Files:** `ports/servoshell/panic_hook.rs`, README, diagnostics wiki and performance notes.
@@ -10,6 +21,8 @@ the file; no dependency or hot-path work is added. Preserve suppression for caug
 decoder panics. This improves diagnosis, not CPU performance, and does not identify the
 cause of the failed local runtime attempt. Rustfmt and ordered replay against pristine
 Servo v0.5.0 passed; cross-platform CI remains the compilation authority.
+All 13 desktop CI jobs on `1e9c7dcfea2` passed, including bundle launch smoke tests;
+Android and iOS also passed. Local benchmark execution remains blocked by automatic review.
 
 ## 2026-10-16 - Delegate analyser transport to Crossbeam ArrayQueue
 

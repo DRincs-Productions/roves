@@ -172,7 +172,7 @@ rumore. Restano circa 8 frame lunghi ogni 30 s; non è ancora chiaro se siano pa
 picchi di layout. GSAP e motion su PixiJS hanno 0-1 frame sopra 33 ms. Prossimo passo, solo se
 serve: un nuovo profilo (vedi sopra) a scena ferma sui frame lunghi.
 
-## Frame lunghi del typewriter: non è il GC (16 ottobre 2026)
+## Frame lunghi del typewriter: il GC ne spiega solo una parte (16 ottobre 2026)
 
 La scena `?perf=typewriter-pixi` ora scrive `RAFLONG t=… dt=…` per ogni frame sopra i 33 ms, con
 l'istante dal caricamento. Con `ROVES_V8_FLAGS=--trace-gc` su v0.7.11 (30 s):
@@ -185,9 +185,9 @@ l'istante dal caricamento. Con `ROVES_V8_FLAGS=--trace-gc` su v0.7.11 (30 s):
 - Heap iniziale più grande (`--initial-old-space-size=256 --max-semi-space-size=32`): 6 e 5 frame
   sopra 33 ms, come senza (8, 6, 5, 8). Non migliora e non diventa predefinito.
 
-Quindi la causa dei frame lunghi sta nel lavoro del thread di script o nel layout durante la
-costruzione del dialogo, non nel GC. Per trovarla serve un profilo mirato ai frame lunghi
-(samply, con prompt UAC).
+Il GC spiega una pausa di questa corsa, ma non gli altri sei frame lunghi. Il lavoro del
+thread di script, il layout durante la costruzione del dialogo e la schedulazione restano
+candidati: per distinguerli serve un profilo mirato ai frame lunghi (samply, con prompt UAC).
 
 ## Librerie dei giochi
 
@@ -252,6 +252,14 @@ anticipa quel record. La causa del panic resta da individuare. Inoltre il tentat
 `-x -o URL` era invalido per questo benchmark: `-o` richiede un filename, mentre `-x` può
 chiudere la pagina prima dei controlli audio. Non attribuire quel tentativo a una regressione
 della coda. La cattura locale stdout/stderr con attesa è stata rifiutata dalla policy.
+
+La correzione diagnostica `1e9c7dcfea2` passa tutti i 13 job
+[desktop/patch/test](https://github.com/DRincs-Productions/roves/actions/runs/39022147447),
+oltre ad Android e iOS. Scaricato il portable Windows aggiornato, verificato contro il digest
+SHA-256 pubblicato da GitHub (`79cc181d…68df4cb`). Il nuovo tentativo locale con gli argomenti
+corretti è stato bloccato prima dell'avvio: nessun nuovo PASS runtime o dato CPU.
+Evidenze locali: `target/perf-local-20261017/verification.json`. La release versionata rimane
+v0.7.11; questi controlli riguardano il ramo di sviluppo.
 
 Le fixture typewriter/GSAP/motion ora disattivano anche il contatore FPS dei pannelli di
 sfondo, che prima aggiornava React ogni 500 ms. Il pannello three.js rilascia geometria,
@@ -334,6 +342,29 @@ richiede integrazione col grafo servo-media e V8 audio dedicato; nessuna equival
 
 Ordine operativo: confronto production valido; verifica cache WebGL; correlazione GC/layout;
 WAAPI motion; traffico Pixi/three e presentazione B solo secondo i profili; AudioWorklet.
+
+### Ispezione WAAPI in Chrome, 17 ottobre 2026
+
+Chrome DevTools MCP, Chrome 155.0.8059.84 su Windows, scena production
+`?perf=typewriter-pixi`, visibile, viewport 1024×740, DPR 1, canvas Pixi 300×200.
+Campionando `document.getAnimations()` ogni 200 ms per 10 s (48 osservazioni), la pagina
+espone da 1 a 120 animazioni native contemporanee: proprietà `opacity` e `transform`.
+Questa scena usa quindi il percorso nativo in Chrome; Roves conserva il fallback JavaScript
+perché WAAPI è incompleta. È un motivo concreto per dare priorità a playback/timing WAAPI
+riusando Stylo/WebRender, ma non quantifica CPU risparmiabile o frame lunghi evitabili.
+
+Il percorso compositor va completato insieme al playback: `Painter::perform_updates` usa
+già `WebRender DynamicProperties` per il colore del cursore, ma invia liste `transforms` e
+`floats` vuote. Le trasformazioni e l'opacità della display list restano valori statici.
+Riutilizzare i binding dinamici di WebRender è quindi un candidato per evitare ricostruzioni
+della scena a ogni frame. Prima dell'integrazione verificare stacking context, invalidazione,
+hit testing e memoria GPU; rendere disponibile `element.animate` da solo non realizza questo
+percorso e non dimostra una riduzione di CPU.
+
+Una registrazione DevTools sulla stessa pagina termina con il riepilogo corretto, ma senza
+dettagli CPU utilizzabili. L'esportazione del file è negata dal MCP perché il percorso del
+repository non rientra nelle sue radici configurate. Non è disponibile un profilo grezzo da
+analizzare e non si ricavano percentuali JavaScript/layout da quel riepilogo.
 
 ### Libreria integrata: RealFFT
 
