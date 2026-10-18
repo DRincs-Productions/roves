@@ -14,6 +14,7 @@ use servo_media::audio::audio_node::{
     AudioNodeInit, AudioNodeMessage, ChannelCountMode as ServoMediaChannelCountMode, ChannelInfo,
     ChannelInterpretation as ServoMediaChannelInterpretation,
 };
+use servo_media::audio::context::NodeDisposer;
 use servo_media::audio::graph::NodeId;
 
 use crate::conversions::Convert;
@@ -34,11 +35,30 @@ use crate::dom::eventtarget::EventTarget;
 // The limit protects against large memory allocations.
 pub(crate) const MAX_CHANNEL_COUNT: u32 = 32;
 
+/// Tells the audio render thread to free the node once its script object is collected: without
+/// it every node a page ever creates (Tone.js makes one source per note) stays in the engine,
+/// with the audio data it was given, until the context closes.
+#[derive(JSTraceable, MallocSizeOf)]
+struct DisposeOnDrop {
+    #[no_trace]
+    node_id: NodeId,
+    #[no_trace]
+    #[ignore_malloc_size_of = "channel to the render thread"]
+    disposer: NodeDisposer,
+}
+
+impl Drop for DisposeOnDrop {
+    fn drop(&mut self) {
+        self.disposer.dispose(self.node_id);
+    }
+}
+
 #[dom_struct]
 pub(crate) struct AudioNode {
     eventtarget: EventTarget,
     #[no_trace]
     node_id: Option<NodeId>,
+    disposer: Option<DisposeOnDrop>,
     context: Dom<BaseAudioContext>,
     number_of_inputs: u32,
     number_of_outputs: u32,
@@ -98,6 +118,10 @@ impl AudioNode {
         AudioNode {
             eventtarget: EventTarget::new_inherited(),
             node_id,
+            disposer: node_id.map(|node_id| DisposeOnDrop {
+                node_id,
+                disposer: context.audio_context_impl().lock().unwrap().node_disposer(),
+            }),
             context: Dom::from_ref(context),
             number_of_inputs,
             number_of_outputs,

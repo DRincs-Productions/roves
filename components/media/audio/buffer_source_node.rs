@@ -2,6 +2,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
+use std::sync::Arc;
+
 use malloc_size_of_derive::MallocSizeOf;
 
 use crate::audio_node::{
@@ -101,6 +103,8 @@ pub(crate) struct AudioBufferSourceNode {
     stop_at: Option<Tick>,
     /// The ended event callback.
     pub onended_callback: Option<OnEndedCallback>,
+    /// Set once the source has finished playing (see `is_finished`).
+    ended: bool,
 }
 
 impl AudioBufferSourceNode {
@@ -122,6 +126,7 @@ impl AudioBufferSourceNode {
             start_when: 0.,
             stop_at: None,
             onended_callback: None,
+            ended: false,
         }
     }
 
@@ -149,6 +154,10 @@ impl AudioBufferSourceNode {
 }
 
 impl AudioNodeEngine for AudioBufferSourceNode {
+    fn is_finished(&self) -> bool {
+        self.ended
+    }
+
     fn node_type(&self) -> AudioNodeType {
         AudioNodeType::AudioBufferSourceNode
     }
@@ -364,8 +373,10 @@ impl AudioNodeEngine for AudioBufferSourceNode {
 
 #[derive(Debug, Clone, MallocSizeOf)]
 pub struct AudioBuffer {
-    /// Invariant: all buffers must be of the same length
-    pub buffers: Vec<Vec<f32>>,
+    /// Invariant: all buffers must be of the same length. Shared: cloning an `AudioBuffer`
+    /// (every `start()` of a buffer source) must not copy the samples.
+    #[conditional_malloc_size_of]
+    pub buffers: Arc<Vec<Vec<f32>>>,
     pub sample_rate: f32,
 }
 
@@ -376,7 +387,7 @@ impl AudioBuffer {
         let single = vec![0.; len];
         buffers.resize(chan as usize, single);
         AudioBuffer {
-            buffers,
+            buffers: Arc::new(buffers),
             sample_rate,
         }
     }
@@ -387,7 +398,7 @@ impl AudioBuffer {
         }
 
         Self {
-            buffers,
+            buffers: Arc::new(buffers),
             sample_rate,
         }
     }
@@ -436,6 +447,6 @@ impl AudioBuffer {
     }
 
     pub fn data_chan_mut(&mut self, chan: u8) -> &mut [f32] {
-        &mut self.buffers[chan as usize]
+        &mut Arc::make_mut(&mut self.buffers)[chan as usize]
     }
 }

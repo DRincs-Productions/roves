@@ -1,3 +1,28 @@
+## 2026-10-18 - Free WebAudio nodes and share AudioBuffer data
+
+**Files:** `components/media/audio/{audio_node,buffer_source_node,constant_source_node,oscillator_node,graph,render_thread,context,lib}.rs`,
+new `components/media/audio/dead_node.rs`, `components/media/servo-media-derive/lib.rs`,
+`components/script/dom/audio/{audionode,audiobuffer}.rs`.
+**Patch:** `0237-free-audio-nodes-share-buffers.patch`.
+
+Found by the per-library matrix: a page running only Tone.js reached 1.2 GiB private
+memory (about 8 MiB/s, linear) while Chrome stayed near 310 MiB; bisecting Tone's pieces
+pointed at `NoiseSynth`, which starts a new looping `AudioBufferSourceNode` per hit.
+Two causes in the engine: (1) `AudioBufferSourceNode.start()` deep-copied the whole
+`AudioBuffer` (`Vec<Vec<f32>>`) into the render thread on every start; (2) nothing ever
+removed a node from the audio graph, so every disconnected source kept its copy until the
+context closed.
+
+Fix: `AudioBuffer.buffers` is now `Arc<Vec<Vec<f32>>>` (clone = refcount, no sample copy).
+The DOM `AudioNode` holds a drop guard that sends `DisposeNode(id)` to the render thread
+when its script object is collected; the render thread frees the node (edges removed, engine
+swapped for a silent `DeadNode`, so the id stays valid and no later message can reach another
+node) when it is a finished source or can no longer reach a destination; playing nodes are
+kept and re-checked about every 64 render quanta. No new dependency; reuses petgraph
+(`Dfs`) already used by the graph. Unit test `disposal_frees_unheard_nodes_and_keeps_heard_ones`
+passes with `cargo test -p servo-media-audio`. Not yet measured in the game: needs a CI build
+and the `only-tone` run (1225 MiB / 71 frames over 33 ms before).
+
 ## 2026-10-18 - Callable classes follow JS reachability
 
 **Files:** `components/roves-js/src/{jsapi,object,rust,tests}.rs`.

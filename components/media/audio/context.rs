@@ -320,6 +320,25 @@ impl AudioContext {
     }
 }
 
+/// Lets a node's script object release the node in the render thread when it is collected.
+pub struct NodeDisposer {
+    sender: Sender<AudioRenderThreadMsg>,
+}
+
+impl NodeDisposer {
+    pub fn dispose(&self, id: NodeId) {
+        let _ = self.sender.send(AudioRenderThreadMsg::DisposeNode(id));
+    }
+}
+
+impl AudioContext {
+    pub fn node_disposer(&self) -> NodeDisposer {
+        NodeDisposer {
+            sender: self.sender.clone(),
+        }
+    }
+}
+
 impl Drop for AudioContext {
     fn drop(&mut self) {
         let (tx, _) = mpsc::channel();

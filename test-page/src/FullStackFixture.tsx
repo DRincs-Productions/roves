@@ -134,12 +134,16 @@ export default function FullStackFixture({ parts = ALL_PARTS, name = "full-stack
 
   useEffect(() => {
     if (!on("tone")) return;
+    // `?tone=poly,membrane` (default `all`) keeps only some pieces: used to bisect audio cost.
+    const wanted = (new URLSearchParams(location.search).get("tone") ?? "all").split(",");
+    const want = (name: string) => wanted.includes("all") || wanted.includes(name);
     const ok: string[] = [];
     const failed: string[] = [];
     const disposables: { dispose(): unknown }[] = [];
     // A game would hit a missing WebAudio node as an exception: build every piece on its own so the
     // rest of the page (and the measurement) survives, and report what this engine could not create.
     const piece = <T extends { dispose(): unknown }>(name: string, make: () => T): T | undefined => {
+      if (!name.startsWith("Sequence") && !want(name.toLowerCase())) return undefined;
       try {
         const value = make();
         disposables.push(value);

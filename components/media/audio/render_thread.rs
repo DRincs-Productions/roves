@@ -51,6 +51,9 @@ pub enum AudioRenderThreadMsg {
 
     SetSinkEosCallback(#[ignore_malloc_size_of = "Fn"] SinkEosCallback),
 
+    /// The node's script object is gone: free the node once it can no longer be heard.
+    DisposeNode(NodeId),
+
     SetMute(bool),
 }
 
@@ -139,6 +142,9 @@ pub struct AudioRenderThread {
     pub current_time: f64,
     pub current_frame: Tick,
     pub muted: bool,
+    /// Nodes whose script object is gone but that are still audible (or still playing).
+    pending_dispose: Vec<NodeId>,
+    blocks_since_dispose_check: u32,
 }
 
 impl AudioRenderThread {
@@ -172,6 +178,8 @@ impl AudioRenderThread {
             current_time: 0.,
             current_frame: Tick(0),
             muted: false,
+            pending_dispose: Vec::new(),
+            blocks_since_dispose_check: 0,
         })
     }
 
@@ -277,6 +285,20 @@ impl AudioRenderThread {
         self.graph.process(&info)
     }
 
+    /// Free the nodes whose script object is gone and that nothing can hear anymore: a source that
+    /// has finished, or any node that no longer reaches a destination. Playing nodes stay.
+    fn collect_disposed(&mut self) {
+        let graph = &mut self.graph;
+        self.pending_dispose.retain(|&id| {
+            if graph.is_finished(id) || !graph.reaches_destination(id) {
+                graph.dispose_node(id);
+                false
+            } else {
+                true
+            }
+        });
+    }
+
     fn set_mute(&mut self, val: bool) {
         self.muted = val;
     }
@@ -334,6 +356,10 @@ impl AudioRenderThread {
                 AudioRenderThreadMsg::SetMute(val) => {
                     context.set_mute(val);
                 },
+                AudioRenderThreadMsg::DisposeNode(id) => {
+                    context.pending_dispose.push(id);
+                    context.collect_disposed();
+                },
             };
 
             break_loop
@@ -371,6 +397,14 @@ impl AudioRenderThread {
                     // increment current frame by the render quantum size.
                     self.current_frame += FRAMES_PER_BLOCK;
                     self.current_time = self.current_frame / self.sample_rate as f64;
+
+                    // A source that ends while playing is only noticed here: look again about
+                    // every 190 ms (64 render quanta at 44.1 kHz).
+                    self.blocks_since_dispose_check += 1;
+                    if self.blocks_since_dispose_check >= 64 {
+                        self.blocks_since_dispose_check = 0;
+                        self.collect_disposed();
+                    }
                 } else {
                     eprintln!("Could not push data to audio sink");
                 }

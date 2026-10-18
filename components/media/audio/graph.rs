@@ -11,12 +11,13 @@ use petgraph::Direction;
 use petgraph::algo::tarjan_scc;
 use petgraph::graph::DefaultIx;
 use petgraph::stable_graph::{NodeIndex, StableGraph};
-use petgraph::visit::{DfsPostOrder, EdgeRef, Reversed};
+use petgraph::visit::{Dfs, DfsPostOrder, EdgeRef, Reversed};
 use rustc_hash::FxHashSet;
 use smallvec::SmallVec;
 
 use crate::audio_node::{AudioNodeEngine, BlockInfo, ChannelCountMode, ChannelInterpretation};
 use crate::block::{Block, Chunk};
+use crate::dead_node::DeadNode;
 use crate::destination_node::DestinationNode;
 use crate::listener::AudioListenerNode;
 use crate::param::ParamType;
@@ -339,6 +340,45 @@ impl AudioGraph {
         }
     }
 
+    /// Whether the node is a source that has played to its end.
+    pub(crate) fn is_finished(&self, id: NodeId) -> bool {
+        self.graph
+            .node_weight(id.0)
+            .is_some_and(|node| node.node.borrow().is_finished())
+    }
+
+    /// Whether the node's output can still reach a destination, directly or through other nodes.
+    pub(crate) fn reaches_destination(&self, id: NodeId) -> bool {
+        let mut visit = Dfs::new(&self.graph, id.0);
+        while let Some(ix) = visit.next(&self.graph) {
+            if self.dests.iter().any(|dest| dest.0 == ix) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Drop a node that nothing can use anymore: disconnect it and release its engine (and any
+    /// audio data it holds). Its id stays valid but inert, so no later message can reach another
+    /// node. Destinations and the listener are never dropped.
+    pub(crate) fn dispose_node(&mut self, id: NodeId) {
+        if id == self.listener_id || self.dests.contains(&id) {
+            return;
+        }
+        let edges: Vec<_> = self
+            .graph
+            .edges_directed(id.0, Direction::Incoming)
+            .chain(self.graph.edges_directed(id.0, Direction::Outgoing))
+            .map(|edge| edge.id())
+            .collect();
+        for edge in edges {
+            self.graph.remove_edge(edge);
+        }
+        if let Some(node) = self.graph.node_weight_mut(id.0) {
+            *node.node.get_mut() = Box::new(DeadNode::new());
+        }
+    }
+
     /// Get the id of the destination node in this graph
     ///
     /// All graphs have a destination node, with one input port
@@ -644,5 +684,51 @@ impl Connection {
             output_idx,
             cache: RefCell::new(None),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::audio_node::{AudioNodeType, ChannelInfo};
+    use crate::gain_node::{GainNode, GainNodeOptions};
+
+    fn gain(graph: &mut AudioGraph) -> NodeId {
+        graph.add_node(Box::new(GainNode::new(
+            GainNodeOptions::default(),
+            ChannelInfo::default(),
+        )))
+    }
+
+    #[test]
+    fn disposal_frees_unheard_nodes_and_keeps_heard_ones() {
+        let mut graph = AudioGraph::new(2);
+        let heard = gain(&mut graph);
+        let unheard = gain(&mut graph);
+        let dest = graph.dest_id();
+        graph.add_edge(heard.output(0), dest.input(0));
+        graph.add_edge(unheard.output(0), heard.input(0));
+        assert!(graph.reaches_destination(unheard));
+        graph.disconnect_all_from(unheard);
+        assert!(graph.reaches_destination(heard));
+        assert!(!graph.reaches_destination(unheard));
+
+        graph.dispose_node(unheard);
+        graph.dispose_node(dest);
+        assert!(graph.reaches_destination(heard), "the audible path is untouched");
+        assert!(graph.reaches_destination(dest), "the destination is never dropped");
+        assert!(!graph.is_finished(unheard));
+        // The disposed id is still valid but inert: a later connection cannot affect other nodes.
+        graph.add_edge(unheard.output(0), heard.input(0));
+        let out = graph.process(&BlockInfo {
+            sample_rate: 44100.,
+            frame: crate::block::Tick(0),
+            time: 0.,
+        });
+        assert!(out.blocks[0].is_silence());
+        assert_eq!(
+            graph.node_mut(unheard).node_type(),
+            AudioNodeType::GainNode
+        );
     }
 }

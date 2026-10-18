@@ -1,0 +1,539 @@
+diff --git a/components/media/audio/audio_node.rs b/components/media/audio/audio_node.rs
+index e27480c9160..9fe4d28eb67 100644
+--- a/components/media/audio/audio_node.rs
++++ b/components/media/audio/audio_node.rs
+@@ -149,6 +149,12 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
+ 
+     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk;
+ 
++    /// A source that has played to its end can never produce sound again, so the graph may
++    /// drop it once nothing can refer to it.
++    fn is_finished(&self) -> bool {
++        false
++    }
++
+     /// <https://webaudio.github.io/web-audio-api/#mute>
+     ///
+     /// Muting an AudioNode means that its output MUST be silence for the
+diff --git a/components/media/audio/buffer_source_node.rs b/components/media/audio/buffer_source_node.rs
+index 33be0160571..4fe3cb80471 100644
+--- a/components/media/audio/buffer_source_node.rs
++++ b/components/media/audio/buffer_source_node.rs
+@@ -2,6 +2,8 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
++use std::sync::Arc;
++
+ use malloc_size_of_derive::MallocSizeOf;
+ 
+ use crate::audio_node::{
+@@ -101,6 +103,8 @@ pub(crate) struct AudioBufferSourceNode {
+     stop_at: Option<Tick>,
+     /// The ended event callback.
+     pub onended_callback: Option<OnEndedCallback>,
++    /// Set once the source has finished playing (see `is_finished`).
++    ended: bool,
+ }
+ 
+ impl AudioBufferSourceNode {
+@@ -122,6 +126,7 @@ impl AudioBufferSourceNode {
+             start_when: 0.,
+             stop_at: None,
+             onended_callback: None,
++            ended: false,
+         }
+     }
+ 
+@@ -149,6 +154,10 @@ impl AudioBufferSourceNode {
+ }
+ 
+ impl AudioNodeEngine for AudioBufferSourceNode {
++    fn is_finished(&self) -> bool {
++        self.ended
++    }
++
+     fn node_type(&self) -> AudioNodeType {
+         AudioNodeType::AudioBufferSourceNode
+     }
+@@ -364,8 +373,10 @@ impl AudioNodeEngine for AudioBufferSourceNode {
+ 
+ #[derive(Debug, Clone, MallocSizeOf)]
+ pub struct AudioBuffer {
+-    /// Invariant: all buffers must be of the same length
+-    pub buffers: Vec<Vec<f32>>,
++    /// Invariant: all buffers must be of the same length. Shared: cloning an `AudioBuffer`
++    /// (every `start()` of a buffer source) must not copy the samples.
++    #[conditional_malloc_size_of]
++    pub buffers: Arc<Vec<Vec<f32>>>,
+     pub sample_rate: f32,
+ }
+ 
+@@ -376,7 +387,7 @@ impl AudioBuffer {
+         let single = vec![0.; len];
+         buffers.resize(chan as usize, single);
+         AudioBuffer {
+-            buffers,
++            buffers: Arc::new(buffers),
+             sample_rate,
+         }
+     }
+@@ -387,7 +398,7 @@ impl AudioBuffer {
+         }
+ 
+         Self {
+-            buffers,
++            buffers: Arc::new(buffers),
+             sample_rate,
+         }
+     }
+@@ -436,6 +447,6 @@ impl AudioBuffer {
+     }
+ 
+     pub fn data_chan_mut(&mut self, chan: u8) -> &mut [f32] {
+-        &mut self.buffers[chan as usize]
++        &mut Arc::make_mut(&mut self.buffers)[chan as usize]
+     }
+ }
+diff --git a/components/media/audio/constant_source_node.rs b/components/media/audio/constant_source_node.rs
+index 2f434737e3c..b84ce15cb0e 100644
+--- a/components/media/audio/constant_source_node.rs
++++ b/components/media/audio/constant_source_node.rs
+@@ -29,6 +29,8 @@ pub(crate) struct ConstantSourceNode {
+     start_at: Option<Tick>,
+     stop_at: Option<Tick>,
+     onended_callback: Option<OnEndedCallback>,
++    /// Set once the source has finished playing (see `is_finished`).
++    ended: bool,
+ }
+ 
+ impl ConstantSourceNode {
+@@ -39,6 +41,7 @@ impl ConstantSourceNode {
+             start_at: None,
+             stop_at: None,
+             onended_callback: None,
++            ended: false,
+         }
+     }
+ 
+@@ -48,6 +51,10 @@ impl ConstantSourceNode {
+ }
+ 
+ impl AudioNodeEngine for ConstantSourceNode {
++    fn is_finished(&self) -> bool {
++        self.ended
++    }
++
+     fn node_type(&self) -> AudioNodeType {
+         AudioNodeType::ConstantSourceNode
+     }
+diff --git a/components/media/audio/context.rs b/components/media/audio/context.rs
+index 847962920dc..5b8cb459a89 100644
+--- a/components/media/audio/context.rs
++++ b/components/media/audio/context.rs
+@@ -320,6 +320,25 @@ impl AudioContext {
+     }
+ }
+ 
++/// Lets a node's script object release the node in the render thread when it is collected.
++pub struct NodeDisposer {
++    sender: Sender<AudioRenderThreadMsg>,
++}
++
++impl NodeDisposer {
++    pub fn dispose(&self, id: NodeId) {
++        let _ = self.sender.send(AudioRenderThreadMsg::DisposeNode(id));
++    }
++}
++
++impl AudioContext {
++    pub fn node_disposer(&self) -> NodeDisposer {
++        NodeDisposer {
++            sender: self.sender.clone(),
++        }
++    }
++}
++
+ impl Drop for AudioContext {
+     fn drop(&mut self) {
+         let (tx, _) = mpsc::channel();
+diff --git a/components/media/audio/dead_node.rs b/components/media/audio/dead_node.rs
+new file mode 100644
+index 00000000000..9e260a16b65
+--- /dev/null
++++ b/components/media/audio/dead_node.rs
+@@ -0,0 +1,39 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use crate::audio_node::{AudioNodeEngine, AudioNodeMessage, AudioNodeType, BlockInfo, ChannelInfo};
++use crate::block::Chunk;
++
++/// What remains of a node the graph no longer needs (see `AudioGraph::dispose_node`): it keeps
++/// the node's id valid, so a late message or connection cannot reach another node, but holds no
++/// audio data and always produces silence.
++#[derive(AudioNodeCommon)]
++pub(crate) struct DeadNode {
++    channel_info: ChannelInfo,
++}
++
++impl DeadNode {
++    pub(crate) fn new() -> Self {
++        Self {
++            channel_info: ChannelInfo::default(),
++        }
++    }
++}
++
++impl AudioNodeEngine for DeadNode {
++    fn node_type(&self) -> AudioNodeType {
++        AudioNodeType::GainNode
++    }
++
++    fn process(&mut self, _inputs: Chunk, _info: &BlockInfo) -> Chunk {
++        self.mute_node()
++    }
++
++    fn message(&mut self, msg: AudioNodeMessage, _sample_rate: f32) {
++        // A parameter read still gets an answer so the caller does not wait for one.
++        if let AudioNodeMessage::GetParamValue(_, tx) = msg {
++            let _ = tx.send(0.);
++        }
++    }
++}
+diff --git a/components/media/audio/graph.rs b/components/media/audio/graph.rs
+index a775eaa3a13..e60744944da 100644
+--- a/components/media/audio/graph.rs
++++ b/components/media/audio/graph.rs
+@@ -11,12 +11,13 @@ use petgraph::Direction;
+ use petgraph::algo::tarjan_scc;
+ use petgraph::graph::DefaultIx;
+ use petgraph::stable_graph::{NodeIndex, StableGraph};
+-use petgraph::visit::{DfsPostOrder, EdgeRef, Reversed};
++use petgraph::visit::{Dfs, DfsPostOrder, EdgeRef, Reversed};
+ use rustc_hash::FxHashSet;
+ use smallvec::SmallVec;
+ 
+ use crate::audio_node::{AudioNodeEngine, BlockInfo, ChannelCountMode, ChannelInterpretation};
+ use crate::block::{Block, Chunk};
++use crate::dead_node::DeadNode;
+ use crate::destination_node::DestinationNode;
+ use crate::listener::AudioListenerNode;
+ use crate::param::ParamType;
+@@ -339,6 +340,45 @@ impl AudioGraph {
+         }
+     }
+ 
++    /// Whether the node is a source that has played to its end.
++    pub(crate) fn is_finished(&self, id: NodeId) -> bool {
++        self.graph
++            .node_weight(id.0)
++            .is_some_and(|node| node.node.borrow().is_finished())
++    }
++
++    /// Whether the node's output can still reach a destination, directly or through other nodes.
++    pub(crate) fn reaches_destination(&self, id: NodeId) -> bool {
++        let mut visit = Dfs::new(&self.graph, id.0);
++        while let Some(ix) = visit.next(&self.graph) {
++            if self.dests.iter().any(|dest| dest.0 == ix) {
++                return true;
++            }
++        }
++        false
++    }
++
++    /// Drop a node that nothing can use anymore: disconnect it and release its engine (and any
++    /// audio data it holds). Its id stays valid but inert, so no later message can reach another
++    /// node. Destinations and the listener are never dropped.
++    pub(crate) fn dispose_node(&mut self, id: NodeId) {
++        if id == self.listener_id || self.dests.contains(&id) {
++            return;
++        }
++        let edges: Vec<_> = self
++            .graph
++            .edges_directed(id.0, Direction::Incoming)
++            .chain(self.graph.edges_directed(id.0, Direction::Outgoing))
++            .map(|edge| edge.id())
++            .collect();
++        for edge in edges {
++            self.graph.remove_edge(edge);
++        }
++        if let Some(node) = self.graph.node_weight_mut(id.0) {
++            *node.node.get_mut() = Box::new(DeadNode::new());
++        }
++    }
++
+     /// Get the id of the destination node in this graph
+     ///
+     /// All graphs have a destination node, with one input port
+@@ -646,3 +686,49 @@ impl Connection {
+         }
+     }
+ }
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::audio_node::{AudioNodeType, ChannelInfo};
++    use crate::gain_node::{GainNode, GainNodeOptions};
++
++    fn gain(graph: &mut AudioGraph) -> NodeId {
++        graph.add_node(Box::new(GainNode::new(
++            GainNodeOptions::default(),
++            ChannelInfo::default(),
++        )))
++    }
++
++    #[test]
++    fn disposal_frees_unheard_nodes_and_keeps_heard_ones() {
++        let mut graph = AudioGraph::new(2);
++        let heard = gain(&mut graph);
++        let unheard = gain(&mut graph);
++        let dest = graph.dest_id();
++        graph.add_edge(heard.output(0), dest.input(0));
++        graph.add_edge(unheard.output(0), heard.input(0));
++        assert!(graph.reaches_destination(unheard));
++        graph.disconnect_all_from(unheard);
++        assert!(graph.reaches_destination(heard));
++        assert!(!graph.reaches_destination(unheard));
++
++        graph.dispose_node(unheard);
++        graph.dispose_node(dest);
++        assert!(graph.reaches_destination(heard), "the audible path is untouched");
++        assert!(graph.reaches_destination(dest), "the destination is never dropped");
++        assert!(!graph.is_finished(unheard));
++        // The disposed id is still valid but inert: a later connection cannot affect other nodes.
++        graph.add_edge(unheard.output(0), heard.input(0));
++        let out = graph.process(&BlockInfo {
++            sample_rate: 44100.,
++            frame: crate::block::Tick(0),
++            time: 0.,
++        });
++        assert!(out.blocks[0].is_silence());
++        assert_eq!(
++            graph.node_mut(unheard).node_type(),
++            AudioNodeType::GainNode
++        );
++    }
++}
+diff --git a/components/media/audio/lib.rs b/components/media/audio/lib.rs
+index c98600e1fcc..1cee29d0278 100644
+--- a/components/media/audio/lib.rs
++++ b/components/media/audio/lib.rs
+@@ -28,6 +28,7 @@ pub mod buffer_source_node;
+ pub mod channel_node;
+ pub mod constant_source_node;
+ pub mod context;
++mod dead_node;
+ pub mod decoder;
+ pub mod destination_node;
+ pub mod gain_node;
+diff --git a/components/media/audio/oscillator_node.rs b/components/media/audio/oscillator_node.rs
+index 9c2bfb660e9..d7ff5dba80d 100644
+--- a/components/media/audio/oscillator_node.rs
++++ b/components/media/audio/oscillator_node.rs
+@@ -62,6 +62,8 @@ pub(crate) struct OscillatorNode {
+     stop_at: Option<Tick>,
+     /// The ended event callback.
+     onended_callback: Option<OnEndedCallback>,
++    /// Set once the source has finished playing (see `is_finished`).
++    ended: bool,
+ }
+ 
+ impl OscillatorNode {
+@@ -75,6 +77,7 @@ impl OscillatorNode {
+             start_at: None,
+             stop_at: None,
+             onended_callback: None,
++            ended: false,
+         }
+     }
+ 
+@@ -92,6 +95,10 @@ impl OscillatorNode {
+ }
+ 
+ impl AudioNodeEngine for OscillatorNode {
++    fn is_finished(&self) -> bool {
++        self.ended
++    }
++
+     fn node_type(&self) -> AudioNodeType {
+         AudioNodeType::OscillatorNode
+     }
+diff --git a/components/media/audio/render_thread.rs b/components/media/audio/render_thread.rs
+index 66a4cd46db8..876e70396ce 100644
+--- a/components/media/audio/render_thread.rs
++++ b/components/media/audio/render_thread.rs
+@@ -51,6 +51,9 @@ pub enum AudioRenderThreadMsg {
+ 
+     SetSinkEosCallback(#[ignore_malloc_size_of = "Fn"] SinkEosCallback),
+ 
++    /// The node's script object is gone: free the node once it can no longer be heard.
++    DisposeNode(NodeId),
++
+     SetMute(bool),
+ }
+ 
+@@ -139,6 +142,9 @@ pub struct AudioRenderThread {
+     pub current_time: f64,
+     pub current_frame: Tick,
+     pub muted: bool,
++    /// Nodes whose script object is gone but that are still audible (or still playing).
++    pending_dispose: Vec<NodeId>,
++    blocks_since_dispose_check: u32,
+ }
+ 
+ impl AudioRenderThread {
+@@ -172,6 +178,8 @@ impl AudioRenderThread {
+             current_time: 0.,
+             current_frame: Tick(0),
+             muted: false,
++            pending_dispose: Vec::new(),
++            blocks_since_dispose_check: 0,
+         })
+     }
+ 
+@@ -277,6 +285,20 @@ impl AudioRenderThread {
+         self.graph.process(&info)
+     }
+ 
++    /// Free the nodes whose script object is gone and that nothing can hear anymore: a source that
++    /// has finished, or any node that no longer reaches a destination. Playing nodes stay.
++    fn collect_disposed(&mut self) {
++        let graph = &mut self.graph;
++        self.pending_dispose.retain(|&id| {
++            if graph.is_finished(id) || !graph.reaches_destination(id) {
++                graph.dispose_node(id);
++                false
++            } else {
++                true
++            }
++        });
++    }
++
+     fn set_mute(&mut self, val: bool) {
+         self.muted = val;
+     }
+@@ -334,6 +356,10 @@ impl AudioRenderThread {
+                 AudioRenderThreadMsg::SetMute(val) => {
+                     context.set_mute(val);
+                 },
++                AudioRenderThreadMsg::DisposeNode(id) => {
++                    context.pending_dispose.push(id);
++                    context.collect_disposed();
++                },
+             };
+ 
+             break_loop
+@@ -371,6 +397,14 @@ impl AudioRenderThread {
+                     // increment current frame by the render quantum size.
+                     self.current_frame += FRAMES_PER_BLOCK;
+                     self.current_time = self.current_frame / self.sample_rate as f64;
++
++                    // A source that ends while playing is only noticed here: look again about
++                    // every 190 ms (64 render quanta at 44.1 kHz).
++                    self.blocks_since_dispose_check += 1;
++                    if self.blocks_since_dispose_check >= 64 {
++                        self.blocks_since_dispose_check = 0;
++                        self.collect_disposed();
++                    }
+                 } else {
+                     eprintln!("Could not push data to audio sink");
+                 }
+diff --git a/components/media/servo-media-derive/lib.rs b/components/media/servo-media-derive/lib.rs
+index 3c34d2b7d66..0c5753d0885 100644
+--- a/components/media/servo-media-derive/lib.rs
++++ b/components/media/servo-media-derive/lib.rs
+@@ -95,6 +95,7 @@ fn impl_audio_scheduled_source_node(ast: &syn::DeriveInput) -> proc_macro2::Toke
+                 if self.start_at.is_none() {
+                     return;
+                 }
++                self.ended = true;
+                 if let Some(cb) = self.onended_callback.take() {
+                     cb.0()
+                 }
+diff --git a/components/script/dom/audio/audiobuffer.rs b/components/script/dom/audio/audiobuffer.rs
+index a664bb769b1..1cab8d33613 100644
+--- a/components/script/dom/audio/audiobuffer.rs
++++ b/components/script/dom/audio/audiobuffer.rs
+@@ -3,6 +3,7 @@
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+ use std::cmp::min;
++use std::sync::Arc;
+ 
+ use dom_struct::dom_struct;
+ use js::context::JSContext;
+@@ -123,7 +124,7 @@ impl AudioBuffer {
+             self.sample_rate,
+         );
+         for channel in 0..self.number_of_channels {
+-            channels.buffers[channel as usize] = match initial_data {
++            Arc::make_mut(&mut channels.buffers)[channel as usize] = match initial_data {
+                 Some(data) => data[channel as usize].clone(),
+                 None => vec![0.; self.length as usize],
+             };
+@@ -170,7 +171,7 @@ impl AudioBuffer {
+             }
+ 
+             // Step 3.
+-            result.buffers[i] = channel.acquire_data(cx).ok()?;
++            Arc::make_mut(&mut result.buffers)[i] = channel.acquire_data(cx).ok()?;
+         }
+ 
+         Some(result)
+diff --git a/components/script/dom/audio/audionode.rs b/components/script/dom/audio/audionode.rs
+index 1773e274fbe..e36b25dbb1f 100644
+--- a/components/script/dom/audio/audionode.rs
++++ b/components/script/dom/audio/audionode.rs
+@@ -14,6 +14,7 @@ use servo_media::audio::audio_node::{
+     AudioNodeInit, AudioNodeMessage, ChannelCountMode as ServoMediaChannelCountMode, ChannelInfo,
+     ChannelInterpretation as ServoMediaChannelInterpretation,
+ };
++use servo_media::audio::context::NodeDisposer;
+ use servo_media::audio::graph::NodeId;
+ 
+ use crate::conversions::Convert;
+@@ -34,11 +35,30 @@ use crate::dom::eventtarget::EventTarget;
+ // The limit protects against large memory allocations.
+ pub(crate) const MAX_CHANNEL_COUNT: u32 = 32;
+ 
++/// Tells the audio render thread to free the node once its script object is collected: without
++/// it every node a page ever creates (Tone.js makes one source per note) stays in the engine,
++/// with the audio data it was given, until the context closes.
++#[derive(JSTraceable, MallocSizeOf)]
++struct DisposeOnDrop {
++    #[no_trace]
++    node_id: NodeId,
++    #[no_trace]
++    #[ignore_malloc_size_of = "channel to the render thread"]
++    disposer: NodeDisposer,
++}
++
++impl Drop for DisposeOnDrop {
++    fn drop(&mut self) {
++        self.disposer.dispose(self.node_id);
++    }
++}
++
+ #[dom_struct]
+ pub(crate) struct AudioNode {
+     eventtarget: EventTarget,
+     #[no_trace]
+     node_id: Option<NodeId>,
++    disposer: Option<DisposeOnDrop>,
+     context: Dom<BaseAudioContext>,
+     number_of_inputs: u32,
+     number_of_outputs: u32,
+@@ -98,6 +118,10 @@ impl AudioNode {
+         AudioNode {
+             eventtarget: EventTarget::new_inherited(),
+             node_id,
++            disposer: node_id.map(|node_id| DisposeOnDrop {
++                node_id,
++                disposer: context.audio_context_impl().lock().unwrap().node_disposer(),
++            }),
+             context: Dom::from_ref(context),
+             number_of_inputs,
+             number_of_outputs,

@@ -3,6 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 use std::cmp::min;
+use std::sync::Arc;
 
 use dom_struct::dom_struct;
 use js::context::JSContext;
@@ -123,7 +124,7 @@ impl AudioBuffer {
             self.sample_rate,
         );
         for channel in 0..self.number_of_channels {
-            channels.buffers[channel as usize] = match initial_data {
+            Arc::make_mut(&mut channels.buffers)[channel as usize] = match initial_data {
                 Some(data) => data[channel as usize].clone(),
                 None => vec![0.; self.length as usize],
             };
@@ -170,7 +171,7 @@ impl AudioBuffer {
             }
 
             // Step 3.
-            result.buffers[i] = channel.acquire_data(cx).ok()?;
+            Arc::make_mut(&mut result.buffers)[i] = channel.acquire_data(cx).ok()?;
         }
 
         Some(result)

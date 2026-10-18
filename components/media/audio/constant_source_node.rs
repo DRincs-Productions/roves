@@ -29,6 +29,8 @@ pub(crate) struct ConstantSourceNode {
     start_at: Option<Tick>,
     stop_at: Option<Tick>,
     onended_callback: Option<OnEndedCallback>,
+    /// Set once the source has finished playing (see `is_finished`).
+    ended: bool,
 }
 
 impl ConstantSourceNode {
@@ -39,6 +41,7 @@ impl ConstantSourceNode {
             start_at: None,
             stop_at: None,
             onended_callback: None,
+            ended: false,
         }
     }
 
@@ -48,6 +51,10 @@ impl ConstantSourceNode {
 }
 
 impl AudioNodeEngine for ConstantSourceNode {
+    fn is_finished(&self) -> bool {
+        self.ended
+    }
+
     fn node_type(&self) -> AudioNodeType {
         AudioNodeType::ConstantSourceNode
     }

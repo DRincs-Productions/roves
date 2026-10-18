@@ -149,6 +149,12 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
 
     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk;
 
+    /// A source that has played to its end can never produce sound again, so the graph may
+    /// drop it once nothing can refer to it.
+    fn is_finished(&self) -> bool {
+        false
+    }
+
     /// <https://webaudio.github.io/web-audio-api/#mute>
     ///
     /// Muting an AudioNode means that its output MUST be silence for the

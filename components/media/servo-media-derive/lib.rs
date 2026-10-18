@@ -95,6 +95,7 @@ fn impl_audio_scheduled_source_node(ast: &syn::DeriveInput) -> proc_macro2::Toke
                 if self.start_at.is_none() {
                     return;
                 }
+                self.ended = true;
                 if let Some(cb) = self.onended_callback.take() {
                     cb.0()
                 }
