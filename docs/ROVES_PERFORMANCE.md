@@ -917,3 +917,38 @@ caricamento e al primo click/tasto: se il contesto resta sospeso il log scrive `
 Non ancora coperti: animazioni/transizioni CSS native, `<video>` (GStreamer), canvas 2D,
 WebAssembly, salvataggi (IndexedDB/localStorage), gamepad. Nessun risultato ancora: le
 tabelle verranno aggiunte solo dopo corse alternate Roves/Chrome con la build CI corrente.
+
+### Matrice per libreria, prima corsa (18 ottobre 2026)
+
+Roves release v0.7.13 (ottimizzata, mimalloc) contro Chrome 155 lanciato dallo script (profilo
+temporaneo, `--app`, flag anti-throttling e autoplay, NON via MCP). Finestra 1024×740 DPR1,
+primo piano, un'unica corsa per cella, GTX1050, piano Risparmio di energia invariato.
+CPU = % di un core in 60–80 s sull'intero albero di processi; privato = picco sull'albero
+(Chrome: 7–8 processi, il working set somma pagine condivise e non è confrontabile).
+Frame da 20 s di rAF a partire da 60 s.
+
+| Modo | Roves CPU | Chrome CPU | Roves privato | Chrome privato | Roves p99 / >33 ms | Chrome p99 / >33 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| blank | 12,1% | 9,9% | 453 MiB | 209 MiB | 32,4 ms / 4 (651 frame) | 17,1 / 0 (1201) |
+| pixi-animated | 61,1% | 37,7% | 500 MiB | 210 MiB | 20,1 / 1 | 17,1 / 0 |
+| only-three | 79,4% | 46,4% | 521 MiB | 237 MiB | 19,6 / 0 | 17,1 / 0 |
+| only-motion (+typewriter) | 49,6% | 28,3% | 546 MiB | 240 MiB | 30,4 / 2 | 17,1 / 0 |
+| only-gsap | 27,7% | 35,5% | 454 MiB | 213 MiB | 31,8 / 0 | 17,1 / 0 |
+| only-worker | 48,4% | 46,6% | 500 MiB | 234 MiB | 32,1 / 0 (650 frame) | 17,1 / 0 (1201) |
+
+Letture prudenti: tre/Pixi/motion costano più CPU in Roves (circa +30–75% relativo), GSAP e
+il worker sono alla pari o meglio; la RAM privata è circa 2× in ogni modo, anche a pagina
+vuota (≈450 MiB contro ≈210): la base di Roves, non una libreria, domina. Nelle pagine
+senza repaint continuo (blank, worker) Roves consegna rAF a ~32/s invece di 60 (p99 ≈32 ms):
+da indagare, può essere una scelta di risparmio o un limite di cadenza. Singola corsa per
+cella: differenze piccole non sono dimostrate.
+
+**Lacuna di compatibilità trovata (non prestazionale):** in Roves mancano
+`createWaveShaper`, `createDelay`, `createConvolver`, `createDynamicsCompressor`,
+`createPeriodicWave`, `createScriptProcessor` e AudioWorklet (probe
+`support/perf/webaudio-nodes-probe.html`; Chrome li ha tutti). Tone.js ne usa molti
+(Reverb → Convolver, FeedbackDelay → Delay, Compressor, Distortion/WaveShaper, matematica sui
+segnali): un'eccezione non gestita nella creazione dei nodi fa smontare la pagina React
+(`only-tone`/`full-stack` restavano fermi a ~10–12% CPU). Il fixture ora crea ogni pezzo in
+try/catch e registra `TONEINFO ok/failed`. Il motore `servo-media` ha il DSP del WaveShaper
+ma non il binding DOM; Delay, Convolver e Compressor sono solo segnaposto senza DSP.

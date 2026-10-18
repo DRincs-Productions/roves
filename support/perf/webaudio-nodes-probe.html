@@ -1,0 +1,18 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>WebAudio node coverage probe</title>
+<script>
+  // Lists which AudioContext factory methods and global node/context classes exist.
+  const factories = [
+    "createAnalyser", "createBiquadFilter", "createBuffer", "createBufferSource", "createChannelMerger",
+    "createChannelSplitter", "createConstantSource", "createConvolver", "createDelay", "createDynamicsCompressor",
+    "createGain", "createIIRFilter", "createMediaElementSource", "createMediaStreamDestination", "createMediaStreamSource",
+    "createOscillator", "createPanner", "createPeriodicWave", "createScriptProcessor", "createStereoPanner", "createWaveShaper",
+  ];
+  const globals = ["AudioWorkletNode", "AudioWorklet", "OfflineAudioContext", "AudioParam", "ConvolverNode", "DelayNode", "DynamicsCompressorNode", "WaveShaperNode", "PeriodicWave"];
+  const context = new AudioContext();
+  const missing = factories.filter((name) => typeof context[name] !== "function");
+  const missingGlobals = globals.filter((name) => typeof window[name] === "undefined");
+  console.log("AUDIOPROBE " + JSON.stringify({ missingFactories: missing, missingGlobals, audioWorklet: "audioWorklet" in context }));
+  setTimeout(() => window.close(), 3000);
+</script>

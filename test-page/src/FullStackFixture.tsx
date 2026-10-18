@@ -134,43 +134,64 @@ export default function FullStackFixture({ parts = ALL_PARTS, name = "full-stack
 
   useEffect(() => {
     if (!on("tone")) return;
-    const reverb = new Tone.Reverb({ decay: 3, wet: 0.3 }).toDestination();
-    const delay = new Tone.FeedbackDelay("8n", 0.25).connect(reverb);
-    const lead = new Tone.PolySynth(Tone.Synth, { volume: -14 }).connect(delay);
-    const kick = new Tone.MembraneSynth({ volume: -10 }).toDestination();
-    const hat = new Tone.NoiseSynth({ volume: -24, envelope: { attack: 0.001, decay: 0.05, sustain: 0 } }).toDestination();
+    const ok: string[] = [];
+    const failed: string[] = [];
+    const disposables: { dispose(): unknown }[] = [];
+    // A game would hit a missing WebAudio node as an exception: build every piece on its own so the
+    // rest of the page (and the measurement) survives, and report what this engine could not create.
+    const piece = <T extends { dispose(): unknown }>(name: string, make: () => T): T | undefined => {
+      try {
+        const value = make();
+        disposables.push(value);
+        ok.push(name);
+        return value;
+      } catch (error) {
+        failed.push(name + ": " + String(error));
+        return undefined;
+      }
+    };
+    const reverb = piece("Reverb", () => new Tone.Reverb({ decay: 3, wet: 0.3 }).toDestination());
+    const delay = piece("FeedbackDelay", () => new Tone.FeedbackDelay("8n", 0.25).connect(reverb ?? Tone.getDestination()));
+    const lead = piece("PolySynth", () => new Tone.PolySynth(Tone.Synth, { volume: -14 }).connect(delay ?? Tone.getDestination()));
+    const kick = piece("MembraneSynth", () => new Tone.MembraneSynth({ volume: -10 }).toDestination());
+    const hat = piece("NoiseSynth", () => new Tone.NoiseSynth({ volume: -24, envelope: { attack: 0.001, decay: 0.05, sustain: 0 } }).toDestination());
+    console.log("TONEINFO " + JSON.stringify({ ok, failed }));
     const notes = ["C4", "E4", "G4", "B4", "A4", "G4", "E4", "D4"];
-    const melody = new Tone.Sequence((time, note) => lead.triggerAttackRelease(note, "8n", time), notes, "8n");
-    const drums = new Tone.Sequence(
-      (time, step) => {
-        if (step % 4 === 0) kick.triggerAttackRelease("C1", "8n", time);
-        hat.triggerAttackRelease("32n", time);
-      },
-      Array.from({ length: 8 }, (_, i) => i),
-      "8n",
+    const melody = piece("Sequence(melody)", () => new Tone.Sequence((time, note) => lead?.triggerAttackRelease(note, "8n", time), notes, "8n"));
+    const drums = piece(
+      "Sequence(drums)",
+      () =>
+        new Tone.Sequence(
+          (time, step) => {
+            if (step % 4 === 0) kick?.triggerAttackRelease("C1", "8n", time);
+            hat?.triggerAttackRelease("32n", time);
+          },
+          Array.from({ length: 8 }, (_, i) => i),
+          "8n",
+        ),
     );
     const transport = Tone.getTransport();
     transport.bpm.value = 120;
-    melody.start(0);
-    drums.start(0);
+    melody?.start(0);
+    drums?.start(0);
     const start = () => {
       Tone.start()
         .then(() => {
           if (transport.state !== "started") transport.start();
-          console.log("TONE state=" + Tone.getContext().state);
+          console.log("AUDIOSTART " + Tone.getContext().state);
         })
         .catch((error) => console.log("TONE failed " + String(error)));
     };
     start();
+    const stateLog = setInterval(() => console.log("AUDIOSTATE " + Tone.getContext().state + " transport=" + transport.state), 15000);
     window.addEventListener("pointerdown", start);
     window.addEventListener("keydown", start);
     return () => {
       window.removeEventListener("pointerdown", start);
       window.removeEventListener("keydown", start);
+      clearInterval(stateLog);
       transport.stop();
-      melody.dispose();
-      drums.dispose();
-      for (const node of [lead, kick, hat, delay, reverb]) node.dispose();
+      for (const node of disposables) node.dispose();
     };
   }, []);
 
