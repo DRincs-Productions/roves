@@ -18,6 +18,8 @@ era a ~47% di un core (profilo: Param::update, tarjan, push GStreamer per quanto
 (`roves_perf_windows_mimalloc.zip`), poi rifare `only-tone`/`full-stack`:
 `matrix.ps1 -RovesExe <play.exe> -Modes only-tone,full-stack` (scratchpad di sessione, non nel repo).
 
+Misurato in release (`fe43d7a`): only-tone 73% -> 50,3% CPU (Chrome 56,3%), privato ~670 MiB invariato, ma 82 frame >33 ms persistono: gli stalli del thread principale con audio hanno un'altra causa (candidati: `currentTime` sincrono verso il thread audio, GC, lavoro Tone sul thread script). Vedi ROVES_PERFORMANCE.md, sezione finale.
+
 Da fare, in ordine:
 1. Leggere CI su `main`; scaricare perf-ab `fe43d7a`; misurare only-tone/full-stack (CPU, privato, frame >33 ms,
    `AUDIOSTATE`); se il thread audio resta caldo, profilare (campionatore user-mode descritto in

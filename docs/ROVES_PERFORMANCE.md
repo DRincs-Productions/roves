@@ -1055,3 +1055,26 @@ Con tutti a 2: 325 MiB e 81 thread; a 1: 322 MiB e 78 thread (due corse ciascuno
 circa 10 MiB per 10 thread in meno: non vale ridurre il parallelismo di layout e decodifica.
 Il consumo fisso sta altrove (heap V8, contesto GL/ANGLE e driver, font e fogli di stile di default);
 per attribuirlo serve un profilo di memoria (heap Rust con `allocation-tracking`, VMMap).
+
+### Audio: effetto delle ottimizzazioni del thread di rendering (18 ottobre 2026, sera)
+
+Build ottimizzata `fe43d7a` (ZIP SHA-256 `8bbd66ca867809b9d709fee542479d5f3e9f873976e45c09011fe0d079348698`,
+commit incorporato verificato) contro la `52faf30` precedente e Chrome 155, stesso protocollo, una corsa
+per cella:
+
+| Scena | Build | CPU | Privato | p99 / frame >33 ms |
+| --- | --- | --- | --- | --- |
+| only-tone | Roves `52faf30` | 73,0% | 658 MiB | 73,9 ms / 86 |
+| only-tone | Roves `fe43d7a` | 50,3% | 670 MiB | 57,6 ms / 82 |
+| only-tone | Chrome | 56,3% | 310 MiB | 17,1 ms / 0 |
+| full-stack | Roves `52faf30` | 191,6% | 772 MiB | 48,5 ms / 49 |
+| full-stack | Roves `fe43d7a` | 187,4% | 783 MiB | 44,4 ms / 51 |
+| full-stack | Chrome | 104,3% | 373 MiB | 17,0 ms / 0 |
+
+Il costo CPU della scena solo audio scende di circa un terzo (e sta sotto Chrome), ma i frame lunghi
+restano: nella pagina che riproduce solo audio il thread principale si ferma 80 volte su 20 s anche con
+il thread audio più leggero, quindi la causa è altrove (candidati: chiamate sincrone `currentTime`
+verso il thread audio, che Tone.js fa continuamente; pause del GC; il lavoro di Tone sul thread script).
+In `full-stack` la CPU resta alta perché dominano grafica e UI. Memoria privata invariata (~670 MiB contro
+310 in Chrome). Da fare: attribuire gli stalli del thread principale con audio (profilo del thread script,
+misura di quanto dura `AudioContext.currentTime`).
