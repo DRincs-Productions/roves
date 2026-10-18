@@ -404,7 +404,6 @@ impl Runtime {
             hooks: Default::default(),
             scripts: Default::default(),
             modules: Default::default(),
-            callable_class_boxes: RefCell::new(Vec::new()),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
         });

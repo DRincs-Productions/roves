@@ -149,8 +149,6 @@ pub struct JSContext {
     pub(crate) scripts: crate::script_impl::Scripts,
     /// Module records and module hooks (see `modules_impl`).
     pub(crate) modules: crate::modules_impl::Modules,
-    /// The boxes of callable class objects (see `object::new_callable_class_object`).
-    pub(crate) callable_class_boxes: RefCell<Vec<v8::cppgc::Persistent<crate::object::ClassBox>>>,
 }
 
 impl JSContext {

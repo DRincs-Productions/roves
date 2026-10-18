@@ -540,12 +540,13 @@ fn callable_class_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8:
 /// An object of a class with `call`/`construct` hooks (Servo's interface objects): a real V8
 /// function, so constructing it through `super()` or `Reflect.construct` passes the actual
 /// `new.target` (an API object's call-as-function handler does not get it) and `typeof` is
-/// "function". Its box is found through a V8 private and kept alive by the runtime.
+/// "function". A private API-object holder lets V8/cppgc trace the function's box;
+/// unreachable functions and their native state are collected together.
 fn new_callable_class_object(cx: &JSContext, class: *const JSClass, proto: *mut JSObject, default_proto: bool) -> *mut JSObject {
     cx.catching(|scope| {
-        let class_box = new_class_box(scope, class);
-        let raw = box_to_raw(&class_box);
-        let data = v8::External::new(scope, raw);
+        let template = cx.class_templates.template(scope, &PLAIN_OBJECT_CLASS);
+        let data = template.new_instance(scope)?;
+        let class_box = make_class_box(scope, data, class);
         let function = v8::Function::builder(callable_class_callback).data(data.into()).build(scope)?;
         if !proto.is_null() {
             // SAFETY: JSAPI callers pass live (rooted) prototypes.
@@ -556,12 +557,10 @@ fn new_callable_class_object(cx: &JSContext, class: *const JSClass, proto: *mut 
             function.set_prototype(scope, null)?;
         }
         let key = callable_class_key(scope);
-        let pointer = v8::External::new(scope, raw);
-        function.set_private(scope, key, pointer.into())?;
+        function.set_private(scope, key, data.into())?;
         let cell = crate::cell::new_cell_with_class(scope, function.into(), Some(Member::new(&class_box)));
-        // SAFETY: just created; the persistent below keeps it alive.
+        // SAFETY: just created; the function's holder traces the box.
         unsafe { class_box.as_ref() }.cell.set(cell);
-        cx.callable_class_boxes.borrow_mut().push(v8::cppgc::Persistent::new(&class_box));
         Some(cell as *mut JSObject)
     })
     .unwrap_or(std::ptr::null_mut())
@@ -570,13 +569,13 @@ fn new_callable_class_object(cx: &JSContext, class: *const JSClass, proto: *mut 
 /// The box of a function made by `new_callable_class_object`.
 pub(crate) fn callable_class_box_of<'b>(scope: &mut v8::PinScope, function: v8::Local<v8::Object>) -> Option<&'b ClassBox> {
     let key = callable_class_key(scope);
-    let pointer = v8::Local::<v8::External>::try_from(function.get_private(scope, key)?).ok()?;
-    box_from_raw(pointer.value())
+    let holder = v8::Local::<v8::Object>::try_from(function.get_private(scope, key)?).ok()?;
+    class_box_of_v8(holder)
 }
 
 fn callable_class_callback(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, mut retval: v8::ReturnValue) {
-    let Ok(external) = v8::Local::<v8::External>::try_from(args.data()) else { return };
-    let Some(class_box) = box_from_raw(external.value()) else { return };
+    let Ok(holder) = v8::Local::<v8::Object>::try_from(args.data()) else { return };
+    let Some(class_box) = class_box_of_v8(holder) else { return };
     // SAFETY: only callable classes get this callback.
     let ops = unsafe { &*(*class_box.class).cOps };
     let constructing = !args.new_target().is_undefined();

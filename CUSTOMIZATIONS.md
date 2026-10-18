@@ -1,3 +1,18 @@
+## 2026-10-18 - Callable classes follow JS reachability
+
+**Files:** `components/roves-js/src/{jsapi,object,rust,tests}.rs`.
+**Patch:** `0236-collect-callable-class-state.patch`.
+
+Every interface object (a callable class) was kept alive by a per-runtime
+`Persistent` list, so interface objects created for dynamic realms (iframes, workers)
+and their native state were never collected before the runtime died. The function now
+carries a plain API-object holder as its callback data and private slot; V8/cppgc traces
+the box through it, and unreachable functions are collected with their state. The
+runtime-wide vector is deleted (net fewer lines, no dependency). A new test keeps a
+constructor reachable across GC, drops it, and checks the finalizer runs exactly once.
+40 local tests pass (2 ignored). No measured memory gain yet: needs an iframe/worker
+churn run on the CI build.
+
 ## 2026-10-18 - Verify v0.7.13 and consumer production channels
 
 Desktop 13/13, V8 10/10, mobile and six release builds pass. Verify the published

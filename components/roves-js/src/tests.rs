@@ -2214,6 +2214,49 @@ mod callable_classes {
         oOps: ptr::null(),
     };
 
+    thread_local! {
+        static COLLECTED_CALLABLES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    }
+
+    unsafe extern "C" fn finalize_callable(_gc: *mut GCContext, _object: *mut JSObject) {
+        COLLECTED_CALLABLES.with(|count| count.set(count.get() + 1));
+    }
+
+    static COLLECTIBLE_OPS: JSClassOps = JSClassOps {
+        finalize: Some(finalize_callable),
+        ..OPS
+    };
+
+    static COLLECTIBLE_CLASS: JSClass = JSClass {
+        cOps: &COLLECTIBLE_OPS,
+        ..CLASS
+    };
+
+    #[test]
+    fn callable_classes_follow_js_reachability_instead_of_runtime_lifetime() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        COLLECTED_CALLABLES.with(|count| count.set(0));
+        {
+            rooted!(in(cx) let iface = unsafe { JS_NewObject(cx, &COLLECTIBLE_CLASS) });
+            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+            rooted!(in(cx) let value = ObjectValue(iface.get()));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"KeptIface".as_ptr(), value.handle().into()) });
+        }
+        runtime.gc_for_testing();
+        assert_eq!(COLLECTED_CALLABLES.with(std::cell::Cell::get), 0);
+        assert_eq!(describe(&runtime, eval(&runtime, "typeof KeptIface")), "function");
+        eval(&runtime, "delete globalThis.KeptIface");
+        for _ in 0..3 {
+            // Collect both heaps: the JS function owns the cppgc holder.
+            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+            runtime.gc_for_testing();
+        }
+        assert_eq!(COLLECTED_CALLABLES.with(std::cell::Cell::get), 1, "a dead constructor must not be a runtime root");
+        runtime.gc_for_testing();
+        assert_eq!(COLLECTED_CALLABLES.with(std::cell::Cell::get), 1, "finalize exactly once");
+    }
+
     #[test]
     fn callable_class_objects_are_functions_with_new_target() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
