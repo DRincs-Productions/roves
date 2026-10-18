@@ -1,5 +1,37 @@
 # V8 migration â€” handoff operativo
 
+## Stato al 18 ottobre 2026, sera (stop richiesto dall'utente)
+
+Su `main`, tutto pushato. Commit chiave: `e190b93` (patch 0237: AudioBuffer condiviso con `Arc` e nodi audio
+liberati; perdita Tone 8 MiB/s -> 0,5 MiB/s verificata su CI debug), merge di `audio-compat` (patch 0238:
+`WaveShaperNode`, `DelayNode` con feedback, `ConvolverNode` via crate `fft-convolver`,
+`DynamicsCompressorNode`, piano di elaborazione in cache, parametri costanti veloci, sink GStreamer a
+4 quanti per buffer). CI desktop verde sul ramo (`52faf30` e `fe43d7a`), V8 checks verdi su `52faf30`.
+La CI su `main` parte con il push del merge: rileggere l'esito prima di rilasciare.
+
+Misure (docs/ROVES_PERFORMANCE.md, wiki `performance.mdx`): matrice Roves vs Chrome per libreria;
+CPU 2D/3D/motion +30-75%, RAM ~2x ovunque (base del motore 322 MiB a `about:blank`). Tone completo in
+release su `52faf30`: 658 MiB e 73% CPU (prima 1225 MiB), ma 86 frame >33 ms in `only-tone`: il thread audio
+era a ~47% di un core (profilo: Param::update, tarjan, push GStreamer per quanto). Le ottimizzazioni
+`fe43d7a` sono state scritte per questo e NON ancora misurate in release: perf-ab su `fe43d7a`
+(run 39159288874, branch audio-compat) in corso; asset nel rilascio rolling `perf-ab`
+(`roves_perf_windows_mimalloc.zip`), poi rifare `only-tone`/`full-stack`:
+`matrix.ps1 -RovesExe <play.exe> -Modes only-tone,full-stack` (scratchpad di sessione, non nel repo).
+
+Da fare, in ordine:
+1. Leggere CI su `main`; scaricare perf-ab `fe43d7a`; misurare only-tone/full-stack (CPU, privato, frame >33 ms,
+   `AUDIOSTATE`); se il thread audio resta caldo, profilare (campionatore user-mode descritto in
+   ROVES_PERFORMANCE.md) e ridurre ancora (Oscillator/Biquad per-frame, silenzio propagato).
+2. Release v0.7.14 + bump pin roves-action e Packmaster (regola AGENTS), poi aggiornare wiki: i nodi
+   WebAudio mancanti nella pagina Performance diventano disponibili (restano PeriodicWave, ScriptProcessor, AudioWorklet).
+3. Perf 2D/3D (thread principale in WebRender/ANGLE, thread driver NVIDIA): serve profilo ETW (richiede admin).
+4. RAM base 322 MiB: serve profilo di memoria (`allocation-tracking`, VMMap).
+Esperimenti senza effetto: mimalloc PURGE_DELAY, V8 semi-space, riduzione pool di thread (-10 MiB), rAF a 33 fps
+solo per cicli che non disegnano (scelta di Servo, nessun problema per i giochi).
+Strumento: compilazione locale del crate script con `AWS_LC_SYS_PREBUILT_NASM=1 cargo check -p servo-script`
+(30 s; senza NASM fallisce `aws-lc-sys`); `cargo test -p servo-media-audio` (12 test).
+
+
 ## Aggiornamento 18 ottobre (pomeriggio)
 
 - `19a8dea` pushato: patch 0236, i costruttori callable seguono la raggiungibilità JS (40 test locali PASS). CI in corso, guadagno RAM non misurato.
