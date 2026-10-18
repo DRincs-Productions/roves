@@ -1929,7 +1929,7 @@ index 1fa3e119c07..3f6cdca1869 100644
 +pub(crate) mod waveshapernode;
 diff --git a/components/script/dom/audio/waveshapernode.rs b/components/script/dom/audio/waveshapernode.rs
 new file mode 100644
-index 00000000000..e5f253273e5
+index 00000000000..6abeea0a56b
 --- /dev/null
 +++ b/components/script/dom/audio/waveshapernode.rs
 @@ -0,0 +1,184 @@
@@ -2067,9 +2067,9 @@ index 00000000000..e5f253273e5
 +    fn SetCurve(
 +        &self,
 +        cx: &mut JSContext,
-+        value: Option<CustomAutoRooterGuard<Float32Array>>,
++        value: CustomAutoRooterGuard<Option<Float32Array>>,
 +    ) -> ErrorResult {
-+        let data = match &value {
++        let data = match (*value).as_ref() {
 +            Some(array) => {
 +                let data = array.to_vec().ok_or(Error::JSFailed)?;
 +                if data.len() < 2 {
@@ -2117,6 +2117,28 @@ index 00000000000..e5f253273e5
 +        }
 +    }
 +}
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index 688c8985085..a0d420ed250 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -52,8 +52,16 @@ DOMInterfaces = {
+     'cx':['CreateMediaElementSource', 'CreateMediaStreamDestination', 'CreateMediaStreamSource', 'CreateMediaStreamTrackSource'],
+ },
+ 
++'ConvolverNode': {
++    'cx': ['SetBuffer'],
++},
++
++'WaveShaperNode': {
++    'cx': ['SetCurve'],
++},
++
+ 'BaseAudioContext': {
+-    'cx': ['CreateBuffer', 'CreateGain', 'CreateOscillator', 'CreatePanner', 'CreateStereoPanner', 'CreateBiquadFilter', 'CreateIIRFilter', 'CreateAnalyser', 'CreateConstantSource', 'CreateChannelMerger', 'CreateChannelSplitter', 'CreateBufferSource', 'Destination', 'Listener'],
++    'cx': ['CreateBuffer', 'CreateGain', 'CreateOscillator', 'CreatePanner', 'CreateStereoPanner', 'CreateBiquadFilter', 'CreateIIRFilter', 'CreateAnalyser', 'CreateConstantSource', 'CreateChannelMerger', 'CreateChannelSplitter', 'CreateBufferSource', 'CreateWaveShaper', 'CreateDelay', 'CreateConvolver', 'CreateDynamicsCompressor', 'Destination', 'Listener'],
+     'realm': ['DecodeAudioData', 'Resume'],
+ },
+ 
 diff --git a/components/script_bindings/webidls/BaseAudioContext.webidl b/components/script_bindings/webidls/BaseAudioContext.webidl
 index 271aa802e32..b1c05e64ef7 100644
 --- a/components/script_bindings/webidls/BaseAudioContext.webidl
