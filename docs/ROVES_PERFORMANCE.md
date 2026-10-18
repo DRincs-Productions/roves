@@ -1041,3 +1041,17 @@ Roves `e20cffa` ottimizzato contro Chrome 155, una corsa per cella.
 Un contesto audio in esecuzione costa un po' di CPU anche in silenzio in entrambi i browser; la
 differenza con Chrome è piccola (4 punti percentuali con il contesto vuoto). Nessun intervento.
 Il consumo fisso del motore a `about:blank` è 322 MiB privati contro 247 MiB di Chrome a pagina vuota.
+
+### Consumo fisso del motore (18 ottobre 2026)
+
+Build ottimizzata `e20cffa` (mimalloc), finestra 1024×740, `about:blank`, 15 s dopo l'avvio:
+privato 333 MiB, working set 231 MiB, 91 thread. All'uscita immediata (`-x`) mimalloc riporta 120 MiB
+di heap Rust, picco RSS 229 MiB e picco commit 336 MiB; con la pagina di test (React) l'heap Rust
+sale a 188 MiB. Chrome a pagina vuota: 247 MiB privati sull'intero albero di processi.
+
+Esperimento: ridurre i pool di thread con `--pref` (`thread_pool_workers_max`,
+`thread_pool_async_runtime_workers_max`, `thread_pool_webrender_workers_max`, `layout_threads`).
+Con tutti a 2: 325 MiB e 81 thread; a 1: 322 MiB e 78 thread (due corse ciascuno). Guadagno di
+circa 10 MiB per 10 thread in meno: non vale ridurre il parallelismo di layout e decodifica.
+Il consumo fisso sta altrove (heap V8, contesto GL/ANGLE e driver, font e fogli di stile di default);
+per attribuirlo serve un profilo di memoria (heap Rust con `allocation-tracking`, VMMap).
