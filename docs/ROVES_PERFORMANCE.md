@@ -1003,3 +1003,24 @@ Chrome fa lo stesso lavoro nel processo GPU con un unico dispositivo D3D e senza
 Candidati: riusare la `SurfaceTexture` tra i frame invece di crearla e distruggerla (surfman),
 ridurre i cambi di stato GL del compositor, verificare la sincronizzazione tra contesto WebGL e
 contesto WebRender. Nessuna modifica fatta: serve prima un profilo ETW (richiede amministratore).
+
+### Cadenza di requestAnimationFrame per tipo di lavoro (18 ottobre 2026)
+
+Fixture `support/perf/raf-cadence.html`: quattro cicli rAF da 4 s ciascuno, finestra visibile,
+frame al secondo consegnati alla callback. Roves release v0.7.13 contro Chrome 155 (script,
+flag anti-throttling), una corsa ciascuno.
+
+| Lavoro nella callback | Roves | Chrome |
+| --- | --- | --- |
+| nessuno | 33 | 60 |
+| riempimento canvas 2D | 60 | 60 |
+| `gl.clear` WebGL | 60 | 60 |
+| trasformazione di un elemento DOM | 60 | 60 |
+
+La causa è una scelta di Servo in `script_thread.rs`
+(`maybe_schedule_rendering_opportunity_after_ipc_message`): se i rAF girano ma non producono
+display list, il tick successivo viene rimandato a 30 ms perché "il rendering non cambia". Un gioco
+che disegna (canvas 2D, WebGL, DOM) riceve 60 al secondo, quindi i valori di 32 rAF/s misurati nelle
+scene `blank`, `only-worker` e `only-tone` sono un effetto del fixture senza disegno, non un difetto
+per i giochi. Un ciclo di sola logica (nessun disegno) vedrebbe 33 al secondo invece di 60: se
+servisse, il ritardo è una costante da una riga. Nessuna modifica fatta.

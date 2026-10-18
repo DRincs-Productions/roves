@@ -1,0 +1,54 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>requestAnimationFrame cadence by workload</title>
+<body style="margin:0;background:#000">
+<canvas id="c2d" width="300" height="200"></canvas>
+<canvas id="gl" width="300" height="200"></canvas>
+<div id="box" style="width:40px;height:40px;background:#8ab4f8"></div>
+<script>
+  // Frames per second delivered to a requestAnimationFrame loop that does a given kind of work.
+  // Servo slows loops that do not change the page; games usually draw, so each variant draws
+  // (or not) the way a real game would.
+  const seconds = 4;
+  const c2d = document.getElementById("c2d").getContext("2d");
+  const gl = document.getElementById("gl").getContext("webgl");
+  const box = document.getElementById("box");
+  const variants = {
+    "no-work": () => {},
+    "canvas2d-fill": (n) => {
+      c2d.fillStyle = n % 2 ? "#f00" : "#00f";
+      c2d.fillRect(0, 0, 300, 200);
+    },
+    "webgl-clear": (n) => {
+      gl.clearColor(n % 2, 0, 1 - (n % 2), 1);
+      gl.clear(gl.COLOR_BUFFER_BIT);
+    },
+    "dom-transform": (n) => {
+      box.style.transform = `translateX(${n % 200}px)`;
+    },
+  };
+  const results = {};
+  const names = Object.keys(variants);
+  function run(index) {
+    if (index >= names.length) {
+      console.log("RAFCADENCE " + JSON.stringify(results));
+      setTimeout(() => window.close(), 500);
+      return;
+    }
+    const name = names[index];
+    const work = variants[name];
+    let frames = 0;
+    const start = performance.now();
+    function frame(now) {
+      work(frames);
+      frames++;
+      if (now - start < seconds * 1000) requestAnimationFrame(frame);
+      else {
+        results[name] = Math.round((frames * 1000) / (now - start));
+        run(index + 1);
+      }
+    }
+    requestAnimationFrame(frame);
+  }
+  setTimeout(() => run(0), 1500);
+</script>
