@@ -981,3 +981,25 @@ Build `e190b93` (dopo; ZIP SHA-256 `500118b51e834b35e4ad5bd8d0ae3c279592596a1363
 commit incorporato verificato): 444, 448, 456, 458 MiB, circa 0,5 MiB/s. Stessa macchina e stessa
 pagina; sono build di debug, quindi conta la pendenza, non il livello assoluto. Resta da misurare
 il confronto ottimizzato Roves/Chrome di `only-tone` e `full-stack`.
+
+### Dove va la CPU nella scena 3D (campionamento a thread, 18 ottobre 2026)
+
+Binario ottimizzato `e20cffa` (mimalloc) con il suo PDB, scena `only-three`, finestra visibile 1024×740.
+Strumento: piccolo campionatore in user mode (sospende i thread più occupati ogni 2 ms, legge RIP e
+una scansione dello stack, simbolizza con `llvm-symbolizer`; pesi = cicli CPU del thread tra due
+campioni via `QueryThreadCycleTime`). Non richiede privilegi di amministratore, ma sospendere i
+thread aggiunge costo in `ntdll`: i valori sono indicativi, non misure di profilatore ETW.
+
+| Thread | Quota dei cicli campionati | Contenuto |
+| --- | --- | --- |
+| principale (event loop SDL + WebRender) | ~38% | `Renderer::draw_frame`, `bind_texture`, `use_program`, `create/destroy_surface_texture` (surfman/ANGLE); ~76% dei cicli in `ntdll`/kernel, ~9% libGLESv2, ~3% driver |
+| thread senza frame Rust (driver NVIDIA) | ~21% | `nvwgf2umx.dll` + `ntdll` |
+| script (V8) | ~13% | quasi solo attesa; calcolo in `sin/cos` e ricerche di stringhe |
+| WebGL | ~8% | `WebGLThread::process`, swap chain surfman |
+
+Lettura: la CPU della scena 3D è dominata dal pilotare la GPU (ANGLE → D3D11 → driver, con la
+creazione/distruzione di una texture di superficie condivisa per frame), non dal JavaScript.
+Chrome fa lo stesso lavoro nel processo GPU con un unico dispositivo D3D e senza questo passaggio.
+Candidati: riusare la `SurfaceTexture` tra i frame invece di crearla e distruggerla (surfman),
+ridurre i cambi di stato GL del compositor, verificare la sincronizzazione tra contesto WebGL e
+contesto WebRender. Nessuna modifica fatta: serve prima un profilo ETW (richiede amministratore).
