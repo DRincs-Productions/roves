@@ -6,7 +6,12 @@
 - mimalloc `PURGE_DELAY=0`: nessun effetto (privato ~626 MiB, ws ~405). Arena mimalloc ~214 MiB committed; heap JS 15 MiB usati su 58–97 totali.
 - In corso: `ROVES_V8_FLAGS=--max-semi-space-size=2/8` sul binario v0.7.13 (script scratchpad run.ps1).
 - Nuovi fixture `test-page/src/FullStackFixture.tsx` (modi `full-stack`, `only-*`): vedi matrice in ROVES_PERFORMANCE.md. Da buildare (npm) dopo le misure.
-- Da fare: matrice per libreria Roves vs Chrome, pagina wiki prestazioni, aggiornare questi file con i risultati.
+- Matrice per libreria Roves vs Chrome eseguita (matrix-1/2/3.jsonl in target/perf-local-20261018): vedi ROVES_PERFORMANCE.md. Divari: CPU 2D/3D/motion +30-75%, RAM ~2x ovunque (pagina vuota 453 vs 209 MiB).
+- Scoperta audio: Tone.js porta Roves a 1,2 GiB e 46-71 frame >33 ms. Fix `e190b93` (patch 0237: AudioBuffer Arc + dispose nodi). CI desktop 39145111619 in corso; poi scaricare artifact e rifare `only-tone`/`full-stack` (script scratchpad matrix.ps1, tonemem.ps1, bisect.ps1).
+- Mancano in Roves: createConvolver/Delay/DynamicsCompressor/WaveShaper(DOM)/PeriodicWave/ScriptProcessor/AudioWorklet (support/perf/webaudio-nodes-probe.html). Da implementare: WaveShaper (motore esiste), poi Delay, Convolver (fft-convolver?), Compressor.
+- rAF a ~32/s in pagine senza ridisegno (blank/worker/tone): da capire (refresh_driver in components/paint).
+- Pagina wiki Performance aggiunta (roves-wiki 1c48d74), link in README.
+- Esperimenti senza effetto: mimalloc PURGE_DELAY, V8 --max-semi-space-size (nessun guadagno RAM, CPU piu alta).
 
 ## Stato verificato, 18 ottobre 2026
 

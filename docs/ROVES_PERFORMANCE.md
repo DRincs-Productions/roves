@@ -952,3 +952,25 @@ segnali): un'eccezione non gestita nella creazione dei nodi fa smontare la pagin
 (`only-tone`/`full-stack` restavano fermi a ~10–12% CPU). Il fixture ora crea ogni pezzo in
 try/catch e registra `TONEINFO ok/failed`. Il motore `servo-media` ha il DSP del WaveShaper
 ma non il binding DOM; Delay, Convolver e Compressor sono solo segnaposto senza DSP.
+
+### Audio (Tone.js): crescita lineare di memoria e frame persi (18 ottobre 2026)
+
+Con il fixture tollerante (ogni pezzo Tone creato in try/catch), release v0.7.13, stesso
+protocollo della matrice, click sintetico per sbloccare l'audio:
+
+| Modo | Roves CPU | Roves privato | Roves p99 / >33 ms | Chrome CPU | Chrome privato | Chrome p99 / >33 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| only-tone | 57% | 1225 MiB | 48,3 ms / 71 | 56,4% | 310 MiB | 17,1 / 0 |
+| full-stack | 184% | 1394 MiB | 44,2 ms / 46 | 94,1% | 376 MiB | 17,1 / 0 |
+
+In Roves Reverb e FeedbackDelay non si creano (`createWaveShaper` assente) e il resto gira,
+cioè Chrome fa più lavoro. La memoria cresce linearmente (~9 MiB/s, heap Rust: arena mimalloc
+~1 GiB al picco). Bisect con `?tone=`: tone=none 440 MiB piatto, membranesynth +0,3 MiB/s,
+polysynth +1,2 MiB/s, **noisesynth +8 MiB/s**. Cause trovate nel motore audio: (1)
+`AudioBufferSourceNode.start()` clonava in profondità l'intero `AudioBuffer` a ogni avvio
+(Tone avvia un nuovo sorgente di rumore per colpo); (2) nessun nodo veniva mai rimosso dal
+grafo audio, quindi ogni sorgente disconnessa teneva la sua copia fino alla chiusura del
+contesto. Correzione `e190b93` (patch 0237): campioni condivisi con `Arc`, rilascio del nodo
+quando l'oggetto script viene raccolto e il nodo è finito o non raggiunge più la
+destinazione. Test unitario del grafo passa; verifica sul gioco/fixture dopo la CI.
+Non ancora misurato: vecchio valore da battere 1225 MiB / 71 frame >33 ms.
