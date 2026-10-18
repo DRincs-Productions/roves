@@ -351,7 +351,9 @@ fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> 
     }
     let file = message.get_script_resource_name(scope).and_then(|name| name.to_string(scope)).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
     let line = message.get_line_number(scope).unwrap_or(0) as u32;
-    let column = message.get_start_column() as u32 + 1;
+    // V8 uses -1 for missing locations; rusty_v8 exposes that sentinel as usize.
+    // Preserve the embedder's zero (unknown) instead of truncating and overflowing.
+    let column = u32::try_from(message.get_start_column()).ok().and_then(|column| column.checked_add(1)).unwrap_or(0);
     (text, file, line, column)
 }
 

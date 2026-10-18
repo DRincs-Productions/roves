@@ -1616,6 +1616,23 @@ mod scripts {
     }
 
     #[test]
+    fn native_errors_without_script_locations_report_unknown_column() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // V8 errors created outside script have no source column (-1).
+        let value = unsafe { &*cx }.with_scope(|scope| {
+            let text = v8::String::new(scope, "native error without a script").unwrap();
+            let error = v8::Exception::error(scope, text);
+            assert!(v8::Exception::create_message(scope, error).get_start_column() >= u32::MAX as usize);
+            from_v8(scope, error)
+        });
+        rooted!(in(cx) let error = value.to_object());
+        let report = unsafe { JS_ErrorFromException(cx, error.handle().into_handle()) };
+        assert!(!report.is_null());
+        assert_eq!(unsafe { (*report)._base.column._base }, 0);
+    }
+
+    #[test]
     fn scripts_compile_run_carry_privates_and_report_errors() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

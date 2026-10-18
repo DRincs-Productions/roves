@@ -398,6 +398,9 @@ location per platform, and a real incident this was built to catch).
 
 ### Repeatable performance fixtures
 
+Development builds also handle V8 exceptions without source locations without overflowing;
+the real typewriter/Pixi smoke run exposed this case while checking the global-lookup changes.
+
 The v0.7.12 consumer CI passes on all platforms. Updated visible Chrome/Roves reference
 measurements and their limits are recorded in [the performance notes](docs/ROVES_PERFORMANCE.md).
 

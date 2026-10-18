@@ -1,0 +1,43 @@
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 66338d11823..4cab09f0c4b 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -351,7 +351,9 @@ fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) ->
+     }
+     let file = message.get_script_resource_name(scope).and_then(|name| name.to_string(scope)).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
+     let line = message.get_line_number(scope).unwrap_or(0) as u32;
+-    let column = message.get_start_column() as u32 + 1;
++    // V8 uses -1 for missing locations; rusty_v8 exposes that sentinel as usize.
++    // Preserve the embedder's zero (unknown) instead of truncating and overflowing.
++    let column = u32::try_from(message.get_start_column()).ok().and_then(|column| column.checked_add(1)).unwrap_or(0);
+     (text, file, line, column)
+ }
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index e6f60c641fa..ecd4dd79bbb 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1615,6 +1615,23 @@ mod scripts {
+         true
+     }
+ 
++    #[test]
++    fn native_errors_without_script_locations_report_unknown_column() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        // V8 errors created outside script have no source column (-1).
++        let value = unsafe { &*cx }.with_scope(|scope| {
++            let text = v8::String::new(scope, "native error without a script").unwrap();
++            let error = v8::Exception::error(scope, text);
++            assert!(v8::Exception::create_message(scope, error).get_start_column() >= u32::MAX as usize);
++            from_v8(scope, error)
++        });
++        rooted!(in(cx) let error = value.to_object());
++        let report = unsafe { JS_ErrorFromException(cx, error.handle().into_handle()) };
++        assert!(!report.is_null());
++        assert_eq!(unsafe { (*report)._base.column._base }, 0);
++    }
++
+     #[test]
+     fn scripts_compile_run_carry_privates_and_report_errors() {
+         let mut runtime = Runtime::new(JSEngineHandle::for_tests());

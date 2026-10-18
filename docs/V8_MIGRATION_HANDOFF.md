@@ -1,6 +1,28 @@
 # V8 migration - handoff
 
-## Pausa richiesta dall'utente — 17 ottobre 2026, ripresa domani
+## Ripresa del 18 ottobre 2026 — patch 0235
+
+L'utente ha autorizzato la ripresa. CI `39069276284` 13/13 e `39069276329` 10/10 verdi;
+anche le suite Linux normal/jitless passano tutte le asserzioni eseguite (skip espliciti).
+Scaricato portable Windows in `target/perf-local-20261018/ci-debug-1e0f476/servo-test-page/play.exe`,
+digest `8b31e710adc5a6af3758848af24275153b2eba5fc646d8206824a52c03ed2a48`,
+commit incorporato `1e0f476` verificato. Nove controlli DOM PASS, worker FIFO128/timer PASS,
+calcolo64 job PASS (89,58ms); Math.imul diretto e catturato entrambi circa7,9ms in debug.
+Non è una percentuale comparabile con il precedente profilo ottimizzato né CPU del gioco.
+
+Il comando con Start-Process/chiusura App in background viene respinto dalla policy;
+non riproposto tramite wrapper. Un controllo diverso in primo piano con `-z -x -o`
+trova un panic reale in script_impl.rs:354: colonna eccezione V8 sconosciuta, overflow.
+Sessione in primo piano terminata con Ctrl-C; nessuna misura game completata.
+Patch0235 usa try_from/checked_add standard Rust, sconosciuto=0. Nuovo test riproduce
+il panic prima, suite dopo39pass/2ignored. Verificare la prossima CI e rileggere
+l'eccezione JavaScript originale, prima di rilasciare o dichiarare App verificata.
+Log `target/perf-local-20261018/unknown-column-{before,after}.log`,
+`typewriter-foreground.stdout.log`; log dei probe in target/perf-local-20261017/*after-1e0f476*.
+HTTP48761 avviato nella sessione76565, Chrome MCP pagina1 (viewport929×861, diverso dal
+precedente riferimento). Nessuna nuova misura Chrome/Roves equivalente ancora completata.
+
+## Archivio della pausa — 17 ottobre 2026
 
 **Questo checkpoint prevale sulle note storiche sotto.** Non proseguire nella notte:
 l'utente ha chiesto di fermare il lavoro e lasciare terminare le CI già avviate.

@@ -658,6 +658,24 @@ Android e iOS passano. Windows ha completato la compilazione e assembla il bundl
 Attendere gli esiti finali, scaricare il portable e verificare hash/commit `1e0f476`
 prima dei test browser. Piano di ripresa in `V8_MIGRATION_HANDOFF.md`.
 
+### Verifica browser del 18 ottobre
+
+Le CI sopra sono concluse: desktop13/13 e V8 10/10 verdi. Le suite Linux normal/jitless
+riportano tutte le asserzioni eseguite PASS (skip espliciti). Portable Windows con hash
+`8b31e710adc5a6af3758848af24275153b2eba5fc646d8206824a52c03ed2a48` e prefisso
+incorporato `1e0f476` verificati. Nove controlli DOM PASS, FIFO128/timer PASS,
+calcolo worker64job PASS in89,58ms. Intrinseci thread principale, diretto
+7,96/7,88/7,92ms, catturato7,89/7,91/7,88ms: il grande costo diagnostico non compare.
+Build debug contro precedenti ottimizzate: nessuna percentuale di CPU del gioco dedotta.
+Chrome MCP attuale ha viewport929×861 e tempi10,6–13,6ms diretti: non è una nuova
+coppia equivalente al riferimento precedente.
+
+Lo smoke App in background è respinto dalla policy. Un controllo headless in primo piano
+con uscita/screenshot nativi trova un overflow nel riportare la colonna sconosciuta di
+un'eccezione V8. Patch0235: conversione/addizione controllate Rust, zero per sconosciuto;
+test rosso prima, suite39verdi/2ignorati dopo. L'eccezione originale e la App restano
+da verificare sul prossimo artefatto CI; nessuna release nuova o misura game dichiarata.
+
 ### Riferimento visibile aggiornato del 17 ottobre, v0.7.12
 
 Una nuova coppia sulla stessa `perf-measured.html?perf=typewriter-pixi`, visibile,

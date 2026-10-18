@@ -1,3 +1,24 @@
+## 2026-10-18 - Preserve unknown V8 exception columns
+
+**Files:** `components/roves-js/src/script_impl.rs`, `src/tests.rs`.
+**Patch:** `0235-unknown-exception-column.patch`.
+
+A foreground headless typewriter/Pixi smoke run on the verified 1e0f476 CI binary
+panics while reporting an exception. V8's missing source column is -1, exposed by
+rusty_v8 as usize; casting to u32 then adding one overflows in debug. Use Rust's
+checked conversion/addition and report zero for unknown locations. No dependency,
+cache or replacement serializer. A native V8 error without a script reproduces the
+exact panic before the fix; all 39 tests pass after it, two ignored.
+The original JavaScript exception and actual game CPU saving remain to be investigated
+with the next CI artifact. No performance parity or new release claimed.
+
+The previous source passes all 13 desktop and 10 V8 CI jobs; Linux normal/jitless
+smoke suites report every executed assertion passing, with explicit skips.
+Windows portable SHA256 8b31e710adc5a6af3758848af24275153b2eba5fc646d8206824a52c03ed2a48
+and embedded 1e0f476 verified. Nine DOM checks, worker FIFO/timers and compute pass;
+main intrinsic direct/captured loops both take about 7.9 ms in this debug build.
+Debug/optimized profiles differ from older baselines: no whole-game percentage inferred.
+
 ## 2026-10-17 - Save the requested overnight handoff
 
 The user pauses work until tomorrow. Update V8_MIGRATION_HANDOFF.md, TODO.md and
