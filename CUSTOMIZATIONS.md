@@ -1,3 +1,32 @@
+## 2026-10-18 - WebAudio: WaveShaper, Delay (with feedback), Convolver, DynamicsCompressor
+
+**Files:** `components/media/audio/{delay_node,convolver_node,dynamics_compressor_node}.rs` (new),
+`components/media/audio/{audio_node,graph,param,render_thread,lib,wave_shaper_node,Cargo.toml}`,
+`components/script/dom/audio/{waveshapernode,delaynode,convolvernode,dynamicscompressornode}.rs` (new),
+`components/script/dom/audio/{audionode,baseaudiocontext,mod}.rs`, new IDL `WaveShaperNode`,
+`DelayNode`, `ConvolverNode`, `DynamicsCompressorNode`, `BaseAudioContext.webidl`, `Cargo.toml`/`Cargo.lock`.
+**Patch:** `0238-webaudio-nodes.patch`.
+
+Roves lacked `createWaveShaper/Delay/Convolver/DynamicsCompressor` (the probe
+`support/perf/webaudio-nodes-probe.html` lists them), so Tone.js effects (Reverb, FeedbackDelay,
+Compressor, Distortion, signal math) threw and could take a page down. Added:
+- `WaveShaperNode`: DOM binding over the existing engine node; curve can be replaced and
+  `oversample` is forwarded (the engine no longer panics on a second curve).
+- `DelayNode` with an `a-rate` `delayTime` (ring buffer, linear interpolation). Feedback loops
+  are no longer muted: a delay inside a cycle is a *cycle breaker* as in the spec (DelayReader
+  before the quantum, DelayWriter after it, minimum delay one render quantum). `AudioGraph::process`
+  orders the nodes first (DFS on the graph without the edges that enter a breaker, then what
+  feeds each breaker) and processes them after. Tests: plain delay, feedback echoes 1, 0.5, 0.25...
+- `ConvolverNode` using the `fft-convolver` crate (MIT, partitioned FFT, built on `realfft`
+  already used by the analyser; its `rtsan-standalone` helpers are inert unless `RTSAN_ENABLE`
+  is set). Mono and stereo responses, spec normalization (`normalize`), silence tail detection so an
+  idle reverb costs nothing. Four-channel responses are rejected (`NotSupported`).
+- `DynamicsCompressorNode`: feed-forward soft-knee compressor with attack/release and the
+  automatic make-up gain; no look-ahead and `reduction` reports 0 (the render thread does not
+  report it back yet). Test: -10 dB in, threshold -20, ratio 4 gives -8.5 dB.
+Still missing: `PeriodicWave`, `ScriptProcessor`, AudioWorklet. `cargo test -p servo-media-audio`
+passes (10 tests); the DOM side compiles only in CI.
+
 ## 2026-10-18 - Free WebAudio nodes and share AudioBuffer data
 
 **Files:** `components/media/audio/{audio_node,buffer_source_node,constant_source_node,oscillator_node,graph,render_thread,context,lib}.rs`,

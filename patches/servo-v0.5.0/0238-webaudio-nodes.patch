@@ -1,0 +1,946 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 11094e9c980..d0ec5c02ec7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2610,6 +2610,17 @@ dependencies = [
+  "subtle",
+ ]
+ 
++[[package]]
++name = "fft-convolver"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1dc2475d152b174858819508db05e86ae8df4542aeb1b2b21ef5a0dda3e64bf6"
++dependencies = [
++ "realfft",
++ "rtsan-standalone",
++ "thiserror 2.0.18",
++]
++
+ [[package]]
+ name = "fiat-crypto"
+ version = "0.3.0"
+@@ -6931,6 +6942,36 @@ dependencies = [
+  "thiserror 2.0.18",
+ ]
+ 
++[[package]]
++name = "rtsan-standalone"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0fd1b6d61d69481a68e555916d3a52213846f5c2d2140bdc74ebc308e2338fc3"
++dependencies = [
++ "rtsan-standalone-macros",
++ "rtsan-standalone-sys",
++]
++
++[[package]]
++name = "rtsan-standalone-macros"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a8320af894782374141c8e0d4521ee613a8f24d7ab08b6ad359881311e37b9ef"
++dependencies = [
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "rtsan-standalone-sys"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "362a9c531f731e574a870cdb28ee7d81178ba7a87ed54380eb9b8d8f0c3b5301"
++dependencies = [
++ "num_cpus",
++ "tempfile",
++]
++
+ [[package]]
+ name = "rusqlite"
+ version = "0.38.0"
+@@ -8104,6 +8145,7 @@ dependencies = [
+  "byte-slice-cast",
+  "crossbeam-queue",
+  "euclid",
++ "fft-convolver",
+  "log",
+  "malloc_size_of_derive",
+  "num-complex",
+diff --git a/Cargo.toml b/Cargo.toml
+index d86de54572e..70a8edbf19f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -93,6 +93,7 @@ elliptic-curve = { version = "0.14", features = ["pkcs8"] }
+ encoding_rs = { version = "0.8", features = ["serde"] }
+ env_logger = "0.11"
+ euclid = "0.22"
++fft-convolver = "0.4"
+ flate2 = "1.1"
+ font-types = "0.12"
+ fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
+diff --git a/components/media/audio/Cargo.toml b/components/media/audio/Cargo.toml
+index 733757170c3..651d9386d11 100644
+--- a/components/media/audio/Cargo.toml
++++ b/components/media/audio/Cargo.toml
+@@ -17,6 +17,7 @@ path = "lib.rs"
+ byte-slice-cast = { workspace = true }
+ crossbeam-queue = { workspace = true }
+ euclid = { workspace = true }
++fft-convolver = { workspace = true }
+ log = { workspace = true }
+ malloc_size_of = { workspace = true }
+ malloc_size_of_derive = { workspace = true }
+diff --git a/components/media/audio/audio_node.rs b/components/media/audio/audio_node.rs
+index 9fe4d28eb67..720de086679 100644
+--- a/components/media/audio/audio_node.rs
++++ b/components/media/audio/audio_node.rs
+@@ -15,6 +15,9 @@ use crate::block::{Block, Chunk, Tick};
+ use crate::buffer_source_node::{AudioBufferSourceNodeMessage, AudioBufferSourceNodeOptions};
+ use crate::channel_node::ChannelNodeOptions;
+ use crate::constant_source_node::ConstantSourceNodeOptions;
++use crate::convolver_node::{ConvolverNodeMessage, ConvolverNodeOptions};
++use crate::delay_node::DelayNodeOptions;
++use crate::dynamics_compressor_node::DynamicsCompressorNodeOptions;
+ use crate::gain_node::GainNodeOptions;
+ use crate::iir_filter_node::IIRFilterNodeOptions;
+ use crate::media_element_source_node::MediaElementSourceNodeMessage;
+@@ -34,9 +37,9 @@ pub enum AudioNodeInit {
+     ChannelMergerNode(ChannelNodeOptions),
+     ChannelSplitterNode,
+     ConstantSourceNode(ConstantSourceNodeOptions),
+-    ConvolverNode,
+-    DelayNode,
+-    DynamicsCompressionNode,
++    ConvolverNode(ConvolverNodeOptions),
++    DelayNode(DelayNodeOptions),
++    DynamicsCompressionNode(DynamicsCompressorNodeOptions),
+     GainNode(GainNodeOptions),
+     IIRFilterNode(IIRFilterNodeOptions),
+     MediaElementSourceNode,
+@@ -149,6 +152,15 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
+ 
+     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk;
+ 
++    /// The graph calls this before each render quantum for a node that sits in a feedback loop
++    /// and breaks it (a `DelayNode`): its output must then not depend on its input of the same
++    /// quantum, and the input is delivered by [`Self::write_after_quantum`] once the whole
++    /// quantum has been processed.
++    fn set_cycle_breaker(&mut self, _breaker: bool) {}
++
++    /// The input of a cycle breaker for the quantum just processed.
++    fn write_after_quantum(&mut self, _inputs: Chunk, _info: &BlockInfo) {}
++
+     /// A source that has played to its end can never produce sound again, so the graph may
+     /// drop it once nothing can refer to it.
+     fn is_finished(&self) -> bool {
+@@ -244,6 +256,7 @@ pub enum AudioNodeMessage {
+     AudioBufferSourceNode(AudioBufferSourceNodeMessage),
+     AudioScheduledSourceNode(AudioScheduledSourceNodeMessage),
+     BiquadFilterNode(BiquadFilterNodeMessage),
++    ConvolverNode(ConvolverNodeMessage),
+     GetParamValue(ParamType, Sender<f32>),
+     MediaElementSourceNode(MediaElementSourceNodeMessage),
+     OscillatorNode(OscillatorNodeMessage),
+diff --git a/components/media/audio/graph.rs b/components/media/audio/graph.rs
+index e60744944da..2d71b728696 100644
+--- a/components/media/audio/graph.rs
++++ b/components/media/audio/graph.rs
+@@ -11,11 +11,13 @@ use petgraph::Direction;
+ use petgraph::algo::tarjan_scc;
+ use petgraph::graph::DefaultIx;
+ use petgraph::stable_graph::{NodeIndex, StableGraph};
+-use petgraph::visit::{Dfs, DfsPostOrder, EdgeRef, Reversed};
++use petgraph::visit::{Dfs, DfsPostOrder, EdgeFiltered, EdgeRef, Reversed};
+ use rustc_hash::FxHashSet;
+ use smallvec::SmallVec;
+ 
+-use crate::audio_node::{AudioNodeEngine, BlockInfo, ChannelCountMode, ChannelInterpretation};
++use crate::audio_node::{
++    AudioNodeEngine, AudioNodeType, BlockInfo, ChannelCountMode, ChannelInterpretation,
++};
+ use crate::block::{Block, Chunk};
+ use crate::dead_node::DeadNode;
+ use crate::destination_node::DestinationNode;
+@@ -408,132 +410,97 @@ impl AudioGraph {
+     /// <https://webaudio.github.io/web-audio-api/#rendering-loop>
+     pub fn process(&mut self, info: &BlockInfo) -> Chunk {
+         // Step 4.2. Order the AudioNodes of the BaseAudioContext to be processed.
+-        let cycle_nodes = self.detect_nodes_in_cycles();
++        let (cycle_nodes, cycle_breakers) = self.detect_nodes_in_cycles();
++        for ix in self.graph.node_indices() {
++            let mut node = self.graph[ix].node.borrow_mut();
++            if node.node_type() == AudioNodeType::DelayNode {
++                node.set_cycle_breaker(cycle_breakers.contains(&ix));
++            }
++        }
+ 
+         // DFS post order: Children are processed before their parent,
+         // which is exactly what we need since the parent depends on the
+         // children's output
+         //
+-        // This will only visit each node once
+-        let reversed = Reversed(&self.graph);
+-
+-        let mut blocks: SmallVec<[SmallVec<[Block; 1]>; 1]> = SmallVec::new();
+-        let mut output_counts: SmallVec<[u32; 1]> = SmallVec::new();
+-
++        // This will only visit each node once. The edges that enter a cycle breaker are left
++        // out: its output only needs what it received in earlier quanta, so it is a source for
++        // ordering purposes and its input is written after the quantum (see below).
++        let filtered = EdgeFiltered::from_fn(&self.graph, |edge| {
++            !cycle_breakers.contains(&edge.target())
++        });
++        let reversed = Reversed(&filtered);
+         let mut visit = DfsPostOrder::empty(reversed);
+-
++        let mut order: Vec<NodeIndex<DefaultIx>> = Vec::new();
++        let mut reached_breakers: Vec<NodeIndex<DefaultIx>> = Vec::new();
+         for dest in &self.dests {
+             visit.move_to(dest.0);
+-
+             while let Some(ix) = visit.next(reversed) {
+-                let mut curr = self.graph[ix].node.borrow_mut();
+-
+-                if cycle_nodes.contains(&ix) {
+-                    // Step 4.2.7. If nodes contains cycles, mute all the AudioNodes
+-                    // that are part of this cycle, and remove them from nodes.
+-                    let chunk = curr.as_mut().mute_node();
+-                    if curr.output_count() == 0 {
+-                        // Step 4.4.5. If this AudioNode is a destination node, record
+-                        // the input of this AudioNode.
+-                        curr.process(chunk, info);
+-                    } else {
+-                        // Step 4.4.6. Else, process the input buffer, and make
+-                        // available for reading the resulting buffer.
+-                        self.fill_node_cache_with_silence(ix, curr.output_count());
++                order.push(ix);
++                if cycle_breakers.contains(&ix) {
++                    reached_breakers.push(ix);
++                }
++            }
++        }
++        // What feeds a cycle breaker still has to run, even when it reaches no destination
++        // another way.
++        let mut breakers_to_feed = reached_breakers.clone();
++        while let Some(breaker) = breakers_to_feed.pop() {
++            let feeders: Vec<_> = self
++                .graph
++                .neighbors_directed(breaker, Direction::Incoming)
++                .collect();
++            for feeder in feeders {
++                visit.move_to(feeder);
++                while let Some(ix) = visit.next(reversed) {
++                    order.push(ix);
++                    if cycle_breakers.contains(&ix) {
++                        reached_breakers.push(ix);
++                        breakers_to_feed.push(ix);
+                     }
+-                    continue;
+                 }
++            }
++        }
+ 
+-                let mut chunk = Chunk::default();
+-                chunk
+-                    .blocks
+-                    .resize(curr.input_count() as usize, Default::default());
+-
+-                // if we have inputs, collect all the computed blocks
+-                // and construct a Chunk
+-
+-                // set up scratch space to store all the blocks
+-                blocks.clear();
+-                blocks.resize(curr.input_count() as usize, Default::default());
++        let mut output_counts: SmallVec<[u32; 1]> = SmallVec::new();
+ 
+-                let mode = curr.channel_count_mode();
+-                let count = curr.channel_count();
+-                let interpretation = curr.channel_interpretation();
++        for ix in order {
++            let mut curr = self.graph[ix].node.borrow_mut();
+ 
+-                // all edges to this node are from its dependencies
+-                for edge in self.graph.edges_directed(ix, Direction::Incoming) {
+-                    let edge = edge.weight();
+-                    for connection in &edge.connections {
+-                        let mut block = connection
+-                            .cache
+-                            .borrow_mut()
+-                            .take()
+-                            .expect("Cache should have been filled from traversal");
+-
+-                        match connection.input_idx {
+-                            PortIndex::Port(idx) => {
+-                                blocks[idx as usize].push(block);
+-                            },
+-                            PortIndex::Param(param) => {
+-                                // param inputs are downmixed to mono
+-                                // https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output
+-                                block.mix(1, ChannelInterpretation::Speakers);
+-                                curr.get_param(param).add_block(block)
+-                            },
+-                            PortIndex::Listener(_) => curr.set_listenerdata(block),
+-                        }
+-                    }
++            if cycle_nodes.contains(&ix) {
++                // Step 4.2.7. If nodes contains cycles, mute all the AudioNodes
++                // that are part of this cycle, and remove them from nodes.
++                let chunk = curr.as_mut().mute_node();
++                if curr.output_count() == 0 {
++                    // Step 4.4.5. If this AudioNode is a destination node, record
++                    // the input of this AudioNode.
++                    curr.process(chunk, info);
++                } else {
++                    // Step 4.4.6. Else, process the input buffer, and make
++                    // available for reading the resulting buffer.
++                    self.fill_node_cache_with_silence(ix, curr.output_count());
+                 }
++                continue;
++            }
+ 
+-                for (i, mut blocks) in blocks.drain(..).enumerate() {
+-                    if blocks.is_empty() {
+-                        if mode == ChannelCountMode::Explicit {
+-                            // It's silence, but mix it anyway
+-                            chunk.blocks[i].mix(count, interpretation);
+-                        }
+-                    } else if blocks.len() == 1 {
+-                        chunk.blocks[i] = blocks.pop().expect("`blocks` had length 1");
+-                        match mode {
+-                            ChannelCountMode::Explicit => {
+-                                chunk.blocks[i].mix(count, interpretation);
+-                            },
+-                            ChannelCountMode::ClampedMax => {
+-                                if chunk.blocks[i].chan_count() > count {
+-                                    chunk.blocks[i].mix(count, interpretation);
+-                                }
+-                            },
+-                            // It's one channel, it maxes itself
+-                            ChannelCountMode::Max => (),
+-                        }
+-                    } else {
+-                        let mix_count = match mode {
+-                            ChannelCountMode::Explicit => count,
+-                            _ => {
+-                                let mut max = 0; // max channel count
+-                                for block in &blocks {
+-                                    max = cmp::max(max, block.chan_count());
+-                                }
+-                                if mode == ChannelCountMode::ClampedMax {
+-                                    max = cmp::min(max, count);
+-                                }
+-                                max
+-                            },
+-                        };
+-                        let block = blocks.into_iter().fold(Block::default(), |acc, mut block| {
+-                            block.mix(mix_count, interpretation);
+-                            acc.sum(block)
+-                        });
+-                        chunk.blocks[i] = block;
+-                    }
+-                }
++            // if we have inputs, collect all the computed blocks and construct a Chunk. A cycle
++            // breaker gets its input after the quantum instead.
++            let chunk = if cycle_breakers.contains(&ix) {
++                let mut chunk = Chunk::default();
++                chunk
++                    .blocks
++                    .resize(curr.input_count() as usize, Default::default());
++                chunk
++            } else {
++                self.gather_inputs(ix, curr.as_mut())
++            };
+ 
+-                // actually run the node engine
+-                let mut out = curr.process(chunk, info);
++            // actually run the node engine
++            let mut out = curr.process(chunk, info);
+ 
+-                assert_eq!(out.len(), curr.output_count() as usize);
+-                if curr.output_count() == 0 {
+-                    continue;
+-                }
++            assert_eq!(out.len(), curr.output_count() as usize);
++            if curr.output_count() == 0 {
++                continue;
++            }
+ 
+                 // Count how many output connections fan out from each port
+                 // This is so that we don't have to needlessly clone audio buffers
+@@ -572,8 +539,18 @@ impl AudioGraph {
+                         }
+                     }
+                 }
++        }
++
++        // Deliver to each cycle breaker the input it was waiting for.
++        for ix in reached_breakers {
++            if cycle_nodes.contains(&ix) {
++                continue;
+             }
++            let mut curr = self.graph[ix].node.borrow_mut();
++            let chunk = self.gather_inputs(ix, curr.as_mut());
++            curr.write_after_quantum(chunk, info);
+         }
++
+         // The destination node stores its output on itself, extract it.
+         self.graph[self.dest_id.0]
+             .node
+@@ -582,6 +559,92 @@ impl AudioGraph {
+             .expect("Destination node should have data cached")
+     }
+ 
++    /// Collect what the connections into a node produced this quantum and mix it into the input
++    /// chunk the node expects.
++    fn gather_inputs(&self, ix: NodeIndex<DefaultIx>, curr: &mut dyn AudioNodeEngine) -> Chunk {
++        let mut chunk = Chunk::default();
++        chunk
++            .blocks
++            .resize(curr.input_count() as usize, Default::default());
++
++        // set up scratch space to store all the blocks
++        let mut blocks: SmallVec<[SmallVec<[Block; 1]>; 1]> = SmallVec::new();
++        blocks.resize(curr.input_count() as usize, Default::default());
++
++        let mode = curr.channel_count_mode();
++        let count = curr.channel_count();
++        let interpretation = curr.channel_interpretation();
++
++        // all edges to this node are from its dependencies
++        for edge in self.graph.edges_directed(ix, Direction::Incoming) {
++            let edge = edge.weight();
++            for connection in &edge.connections {
++                let mut block = connection
++                    .cache
++                    .borrow_mut()
++                    .take()
++                    .expect("Cache should have been filled from traversal");
++
++                match connection.input_idx {
++                    PortIndex::Port(idx) => {
++                        blocks[idx as usize].push(block);
++                    },
++                    PortIndex::Param(param) => {
++                        // param inputs are downmixed to mono
++                        // https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output
++                        block.mix(1, ChannelInterpretation::Speakers);
++                        curr.get_param(param).add_block(block)
++                    },
++                    PortIndex::Listener(_) => curr.set_listenerdata(block),
++                }
++            }
++        }
++
++        for (i, mut blocks) in blocks.drain(..).enumerate() {
++            if blocks.is_empty() {
++                if mode == ChannelCountMode::Explicit {
++                    // It's silence, but mix it anyway
++                    chunk.blocks[i].mix(count, interpretation);
++                }
++            } else if blocks.len() == 1 {
++                chunk.blocks[i] = blocks.pop().expect("`blocks` had length 1");
++                match mode {
++                    ChannelCountMode::Explicit => {
++                        chunk.blocks[i].mix(count, interpretation);
++                    },
++                    ChannelCountMode::ClampedMax => {
++                        if chunk.blocks[i].chan_count() > count {
++                            chunk.blocks[i].mix(count, interpretation);
++                        }
++                    },
++                    // It's one channel, it maxes itself
++                    ChannelCountMode::Max => (),
++                }
++            } else {
++                let mix_count = match mode {
++                    ChannelCountMode::Explicit => count,
++                    _ => {
++                        let mut max = 0; // max channel count
++                        for block in &blocks {
++                            max = cmp::max(max, block.chan_count());
++                        }
++                        if mode == ChannelCountMode::ClampedMax {
++                            max = cmp::min(max, count);
++                        }
++                        max
++                    },
++                };
++                let block = blocks.into_iter().fold(Block::default(), |acc, mut block| {
++                    block.mix(mix_count, interpretation);
++                    acc.sum(block)
++                });
++                chunk.blocks[i] = block;
++            }
++        }
++
++        chunk
++    }
++
+     /// Obtain a mutable reference to a node
+     pub(crate) fn node_mut(&self, ix: NodeId) -> RefMut<'_, Box<dyn AudioNodeEngine>> {
+         self.graph[ix.0].node.borrow_mut()
+@@ -617,8 +680,14 @@ impl AudioGraph {
+     ///
+     /// TODO: Implement steps 4.2.4–4.2.6 for cyclic `DelayNode`s by replacing
+     /// each with a `DelayWriter` and `DelayReader`.
+-    fn detect_nodes_in_cycles(&self) -> FxHashSet<NodeIndex<DefaultIx>> {
++    fn detect_nodes_in_cycles(
++        &self,
++    ) -> (
++        FxHashSet<NodeIndex<DefaultIx>>,
++        FxHashSet<NodeIndex<DefaultIx>>,
++    ) {
+         let mut cycle_nodes = FxHashSet::default();
++        let mut cycle_breakers = FxHashSet::default();
+         for component in tarjan_scc(&self.graph) {
+             // Tarjan's algorithm groups the graph into strongly connected components.
+             // A component with multiple nodes is a cycle; a single-node component is a
+@@ -629,11 +698,23 @@ impl AudioGraph {
+                         .edges(*node_index)
+                         .any(|edge| edge.target() == *node_index)
+                 });
+-            if is_cycle {
++            if !is_cycle {
++                continue;
++            }
++            // Steps 4.2.4-4.2.6: a DelayNode inside a cycle breaks it, so that cycle is not
++            // muted. A cycle without any DelayNode is.
++            let delays: Vec<_> = component
++                .iter()
++                .copied()
++                .filter(|ix| self.graph[*ix].node.borrow().node_type() == AudioNodeType::DelayNode)
++                .collect();
++            if delays.is_empty() {
+                 cycle_nodes.extend(component);
++            } else {
++                cycle_breakers.extend(delays);
+             }
+         }
+-        cycle_nodes
++        (cycle_nodes, cycle_breakers)
+     }
+ 
+     /// <https://webaudio.github.io/web-audio-api/#available-for-reading>
+@@ -690,7 +771,12 @@ impl Connection {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::audio_node::{AudioNodeType, ChannelInfo};
++    use crate::audio_node::{
++        AudioNodeMessage, AudioNodeType, AudioScheduledSourceNodeMessage, ChannelInfo,
++    };
++    use crate::buffer_source_node::{AudioBuffer, AudioBufferSourceNode, AudioBufferSourceNodeOptions};
++    use crate::convolver_node::{ConvolverNode, ConvolverNodeOptions};
++    use crate::delay_node::{DelayNode, DelayNodeOptions};
+     use crate::gain_node::{GainNode, GainNodeOptions};
+ 
+     fn gain(graph: &mut AudioGraph) -> NodeId {
+@@ -731,4 +817,166 @@ mod tests {
+             AudioNodeType::GainNode
+         );
+     }
++
++    /// An impulse into `input`, run for `blocks` render quanta; the destination's samples.
++    fn run(graph: &mut AudioGraph, blocks: u64) -> Vec<f32> {
++        let mut samples = Vec::new();
++        for quantum in 0..blocks {
++            let out = graph.process(&BlockInfo {
++                sample_rate: 44100.,
++                frame: crate::block::Tick(quantum * 128),
++                time: 0.,
++            });
++            let block = &out.blocks[0];
++            if block.is_silence() {
++                samples.extend(std::iter::repeat_n(0., 128));
++            } else {
++                samples.extend_from_slice(block.data_chan(0));
++            }
++        }
++        samples
++    }
++
++    fn impulse(graph: &mut AudioGraph) -> NodeId {
++        let id = graph.add_node(Box::new(AudioBufferSourceNode::new(
++            AudioBufferSourceNodeOptions {
++                buffer: Some(AudioBuffer::from_buffer(vec![1.], 44100.)),
++                ..Default::default()
++            },
++            ChannelInfo::default(),
++        )));
++        graph.node_mut(id).message(
++            AudioNodeMessage::AudioScheduledSourceNode(AudioScheduledSourceNodeMessage::Start(0.)),
++            44100.,
++        );
++        id
++    }
++
++    fn delay(graph: &mut AudioGraph, frames: f32) -> NodeId {
++        graph.add_node(Box::new(DelayNode::new(
++            DelayNodeOptions {
++                max_delay_time: 1.,
++                delay_time: frames / 44100.,
++            },
++            ChannelInfo::default(),
++        )))
++    }
++
++    #[test]
++    fn a_delay_line_delays_by_its_delay_time() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let line = delay(&mut graph, 300.);
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), line.input(0));
++        graph.add_edge(line.output(0), dest.input(0));
++        let out = run(&mut graph, 6);
++        for (frame, sample) in out.iter().enumerate() {
++            let expected = if frame == 300 { 1. } else { 0. };
++            assert!((sample - expected).abs() < 1e-4, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_delay_in_a_feedback_loop_is_not_muted() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let line = delay(&mut graph, 200.);
++        let feedback = gain(&mut graph);
++        graph.node_mut(feedback).message(
++            AudioNodeMessage::SetParam(
++                crate::param::ParamType::Gain,
++                crate::param::UserAutomationEvent::SetValue(0.5),
++            ),
++            44100.,
++        );
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), line.input(0));
++        graph.add_edge(line.output(0), feedback.input(0));
++        graph.add_edge(feedback.output(0), line.input(0));
++        graph.add_edge(line.output(0), dest.input(0));
++        let out = run(&mut graph, 8);
++        for (frame, sample) in out.iter().enumerate() {
++            // An echo every 200 frames, each half the previous one.
++            let expected = if frame >= 200 && frame % 200 == 0 {
++                0.5_f32.powi((frame / 200 - 1) as i32)
++            } else {
++                0.
++            };
++            assert!((sample - expected).abs() < 1e-5, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_convolver_returns_its_impulse_response_for_an_impulse() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let mut response = vec![0.; 300];
++        response[0] = 0.5;
++        response[7] = 0.25;
++        response[200] = -0.125;
++        let convolver = graph.add_node(Box::new(ConvolverNode::new(
++            ConvolverNodeOptions {
++                buffer: Some(AudioBuffer::from_buffer(response.clone(), 44100.)),
++                disable_normalization: true,
++            },
++            ChannelInfo::default(),
++        )));
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), convolver.input(0));
++        graph.add_edge(convolver.output(0), dest.input(0));
++        let out = run(&mut graph, 8);
++        for (frame, sample) in out.iter().enumerate() {
++            let expected = response.get(frame).copied().unwrap_or(0.);
++            assert!((sample - expected).abs() < 1e-4, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_convolver_without_a_response_is_silent() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let convolver = graph.add_node(Box::new(ConvolverNode::new(
++            ConvolverNodeOptions::default(),
++            ChannelInfo::default(),
++        )));
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), convolver.input(0));
++        graph.add_edge(convolver.output(0), dest.input(0));
++        assert!(run(&mut graph, 4).iter().all(|sample| *sample == 0.));
++    }
++
++    #[test]
++    fn a_compressor_lowers_a_loud_steady_signal_by_the_curve() {
++        use crate::dynamics_compressor_node::{DynamicsCompressorNode, DynamicsCompressorNodeOptions};
++        // A constant -10 dB input, threshold -20 dB, ratio 4, no knee: the curve gives -17.5 dB,
++        // and the automatic make-up gain (0.6 of the 15 dB a full-scale input would lose) adds 9 dB.
++        let mut compressor = DynamicsCompressorNode::new(
++            DynamicsCompressorNodeOptions {
++                threshold: -20.,
++                knee: 0.,
++                ratio: 4.,
++                attack: 0.,
++                release: 0.,
++            },
++            ChannelInfo::default(),
++        );
++        let level = 10_f32.powf(-10. / 20.);
++        let mut last = 0.;
++        for quantum in 0..4 {
++            let mut chunk = crate::block::Chunk::explicit_silence();
++            chunk.blocks[0] = crate::block::Block::for_vec(vec![level; 128]);
++            let out = compressor.process(
++                chunk,
++                &BlockInfo {
++                    sample_rate: 44100.,
++                    frame: crate::block::Tick(quantum * 128),
++                    time: 0.,
++                },
++            );
++            last = out.blocks[0].data_chan(0)[127];
++        }
++        let db = 20. * last.log10();
++        assert!((db - -8.5).abs() < 0.1, "{db} dB");
++    }
+ }
+diff --git a/components/media/audio/lib.rs b/components/media/audio/lib.rs
+index 1cee29d0278..31df1cd131d 100644
+--- a/components/media/audio/lib.rs
++++ b/components/media/audio/lib.rs
+@@ -27,10 +27,13 @@ pub mod block;
+ pub mod buffer_source_node;
+ pub mod channel_node;
+ pub mod constant_source_node;
++pub mod convolver_node;
+ pub mod context;
+ mod dead_node;
+ pub mod decoder;
++pub mod delay_node;
+ pub mod destination_node;
++pub mod dynamics_compressor_node;
+ pub mod gain_node;
+ pub mod graph;
+ pub mod iir_filter_node;
+diff --git a/components/media/audio/param.rs b/components/media/audio/param.rs
+index f14a9032e4d..f4847b38e8e 100644
+--- a/components/media/audio/param.rs
++++ b/components/media/audio/param.rs
+@@ -12,6 +12,12 @@ pub enum ParamType {
+     Frequency,
+     Detune,
+     Gain,
++    DelayTime,
++    Threshold,
++    Knee,
++    Ratio,
++    Attack,
++    Release,
+     Q,
+     Pan,
+     PlaybackRate,
+diff --git a/components/media/audio/render_thread.rs b/components/media/audio/render_thread.rs
+index 876e70396ce..5d8573bb709 100644
+--- a/components/media/audio/render_thread.rs
++++ b/components/media/audio/render_thread.rs
+@@ -26,6 +26,9 @@ use crate::oscillator_node::OscillatorNode;
+ use crate::panner_node::PannerNode;
+ use crate::sink::{AudioSink, AudioSinkError};
+ use crate::stereo_panner::StereoPannerNode;
++use crate::convolver_node::ConvolverNode;
++use crate::delay_node::DelayNode;
++use crate::dynamics_compressor_node::DynamicsCompressorNode;
+ use crate::wave_shaper_node::WaveShaperNode;
+ use crate::{AudioBackend, AudioStreamReader};
+ 
+@@ -253,6 +256,11 @@ impl AudioRenderThread {
+             },
+             AudioNodeInit::ChannelSplitterNode => Box::new(ChannelSplitterNode::new(ch)),
+             AudioNodeInit::WaveShaperNode(options) => Box::new(WaveShaperNode::new(options, ch)),
++            AudioNodeInit::DelayNode(options) => Box::new(DelayNode::new(options, ch)),
++            AudioNodeInit::ConvolverNode(options) => Box::new(ConvolverNode::new(options, ch)),
++            AudioNodeInit::DynamicsCompressionNode(options) => {
++                Box::new(DynamicsCompressorNode::new(options, ch))
++            },
+             AudioNodeInit::MediaElementSourceNode => Box::new(MediaElementSourceNode::new(ch)),
+             AudioNodeInit::IIRFilterNode(options) => Box::new(IIRFilterNode::new(options, ch)),
+             _ => unimplemented!(),
+diff --git a/components/media/audio/wave_shaper_node.rs b/components/media/audio/wave_shaper_node.rs
+index e95ca3ab241..e712b415b35 100644
+--- a/components/media/audio/wave_shaper_node.rs
++++ b/components/media/audio/wave_shaper_node.rs
+@@ -54,6 +54,7 @@ impl Default for WaveShaperNodeOptions {
+ #[derive(Clone, Debug, MallocSizeOf)]
+ pub enum WaveShaperNodeMessage {
+     SetCurve(WaveShaperCurve),
++    SetOversample(OverSampleType),
+ }
+ 
+ #[derive(AudioNodeCommon, MallocSizeOf)]
+@@ -93,12 +94,17 @@ impl WaveShaperNode {
+     fn handle_waveshaper_message(&mut self, message: WaveShaperNodeMessage, _sample_rate: f32) {
+         match message {
+             WaveShaperNodeMessage::SetCurve(new_curve) => {
+-                if self.curve_set && new_curve.is_some() {
+-                    panic!("InvalidStateError: cant set curve if it was already set");
+-                }
+                 self.curve_set = new_curve.is_some();
+                 self.curve = new_curve;
+             },
++            WaveShaperNodeMessage::SetOversample(oversample) => {
++                if oversample != self.oversample {
++                    // The resamplers are built for one factor: rebuild them on the next block.
++                    self.upsampler = None;
++                    self.downsampler = None;
++                    self.oversample = oversample;
++                }
++            },
+         }
+     }
+ }
+diff --git a/components/script/dom/audio/audionode.rs b/components/script/dom/audio/audionode.rs
+index e36b25dbb1f..83e0160ee71 100644
+--- a/components/script/dom/audio/audionode.rs
++++ b/components/script/dom/audio/audionode.rs
+@@ -141,6 +141,10 @@ impl AudioNode {
+         }
+     }
+ 
++    pub(crate) fn context(&self) -> &BaseAudioContext {
++        &self.context
++    }
++
+     pub(crate) fn node_id(&self) -> Option<NodeId> {
+         self.node_id
+     }
+diff --git a/components/script/dom/audio/baseaudiocontext.rs b/components/script/dom/audio/baseaudiocontext.rs
+index 674451fe560..5c4196b083a 100644
+--- a/components/script/dom/audio/baseaudiocontext.rs
++++ b/components/script/dom/audio/baseaudiocontext.rs
+@@ -34,6 +34,9 @@ use crate::dom::audio::audiolistener::AudioListener;
+ use crate::dom::audio::audionode::MAX_CHANNEL_COUNT;
+ use crate::dom::audio::biquadfilternode::BiquadFilterNode;
+ use crate::dom::audio::channelmergernode::ChannelMergerNode;
++use crate::dom::audio::convolvernode::ConvolverNode;
++use crate::dom::audio::delaynode::DelayNode;
++use crate::dom::audio::dynamicscompressornode::DynamicsCompressorNode;
+ use crate::dom::audio::channelsplitternode::ChannelSplitterNode;
+ use crate::dom::audio::constantsourcenode::ConstantSourceNode;
+ use crate::dom::audio::gainnode::GainNode;
+@@ -41,6 +44,7 @@ use crate::dom::audio::iirfilternode::IIRFilterNode;
+ use crate::dom::audio::oscillatornode::OscillatorNode;
+ use crate::dom::audio::pannernode::PannerNode;
+ use crate::dom::audio::stereopannernode::StereoPannerNode;
++use crate::dom::audio::waveshapernode::WaveShaperNode;
+ use crate::dom::bindings::callback::ExceptionHandling;
+ use crate::dom::bindings::codegen::Bindings::AnalyserNodeBinding::AnalyserOptions;
+ use crate::dom::bindings::codegen::Bindings::AudioBufferSourceNodeBinding::AudioBufferSourceOptions;
+@@ -54,11 +58,15 @@ use crate::dom::bindings::codegen::Bindings::BiquadFilterNodeBinding::BiquadFilt
+ use crate::dom::bindings::codegen::Bindings::ChannelMergerNodeBinding::ChannelMergerOptions;
+ use crate::dom::bindings::codegen::Bindings::ChannelSplitterNodeBinding::ChannelSplitterOptions;
+ use crate::dom::bindings::codegen::Bindings::ConstantSourceNodeBinding::ConstantSourceOptions;
++use crate::dom::bindings::codegen::Bindings::ConvolverNodeBinding::ConvolverOptions;
++use crate::dom::bindings::codegen::Bindings::DelayNodeBinding::DelayOptions;
++use crate::dom::bindings::codegen::Bindings::DynamicsCompressorNodeBinding::DynamicsCompressorOptions;
+ use crate::dom::bindings::codegen::Bindings::GainNodeBinding::GainOptions;
+ use crate::dom::bindings::codegen::Bindings::IIRFilterNodeBinding::IIRFilterOptions;
+ use crate::dom::bindings::codegen::Bindings::OscillatorNodeBinding::OscillatorOptions;
+ use crate::dom::bindings::codegen::Bindings::PannerNodeBinding::PannerOptions;
+ use crate::dom::bindings::codegen::Bindings::StereoPannerNodeBinding::StereoPannerOptions;
++use crate::dom::bindings::codegen::Bindings::WaveShaperNodeBinding::WaveShaperOptions;
+ use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::bindings::num::Finite;
+@@ -369,6 +377,50 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
+         )
+     }
+ 
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createconvolver>
++    fn CreateConvolver(&self, cx: &mut JSContext) -> Fallible<DomRoot<ConvolverNode>> {
++        ConvolverNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &ConvolverOptions::empty(),
++        )
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdynamicscompressor>
++    fn CreateDynamicsCompressor(
++        &self,
++        cx: &mut JSContext,
++    ) -> Fallible<DomRoot<DynamicsCompressorNode>> {
++        DynamicsCompressorNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &DynamicsCompressorOptions::empty(),
++        )
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdelay>
++    fn CreateDelay(
++        &self,
++        cx: &mut JSContext,
++        max_delay_time: Finite<f64>,
++    ) -> Fallible<DomRoot<DelayNode>> {
++        let mut options = DelayOptions::empty();
++        options.maxDelayTime = max_delay_time;
++        DelayNode::new(cx, self.global().as_window(), self, &options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createwaveshaper>
++    fn CreateWaveShaper(&self, cx: &mut JSContext) -> Fallible<DomRoot<WaveShaperNode>> {
++        WaveShaperNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &WaveShaperOptions::empty(),
++        )
++    }
++
+     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createbiquadfilter>
+     fn CreateBiquadFilter(&self, cx: &mut JSContext) -> Fallible<DomRoot<BiquadFilterNode>> {
+         BiquadFilterNode::new(
+diff --git a/components/script/dom/audio/mod.rs b/components/script/dom/audio/mod.rs
+index 1fa3e119c07..3f6cdca1869 100644
+--- a/components/script/dom/audio/mod.rs
++++ b/components/script/dom/audio/mod.rs
+@@ -18,6 +18,9 @@ pub(crate) mod biquadfilternode;
+ pub(crate) mod channelmergernode;
+ pub(crate) mod channelsplitternode;
+ pub(crate) mod constantsourcenode;
++pub(crate) mod convolvernode;
++pub(crate) mod delaynode;
++pub(crate) mod dynamicscompressornode;
+ pub(crate) mod gainnode;
+ pub(crate) mod iirfilternode;
+ pub(crate) mod mediaelementaudiosourcenode;
+@@ -29,3 +32,4 @@ pub(crate) mod offlineaudiocontext;
+ pub(crate) mod oscillatornode;
+ pub(crate) mod pannernode;
+ pub(crate) mod stereopannernode;
++pub(crate) mod waveshapernode;
+diff --git a/components/script_bindings/webidls/BaseAudioContext.webidl b/components/script_bindings/webidls/BaseAudioContext.webidl
+index 271aa802e32..b1c05e64ef7 100644
+--- a/components/script_bindings/webidls/BaseAudioContext.webidl
++++ b/components/script_bindings/webidls/BaseAudioContext.webidl
+@@ -37,17 +37,17 @@ interface BaseAudioContext : EventTarget {
+   //                                           optional unsigned long numberOfOutputChannels = 2);
+   [Throws] AnalyserNode createAnalyser();
+   [Throws]  GainNode createGain();
+-  // DelayNode createDelay(optional double maxDelayTime = 1);
++  [Throws] DelayNode createDelay(optional double maxDelayTime = 1);
+   [Throws] BiquadFilterNode createBiquadFilter();
+   [Throws] IIRFilterNode createIIRFilter(sequence<double> feedforward,
+                                 sequence<double> feedback);
+-  // WaveShaperNode createWaveShaper();
++  [Throws] WaveShaperNode createWaveShaper();
+   [Throws] PannerNode createPanner();
+   [Throws] StereoPannerNode createStereoPanner();
+-  // ConvolverNode createConvolver();
++  [Throws] ConvolverNode createConvolver();
+   [Throws] ChannelSplitterNode createChannelSplitter(optional unsigned long numberOfOutputs = 6);
+   [Throws] ChannelMergerNode createChannelMerger(optional unsigned long numberOfInputs = 6);
+-  // DynamicsCompressorNode createDynamicsCompressor();
++  [Throws] DynamicsCompressorNode createDynamicsCompressor();
+   [Throws]  OscillatorNode createOscillator();
+   // PeriodicWave createPeriodicWave(sequence<float> real,
+   //                                 sequence<float> imag,

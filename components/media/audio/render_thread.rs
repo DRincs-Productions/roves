@@ -26,6 +26,9 @@ use crate::oscillator_node::OscillatorNode;
 use crate::panner_node::PannerNode;
 use crate::sink::{AudioSink, AudioSinkError};
 use crate::stereo_panner::StereoPannerNode;
+use crate::convolver_node::ConvolverNode;
+use crate::delay_node::DelayNode;
+use crate::dynamics_compressor_node::DynamicsCompressorNode;
 use crate::wave_shaper_node::WaveShaperNode;
 use crate::{AudioBackend, AudioStreamReader};
 
@@ -253,6 +256,11 @@ impl AudioRenderThread {
             },
             AudioNodeInit::ChannelSplitterNode => Box::new(ChannelSplitterNode::new(ch)),
             AudioNodeInit::WaveShaperNode(options) => Box::new(WaveShaperNode::new(options, ch)),
+            AudioNodeInit::DelayNode(options) => Box::new(DelayNode::new(options, ch)),
+            AudioNodeInit::ConvolverNode(options) => Box::new(ConvolverNode::new(options, ch)),
+            AudioNodeInit::DynamicsCompressionNode(options) => {
+                Box::new(DynamicsCompressorNode::new(options, ch))
+            },
             AudioNodeInit::MediaElementSourceNode => Box::new(MediaElementSourceNode::new(ch)),
             AudioNodeInit::IIRFilterNode(options) => Box::new(IIRFilterNode::new(options, ch)),
             _ => unimplemented!(),

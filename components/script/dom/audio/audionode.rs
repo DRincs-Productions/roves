@@ -141,6 +141,10 @@ impl AudioNode {
         }
     }
 
+    pub(crate) fn context(&self) -> &BaseAudioContext {
+        &self.context
+    }
+
     pub(crate) fn node_id(&self) -> Option<NodeId> {
         self.node_id
     }

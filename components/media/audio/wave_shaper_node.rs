@@ -54,6 +54,7 @@ impl Default for WaveShaperNodeOptions {
 #[derive(Clone, Debug, MallocSizeOf)]
 pub enum WaveShaperNodeMessage {
     SetCurve(WaveShaperCurve),
+    SetOversample(OverSampleType),
 }
 
 #[derive(AudioNodeCommon, MallocSizeOf)]
@@ -93,11 +94,16 @@ impl WaveShaperNode {
     fn handle_waveshaper_message(&mut self, message: WaveShaperNodeMessage, _sample_rate: f32) {
         match message {
             WaveShaperNodeMessage::SetCurve(new_curve) => {
-                if self.curve_set && new_curve.is_some() {
-                    panic!("InvalidStateError: cant set curve if it was already set");
-                }
                 self.curve_set = new_curve.is_some();
                 self.curve = new_curve;
+            },
+            WaveShaperNodeMessage::SetOversample(oversample) => {
+                if oversample != self.oversample {
+                    // The resamplers are built for one factor: rebuild them on the next block.
+                    self.upsampler = None;
+                    self.downsampler = None;
+                    self.oversample = oversample;
+                }
             },
         }
     }
