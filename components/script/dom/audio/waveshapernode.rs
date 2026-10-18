@@ -132,9 +132,9 @@ impl WaveShaperNodeMethods<crate::DomTypeHolder> for WaveShaperNode {
     fn SetCurve(
         &self,
         cx: &mut JSContext,
-        value: Option<CustomAutoRooterGuard<Float32Array>>,
+        value: CustomAutoRooterGuard<Option<Float32Array>>,
     ) -> ErrorResult {
-        let data = match &value {
+        let data = match (*value).as_ref() {
             Some(array) => {
                 let data = array.to_vec().ok_or(Error::JSFailed)?;
                 if data.len() < 2 {
