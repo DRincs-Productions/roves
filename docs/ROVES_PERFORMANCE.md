@@ -884,3 +884,14 @@ mimalloc mentre si approfondisce il compromesso CPU/memoria. I riferimenti Chrom
 provengono da momenti e stati di processo diversi: nessuna parità globale con Chrome è
 dimostrata. I frame da 60 a 80 s non sono confrontabili direttamente con i vecchi test da
 5 a 25 s o da 30 s; non attribuire la differenza alla rimozione dei task audio.
+
+### mimalloc: ritardo di purge (18 ottobre 2026) — nessun effetto
+
+Release v0.7.13 ottimizzata, typewriter/Pixi visibile 1024×740, CPU e memoria 60–80 s,
+due corse alternate per configurazione, variabile d'ambiente `MIMALLOC_PURGE_DELAY=0`
+contro default. Picco privato 628,5/621,2 MiB (default) contro 629,7/630,8 MiB (purge 0);
+working set 402–410 MiB in tutte; CPU 89–98% di un core, rumore maggiore della differenza.
+Conclusione: la memoria privata di ~626 MiB non è ritenzione dell'allocatore restituibile
+al sistema; nessun codice o opzione da aggiungere. Il divario privato/working set (~220 MiB)
+indica memoria impegnata ma non toccata (riserve V8/driver GPU): prossimo passo è attribuirla
+con VMMap/heap V8, non cambiare allocatore. Script: scratchpad run.ps1 (non tracciato).
