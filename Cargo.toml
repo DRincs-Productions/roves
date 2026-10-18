@@ -93,6 +93,7 @@ elliptic-curve = { version = "0.14", features = ["pkcs8"] }
 encoding_rs = { version = "0.8", features = ["serde"] }
 env_logger = "0.11"
 euclid = "0.22"
+fft-convolver = "0.4"
 flate2 = "1.1"
 font-types = "0.12"
 fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }

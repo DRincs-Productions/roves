@@ -1,0 +1,2752 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 11094e9c980..d0ec5c02ec7 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -2610,6 +2610,17 @@ dependencies = [
+  "subtle",
+ ]
+ 
++[[package]]
++name = "fft-convolver"
++version = "0.4.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1dc2475d152b174858819508db05e86ae8df4542aeb1b2b21ef5a0dda3e64bf6"
++dependencies = [
++ "realfft",
++ "rtsan-standalone",
++ "thiserror 2.0.18",
++]
++
+ [[package]]
+ name = "fiat-crypto"
+ version = "0.3.0"
+@@ -6931,6 +6942,36 @@ dependencies = [
+  "thiserror 2.0.18",
+ ]
+ 
++[[package]]
++name = "rtsan-standalone"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "0fd1b6d61d69481a68e555916d3a52213846f5c2d2140bdc74ebc308e2338fc3"
++dependencies = [
++ "rtsan-standalone-macros",
++ "rtsan-standalone-sys",
++]
++
++[[package]]
++name = "rtsan-standalone-macros"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a8320af894782374141c8e0d4521ee613a8f24d7ab08b6ad359881311e37b9ef"
++dependencies = [
++ "quote",
++ "syn 2.0.119",
++]
++
++[[package]]
++name = "rtsan-standalone-sys"
++version = "0.3.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "362a9c531f731e574a870cdb28ee7d81178ba7a87ed54380eb9b8d8f0c3b5301"
++dependencies = [
++ "num_cpus",
++ "tempfile",
++]
++
+ [[package]]
+ name = "rusqlite"
+ version = "0.38.0"
+@@ -8104,6 +8145,7 @@ dependencies = [
+  "byte-slice-cast",
+  "crossbeam-queue",
+  "euclid",
++ "fft-convolver",
+  "log",
+  "malloc_size_of_derive",
+  "num-complex",
+diff --git a/Cargo.toml b/Cargo.toml
+index d86de54572e..70a8edbf19f 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -93,6 +93,7 @@ elliptic-curve = { version = "0.14", features = ["pkcs8"] }
+ encoding_rs = { version = "0.8", features = ["serde"] }
+ env_logger = "0.11"
+ euclid = "0.22"
++fft-convolver = "0.4"
+ flate2 = "1.1"
+ font-types = "0.12"
+ fontconfig_sys = { package = "yeslogic-fontconfig-sys", version = "6" }
+diff --git a/components/media/audio/Cargo.toml b/components/media/audio/Cargo.toml
+index 733757170c3..651d9386d11 100644
+--- a/components/media/audio/Cargo.toml
++++ b/components/media/audio/Cargo.toml
+@@ -17,6 +17,7 @@ path = "lib.rs"
+ byte-slice-cast = { workspace = true }
+ crossbeam-queue = { workspace = true }
+ euclid = { workspace = true }
++fft-convolver = { workspace = true }
+ log = { workspace = true }
+ malloc_size_of = { workspace = true }
+ malloc_size_of_derive = { workspace = true }
+diff --git a/components/media/audio/audio_node.rs b/components/media/audio/audio_node.rs
+index 9fe4d28eb67..720de086679 100644
+--- a/components/media/audio/audio_node.rs
++++ b/components/media/audio/audio_node.rs
+@@ -15,6 +15,9 @@ use crate::block::{Block, Chunk, Tick};
+ use crate::buffer_source_node::{AudioBufferSourceNodeMessage, AudioBufferSourceNodeOptions};
+ use crate::channel_node::ChannelNodeOptions;
+ use crate::constant_source_node::ConstantSourceNodeOptions;
++use crate::convolver_node::{ConvolverNodeMessage, ConvolverNodeOptions};
++use crate::delay_node::DelayNodeOptions;
++use crate::dynamics_compressor_node::DynamicsCompressorNodeOptions;
+ use crate::gain_node::GainNodeOptions;
+ use crate::iir_filter_node::IIRFilterNodeOptions;
+ use crate::media_element_source_node::MediaElementSourceNodeMessage;
+@@ -34,9 +37,9 @@ pub enum AudioNodeInit {
+     ChannelMergerNode(ChannelNodeOptions),
+     ChannelSplitterNode,
+     ConstantSourceNode(ConstantSourceNodeOptions),
+-    ConvolverNode,
+-    DelayNode,
+-    DynamicsCompressionNode,
++    ConvolverNode(ConvolverNodeOptions),
++    DelayNode(DelayNodeOptions),
++    DynamicsCompressionNode(DynamicsCompressorNodeOptions),
+     GainNode(GainNodeOptions),
+     IIRFilterNode(IIRFilterNodeOptions),
+     MediaElementSourceNode,
+@@ -149,6 +152,15 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
+ 
+     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk;
+ 
++    /// The graph calls this before each render quantum for a node that sits in a feedback loop
++    /// and breaks it (a `DelayNode`): its output must then not depend on its input of the same
++    /// quantum, and the input is delivered by [`Self::write_after_quantum`] once the whole
++    /// quantum has been processed.
++    fn set_cycle_breaker(&mut self, _breaker: bool) {}
++
++    /// The input of a cycle breaker for the quantum just processed.
++    fn write_after_quantum(&mut self, _inputs: Chunk, _info: &BlockInfo) {}
++
+     /// A source that has played to its end can never produce sound again, so the graph may
+     /// drop it once nothing can refer to it.
+     fn is_finished(&self) -> bool {
+@@ -244,6 +256,7 @@ pub enum AudioNodeMessage {
+     AudioBufferSourceNode(AudioBufferSourceNodeMessage),
+     AudioScheduledSourceNode(AudioScheduledSourceNodeMessage),
+     BiquadFilterNode(BiquadFilterNodeMessage),
++    ConvolverNode(ConvolverNodeMessage),
+     GetParamValue(ParamType, Sender<f32>),
+     MediaElementSourceNode(MediaElementSourceNodeMessage),
+     OscillatorNode(OscillatorNodeMessage),
+diff --git a/components/media/audio/constant_source_node.rs b/components/media/audio/constant_source_node.rs
+index b84ce15cb0e..e3bf21e3933 100644
+--- a/components/media/audio/constant_source_node.rs
++++ b/components/media/audio/constant_source_node.rs
+@@ -71,6 +71,23 @@ impl AudioNodeEngine for ConstantSourceNode {
+             ShouldPlay::Between(start, end) => (start, end),
+         };
+ 
++        // A source that plays for the whole quantum with an offset nothing is changing produces a
++        // flat block: write it in one go, or leave it silent when the offset is zero so that the
++        // nodes after it can skip their work too.
++        let whole_quantum = start_at == Tick(0) && stop_at >= Tick::FRAMES_PER_BLOCK;
++        if whole_quantum {
++            self.update_parameters(info, Tick(0));
++            if self.offset.is_constant() {
++                let offset = self.offset.value();
++                if offset != 0. {
++                    let block = &mut inputs.blocks[0];
++                    block.explicit_silence();
++                    block.data_mut().fill(offset);
++                }
++                return inputs;
++            }
++        }
++
+         {
+             inputs.blocks[0].explicit_silence();
+ 
+@@ -83,7 +100,8 @@ impl AudioNodeEngine for ConstantSourceNode {
+                 } else if tick > stop_at {
+                     break;
+                 }
+-                if self.update_parameters(info, frame.tick()) {
++                // Tick 0 was handled above when the source plays for the whole quantum.
++                if !(whole_quantum && tick == Tick(0)) && self.update_parameters(info, tick) {
+                     offset = self.offset.value();
+                 }
+                 frame.mutate_with(|sample, _| *sample = offset);
+diff --git a/components/media/audio/convolver_node.rs b/components/media/audio/convolver_node.rs
+new file mode 100644
+index 00000000000..20714602bd8
+--- /dev/null
++++ b/components/media/audio/convolver_node.rs
+@@ -0,0 +1,189 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use fft_convolver::TwoStageFFTConvolver;
++use malloc_size_of_derive::MallocSizeOf;
++
++use crate::audio_node::{AudioNodeEngine, AudioNodeType, BlockInfo, ChannelInfo};
++use crate::block::{Block, Chunk, FRAMES_PER_BLOCK_USIZE};
++use crate::buffer_source_node::AudioBuffer;
++
++/// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-normalize>: the gain applied to
++/// the impulse response is calibrated against this power and sample rate.
++const GAIN_CALIBRATION: f32 = 0.00125;
++const GAIN_CALIBRATION_SAMPLE_RATE: f32 = 44100.;
++const MIN_POWER: f32 = 0.000125;
++
++/// Options for constructing a [`ConvolverNode`].
++#[derive(Clone, Debug, Default, MallocSizeOf)]
++pub struct ConvolverNodeOptions {
++    pub buffer: Option<AudioBuffer>,
++    pub disable_normalization: bool,
++}
++
++/// Control messages directed to ConvolverNodes.
++#[derive(Clone, Debug, MallocSizeOf)]
++pub enum ConvolverNodeMessage {
++    SetBuffer(Option<AudioBuffer>),
++    SetNormalize(bool),
++}
++
++/// Convolution with an impulse response, in partitioned FFT blocks (the `fft-convolver` crate).
++///
++/// <https://webaudio.github.io/web-audio-api/#ConvolverNode>
++///
++/// Supports one- and two-channel impulse responses: a mono response is applied to each input
++/// channel, a stereo one gives a stereo output.
++#[derive(AudioNodeCommon)]
++pub(crate) struct ConvolverNode {
++    channel_info: ChannelInfo,
++    buffer: Option<AudioBuffer>,
++    normalize: bool,
++    /// The impulse response scaled by the normalization, one `Vec` per channel.
++    response: Vec<Vec<f32>>,
++    /// One convolver per output channel (each one keeps the state of its own signal).
++    convolvers: Vec<TwoStageFFTConvolver<f32>>,
++    /// Quanta of silence seen since the last sound; the tail of the response is over after
++    /// [`Self::tail_quanta`] of them.
++    silent_quanta: usize,
++}
++
++impl ConvolverNode {
++    pub fn new(options: ConvolverNodeOptions, channel_info: ChannelInfo) -> Self {
++        let mut node = Self {
++            channel_info,
++            buffer: options.buffer,
++            normalize: !options.disable_normalization,
++            response: Vec::new(),
++            convolvers: Vec::new(),
++            silent_quanta: usize::MAX,
++        };
++        node.rebuild();
++        node
++    }
++
++    fn handle_message(&mut self, message: ConvolverNodeMessage, _sample_rate: f32) {
++        match message {
++            ConvolverNodeMessage::SetBuffer(buffer) => self.buffer = buffer,
++            ConvolverNodeMessage::SetNormalize(normalize) => self.normalize = normalize,
++        }
++        self.rebuild();
++    }
++
++    /// The factor the response is scaled by when normalization is on.
++    fn normalization_scale(buffer: &AudioBuffer) -> f32 {
++        let channels = buffer.chans() as usize;
++        let sum_of_squares: f32 = buffer
++            .buffers
++            .iter()
++            .flat_map(|channel| channel.iter())
++            .map(|sample| sample * sample)
++            .sum();
++        let power = (sum_of_squares / (channels * buffer.len()) as f32).sqrt();
++        let power = if power.is_finite() {
++            power.max(MIN_POWER)
++        } else {
++            MIN_POWER
++        };
++        let mut scale = GAIN_CALIBRATION / power;
++        scale *= GAIN_CALIBRATION_SAMPLE_RATE / buffer.sample_rate;
++        if channels == 4 {
++            scale *= 0.5;
++        }
++        scale
++    }
++
++    fn rebuild(&mut self) {
++        self.convolvers.clear();
++        self.response.clear();
++        self.silent_quanta = usize::MAX;
++        let Some(buffer) = self.buffer.as_ref().filter(|buffer| !buffer.is_empty()) else {
++            return;
++        };
++        let scale = if self.normalize {
++            Self::normalization_scale(buffer)
++        } else {
++            1.
++        };
++        // Only the first two channels are used (mono and stereo responses).
++        for channel in buffer.buffers.iter().take(2) {
++            self.response
++                .push(channel.iter().map(|sample| sample * scale).collect());
++        }
++    }
++
++    /// A convolver for output channel `channel`, built the first time it is needed.
++    fn convolver(&mut self, channel: usize) -> Option<&mut TwoStageFFTConvolver<f32>> {
++        while self.convolvers.len() <= channel {
++            let response = &self.response[self.convolvers.len().min(self.response.len() - 1)];
++            let mut convolver = TwoStageFFTConvolver::default();
++            convolver
++                .init_default(FRAMES_PER_BLOCK_USIZE, response)
++                .ok()?;
++            self.convolvers.push(convolver);
++        }
++        self.convolvers.get_mut(channel)
++    }
++
++    /// How many silent quanta follow a sound before the response has died out.
++    fn tail_quanta(&self) -> usize {
++        let frames = self.response.first().map_or(0, Vec::len);
++        frames / FRAMES_PER_BLOCK_USIZE + 2
++    }
++}
++
++impl AudioNodeEngine for ConvolverNode {
++    fn node_type(&self) -> AudioNodeType {
++        AudioNodeType::ConvolverNode
++    }
++
++    fn process(&mut self, mut inputs: Chunk, _info: &BlockInfo) -> Chunk {
++        debug_assert!(inputs.len() == 1);
++        // Without an impulse response the output is silence.
++        if self.response.is_empty() {
++            inputs.blocks[0] = Block::default();
++            return inputs;
++        }
++        if inputs.blocks[0].is_silence() {
++            self.silent_quanta = self.silent_quanta.saturating_add(1);
++            if self.silent_quanta > self.tail_quanta() {
++                return inputs;
++            }
++        } else {
++            self.silent_quanta = 0;
++        }
++
++        let input = &inputs.blocks[0];
++        let input_channels = if input.is_silence() {
++            1
++        } else {
++            input.chan_count() as usize
++        };
++        // A mono response keeps the input's channel count; a stereo response makes stereo.
++        let output_channels = if self.response.len() == 1 {
++            input_channels.min(2)
++        } else {
++            2
++        };
++        let silence = [0.; FRAMES_PER_BLOCK_USIZE];
++        let mut output = Block::for_channels_explicit(output_channels as u8);
++        for channel in 0..output_channels {
++            let source: &[f32] = if input.is_silence() {
++                &silence
++            } else {
++                input.data_chan(channel.min(input_channels - 1) as u8)
++            };
++            let mut samples = [0.; FRAMES_PER_BLOCK_USIZE];
++            samples.copy_from_slice(source);
++            let Some(convolver) = self.convolver(channel) else {
++                continue;
++            };
++            let _ = convolver.process(&samples, output.data_chan_mut(channel as u8));
++        }
++        inputs.blocks[0] = output;
++        inputs
++    }
++
++    make_message_handler!(ConvolverNode: handle_message);
++}
+diff --git a/components/media/audio/delay_node.rs b/components/media/audio/delay_node.rs
+new file mode 100644
+index 00000000000..bb53e684d95
+--- /dev/null
++++ b/components/media/audio/delay_node.rs
+@@ -0,0 +1,177 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use malloc_size_of_derive::MallocSizeOf;
++
++use crate::audio_node::{AudioNodeEngine, AudioNodeType, BlockInfo, ChannelInfo};
++use crate::block::{Block, Chunk, FRAMES_PER_BLOCK_USIZE, Tick};
++use crate::param::{Param, ParamType};
++
++/// Options for constructing a [`DelayNode`].
++#[derive(Copy, Clone, Debug, MallocSizeOf)]
++pub struct DelayNodeOptions {
++    /// The largest delay, in seconds, that `delayTime` can reach.
++    pub max_delay_time: f64,
++    /// The initial `delayTime`, in seconds.
++    pub delay_time: f32,
++}
++
++impl Default for DelayNodeOptions {
++    fn default() -> Self {
++        DelayNodeOptions {
++            max_delay_time: 1.,
++            delay_time: 0.,
++        }
++    }
++}
++
++/// The delay line: a ring buffer per channel, read with linear interpolation.
++///
++/// <https://webaudio.github.io/web-audio-api/#DelayNode>
++///
++/// In a feedback loop the graph makes the node a *cycle breaker* (see
++/// [`AudioNodeEngine::set_cycle_breaker`]): its output for a render quantum is read before any
++/// node that feeds it has run, and its input is written once the quantum is done, so the delay
++/// can never be shorter than one render quantum there.
++#[derive(AudioNodeCommon)]
++pub(crate) struct DelayNode {
++    channel_info: ChannelInfo,
++    delay_time: Param,
++    max_delay_time: f64,
++    /// One ring buffer per channel; all the same length.
++    ring: Vec<Vec<f32>>,
++    /// Frames written so far (the ring's write position is this modulo its length).
++    frames_written: u64,
++    sample_rate: f32,
++    cycle_breaker: bool,
++}
++
++impl DelayNode {
++    pub fn new(options: DelayNodeOptions, channel_info: ChannelInfo) -> Self {
++        let max = options.max_delay_time.max(0.);
++        Self {
++            channel_info,
++            delay_time: Param::new(options.delay_time.clamp(0., max as f32)),
++            max_delay_time: max,
++            ring: Vec::new(),
++            frames_written: 0,
++            sample_rate: 0.,
++            cycle_breaker: false,
++        }
++    }
++
++    fn ring_len(&self) -> usize {
++        self.ring.first().map_or(0, Vec::len)
++    }
++
++    /// Make the ring able to hold `channels` channels and the longest delay.
++    fn prepare(&mut self, channels: usize, sample_rate: f32) {
++        if self.sample_rate != sample_rate {
++            self.sample_rate = sample_rate;
++            self.ring.clear();
++        }
++        let len = (self.max_delay_time * sample_rate as f64).ceil() as usize +
++            FRAMES_PER_BLOCK_USIZE +
++            2;
++        while self.ring.len() < channels {
++            self.ring.push(vec![0.; len]);
++        }
++    }
++
++    /// Append one render quantum of input (`None` is silence) to the delay line.
++    fn write(&mut self, input: Option<&Block>, info: &BlockInfo) {
++        let channels = input.map_or(self.ring.len().max(1), |block| block.chan_count() as usize);
++        self.prepare(channels, info.sample_rate);
++        let len = self.ring_len();
++        for (channel, ring) in self.ring.iter_mut().enumerate() {
++            for frame in 0..FRAMES_PER_BLOCK_USIZE {
++                let index = (self.frames_written as usize + frame) % len;
++                ring[index] = match input {
++                    Some(block) if channel < block.chan_count() as usize => {
++                        block.data_chan_frame(frame, channel as u8)
++                    },
++                    _ => 0.,
++                };
++            }
++        }
++        self.frames_written += FRAMES_PER_BLOCK_USIZE as u64;
++    }
++
++    /// Read one render quantum of output.
++    fn read(&mut self, info: &BlockInfo) -> Block {
++        if self.ring.is_empty() {
++            return Block::default();
++        }
++        let len = self.ring_len() as i64;
++        let written = self.frames_written as f64;
++        let max_frames = (self.max_delay_time * info.sample_rate as f64).max(0.);
++        // Inside a feedback loop this quantum's input is not written yet: the delay cannot be
++        // shorter than the quantum. Otherwise the input was just written and ends at `written`.
++        let (start, min_frames) = if self.cycle_breaker {
++            (written, FRAMES_PER_BLOCK_USIZE as f64)
++        } else {
++            (written - FRAMES_PER_BLOCK_USIZE as f64, 0.)
++        };
++        let mut block = Block::for_channels_explicit(self.ring.len() as u8);
++        for frame in 0..FRAMES_PER_BLOCK_USIZE {
++            self.delay_time.update(info, Tick(frame as u64));
++            let delay = (self.delay_time.value() as f64 * info.sample_rate as f64)
++                .clamp(0., max_frames)
++                .max(min_frames);
++            let position = start + frame as f64 - delay;
++            let base = position.floor();
++            let fraction = (position - base) as f32;
++            // Before the first frame the line holds silence.
++            let sample = |ring: &[f32], index: f64| {
++                if index < 0. {
++                    0.
++                } else {
++                    ring[(index as i64).rem_euclid(len) as usize]
++                }
++            };
++            for (channel, ring) in self.ring.iter().enumerate() {
++                let first = sample(ring, base);
++                let second = if base + 1. < written {
++                    sample(ring, base + 1.)
++                } else {
++                    first
++                };
++                block.data_chan_mut(channel as u8)[frame] = first + (second - first) * fraction;
++            }
++        }
++        block
++    }
++}
++
++impl AudioNodeEngine for DelayNode {
++    fn node_type(&self) -> AudioNodeType {
++        AudioNodeType::DelayNode
++    }
++
++    fn process(&mut self, mut inputs: Chunk, info: &BlockInfo) -> Chunk {
++        debug_assert!(inputs.len() == 1);
++        if !self.cycle_breaker {
++            let input = &inputs.blocks[0];
++            self.write((!input.is_silence()).then_some(input), info);
++        }
++        inputs.blocks[0] = self.read(info);
++        inputs
++    }
++
++    fn set_cycle_breaker(&mut self, breaker: bool) {
++        self.cycle_breaker = breaker;
++    }
++
++    fn write_after_quantum(&mut self, inputs: Chunk, info: &BlockInfo) {
++        let input = inputs.blocks.first().filter(|block| !block.is_silence());
++        self.write(input, info);
++    }
++
++    fn get_param(&mut self, id: ParamType) -> &mut Param {
++        match id {
++            ParamType::DelayTime => &mut self.delay_time,
++            _ => panic!("Unknown param {:?} for DelayNode", id),
++        }
++    }
++}
+diff --git a/components/media/audio/dynamics_compressor_node.rs b/components/media/audio/dynamics_compressor_node.rs
+new file mode 100644
+index 00000000000..c38f8bb148a
+--- /dev/null
++++ b/components/media/audio/dynamics_compressor_node.rs
+@@ -0,0 +1,157 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use malloc_size_of_derive::MallocSizeOf;
++
++use crate::audio_node::{AudioNodeEngine, AudioNodeType, BlockInfo, ChannelInfo};
++use crate::block::{Chunk, FRAMES_PER_BLOCK_USIZE, Tick};
++use crate::param::{Param, ParamType};
++
++/// Options for constructing a [`DynamicsCompressorNode`].
++#[derive(Copy, Clone, Debug, MallocSizeOf)]
++pub struct DynamicsCompressorNodeOptions {
++    pub threshold: f32,
++    pub knee: f32,
++    pub ratio: f32,
++    pub attack: f32,
++    pub release: f32,
++}
++
++impl Default for DynamicsCompressorNodeOptions {
++    fn default() -> Self {
++        DynamicsCompressorNodeOptions {
++            threshold: -24.,
++            knee: 30.,
++            ratio: 12.,
++            attack: 0.003,
++            release: 0.25,
++        }
++    }
++}
++
++/// A feed-forward compressor: a soft-knee gain curve on the loudest channel, smoothed with
++/// attack and release times, plus the automatic make-up gain browsers apply.
++///
++/// <https://webaudio.github.io/web-audio-api/#DynamicsCompressorNode>
++///
++/// Unlike browsers there is no look-ahead delay, so a very sharp transient can pass before the
++/// attack has pulled the gain down.
++#[derive(AudioNodeCommon)]
++pub(crate) struct DynamicsCompressorNode {
++    channel_info: ChannelInfo,
++    threshold: Param,
++    knee: Param,
++    ratio: Param,
++    attack: Param,
++    release: Param,
++    /// The current gain reduction, in dB (zero or negative).
++    reduction_db: f32,
++}
++
++/// The output level, in dB, for an input level `input_db` (<https://webaudio.github.io/web-audio-api/#compression-curve>).
++fn curve_db(input_db: f32, threshold: f32, knee: f32, ratio: f32) -> f32 {
++    let over = input_db - threshold;
++    if 2. * over < -knee {
++        input_db
++    } else if 2. * over.abs() <= knee {
++        // Inside the soft knee: a quadratic that joins the two straight parts.
++        let t = over + knee / 2.;
++        input_db + (1. / ratio - 1.) * t * t / (2. * knee)
++    } else {
++        threshold + over / ratio
++    }
++}
++
++impl DynamicsCompressorNode {
++    pub fn new(options: DynamicsCompressorNodeOptions, channel_info: ChannelInfo) -> Self {
++        Self {
++            channel_info,
++            threshold: Param::new_krate(options.threshold),
++            knee: Param::new_krate(options.knee),
++            ratio: Param::new_krate(options.ratio),
++            attack: Param::new_krate(options.attack),
++            release: Param::new_krate(options.release),
++            reduction_db: 0.,
++        }
++    }
++
++    /// The smoothing coefficient for a time constant of `seconds`.
++    fn coefficient(seconds: f32, sample_rate: f32) -> f32 {
++        if seconds <= 0. {
++            0.
++        } else {
++            (-1. / (seconds * sample_rate)).exp()
++        }
++    }
++}
++
++impl AudioNodeEngine for DynamicsCompressorNode {
++    fn node_type(&self) -> AudioNodeType {
++        AudioNodeType::DynamicsCompressionNode
++    }
++
++    fn process(&mut self, mut inputs: Chunk, info: &BlockInfo) -> Chunk {
++        debug_assert!(inputs.len() == 1);
++        for param in [
++            &mut self.threshold,
++            &mut self.knee,
++            &mut self.ratio,
++            &mut self.attack,
++            &mut self.release,
++        ] {
++            param.update(info, Tick(0));
++        }
++        let threshold = self.threshold.value().clamp(-100., 0.);
++        let knee = self.knee.value().clamp(0., 40.);
++        let ratio = self.ratio.value().clamp(1., 20.);
++        let attack = Self::coefficient(self.attack.value(), info.sample_rate);
++        let release = Self::coefficient(self.release.value(), info.sample_rate);
++        // Browsers lift the output so that a full-scale input comes out near full scale.
++        let full_range_db = curve_db(0., threshold, knee, ratio);
++        let makeup = 10_f32.powf(-full_range_db * 0.6 / 20.);
++
++        let block = &mut inputs.blocks[0];
++        if block.is_silence() && self.reduction_db > -0.01 {
++            self.reduction_db = 0.;
++            return inputs;
++        }
++        let channels = block.chan_count();
++        let mut level = [0.; FRAMES_PER_BLOCK_USIZE];
++        for channel in 0..channels {
++            for (peak, sample) in level.iter_mut().zip(block.data_chan(channel)) {
++                *peak = f32::max(*peak, sample.abs());
++            }
++        }
++        let mut gains = [1.; FRAMES_PER_BLOCK_USIZE];
++        for (gain, peak) in gains.iter_mut().zip(level) {
++            let input_db = 20. * peak.max(1e-6).log10();
++            let target = curve_db(input_db, threshold, knee, ratio) - input_db;
++            // More reduction follows the attack time, less follows the release time.
++            let coefficient = if target < self.reduction_db {
++                attack
++            } else {
++                release
++            };
++            self.reduction_db = coefficient * self.reduction_db + (1. - coefficient) * target;
++            *gain = 10_f32.powf(self.reduction_db / 20.) * makeup;
++        }
++        for channel in 0..channels {
++            for (sample, gain) in block.data_chan_mut(channel).iter_mut().zip(gains) {
++                *sample *= gain;
++            }
++        }
++        inputs
++    }
++
++    fn get_param(&mut self, id: ParamType) -> &mut Param {
++        match id {
++            ParamType::Threshold => &mut self.threshold,
++            ParamType::Knee => &mut self.knee,
++            ParamType::Ratio => &mut self.ratio,
++            ParamType::Attack => &mut self.attack,
++            ParamType::Release => &mut self.release,
++            _ => panic!("Unknown param {:?} for DynamicsCompressorNode", id),
++        }
++    }
++}
+diff --git a/components/media/audio/gain_node.rs b/components/media/audio/gain_node.rs
+index bea12a7bd5f..87788229017 100644
+--- a/components/media/audio/gain_node.rs
++++ b/components/media/audio/gain_node.rs
+@@ -50,12 +50,27 @@ impl AudioNodeEngine for GainNode {
+             return inputs;
+         }
+ 
++        // Apply what is due at the start of the quantum. Most gains never change (and Tone.js
++        // builds graphs of hundreds of them): scale the block in one go instead of asking the
++        // parameter for a value at every frame.
++        self.update_parameters(info, Tick(0));
++        if self.gain.is_constant() {
++            let gain = self.gain.value();
++            if gain != 1. {
++                for sample in inputs.blocks[0].data_mut() {
++                    *sample *= gain;
++                }
++            }
++            return inputs;
++        }
++
+         {
+             let mut iter = inputs.blocks[0].iter();
+             let mut gain = self.gain.value();
+ 
+             while let Some(mut frame) = iter.next() {
+-                if self.update_parameters(info, frame.tick()) {
++                // Tick 0 was handled above.
++                if frame.tick() != Tick(0) && self.update_parameters(info, frame.tick()) {
+                     gain = self.gain.value();
+                 }
+                 frame.mutate_with(|sample, _| *sample *= gain);
+diff --git a/components/media/audio/graph.rs b/components/media/audio/graph.rs
+index e60744944da..58f328a6935 100644
+--- a/components/media/audio/graph.rs
++++ b/components/media/audio/graph.rs
+@@ -11,11 +11,13 @@ use petgraph::Direction;
+ use petgraph::algo::tarjan_scc;
+ use petgraph::graph::DefaultIx;
+ use petgraph::stable_graph::{NodeIndex, StableGraph};
+-use petgraph::visit::{Dfs, DfsPostOrder, EdgeRef, Reversed};
++use petgraph::visit::{Dfs, DfsPostOrder, EdgeFiltered, EdgeRef, Reversed};
+ use rustc_hash::FxHashSet;
+ use smallvec::SmallVec;
+ 
+-use crate::audio_node::{AudioNodeEngine, BlockInfo, ChannelCountMode, ChannelInterpretation};
++use crate::audio_node::{
++    AudioNodeEngine, AudioNodeType, BlockInfo, ChannelCountMode, ChannelInterpretation,
++};
+ use crate::block::{Block, Chunk};
+ use crate::dead_node::DeadNode;
+ use crate::destination_node::DestinationNode;
+@@ -115,11 +117,23 @@ impl PortKind for OutputPort {
+     type Listener = Void;
+ }
+ 
++/// What a render quantum needs to know about the shape of the graph: which nodes are in a
++/// cycle, the cycle breakers and the order to process the nodes in. It only changes when a node
++/// or a connection does, so it is built once and reused for every quantum until then.
++struct ProcessingPlan {
++    cycle_nodes: FxHashSet<NodeIndex<DefaultIx>>,
++    cycle_breakers: FxHashSet<NodeIndex<DefaultIx>>,
++    order: Vec<NodeIndex<DefaultIx>>,
++    reached_breakers: Vec<NodeIndex<DefaultIx>>,
++}
++
+ pub struct AudioGraph {
+     graph: StableGraph<Node, Edge>,
+     dest_id: NodeId,
+     dests: Vec<NodeId>,
+     listener_id: NodeId,
++    /// `None` after the graph changed, until the next quantum rebuilds it.
++    plan: Option<ProcessingPlan>,
+ }
+ 
+ pub(crate) struct Node {
+@@ -191,11 +205,13 @@ impl AudioGraph {
+             dest_id,
+             dests: vec![dest_id],
+             listener_id,
++            plan: None,
+         }
+     }
+ 
+     /// Create a node, obtain its id
+     pub(crate) fn add_node(&mut self, node: Box<dyn AudioNodeEngine>) -> NodeId {
++        self.plan = None;
+         NodeId(self.graph.add_node(Node::new(node)))
+     }
+ 
+@@ -203,6 +219,7 @@ impl AudioGraph {
+     ///
+     /// The edge goes *from* the output port *to* the input port, connecting two nodes
+     pub fn add_edge(&mut self, out: PortId<OutputPort>, inp: PortId<InputPort>) {
++        self.plan = None;
+         let edge = self
+             .graph
+             .edges(out.node().0)
+@@ -229,6 +246,7 @@ impl AudioGraph {
+     ///
+     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect>
+     pub fn disconnect_all_from(&mut self, node: NodeId) {
++        self.plan = None;
+         let edges = self.graph.edges(node.0).map(|e| e.id()).collect::<Vec<_>>();
+         for edge in edges {
+             self.graph.remove_edge(edge);
+@@ -239,6 +257,7 @@ impl AudioGraph {
+     ///
+     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-output>
+     pub fn disconnect_output(&mut self, out: PortId<OutputPort>) {
++        self.plan = None;
+         let candidates: Vec<_> = self
+             .graph
+             .edges(out.node().0)
+@@ -260,6 +279,7 @@ impl AudioGraph {
+     ///
+     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationnode>
+     pub fn disconnect_between(&mut self, from: NodeId, to: NodeId) {
++        self.plan = None;
+         let edge = self
+             .graph
+             .edges(from.0)
+@@ -274,6 +294,7 @@ impl AudioGraph {
+     ///
+     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationnode-output>
+     pub fn disconnect_output_between(&mut self, out: PortId<OutputPort>, to: NodeId) {
++        self.plan = None;
+         let edge = self
+             .graph
+             .edges(out.node().0)
+@@ -297,6 +318,7 @@ impl AudioGraph {
+     ///
+     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationparam>
+     pub fn disconnect_to(&mut self, node: NodeId, inp: PortId<InputPort>) {
++        self.plan = None;
+         let edge = self
+             .graph
+             .edges(node.0)
+@@ -323,6 +345,7 @@ impl AudioGraph {
+         out: PortId<OutputPort>,
+         inp: PortId<InputPort>,
+     ) {
++        self.plan = None;
+         let edge = self
+             .graph
+             .edges(out.node().0)
+@@ -362,6 +385,7 @@ impl AudioGraph {
+     /// audio data it holds). Its id stays valid but inert, so no later message can reach another
+     /// node. Destinations and the listener are never dropped.
+     pub(crate) fn dispose_node(&mut self, id: NodeId) {
++        self.plan = None;
+         if id == self.listener_id || self.dests.contains(&id) {
+             return;
+         }
+@@ -388,6 +412,7 @@ impl AudioGraph {
+ 
+     /// Add additional terminator nodes
+     pub fn add_extra_dest(&mut self, dest: NodeId) {
++        self.plan = None;
+         self.dests.push(dest);
+     }
+ 
+@@ -408,132 +433,57 @@ impl AudioGraph {
+     /// <https://webaudio.github.io/web-audio-api/#rendering-loop>
+     pub fn process(&mut self, info: &BlockInfo) -> Chunk {
+         // Step 4.2. Order the AudioNodes of the BaseAudioContext to be processed.
+-        let cycle_nodes = self.detect_nodes_in_cycles();
++        let plan = match self.plan.take() {
++            Some(plan) => plan,
++            None => self.build_plan(),
++        };
++        let ProcessingPlan {
++            cycle_nodes,
++            cycle_breakers,
++            order,
++            reached_breakers,
++        } = &plan;
+ 
+-        // DFS post order: Children are processed before their parent,
+-        // which is exactly what we need since the parent depends on the
+-        // children's output
+-        //
+-        // This will only visit each node once
+-        let reversed = Reversed(&self.graph);
+-
+-        let mut blocks: SmallVec<[SmallVec<[Block; 1]>; 1]> = SmallVec::new();
+         let mut output_counts: SmallVec<[u32; 1]> = SmallVec::new();
+ 
+-        let mut visit = DfsPostOrder::empty(reversed);
+-
+-        for dest in &self.dests {
+-            visit.move_to(dest.0);
++        for &ix in order {
++            let mut curr = self.graph[ix].node.borrow_mut();
+ 
+-            while let Some(ix) = visit.next(reversed) {
+-                let mut curr = self.graph[ix].node.borrow_mut();
+-
+-                if cycle_nodes.contains(&ix) {
+-                    // Step 4.2.7. If nodes contains cycles, mute all the AudioNodes
+-                    // that are part of this cycle, and remove them from nodes.
+-                    let chunk = curr.as_mut().mute_node();
+-                    if curr.output_count() == 0 {
+-                        // Step 4.4.5. If this AudioNode is a destination node, record
+-                        // the input of this AudioNode.
+-                        curr.process(chunk, info);
+-                    } else {
+-                        // Step 4.4.6. Else, process the input buffer, and make
+-                        // available for reading the resulting buffer.
+-                        self.fill_node_cache_with_silence(ix, curr.output_count());
+-                    }
+-                    continue;
++            if cycle_nodes.contains(&ix) {
++                // Step 4.2.7. If nodes contains cycles, mute all the AudioNodes
++                // that are part of this cycle, and remove them from nodes.
++                let chunk = curr.as_mut().mute_node();
++                if curr.output_count() == 0 {
++                    // Step 4.4.5. If this AudioNode is a destination node, record
++                    // the input of this AudioNode.
++                    curr.process(chunk, info);
++                } else {
++                    // Step 4.4.6. Else, process the input buffer, and make
++                    // available for reading the resulting buffer.
++                    self.fill_node_cache_with_silence(ix, curr.output_count());
+                 }
++                continue;
++            }
+ 
++            // if we have inputs, collect all the computed blocks and construct a Chunk. A cycle
++            // breaker gets its input after the quantum instead.
++            let chunk = if cycle_breakers.contains(&ix) {
+                 let mut chunk = Chunk::default();
+                 chunk
+                     .blocks
+                     .resize(curr.input_count() as usize, Default::default());
++                chunk
++            } else {
++                self.gather_inputs(ix, curr.as_mut())
++            };
+ 
+-                // if we have inputs, collect all the computed blocks
+-                // and construct a Chunk
+-
+-                // set up scratch space to store all the blocks
+-                blocks.clear();
+-                blocks.resize(curr.input_count() as usize, Default::default());
+-
+-                let mode = curr.channel_count_mode();
+-                let count = curr.channel_count();
+-                let interpretation = curr.channel_interpretation();
+-
+-                // all edges to this node are from its dependencies
+-                for edge in self.graph.edges_directed(ix, Direction::Incoming) {
+-                    let edge = edge.weight();
+-                    for connection in &edge.connections {
+-                        let mut block = connection
+-                            .cache
+-                            .borrow_mut()
+-                            .take()
+-                            .expect("Cache should have been filled from traversal");
+-
+-                        match connection.input_idx {
+-                            PortIndex::Port(idx) => {
+-                                blocks[idx as usize].push(block);
+-                            },
+-                            PortIndex::Param(param) => {
+-                                // param inputs are downmixed to mono
+-                                // https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output
+-                                block.mix(1, ChannelInterpretation::Speakers);
+-                                curr.get_param(param).add_block(block)
+-                            },
+-                            PortIndex::Listener(_) => curr.set_listenerdata(block),
+-                        }
+-                    }
+-                }
+-
+-                for (i, mut blocks) in blocks.drain(..).enumerate() {
+-                    if blocks.is_empty() {
+-                        if mode == ChannelCountMode::Explicit {
+-                            // It's silence, but mix it anyway
+-                            chunk.blocks[i].mix(count, interpretation);
+-                        }
+-                    } else if blocks.len() == 1 {
+-                        chunk.blocks[i] = blocks.pop().expect("`blocks` had length 1");
+-                        match mode {
+-                            ChannelCountMode::Explicit => {
+-                                chunk.blocks[i].mix(count, interpretation);
+-                            },
+-                            ChannelCountMode::ClampedMax => {
+-                                if chunk.blocks[i].chan_count() > count {
+-                                    chunk.blocks[i].mix(count, interpretation);
+-                                }
+-                            },
+-                            // It's one channel, it maxes itself
+-                            ChannelCountMode::Max => (),
+-                        }
+-                    } else {
+-                        let mix_count = match mode {
+-                            ChannelCountMode::Explicit => count,
+-                            _ => {
+-                                let mut max = 0; // max channel count
+-                                for block in &blocks {
+-                                    max = cmp::max(max, block.chan_count());
+-                                }
+-                                if mode == ChannelCountMode::ClampedMax {
+-                                    max = cmp::min(max, count);
+-                                }
+-                                max
+-                            },
+-                        };
+-                        let block = blocks.into_iter().fold(Block::default(), |acc, mut block| {
+-                            block.mix(mix_count, interpretation);
+-                            acc.sum(block)
+-                        });
+-                        chunk.blocks[i] = block;
+-                    }
+-                }
+-
+-                // actually run the node engine
+-                let mut out = curr.process(chunk, info);
++            // actually run the node engine
++            let mut out = curr.process(chunk, info);
+ 
+-                assert_eq!(out.len(), curr.output_count() as usize);
+-                if curr.output_count() == 0 {
+-                    continue;
+-                }
++            assert_eq!(out.len(), curr.output_count() as usize);
++            if curr.output_count() == 0 {
++                continue;
++            }
+ 
+                 // Count how many output connections fan out from each port
+                 // This is so that we don't have to needlessly clone audio buffers
+@@ -572,14 +522,174 @@ impl AudioGraph {
+                         }
+                     }
+                 }
++        }
++
++        // Deliver to each cycle breaker the input it was waiting for.
++        for &ix in reached_breakers {
++            if cycle_nodes.contains(&ix) {
++                continue;
+             }
++            let mut curr = self.graph[ix].node.borrow_mut();
++            let chunk = self.gather_inputs(ix, curr.as_mut());
++            curr.write_after_quantum(chunk, info);
+         }
+-        // The destination node stores its output on itself, extract it.
+-        self.graph[self.dest_id.0]
++
++        let output = self.graph[self.dest_id.0]
+             .node
+             .borrow_mut()
+             .destination_data()
+-            .expect("Destination node should have data cached")
++            .expect("Destination node should have data cached");
++        // The destination stores its output on itself: extracted above. Keep the plan for the
++        // next quantum.
++        self.plan = Some(plan);
++        output
++    }
++
++    /// Work out the processing order of the current graph (step 4.2).
++    fn build_plan(&self) -> ProcessingPlan {
++        let (cycle_nodes, cycle_breakers) = self.detect_nodes_in_cycles();
++        for ix in self.graph.node_indices() {
++            let mut node = self.graph[ix].node.borrow_mut();
++            if node.node_type() == AudioNodeType::DelayNode {
++                node.set_cycle_breaker(cycle_breakers.contains(&ix));
++            }
++        }
++
++        // DFS post order: Children are processed before their parent,
++        // which is exactly what we need since the parent depends on the
++        // children's output
++        //
++        // This will only visit each node once. The edges that enter a cycle breaker are left
++        // out: its output only needs what it received in earlier quanta, so it is a source for
++        // ordering purposes and its input is written after the quantum (see below).
++        let filtered = EdgeFiltered::from_fn(&self.graph, |edge| {
++            !cycle_breakers.contains(&edge.target())
++        });
++        let reversed = Reversed(&filtered);
++        let mut visit = DfsPostOrder::empty(reversed);
++        let mut order: Vec<NodeIndex<DefaultIx>> = Vec::new();
++        let mut reached_breakers: Vec<NodeIndex<DefaultIx>> = Vec::new();
++        for dest in &self.dests {
++            visit.move_to(dest.0);
++            while let Some(ix) = visit.next(reversed) {
++                order.push(ix);
++                if cycle_breakers.contains(&ix) {
++                    reached_breakers.push(ix);
++                }
++            }
++        }
++        // What feeds a cycle breaker still has to run, even when it reaches no destination
++        // another way.
++        let mut breakers_to_feed = reached_breakers.clone();
++        while let Some(breaker) = breakers_to_feed.pop() {
++            let feeders: Vec<_> = self
++                .graph
++                .neighbors_directed(breaker, Direction::Incoming)
++                .collect();
++            for feeder in feeders {
++                visit.move_to(feeder);
++                while let Some(ix) = visit.next(reversed) {
++                    order.push(ix);
++                    if cycle_breakers.contains(&ix) {
++                        reached_breakers.push(ix);
++                        breakers_to_feed.push(ix);
++                    }
++                }
++            }
++        }
++
++        ProcessingPlan {
++            cycle_nodes,
++            cycle_breakers,
++            order,
++            reached_breakers,
++        }
++    }
++
++    /// Collect what the connections into a node produced this quantum and mix it into the input
++    /// chunk the node expects.
++    fn gather_inputs(&self, ix: NodeIndex<DefaultIx>, curr: &mut dyn AudioNodeEngine) -> Chunk {
++        let mut chunk = Chunk::default();
++        chunk
++            .blocks
++            .resize(curr.input_count() as usize, Default::default());
++
++        // set up scratch space to store all the blocks
++        let mut blocks: SmallVec<[SmallVec<[Block; 1]>; 1]> = SmallVec::new();
++        blocks.resize(curr.input_count() as usize, Default::default());
++
++        let mode = curr.channel_count_mode();
++        let count = curr.channel_count();
++        let interpretation = curr.channel_interpretation();
++
++        // all edges to this node are from its dependencies
++        for edge in self.graph.edges_directed(ix, Direction::Incoming) {
++            let edge = edge.weight();
++            for connection in &edge.connections {
++                let mut block = connection
++                    .cache
++                    .borrow_mut()
++                    .take()
++                    .expect("Cache should have been filled from traversal");
++
++                match connection.input_idx {
++                    PortIndex::Port(idx) => {
++                        blocks[idx as usize].push(block);
++                    },
++                    PortIndex::Param(param) => {
++                        // param inputs are downmixed to mono
++                        // https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output
++                        block.mix(1, ChannelInterpretation::Speakers);
++                        curr.get_param(param).add_block(block)
++                    },
++                    PortIndex::Listener(_) => curr.set_listenerdata(block),
++                }
++            }
++        }
++
++        for (i, mut blocks) in blocks.drain(..).enumerate() {
++            if blocks.is_empty() {
++                if mode == ChannelCountMode::Explicit {
++                    // It's silence, but mix it anyway
++                    chunk.blocks[i].mix(count, interpretation);
++                }
++            } else if blocks.len() == 1 {
++                chunk.blocks[i] = blocks.pop().expect("`blocks` had length 1");
++                match mode {
++                    ChannelCountMode::Explicit => {
++                        chunk.blocks[i].mix(count, interpretation);
++                    },
++                    ChannelCountMode::ClampedMax => {
++                        if chunk.blocks[i].chan_count() > count {
++                            chunk.blocks[i].mix(count, interpretation);
++                        }
++                    },
++                    // It's one channel, it maxes itself
++                    ChannelCountMode::Max => (),
++                }
++            } else {
++                let mix_count = match mode {
++                    ChannelCountMode::Explicit => count,
++                    _ => {
++                        let mut max = 0; // max channel count
++                        for block in &blocks {
++                            max = cmp::max(max, block.chan_count());
++                        }
++                        if mode == ChannelCountMode::ClampedMax {
++                            max = cmp::min(max, count);
++                        }
++                        max
++                    },
++                };
++                let block = blocks.into_iter().fold(Block::default(), |acc, mut block| {
++                    block.mix(mix_count, interpretation);
++                    acc.sum(block)
++                });
++                chunk.blocks[i] = block;
++            }
++        }
++
++        chunk
+     }
+ 
+     /// Obtain a mutable reference to a node
+@@ -617,8 +727,14 @@ impl AudioGraph {
+     ///
+     /// TODO: Implement steps 4.2.4–4.2.6 for cyclic `DelayNode`s by replacing
+     /// each with a `DelayWriter` and `DelayReader`.
+-    fn detect_nodes_in_cycles(&self) -> FxHashSet<NodeIndex<DefaultIx>> {
++    fn detect_nodes_in_cycles(
++        &self,
++    ) -> (
++        FxHashSet<NodeIndex<DefaultIx>>,
++        FxHashSet<NodeIndex<DefaultIx>>,
++    ) {
+         let mut cycle_nodes = FxHashSet::default();
++        let mut cycle_breakers = FxHashSet::default();
+         for component in tarjan_scc(&self.graph) {
+             // Tarjan's algorithm groups the graph into strongly connected components.
+             // A component with multiple nodes is a cycle; a single-node component is a
+@@ -629,11 +745,23 @@ impl AudioGraph {
+                         .edges(*node_index)
+                         .any(|edge| edge.target() == *node_index)
+                 });
+-            if is_cycle {
++            if !is_cycle {
++                continue;
++            }
++            // Steps 4.2.4-4.2.6: a DelayNode inside a cycle breaks it, so that cycle is not
++            // muted. A cycle without any DelayNode is.
++            let delays: Vec<_> = component
++                .iter()
++                .copied()
++                .filter(|ix| self.graph[*ix].node.borrow().node_type() == AudioNodeType::DelayNode)
++                .collect();
++            if delays.is_empty() {
+                 cycle_nodes.extend(component);
++            } else {
++                cycle_breakers.extend(delays);
+             }
+         }
+-        cycle_nodes
++        (cycle_nodes, cycle_breakers)
+     }
+ 
+     /// <https://webaudio.github.io/web-audio-api/#available-for-reading>
+@@ -690,7 +818,12 @@ impl Connection {
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+-    use crate::audio_node::{AudioNodeType, ChannelInfo};
++    use crate::audio_node::{
++        AudioNodeMessage, AudioNodeType, AudioScheduledSourceNodeMessage, ChannelInfo,
++    };
++    use crate::buffer_source_node::{AudioBuffer, AudioBufferSourceNode, AudioBufferSourceNodeOptions};
++    use crate::convolver_node::{ConvolverNode, ConvolverNodeOptions};
++    use crate::delay_node::{DelayNode, DelayNodeOptions};
+     use crate::gain_node::{GainNode, GainNodeOptions};
+ 
+     fn gain(graph: &mut AudioGraph) -> NodeId {
+@@ -731,4 +864,227 @@ mod tests {
+             AudioNodeType::GainNode
+         );
+     }
++
++    /// An impulse into `input`, run for `blocks` render quanta; the destination's samples.
++    fn run(graph: &mut AudioGraph, blocks: u64) -> Vec<f32> {
++        let mut samples = Vec::new();
++        for quantum in 0..blocks {
++            let out = graph.process(&BlockInfo {
++                sample_rate: 44100.,
++                frame: crate::block::Tick(quantum * 128),
++                time: 0.,
++            });
++            let block = &out.blocks[0];
++            if block.is_silence() {
++                samples.extend(std::iter::repeat_n(0., 128));
++            } else {
++                samples.extend_from_slice(block.data_chan(0));
++            }
++        }
++        samples
++    }
++
++    fn impulse(graph: &mut AudioGraph) -> NodeId {
++        let id = graph.add_node(Box::new(AudioBufferSourceNode::new(
++            AudioBufferSourceNodeOptions {
++                buffer: Some(AudioBuffer::from_buffer(vec![1.], 44100.)),
++                ..Default::default()
++            },
++            ChannelInfo::default(),
++        )));
++        graph.node_mut(id).message(
++            AudioNodeMessage::AudioScheduledSourceNode(AudioScheduledSourceNodeMessage::Start(0.)),
++            44100.,
++        );
++        id
++    }
++
++    fn delay(graph: &mut AudioGraph, frames: f32) -> NodeId {
++        graph.add_node(Box::new(DelayNode::new(
++            DelayNodeOptions {
++                max_delay_time: 1.,
++                delay_time: frames / 44100.,
++            },
++            ChannelInfo::default(),
++        )))
++    }
++
++    #[test]
++    fn a_delay_line_delays_by_its_delay_time() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let line = delay(&mut graph, 300.);
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), line.input(0));
++        graph.add_edge(line.output(0), dest.input(0));
++        let out = run(&mut graph, 6);
++        for (frame, sample) in out.iter().enumerate() {
++            let expected = if frame == 300 { 1. } else { 0. };
++            assert!((sample - expected).abs() < 1e-4, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_delay_in_a_feedback_loop_is_not_muted() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let line = delay(&mut graph, 200.);
++        let feedback = gain(&mut graph);
++        graph.node_mut(feedback).message(
++            AudioNodeMessage::SetParam(
++                crate::param::ParamType::Gain,
++                crate::param::UserAutomationEvent::SetValue(0.5),
++            ),
++            44100.,
++        );
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), line.input(0));
++        graph.add_edge(line.output(0), feedback.input(0));
++        graph.add_edge(feedback.output(0), line.input(0));
++        graph.add_edge(line.output(0), dest.input(0));
++        let out = run(&mut graph, 8);
++        for (frame, sample) in out.iter().enumerate() {
++            // An echo every 200 frames, each half the previous one.
++            let expected = if frame >= 200 && frame % 200 == 0 {
++                0.5_f32.powi((frame / 200 - 1) as i32)
++            } else {
++                0.
++            };
++            assert!((sample - expected).abs() < 1e-5, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_convolver_returns_its_impulse_response_for_an_impulse() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let mut response = vec![0.; 300];
++        response[0] = 0.5;
++        response[7] = 0.25;
++        response[200] = -0.125;
++        let convolver = graph.add_node(Box::new(ConvolverNode::new(
++            ConvolverNodeOptions {
++                buffer: Some(AudioBuffer::from_buffer(response.clone(), 44100.)),
++                disable_normalization: true,
++            },
++            ChannelInfo::default(),
++        )));
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), convolver.input(0));
++        graph.add_edge(convolver.output(0), dest.input(0));
++        let out = run(&mut graph, 8);
++        for (frame, sample) in out.iter().enumerate() {
++            let expected = response.get(frame).copied().unwrap_or(0.);
++            assert!((sample - expected).abs() < 1e-4, "frame {frame}: {sample}");
++        }
++    }
++
++    #[test]
++    fn a_convolver_without_a_response_is_silent() {
++        let mut graph = AudioGraph::new(2);
++        let source = impulse(&mut graph);
++        let convolver = graph.add_node(Box::new(ConvolverNode::new(
++            ConvolverNodeOptions::default(),
++            ChannelInfo::default(),
++        )));
++        let dest = graph.dest_id();
++        graph.add_edge(source.output(0), convolver.input(0));
++        graph.add_edge(convolver.output(0), dest.input(0));
++        assert!(run(&mut graph, 4).iter().all(|sample| *sample == 0.));
++    }
++
++    #[test]
++    fn a_compressor_lowers_a_loud_steady_signal_by_the_curve() {
++        use crate::dynamics_compressor_node::{DynamicsCompressorNode, DynamicsCompressorNodeOptions};
++        // A constant -10 dB input, threshold -20 dB, ratio 4, no knee: the curve gives -17.5 dB,
++        // and the automatic make-up gain (0.6 of the 15 dB a full-scale input would lose) adds 9 dB.
++        let mut compressor = DynamicsCompressorNode::new(
++            DynamicsCompressorNodeOptions {
++                threshold: -20.,
++                knee: 0.,
++                ratio: 4.,
++                attack: 0.,
++                release: 0.,
++            },
++            ChannelInfo::default(),
++        );
++        let level = 10_f32.powf(-10. / 20.);
++        let mut last = 0.;
++        for quantum in 0..4 {
++            let mut chunk = crate::block::Chunk::explicit_silence();
++            chunk.blocks[0] = crate::block::Block::for_vec(vec![level; 128]);
++            let out = compressor.process(
++                chunk,
++                &BlockInfo {
++                    sample_rate: 44100.,
++                    frame: crate::block::Tick(quantum * 128),
++                    time: 0.,
++                },
++            );
++            last = out.blocks[0].data_chan(0)[127];
++        }
++        let db = 20. * last.log10();
++        assert!((db - -8.5).abs() < 0.1, "{db} dB");
++    }
++
++    fn constant_source(graph: &mut AudioGraph, offset: f32) -> NodeId {
++        use crate::constant_source_node::{ConstantSourceNode, ConstantSourceNodeOptions};
++        let id = graph.add_node(Box::new(ConstantSourceNode::new(
++            ConstantSourceNodeOptions { offset },
++            ChannelInfo::default(),
++        )));
++        graph.node_mut(id).message(
++            AudioNodeMessage::AudioScheduledSourceNode(AudioScheduledSourceNodeMessage::Start(0.)),
++            44100.,
++        );
++        id
++    }
++
++    #[test]
++    fn a_constant_source_writes_a_flat_block_or_stays_silent() {
++        for (offset, expected) in [(0.25_f32, 0.25_f32), (0., 0.)] {
++            let mut graph = AudioGraph::new(2);
++            let source = constant_source(&mut graph, offset);
++            let dest = graph.dest_id();
++            graph.add_edge(source.output(0), dest.input(0));
++            let out = run(&mut graph, 3);
++            assert!(out.iter().all(|sample| (sample - expected).abs() < 1e-6), "offset {offset}");
++        }
++    }
++
++    #[test]
++    fn a_constant_gain_scales_the_block_and_a_ramp_automates_it() {
++        use crate::param::{ParamType, RampKind, UserAutomationEvent};
++        let build = |events: Vec<UserAutomationEvent>| {
++            let mut graph = AudioGraph::new(2);
++            let source = constant_source(&mut graph, 1.);
++            let gain_node = gain(&mut graph);
++            for event in events {
++                graph
++                    .node_mut(gain_node)
++                    .message(AudioNodeMessage::SetParam(ParamType::Gain, event), 44100.);
++            }
++            let dest = graph.dest_id();
++            graph.add_edge(source.output(0), gain_node.input(0));
++            graph.add_edge(gain_node.output(0), dest.input(0));
++            run(&mut graph, 4)
++        };
++        // A constant gain of one half.
++        let half = build(vec![UserAutomationEvent::SetValue(0.5)]);
++        assert!(half.iter().all(|sample| (sample - 0.5).abs() < 1e-6));
++        // No event at all: unity.
++        let unity = build(vec![]);
++        assert!(unity.iter().all(|sample| (sample - 1.).abs() < 1e-6));
++        // A linear ramp from 0 to 1 over 256 frames, then it holds.
++        let ramp = build(vec![
++            UserAutomationEvent::SetValueAtTime(0., 0.),
++            UserAutomationEvent::RampToValueAtTime(RampKind::Linear, 1., 256. / 44100.),
++        ]);
++        for (frame, sample) in ramp.iter().enumerate() {
++            let expected = (frame as f32 / 256.).min(1.);
++            assert!((sample - expected).abs() < 0.02, "frame {frame}: {sample} vs {expected}");
++        }
++        // After the ramp is done the gain is constant again (the fast path) and still one.
++        assert!(ramp[300..].iter().all(|sample| (sample - 1.).abs() < 1e-4));
++    }
+ }
+diff --git a/components/media/audio/lib.rs b/components/media/audio/lib.rs
+index 1cee29d0278..31df1cd131d 100644
+--- a/components/media/audio/lib.rs
++++ b/components/media/audio/lib.rs
+@@ -27,10 +27,13 @@ pub mod block;
+ pub mod buffer_source_node;
+ pub mod channel_node;
+ pub mod constant_source_node;
++pub mod convolver_node;
+ pub mod context;
+ mod dead_node;
+ pub mod decoder;
++pub mod delay_node;
+ pub mod destination_node;
++pub mod dynamics_compressor_node;
+ pub mod gain_node;
+ pub mod graph;
+ pub mod iir_filter_node;
+diff --git a/components/media/audio/param.rs b/components/media/audio/param.rs
+index f14a9032e4d..fd26ba67206 100644
+--- a/components/media/audio/param.rs
++++ b/components/media/audio/param.rs
+@@ -12,6 +12,12 @@ pub enum ParamType {
+     Frequency,
+     Detune,
+     Gain,
++    DelayTime,
++    Threshold,
++    Knee,
++    Ratio,
++    Attack,
++    Release,
+     Q,
+     Pan,
+     PlaybackRate,
+@@ -193,6 +199,13 @@ impl Param {
+         self.val + self.block_mix_val
+     }
+ 
++    /// Whether the value stays the same for the whole render quantum: nothing is automating it
++    /// any more and no node is connected to it. Only valid right after [`Self::update`] was
++    /// called for tick 0 of the quantum, which applies what is due at its start.
++    pub fn is_constant(&self) -> bool {
++        self.current_event >= self.events.len() && self.blocks.is_empty()
++    }
++
+     pub fn set_rate(&mut self, rate: ParamRate) {
+         self.kind = rate;
+     }
+diff --git a/components/media/audio/render_thread.rs b/components/media/audio/render_thread.rs
+index 876e70396ce..5d8573bb709 100644
+--- a/components/media/audio/render_thread.rs
++++ b/components/media/audio/render_thread.rs
+@@ -26,6 +26,9 @@ use crate::oscillator_node::OscillatorNode;
+ use crate::panner_node::PannerNode;
+ use crate::sink::{AudioSink, AudioSinkError};
+ use crate::stereo_panner::StereoPannerNode;
++use crate::convolver_node::ConvolverNode;
++use crate::delay_node::DelayNode;
++use crate::dynamics_compressor_node::DynamicsCompressorNode;
+ use crate::wave_shaper_node::WaveShaperNode;
+ use crate::{AudioBackend, AudioStreamReader};
+ 
+@@ -253,6 +256,11 @@ impl AudioRenderThread {
+             },
+             AudioNodeInit::ChannelSplitterNode => Box::new(ChannelSplitterNode::new(ch)),
+             AudioNodeInit::WaveShaperNode(options) => Box::new(WaveShaperNode::new(options, ch)),
++            AudioNodeInit::DelayNode(options) => Box::new(DelayNode::new(options, ch)),
++            AudioNodeInit::ConvolverNode(options) => Box::new(ConvolverNode::new(options, ch)),
++            AudioNodeInit::DynamicsCompressionNode(options) => {
++                Box::new(DynamicsCompressorNode::new(options, ch))
++            },
+             AudioNodeInit::MediaElementSourceNode => Box::new(MediaElementSourceNode::new(ch)),
+             AudioNodeInit::IIRFilterNode(options) => Box::new(IIRFilterNode::new(options, ch)),
+             _ => unimplemented!(),
+diff --git a/components/media/audio/wave_shaper_node.rs b/components/media/audio/wave_shaper_node.rs
+index e95ca3ab241..e712b415b35 100644
+--- a/components/media/audio/wave_shaper_node.rs
++++ b/components/media/audio/wave_shaper_node.rs
+@@ -54,6 +54,7 @@ impl Default for WaveShaperNodeOptions {
+ #[derive(Clone, Debug, MallocSizeOf)]
+ pub enum WaveShaperNodeMessage {
+     SetCurve(WaveShaperCurve),
++    SetOversample(OverSampleType),
+ }
+ 
+ #[derive(AudioNodeCommon, MallocSizeOf)]
+@@ -93,12 +94,17 @@ impl WaveShaperNode {
+     fn handle_waveshaper_message(&mut self, message: WaveShaperNodeMessage, _sample_rate: f32) {
+         match message {
+             WaveShaperNodeMessage::SetCurve(new_curve) => {
+-                if self.curve_set && new_curve.is_some() {
+-                    panic!("InvalidStateError: cant set curve if it was already set");
+-                }
+                 self.curve_set = new_curve.is_some();
+                 self.curve = new_curve;
+             },
++            WaveShaperNodeMessage::SetOversample(oversample) => {
++                if oversample != self.oversample {
++                    // The resamplers are built for one factor: rebuild them on the next block.
++                    self.upsampler = None;
++                    self.downsampler = None;
++                    self.oversample = oversample;
++                }
++            },
+         }
+     }
+ }
+diff --git a/components/media/backends/gstreamer/audio_sink.rs b/components/media/backends/gstreamer/audio_sink.rs
+index a2ad733af31..183e2dcf4ee 100644
+--- a/components/media/backends/gstreamer/audio_sink.rs
++++ b/components/media/backends/gstreamer/audio_sink.rs
+@@ -21,12 +21,21 @@ use crate::media_stream::GstreamerMediaSocket;
+ 
+ const DEFAULT_SAMPLE_RATE: f32 = 44100.;
+ 
++/// How many render quanta (128 frames, 2.9 ms at 44.1 kHz) go into one buffer pushed to GStreamer.
++/// Pushing a buffer, and the "need data" round trip that follows, has a fixed cost: doing it
++/// every quantum made the audio thread one of the busiest in a page that only plays sound. Four
++/// quanta is about 11.6 ms, the size of the sink's own 10 ms periods (see `init`).
++const QUANTA_PER_BUFFER: u32 = 4;
++
+ pub struct GStreamerAudioSink {
+     pipeline: gstreamer::Pipeline,
+     appsrc: Arc<AppSrc>,
+     sample_rate: Cell<f32>,
+     audio_info: RefCell<Option<gstreamer_audio::AudioInfo>>,
+     sample_offset: Cell<u64>,
++    /// Interleaved samples of the quanta rendered since the last buffer was pushed.
++    pending: RefCell<Vec<f32>>,
++    pending_quanta: Cell<u32>,
+ }
+ 
+ impl GStreamerAudioSink {
+@@ -51,6 +60,8 @@ impl GStreamerAudioSink {
+             sample_rate: Cell::new(DEFAULT_SAMPLE_RATE),
+             audio_info: RefCell::new(None),
+             sample_offset: Cell::new(0),
++            pending: RefCell::new(Vec::new()),
++            pending_quanta: Cell::new(0),
+         })
+     }
+ }
+@@ -83,6 +94,53 @@ impl GStreamerAudioSink {
+     }
+ }
+ 
++impl GStreamerAudioSink {
++    /// Push the rendered quanta queued so far as one buffer.
++    fn flush_pending(&self) -> Result<(), AudioSinkError> {
++        let quanta = self.pending_quanta.replace(0);
++        if quanta == 0 {
++            return Ok(());
++        }
++        let mut samples = self.pending.borrow_mut();
++        let sample_rate = self.sample_rate.get() as u64;
++        let n_samples = FRAMES_PER_BLOCK.0 * quanta as u64;
++        let mut buffer = gstreamer::Buffer::with_size(samples.len() * 4).unwrap();
++        {
++            let buffer = buffer.get_mut().unwrap();
++            let sample_offset = self.sample_offset.get();
++            // Calculate the current timestamp (PTS) and the next one,
++            // and calculate the duration from the difference instead of
++            // simply the number of samples to prevent rounding errors
++            let pts = gstreamer::ClockTime::from_nseconds(
++                sample_offset
++                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
++                    .unwrap(),
++            );
++            let next_pts: gstreamer::ClockTime = gstreamer::ClockTime::from_nseconds(
++                (sample_offset + n_samples)
++                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
++                    .unwrap(),
++            );
++            buffer.set_pts(Some(pts));
++            buffer.set_duration(next_pts - pts);
++            // XXXManishearth if we have a safe way to convert
++            // from Box<[f32]> to Box<[u8]> (similarly for Vec)
++            // we can use Buffer::from_slice instead
++            buffer
++                .copy_from_slice(0, samples.as_mut_slice().as_mut_byte_slice())
++                .expect("copying failed");
++            self.sample_offset.set(sample_offset + n_samples);
++        }
++        samples.clear();
++        drop(samples);
++
++        self.appsrc
++            .push_buffer(buffer)
++            .map(|_| ())
++            .map_err(|_| AudioSinkError::BufferPushFailed)
++    }
++}
++
+ impl AudioSink for GStreamerAudioSink {
+     fn init(
+         &self,
+@@ -188,6 +246,9 @@ impl AudioSink for GStreamerAudioSink {
+     }
+ 
+     fn stop(&self) -> Result<(), AudioSinkError> {
++        // Samples rendered before a pause must not play after the resume.
++        self.pending.borrow_mut().clear();
++        self.pending_quanta.set(0);
+         self.pipeline
+             .set_state(gstreamer::State::Paused)
+             .map(|_| ())
+@@ -200,59 +261,35 @@ impl AudioSink for GStreamerAudioSink {
+ 
+     fn push_data(&self, mut chunk: Chunk) -> Result<(), AudioSinkError> {
+         if let Some(block) = chunk.blocks.first() {
+-            self.set_channels_if_changed(block.chan_count())?;
+-        }
+-
+-        let sample_rate = self.sample_rate.get() as u64;
+-        let audio_info = self.audio_info.borrow();
+-        let audio_info = audio_info.as_ref().unwrap();
+-        let channels = audio_info.channels();
+-        let bpf = audio_info.bpf() as usize;
+-        assert_eq!(bpf, 4 * channels as usize);
+-        let n_samples = FRAMES_PER_BLOCK.0;
+-        let buf_size = (n_samples as usize) * (bpf);
+-        let mut buffer = gstreamer::Buffer::with_size(buf_size).unwrap();
+-        {
+-            let buffer = buffer.get_mut().unwrap();
+-            let mut sample_offset = self.sample_offset.get();
+-            // Calculate the current timestamp (PTS) and the next one,
+-            // and calculate the duration from the difference instead of
+-            // simply the number of samples to prevent rounding errors
+-            let pts = gstreamer::ClockTime::from_nseconds(
+-                sample_offset
+-                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
+-                    .unwrap(),
+-            );
+-            let next_pts: gstreamer::ClockTime = gstreamer::ClockTime::from_nseconds(
+-                (sample_offset + n_samples)
+-                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
+-                    .unwrap(),
+-            );
+-            buffer.set_pts(Some(pts));
+-            buffer.set_duration(next_pts - pts);
+-
+-            // sometimes nothing reaches the output
+-            if chunk.is_empty() {
+-                chunk.blocks.push(Default::default());
+-                chunk.blocks[0].repeat(channels as u8);
++            let channels = block.chan_count();
++            let current = self
++                .audio_info
++                .borrow()
++                .as_ref()
++                .map(|info| info.channels() as u8);
++            if current.is_some_and(|current| current != channels) {
++                // The queued samples have the old channel layout: send them before the caps change.
++                self.flush_pending()?;
+             }
+-            debug_assert!(chunk.len() == 1);
+-            let mut data = chunk.blocks[0].interleave();
+-            let data = data.as_mut_byte_slice();
+-
+-            // XXXManishearth if we have a safe way to convert
+-            // from Box<[f32]> to Box<[u8]> (similarly for Vec)
+-            // we can use Buffer::from_slice instead
+-            buffer.copy_from_slice(0, data).expect("copying failed");
+-
+-            sample_offset += n_samples;
+-            self.sample_offset.set(sample_offset);
++            self.set_channels_if_changed(channels)?;
+         }
+ 
+-        self.appsrc
+-            .push_buffer(buffer)
+-            .map(|_| ())
+-            .map_err(|_| AudioSinkError::BufferPushFailed)
++        let channels = self.audio_info.borrow().as_ref().unwrap().channels();
++        // sometimes nothing reaches the output
++        if chunk.is_empty() {
++            chunk.blocks.push(Default::default());
++            chunk.blocks[0].repeat(channels as u8);
++        }
++        debug_assert!(chunk.len() == 1);
++        self.pending
++            .borrow_mut()
++            .extend_from_slice(&chunk.blocks[0].interleave());
++        self.pending_quanta.set(self.pending_quanta.get() + 1);
++        if self.pending_quanta.get() < QUANTA_PER_BUFFER {
++            // Not enough for a buffer yet: the render thread keeps rendering (the appsrc is empty).
++            return Ok(());
++        }
++        self.flush_pending()
+     }
+ 
+     fn set_eos_callback(&self, _: Box<dyn Fn(Box<dyn AsRef<[f32]>>) + Send + Sync + 'static>) {}
+diff --git a/components/script/dom/audio/audionode.rs b/components/script/dom/audio/audionode.rs
+index e36b25dbb1f..83e0160ee71 100644
+--- a/components/script/dom/audio/audionode.rs
++++ b/components/script/dom/audio/audionode.rs
+@@ -141,6 +141,10 @@ impl AudioNode {
+         }
+     }
+ 
++    pub(crate) fn context(&self) -> &BaseAudioContext {
++        &self.context
++    }
++
+     pub(crate) fn node_id(&self) -> Option<NodeId> {
+         self.node_id
+     }
+diff --git a/components/script/dom/audio/baseaudiocontext.rs b/components/script/dom/audio/baseaudiocontext.rs
+index 674451fe560..5c4196b083a 100644
+--- a/components/script/dom/audio/baseaudiocontext.rs
++++ b/components/script/dom/audio/baseaudiocontext.rs
+@@ -34,6 +34,9 @@ use crate::dom::audio::audiolistener::AudioListener;
+ use crate::dom::audio::audionode::MAX_CHANNEL_COUNT;
+ use crate::dom::audio::biquadfilternode::BiquadFilterNode;
+ use crate::dom::audio::channelmergernode::ChannelMergerNode;
++use crate::dom::audio::convolvernode::ConvolverNode;
++use crate::dom::audio::delaynode::DelayNode;
++use crate::dom::audio::dynamicscompressornode::DynamicsCompressorNode;
+ use crate::dom::audio::channelsplitternode::ChannelSplitterNode;
+ use crate::dom::audio::constantsourcenode::ConstantSourceNode;
+ use crate::dom::audio::gainnode::GainNode;
+@@ -41,6 +44,7 @@ use crate::dom::audio::iirfilternode::IIRFilterNode;
+ use crate::dom::audio::oscillatornode::OscillatorNode;
+ use crate::dom::audio::pannernode::PannerNode;
+ use crate::dom::audio::stereopannernode::StereoPannerNode;
++use crate::dom::audio::waveshapernode::WaveShaperNode;
+ use crate::dom::bindings::callback::ExceptionHandling;
+ use crate::dom::bindings::codegen::Bindings::AnalyserNodeBinding::AnalyserOptions;
+ use crate::dom::bindings::codegen::Bindings::AudioBufferSourceNodeBinding::AudioBufferSourceOptions;
+@@ -54,11 +58,15 @@ use crate::dom::bindings::codegen::Bindings::BiquadFilterNodeBinding::BiquadFilt
+ use crate::dom::bindings::codegen::Bindings::ChannelMergerNodeBinding::ChannelMergerOptions;
+ use crate::dom::bindings::codegen::Bindings::ChannelSplitterNodeBinding::ChannelSplitterOptions;
+ use crate::dom::bindings::codegen::Bindings::ConstantSourceNodeBinding::ConstantSourceOptions;
++use crate::dom::bindings::codegen::Bindings::ConvolverNodeBinding::ConvolverOptions;
++use crate::dom::bindings::codegen::Bindings::DelayNodeBinding::DelayOptions;
++use crate::dom::bindings::codegen::Bindings::DynamicsCompressorNodeBinding::DynamicsCompressorOptions;
+ use crate::dom::bindings::codegen::Bindings::GainNodeBinding::GainOptions;
+ use crate::dom::bindings::codegen::Bindings::IIRFilterNodeBinding::IIRFilterOptions;
+ use crate::dom::bindings::codegen::Bindings::OscillatorNodeBinding::OscillatorOptions;
+ use crate::dom::bindings::codegen::Bindings::PannerNodeBinding::PannerOptions;
+ use crate::dom::bindings::codegen::Bindings::StereoPannerNodeBinding::StereoPannerOptions;
++use crate::dom::bindings::codegen::Bindings::WaveShaperNodeBinding::WaveShaperOptions;
+ use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::bindings::num::Finite;
+@@ -369,6 +377,50 @@ impl BaseAudioContextMethods<crate::DomTypeHolder> for BaseAudioContext {
+         )
+     }
+ 
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createconvolver>
++    fn CreateConvolver(&self, cx: &mut JSContext) -> Fallible<DomRoot<ConvolverNode>> {
++        ConvolverNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &ConvolverOptions::empty(),
++        )
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdynamicscompressor>
++    fn CreateDynamicsCompressor(
++        &self,
++        cx: &mut JSContext,
++    ) -> Fallible<DomRoot<DynamicsCompressorNode>> {
++        DynamicsCompressorNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &DynamicsCompressorOptions::empty(),
++        )
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createdelay>
++    fn CreateDelay(
++        &self,
++        cx: &mut JSContext,
++        max_delay_time: Finite<f64>,
++    ) -> Fallible<DomRoot<DelayNode>> {
++        let mut options = DelayOptions::empty();
++        options.maxDelayTime = max_delay_time;
++        DelayNode::new(cx, self.global().as_window(), self, &options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createwaveshaper>
++    fn CreateWaveShaper(&self, cx: &mut JSContext) -> Fallible<DomRoot<WaveShaperNode>> {
++        WaveShaperNode::new(
++            cx,
++            self.global().as_window(),
++            self,
++            &WaveShaperOptions::empty(),
++        )
++    }
++
+     /// <https://webaudio.github.io/web-audio-api/#dom-baseaudiocontext-createbiquadfilter>
+     fn CreateBiquadFilter(&self, cx: &mut JSContext) -> Fallible<DomRoot<BiquadFilterNode>> {
+         BiquadFilterNode::new(
+diff --git a/components/script/dom/audio/convolvernode.rs b/components/script/dom/audio/convolvernode.rs
+new file mode 100644
+index 00000000000..2f1da5dda59
+--- /dev/null
++++ b/components/script/dom/audio/convolvernode.rs
+@@ -0,0 +1,161 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use std::cell::Cell;
++
++use dom_struct::dom_struct;
++use js::context::JSContext;
++use js::rust::HandleObject;
++use script_bindings::reflector::reflect_dom_object_with_proto;
++use servo_media::audio::audio_node::{AudioNodeInit, AudioNodeMessage};
++use servo_media::audio::buffer_source_node::AudioBuffer as ServoMediaAudioBuffer;
++use servo_media::audio::convolver_node::{ConvolverNodeMessage, ConvolverNodeOptions};
++
++use crate::dom::audio::audiobuffer::AudioBuffer;
++use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
++use crate::dom::audio::baseaudiocontext::BaseAudioContext;
++use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
++    ChannelCountMode, ChannelInterpretation,
++};
++use crate::dom::bindings::codegen::Bindings::BaseAudioContextBinding::BaseAudioContextMethods;
++use crate::dom::bindings::codegen::Bindings::ConvolverNodeBinding::{
++    ConvolverNodeMethods, ConvolverOptions,
++};
++use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
++use crate::dom::bindings::root::{DomRoot, MutNullableDom};
++use crate::dom::window::Window;
++
++#[dom_struct]
++pub(crate) struct ConvolverNode {
++    node: AudioNode,
++    buffer: MutNullableDom<AudioBuffer>,
++    normalize: Cell<bool>,
++}
++
++/// The samples of an impulse response, if the context can use them: the same sample rate as the
++/// context and one or two channels.
++///
++/// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-buffer>
++fn response_channels(
++    cx: &mut JSContext,
++    context: &BaseAudioContext,
++    buffer: &AudioBuffer,
++) -> Fallible<ServoMediaAudioBuffer> {
++    let channels = buffer
++        .get_channels(cx)
++        .clone()
++        .ok_or(Error::InvalidState(None))?;
++    if channels.sample_rate != *context.SampleRate() || !(1..=2).contains(&channels.chans()) {
++        return Err(Error::NotSupported(None));
++    }
++    Ok(channels)
++}
++
++impl ConvolverNode {
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    pub(crate) fn new_inherited(
++        cx: &mut JSContext,
++        context: &BaseAudioContext,
++        options: &ConvolverOptions,
++    ) -> Fallible<ConvolverNode> {
++        let node_options = options.parent.unwrap_or(
++            2,
++            ChannelCountMode::Clamped_max,
++            ChannelInterpretation::Speakers,
++        );
++        let buffer = options.buffer.as_ref().and_then(|buffer| buffer.as_ref());
++        let response = match buffer {
++            Some(buffer) => Some(response_channels(cx, context, buffer)?),
++            None => None,
++        };
++        let node = AudioNode::new_inherited(
++            cx,
++            AudioNodeInit::ConvolverNode(ConvolverNodeOptions {
++                buffer: response,
++                disable_normalization: options.disableNormalization,
++            }),
++            context,
++            node_options,
++            1, // inputs
++            1, // outputs
++        )?;
++        let result = ConvolverNode {
++            node,
++            buffer: Default::default(),
++            normalize: Cell::new(!options.disableNormalization),
++        };
++        result.buffer.set(buffer.map(|buffer| &**buffer));
++        Ok(result)
++    }
++
++    pub(crate) fn new(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &ConvolverOptions,
++    ) -> Fallible<DomRoot<ConvolverNode>> {
++        Self::new_with_proto(cx, window, None, context, options)
++    }
++
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    fn new_with_proto(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &ConvolverOptions,
++    ) -> Fallible<DomRoot<ConvolverNode>> {
++        let node = ConvolverNode::new_inherited(cx, context, options)?;
++        Ok(reflect_dom_object_with_proto(
++            cx,
++            Box::new(node),
++            window,
++            proto,
++        ))
++    }
++}
++
++impl ConvolverNodeMethods<crate::DomTypeHolder> for ConvolverNode {
++    /// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-convolvernode>
++    fn Constructor(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &ConvolverOptions,
++    ) -> Fallible<DomRoot<ConvolverNode>> {
++        ConvolverNode::new_with_proto(cx, window, proto, context, options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-buffer>
++    fn GetBuffer(&self) -> Option<DomRoot<AudioBuffer>> {
++        self.buffer.get()
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-buffer>
++    fn SetBuffer(&self, cx: &mut JSContext, new_buffer: Option<&AudioBuffer>) -> ErrorResult {
++        let response = match new_buffer {
++            Some(buffer) => Some(response_channels(cx, &self.node.context(), buffer)?),
++            None => None,
++        };
++        self.buffer.set(new_buffer);
++        self.node.message(AudioNodeMessage::ConvolverNode(
++            ConvolverNodeMessage::SetBuffer(response),
++        ));
++        Ok(())
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-normalize>
++    fn Normalize(&self) -> bool {
++        self.normalize.get()
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-convolvernode-normalize>
++    fn SetNormalize(&self, normalize: bool) {
++        self.normalize.set(normalize);
++        self.node.message(AudioNodeMessage::ConvolverNode(
++            ConvolverNodeMessage::SetNormalize(normalize),
++        ));
++    }
++}
+diff --git a/components/script/dom/audio/delaynode.rs b/components/script/dom/audio/delaynode.rs
+new file mode 100644
+index 00000000000..d35f0df16be
+--- /dev/null
++++ b/components/script/dom/audio/delaynode.rs
+@@ -0,0 +1,126 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use js::context::JSContext;
++use js::rust::HandleObject;
++use script_bindings::reflector::reflect_dom_object_with_proto;
++use servo_media::audio::audio_node::{AudioNodeInit, AudioNodeType};
++use servo_media::audio::delay_node::DelayNodeOptions;
++use servo_media::audio::param::ParamType;
++
++use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
++use crate::dom::audio::audioparam::AudioParam;
++use crate::dom::audio::baseaudiocontext::BaseAudioContext;
++use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
++    ChannelCountMode, ChannelInterpretation,
++};
++use crate::dom::bindings::codegen::Bindings::AudioParamBinding::AutomationRate;
++use crate::dom::bindings::codegen::Bindings::DelayNodeBinding::{DelayNodeMethods, DelayOptions};
++use crate::dom::bindings::error::{Error, Fallible};
++use crate::dom::bindings::root::{Dom, DomRoot};
++use crate::dom::window::Window;
++
++/// The longest `maxDelayTime` the spec allows, in seconds (exclusive).
++const MAX_DELAY_TIME_LIMIT: f64 = 180.;
++
++#[dom_struct]
++pub(crate) struct DelayNode {
++    node: AudioNode,
++    delay_time: Dom<AudioParam>,
++}
++
++impl DelayNode {
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    pub(crate) fn new_inherited(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &DelayOptions,
++    ) -> Fallible<DelayNode> {
++        let max_delay_time = *options.maxDelayTime;
++        if max_delay_time <= 0. || max_delay_time >= MAX_DELAY_TIME_LIMIT {
++            return Err(Error::NotSupported(None));
++        }
++        let delay_time = *options.delayTime;
++        if !(0. ..=max_delay_time).contains(&delay_time) {
++            return Err(Error::NotSupported(None));
++        }
++        let node_options =
++            options
++                .parent
++                .unwrap_or(2, ChannelCountMode::Max, ChannelInterpretation::Speakers);
++        let node = AudioNode::new_inherited(
++            cx,
++            AudioNodeInit::DelayNode(DelayNodeOptions {
++                max_delay_time,
++                delay_time: delay_time as f32,
++            }),
++            context,
++            node_options,
++            1, // inputs
++            1, // outputs
++        )?;
++        let delay_time = AudioParam::new(
++            cx,
++            window,
++            context,
++            node.node_id(),
++            AudioNodeType::DelayNode,
++            ParamType::DelayTime,
++            AutomationRate::A_rate,
++            delay_time as f32,       // default value
++            0.,                      // min value
++            max_delay_time as f32,   // max value
++        );
++        Ok(DelayNode {
++            node,
++            delay_time: Dom::from_ref(&delay_time),
++        })
++    }
++
++    pub(crate) fn new(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &DelayOptions,
++    ) -> Fallible<DomRoot<DelayNode>> {
++        Self::new_with_proto(cx, window, None, context, options)
++    }
++
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    fn new_with_proto(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &DelayOptions,
++    ) -> Fallible<DomRoot<DelayNode>> {
++        let node = DelayNode::new_inherited(cx, window, context, options)?;
++        Ok(reflect_dom_object_with_proto(
++            cx,
++            Box::new(node),
++            window,
++            proto,
++        ))
++    }
++}
++
++impl DelayNodeMethods<crate::DomTypeHolder> for DelayNode {
++    /// <https://webaudio.github.io/web-audio-api/#dom-delaynode-delaynode>
++    fn Constructor(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &DelayOptions,
++    ) -> Fallible<DomRoot<DelayNode>> {
++        DelayNode::new_with_proto(cx, window, proto, context, options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-delaynode-delaytime>
++    fn DelayTime(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.delay_time)
++    }
++}
+diff --git a/components/script/dom/audio/dynamicscompressornode.rs b/components/script/dom/audio/dynamicscompressornode.rs
+new file mode 100644
+index 00000000000..a07395549ae
+--- /dev/null
++++ b/components/script/dom/audio/dynamicscompressornode.rs
+@@ -0,0 +1,163 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use dom_struct::dom_struct;
++use js::context::JSContext;
++use js::rust::HandleObject;
++use script_bindings::reflector::reflect_dom_object_with_proto;
++use servo_media::audio::audio_node::{AudioNodeInit, AudioNodeType};
++use servo_media::audio::dynamics_compressor_node::DynamicsCompressorNodeOptions;
++use servo_media::audio::param::ParamType;
++
++use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
++use crate::dom::audio::audioparam::AudioParam;
++use crate::dom::audio::baseaudiocontext::BaseAudioContext;
++use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
++    ChannelCountMode, ChannelInterpretation,
++};
++use crate::dom::bindings::codegen::Bindings::AudioParamBinding::AutomationRate;
++use crate::dom::bindings::codegen::Bindings::DynamicsCompressorNodeBinding::{
++    DynamicsCompressorNodeMethods, DynamicsCompressorOptions,
++};
++use crate::dom::bindings::error::Fallible;
++use crate::dom::bindings::num::Finite;
++use crate::dom::bindings::root::{Dom, DomRoot};
++use crate::dom::window::Window;
++
++#[dom_struct]
++pub(crate) struct DynamicsCompressorNode {
++    node: AudioNode,
++    threshold: Dom<AudioParam>,
++    knee: Dom<AudioParam>,
++    ratio: Dom<AudioParam>,
++    attack: Dom<AudioParam>,
++    release: Dom<AudioParam>,
++}
++
++impl DynamicsCompressorNode {
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    pub(crate) fn new_inherited(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &DynamicsCompressorOptions,
++    ) -> Fallible<DynamicsCompressorNode> {
++        let node_options = options.parent.unwrap_or(
++            2,
++            ChannelCountMode::Clamped_max,
++            ChannelInterpretation::Speakers,
++        );
++        let node = AudioNode::new_inherited(
++            cx,
++            AudioNodeInit::DynamicsCompressionNode(DynamicsCompressorNodeOptions {
++                threshold: *options.threshold,
++                knee: *options.knee,
++                ratio: *options.ratio,
++                attack: *options.attack,
++                release: *options.release,
++            }),
++            context,
++            node_options,
++            1, // inputs
++            1, // outputs
++        )?;
++        let param = |cx: &mut JSContext, param_type, value: f32, min: f32, max: f32| {
++            Dom::from_ref(&*AudioParam::new(
++                cx,
++                window,
++                context,
++                node.node_id(),
++                AudioNodeType::DynamicsCompressionNode,
++                param_type,
++                AutomationRate::K_rate,
++                value,
++                min,
++                max,
++            ))
++        };
++        let threshold = param(cx, ParamType::Threshold, *options.threshold, -100., 0.);
++        let knee = param(cx, ParamType::Knee, *options.knee, 0., 40.);
++        let ratio = param(cx, ParamType::Ratio, *options.ratio, 1., 20.);
++        let attack = param(cx, ParamType::Attack, *options.attack, 0., 1.);
++        let release = param(cx, ParamType::Release, *options.release, 0., 1.);
++        Ok(DynamicsCompressorNode {
++            node,
++            threshold,
++            knee,
++            ratio,
++            attack,
++            release,
++        })
++    }
++
++    pub(crate) fn new(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &DynamicsCompressorOptions,
++    ) -> Fallible<DomRoot<DynamicsCompressorNode>> {
++        Self::new_with_proto(cx, window, None, context, options)
++    }
++
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    fn new_with_proto(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &DynamicsCompressorOptions,
++    ) -> Fallible<DomRoot<DynamicsCompressorNode>> {
++        let node = DynamicsCompressorNode::new_inherited(cx, window, context, options)?;
++        Ok(reflect_dom_object_with_proto(
++            cx,
++            Box::new(node),
++            window,
++            proto,
++        ))
++    }
++}
++
++impl DynamicsCompressorNodeMethods<crate::DomTypeHolder> for DynamicsCompressorNode {
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-dynamicscompressornode>
++    fn Constructor(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &DynamicsCompressorOptions,
++    ) -> Fallible<DomRoot<DynamicsCompressorNode>> {
++        DynamicsCompressorNode::new_with_proto(cx, window, proto, context, options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-threshold>
++    fn Threshold(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.threshold)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-knee>
++    fn Knee(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.knee)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-ratio>
++    fn Ratio(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.ratio)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-reduction>
++    fn Reduction(&self) -> Finite<f32> {
++        // The render thread does not report the live gain reduction back yet.
++        Finite::wrap(0.)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-attack>
++    fn Attack(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.attack)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-dynamicscompressornode-release>
++    fn Release(&self) -> DomRoot<AudioParam> {
++        DomRoot::from_ref(&self.release)
++    }
++}
+diff --git a/components/script/dom/audio/mod.rs b/components/script/dom/audio/mod.rs
+index 1fa3e119c07..3f6cdca1869 100644
+--- a/components/script/dom/audio/mod.rs
++++ b/components/script/dom/audio/mod.rs
+@@ -18,6 +18,9 @@ pub(crate) mod biquadfilternode;
+ pub(crate) mod channelmergernode;
+ pub(crate) mod channelsplitternode;
+ pub(crate) mod constantsourcenode;
++pub(crate) mod convolvernode;
++pub(crate) mod delaynode;
++pub(crate) mod dynamicscompressornode;
+ pub(crate) mod gainnode;
+ pub(crate) mod iirfilternode;
+ pub(crate) mod mediaelementaudiosourcenode;
+@@ -29,3 +32,4 @@ pub(crate) mod offlineaudiocontext;
+ pub(crate) mod oscillatornode;
+ pub(crate) mod pannernode;
+ pub(crate) mod stereopannernode;
++pub(crate) mod waveshapernode;
+diff --git a/components/script/dom/audio/waveshapernode.rs b/components/script/dom/audio/waveshapernode.rs
+new file mode 100644
+index 00000000000..6abeea0a56b
+--- /dev/null
++++ b/components/script/dom/audio/waveshapernode.rs
+@@ -0,0 +1,184 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use std::cell::Cell;
++
++use dom_struct::dom_struct;
++use js::context::JSContext;
++use js::rust::{CustomAutoRooterGuard, HandleObject};
++use js::typedarray::{Float32, Float32Array, HeapFloat32Array};
++use script_bindings::cell::DomRefCell;
++use script_bindings::reflector::reflect_dom_object_with_proto;
++use script_bindings::trace::RootedTraceableBox;
++use servo_media::audio::audio_node::{AudioNodeInit, AudioNodeMessage};
++use servo_media::audio::wave_shaper_node::{
++    OverSampleType as ServoMediaOverSampleType, WaveShaperNodeMessage, WaveShaperNodeOptions,
++};
++
++use crate::conversions::Convert;
++use crate::dom::audio::audionode::{AudioNode, AudioNodeOptionsHelper};
++use crate::dom::audio::baseaudiocontext::BaseAudioContext;
++use crate::dom::bindings::buffer_source::HeapBufferSource;
++use crate::dom::bindings::codegen::Bindings::AudioNodeBinding::{
++    ChannelCountMode, ChannelInterpretation,
++};
++use crate::dom::bindings::codegen::Bindings::WaveShaperNodeBinding::{
++    OverSampleType, WaveShaperNodeMethods, WaveShaperOptions,
++};
++use crate::dom::bindings::error::{Error, ErrorResult, Fallible};
++use crate::dom::bindings::root::DomRoot;
++use crate::dom::window::Window;
++
++#[dom_struct]
++pub(crate) struct WaveShaperNode {
++    node: AudioNode,
++    /// The curve as the page set it, returned unchanged by the getter.
++    #[ignore_malloc_size_of = "mozjs"]
++    curve: DomRefCell<HeapBufferSource<Float32>>,
++    oversample: Cell<OverSampleType>,
++}
++
++impl WaveShaperNode {
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    pub(crate) fn new_inherited(
++        cx: &mut JSContext,
++        context: &BaseAudioContext,
++        options: &WaveShaperOptions,
++    ) -> Fallible<WaveShaperNode> {
++        let node_options =
++            options
++                .parent
++                .unwrap_or(2, ChannelCountMode::Max, ChannelInterpretation::Speakers);
++        let curve_data: Option<Vec<f32>> = options
++            .curve
++            .as_ref()
++            .map(|curve| curve.iter().map(|value| **value).collect());
++        if curve_data.as_ref().is_some_and(|curve| curve.len() < 2) {
++            return Err(Error::InvalidState(None));
++        }
++        let node = AudioNode::new_inherited(
++            cx,
++            AudioNodeInit::WaveShaperNode(WaveShaperNodeOptions {
++                curve: curve_data.clone(),
++                oversample: options.oversample.convert(),
++            }),
++            context,
++            node_options,
++            1, // inputs
++            1, // outputs
++        )?;
++        let curve = HeapBufferSource::default();
++        if let Some(data) = curve_data {
++            curve.set_data(cx, &data).map_err(|_| Error::JSFailed)?;
++        }
++        Ok(WaveShaperNode {
++            node,
++            curve: DomRefCell::new(curve),
++            oversample: Cell::new(options.oversample),
++        })
++    }
++
++    pub(crate) fn new(
++        cx: &mut JSContext,
++        window: &Window,
++        context: &BaseAudioContext,
++        options: &WaveShaperOptions,
++    ) -> Fallible<DomRoot<WaveShaperNode>> {
++        Self::new_with_proto(cx, window, None, context, options)
++    }
++
++    #[cfg_attr(crown, expect(crown::unrooted_must_root))]
++    fn new_with_proto(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &WaveShaperOptions,
++    ) -> Fallible<DomRoot<WaveShaperNode>> {
++        let node = WaveShaperNode::new_inherited(cx, context, options)?;
++        Ok(reflect_dom_object_with_proto(
++            cx,
++            Box::new(node),
++            window,
++            proto,
++        ))
++    }
++}
++
++impl WaveShaperNodeMethods<crate::DomTypeHolder> for WaveShaperNode {
++    /// <https://webaudio.github.io/web-audio-api/#dom-waveshapernode-waveshapernode>
++    fn Constructor(
++        cx: &mut JSContext,
++        window: &Window,
++        proto: Option<HandleObject>,
++        context: &BaseAudioContext,
++        options: &WaveShaperOptions,
++    ) -> Fallible<DomRoot<WaveShaperNode>> {
++        WaveShaperNode::new_with_proto(cx, window, proto, context, options)
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-waveshapernode-curve>
++    fn GetCurve(&self) -> Option<RootedTraceableBox<HeapFloat32Array>> {
++        let curve = self.curve.borrow();
++        if curve.is_initialized() {
++            curve.get_typed_array().ok()
++        } else {
++            None
++        }
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-waveshapernode-curve>
++    fn SetCurve(
++        &self,
++        cx: &mut JSContext,
++        value: CustomAutoRooterGuard<Option<Float32Array>>,
++    ) -> ErrorResult {
++        let data = match (*value).as_ref() {
++            Some(array) => {
++                let data = array.to_vec().ok_or(Error::JSFailed)?;
++                if data.len() < 2 {
++                    return Err(Error::InvalidState(None));
++                }
++                Some(data)
++            },
++            None => None,
++        };
++        let stored = match &data {
++            Some(data) => {
++                let new_curve = HeapBufferSource::default();
++                new_curve.set_data(cx, data).map_err(|_| Error::JSFailed)?;
++                new_curve
++            },
++            None => HeapBufferSource::default(),
++        };
++        *self.curve.borrow_mut() = stored;
++        self.node.message(AudioNodeMessage::WaveShaperNode(
++            WaveShaperNodeMessage::SetCurve(data),
++        ));
++        Ok(())
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-waveshapernode-oversample>
++    fn Oversample(&self) -> OverSampleType {
++        self.oversample.get()
++    }
++
++    /// <https://webaudio.github.io/web-audio-api/#dom-waveshapernode-oversample>
++    fn SetOversample(&self, oversample: OverSampleType) {
++        self.oversample.set(oversample);
++        self.node.message(AudioNodeMessage::WaveShaperNode(
++            WaveShaperNodeMessage::SetOversample(oversample.convert()),
++        ));
++    }
++}
++
++impl Convert<ServoMediaOverSampleType> for OverSampleType {
++    fn convert(self) -> ServoMediaOverSampleType {
++        match self {
++            OverSampleType::None => ServoMediaOverSampleType::None,
++            OverSampleType::_2x => ServoMediaOverSampleType::Double,
++            OverSampleType::_4x => ServoMediaOverSampleType::Quadruple,
++        }
++    }
++}
+diff --git a/components/script_bindings/codegen/Bindings.conf b/components/script_bindings/codegen/Bindings.conf
+index 688c8985085..a0d420ed250 100644
+--- a/components/script_bindings/codegen/Bindings.conf
++++ b/components/script_bindings/codegen/Bindings.conf
+@@ -52,8 +52,16 @@ DOMInterfaces = {
+     'cx':['CreateMediaElementSource', 'CreateMediaStreamDestination', 'CreateMediaStreamSource', 'CreateMediaStreamTrackSource'],
+ },
+ 
++'ConvolverNode': {
++    'cx': ['SetBuffer'],
++},
++
++'WaveShaperNode': {
++    'cx': ['SetCurve'],
++},
++
+ 'BaseAudioContext': {
+-    'cx': ['CreateBuffer', 'CreateGain', 'CreateOscillator', 'CreatePanner', 'CreateStereoPanner', 'CreateBiquadFilter', 'CreateIIRFilter', 'CreateAnalyser', 'CreateConstantSource', 'CreateChannelMerger', 'CreateChannelSplitter', 'CreateBufferSource', 'Destination', 'Listener'],
++    'cx': ['CreateBuffer', 'CreateGain', 'CreateOscillator', 'CreatePanner', 'CreateStereoPanner', 'CreateBiquadFilter', 'CreateIIRFilter', 'CreateAnalyser', 'CreateConstantSource', 'CreateChannelMerger', 'CreateChannelSplitter', 'CreateBufferSource', 'CreateWaveShaper', 'CreateDelay', 'CreateConvolver', 'CreateDynamicsCompressor', 'Destination', 'Listener'],
+     'realm': ['DecodeAudioData', 'Resume'],
+ },
+ 
+diff --git a/components/script_bindings/webidls/BaseAudioContext.webidl b/components/script_bindings/webidls/BaseAudioContext.webidl
+index 271aa802e32..b1c05e64ef7 100644
+--- a/components/script_bindings/webidls/BaseAudioContext.webidl
++++ b/components/script_bindings/webidls/BaseAudioContext.webidl
+@@ -37,17 +37,17 @@ interface BaseAudioContext : EventTarget {
+   //                                           optional unsigned long numberOfOutputChannels = 2);
+   [Throws] AnalyserNode createAnalyser();
+   [Throws]  GainNode createGain();
+-  // DelayNode createDelay(optional double maxDelayTime = 1);
++  [Throws] DelayNode createDelay(optional double maxDelayTime = 1);
+   [Throws] BiquadFilterNode createBiquadFilter();
+   [Throws] IIRFilterNode createIIRFilter(sequence<double> feedforward,
+                                 sequence<double> feedback);
+-  // WaveShaperNode createWaveShaper();
++  [Throws] WaveShaperNode createWaveShaper();
+   [Throws] PannerNode createPanner();
+   [Throws] StereoPannerNode createStereoPanner();
+-  // ConvolverNode createConvolver();
++  [Throws] ConvolverNode createConvolver();
+   [Throws] ChannelSplitterNode createChannelSplitter(optional unsigned long numberOfOutputs = 6);
+   [Throws] ChannelMergerNode createChannelMerger(optional unsigned long numberOfInputs = 6);
+-  // DynamicsCompressorNode createDynamicsCompressor();
++  [Throws] DynamicsCompressorNode createDynamicsCompressor();
+   [Throws]  OscillatorNode createOscillator();
+   // PeriodicWave createPeriodicWave(sequence<float> real,
+   //                                 sequence<float> imag,
+diff --git a/components/script_bindings/webidls/ConvolverNode.webidl b/components/script_bindings/webidls/ConvolverNode.webidl
+new file mode 100644
+index 00000000000..6a419d112d5
+--- /dev/null
++++ b/components/script_bindings/webidls/ConvolverNode.webidl
+@@ -0,0 +1,19 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++/*
++ * The origin of this IDL file is
++ * https://webaudio.github.io/web-audio-api/#convolvernode
++ */
++
++dictionary ConvolverOptions : AudioNodeOptions {
++  AudioBuffer? buffer;
++  boolean disableNormalization = false;
++};
++
++[Exposed=Window]
++interface ConvolverNode : AudioNode {
++  [Throws] constructor(BaseAudioContext context, optional ConvolverOptions options = {});
++  [SetterThrows] attribute AudioBuffer? buffer;
++  attribute boolean normalize;
++};
+diff --git a/components/script_bindings/webidls/DelayNode.webidl b/components/script_bindings/webidls/DelayNode.webidl
+new file mode 100644
+index 00000000000..4e87abe04d1
+--- /dev/null
++++ b/components/script_bindings/webidls/DelayNode.webidl
+@@ -0,0 +1,18 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++/*
++ * The origin of this IDL file is
++ * https://webaudio.github.io/web-audio-api/#delaynode
++ */
++
++dictionary DelayOptions : AudioNodeOptions {
++  double maxDelayTime = 1;
++  double delayTime = 0;
++};
++
++[Exposed=Window]
++interface DelayNode : AudioNode {
++  [Throws] constructor(BaseAudioContext context, optional DelayOptions options = {});
++  readonly attribute AudioParam delayTime;
++};
+diff --git a/components/script_bindings/webidls/DynamicsCompressorNode.webidl b/components/script_bindings/webidls/DynamicsCompressorNode.webidl
+new file mode 100644
+index 00000000000..e03adccc758
+--- /dev/null
++++ b/components/script_bindings/webidls/DynamicsCompressorNode.webidl
+@@ -0,0 +1,26 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++/*
++ * The origin of this IDL file is
++ * https://webaudio.github.io/web-audio-api/#dynamicscompressornode
++ */
++
++dictionary DynamicsCompressorOptions : AudioNodeOptions {
++  float attack = 0.003;
++  float knee = 30;
++  float ratio = 12;
++  float release = 0.25;
++  float threshold = -24;
++};
++
++[Exposed=Window]
++interface DynamicsCompressorNode : AudioNode {
++  [Throws] constructor(BaseAudioContext context, optional DynamicsCompressorOptions options = {});
++  readonly attribute AudioParam threshold;
++  readonly attribute AudioParam knee;
++  readonly attribute AudioParam ratio;
++  readonly attribute float reduction;
++  readonly attribute AudioParam attack;
++  readonly attribute AudioParam release;
++};
+diff --git a/components/script_bindings/webidls/WaveShaperNode.webidl b/components/script_bindings/webidls/WaveShaperNode.webidl
+new file mode 100644
+index 00000000000..13cac1e8429
+--- /dev/null
++++ b/components/script_bindings/webidls/WaveShaperNode.webidl
+@@ -0,0 +1,25 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++/*
++ * The origin of this IDL file is
++ * https://webaudio.github.io/web-audio-api/#waveshapernode
++ */
++
++enum OverSampleType {
++  "none",
++  "2x",
++  "4x"
++};
++
++dictionary WaveShaperOptions : AudioNodeOptions {
++  sequence<float> curve;
++  OverSampleType oversample = "none";
++};
++
++[Exposed=Window]
++interface WaveShaperNode : AudioNode {
++  [Throws] constructor(BaseAudioContext context, optional WaveShaperOptions options = {});
++  [SetterThrows] attribute Float32Array? curve;
++  attribute OverSampleType oversample;
++};

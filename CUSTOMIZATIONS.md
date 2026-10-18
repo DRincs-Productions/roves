@@ -1,3 +1,52 @@
+## 2026-10-18 - Audio render thread: cached plan, constant parameters, batched sink pushes
+
+**Files:** `components/media/audio/{graph,param,gain_node,constant_source_node}.rs`,
+`components/media/backends/gstreamer/audio_sink.rs` (part of `0238-webaudio-nodes.patch`).
+
+Profile of the audio-only Tone.js scene on the optimized build: the render thread alone used
+about 47% of a core. Its hot spots were `Param::update` called for every frame of every node,
+the cycle detection (`tarjan_scc`) and the DFS ordering recomputed for every 128-frame quantum,
+and one GStreamer buffer push plus a "need data" round trip per quantum (about 345 a second).
+- `AudioGraph` keeps a `ProcessingPlan` (cycle nodes, cycle breakers, processing order) and only
+  rebuilds it when a node or connection changes.
+- `Param::is_constant()` (nothing automating it, nothing connected). `GainNode` scales a block
+  in one pass when the gain is constant (and not at all when it is one); `ConstantSourceNode`
+  writes a flat block, or leaves it silent when the offset is zero so the nodes behind it can skip
+  their work. Per-frame updates remain when a parameter is automated or driven by another node.
+- The GStreamer sink queues four quanta (about 11.6 ms, the sink's own period) per pushed buffer
+  instead of one, cutting pushes and wake-ups four times; samples queued before a pause are dropped.
+Tests: gain constant / unity / linear ramp, constant source flat and silent
+(`cargo test -p servo-media-audio`, 12 tests). Measured gain: pending a CI build.
+
+## 2026-10-18 - WebAudio: WaveShaper, Delay (with feedback), Convolver, DynamicsCompressor
+
+**Files:** `components/media/audio/{delay_node,convolver_node,dynamics_compressor_node}.rs` (new),
+`components/media/audio/{audio_node,graph,param,render_thread,lib,wave_shaper_node,Cargo.toml}`,
+`components/script/dom/audio/{waveshapernode,delaynode,convolvernode,dynamicscompressornode}.rs` (new),
+`components/script/dom/audio/{audionode,baseaudiocontext,mod}.rs`, new IDL `WaveShaperNode`,
+`DelayNode`, `ConvolverNode`, `DynamicsCompressorNode`, `BaseAudioContext.webidl`, `Cargo.toml`/`Cargo.lock`.
+**Patch:** `0238-webaudio-nodes.patch`.
+
+Roves lacked `createWaveShaper/Delay/Convolver/DynamicsCompressor` (the probe
+`support/perf/webaudio-nodes-probe.html` lists them), so Tone.js effects (Reverb, FeedbackDelay,
+Compressor, Distortion, signal math) threw and could take a page down. Added:
+- `WaveShaperNode`: DOM binding over the existing engine node; curve can be replaced and
+  `oversample` is forwarded (the engine no longer panics on a second curve).
+- `DelayNode` with an `a-rate` `delayTime` (ring buffer, linear interpolation). Feedback loops
+  are no longer muted: a delay inside a cycle is a *cycle breaker* as in the spec (DelayReader
+  before the quantum, DelayWriter after it, minimum delay one render quantum). `AudioGraph::process`
+  orders the nodes first (DFS on the graph without the edges that enter a breaker, then what
+  feeds each breaker) and processes them after. Tests: plain delay, feedback echoes 1, 0.5, 0.25...
+- `ConvolverNode` using the `fft-convolver` crate (MIT, partitioned FFT, built on `realfft`
+  already used by the analyser; its `rtsan-standalone` helpers are inert unless `RTSAN_ENABLE`
+  is set). Mono and stereo responses, spec normalization (`normalize`), silence tail detection so an
+  idle reverb costs nothing. Four-channel responses are rejected (`NotSupported`).
+- `DynamicsCompressorNode`: feed-forward soft-knee compressor with attack/release and the
+  automatic make-up gain; no look-ahead and `reduction` reports 0 (the render thread does not
+  report it back yet). Test: -10 dB in, threshold -20, ratio 4 gives -8.5 dB.
+Still missing: `PeriodicWave`, `ScriptProcessor`, AudioWorklet. `cargo test -p servo-media-audio`
+passes (10 tests); the DOM side compiles only in CI.
+
 ## 2026-10-18 - Free WebAudio nodes and share AudioBuffer data
 
 **Files:** `components/media/audio/{audio_node,buffer_source_node,constant_source_node,oscillator_node,graph,render_thread,context,lib}.rs`,

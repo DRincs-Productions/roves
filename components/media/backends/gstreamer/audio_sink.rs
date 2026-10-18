@@ -21,12 +21,21 @@ use crate::media_stream::GstreamerMediaSocket;
 
 const DEFAULT_SAMPLE_RATE: f32 = 44100.;
 
+/// How many render quanta (128 frames, 2.9 ms at 44.1 kHz) go into one buffer pushed to GStreamer.
+/// Pushing a buffer, and the "need data" round trip that follows, has a fixed cost: doing it
+/// every quantum made the audio thread one of the busiest in a page that only plays sound. Four
+/// quanta is about 11.6 ms, the size of the sink's own 10 ms periods (see `init`).
+const QUANTA_PER_BUFFER: u32 = 4;
+
 pub struct GStreamerAudioSink {
     pipeline: gstreamer::Pipeline,
     appsrc: Arc<AppSrc>,
     sample_rate: Cell<f32>,
     audio_info: RefCell<Option<gstreamer_audio::AudioInfo>>,
     sample_offset: Cell<u64>,
+    /// Interleaved samples of the quanta rendered since the last buffer was pushed.
+    pending: RefCell<Vec<f32>>,
+    pending_quanta: Cell<u32>,
 }
 
 impl GStreamerAudioSink {
@@ -51,6 +60,8 @@ impl GStreamerAudioSink {
             sample_rate: Cell::new(DEFAULT_SAMPLE_RATE),
             audio_info: RefCell::new(None),
             sample_offset: Cell::new(0),
+            pending: RefCell::new(Vec::new()),
+            pending_quanta: Cell::new(0),
         })
     }
 }
@@ -80,6 +91,53 @@ impl GStreamerAudioSink {
             self.set_audio_info(self.sample_rate.get(), channels)?;
         }
         Ok(())
+    }
+}
+
+impl GStreamerAudioSink {
+    /// Push the rendered quanta queued so far as one buffer.
+    fn flush_pending(&self) -> Result<(), AudioSinkError> {
+        let quanta = self.pending_quanta.replace(0);
+        if quanta == 0 {
+            return Ok(());
+        }
+        let mut samples = self.pending.borrow_mut();
+        let sample_rate = self.sample_rate.get() as u64;
+        let n_samples = FRAMES_PER_BLOCK.0 * quanta as u64;
+        let mut buffer = gstreamer::Buffer::with_size(samples.len() * 4).unwrap();
+        {
+            let buffer = buffer.get_mut().unwrap();
+            let sample_offset = self.sample_offset.get();
+            // Calculate the current timestamp (PTS) and the next one,
+            // and calculate the duration from the difference instead of
+            // simply the number of samples to prevent rounding errors
+            let pts = gstreamer::ClockTime::from_nseconds(
+                sample_offset
+                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
+                    .unwrap(),
+            );
+            let next_pts: gstreamer::ClockTime = gstreamer::ClockTime::from_nseconds(
+                (sample_offset + n_samples)
+                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
+                    .unwrap(),
+            );
+            buffer.set_pts(Some(pts));
+            buffer.set_duration(next_pts - pts);
+            // XXXManishearth if we have a safe way to convert
+            // from Box<[f32]> to Box<[u8]> (similarly for Vec)
+            // we can use Buffer::from_slice instead
+            buffer
+                .copy_from_slice(0, samples.as_mut_slice().as_mut_byte_slice())
+                .expect("copying failed");
+            self.sample_offset.set(sample_offset + n_samples);
+        }
+        samples.clear();
+        drop(samples);
+
+        self.appsrc
+            .push_buffer(buffer)
+            .map(|_| ())
+            .map_err(|_| AudioSinkError::BufferPushFailed)
     }
 }
 
@@ -188,6 +246,9 @@ impl AudioSink for GStreamerAudioSink {
     }
 
     fn stop(&self) -> Result<(), AudioSinkError> {
+        // Samples rendered before a pause must not play after the resume.
+        self.pending.borrow_mut().clear();
+        self.pending_quanta.set(0);
         self.pipeline
             .set_state(gstreamer::State::Paused)
             .map(|_| ())
@@ -200,59 +261,35 @@ impl AudioSink for GStreamerAudioSink {
 
     fn push_data(&self, mut chunk: Chunk) -> Result<(), AudioSinkError> {
         if let Some(block) = chunk.blocks.first() {
-            self.set_channels_if_changed(block.chan_count())?;
-        }
-
-        let sample_rate = self.sample_rate.get() as u64;
-        let audio_info = self.audio_info.borrow();
-        let audio_info = audio_info.as_ref().unwrap();
-        let channels = audio_info.channels();
-        let bpf = audio_info.bpf() as usize;
-        assert_eq!(bpf, 4 * channels as usize);
-        let n_samples = FRAMES_PER_BLOCK.0;
-        let buf_size = (n_samples as usize) * (bpf);
-        let mut buffer = gstreamer::Buffer::with_size(buf_size).unwrap();
-        {
-            let buffer = buffer.get_mut().unwrap();
-            let mut sample_offset = self.sample_offset.get();
-            // Calculate the current timestamp (PTS) and the next one,
-            // and calculate the duration from the difference instead of
-            // simply the number of samples to prevent rounding errors
-            let pts = gstreamer::ClockTime::from_nseconds(
-                sample_offset
-                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
-                    .unwrap(),
-            );
-            let next_pts: gstreamer::ClockTime = gstreamer::ClockTime::from_nseconds(
-                (sample_offset + n_samples)
-                    .mul_div_floor(gstreamer::ClockTime::SECOND.nseconds(), sample_rate)
-                    .unwrap(),
-            );
-            buffer.set_pts(Some(pts));
-            buffer.set_duration(next_pts - pts);
-
-            // sometimes nothing reaches the output
-            if chunk.is_empty() {
-                chunk.blocks.push(Default::default());
-                chunk.blocks[0].repeat(channels as u8);
+            let channels = block.chan_count();
+            let current = self
+                .audio_info
+                .borrow()
+                .as_ref()
+                .map(|info| info.channels() as u8);
+            if current.is_some_and(|current| current != channels) {
+                // The queued samples have the old channel layout: send them before the caps change.
+                self.flush_pending()?;
             }
-            debug_assert!(chunk.len() == 1);
-            let mut data = chunk.blocks[0].interleave();
-            let data = data.as_mut_byte_slice();
-
-            // XXXManishearth if we have a safe way to convert
-            // from Box<[f32]> to Box<[u8]> (similarly for Vec)
-            // we can use Buffer::from_slice instead
-            buffer.copy_from_slice(0, data).expect("copying failed");
-
-            sample_offset += n_samples;
-            self.sample_offset.set(sample_offset);
+            self.set_channels_if_changed(channels)?;
         }
 
-        self.appsrc
-            .push_buffer(buffer)
-            .map(|_| ())
-            .map_err(|_| AudioSinkError::BufferPushFailed)
+        let channels = self.audio_info.borrow().as_ref().unwrap().channels();
+        // sometimes nothing reaches the output
+        if chunk.is_empty() {
+            chunk.blocks.push(Default::default());
+            chunk.blocks[0].repeat(channels as u8);
+        }
+        debug_assert!(chunk.len() == 1);
+        self.pending
+            .borrow_mut()
+            .extend_from_slice(&chunk.blocks[0].interleave());
+        self.pending_quanta.set(self.pending_quanta.get() + 1);
+        if self.pending_quanta.get() < QUANTA_PER_BUFFER {
+            // Not enough for a buffer yet: the render thread keeps rendering (the appsrc is empty).
+            return Ok(());
+        }
+        self.flush_pending()
     }
 
     fn set_eos_callback(&self, _: Box<dyn Fn(Box<dyn AsRef<[f32]>>) + Send + Sync + 'static>) {}

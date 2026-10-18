@@ -15,6 +15,9 @@ use crate::block::{Block, Chunk, Tick};
 use crate::buffer_source_node::{AudioBufferSourceNodeMessage, AudioBufferSourceNodeOptions};
 use crate::channel_node::ChannelNodeOptions;
 use crate::constant_source_node::ConstantSourceNodeOptions;
+use crate::convolver_node::{ConvolverNodeMessage, ConvolverNodeOptions};
+use crate::delay_node::DelayNodeOptions;
+use crate::dynamics_compressor_node::DynamicsCompressorNodeOptions;
 use crate::gain_node::GainNodeOptions;
 use crate::iir_filter_node::IIRFilterNodeOptions;
 use crate::media_element_source_node::MediaElementSourceNodeMessage;
@@ -34,9 +37,9 @@ pub enum AudioNodeInit {
     ChannelMergerNode(ChannelNodeOptions),
     ChannelSplitterNode,
     ConstantSourceNode(ConstantSourceNodeOptions),
-    ConvolverNode,
-    DelayNode,
-    DynamicsCompressionNode,
+    ConvolverNode(ConvolverNodeOptions),
+    DelayNode(DelayNodeOptions),
+    DynamicsCompressionNode(DynamicsCompressorNodeOptions),
     GainNode(GainNodeOptions),
     IIRFilterNode(IIRFilterNodeOptions),
     MediaElementSourceNode,
@@ -149,6 +152,15 @@ pub(crate) trait AudioNodeEngine: Send + AudioNodeCommon {
 
     fn process(&mut self, inputs: Chunk, info: &BlockInfo) -> Chunk;
 
+    /// The graph calls this before each render quantum for a node that sits in a feedback loop
+    /// and breaks it (a `DelayNode`): its output must then not depend on its input of the same
+    /// quantum, and the input is delivered by [`Self::write_after_quantum`] once the whole
+    /// quantum has been processed.
+    fn set_cycle_breaker(&mut self, _breaker: bool) {}
+
+    /// The input of a cycle breaker for the quantum just processed.
+    fn write_after_quantum(&mut self, _inputs: Chunk, _info: &BlockInfo) {}
+
     /// A source that has played to its end can never produce sound again, so the graph may
     /// drop it once nothing can refer to it.
     fn is_finished(&self) -> bool {
@@ -244,6 +256,7 @@ pub enum AudioNodeMessage {
     AudioBufferSourceNode(AudioBufferSourceNodeMessage),
     AudioScheduledSourceNode(AudioScheduledSourceNodeMessage),
     BiquadFilterNode(BiquadFilterNodeMessage),
+    ConvolverNode(ConvolverNodeMessage),
     GetParamValue(ParamType, Sender<f32>),
     MediaElementSourceNode(MediaElementSourceNodeMessage),
     OscillatorNode(OscillatorNodeMessage),

@@ -71,6 +71,23 @@ impl AudioNodeEngine for ConstantSourceNode {
             ShouldPlay::Between(start, end) => (start, end),
         };
 
+        // A source that plays for the whole quantum with an offset nothing is changing produces a
+        // flat block: write it in one go, or leave it silent when the offset is zero so that the
+        // nodes after it can skip their work too.
+        let whole_quantum = start_at == Tick(0) && stop_at >= Tick::FRAMES_PER_BLOCK;
+        if whole_quantum {
+            self.update_parameters(info, Tick(0));
+            if self.offset.is_constant() {
+                let offset = self.offset.value();
+                if offset != 0. {
+                    let block = &mut inputs.blocks[0];
+                    block.explicit_silence();
+                    block.data_mut().fill(offset);
+                }
+                return inputs;
+            }
+        }
+
         {
             inputs.blocks[0].explicit_silence();
 
@@ -83,7 +100,8 @@ impl AudioNodeEngine for ConstantSourceNode {
                 } else if tick > stop_at {
                     break;
                 }
-                if self.update_parameters(info, frame.tick()) {
+                // Tick 0 was handled above when the source plays for the whole quantum.
+                if !(whole_quantum && tick == Tick(0)) && self.update_parameters(info, tick) {
                     offset = self.offset.value();
                 }
                 frame.mutate_with(|sample, _| *sample = offset);

@@ -12,6 +12,12 @@ pub enum ParamType {
     Frequency,
     Detune,
     Gain,
+    DelayTime,
+    Threshold,
+    Knee,
+    Ratio,
+    Attack,
+    Release,
     Q,
     Pan,
     PlaybackRate,
@@ -191,6 +197,13 @@ impl Param {
         // together in update(), and then mixed with the actual param value
         // https://webaudio.github.io/web-audio-api/#dom-audionode-connect-destinationparam-output
         self.val + self.block_mix_val
+    }
+
+    /// Whether the value stays the same for the whole render quantum: nothing is automating it
+    /// any more and no node is connected to it. Only valid right after [`Self::update`] was
+    /// called for tick 0 of the quantum, which applies what is due at its start.
+    pub fn is_constant(&self) -> bool {
+        self.current_event >= self.events.len() && self.blocks.is_empty()
     }
 
     pub fn set_rate(&mut self, rate: ParamRate) {
