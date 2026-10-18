@@ -398,10 +398,11 @@ location per platform, and a real incident this was built to catch).
 
 ### Repeatable performance fixtures
 
-Development builds also handle V8 exceptions without source locations without overflowing;
-the real typewriter/Pixi smoke run exposed this case while checking the global-lookup changes.
+Roves [v0.7.13](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.13) delegates
+global intrinsic lookup to V8 and handles exceptions without source locations safely.
+The verified release passes DOM/iframe, worker FIFO/timer and visible typewriter/Pixi probes.
 
-The v0.7.12 consumer CI passes on all platforms. Updated visible Chrome/Roves reference
+The v0.7.13 consumer CI passes on all platforms. Updated visible Chrome/Roves reference
 measurements and their limits are recorded in [the performance notes](docs/ROVES_PERFORMANCE.md).
 
 The bundled diagnostic page also exposes deliberately minimal comparison workloads through
@@ -435,21 +436,24 @@ from 5.72 to 3.88 ms for cloning and 6.37 to 4.15 ms for transfer. These are API
 not whole-game CPU savings; the Chrome transfer reference remains about 0.10 ms.
 Worker OffscreenCanvas WebGL rendering is not yet supported; the canvas capability probe
 distinguishes this from working OffscreenCanvas contexts on the DOM thread.
-Development after the v0.7.12 tag removes redundant standard-class hooks from worker globals,
+The v0.7.13 release removes redundant standard-class hooks from worker globals,
 delegating intrinsic lookups to V8. All desktop/V8 CI checks and the downloaded runtime pass;
 the fixed-work direct-lookup probe takes 93 ms in the new debug build, versus 8551 ms in the
 previous optimized build. This diagnostic comparison is not a matched-profile CPU percentage.
-A subsequent development change uses V8 native data properties for Window's lazy interfaces,
-with 38 engine-layer tests passing, including cross-global ownership and exception recovery;
-browser verification is pending CI artifacts.
+It uses V8 native data properties for Window's lazy interfaces, with 39 engine-layer tests
+passing, including cross-global ownership, exception recovery and missing source locations.
+The large worker probe scales from about 8.4 s with one worker to 1.1 s with eight on this machine;
+total process CPU remains about 11 core-seconds and observed private memory rises from 174 to 250 MiB.
+These headless arithmetic probes do not establish game frame pacing or CPU parity.
 Animation comparison fixtures omit FPS polling; the Three.js panel releases its scene
 resources and canvas when unmounted.
 Downloaded CI builds pass the numerical and WebGL resize/readback checks; reproducible
 API benchmarks live in [`support/perf`](./support/perf/README.md), with results and scope in
 [`ROVES_PERFORMANCE.md`](./docs/ROVES_PERFORMANCE.md). These measurements do not establish whole-game parity with Chrome.
 
-An experimental `./mach build --features mimalloc` swaps the global allocator for mimalloc (default:
-system allocator on Windows, jemalloc elsewhere) for allocator A/B measurements. The `perf-ab.yml`
+Windows uses mimalloc by default; `--features system-allocator` selects the system allocator.
+`./mach build --features mimalloc` forces mimalloc on other targets (normally jemalloc there).
+The `perf-ab.yml`
 workflow publishes Windows release builds of both to the `perf-ab` pre-release.
 
 For shell-side counts, launch a desktop build with `ROVES_PERF_LOG_INTERVAL_MS=10000` (or another

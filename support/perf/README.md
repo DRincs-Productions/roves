@@ -39,6 +39,10 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
   Math.imul function as a control for global-lookup overhead. Startup is reported separately.
   More workers can improve completion time while saturating more cores; this is not a whole-game
   CPU saving. Short fast runs do not provide enough rAF samples for frame-percentile claims.
+  `jobs=1024&iterations=8388608` selects a larger fixed workload (bounds: 1..4096 jobs,
+  1..16777216 iterations); `auto=1` asks the page to close after completion. For Chrome MCP,
+  omit auto and await `window.computeRun`. CPU sampled over the whole process lifetime also
+  includes startup, warm-up and shutdown; distinguish it from the reported compute duration.
 - `main-intrinsics-bench.html`: warm-up and three alternating direct/captured Math.imul
   runs on the main thread, 8388608 integer iterations each, checking identical results.
   Logs WORKERBENCH with scene=main-intrinsics for the shared terminal runner. This isolates
@@ -47,6 +51,9 @@ Serve this directory locally, for example with `python -m http.server 48762 --bi
 - `native-globals-probe.html`: nine functional checks for standard intrinsics, DOM constructors,
   Image/Audio/Option aliases, an initialized property descriptor and iframe constructor realms.
   Logs WORKERBENCH with scene=native-globals. This is not a performance benchmark.
+
+The native-global, main-intrinsic and worker-queue probes also accept `auto=1` for page-owned
+closure, allowing foreground terminal runs without an external process launcher/terminator.
 
 Use the same page, browser build, hardware and rendering mode for before/after comparisons.
 Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.

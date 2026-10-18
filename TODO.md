@@ -113,10 +113,6 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
   verificando stacking context, hit testing e memoria GPU. Chrome MCP osserva fino a 120
   animazioni native nella fixture typewriter; il risparmio CPU ottenibile non è misurato.
 - [ ] Misurare traffico WebGL e attese sincrone di PixiJS/three.js prima di introdurre batching.
-- [ ] Confermare sul browser CI le patch 0233/0234 per i globali Window (sorgente `1e0f4764378`,
-  run desktop `39069276284`, V8 `39069276329`), poi ripetere CPU/RAM della
-  scena reale su build ottimizzate. La correzione worker 0232 passa già il test di calcolo
-  senza variabile locale; non riavviare l'indagine da zero sui globali.
 - [ ] Estendere la misura AnalyserNode Crossbeam a letture per frame, più carichi e sessioni
   lunghe, poi verificare l'effetto sul gioco. Prove debug e ottimizzate con 0/8 nodi non letti
   già completate; condizioni e variabilità in `docs/ROVES_PERFORMANCE.md`.
@@ -124,7 +120,7 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
   riusando BackingStore/serializer V8 con ownership e cleanup espliciti. La rimozione delle due
   copie del vettore esterno e il rilascio dei thread inattivi sono già verificati. Preservare
   il percorso IPC/serializzabile, errori di clone, terminate immediato e chiusura del parent.
-- [ ] Confrontare calcolo e messaggi con 1/2/4/8 worker: throughput, CPU totale, memoria e
+- [ ] Estendere il confronto già completato del calcolo con 1/2/4/8 worker ai messaggi e al gioco: CPU totale, memoria e
   fluidità del thread principale. Per i giochi valutare un pool riusato con coda e batch limitati;
   non equiparare più thread a meno CPU. WebGL/rAF nei worker richiedono ancora supporto del motore.
 - [ ] Valutare AudioWorklet sul grafo servo-media esistente: isolate V8 dedicato, moduli,
@@ -208,7 +204,7 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 
 - [ ] **GStreamer dal sito ufficiale:** da ottobre 2026 `gstreamer.freedesktop.org` tronca i download dopo circa 1 MiB e spesso risponde 503. Per questo le build Windows/macOS e `mach bootstrap` scaricano gli installer di GStreamer dalla copia verificata nella release `deps-gstreamer-<versione>` di questo repo (`.github/workflows/gstreamer-mirror.yml`, `support/gstreamer_mirror.py`, `python/servo/platform/{macos,windows}.py`), e usano il sito ufficiale solo come ripiego. Quando il sito ufficiale torna affidabile, rimettere il link ufficiale come fonte principale, oppure decidere di tenere la copia come cache; a ogni nuova versione di GStreamer, rilanciare il mirror con un tag `deps-gstreamer-<versione>`.
 - [ ] **Grafo desktop effettivo:** controllare feature e duplicazioni del target scelto prima di rimuovere dipendenze o deduplicare major incompatibili; non trattare tutto il lockfile workspace come contenuto del binario.
-- [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il pin `roves-ref`/`TARGET_SHELL_VERSION`, va bumped a ogni release rilevante (vedi `AGENTS.md`).
+- [ ] **Distribuzione del fork:** verificare che i consumer esterni (`roves-action`, Packmaster) scarichino Roves patchato al tag corretto — vedi anche il due riferimenti Action e `shell-version.txt` condiviso TS/Rust, va bumped a ogni release rilevante (vedi `AGENTS.md`).
 - [ ] **Matrice di regressione:** aggiungere/verificare smoke test delle app confezionate con routing, JS, storage, salvataggi, grafica, audio e API native; separare test della build, test della firma e test sul dispositivo.
 - [ ] **Riproducibilità:** ogni modifica runtime deve essere riproducibile da upstream + patch e mantenere coerenti documentazione, lockfile, bundle e asset CI. Gli aggiornamenti del solo backlog non richiedono una patch del motore.
 - [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.

@@ -15,5 +15,6 @@ addEventListener('load', async () => {
  check('iframe Image alias realm',()=>{const child=frame.contentWindow;return new child.Image() instanceof child.HTMLImageElement});
  frame.remove();
  console.log('WORKERBENCH '+JSON.stringify({phase:checks.every(x=>x.pass)?'PASS':'FAIL',scene:'native-globals',checks}));
+ if(new URLSearchParams(location.search).get('auto')==='1')window.close();
 });
 </script><body>DOM global integration probe</body>

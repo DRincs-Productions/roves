@@ -11,5 +11,6 @@ setTimeout(()=>{
  }
  window.results=results;
  console.log('WORKERBENCH '+JSON.stringify({phase:results.every(r=>r.value===results[0].value)?'PASS':'FAIL',scene:'main-intrinsics',results,visibility:document.visibilityState,viewport:[innerWidth,innerHeight]}));
+ if(new URLSearchParams(location.search).get('auto')==='1')window.close();
 },1000);
 </script>

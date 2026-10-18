@@ -1,13 +1,52 @@
 # Roves — Prestazioni
 
-## Stato corrente, 17 ottobre 2026
+## Stato verificato, 18 ottobre 2026
 
-Pubblicata [v0.7.12](https://github.com/DRincs-Productions/roves/releases/tag/v0.7.12), sorgente
-`0d89099fa9d`: sei build release verdi e sei archivi presenti. Portable Windows verificato
-con SHA256 `f77cc2e1686cbaafb44fea4913f2ee6999ec937a1197da6a022202779a75ef0b` e commit
-incorporato. FIFO/timer e rilascio dei quattro worker passano sul binario pubblicato.
-Pin aggiornati in roves-action `eaadbcb` e Packmaster `31554fa`; controllo Biome passato.
-Le ottimizzazioni successive degli accessi globali descritte sotto non sono nella v0.7.12.
+Engine **v0.7.13**, sorgente `a3963eae5c6`: desktop CI `39122648517` 13/13,
+V8 `39122648553` 10/10, Android/iOS e release `39122949519` verdi. Sei archivi
+plain/Steam presenti. Windows SHA256
+`20ea28aba13b10508593db1d295bd939a20be23cfb14958ccba1b89bc9b7d3f2`, commit incorporato verificato.
+Nove controlli DOM, FIFO128/timer, intrinsics e scena Pixi/typewriter visibile PASS.
+Patch 0235 verificata anche sul debug CI: uscita anticipata senza il precedente panic
+di overflow; l'errore null di chiusura si osserva anche nella v0.7.12.
+
+Distribuzione verificata: roves-action **v0.1.9**, alias `v0` a `cc7aba6`, CI consumer
+`39128141935` 9/9; Packmaster **v0.1.9** `ceb9c1b`, release `39127760654` verde,
+tre archivi presenti. Corretto un pin importante: la UI Packmaster indicava v0.7.12,
+ma il backend di produzione scaricava ancora v0.4.18. Ora TS e Rust leggono lo stesso
+`src/lib/shell-version.txt` (v0.7.13). Le build di test che usano latest mascheravano
+il problema. Archivio Windows verificato tramite SHA256; il pin condiviso è verificato nei sorgenti
+della release. La ricerca di stringhe nel binario ottimizzato non è conclusiva, né
+questa verifica equivale a una prova completa della GUI.
+
+### Misure e limiti
+
+Scena typewriter/Pixi, Windows 11/i7-8700/GTX1050, 1024×740, DPR1, piano Risparmio
+di energia invariato. Campioni CPU/RAM a 60–80 s; GPU non campionata.
+v0.7.13: **87,44% di un core**, 626,3 MiB privati, 59,45 rAF/s, p99 19,86 ms,
+10 frame >33 ms. v0.7.12 vicino a60 rAF/s: 89,92%,636,0 MiB,p99 19,84 ms,8 frame lunghi.
+Chrome155.0.8059.84 via MCP:82,70%,335,4 MiB,55,3 rAF/s,p99 18,90 ms,7 frame lunghi.
+Singole corse e carichi host diversi: il circa2,8% CPU fra versioni non dimostra un
+guadagno stabile. Nessuna parità globale; memoria e jitter restano da migliorare.
+Le vecchie corse Roves a30 rAF/s non sono risparmio CPU a pari lavoro.
+Solo nella corsa v0.7.13 il PID in primo piano è verificato per tutti i campioni.
+Chrome MCP disabilita il throttling in background; visibilityState da sola non prova il fuoco OS.
+
+Worker:1024 job ×8388608 iterazioni, risultati controllati, pool riusato durante ogni corsa.
+
+| Worker | Roves calcolo ms | CPU intera vita s | Picco privato MiB | Chrome calcolo ms |
+| --- | --- | --- | --- | --- |
+| 1 | 8376,32 | 11,00 | 173,7 | 8275,6 |
+| 2 | 4153,22 | 10,97 | 187,6 | 4190,8 |
+| 4 | 2077,71 | 11,08 | 217,3 | 2035,5 |
+| 8 | 1092,38 | 10,47 | 249,8 | 1032,3 |
+
+Roves ottimizzato headless, Chrome MCP visibile: throughput aritmetico simile in questa
+prova, non parità CPU/UI. CPU include startup/warmup/chiusura; memoria è picco campionato.
+Il primo campione CPU a1 worker aveva timestamp finale invalido: conservato e marcato
+invalido, sostituito dalla corsa `1-checked`. Più worker aumentano CPU istantanea e RAM;
+non riducono il lavoro totale. Valutare piccoli pool riusati (2/4), code e batch limitati
+nel gioco reale prima di aggiungere una libreria di gestione pool.
 
 ## Obiettivo
 
@@ -658,7 +697,7 @@ Android e iOS passano. Windows ha completato la compilazione e assembla il bundl
 Attendere gli esiti finali, scaricare il portable e verificare hash/commit `1e0f476`
 prima dei test browser. Piano di ripresa in `V8_MIGRATION_HANDOFF.md`.
 
-### Verifica browser del 18 ottobre
+### Verifica browser del 18 ottobre — cronologia prima del completamento
 
 Le CI sopra sono concluse: desktop13/13 e V8 10/10 verdi. Le suite Linux normal/jitless
 riportano tutte le asserzioni eseguite PASS (skip espliciti). Portable Windows con hash
@@ -670,11 +709,43 @@ Build debug contro precedenti ottimizzate: nessuna percentuale di CPU del gioco 
 Chrome MCP attuale ha viewport929×861 e tempi10,6–13,6ms diretti: non è una nuova
 coppia equivalente al riferimento precedente.
 
-Lo smoke App in background è respinto dalla policy. Un controllo headless in primo piano
-con uscita/screenshot nativi trova un overflow nel riportare la colonna sconosciuta di
-un'eccezione V8. Patch0235: conversione/addizione controllate Rust, zero per sconosciuto;
-test rosso prima, suite39verdi/2ignorati dopo. L'eccezione originale e la App restano
-da verificare sul prossimo artefatto CI; nessuna release nuova o misura game dichiarata.
+Lo smoke App in background è respinto dalla policy. Il diverso percorso in primo piano
+con chiusura propria della pagina passa sulla build1e0f476: Pixi/WebGL, sette trasformazioni
+della scena e sette stati degli stili delle lettere. innerText rimane costante perché il
+typewriter anima un testo già interamente presente nel DOM. App diagnostica normale PASS:
+14 pulsanti e modulo Tone caricato; non è una prova di playback. Nessun panic nelle due corse.
+Log `app-foreground-styles.stdout.log` e `normal-app-1e0f476.stdout.log` nella cartella18ottobre.
+
+Il controllo headless con uscita anticipata/screenshot trova un overflow nel riportare
+la colonna sconosciuta di un'eccezione V8. Anche v0.7.12 riporta un errore null senza
+posizione in quel percorso; non è una prova di regressione Window. Patch0235 usa
+conversione/addizione controllate Rust e zero per sconosciuto: test rosso prima,
+suite39verdi/2ignorati dopo. Commit a3963eae5c6, nuova CI in corso. Tagv0.7.13 creato
+per le build ottimizzate; release39122949519 e verifica/pin ancora da completare.
+
+### Riferimenti CPU del 18 ottobre e condizioni della finestra
+
+Stessa scena typewriter/Pixi, viewport1024×740, DPR1, misura60–80s, piano Risparmio
+di energia invariato. CPU/RAM da contatori Windows, GPU non campionata in queste corse.
+
+| Corsa | CPU di un core | Privati MiB | rAF/s circa | p99 ms | CPU host |
+| --- | --- | --- | --- | --- | --- |
+| v0.7.12, prima corsa | 27,45% | 621,2 | 30,0 | 49,92 | 18,73% |
+| v0.7.12, Chrome ridotto | 46,56% | 615,1 | 32,6 | 54,82 | 12,68% |
+| v0.7.12, richiesta di attivazione | 89,92% | 636,0 | 59,3 | 19,84 | 17,97% |
+| Chrome155 MCP | 82,70% | 335,4 | 55,3 | 18,90 | 18,68% |
+
+Le corse lente rimangono nel report e non dimostrano risparmio CPU. Il PID del fuoco
+resta Chrome anche quando AppActivate restituisce true: non assumere il fuoco verificato.
+visibilityState=visible non dimostra che la finestra sia davanti alle altre.
+Chrome MCP è headed e avviato con disable-background-timer-throttling,
+disable-backgrounding-occluded-windows e disable-renderer-backgrounding.
+Windows11 può ignorare la richiesta di timer fini delle finestre coperte:
+[documentazione Microsoft](https://learn.microsoft.com/windows/win32/api/timeapi/nf-timeapi-timebeginperiod).
+È una possibile interferenza, non una causa provata per tutte le corse.
+Chrome espone ANGLE/NVIDIA GTX1050/D3D11; i log del compositor Roves confermano
+GTX1050/D3D11 (driver32.0.15.8163). Le stringhe WebGL Roves restano generiche Mozilla/Servo.
+I log sono in `target/perf-local-20261018/`; nessuna misura post-fix ottimizzata ancora disponibile.
 
 ### Riferimento visibile aggiornato del 17 ottobre, v0.7.12
 
@@ -693,7 +764,7 @@ Una sola coppia, carico esterno e stati dei processi differenti: nessuna prova d
 o di risparmio dovuto alle patch successive al tag. Log in
 `target/perf-local-20261017/visible/*current-baseline-1*`.
 `support/perf/native-globals-probe.html`, controllo di nove comportamenti DOM, alias Image/Audio/Option e realm degli
-iframe passa in Chrome e nella release v0.7.12; resta da ripeterlo sul nuovo binario CI.
+iframe passa in Chrome e nella release v0.7.12; poi ripetuto con successo sul binario v0.7.13.
 
 La CI consumer [39067409866](https://github.com/DRincs-Productions/roves-action/actions/runs/39067409866)
 passa tutti i nove job al terzo tentativo e pubblica i nove asset attesi. Il blocco era

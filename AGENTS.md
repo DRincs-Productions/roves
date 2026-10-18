@@ -258,7 +258,7 @@ the next person upgrading the Servo version; a real user has no reason to ever o
 
 `roves-action` and `roves-packmaster` never build against this repo's `main` branch — both pin a
 specific, already-released version tag (`roves-action/action.yml`'s `ref:`/download URL,
-`roves-packmaster/src/lib/shell-version.ts`'s `TARGET_SHELL_VERSION`). A fix pushed to `main`
+`roves-packmaster/src/lib/shell-version.txt`, shared by its frontend and Rust backend). A fix pushed to `main`
 is invisible to both of them, and to anyone building through them, until a new tag is cut *and*
 that pin is bumped to point at it — merging to `main` alone changes nothing anyone downstream
 actually consumes.
@@ -296,8 +296,8 @@ UI/game content (`roves-packmaster` content lands in a future release).
    `release.yml`; nothing else needs to happen by hand.
 3. Watch the run: `https://github.com/DRincs-Productions/roves/actions/workflows/release.yml`.
 4. Once green, verify what actually got published at
-   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all 3 zips are
-   attached (`roves_shell_windows.zip`, `roves_shell_macos.zip`, `roves_shell_linux.zip`) and
+   `https://github.com/DRincs-Productions/roves/releases/tag/v0.1.0` — check all six zips are
+   attached (Windows/macOS/Linux, plain and `_steam` variants) and
    the notes rendered as expected. Don't consider the release done on "the workflow went
    green" alone — confirm the artifacts are actually there.
 5. Update the pinned shell version in `roves-action` and `roves-packmaster` (see the dedicated
@@ -307,22 +307,18 @@ UI/game content (`roves-packmaster` content lands in a future release).
 
 ### CRITICAL: after every release, sync the shell version in `roves-action` and `roves-packmaster`
 
-Two sibling checkouts (see the `roves-action` section near the top of this file for what
-"sibling checkout present" means in practice) each carry their own reference to *which*
-shell version they currently target — neither updates itself just because a new tag got
-pushed here:
+The consumer checkouts can be sibling directories or submodules inside this repository
+(`roves-action/`, `roves-packmaster/`, `roves-wiki/`). Locate the actual checkout before
+reporting it missing. Their engine references do not update just because a tag is pushed:
 
-- **`roves-action`** (`../roves-action/action.yml`): the `roves-ref` input's `default` (and
-  the matching commented-out example in `README.md`) should point at the new tag, e.g.
-  `default: 'v0.1.1'`. This is a real behavior change — every consumer of this action that
-  doesn't override `roves-ref` explicitly will start building against the new tag on their
-  next CI run, so treat it with the same care as any other default-changing release: a real
-  commit, not a drive-by edit.
-- **`roves-packmaster`** (`../roves-packmaster/src/lib/shell-version.ts`): bump `TARGET_SHELL_VERSION` to
-  the new tag. This is what the in-app "a newer shell is available" banner
-  (`src/components/shell-update-banner.tsx`) compares the latest published GitHub release
-  against — leaving it stale means Packmaster nags its own maintainers' current release as
-  if it were out of date.
+- **`roves-action/action.yml`**: bump both fixed literals, the source-checkout `ref:` and
+  the prebuilt-shell release URL, plus the README version. There is no `roves-ref` input
+  anymore. This changes what consumers receive and needs a verified commit.
+- **`roves-packmaster/src/lib/shell-version.txt`**: update the single shared pin. The frontend
+  imports it through Vite's raw loader for `TARGET_SHELL_VERSION`, and Rust embeds it with
+  `include_str!` for the actual download. Both trim whitespace. Update the README and check
+  both paths; do not reintroduce separate literals. A frontend-only bump previously left
+  production Rust downloads at v0.4.18 while the UI displayed v0.7.12.
 
 `roves-api` (`../roves-api/src/version.ts`'s `COMPATIBLE_SHELL_VERSION`) is **not** part of
 this same per-release obligation — it's a static compatibility note for consumers, not

@@ -1,3 +1,20 @@
+## 2026-10-18 - Verify v0.7.13 and consumer production channels
+
+Desktop 13/13, V8 10/10, mobile and six release builds pass. Verify the published
+Windows digest/embedded source, native-global, queue, intrinsic and visible game probes.
+Debug CI confirms patch 0235 removes the unknown-column panic. No whole-game parity
+claim: one visible pair is 87.44/82.70 percent of one core for Roves/Chrome; private
+memory remains 626/335 MiB. Record worker scaling and measurement limitations.
+
+Publish roves-action and Packmaster v0.1.9. Action's existing release workflow updates
+the v0 major alias. Replace Packmaster's stale production Rust v0.4.18 pin with the
+same maintained Vite/Rust raw-file import used by the frontend: shell-version.txt,
+v0.7.13. No new dependency. All consumer/release jobs pass; three Packmaster assets
+verified. Test/latest mode alone had masked the stale production pin. Lint consumer
+workflows with official actionlint; repair a duplicate branch key before final release.
+Refresh AGENTS, README, wiki, performance notes and operational handoff. Benchmark
+fixtures use existing browser APIs for bounded workloads and page-owned closure.
+
 ## 2026-10-18 - Preserve unknown V8 exception columns
 
 **Files:** `components/roves-js/src/script_impl.rs`, `src/tests.rs`.
@@ -9,8 +26,17 @@ rusty_v8 as usize; casting to u32 then adding one overflows in debug. Use Rust's
 checked conversion/addition and report zero for unknown locations. No dependency,
 cache or replacement serializer. A native V8 error without a script reproduces the
 exact panic before the fix; all 39 tests pass after it, two ignored.
-The original JavaScript exception and actual game CPU saving remain to be investigated
-with the next CI artifact. No performance parity or new release claimed.
+The published debug CI artifact verifies this reporting fix. A different visible foreground path
+with page-owned closure passes the game probe (Pixi/WebGL and changing transform/letter
+styles) and normal diagnostics on 1e0f476. Early -x exit reports a null exception even on
+v0.7.12, so a Window regression has not been established. No performance parity claimed.
+Tag v0.7.13 at a3963eae5c6 passes six optimized release builds; assets and both
+consumer production channels are verified. Duplicate tag-triggered test/V8 runs are canceled.
+Performance notes preserve the 30-rAF/s reference runs and distinguish them from the
+activation-request run near60rAF/s; background policies and measured throughput matter.
+The worker-compute fixture accepts bounded work-size parameters and optional page-owned
+closure for read-only external sampling. Reuse URLSearchParams/browser APIs without a
+dependency; keep the default workload unchanged. These are fixture changes, not engine gains.
 
 The previous source passes all 13 desktop and 10 V8 CI jobs; Linux normal/jitless
 smoke suites report every executed assertion passing, with explicit skips.
