@@ -1,0 +1,28 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Idle AudioContext cost</title>
+<body style="margin:0;background:#000;color:#ccc;font:14px sans-serif">
+<p id="s">starting</p>
+<script>
+  // `?n=none` is a page with no audio at all; `?n=empty` an AudioContext with no node connected
+  // (what a game has between sounds); `?n=silent` one oscillator at zero gain.
+  // Audio needs a user gesture: the harness clicks the window, then the context is resumed.
+  const variant = new URLSearchParams(location.search).get("n") || "empty";
+  let context;
+  function start() {
+    if (variant === "none" || context) return;
+    context = new AudioContext();
+    if (variant === "silent") {
+      const oscillator = context.createOscillator();
+      const gain = context.createGain();
+      gain.gain.value = 0;
+      oscillator.connect(gain).connect(context.destination);
+      oscillator.start();
+    }
+    context.resume().then(() => console.log("IDLEAUDIO " + variant + " state=" + context.state));
+    document.getElementById("s").textContent = variant + " " + context.state;
+  }
+  addEventListener("pointerdown", start);
+  addEventListener("keydown", start);
+  setTimeout(() => window.close(), 70000);
+</script>

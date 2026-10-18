@@ -1024,3 +1024,20 @@ che disegna (canvas 2D, WebGL, DOM) riceve 60 al secondo, quindi i valori di 32 
 scene `blank`, `only-worker` e `only-tone` sono un effetto del fixture senza disegno, non un difetto
 per i giochi. Un ciclo di sola logica (nessun disegno) vedrebbe 33 al secondo invece di 60: se
 servisse, il ritardo è una costante da una riga. Nessuna modifica fatta.
+
+### Costo di un AudioContext inattivo (18 ottobre 2026)
+
+Fixture `support/perf/audio-idle.html`: pagina senza audio (`none`), un `AudioContext` senza nodi
+(`empty`, quello che un gioco ha tra un suono e l'altro) e un oscillatore a guadagno zero
+(`silent`). Click sintetico per sbloccare l'audio, CPU su 20 s a partire da 30 s dopo l'avvio.
+Roves `e20cffa` ottimizzato contro Chrome 155, una corsa per cella.
+
+| Variante | Roves CPU | Chrome CPU | Roves privato | Chrome privato |
+| --- | --- | --- | --- | --- |
+| nessun audio | 0,5% | ~0% | 363 MiB | 247 MiB |
+| contesto vuoto, `running` | 8,3% | 4,3% | 367 MiB | 267 MiB |
+| oscillatore a gain 0 | 9,3% | 10,9% | 367 MiB | 244 MiB |
+
+Un contesto audio in esecuzione costa un po' di CPU anche in silenzio in entrambi i browser; la
+differenza con Chrome è piccola (4 punti percentuali con il contesto vuoto). Nessun intervento.
+Il consumo fisso del motore a `about:blank` è 322 MiB privati contro 247 MiB di Chrome a pagina vuota.
