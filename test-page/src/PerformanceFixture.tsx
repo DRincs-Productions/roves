@@ -1,6 +1,7 @@
 import PixiPanel from "./PixiPanel.tsx";
 import DomAnimationFixture from "./DomAnimationFixture.tsx";
 import TypewriterFixture from "./TypewriterFixture.tsx";
+import FullStackFixture, { type FixturePart } from "./FullStackFixture.tsx";
 
 export type PerformanceFixtureMode =
   | "blank"
@@ -9,7 +10,13 @@ export type PerformanceFixtureMode =
   | "typewriter-pixi"
   | "typewriter-three"
   | "gsap-pixi"
-  | "motion-pixi";
+  | "motion-pixi"
+  | "full-stack"
+  | "only-three"
+  | "only-tone"
+  | "only-motion"
+  | "only-gsap"
+  | "only-worker";
 
 export function performanceFixtureMode(search: string): PerformanceFixtureMode | null {
   const value = new URLSearchParams(search).get("perf");
@@ -20,7 +27,13 @@ export function performanceFixtureMode(search: string): PerformanceFixtureMode |
     value === "typewriter-pixi" ||
     value === "typewriter-three" ||
     value === "gsap-pixi" ||
-    value === "motion-pixi"
+    value === "motion-pixi" ||
+    value === "full-stack" ||
+    value === "only-three" ||
+    value === "only-tone" ||
+    value === "only-motion" ||
+    value === "only-gsap" ||
+    value === "only-worker"
   ) {
     return value;
   }
@@ -33,6 +46,8 @@ export function performanceFixtureMode(search: string): PerformanceFixtureMode |
  * contaminate CPU/wake-up measurements, especially the static and blank baselines.
  */
 export default function PerformanceFixture({ mode }: { mode: PerformanceFixtureMode }) {
+  if (mode === "full-stack") return <FullStackFixture />;
+  if (mode.startsWith("only-")) return <FullStackFixture name={mode} parts={[mode.slice(5) as FixturePart]} />;
   if (mode === "gsap-pixi" || mode === "motion-pixi") {
     return <DomAnimationFixture library={mode === "gsap-pixi" ? "gsap" : "motion"} />;
   }

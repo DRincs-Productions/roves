@@ -1,5 +1,13 @@
 # V8 migration â€” handoff operativo
 
+## Aggiornamento 18 ottobre (pomeriggio)
+
+- `19a8dea` pushato: patch 0236, i costruttori callable seguono la raggiungibilità JS (40 test locali PASS). CI in corso, guadagno RAM non misurato.
+- mimalloc `PURGE_DELAY=0`: nessun effetto (privato ~626 MiB, ws ~405). Arena mimalloc ~214 MiB committed; heap JS 15 MiB usati su 58–97 totali.
+- In corso: `ROVES_V8_FLAGS=--max-semi-space-size=2/8` sul binario v0.7.13 (script scratchpad run.ps1).
+- Nuovi fixture `test-page/src/FullStackFixture.tsx` (modi `full-stack`, `only-*`): vedi matrice in ROVES_PERFORMANCE.md. Da buildare (npm) dopo le misure.
+- Da fare: matrice per libreria Roves vs Chrome, pagina wiki prestazioni, aggiornare questi file con i risultati.
+
 ## Stato verificato, 18 ottobre 2026
 
 Engine **v0.7.13**, sorgente `a3963eae5c6`: desktop CI `39122648517` 13/13,

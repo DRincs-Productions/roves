@@ -895,3 +895,25 @@ Conclusione: la memoria privata di ~626 MiB non è ritenzione dell'allocatore re
 al sistema; nessun codice o opzione da aggiungere. Il divario privato/working set (~220 MiB)
 indica memoria impegnata ma non toccata (riserve V8/driver GPU): prossimo passo è attribuirla
 con VMMap/heap V8, non cambiare allocatore. Script: scratchpad run.ps1 (non tracciato).
+
+### Matrice di test per libreria (in preparazione, 18 ottobre 2026)
+
+Richiesta dell'utente: un test completo con tutte le librerie insieme e test isolati per
+libreria, per attribuire CPU/RAM. Fixture in `test-page/src/FullStackFixture.tsx`
+(`?perf=<modo>`), stesso carico in Roves e Chrome, stessa finestra 1024×740 DPR1:
+
+| Modo | Contenuto | Libreria |
+| --- | --- | --- |
+| `full-stack` | tutto insieme | three.js, PixiJS, motion, markdown-typewriter, GSAP, Tone.js, Worker |
+| `only-three` | 400 cubi istanziati con 3 luci + 4000 particelle | three.js |
+| `only-tone` | sequenza in loop: PolySynth, MembraneSynth, NoiseSynth, FeedbackDelay, Reverb | Tone.js |
+| `only-motion` | box motion + dialogo typewriter (animazioni DOM per lettera) | motion, markdown-typewriter |
+| `only-gsap` | tween GSAP su un elemento DOM | GSAP |
+| `only-worker` | worker che calcola a slice da 6 ms ogni ~10 ms | Worker |
+| `pixi-animated` (esistente) | scena 2D | PixiJS |
+
+Il carico worker è sintetico (aritmetica intera), non un gioco reale. L'audio parte al
+caricamento e al primo click/tasto: se il contesto resta sospeso il log scrive `TONE state=`.
+Non ancora coperti: animazioni/transizioni CSS native, `<video>` (GStreamer), canvas 2D,
+WebAssembly, salvataggi (IndexedDB/localStorage), gamepad. Nessun risultato ancora: le
+tabelle verranno aggiunte solo dopo corse alternate Roves/Chrome con la build CI corrente.
