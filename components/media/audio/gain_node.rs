@@ -50,12 +50,27 @@ impl AudioNodeEngine for GainNode {
             return inputs;
         }
 
+        // Apply what is due at the start of the quantum. Most gains never change (and Tone.js
+        // builds graphs of hundreds of them): scale the block in one go instead of asking the
+        // parameter for a value at every frame.
+        self.update_parameters(info, Tick(0));
+        if self.gain.is_constant() {
+            let gain = self.gain.value();
+            if gain != 1. {
+                for sample in inputs.blocks[0].data_mut() {
+                    *sample *= gain;
+                }
+            }
+            return inputs;
+        }
+
         {
             let mut iter = inputs.blocks[0].iter();
             let mut gain = self.gain.value();
 
             while let Some(mut frame) = iter.next() {
-                if self.update_parameters(info, frame.tick()) {
+                // Tick 0 was handled above.
+                if frame.tick() != Tick(0) && self.update_parameters(info, frame.tick()) {
                     gain = self.gain.value();
                 }
                 frame.mutate_with(|sample, _| *sample *= gain);

@@ -1,3 +1,23 @@
+## 2026-10-18 - Audio render thread: cached plan, constant parameters, batched sink pushes
+
+**Files:** `components/media/audio/{graph,param,gain_node,constant_source_node}.rs`,
+`components/media/backends/gstreamer/audio_sink.rs` (part of `0238-webaudio-nodes.patch`).
+
+Profile of the audio-only Tone.js scene on the optimized build: the render thread alone used
+about 47% of a core. Its hot spots were `Param::update` called for every frame of every node,
+the cycle detection (`tarjan_scc`) and the DFS ordering recomputed for every 128-frame quantum,
+and one GStreamer buffer push plus a "need data" round trip per quantum (about 345 a second).
+- `AudioGraph` keeps a `ProcessingPlan` (cycle nodes, cycle breakers, processing order) and only
+  rebuilds it when a node or connection changes.
+- `Param::is_constant()` (nothing automating it, nothing connected). `GainNode` scales a block
+  in one pass when the gain is constant (and not at all when it is one); `ConstantSourceNode`
+  writes a flat block, or leaves it silent when the offset is zero so the nodes behind it can skip
+  their work. Per-frame updates remain when a parameter is automated or driven by another node.
+- The GStreamer sink queues four quanta (about 11.6 ms, the sink's own period) per pushed buffer
+  instead of one, cutting pushes and wake-ups four times; samples queued before a pause are dropped.
+Tests: gain constant / unity / linear ramp, constant source flat and silent
+(`cargo test -p servo-media-audio`, 12 tests). Measured gain: pending a CI build.
+
 ## 2026-10-18 - WebAudio: WaveShaper, Delay (with feedback), Convolver, DynamicsCompressor
 
 **Files:** `components/media/audio/{delay_node,convolver_node,dynamics_compressor_node}.rs` (new),

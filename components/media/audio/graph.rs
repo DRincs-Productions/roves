@@ -117,11 +117,23 @@ impl PortKind for OutputPort {
     type Listener = Void;
 }
 
+/// What a render quantum needs to know about the shape of the graph: which nodes are in a
+/// cycle, the cycle breakers and the order to process the nodes in. It only changes when a node
+/// or a connection does, so it is built once and reused for every quantum until then.
+struct ProcessingPlan {
+    cycle_nodes: FxHashSet<NodeIndex<DefaultIx>>,
+    cycle_breakers: FxHashSet<NodeIndex<DefaultIx>>,
+    order: Vec<NodeIndex<DefaultIx>>,
+    reached_breakers: Vec<NodeIndex<DefaultIx>>,
+}
+
 pub struct AudioGraph {
     graph: StableGraph<Node, Edge>,
     dest_id: NodeId,
     dests: Vec<NodeId>,
     listener_id: NodeId,
+    /// `None` after the graph changed, until the next quantum rebuilds it.
+    plan: Option<ProcessingPlan>,
 }
 
 pub(crate) struct Node {
@@ -193,11 +205,13 @@ impl AudioGraph {
             dest_id,
             dests: vec![dest_id],
             listener_id,
+            plan: None,
         }
     }
 
     /// Create a node, obtain its id
     pub(crate) fn add_node(&mut self, node: Box<dyn AudioNodeEngine>) -> NodeId {
+        self.plan = None;
         NodeId(self.graph.add_node(Node::new(node)))
     }
 
@@ -205,6 +219,7 @@ impl AudioGraph {
     ///
     /// The edge goes *from* the output port *to* the input port, connecting two nodes
     pub fn add_edge(&mut self, out: PortId<OutputPort>, inp: PortId<InputPort>) {
+        self.plan = None;
         let edge = self
             .graph
             .edges(out.node().0)
@@ -231,6 +246,7 @@ impl AudioGraph {
     ///
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect>
     pub fn disconnect_all_from(&mut self, node: NodeId) {
+        self.plan = None;
         let edges = self.graph.edges(node.0).map(|e| e.id()).collect::<Vec<_>>();
         for edge in edges {
             self.graph.remove_edge(edge);
@@ -241,6 +257,7 @@ impl AudioGraph {
     ///
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-output>
     pub fn disconnect_output(&mut self, out: PortId<OutputPort>) {
+        self.plan = None;
         let candidates: Vec<_> = self
             .graph
             .edges(out.node().0)
@@ -262,6 +279,7 @@ impl AudioGraph {
     ///
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationnode>
     pub fn disconnect_between(&mut self, from: NodeId, to: NodeId) {
+        self.plan = None;
         let edge = self
             .graph
             .edges(from.0)
@@ -276,6 +294,7 @@ impl AudioGraph {
     ///
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationnode-output>
     pub fn disconnect_output_between(&mut self, out: PortId<OutputPort>, to: NodeId) {
+        self.plan = None;
         let edge = self
             .graph
             .edges(out.node().0)
@@ -299,6 +318,7 @@ impl AudioGraph {
     ///
     /// <https://webaudio.github.io/web-audio-api/#dom-audionode-disconnect-destinationparam>
     pub fn disconnect_to(&mut self, node: NodeId, inp: PortId<InputPort>) {
+        self.plan = None;
         let edge = self
             .graph
             .edges(node.0)
@@ -325,6 +345,7 @@ impl AudioGraph {
         out: PortId<OutputPort>,
         inp: PortId<InputPort>,
     ) {
+        self.plan = None;
         let edge = self
             .graph
             .edges(out.node().0)
@@ -364,6 +385,7 @@ impl AudioGraph {
     /// audio data it holds). Its id stays valid but inert, so no later message can reach another
     /// node. Destinations and the listener are never dropped.
     pub(crate) fn dispose_node(&mut self, id: NodeId) {
+        self.plan = None;
         if id == self.listener_id || self.dests.contains(&id) {
             return;
         }
@@ -390,6 +412,7 @@ impl AudioGraph {
 
     /// Add additional terminator nodes
     pub fn add_extra_dest(&mut self, dest: NodeId) {
+        self.plan = None;
         self.dests.push(dest);
     }
 
@@ -410,60 +433,20 @@ impl AudioGraph {
     /// <https://webaudio.github.io/web-audio-api/#rendering-loop>
     pub fn process(&mut self, info: &BlockInfo) -> Chunk {
         // Step 4.2. Order the AudioNodes of the BaseAudioContext to be processed.
-        let (cycle_nodes, cycle_breakers) = self.detect_nodes_in_cycles();
-        for ix in self.graph.node_indices() {
-            let mut node = self.graph[ix].node.borrow_mut();
-            if node.node_type() == AudioNodeType::DelayNode {
-                node.set_cycle_breaker(cycle_breakers.contains(&ix));
-            }
-        }
-
-        // DFS post order: Children are processed before their parent,
-        // which is exactly what we need since the parent depends on the
-        // children's output
-        //
-        // This will only visit each node once. The edges that enter a cycle breaker are left
-        // out: its output only needs what it received in earlier quanta, so it is a source for
-        // ordering purposes and its input is written after the quantum (see below).
-        let filtered = EdgeFiltered::from_fn(&self.graph, |edge| {
-            !cycle_breakers.contains(&edge.target())
-        });
-        let reversed = Reversed(&filtered);
-        let mut visit = DfsPostOrder::empty(reversed);
-        let mut order: Vec<NodeIndex<DefaultIx>> = Vec::new();
-        let mut reached_breakers: Vec<NodeIndex<DefaultIx>> = Vec::new();
-        for dest in &self.dests {
-            visit.move_to(dest.0);
-            while let Some(ix) = visit.next(reversed) {
-                order.push(ix);
-                if cycle_breakers.contains(&ix) {
-                    reached_breakers.push(ix);
-                }
-            }
-        }
-        // What feeds a cycle breaker still has to run, even when it reaches no destination
-        // another way.
-        let mut breakers_to_feed = reached_breakers.clone();
-        while let Some(breaker) = breakers_to_feed.pop() {
-            let feeders: Vec<_> = self
-                .graph
-                .neighbors_directed(breaker, Direction::Incoming)
-                .collect();
-            for feeder in feeders {
-                visit.move_to(feeder);
-                while let Some(ix) = visit.next(reversed) {
-                    order.push(ix);
-                    if cycle_breakers.contains(&ix) {
-                        reached_breakers.push(ix);
-                        breakers_to_feed.push(ix);
-                    }
-                }
-            }
-        }
+        let plan = match self.plan.take() {
+            Some(plan) => plan,
+            None => self.build_plan(),
+        };
+        let ProcessingPlan {
+            cycle_nodes,
+            cycle_breakers,
+            order,
+            reached_breakers,
+        } = &plan;
 
         let mut output_counts: SmallVec<[u32; 1]> = SmallVec::new();
 
-        for ix in order {
+        for &ix in order {
             let mut curr = self.graph[ix].node.borrow_mut();
 
             if cycle_nodes.contains(&ix) {
@@ -542,7 +525,7 @@ impl AudioGraph {
         }
 
         // Deliver to each cycle breaker the input it was waiting for.
-        for ix in reached_breakers {
+        for &ix in reached_breakers {
             if cycle_nodes.contains(&ix) {
                 continue;
             }
@@ -551,12 +534,76 @@ impl AudioGraph {
             curr.write_after_quantum(chunk, info);
         }
 
-        // The destination node stores its output on itself, extract it.
-        self.graph[self.dest_id.0]
+        let output = self.graph[self.dest_id.0]
             .node
             .borrow_mut()
             .destination_data()
-            .expect("Destination node should have data cached")
+            .expect("Destination node should have data cached");
+        // The destination stores its output on itself: extracted above. Keep the plan for the
+        // next quantum.
+        self.plan = Some(plan);
+        output
+    }
+
+    /// Work out the processing order of the current graph (step 4.2).
+    fn build_plan(&self) -> ProcessingPlan {
+        let (cycle_nodes, cycle_breakers) = self.detect_nodes_in_cycles();
+        for ix in self.graph.node_indices() {
+            let mut node = self.graph[ix].node.borrow_mut();
+            if node.node_type() == AudioNodeType::DelayNode {
+                node.set_cycle_breaker(cycle_breakers.contains(&ix));
+            }
+        }
+
+        // DFS post order: Children are processed before their parent,
+        // which is exactly what we need since the parent depends on the
+        // children's output
+        //
+        // This will only visit each node once. The edges that enter a cycle breaker are left
+        // out: its output only needs what it received in earlier quanta, so it is a source for
+        // ordering purposes and its input is written after the quantum (see below).
+        let filtered = EdgeFiltered::from_fn(&self.graph, |edge| {
+            !cycle_breakers.contains(&edge.target())
+        });
+        let reversed = Reversed(&filtered);
+        let mut visit = DfsPostOrder::empty(reversed);
+        let mut order: Vec<NodeIndex<DefaultIx>> = Vec::new();
+        let mut reached_breakers: Vec<NodeIndex<DefaultIx>> = Vec::new();
+        for dest in &self.dests {
+            visit.move_to(dest.0);
+            while let Some(ix) = visit.next(reversed) {
+                order.push(ix);
+                if cycle_breakers.contains(&ix) {
+                    reached_breakers.push(ix);
+                }
+            }
+        }
+        // What feeds a cycle breaker still has to run, even when it reaches no destination
+        // another way.
+        let mut breakers_to_feed = reached_breakers.clone();
+        while let Some(breaker) = breakers_to_feed.pop() {
+            let feeders: Vec<_> = self
+                .graph
+                .neighbors_directed(breaker, Direction::Incoming)
+                .collect();
+            for feeder in feeders {
+                visit.move_to(feeder);
+                while let Some(ix) = visit.next(reversed) {
+                    order.push(ix);
+                    if cycle_breakers.contains(&ix) {
+                        reached_breakers.push(ix);
+                        breakers_to_feed.push(ix);
+                    }
+                }
+            }
+        }
+
+        ProcessingPlan {
+            cycle_nodes,
+            cycle_breakers,
+            order,
+            reached_breakers,
+        }
     }
 
     /// Collect what the connections into a node produced this quantum and mix it into the input
@@ -978,5 +1025,66 @@ mod tests {
         }
         let db = 20. * last.log10();
         assert!((db - -8.5).abs() < 0.1, "{db} dB");
+    }
+
+    fn constant_source(graph: &mut AudioGraph, offset: f32) -> NodeId {
+        use crate::constant_source_node::{ConstantSourceNode, ConstantSourceNodeOptions};
+        let id = graph.add_node(Box::new(ConstantSourceNode::new(
+            ConstantSourceNodeOptions { offset },
+            ChannelInfo::default(),
+        )));
+        graph.node_mut(id).message(
+            AudioNodeMessage::AudioScheduledSourceNode(AudioScheduledSourceNodeMessage::Start(0.)),
+            44100.,
+        );
+        id
+    }
+
+    #[test]
+    fn a_constant_source_writes_a_flat_block_or_stays_silent() {
+        for (offset, expected) in [(0.25_f32, 0.25_f32), (0., 0.)] {
+            let mut graph = AudioGraph::new(2);
+            let source = constant_source(&mut graph, offset);
+            let dest = graph.dest_id();
+            graph.add_edge(source.output(0), dest.input(0));
+            let out = run(&mut graph, 3);
+            assert!(out.iter().all(|sample| (sample - expected).abs() < 1e-6), "offset {offset}");
+        }
+    }
+
+    #[test]
+    fn a_constant_gain_scales_the_block_and_a_ramp_automates_it() {
+        use crate::param::{ParamType, RampKind, UserAutomationEvent};
+        let build = |events: Vec<UserAutomationEvent>| {
+            let mut graph = AudioGraph::new(2);
+            let source = constant_source(&mut graph, 1.);
+            let gain_node = gain(&mut graph);
+            for event in events {
+                graph
+                    .node_mut(gain_node)
+                    .message(AudioNodeMessage::SetParam(ParamType::Gain, event), 44100.);
+            }
+            let dest = graph.dest_id();
+            graph.add_edge(source.output(0), gain_node.input(0));
+            graph.add_edge(gain_node.output(0), dest.input(0));
+            run(&mut graph, 4)
+        };
+        // A constant gain of one half.
+        let half = build(vec![UserAutomationEvent::SetValue(0.5)]);
+        assert!(half.iter().all(|sample| (sample - 0.5).abs() < 1e-6));
+        // No event at all: unity.
+        let unity = build(vec![]);
+        assert!(unity.iter().all(|sample| (sample - 1.).abs() < 1e-6));
+        // A linear ramp from 0 to 1 over 256 frames, then it holds.
+        let ramp = build(vec![
+            UserAutomationEvent::SetValueAtTime(0., 0.),
+            UserAutomationEvent::RampToValueAtTime(RampKind::Linear, 1., 256. / 44100.),
+        ]);
+        for (frame, sample) in ramp.iter().enumerate() {
+            let expected = (frame as f32 / 256.).min(1.);
+            assert!((sample - expected).abs() < 0.02, "frame {frame}: {sample} vs {expected}");
+        }
+        // After the ramp is done the gain is constant again (the fast path) and still one.
+        assert!(ramp[300..].iter().all(|sample| (sample - 1.).abs() < 1e-4));
     }
 }
