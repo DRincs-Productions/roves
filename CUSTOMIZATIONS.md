@@ -9,7 +9,8 @@ custom traps, so JavaScript could replace their prototype despite the JSAPI flag
 original prototype identity in the existing cppgc-traced `ClassBox`, seed `ObjectOpResult` with
 the immutable-prototype outcome, and still invoke the custom trap so origin checks run. The
 regression covers accepting the original prototype and rejecting a different one through
-`Reflect.setPrototypeOf`. No new dependency is needed.
+`Reflect.setPrototypeOf`, then removes its global reference before checking proxy finalization.
+No new dependency is needed.
 
 ## 2026-10-19 - Pass direct eval source to Trusted Types CSP validation
 

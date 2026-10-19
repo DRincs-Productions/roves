@@ -1072,6 +1072,7 @@ mod proxies {
             runtime.gc_for_testing();
             assert!(PROXY_TRACED.with(Cell::get) > 0, "the trace trap runs during GC");
             eval(&runtime, "delete globalThis.p");
+            eval(&runtime, "delete globalThis.immutableProxy");
         }
         runtime.gc_for_testing();
         runtime.gc_for_testing();

@@ -102,7 +102,9 @@ browser `Object/Reflect` su global e vero `WindowProxy` è stato aggiunto allo s
 eseguire prima di chiudere la voce nella tabella. La run `39312754922` ha mostrato che il
 dispatcher dei proxy non applicava il flag quando era presente un trap `setPrototypeOf`
 personalizzato. La correzione ora rifiuta il prototipo diverso anche in quel ramo e aggiunge una
-regressione JSAPI proxy; smoke browser e CI restano da eseguire. Nessuna libreria aggiunta: rusty_v8 già offre
+regressione JSAPI proxy; il primo test mirato ha trovato un riferimento globale trattenuto dalla
+fixture, ora cancellato prima del controllo di finalizzazione. Il test proxy mirato passa dopo la
+correzione; smoke browser e CI aggiornati restano da attendere. Nessuna libreria aggiunta: rusty_v8 già offre
 handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.

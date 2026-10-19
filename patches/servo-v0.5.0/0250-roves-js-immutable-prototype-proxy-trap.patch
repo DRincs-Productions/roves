@@ -32,7 +32,7 @@ index ca40aac4b1e..7e790ae4336 100644
          Some(trap) => {
              let cx = context.cx;
 diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
-index d2891c21e28..51b12020889 100644
+index d2891c21e28..6daa8a9eb76 100644
 --- a/components/roves-js/src/tests.rs
 +++ b/components/roves-js/src/tests.rs
 @@ -1035,6 +1035,11 @@ mod proxies {
@@ -56,3 +56,11 @@ index d2891c21e28..51b12020889 100644
              assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"p".as_ptr(), value.handle().into_handle()) });
              assert_eq!(eval(&runtime, "p").to_object(), proxy.get(), "a proxy keeps its identity");
  
+@@ -1069,6 +1072,7 @@ mod proxies {
+             runtime.gc_for_testing();
+             assert!(PROXY_TRACED.with(Cell::get) > 0, "the trace trap runs during GC");
+             eval(&runtime, "delete globalThis.p");
++            eval(&runtime, "delete globalThis.immutableProxy");
+         }
+         runtime.gc_for_testing();
+         runtime.gc_for_testing();
