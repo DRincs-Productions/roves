@@ -37,6 +37,7 @@ crossOriginFrame.addEventListener("load", () => {
   try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
   console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
 });
+crossOriginFrame.addEventListener("error", () => console.log("ROVES-V8 cross-origin iframe error"));
 document.body.appendChild(crossOriginFrame);
 setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout", crossOriginFrame.contentWindow !== null), 5000);
 </script></body></html>
