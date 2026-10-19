@@ -62,13 +62,14 @@ V8 forte cppgc-tracciato; `JS_SetPrototype` accetta l'identità originale e rifi
 sostituzione, senza rendere non estensibili gli oggetti né impedire proprietà normali. Il trap
 `setPrototypeOf` predefinito applica lo stesso vincolo al target proxy.
 
-Regressioni locali: oggetto JSAPI con prototipo iniziale e definizione di proprietà, e global
-WebIDL con sostituzione rifiutata. `cargo test --locked --manifest-path
-components/roves-js/Cargo.toml` passa (41 passati, 2 benchmark ignorati); il test mirato passa
-anche con `--features jitless`. La suite del crate è stata eseguita prima dell’aggiunta della
-sola asserzione sul global; entrambi i test mirati sono verdi. La semantica JS `Object/Reflect`
-del global e del vero `WindowProxy` non è ancora verificata in browser, quindi la lacuna nella
-tabella resta aperta fino alla prova end-to-end. Nessuna libreria aggiunta: rusty_v8 già offre
+La prima esecuzione CI ha riprodotto un errore nel bundle Linux: la named-properties proxy di
+Window presenta la `ClassBox` tramite la cella JSAPI, non nei campi interni dell’oggetto Proxy
+V8. Il lookup in `JS_SetImmutablePrototype` e `JS_SetPrototype` è stato corretto per usare la
+cella, con regressione su un proxy DOM della stessa classe. Suite locale aggiornata:
+`cargo test --locked --manifest-path components/roves-js/Cargo.toml` passa (41 passati,
+2 benchmark ignorati); con `--features jitless` passa (40 passati, 3 ignorati). La verifica
+browser `Object/Reflect` su global e vero `WindowProxy` resta da eseguire in CI prima di chiudere
+la voce nella tabella. Nessuna libreria aggiunta: rusty_v8 già offre
 handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.

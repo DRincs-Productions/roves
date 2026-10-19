@@ -13293,16 +13293,18 @@ Synced in the same effort:
 ## 2026-10-19 - Enforce immutable JSAPI prototypes in roves-js
 
 **Engine files:** `components/roves-js/src/jsapi_impl.rs`, `object.rs`, `proxy.rs`, and `tests.rs`.
-**Patch:** `0239-immutable-prototypes.patch` (V8 migration follow-up).
+**Patches:** `0240-roves-js-immutable-prototypes.patch` and `0241-roves-js-proxy-cell-immutable-prototype.patch`.
 
 `JS_SetImmutablePrototype` previously returned success without changing state. Class objects
 now keep the prototype selected at the call in a V8 `Global<Value>` owned by their cppgc
 `ClassBox`. `JS_SetPrototype` accepts that same prototype and throws on replacement; default
 proxy `setPrototypeOf` handling preserves the same invariant. This leaves property definition
 and object extensibility unchanged. Tests cover class objects and WebIDL globals in normal and
-JIT-less mode. Browser-level `Object/Reflect` behavior on WindowProxy remains an open migration
-acceptance check. No dependency was added: rusty_v8 already supplies the required handles and
-cppgc ownership primitives.
+JIT-less mode. The V8 CI bundle smoke exposed that Window's named-properties proxy reaches its
+class box through the JSAPI cell, not the V8 proxy object's internal fields. `JS_SetImmutablePrototype`
+and `JS_SetPrototype` now resolve that cell, and the proxy regression covers the same call path.
+No dependency was added: rusty_v8 already supplies the required handles and cppgc ownership
+primitives.
 
 ## 2026-10-11 - V8 migration: first results of the new test pages; the JavaScript stack budget
 

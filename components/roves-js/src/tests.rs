@@ -1030,6 +1030,11 @@ mod proxies {
             rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
             assert!(!proxy.get().is_null());
             unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
+            let mut immutable = false;
+            assert!(unsafe { JS_SetImmutablePrototype(cx, proxy.handle().into_handle(), &mut immutable) });
+            assert!(immutable, "proxy class boxes are reached through the JSAPI cell");
+            rooted!(in(cx) let mut replacement_proto = unsafe { JS_NewPlainObject(cx) });
+            assert!(!unsafe { JS_SetPrototype(cx, proxy.handle().into_handle(), replacement_proto.handle().into_handle()) });
             assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
             rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
             assert!(unsafe { JS_GetPrototype(cx, proxy.handle().into_handle(), prototype.handle_mut().into_handle()) });

@@ -198,9 +198,19 @@ pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
     class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
 }
 
+/// Whether the JSAPI object cell was marked with an immutable prototype.
+pub(crate) fn cell_has_immutable_prototype(object: *mut JSObject) -> bool {
+    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.get())
+}
+
 /// The original prototype stored when the immutable flag was set.
 pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
     class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
+}
+
+/// The immutable prototype stored on a JSAPI object cell.
+pub(crate) fn immutable_prototype_for_cell(object: *mut JSObject) -> Option<v8::Global<v8::Value>> {
+    class_box(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
 }
 
 impl ClassBox {

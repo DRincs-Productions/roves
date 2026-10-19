@@ -1,0 +1,66 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 79502ba1083..314854f4622 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -287,8 +287,8 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
+                 Some(proto) => proto.into(),
+                 None => v8::null(scope).into(),
+             };
+-            if crate::object::has_immutable_prototype(target) {
+-                let original = crate::object::immutable_prototype(target)?;
++            if crate::object::cell_has_immutable_prototype(obj.get()) {
++                let original = crate::object::immutable_prototype_for_cell(obj.get())?;
+                 if v8::Local::new(scope, &original) == prototype {
+                     return Some(true);
+                 }
+@@ -305,7 +305,7 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
+ pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool {
+     let result = raw(cx).catching(|scope| {
+         let target = object(scope, obj.get())?;
+-        let Some(class_box) = crate::object::class_box_of_v8(target) else { return None };
++        let Some(class_box) = crate::object::class_box(obj.get()) else { return None };
+         let prototype = prototype_of(scope, target)?;
+         *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
+         class_box.immutable_prototype.set(true);
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index edfcc99aeda..95a090dca06 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -198,11 +198,21 @@ pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
+     class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
+ }
+
++/// Whether the JSAPI object cell was marked with an immutable prototype.
++pub(crate) fn cell_has_immutable_prototype(object: *mut JSObject) -> bool {
++    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.get())
++}
++
+ /// The original prototype stored when the immutable flag was set.
+ pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
+     class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
+ }
+
++/// The immutable prototype stored on a JSAPI object cell.
++pub(crate) fn immutable_prototype_for_cell(object: *mut JSObject) -> Option<v8::Global<v8::Value>> {
++    class_box(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
++}
++
+ impl ClassBox {
+     /// Replaces the reserved slots with `other`'s (`JS_TransplantObject`).
+     pub(crate) fn copy_slots_from(&self, other: &ClassBox) {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7adcfda1281..92c716e8d76 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1030,6 +1030,11 @@ mod proxies {
+             rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
+             assert!(!proxy.get().is_null());
+             unsafe { SetProxyReservedSlot(proxy.get(), 0, &Int32Value(77)) };
++            let mut immutable = false;
++            assert!(unsafe { JS_SetImmutablePrototype(cx, proxy.handle().into_handle(), &mut immutable) });
++            assert!(immutable, "proxy class boxes are reached through the JSAPI cell");
++            rooted!(in(cx) let mut replacement_proto = unsafe { JS_NewPlainObject(cx) });
++            assert!(!unsafe { JS_SetPrototype(cx, proxy.handle().into_handle(), replacement_proto.handle().into_handle()) });
+             assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
+             rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
+             assert!(unsafe { JS_GetPrototype(cx, proxy.handle().into_handle(), prototype.handle_mut().into_handle()) });

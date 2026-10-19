@@ -287,8 +287,8 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
                 Some(proto) => proto.into(),
                 None => v8::null(scope).into(),
             };
-            if crate::object::has_immutable_prototype(target) {
-                let original = crate::object::immutable_prototype(target)?;
+            if crate::object::cell_has_immutable_prototype(obj.get()) {
+                let original = crate::object::immutable_prototype_for_cell(obj.get())?;
                 if v8::Local::new(scope, &original) == prototype {
                     return Some(true);
                 }
@@ -305,7 +305,7 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
 pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool {
     let result = raw(cx).catching(|scope| {
         let target = object(scope, obj.get())?;
-        let Some(class_box) = crate::object::class_box_of_v8(target) else { return None };
+        let Some(class_box) = crate::object::class_box(obj.get()) else { return None };
         let prototype = prototype_of(scope, target)?;
         *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
         class_box.immutable_prototype.set(true);
