@@ -695,7 +695,43 @@ Riproduzione selezionata di 30 patch sui tre file PASS. Alla pausa richiesta dal
 il 17 ottobre, desktop `39069276284` è a 10/13 job verdi e V8 `39069276329` a 7/10;
 Android e iOS passano. Windows ha completato la compilazione e assembla il bundle.
 Attendere gli esiti finali, scaricare il portable e verificare hash/commit `1e0f476`
-prima dei test browser. Piano di ripresa in `V8_MIGRATION_HANDOFF.md`.
+prima dei test browser.
+
+## Riepilogo e backlog performance (snapshot 18 ottobre 2026)
+
+Questa sezione consolida gli appunti dell'handoff V8, che viene rimosso. Il cutover dell'engine
+è permanente; questi punti riguardano prestazioni e copertura delle API usate dai giochi.
+
+La matrice Roves/Chrome indicava CPU superiore del 30–75% nei carichi 2D/3D/motion e memoria
+circa doppia; il motore vuoto occupava circa 322 MiB privati. Sono misure esplorative, con una
+corsa per cella e condizioni non sempre appaiate: non sono una stima generale delle prestazioni.
+
+Con Tone.js, le ottimizzazioni audio tra `52faf30` e `fe43d7a` hanno ridotto la CPU di
+`only-tone` dal 73,0% al 50,3% di un core, vicino al 56,3% di Chrome. La memoria è rimasta
+intorno a 670 MiB contro 310 MiB; i frame oltre 33 ms sono scesi solo da 86 a 82. In `full-stack`
+la CPU è rimasta circa 187% contro 104% di Chrome e i frame lunghi 51 contro zero. Gli stalli
+residui in `only-tone` richiedono un profilo del thread script e la misura del costo sincrono di
+`AudioContext.currentTime`; le cause candidate includono anche GC e lavoro Tone sul thread JS.
+
+Backlog registrato in quella sessione:
+
+- Profilare gli stalli audio e il thread audio prima di ulteriori ottimizzazioni per-frame di
+  Oscillator/Biquad o propagazione del silenzio.
+- Profilare con ETW il carico 2D/3D tra thread principale, WebRender/ANGLE e driver GPU.
+- Attribuire la memoria base con allocation tracking Rust, heap V8 e VMMap.
+- Completare `PeriodicWave`, `ScriptProcessor` e `AudioWorklet`; validare il playback Tone dei
+  nodi `WaveShaper`, `Delay`, `Convolver` e `DynamicsCompressor`.
+- Worker WebGL 1/2 restituisce `null` e `requestAnimationFrame` non è disponibile nei worker;
+  l'esposizione di `OffscreenCanvas` da sola non prova il rendering PixiJS/Three.js nei worker.
+- Il trasferimento di ArrayBuffer worker fa ancora copie: un payload da 4 MiB misurava circa
+  4,15 ms contro circa 0,1 ms in Chrome nel riferimento riportato. Valutare BackingStore o
+  serializer V8 solo con proprietà/cleanup e fallback IPC definiti; non dichiarare zero-copy
+  senza verificarlo.
+- Motion non ha playback Web Animations nativo completo. Valutare l'integrazione con Stylo e
+  WebRender preservando promise, eventi, stacking e hit testing prima di abilitarla per default.
+
+Questi dati sono uno snapshot del 18 ottobre 2026. Le misure successive e le relative condizioni
+sono riportate nelle sezioni cronologiche sottostanti.
 
 ### Verifica browser del 18 ottobre — cronologia prima del completamento
 

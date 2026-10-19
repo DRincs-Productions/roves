@@ -136,7 +136,7 @@ Debug/optimized profiles differ from older baselines: no whole-game percentage i
 
 ## 2026-10-17 - Save the requested overnight handoff
 
-The user pauses work until tomorrow. Update V8_MIGRATION_HANDOFF.md, TODO.md and
+The user pauses work until tomorrow. Update the V8 performance handoff, TODO.md and
 performance notes with source 1e0f4764378, CI run IDs, pending verification, artifact
 identity checks and the next functional/optimized measurements. Leave existing CI
 running; no new release or expensive build. Documentation-only push preserves the

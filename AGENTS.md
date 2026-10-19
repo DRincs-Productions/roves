@@ -29,7 +29,8 @@ esplicitamente e non presentare misure ottenute con altri strumenti come risulta
 
 ## Active work: autonomous V8 migration
 
-Read `docs/V8_MIGRATION.md` and `docs/V8_MIGRATION_HANDOFF.md` before continuing the migration.
+Read `docs/V8_MIGRATION.md` before continuing V8 compatibility work. Performance results and
+the historical measurement backlog are in `docs/ROVES_PERFORMANCE.md`.
 The user explicitly requires autonomous implementation, local tests wherever possible,
 CI execution, waiting for results, fixing failures and continuing until every migration
 completion criterion is satisfied. Do not end work at a partial checkpoint or merely after
