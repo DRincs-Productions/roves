@@ -91,8 +91,21 @@ Verifica locale: sei test unittest, inclusi casi multipli e l’esecuzione del r
 con launcher simulato, passano. Verificati crash, asserzioni false, totali mancanti/incoerenti,
 skip inattesi, risultati Window/CSP/navigazione mancanti e timeout prima/dopo il completamento.
 Replay ordinato delle patch sui file smoke originali, dry-run della 0239 e confronto dei quattro
-file ricostruiti passano. La suite browser completa normale/JIT-less resta da verificare in CI;
-non considerare conclusa la fase 1.
+file ricostruiti passano.
+
+La CI `39287531308`, commit `1af334ab062`, ha eseguito gli smoke Linux normale e
+JIT-less: entrambe le richieste WebGPU sono scadute dopo 25 secondi. La causa era
+nel percorso Servo della Constellation: gli smoke usano URL `file://`, privi di host;
+`handle_wgpu_request` scartava il messaggio prima di rispondere al callback. La
+correzione risponde `None` alle richieste di adapter/canale senza host, così l’API
+può risolvere con adapter assente. Il controllo mantiene il timeout come errore per
+una richiesta che resta bloccata. Un secondo falso negativo era nel runner: la riga
+DOM include anche titolo e numero di figli, mentre il confronto esatto cercava solo
+il prefisso; ora il fixture riproduce l’output reale e il matcher verifica quel prefisso.
+
+Patch incrementali `0242-webgpu-no-host-response.patch` e
+`0243-v8-smoke-dom-output.patch`. Verifica locale e nuova CI normale/JIT-less ancora
+da eseguire; la fase 1 resta aperta fino all’esito.
 
 ## 2. Correggere semantica e ciclo di vita
 

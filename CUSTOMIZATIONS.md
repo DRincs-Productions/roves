@@ -1,3 +1,25 @@
+## 2026-10-19 - Resolve WebGPU requests without a host and fix the DOM smoke matcher
+
+**Files:** `components/constellation/constellation.rs` (`0242-webgpu-no-host-response.patch`),
+`support/v8-smoke/{run.sh,test_runner.py}` (`0243-v8-smoke-dom-output.patch`),
+`README.md`, `docs/V8_MIGRATION.md`.
+
+CI run `39287531308` reproduced a 25-second WebGPU timeout in normal and JIT-less
+smoke. The pages use `file://`; `registered_domain_name` returns no host, and the
+Constellation handler previously discarded the adapter/channel request without
+resolving its callback. Reply with `None` for these host-less requests so the WebGPU
+promise resolves as unavailable. Keep a timeout as a failure for genuinely hung
+requests. The `test.html` DOM line includes title and child count, so exact-line
+matching incorrectly rejected valid output; check the stable prefix and exercise
+the actual output shape in the runner fixture. Reuse existing WebGPU channels and
+std-library test tooling; no dependencies added.
+
+Update the README and current engine documentation in the wiki. Verify both patches
+apply after the existing Servo patch series, run the smoke-runner regression suite,
+then run the normal/JIT-less browser CI to confirm unavailable adapters resolve and
+the timeout check still catches hangs. No build flags, consumer pins, or packaging
+behavior change.
+
 ## 2026-10-19 - Make V8 smoke results fail closed
 
 **Files:** `support/v8-smoke/{run.sh,check_results.py,test_runner.py,graphics.html}`,

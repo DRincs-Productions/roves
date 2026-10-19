@@ -1,0 +1,26 @@
+diff --git a/components/constellation/constellation.rs b/components/constellation/constellation.rs
+index 021b5cb26c9..c48958f584e 100644
+--- a/components/constellation/constellation.rs
++++ b/components/constellation/constellation.rs
+@@ -2107,7 +2107,20 @@ where
+             return warn!("{source_pipeline_id}: ScriptMsg from closed pipeline");
+         };
+         let Some(host) = registered_domain_name(&source_pipeline.url) else {
+-            return warn!("Invalid host url");
++            match request {
++                ScriptToConstellationMessage::RequestAdapter(response_sender, _, _) => {
++                    if let Err(e) = response_sender.send(None) {
++                        warn!("Failed to respond to adapter request for URL without a host: {}", e)
++                    }
++                },
++                ScriptToConstellationMessage::GetWebGPUChan(response_sender) => {
++                    if let Err(e) = response_sender.send(None) {
++                        warn!("Failed to respond to WebGPU channel request for URL without a host: {}", e)
++                    }
++                },
++                _ => warn!("Invalid host url for WebGPU request"),
++            }
++            return;
+         };
+         let browsing_context_group = if let Some(bcg) = self
+             .browsing_context_group_set

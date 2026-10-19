@@ -67,7 +67,7 @@ scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
 if page == 'test.html':
-    print('ROVES-V8 dom: changed by js')
+    print('ROVES-V8 dom: changed by js v8 test 1')
     print('ROVES-V8 click event click true')
     print('ROVES-V8 promise 5')
     print('ROVES-V8 timeout fired')
