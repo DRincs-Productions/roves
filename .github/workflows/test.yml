@@ -966,11 +966,24 @@ jobs:
           $env:ROVES_TEST_VIRTUAL_GAMEPAD = "1"
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
-          # 25s, not 15s -- same reasoning and same bump as the Linux/macOS smoke-test step's
-          # own identical change a few lines up in this file (see its comment for the full
-          # story: this is what just failed, twice in a row, specifically on this Windows/MSI
-          # leg in run 35519619799).
-          Start-Sleep -Seconds 25
+          # MSI startup can take ~25s before the bundled game page is ready on shared runners.
+          # Wait up to another 30s for the virtual SDL gamepad event, exiting early once the
+          # page records it. This tests the installed bundle without imposing a timing threshold.
+          $deadline = [DateTime]::UtcNow.AddSeconds(55)
+          $gamepadPattern = '\[roves-input\] kind=gamepadbuttondown '
+          $logPath = $null
+          do {
+            $observed = Select-String -Path $stdout -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue
+            if ($logPath -and (Test-Path $logPath)) {
+              $observed = $observed -or (Select-String -Path $logPath -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue)
+            }
+            if ($observed -or $proc.HasExited -or [DateTime]::UtcNow -ge $deadline) { break }
+            Start-Sleep -Milliseconds 500
+            if (-not $logPath) {
+              $logPath = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+            }
+          } while ($true)
           $stillRunning = -not $proc.HasExited
           if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
 
