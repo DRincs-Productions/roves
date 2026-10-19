@@ -1,75 +1,3 @@
-diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
-index 433666bceac..6e40daa800d 100644
---- a/support/v8-smoke/graphics.html
-+++ b/support/v8-smoke/graphics.html
-@@ -210,9 +210,9 @@ check("Path2D and isPointInPath", () => {
- });
- check("WebGPU adapter request (when available)", async () => {
-   if (!navigator.gpu) return "skip";
--  // Without a GPU (CI runners) the request may never settle: that is the environment.
-+  // An unavailable adapter may be skipped; a request that never settles is a failure.
-   const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
--  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
-+  if (adapter === "unsettled") return "requestAdapter did not settle in 25 s";
-   return adapter ? true : "skip";
- }, 30000);
- finish();
-diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
-index 6cc5a3fe601..f3247ff58d3 100755
---- a/support/v8-smoke/run.sh
-+++ b/support/v8-smoke/run.sh
-@@ -6,6 +6,9 @@
- #
- #     support/v8-smoke/run.sh path/to/servoshell [runner args...]
- set -u
-+MODE="${V8_SMOKE_MODE:-normal}"
-+case "$MODE" in normal|jitless) ;; *) echo "::error::Invalid V8_SMOKE_MODE: $MODE"; exit 1 ;; esac
-+PYTHON="${PYTHON3:-python3}"
- BIN="$1"
- shift
- RUNNER=("$@")
-@@ -30,13 +33,11 @@ run_suite() {
-   local page="$1" log="$2" seconds="${3:-60}"
-   run_page "$page" "$seconds" "$log"
-   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
--  local total failures
-+  local total
-   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
--  failures=$(grep -a "^SUITE FAIL " "$log" | sed 's/^SUITE FAIL //' | tr '
--' '|' | sed 's/|/%0A/g')
--  if [ -n "$failures" ]; then
--    echo "::warning title=$page failures (${total#SUITE TOTAL })::$failures"
--  fi
-+  local validator_args=(--mode "$MODE")
-+  if [ "${V8_SMOKE_ALLOW_MISSING_DEVICES:-0}" = 1 ]; then validator_args+=(--allow-missing-devices); fi
-+  if ! "$PYTHON" "$DIR/check_results.py" "$page" "$log" "${validator_args[@]}"; then STATUS=1; fi
-   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
-   fi
-@@ -62,19 +63,19 @@ echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
- 
- run_page test.html 30 test.log
- for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
--  if grep -aq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
-+  if grep -aFxq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
- done
--if grep -aq "ROVES-V8 class 2 {\"a\":\[1,2\]} true true" test.log; then echo "::notice::test.html: window === globalThis"; else echo "::warning::test.html: window === globalThis not confirmed"; fi
-+if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
- 
- run_page csp.html 30 csp.log
- for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
--  if grep -aq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else echo "::warning::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
-+  if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
- ' ' '))"; fi
- done
- 
- run_page nav1.html 30 nav.log
- for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
--  if grep -aq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
-+  if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
- done
- 
- exit $STATUS
 diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
 new file mode 100644
 index 00000000000..64b2c17feac
@@ -170,12 +98,101 @@ index 00000000000..64b2c17feac
 +
 +if __name__ == "__main__":
 +    raise SystemExit(main())
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+index 433666bceac..6e40daa800d 100644
+--- a/support/v8-smoke/graphics.html
++++ b/support/v8-smoke/graphics.html
+@@ -210,9 +210,9 @@ check("Path2D and isPointInPath", () => {
+ });
+ check("WebGPU adapter request (when available)", async () => {
+   if (!navigator.gpu) return "skip";
+-  // Without a GPU (CI runners) the request may never settle: that is the environment.
++  // An unavailable adapter may be skipped; a request that never settles is a failure.
+   const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
+-  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
++  if (adapter === "unsettled") return "requestAdapter did not settle in 25 s";
+   return adapter ? true : "skip";
+ }, 30000);
+ finish();
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 6cc5a3fe601..dfa847373e8 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -6,8 +6,12 @@
+ #
+ #     support/v8-smoke/run.sh path/to/servoshell [runner args...]
+ set -u
++MODE="${V8_SMOKE_MODE:-normal}"
++case "$MODE" in normal|jitless) ;; *) echo "::error::Invalid V8_SMOKE_MODE: $MODE"; exit 1 ;; esac
++PYTHON="${PYTHON3:-python3}"
+ BIN="$1"
+ shift
++RUNNER_COUNT=$#
+ RUNNER=("$@")
+ DIR="$(cd "$(dirname "$0")" && pwd)"
+ STATUS=0
+@@ -16,7 +20,12 @@ TOTALS=""
+ 
+ run_page() {
+   local page="$1" seconds="$2" log="$3"
+-  timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++  # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
++  if [ "$RUNNER_COUNT" -gt 0 ]; then
++    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++  else
++    timeout "$seconds" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++  fi
+   local code=$?
+   # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
+   if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
+@@ -30,13 +39,11 @@ run_suite() {
+   local page="$1" log="$2" seconds="${3:-60}"
+   run_page "$page" "$seconds" "$log"
+   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+-  local total failures
++  local total
+   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+-  failures=$(grep -a "^SUITE FAIL " "$log" | sed 's/^SUITE FAIL //' | tr '
+-' '|' | sed 's/|/%0A/g')
+-  if [ -n "$failures" ]; then
+-    echo "::warning title=$page failures (${total#SUITE TOTAL })::$failures"
+-  fi
++  local validator_args=(--mode "$MODE")
++  if [ "${V8_SMOKE_ALLOW_MISSING_DEVICES:-0}" = 1 ]; then validator_args+=(--allow-missing-devices); fi
++  if ! "$PYTHON" "$DIR/check_results.py" "$page" "$log" "${validator_args[@]}"; then STATUS=1; fi
+   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+   fi
+@@ -62,19 +69,19 @@ echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
+ 
+ run_page test.html 30 test.log
+ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
+-  if grep -aq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
++  if grep -aFxq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
+ done
+-if grep -aq "ROVES-V8 class 2 {\"a\":\[1,2\]} true true" test.log; then echo "::notice::test.html: window === globalThis"; else echo "::warning::test.html: window === globalThis not confirmed"; fi
++if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+ for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
+-  if grep -aq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else echo "::warning::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
++  if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
+ 
+ run_page nav1.html 30 nav.log
+ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
+-  if grep -aq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
++  if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
+ done
+ 
+ exit $STATUS
 diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
 new file mode 100644
-index 00000000000..f149720208f
+index 00000000000..bf2e9be1f15
 --- /dev/null
 +++ b/support/v8-smoke/test_runner.py
-@@ -0,0 +1,115 @@
+@@ -0,0 +1,121 @@
 +"""Regression tests for the smoke protocol and the complete shell runner."""
 +
 +import os
@@ -229,13 +246,17 @@ index 00000000000..f149720208f
 +
 +@unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 +class RunnerTests(unittest.TestCase):
-+    def run_fixture(self, scenario):
++    def run_fixture(self, scenario, wrapped=False):
 +        with tempfile.TemporaryDirectory() as directory:
 +            directory = Path(directory)
 +            # Substitute only the process launcher; execute the real runner and validator.
 +            launcher = directory / 'timeout'
 +            launcher.write_text('''#!/usr/bin/env python3
 +import os, sys
++if os.environ['SMOKE_TEST_WRAPPED'] == '1':
++    assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
++else:
++    assert sys.argv[2] == 'unused-browser', sys.argv
 +page = sys.argv[-1].rsplit('/', 1)[-1]
 +scenario = os.environ['SMOKE_TEST_SCENARIO']
 +if scenario == 'crash' and page == 'suite.html':
@@ -269,17 +290,19 @@ index 00000000000..f149720208f
 +''')
 +            launcher.chmod(0o755)
 +            env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
-+                       SMOKE_TEST_SCENARIO=scenario, V8_SMOKE_MODE='normal',
++                       SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
 +                       V8_SMOKE_ALLOW_MISSING_DEVICES='0')
 +            env.pop('GITHUB_STEP_SUMMARY', None)
-+            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser'],
++            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
++                                   *(['wrapper with spaces', '--option'] if wrapped else [])],
 +                                  cwd=directory, env=env, capture_output=True, text=True, timeout=20)
 +
 +    def test_complete_and_post_completion_timeout(self):
-+        for scenario in ('pass', 'timeout'):
-+            with self.subTest(scenario=scenario):
-+                result = self.run_fixture(scenario)
-+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++        for wrapped in (False, True):
++            for scenario in ('pass', 'timeout'):
++                with self.subTest(scenario=scenario, wrapped=wrapped):
++                    result = self.run_fixture(scenario, wrapped=wrapped)
++                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 +
 +    def test_failure_paths(self):
 +        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'navigation', 'skip'):

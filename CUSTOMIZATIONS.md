@@ -15,6 +15,12 @@ Test parser and actual shell runner using a fake browser launcher, including cra
 and post-completion timeouts, assertion failures, and missing mandatory outputs. Run the runner
 regressions in the existing V8 matrix before compilation. Reuse unittest/stdlib instead of
 adding a test framework or runtime dependency; the validator has no GPU or browser dependency.
+Follow-up: macOS's Bash 3.2 rejects expansion of an empty runner array with `set -u`.
+Retain the wrapper argument count and bypass array expansion when no wrapper is supplied.
+Regression tests cover direct invocation and wrappers with spaced arguments, including both
+normal exit and timeout after completed results. The invocation bug predates this change;
+the new macOS runner tests exposed it. Native Bash 3.2 validation remains a CI check.
+
 Update the wiki and roves-action's description of the separate V8 validation workflow; no build
 flags, consumer pins, packaging behavior or shipped runtime change.
 

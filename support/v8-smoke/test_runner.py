@@ -51,13 +51,17 @@ class ResultsTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
-    def run_fixture(self, scenario):
+    def run_fixture(self, scenario, wrapped=False):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             # Substitute only the process launcher; execute the real runner and validator.
             launcher = directory / 'timeout'
             launcher.write_text('''#!/usr/bin/env python3
 import os, sys
+if os.environ['SMOKE_TEST_WRAPPED'] == '1':
+    assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
+else:
+    assert sys.argv[2] == 'unused-browser', sys.argv
 page = sys.argv[-1].rsplit('/', 1)[-1]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'crash' and page == 'suite.html':
@@ -91,17 +95,19 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
 ''')
             launcher.chmod(0o755)
             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
-                       SMOKE_TEST_SCENARIO=scenario, V8_SMOKE_MODE='normal',
+                       SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
                        V8_SMOKE_ALLOW_MISSING_DEVICES='0')
             env.pop('GITHUB_STEP_SUMMARY', None)
-            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser'],
+            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
+                                   *(['wrapper with spaces', '--option'] if wrapped else [])],
                                   cwd=directory, env=env, capture_output=True, text=True, timeout=20)
 
     def test_complete_and_post_completion_timeout(self):
-        for scenario in ('pass', 'timeout'):
-            with self.subTest(scenario=scenario):
-                result = self.run_fixture(scenario)
-                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        for wrapped in (False, True):
+            for scenario in ('pass', 'timeout'):
+                with self.subTest(scenario=scenario, wrapped=wrapped):
+                    result = self.run_fixture(scenario, wrapped=wrapped)
+                    self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
         for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'navigation', 'skip'):

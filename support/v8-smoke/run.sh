@@ -11,6 +11,7 @@ case "$MODE" in normal|jitless) ;; *) echo "::error::Invalid V8_SMOKE_MODE: $MOD
 PYTHON="${PYTHON3:-python3}"
 BIN="$1"
 shift
+RUNNER_COUNT=$#
 RUNNER=("$@")
 DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS=0
@@ -19,7 +20,12 @@ TOTALS=""
 
 run_page() {
   local page="$1" seconds="$2" log="$3"
-  timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
+  # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
+  if [ "$RUNNER_COUNT" -gt 0 ]; then
+    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
+  else
+    timeout "$seconds" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
+  fi
   local code=$?
   # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
   if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
