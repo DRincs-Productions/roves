@@ -1,45 +1,15 @@
 diff --git a/README.md b/README.md
-index 9a0b72e4b08..f6f11606054 100644
 --- a/README.md
 +++ b/README.md
-@@ -38,7 +38,9 @@ three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
- [Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
- The V8 smoke CI treats failed assertions, incomplete reports, unexpected skips and missing
- Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly configured
--missing audio/GPU devices are the only accepted exceptions.
-+missing audio/GPU devices are the only accepted exceptions. When WebGPU has no usable adapter,
-+`requestAdapter()` resolves with `null`, including for local `file://` pages; a request that
-+hangs still fails the smoke check.
- Shared agent instructions live in [AGENTS.md](./AGENTS.md).
+@@ -4,4 +4,8 @@
+ [Rust](https://github.com/rust-lang/rust) language. It is currently developed on
+ 64-bit macOS, 64-bit Linux, 64-bit Windows, 64-bit OpenHarmony, and Android.
  
- For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
-diff --git a/docs/V8_MIGRATION.md b/docs/V8_MIGRATION.md
-index 89e606a93f0..bc1e24516e7 100644
---- a/docs/V8_MIGRATION.md
-+++ b/docs/V8_MIGRATION.md
-@@ -91,8 +91,21 @@ Verifica locale: sei test unittest, inclusi casi multipli e l’esecuzione del r
- con launcher simulato, passano. Verificati crash, asserzioni false, totali mancanti/incoerenti,
- skip inattesi, risultati Window/CSP/navigazione mancanti e timeout prima/dopo il completamento.
- Replay ordinato delle patch sui file smoke originali, dry-run della 0239 e confronto dei quattro
--file ricostruiti passano. La suite browser completa normale/JIT-less resta da verificare in CI;
--non considerare conclusa la fase 1.
-+file ricostruiti passano.
++Roves uses V8 for JavaScript. Its normal and JIT-less smoke checks fail on hung
++WebGPU adapter requests; local `file://` pages without a GPU host resolve
++`requestAdapter()` with `null`.
 +
-+La CI `39287531308`, commit `1af334ab062`, ha eseguito gli smoke Linux normale e
-+JIT-less: entrambe le richieste WebGPU sono scadute dopo 25 secondi. La causa era
-+nel percorso Servo della Constellation: gli smoke usano URL `file://`, privi di host;
-+`handle_wgpu_request` scartava il messaggio prima di rispondere al callback. La
-+correzione risponde `None` alle richieste di adapter/canale senza host, così l’API
-+può risolvere con adapter assente. Il controllo mantiene il timeout come errore per
-+una richiesta che resta bloccata. Un secondo falso negativo era nel runner: la riga
-+DOM include anche titolo e numero di figli, mentre il confronto esatto cercava solo
-+il prefisso; ora il fixture riproduce l’output reale e il matcher verifica quel prefisso.
-+
-+Patch incrementali `0242-webgpu-no-host-response.patch` e
-+`0243-v8-smoke-dom-output.patch`. Verifica locale e nuova CI normale/JIT-less ancora
-+da eseguire; la fase 1 resta aperta fino all’esito.
- 
- ## 2. Correggere semantica e ciclo di vita
+ Servo welcomes contribution from everyone. Check out:
  
 diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
 index dfa847373e8..210bafd2e1a 100755
