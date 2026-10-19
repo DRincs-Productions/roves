@@ -1,9 +1,11 @@
 # V8 migration — Phase 0 inventory
 
-Produced 2026-09-29, read-only research per `docs/V8_MIGRATION.md`'s Phase 0. No code was
-changed to produce this. Grep-based counts are approximate (file-level, not line-level dedup)
-and meant as a starting map for implementers, not a final audit — re-verify before relying on a
-specific number in a later phase, since the codebase will keep moving.
+Historical read-only inventory produced 2026-09-29 before the V8 cutover. Its dependency,
+feature, CI and file-count findings describe the pre-migration repository and are not current
+state. Keep only as a dated record of the initial audit; do not use it to plan remaining work
+without re-running the searches against the current tree.
+
+## Historical findings (pre-cutover)
 
 ## 1. Build configuration (Cargo dependencies/features)
 
@@ -88,20 +90,12 @@ repeated GC") starts from zero — there is nothing to adapt, it has to be writt
   `components/script_bindings/third_party/WebIDL/parser/tests/` (~80 Python parser tests,
   engine-neutral, don't depend on SpiderMonkey vs V8).
 
-## What this means for the next phase
+## Historical next-phase assessment (superseded)
 
-Phase 1 (introduce `components/roves-v8`) does not depend on resolving any of the above — it's
-additive and isolated per the plan's own design. The rooting/GC inventory (section 2) is what
-Phase 3 will actually need, and the codegen inventory (section 3) is what Phase 4 will need.
-Both are large enough that neither should be attempted as a single change; the plan's own phase
-boundaries already reflect that.
+The original phase sequence and test-gap analysis were superseded by the implementation and
+permanent V8 cutover (CP114).
 
-The biggest testing gap found here — no `-p script`/`script_bindings` CI leg, no WPT execution,
-no GC stress harness — is worth closing *incrementally* as migration work touches each area
-(per `docs/V8_MIGRATION.md`'s own Phase 5 guidance: "add or strengthen tests when a CI failure
-exposes an untested contract"), not as a prerequisite blocking Phase 1 from starting.
-
-## 2026-10-04 update - resolved Cargo graph and executable link boundary
+## Historical update, 2026-10-04 - Cargo graph and executable link boundary
 
 A workspace-resolved Cargo tree (`cargo tree -i mozjs --workspace --locked` and
 `cargo tree -i servo-jstraceable-derive --workspace --locked`) confirms the production
@@ -111,16 +105,12 @@ fan-out: `mozjs` is a direct dependency of `servo-script`, `servo-script-binding
 used by the same three script crates. The opt-in `roves-v8` crate is the only workspace consumer
 of `v8`.
 
-CP32's attempted executable test with the pilot feature proved that enabling both engines in one
-binary is not a viable migration bridge on Windows: linking `servo-script-bindings` with
+CP32's attempted executable test with the pilot feature showed that enabling both engines in one
+binary was not a viable migration bridge on Windows: linking `servo-script-bindings` with
 `v8-bindings-pilot,js/jit` failed on duplicate `v8::internal::PrintF` symbols from the V8 archive
 and SpiderMonkey's `mozjs_sys` archive, and duplicate `diplomat_alloc`/`diplomat_free` symbols.
-`cargo check` still passes because it does not link a binary. Continue the replacement as a
-single-engine cutover: migrate/remove the SpiderMonkey-dependent binding/runtime layers before
-attempting an executable Servo V8 integration test. Do not use the dual-engine pilot feature as a
-production configuration.
+`cargo check` still passes because it does not link a binary. The later implementation used a single-engine cutover; this finding is historical context,
+not an active implementation instruction.
 
-The dependency tree also shows ICU C API `diplomat-runtime` 0.8.3 under mozjs, while V8's
-`temporal_capi` uses 0.16.0; the reported duplicate symbols were between two distinct 0.16.0
-artifacts at link time, so version unification alone is not established as a fix. Keep the direct
-linker collision as a cutover constraint and re-evaluate it only after SpiderMonkey is removed.
+The dependency tree also showed ICU C API `diplomat-runtime` 0.8.3 under mozjs, while V8's
+`temporal_capi` used 0.16.0. This is retained as historical linker-debugging context.
