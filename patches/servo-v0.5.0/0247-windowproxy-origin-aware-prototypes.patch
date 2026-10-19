@@ -1,0 +1,65 @@
+diff --git a/components/script/dom/window/windowproxy.rs b/components/script/dom/window/windowproxy.rs
+index 5cbd24ae3cc..bb85e7bf829 100644
+--- a/components/script/dom/window/windowproxy.rs
++++ b/components/script/dom/window/windowproxy.rs
+@@ -29 +29 @@ use js::rust::wrappers2::{
+-    JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
++    GetObjectProto, JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
+@@ -37 +37,4 @@ use script_bindings::cell::DomRefCell;
+-use script_bindings::proxyhandler::set_property_descriptor;
++use script_bindings::proxyhandler::{
++    maybe_cross_origin_get_prototype, maybe_cross_origin_get_prototype_if_ordinary_rawcx,
++    maybe_cross_origin_set_prototype_rawcx, set_property_descriptor,
++};
+@@ -1174,0 +1178,21 @@ unsafe extern "C" fn get_prototype_if_ordinary(
++#[expect(unsafe_code)]
++unsafe extern "C" fn get_prototype(
++    cx: *mut RawJSContext,
++    proxy: RawHandleObject,
++    proto: RawMutableHandleObject,
++) -> bool {
++    let mut cx = unsafe {
++        // SAFETY: V8 calls proxy traps with the current live script context.
++        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in proxy trap"))
++    };
++    let mut realm = CurrentRealm::assert(&mut cx);
++    maybe_cross_origin_get_prototype::<crate::DomTypeHolder>(
++        &mut realm,
++        unsafe { Handle::from_raw(proxy) },
++        |cx, global, proto| {
++            unsafe { GetObjectProto(cx, global, proto) };
++        },
++        unsafe { MutableHandle::from_raw(proto) },
++    )
++}
++
+@@ -1176,2 +1200,2 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
+-    // TODO: These traps should change their behavior depending on
+-    //       `IsPlatformObjectSameOrigin(this.[[Window]])`
++    // The prototype traps use Servo's maybe-cross-origin helpers below. The
++    // remaining traps still need to vary with `IsPlatformObjectSameOrigin`.
+@@ -1185,2 +1209,2 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
+-    getPrototype: None, // TODO: return `null` if cross origin-domain
+-    setPrototype: None,
++    getPrototype: Some(get_prototype),
++    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
+@@ -1424,3 +1448,3 @@ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
+-    getPrototypeIfOrdinary: None,
+-    getPrototype: None,
+-    setPrototype: None,
++    getPrototypeIfOrdinary: Some(maybe_cross_origin_get_prototype_if_ordinary_rawcx),
++    getPrototype: Some(get_prototype),
++    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index a60345cb40b..781030eb749 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -315 +315 @@ fn cross_origin_own_property_keys(
+-pub(crate) unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_rawcx(
++pub unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_rawcx(
+@@ -333 +333 @@ pub(crate) unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_raw
+-pub(crate) unsafe extern "C" fn maybe_cross_origin_set_prototype_rawcx(
++pub unsafe extern "C" fn maybe_cross_origin_set_prototype_rawcx(
+@@ -633 +633 @@ pub(crate) unsafe extern "C" fn maybe_cross_origin_set_rawcx<D: DomTypes>(
+-pub(crate) fn maybe_cross_origin_get_prototype<D: DomTypes>(
++pub fn maybe_cross_origin_get_prototype<D: DomTypes>(

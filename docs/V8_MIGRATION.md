@@ -51,7 +51,7 @@ come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
 | Script privates | `script_impl::Scripts::privates` è una mappa tracciata dal runtime; `globalscope/script_execution.rs` la alimenta con `SetScriptPrivate`. | Raccolta dopo perdita dello script e dei suoi callable; conservazione dei privati necessari ai callable ancora vivi. |
 | Module privates | `modules_impl::Modules::entries` e `trace_modules` tengono vivi record e privati; `script_module.rs` chiama `SetModulePrivate`. | Raccolta dei grafi modulo irraggiungibili senza rompere import dinamico, namespace conservati e risoluzione dei moduli. |
 | TrustedScript | `runtime_impl::code_generation_from_strings` permetteva i non-stringa senza usare `codeForEvalGets`; Servo registra quel callback in `script_runtime.rs`. | Implementata estrazione del TrustedScript e inoltro del valore originale a CSP. Restano smoke browser/CI, Function constructor, Wasm e realm/report. |
-| Window cross-origin | `window/windowproxy.rs::PROXY_TRAPS` conserva TODO su same-origin e getPrototype; esiste già `maybe_cross_origin_set_prototype_rawcx` nei binding. | Pagina/iframe su due origini, permessi get/set/ownKeys/prototipo, navigazione tra origini e identità del proxy. Distinguere lacune Servo da regressioni V8. |
+| Window cross-origin | `window/windowproxy.rs` ora collega `getPrototype`, `setPrototype` e i trap ordinary alle API `maybe_cross_origin_*` esistenti; il resto dei trap conserva TODO origin-aware. | Pagina/iframe su due origini, permessi get/set/ownKeys/prototipo, navigazione tra origini e identità del proxy. Distinguere lacune Servo da regressioni V8. |
 | Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; esiste `callable_classes_follow_js_reachability_instead_of_runtime_lifetime` nei test roves-js. | Rieseguire il test normale/JIT-less in CI. La conservazione incondizionata fino alla fine del runtime è già stata rimossa dalla patch 0236. |
 
 ### Aggiornamento implementazione — 19 ottobre 2026
@@ -125,6 +125,21 @@ passa; i due test d’integrazione shell sono saltati su Windows perché richied
 POSIX, e sono eseguiti nella matrice Linux/macOS. La fase 1 resta aperta per l’audit
 residuo del backlog e la copertura applicativa/WPT elencata nelle fasi successive.
 
+### Trap del prototipo WindowProxy — 19 ottobre 2026
+
+`WindowProxy` non collegava i trap `getPrototype`/`setPrototype`; la variante cross-origin
+lasciava anche il controllo `getPrototypeIfOrdinary` al comportamento predefinito. Collegati gli
+helper Servo già presenti: `GetPrototypeOf` restituisce il prototipo Window per oggetti same-origin
+e `null` cross-origin; `SetPrototypeOf` accetta solo lo stesso prototipo. La variante cross-origin
+ora dichiara il trap prototype non ordinario. Nessuna nuova libreria o logica duplicata. Lo smoke
+strict richiede il marker cross-origin per un iframe `data:` con origine opaca. Riferimento Chrome
+DevTools: Chrome 155.0.0.0, Windows x64, pagina `file://` del test e iframe `data:`; il marker
+`true true` è stato osservato, mentre Chrome blocca anche la lettura diretta di `Location.origin`.
+La compilazione locale di `script_bindings` passa. Il check del crate `script` non è ancora
+concluso: il primo tentativo si è fermato in `aws-lc-sys` per NASM mancante; il secondo usa la
+modalità debug senza assembly e va atteso. La CI V8 desktop e WPT restano necessari prima di
+chiudere il criterio.
+
 ### Verifica della smoke MSI Windows — 19 ottobre 2026
 
 La matrice `39296023222` ha fallito solo il controllo del gamepad nell’MSI: l’installazione
@@ -141,7 +156,8 @@ terminano.
 ## 2. Correggere semantica e ciclo di vita
 
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
-  Preservare identità, controlli di accesso, descrittori ed eccezioni previsti.
+  I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
+  `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
 - [x] Correggere `JS_SetImmutablePrototype` e il trap proxy, con smoke browser aggiunto; chiudere dopo CI.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
   percorso `eval(TrustedScript)` è implementato e attende CI/browser, restano Function e Wasm;

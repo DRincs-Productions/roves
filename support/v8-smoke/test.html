@@ -20,4 +20,15 @@ const windowPrototypeChange = Reflect.setPrototypeOf(window, {});
 Object.defineProperty(window, "__rovesV8SmokeOrdinary", { value: 1, configurable: true });
 console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === false && Object.getPrototypeOf(window) === windowPrototype && window.__rovesV8SmokeOrdinary === 1);
 delete window.__rovesV8SmokeOrdinary;
+const crossOriginFrame = document.createElement("iframe");
+crossOriginFrame.src = "data:text/html,%3C!doctype%20html%3E%3Ctitle%3Eopaque%20origin%3C/title%3E";
+crossOriginFrame.addEventListener("load", () => {
+  const otherWindow = crossOriginFrame.contentWindow;
+  let prototypeIsNull = false;
+  let prototypeReplacementRejected = false;
+  try { prototypeIsNull = Object.getPrototypeOf(otherWindow) === null; } catch (_) {}
+  try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
+  console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
+});
+document.body.appendChild(crossOriginFrame);
 </script></body></html>

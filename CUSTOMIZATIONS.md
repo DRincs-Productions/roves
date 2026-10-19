@@ -1,3 +1,19 @@
+## 2026-10-19 - Implement WindowProxy prototype traps with origin checks
+
+**Files:** `components/script/dom/window/windowproxy.rs`,
+`components/script_bindings/proxyhandler.rs`
+(`0247-windowproxy-origin-aware-prototypes.patch`), `support/v8-smoke/{test.html,run.sh,test_runner.py}`,
+`README.md`.
+
+WindowProxy left `getPrototype` and `setPrototype` unset, and the cross-origin proxy also
+left `getPrototypeIfOrdinary` unset. Wire these traps to Servo's existing
+`maybe_cross_origin_*` helpers: same-origin reads return the Window prototype, cross-origin
+reads return `null`, and prototype writes succeed only when they preserve the current
+prototype. Expose the helpers from `script_bindings` for use by `script`; no new dependency
+or parallel implementation is needed. The strict V8 smoke uses a `data:` iframe with an opaque
+origin and requires the cross-origin prototype result. Keep WPT verification open until CI covers
+same-origin and cross-origin behavior in Servo.
+
 ## 2026-10-19 - Remove unused WebIDL V8 runtime pilot wiring
 
 **Files:** `components/script/{Cargo.toml,dom/screen.rs}`,

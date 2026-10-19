@@ -73,6 +73,7 @@ if page == 'test.html':
     print('ROVES-V8 timeout fired')
     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
     if scenario != 'immutable-prototype': print('ROVES-V8 immutable window prototype true')
+    if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
 elif page == 'csp.html':
     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
     print('ROVES-V8 csp function EvalError')
@@ -113,7 +114,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'trusted-script', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'cross-origin-prototype', 'csp', 'trusted-script', 'navigation', 'skip'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)

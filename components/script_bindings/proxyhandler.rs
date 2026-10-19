@@ -312,7 +312,7 @@ fn cross_origin_own_property_keys(
 
 /// # Safety
 /// `is_ordinary` must point to a valid, non-null bool.
-pub(crate) unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_rawcx(
+pub unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_rawcx(
     _: *mut RawJSContext,
     _proxy: RawHandleObject,
     is_ordinary: *mut bool,
@@ -330,7 +330,7 @@ pub(crate) unsafe extern "C" fn maybe_cross_origin_get_prototype_if_ordinary_raw
 ///
 /// # Safety
 /// `result` must point to a valid, non-null ObjectOpResult.
-pub(crate) unsafe extern "C" fn maybe_cross_origin_set_prototype_rawcx(
+pub unsafe extern "C" fn maybe_cross_origin_set_prototype_rawcx(
     cx: *mut RawJSContext,
     proxy: RawHandleObject,
     proto: RawHandleObject,
@@ -630,7 +630,7 @@ pub(crate) unsafe extern "C" fn maybe_cross_origin_set_rawcx<D: DomTypes>(
 /// Implementation of `[[GetPrototypeOf]]` for [`Location`].
 ///
 /// [`Location`]: https://html.spec.whatwg.org/multipage/#location-getprototypeof
-pub(crate) fn maybe_cross_origin_get_prototype<D: DomTypes>(
+pub fn maybe_cross_origin_get_prototype<D: DomTypes>(
     cx: &mut CurrentRealm,
     proxy: HandleObject,
     get_proto_object: fn(cx: &mut JSContext, global: HandleObject, rval: MutableHandleObject),

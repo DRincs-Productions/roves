@@ -26,7 +26,7 @@ use js::jsapi::{
 use js::jsval::{NullValue, PrivateValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{
-    JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
+    GetObjectProto, JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
     JS_HasPropertyById, JS_IsExceptionPending, JS_TransplantObject, NewWindowProxy, SetWindowProxy,
 };
 use js::rust::{Handle, MutableHandle, MutableHandleValue, get_object_class};
@@ -34,7 +34,10 @@ use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
 use net_traits::ReferrerPolicy;
 use net_traits::request::Referrer;
 use script_bindings::cell::DomRefCell;
-use script_bindings::proxyhandler::set_property_descriptor;
+use script_bindings::proxyhandler::{
+    maybe_cross_origin_get_prototype, maybe_cross_origin_get_prototype_if_ordinary_rawcx,
+    maybe_cross_origin_set_prototype_rawcx, set_property_descriptor,
+};
 use script_bindings::reflector::{DomObject, MutDomObject, Reflector};
 use script_traits::NewPipelineInfo;
 use serde::{Deserialize, Serialize};
@@ -1172,9 +1175,30 @@ unsafe extern "C" fn get_prototype_if_ordinary(
     true
 }
 
+#[expect(unsafe_code)]
+unsafe extern "C" fn get_prototype(
+    cx: *mut RawJSContext,
+    proxy: RawHandleObject,
+    proto: RawMutableHandleObject,
+) -> bool {
+    let mut cx = unsafe {
+        // SAFETY: V8 calls proxy traps with the current live script context.
+        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in proxy trap"))
+    };
+    let mut realm = CurrentRealm::assert(&mut cx);
+    maybe_cross_origin_get_prototype::<crate::DomTypeHolder>(
+        &mut realm,
+        unsafe { Handle::from_raw(proxy) },
+        |cx, global, proto| {
+            unsafe { GetObjectProto(cx, global, proto) };
+        },
+        unsafe { MutableHandle::from_raw(proto) },
+    )
+}
+
 static PROXY_TRAPS: ProxyTraps = ProxyTraps {
-    // TODO: These traps should change their behavior depending on
-    //       `IsPlatformObjectSameOrigin(this.[[Window]])`
+    // The prototype traps use Servo's maybe-cross-origin helpers below. The
+    // remaining traps still need to vary with `IsPlatformObjectSameOrigin`.
     enter: None,
     getOwnPropertyDescriptor: Some(get_own_property_descriptor),
     defineProperty: Some(define_property),
@@ -1182,8 +1206,8 @@ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
     delete_: None,
     enumerate: None,
     getPrototypeIfOrdinary: Some(get_prototype_if_ordinary),
-    getPrototype: None, // TODO: return `null` if cross origin-domain
-    setPrototype: None,
+    getPrototype: Some(get_prototype),
+    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
     setImmutablePrototype: None,
     preventExtensions: None,
     isExtensible: None,
@@ -1421,9 +1445,9 @@ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
     ownPropertyKeys: None,
     delete_: Some(delete_xorigin),
     enumerate: None,
-    getPrototypeIfOrdinary: None,
-    getPrototype: None,
-    setPrototype: None,
+    getPrototypeIfOrdinary: Some(maybe_cross_origin_get_prototype_if_ordinary_rawcx),
+    getPrototype: Some(get_prototype),
+    setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
     setImmutablePrototype: None,
     preventExtensions: Some(preventExtensions_xorigin),
     isExtensible: None,
