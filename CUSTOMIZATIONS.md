@@ -18,6 +18,11 @@ adding a test framework or runtime dependency; the validator has no GPU or brows
 Update the wiki and roves-action's description of the separate V8 validation workflow; no build
 flags, consumer pins, packaging behavior or shipped runtime change.
 
+Record a targeted static audit in the completion plan: immutable-prototype false success,
+runtime-rooted realms and script/module privates, the non-string eval callback gap and the
+already-fixed callable-class lifetime. Include production callers and acceptance scenarios;
+these findings are not claims of completed runtime fixes or an exhaustive API audit.
+
 ## 2026-10-19 - Replace the V8 migration notes with the approved completion plan
 
 **File:** `docs/V8_MIGRATION.md` (Roves-only maintainer documentation).

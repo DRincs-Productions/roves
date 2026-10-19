@@ -39,6 +39,27 @@ prova identifica un difetto nel collegamento a V8.
 **Criterio di uscita:** ogni voce residua ha evidenze aggiornate e la CI fallisce realmente
 quando una verifica obbligatoria fallisce.
 
+### Audit mirato del codice — 19 ottobre 2026
+
+Questa è una verifica statica mirata, non un audit esaustivo delle API compatibili. Non segnare
+come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
+
+| Area | Evidenza e chiamanti di produzione | Verifica richiesta per chiudere |
+| --- | --- | --- |
+| Prototipi immutabili | `jsapi_impl::JS_SetImmutablePrototype` scrive `succeeded=true` senza cambiare l’oggetto; il generatore WebIDL lo chiama durante l’inizializzazione dei globali. | Stesso prototipo accettato; prototipo diverso respinto da Object/Reflect, senza bloccare la definizione di proprietà ordinarie. |
+| Realm | `realm_impl::register_realm` conserva un `Global<Context>` in `cx.realms`; `trace_realms` traccia ogni globale/proxy/drain. | Navigazioni ripetute con rilascio dei realm irraggiungibili; mantenere riferimenti cross-realm e bfcache ancora vivi. |
+| Script privates | `script_impl::Scripts::privates` è una mappa tracciata dal runtime; `globalscope/script_execution.rs` la alimenta con `SetScriptPrivate`. | Raccolta dopo perdita dello script e dei suoi callable; conservazione dei privati necessari ai callable ancora vivi. |
+| Module privates | `modules_impl::Modules::entries` e `trace_modules` tengono vivi record e privati; `script_module.rs` chiama `SetModulePrivate`. | Raccolta dei grafi modulo irraggiungibili senza rompere import dinamico, namespace conservati e risoluzione dei moduli. |
+| TrustedScript | `runtime_impl::code_generation_from_strings` permette i non-stringa senza usare `codeForEvalGets`; Servo registra quel callback in `script_runtime.rs`. | Eval con stringhe normali, oggetti normali e TrustedScript sotto CSP/Trusted Types; coercizioni e report nel realm corretto. Non attribuire bypass senza una riproduzione. |
+| Window cross-origin | `window/windowproxy.rs::PROXY_TRAPS` conserva TODO su same-origin e getPrototype; esiste già `maybe_cross_origin_set_prototype_rawcx` nei binding. | Pagina/iframe su due origini, permessi get/set/ownKeys/prototipo, navigazione tra origini e identità del proxy. Distinguere lacune Servo da regressioni V8. |
+| Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; esiste `callable_classes_follow_js_reachability_instead_of_runtime_lifetime` nei test roves-js. | Rieseguire il test normale/JIT-less in CI. La conservazione incondizionata fino alla fine del runtime è già stata rimossa dalla patch 0236. |
+
+Il callback CSP per stringhe e Wasm è già installato in `runtime_impl`; non ripianificarne
+l’intera implementazione. La lacuna TrustedScript riguarda il percorso degli oggetti code-like.
+La prossima modifica di ownership deve riusare weak handle/cppgc di V8 e conservare tutte le
+radici necessarie; eliminare una voce dalla mappa senza un contratto di raggiungibilità non è
+una correzione sicura.
+
 ### Verifica del runner — 19 ottobre 2026
 
 Implementata nella patch `0239-strict-v8-smoke-results.patch`. Python stdlib verifica risultati,
