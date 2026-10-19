@@ -14469,3 +14469,15 @@ context creation returns null and requestAnimationFrame is absent. Chrome DevToo
 both context types and red-pixel readback on the same page. Record this limitation separately
 from working DOM-thread OffscreenCanvas tests. The probe does not test presentation into a
 transferred DOM canvas; it prevents suggesting worker rendering before the platform path exists.
+## 2026-10-20 - Correct V8 smoke expectations for trusted eval and isolate Window failures
+
+**Files:** `support/v8-smoke/{csp.html,test.html,run.sh,test_runner.py}` (repository-only; no Servo source patch),
+`docs/V8_MIGRATION.md`.
+
+The trusted-eval smoke called `eval(TrustedScript)` but discarded its result, printing
+`allowed` while the runner required `42`. Report the actual result (or exception) so the
+assertion checks Trusted Types behavior and evaluation output. The Window prototype check
+could throw before the later cross-origin iframe case ran; catch and report each operation
+independently and emit a bounded iframe timeout marker. This makes the existing failures
+diagnosable without claiming the underlying global-proxy behavior is fixed. No dependency is
+needed.

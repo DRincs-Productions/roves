@@ -1,5 +1,74 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Punto della situazione — 20 ottobre 2026, ore 00:30 CEST
+
+Rilevazione sul commit `4d0579409ed` (`main`), con modifiche locali non ancora committate.
+**La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
+ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
+sulla macchina locale.
+
+### Risultati effettivi dell’ultimo commit
+
+| Workflow | Esito conclusivo | Evidenza |
+| --- | --- | --- |
+| [V8 migration checks — 39320063351](https://github.com/DRincs-Productions/roves/actions/runs/39320063351) | Fallito, 8 job verdi su 10 | Tutti i 6 job runtime (Linux/Windows/macOS, normal/JIT-less) passano. Build servoshell Windows/macOS verdi. Le due build Linux passano, ma entrambi gli smoke browser falliscono. |
+| [Build Servo Test Binaries — 39320063236](https://github.com/DRincs-Productions/roves/actions/runs/39320063236) | Verde, 13/13 job | Replay patch, SDL3, sei bundle portable/installer e smoke Steam verdi; Windows MSI incluso. |
+| [Android — 39320063387](https://github.com/DRincs-Productions/roves/actions/runs/39320063387) | Verde | Workflow concluso con successo. |
+| [iOS — 39320063333](https://github.com/DRincs-Productions/roves/actions/runs/39320063333) | Esito aggregato fallito | Job `ios` ed `ensure-test-release` verdi; `ios-release-signing-smoke` cancellato. Nessuno step fallito esposto nei job consultati: non attribuire la causa al codice V8 senza ulteriori log. |
+
+Le nove suite Linux (`suite`, `suite2`, `games`, `modules`, `errors`, `events`, `graphics`,
+`stress`, `saves`) riportano riepiloghi validi in entrambe le modalità, con gli skip consentiti.
+Anche DOM, eventi, Promise, timer e identità `window === globalThis` sono confermati.
+I tre errori residui dello smoke sono:
+
+1. **Prototipo immutabile Window non confermato.** Diagnosi aggiornata ancora aperta. V8
+   crea un global proxy nativo distinto dal globale sottostante; i trap di roves-js non vengono
+   invocati per questo oggetto. Il flag `ObjectTemplate::set_immutable_proto()` non viene
+   trasferito al template interno del global proxy: esame del sorgente rusty_v8/V8 e test
+   runtime sui globali lo confermano. Non applicare workaround che cambino il prototipo che V8
+   usa internamente; serve un’integrazione corretta del global proxy o una revisione della
+   strategia Window.
+2. **Prototipo cross-origin WindowProxy non confermato.** Il controllo runtime non è ancora
+   stato separato dal caricamento iframe. La fixture locale ora cattura gli errori Window
+   indipendentemente, segnala un errore di caricamento e stampa un marker dopo 5 secondi se
+   l’iframe non completa il caricamento.
+3. **Matcher CSP corretto localmente.** La pagina scartava il risultato di `eval(TrustedScript)`
+   e stampava `allowed`; ora stampa il valore restituito o il nome dell’eccezione. La CI non ha
+   ancora verificato la fixture corretta.
+
+Il test locale `roves-js::immutable_prototypes_reject_replacement_but_allow_properties` passa.
+La build completa locale di servoshell è stata interrotta su indicazione dell’utente per evitare
+carico elevato; non ha modificato Cargo.toml/Cargo.lock e non ha prodotto una nuova build
+utilizzabile. Nessuna nuova misura browser è stata raccolta. Per il prossimo controllo pesante
+preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
+
+### Implementazione presente e lavoro ancora aperto
+
+- Patch 0248: `js_disable_jit` passa `--jitless` all’inizializzazione V8; rimosso il no-op
+  `DisableJitBackend`. Compilazione e CI runtime verdi; la selezione effettiva della preferenza
+  richiede ancora una verifica dedicata, distinta dalla feature Cargo JIT-less.
+- Patch 0249: direct eval inoltra `bodyString` a CSP. Test runtime verdi; la fixture aggiornata
+  controlla adesso il risultato numerico, ancora da verificare in browser CI.
+- Patch 0250: gestione del prototipo immutabile nei proxy e regressione JSAPI. Il commit
+  `4d0579409ed` rimuove il riferimento globale della fixture prima della finalizzazione.
+  Test runtime verdi; comportamento Window nel browser ancora aperto.
+- Replay sequenziale 0248–0250 verificato localmente sui sei file sorgente, con confronto
+  SHA256, e validazione complessiva delle patch verde nella CI generale.
+- Questa ripresa aggiorna le fixture CSP/Window e `README.md`, `CUSTOMIZATIONS.md`, il presente
+  piano e `roves-wiki/content/docs/{shell,architecture}.mdx`. Le fixture modificate sono file
+  repository-only: la workflow V8 le usa direttamente e non le include nel replay delle patch Servo.
+- Oltre ai test restano: audit completo delle API `roves-js`; diagnosi/correzione del percorso
+  Window/WindowProxy e dei trap origin-aware residui; preservazione degli argomenti Trusted
+  Types per `Function` e controllo del percorso Wasm; progetto del rilascio di realm, script,
+  moduli e callback; eventuali correzioni di shutdown/worker risultanti dall’audit.
+- La validazione finale resta aperta: WPT selezionati, stress GC/lifecycle, copertura applicativa,
+  misure per modifiche di ownership, artefatti e release/pin. Il dettaglio resta nelle fasi 1–4.
+
+Prossimi passi: completare l’audit statico delle API e avviare la CI online per ottenere il
+diagnostico browser completo. Usare i log per risolvere Window/WindowProxy e continuare le fasi
+2–4 senza fermarsi al checkpoint CI. Nessun cambio di codice Servo si è reso necessario finora,
+quindi non è ancora richiesta una release né un bump dei pin consumer.
+
 ## Obiettivo e stato iniziale
 
 V8 è già il motore JavaScript di produzione tramite `roves-js`. Completare la migrazione
@@ -46,13 +115,13 @@ come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
 
 | Area | Evidenza e chiamanti di produzione | Verifica richiesta per chiudere |
 | --- | --- | --- |
-| Prototipi immutabili | `JS_SetImmutablePrototype` conserva il prototipo originale; il dispatcher V8 deve applicarlo anche ai proxy WebIDL con trap personalizzati. | La run CI `39312754922` non ha visto il marker Window. Fix proxy aggiunto dopo la run; attendere smoke/CI, verificare stesso prototipo accettato, diverso respinto e proprietà ordinarie consentite. |
+| Prototipi immutabili | `JS_SetImmutablePrototype` conserva il prototipo originale; patch 0250 nel dispatcher proxy. | CI `39320063351`: tutti i test runtime verdi, ma marker Window ancora non confermato nei due smoke Linux. Diagnosi browser aperta. |
 | Realm | `realm_impl::register_realm` conserva un `Global<Context>` in `cx.realms`; `trace_realms` traccia ogni globale/proxy/drain. | Navigazioni ripetute con rilascio dei realm irraggiungibili; mantenere riferimenti cross-realm e bfcache ancora vivi. |
 | Script privates | `script_impl::Scripts::privates` è una mappa tracciata dal runtime; `globalscope/script_execution.rs` la alimenta con `SetScriptPrivate`. | Raccolta dopo perdita dello script e dei suoi callable; conservazione dei privati necessari ai callable ancora vivi. |
 | Module privates | `modules_impl::Modules::entries` e `trace_modules` tengono vivi record e privati; `script_module.rs` chiama `SetModulePrivate`. | Raccolta dei grafi modulo irraggiungibili senza rompere import dinamico, namespace conservati e risoluzione dei moduli. |
-| TrustedScript | `runtime_impl::code_generation_from_strings` inoltra il sorgente originale; Servo registra `codeForEvalGets` in `script_runtime.rs`. | CI V8 `39312754922` ha fallito `eval(TrustedScript)`: patch 0249 passa `bodyString` a CSP; fix non ancora verificato. Restano Function constructor, Wasm e realm/report. |
-| Window cross-origin | `window/windowproxy.rs` collega i trap prototipo agli helper Servo; gli altri trap conservano TODO origin-aware. | Il marker cross-origin non è apparso nella CI V8 `39312754922`; il controllo Chrome non dimostra Servo. Diagnosi ancora aperta per la fixture `data:` o per il trap. Verificare accessi, navigazione e identità. |
-| Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; esiste `callable_classes_follow_js_reachability_instead_of_runtime_lifetime` nei test roves-js. | Rieseguire il test normale/JIT-less in CI. La conservazione incondizionata fino alla fine del runtime è già stata rimossa dalla patch 0236. |
+| TrustedScript | Patch 0249 inoltra il body direct eval; Servo registra `codeForEvalGets` in `script_runtime.rs`. | CI `39320063351`: trusted eval consentito; matcher cerca `42` ma fixture stampa `allowed`. Correggere la verifica del risultato. Restano Function constructor, Wasm e realm/report. |
+| Window cross-origin | `window/windowproxy.rs` collega i trap prototipo agli helper Servo; gli altri trap conservano TODO origin-aware. | Marker ancora non confermato in `39320063351`. Isolare il controllo dalla precedente sequenza Window prima di attribuire la causa a origine/trap. Verificare anche accessi, navigazione e identità. |
+| Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; test di raggiungibilità presente. | I sei job runtime di `39320063351` sono verdi. La retention incondizionata è rimossa dalla patch 0236; l’audit lifecycle complessivo resta aperto. |
 
 ### Preferenza js_disable_jit — 19 ottobre 2026
 
@@ -61,8 +130,8 @@ L’audit ha trovato `script::init` che dichiarava di disabilitare JIT chiamando
 `--jitless` deve essere impostato prima di inizializzare il platform process-wide. Aggiunto
 `JSEngine::init_with_flags` e usato dalla preferenza Servo `js_disable_jit`; l’inizializzazione
 predefinita e la feature di build `roves-js/jitless` restano invariate. Rimossa la funzione
-compatibilità senza effetto. Verifiche smoke/test raccolte nella fase finale; patch 0248 da
-replayare e CI da attendere.
+compatibilità senza effetto. Replay patch e CI runtime `39320063351` verdi. Resta da verificare
+direttamente la preferenza, poiché la matrice JIT-less usa anche la feature Cargo dedicata.
 
 ### Esito dell’audit mirato delle API JSAPI — 19 ottobre 2026
 
@@ -99,12 +168,14 @@ cella, con regressione su un proxy DOM della stessa classe. Suite locale aggiorn
 `cargo test --locked --manifest-path components/roves-js/Cargo.toml` passa (41 passati,
 2 benchmark ignorati); con `--features jitless` passa (40 passati, 3 ignorati). La verifica
 browser `Object/Reflect` su global e vero `WindowProxy` è stato aggiunto allo smoke CI e resta da
-eseguire prima di chiudere la voce nella tabella. La run `39312754922` ha mostrato che il
-dispatcher dei proxy non applicava il flag quando era presente un trap `setPrototypeOf`
-personalizzato. La correzione ora rifiuta il prototipo diverso anche in quel ramo e aggiunge una
+confermare prima di chiudere la voce nella tabella. Dopo il fallimento `39312754922` è stata
+aggiunta la patch 0250 al dispatcher dei proxy per il ramo con trap `setPrototypeOf`
+personalizzato. La correzione intende rifiutare il prototipo diverso anche in quel ramo e aggiunge una
 regressione JSAPI proxy; il primo test mirato ha trovato un riferimento globale trattenuto dalla
 fixture, ora cancellato prima del controllo di finalizzazione. Il test proxy mirato passa dopo la
-correzione; smoke browser e CI aggiornati restano da attendere. Nessuna libreria aggiunta: rusty_v8 già offre
+correzione. In `39320063351` tutti i test runtime passano, ma lo smoke browser continua a non
+confermare il prototipo immutabile Window: causa e correzione di produzione restano aperte.
+Nessuna libreria aggiunta: rusty_v8 già offre
 handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.
@@ -121,9 +192,11 @@ dell’oggetto al callback e identità degli oggetti normali. Lo smoke CSP brows
 `39312754922` ha fallito sia in normal sia in JIT-less: `csp.html` ha ricevuto `EvalError`.
 La causa isolata è il `bodyString` vuoto passato da `csp_allows` per direct eval, mentre Servo
 confronta quel valore con i dati di `TrustedScript`. La patch 0249 passa come body la sorgente
-completa di direct eval e aggiorna le asserzioni del test runtime. Smoke browser e CI per questa
-correzione sono ancora da eseguire; `Function(TrustedScript)` e parametri trusted della Function
-constructor restano da verificare separatamente.
+completa di direct eval e aggiorna le asserzioni del test runtime. In `39320063351` i sei job
+runtime passano e lo smoke stampa `trusted eval allowed` in normal e JIT-less. Il runner
+cerca però `trusted eval 42`, impossibile con l’attuale helper `attempt` che scarta il risultato.
+La verifica del valore va corretta; `Function(TrustedScript)` e parametri trusted della Function
+constructor restano da esaminare separatamente.
 
 Il callback CSP per stringhe e Wasm era già installato in `runtime_impl`; la lacuna era
 l’integrazione dell’operando oggetto di `eval` con il callback Servo esistente. La prossima
@@ -179,8 +252,11 @@ Le compilazioni locali di `script_bindings` e `script` passano. `cargo check --l
 `-p servo-script` passa con `AWS_LC_SYS_NO_ASM=1`, necessario perché la build locale di
 `aws-lc-sys` non trova NASM. La run V8 `39312754922` ha però fallito in normal e JIT-less: la
 smoke headless non ha confermato il prototipo immutabile del Window, il prototipo cross-origin
-del WindowProxy né `eval(TrustedScript)`. Il fix del dispatcher immutabile e quello CSP sono
-successivi a quella run e ancora non verificati; il marker cross-origin resta senza diagnosi.
+del WindowProxy né `eval(TrustedScript)`. La successiva `39320063351` conferma i test runtime
+dei fix ma continua a non confermare entrambi i marker di prototipo nel browser. Trusted eval
+è ora consentito, con un errore nel matcher della fixture descritto nel punto della situazione.
+Il marker cross-origin resta senza diagnosi e potrebbe non essere eseguito dopo un’eccezione
+nei controlli Window che lo precedono.
 Il controllo Chrome DevTools conferma soltanto il comportamento di Chrome 155, non quello di
 Servo. La diagnosi di queste regressioni precede la chiusura della migrazione.
 
@@ -194,17 +270,20 @@ risultato `roves:save_file`: Windows portable e MSI sono entrambi falliti con il
 salvataggio mancante nella matrice `39302751406`. La nuova attesa richiede sia l’evento gamepad
 (dove il test è abilitato) sia il marker `roves:save_file`, con limite di 75 secondi;
 Linux/macOS usano la stessa condizione per il marker, Linux richiede anche l’input sintetico.
-La matrice è stata corretta e va rilanciata; non chiudere la verifica finché tutti i job non
-terminano.
+La matrice generale `39320063236` sul commit `4d0579409ed` è terminata verde (13/13 job),
+inclusi Windows portable/MSI e gli altri quattro bundle desktop: questa regressione del runner
+risulta superata nella CI corrente.
 
 ## 2. Correggere semantica e ciclo di vita
 
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
   I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
   `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
-- [x] Correggere `JS_SetImmutablePrototype` e il trap proxy, con smoke browser aggiunto; chiudere dopo CI.
+- [ ] Completare la correzione di `JS_SetImmutablePrototype` sul percorso Window di produzione:
+  test JSAPI verdi, smoke browser ancora fallito in `39320063351`.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
-  CI V8 `39312754922` ha fallito `eval(TrustedScript)` in normal e JIT-less; correggere prima di procedere a Function e Wasm;
+  CI V8 `39320063351` consente `eval(TrustedScript)` ma la fixture non controlla il risultato;
+  correggere quel controllo prima di chiudere eval, poi esaminare Function e Wasm;
   preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. Rilasciare gli oggetti
   non più raggiungibili dopo navigazione o chiusura, preservando quelli richiesti da
@@ -296,9 +375,10 @@ alle API native.
 La migrazione è conclusa quando le verifiche obbligatorie sono bloccanti e verdi, le lacune
 d’integrazione individuate sono risolte, i test di ciclo di vita passano e il codice obsoleto
 sostituito è rimosso. Le attività indipendenti del runtime web restano nel backlog performance.
-Al 19 ottobre 2026 la CI V8 `39312754922` non è verde: i fix per CSP TrustedScript e prototipo
-immutabile del proxy sono candidati successivi, non ancora verificati. Gli altri marker hanno
-passato quella run, mentre il workflow build/test generale `39312755035` è verde.
+All’ultima ricognizione del 19 ottobre 2026 la CI V8 `39320063351` è fallita negli smoke Linux
+normal/JIT-less, mentre i sei job runtime sono verdi. Restano i due controlli prototipo e il
+matcher CSP incoerente; il dettaglio e i limiti delle evidenze sono nel punto della situazione
+in apertura. Il workflow generale `39320063236` è verde, 13/13 job.
 
 I tipi V8 restano confinati al livello scripting. Non sono previste nuove API pubbliche Roves;
 eventuali cambiamenti del comportamento web devono seguire gli standard e avere test dedicati.

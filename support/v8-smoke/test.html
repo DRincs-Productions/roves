@@ -15,10 +15,17 @@ Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
 setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
 class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
 console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
-const windowPrototype = Object.getPrototypeOf(window);
-const windowPrototypeChange = Reflect.setPrototypeOf(window, {});
-Object.defineProperty(window, "__rovesV8SmokeOrdinary", { value: 1, configurable: true });
-console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === false && Object.getPrototypeOf(window) === windowPrototype && window.__rovesV8SmokeOrdinary === 1);
+let windowPrototype;
+let windowPrototypeChange;
+let windowOrdinaryProperty;
+try { windowPrototype = Object.getPrototypeOf(window); } catch (error) { windowPrototype = error.constructor.name; }
+try { windowPrototypeChange = Reflect.setPrototypeOf(window, {}); } catch (error) { windowPrototypeChange = error.constructor.name; }
+try {
+  Object.defineProperty(window, "__rovesV8SmokeOrdinary", { value: 1, configurable: true });
+  windowOrdinaryProperty = window.__rovesV8SmokeOrdinary === 1;
+} catch (error) { windowOrdinaryProperty = error.constructor.name; }
+console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === false && Object.getPrototypeOf(window) === windowPrototype && windowOrdinaryProperty);
+console.log("ROVES-V8 window prototype diagnostics", typeof windowPrototype, String(windowPrototypeChange), String(windowOrdinaryProperty));
 delete window.__rovesV8SmokeOrdinary;
 const crossOriginFrame = document.createElement("iframe");
 crossOriginFrame.src = "data:text/html,%3C!doctype%20html%3E%3Ctitle%3Eopaque%20origin%3C/title%3E";
@@ -31,4 +38,5 @@ crossOriginFrame.addEventListener("load", () => {
   console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
 });
 document.body.appendChild(crossOriginFrame);
+setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout", crossOriginFrame.contentWindow !== null), 5000);
 </script></body></html>

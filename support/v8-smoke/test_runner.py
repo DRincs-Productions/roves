@@ -73,7 +73,9 @@ if page == 'test.html':
     print('ROVES-V8 timeout fired')
     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
     if scenario != 'immutable-prototype': print('ROVES-V8 immutable window prototype true')
+    if scenario != 'immutable-prototype': print('ROVES-V8 window prototype diagnostics object false true')
     if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
+    if scenario == 'cross-origin-timeout': print('ROVES-V8 cross-origin iframe timeout true')
 elif page == 'csp.html':
     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
     print('ROVES-V8 csp function EvalError')

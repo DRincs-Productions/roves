@@ -73,7 +73,9 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" 
 done
 if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 immutable window prototype true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
+if grep -aFq 'ROVES-V8 window prototype diagnostics ' test.log; then echo "::notice::test.html: Window prototype diagnostics available"; else echo "::error::test.html: Window prototype diagnostics missing"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed"; STATUS=1; fi
+if grep -aFq 'ROVES-V8 cross-origin iframe timeout ' test.log; then echo "::error::test.html: cross-origin iframe did not load"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
 for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp ordinary eval unchanged true"; do
