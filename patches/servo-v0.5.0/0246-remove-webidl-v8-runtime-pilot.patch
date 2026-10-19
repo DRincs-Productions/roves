@@ -1,0 +1,104 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index d0ec5c02ec7..6bd19894c2b 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -8663 +8662,0 @@ dependencies = [
+- "roves-v8",
+@@ -8757 +8755,0 @@ dependencies = [
+- "roves-v8",
+diff --git a/components/script/Cargo.toml b/components/script/Cargo.toml
+index bd67af89a6f..c0a027ecc7a 100644
+--- a/components/script/Cargo.toml
++++ b/components/script/Cargo.toml
+@@ -24 +23,0 @@ js_jit = ["js/jit"]
+-v8-bindings-pilot = ["script_bindings/v8-bindings-pilot", "dep:roves-v8"]
+@@ -128 +126,0 @@ rustc-hash = { workspace = true }
+-roves-v8 = { path = "../roves-v8", optional = true }
+diff --git a/components/script/dom/screen.rs b/components/script/dom/screen.rs
+index 717864b4254..8deaf8fa6d8 100644
+--- a/components/script/dom/screen.rs
++++ b/components/script/dom/screen.rs
+@@ -78,37 +77,0 @@ impl ScreenMethods<crate::DomTypeHolder> for Screen {
+-
+-/// Connect Servo's existing native Screen object to the opt-in V8-generated WebIDL contract.
+-/// This adapter does not create a V8 object or switch the production SpiderMonkey path.
+-#[cfg(feature = "v8-bindings-pilot")]
+-impl script_bindings::v8_bindings::screen::ScreenNative for Screen {
+-    fn AvailWidth(&self) -> roves_v8::FiniteF64 {
+-        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::AvailWidth(
+-            self,
+-        ))
+-        .unwrap()
+-    }
+-
+-    fn AvailHeight(&self) -> roves_v8::FiniteF64 {
+-        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::AvailHeight(
+-            self,
+-        ))
+-        .unwrap()
+-    }
+-
+-    fn Width(&self) -> roves_v8::FiniteF64 {
+-        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::Width(self))
+-            .unwrap()
+-    }
+-
+-    fn Height(&self) -> roves_v8::FiniteF64 {
+-        roves_v8::FiniteF64::new(*<Self as ScreenMethods<crate::DomTypeHolder>>::Height(self))
+-            .unwrap()
+-    }
+-
+-    fn ColorDepth(&self) -> u32 {
+-        <Self as ScreenMethods<crate::DomTypeHolder>>::ColorDepth(self)
+-    }
+-
+-    fn PixelDepth(&self) -> u32 {
+-        <Self as ScreenMethods<crate::DomTypeHolder>>::PixelDepth(self)
+-    }
+-}
+diff --git a/components/script_bindings/Cargo.toml b/components/script_bindings/Cargo.toml
+index 67d70ab5902..dc5dbd3495d 100644
+--- a/components/script_bindings/Cargo.toml
++++ b/components/script_bindings/Cargo.toml
+@@ -23 +22,0 @@ path = "lib.rs"
+-roves-v8 = { path = "../roves-v8", optional = true }
+@@ -70,2 +68,0 @@ harness = false
+-# Temporary real-WebIDL V8 binding pilot; production engine migration is separate.
+-v8-bindings-pilot = ["dep:roves-v8"]
+diff --git a/components/script_bindings/build.rs b/components/script_bindings/build.rs
+index adf46f75460..1eab660e18c 100644
+--- a/components/script_bindings/build.rs
++++ b/components/script_bindings/build.rs
+@@ -41,16 +40,0 @@ fn main() {
+-    if env::var_os("CARGO_FEATURE_V8_BINDINGS_PILOT").is_some() {
+-        for (interface, webidl) in [
+-            ("ValidityState", "ValidityState.webidl"),
+-            ("Screen", "Screen.webidl"),
+-        ] {
+-            let status = find_python()
+-                .arg("codegen/run_v8.py")
+-                .arg(format!("webidls/{webidl}"))
+-                .arg(out_dir.join(format!("{interface}V8Binding.rs")))
+-                .env("PYTHONDONTWRITEBYTECODE", "1")
+-                .status()
+-                .expect("run V8 WebIDL pilot generator");
+-            assert!(status.success(), "V8 WebIDL pilot generation failed for {interface}");
+-        }
+-    }
+-
+diff --git a/components/script_bindings/lib.rs b/components/script_bindings/lib.rs
+index 1c0f8c17ddf..5e70d2635b8 100644
+--- a/components/script_bindings/lib.rs
++++ b/components/script_bindings/lib.rs
+@@ -18,11 +17,0 @@ extern crate malloc_size_of_derive;
+-/// Temporary opt-in generated V8 backend, not the production DOM engine.
+-#[cfg(feature = "v8-bindings-pilot")]
+-pub mod v8_bindings {
+-    pub mod screen {
+-        include!(concat!(env!("OUT_DIR"), "/ScreenV8Binding.rs"));
+-    }
+-    pub mod validity_state {
+-        include!(concat!(env!("OUT_DIR"), "/ValidityStateV8Binding.rs"));
+-    }
+-}
+-

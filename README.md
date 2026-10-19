@@ -47,6 +47,8 @@ The browser smoke also checks that `window` rejects prototype replacement while 
 ordinary properties.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks; the
 normal-string and ordinary-object paths retain their separate JavaScript behavior.
+The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
+compiled into the production bindings crate.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

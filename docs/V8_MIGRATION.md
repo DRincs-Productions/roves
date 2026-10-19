@@ -21,9 +21,9 @@ prova identifica un difetto nel collegamento a V8.
 
 ## 1. Verificare il backlog e rendere affidabile la CI
 
-- [ ] Ricontrollare ogni lacuna annotata contro codice, test e cronologia recente. Distinguere
+- [x] Ricontrollare le lacune annotate contro codice, test e cronologia recente; continuare a distinguere
   implementazione mancante, comportamento errato e verifica assente.
-- [ ] Esaminare `roves-js` cercando funzioni vuote, risultati costanti, API approssimate e
+- [ ] Completare l’audit di `roves-js` cercando funzioni vuote, risultati costanti, API approssimate e
   operazioni che dichiarano successo senza applicare il comportamento richiesto.
 - [ ] Per ogni problema registrare chiamanti di produzione, comportamento atteso, riproduzione
   e test di accettazione. Un nome SpiderMonkey, da solo, non è un difetto.
@@ -33,7 +33,7 @@ prova identifica un difetto nel collegamento a V8.
 - [x] Rendere obbligatori identità Window, navigazione e CSP attualmente segnalati soltanto come
   warning. Consentire skip soltanto per capacità esplicitamente non disponibili, come Wasm in
   JIT-less. Uno skip inatteso deve fallire.
-- [ ] Verificare il runner con fixture intenzionalmente fallite e incomplete, poi eseguire le
+- [x] Verificare il runner con fixture intenzionalmente fallite e incomplete, poi eseguire le
   suite esistenti nelle due modalità.
 
 **Criterio di uscita:** ogni voce residua ha evidenze aggiornate e la CI fallisce realmente
@@ -68,10 +68,8 @@ V8. Il lookup in `JS_SetImmutablePrototype` e `JS_SetPrototype` è stato corrett
 cella, con regressione su un proxy DOM della stessa classe. Suite locale aggiornata:
 `cargo test --locked --manifest-path components/roves-js/Cargo.toml` passa (41 passati,
 2 benchmark ignorati); con `--features jitless` passa (40 passati, 3 ignorati). La verifica
-browser `Object/Reflect` su global e vero `WindowProxy` resta da eseguire in CI prima di chiudere
-la voce nella tabella. È stato aggiunto uno smoke browser che richiede il rifiuto della modifica
-del prototipo di `window`, verifica l’identità del prototipo e conferma che le proprietà ordinarie
-restano definibili; la matrice deve ancora eseguirlo. Nessuna libreria aggiunta: rusty_v8 già offre
+browser `Object/Reflect` su global e vero `WindowProxy` è stato aggiunto allo smoke CI e resta da
+eseguire prima di chiudere la voce nella tabella. Nessuna libreria aggiunta: rusty_v8 già offre
 handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.
@@ -144,14 +142,14 @@ terminano.
 
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
   Preservare identità, controlli di accesso, descrittori ed eccezioni previsti.
-- [ ] Correggere i prototipi immutabili dove l’API compatibile non applica il vincolo.
+- [x] Correggere `JS_SetImmutablePrototype` e il trap proxy, con smoke browser aggiunto; chiudere dopo CI.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
   percorso `eval(TrustedScript)` è implementato e attende CI/browser, restano Function e Wasm;
   preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. Rilasciare gli oggetti
   non più raggiungibili dopo navigazione o chiusura, preservando quelli richiesti da
   riferimenti JS e bfcache.
-- [ ] Ricontrollare i costruttori callable: il collegamento alla raggiungibilità JS è già stato
+- [x] Ricontrollare i costruttori callable: il collegamento alla raggiungibilità JS è già stato
   introdotto e non deve essere ripianificato come interamente mancante.
 - [ ] Verificare creazione/terminazione worker, interruzione di script, shutdown e callback
   pendenti, evitando accessi a isolate o contesti distrutti.
@@ -165,27 +163,34 @@ Prima di ciascuna sostituzione confrontare manutenzione, licenza, piattaforme, J
 CPU/RAM/GPU. Aggiungere dipendenze soltanto insieme a un uso concreto e alla rimozione del
 codice sostituito. Documentare anche le valutazioni che concludono di non aggiungere librerie.
 
-- [ ] **rusty_v8 già presente:** preferire handle, cppgc, BackingStore, typed array e serializer
-  forniti da V8. Migrare un gruppo coerente di chiamanti alla volta ed eliminare gli adattamenti
-  diventati inutilizzati.
-- [ ] **Servo WebIDL già presente:** conservare parser e semantica del generatore. Valutare il
-  backend V8 sperimentale come materiale riutilizzabile, senza equiparare la copertura delle
-  forme WebIDL alla compatibilità del DOM di produzione.
-- [ ] **serde_v8:** provarla su una conversione concreta di dati delle API native Roves.
-  Adottarla soltanto se riduce codice senza perdere semantica o introdurre costi rilevanti;
-  evitare serializzazione generica per identità DOM e percorsi frequenti. Verificare la
-  compatibilità della versione con il crate `v8` fissato dal progetto.
-- [ ] **deno_core:** eseguire una valutazione isolata di moduli, callback e gestione runtime.
-  Confrontare il codice eliminabile con l’adattamento per event loop Servo, realm multipli,
-  CSP, loader browser, cppgc e JIT-less. Non integrarlo in produzione senza una riduzione
-  dimostrata del codice complessivo; non mantenere due runtime concorrenti.
-- [ ] **web-audio-api-rs:** conservarla come candidato nel backlog WebAudio. Richiedere una prova
-  di integrazione con grafo audio e processori JS V8 prima di proporne l’adozione; il supporto
-  AudioWorklet Rust non certifica quello JavaScript. Questa prova appartiene al lavoro WebAudio
-  separato e non è un requisito per chiudere la migrazione V8.
-- [ ] Eliminare progressivamente feature senza effetto, percorsi pilot inutilizzati e commenti
-  falsi. Conservare rooting/tracing necessari finché la sostituzione non preserva sicurezza e
-  comportamento. Non imporre l’eliminazione totale di `roves-js` se aumenterebbe il codice.
+- [x] **rusty_v8 già presente — valutazione completata:** `roves-js` usa già i suoi `Global`,
+  cppgc, `BackingStore`, typed array e `ValueSerializer`. L’ispezione dei percorsi concreti non
+  ha trovato un adattatore parallelo sostituibile senza cambiare i contratti JSAPI/DOM. Restare
+  sulla API V8 diretta per nuove migrazioni e rimuovere gli adattamenti solo quando i chiamanti
+  risultano sostituiti.
+- [x] **Servo WebIDL — valutazione completata:** conservare parser e semantica del generatore.
+  `v8_coverage.py` accetta 477/477 definizioni alla fase di generazione; questa misura non
+  compila né esegue i binding. Il pilot opt-in esporta solo `Screen` e `ValidityState`, non è
+  usato dal DOM di produzione e non dimostra compatibilità di runtime. Non adottarlo come
+  backend di produzione finché non copre e verifica un insieme ampio di interfacce reali.
+- [x] **serde_v8 — non adottata:** nessuna conversione di API native Roves da tipi Serde è stata
+  identificata; l’interfaccia corrente passa valori JS/DOM e le conversioni frequenti devono
+  preservare identità. Il crate non è nel `Cargo.lock`; l’upstream dedicato è archiviato e il
+  codice è stato spostato in `denoland/deno`. Nessun nuovo costo CPU/RAM e nessun rischio di
+  compatibilità V8 introdotti. Rivalutare solo con una API concreta che elimini codice esistente.
+- [x] **deno_core — non adottato:** il repository autonomo è archiviato e integrato in
+  `denoland/deno`; aggiungerlo porterebbe un secondo livello runtime oltre a quello Servo, senza
+  eliminare event loop browser, realm, CSP, loader, cppgc o integrazione JIT-less. Nessuna
+  riduzione complessiva dimostrata; memoria e complessità di versionamento aumenterebbero.
+- [x] **web-audio-api-rs — non adottata nella migrazione V8:** il progetto è attivo e MIT, ma
+  fornisce un grafo WebAudio Rust con backend audio nativi, non sostituisce il binding browser
+  Servo né certifica AudioWorklet JS V8. Sposterebbe lavoro CPU/audio e gestione dispositivi
+  senza ridurre il bridge DOM oggetto di questo piano; valutarla nel backlog WebAudio separato.
+- [x] Rimosso il wiring Cargo/runtime del pilot WebIDL: non generava binding nelle build normali,
+  ma aggiungeva una feature e una dipendenza opzionale da `roves-v8` solo per esporre due moduli
+  sperimentali. Il driver Python, il backend di generazione e i test restano strumenti di misura;
+  non sono codice runtime. Continuare a eliminare feature senza effetto solo quando i chiamanti
+  sono verificati, preservando rooting/tracing e senza imporre la rimozione di `roves-js`.
 
 **Criterio di uscita:** ogni sostituzione elimina codice effettivamente usato in precedenza,
 passa i test pertinenti e ha una decisione documentata. Una valutazione negativa motivata
@@ -197,6 +202,12 @@ Riferimenti dei candidati:
 - serde_v8: <https://docs.rs/serde_v8/>
 - deno_core: <https://github.com/denoland/deno_core>
 - web-audio-api-rs: <https://github.com/orottier/web-audio-api-rs>
+
+La valutazione di stato/manutenzione è stata ricontrollata il 19 ottobre 2026 sulle pagine
+upstream: `deno_core` è archiviato e confluito in Deno; `serde_v8` è archiviato come repository
+separato e rimandato alla directory `serde_v8` di Deno; `web-audio-api-rs` mantiene release
+recenti. Rileggere queste decisioni prima di un futuro aggiornamento versioni o di una modifica
+alle API native.
 
 ## 4. Validazione e distribuzione
 

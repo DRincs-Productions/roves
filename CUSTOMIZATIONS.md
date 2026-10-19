@@ -1,3 +1,16 @@
+## 2026-10-19 - Remove unused WebIDL V8 runtime pilot wiring
+
+**Files:** `components/script/{Cargo.toml,dom/screen.rs}`,
+`components/script_bindings/{Cargo.toml,build.rs,lib.rs}`, `Cargo.lock`
+(`0246-remove-webidl-v8-runtime-pilot.patch`), `README.md`.
+
+The opt-in `v8-bindings-pilot` feature added an optional `roves-v8` production dependency,
+generated two experimental bindings at build time, and exported them from the production
+bindings crate. No build or consumer enabled it; the Python generator and coverage tests are
+the useful evaluation tools. Remove only the Cargo feature, build-time generation and exported
+modules. Keep the generator, its fixtures and coverage utility for future measured evaluation.
+This reduces dependency/build surface without changing default Servo binding behavior.
+
 ## 2026-10-19 - Route TrustedScript eval through Servo CSP
 
 **Files:** `components/roves-js/src/{runtime_impl.rs,tests.rs}` and
