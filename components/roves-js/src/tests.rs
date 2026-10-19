@@ -1388,6 +1388,7 @@ mod runtime_hooks {
         static EXTRA_TRACED: Cell<u32> = const { Cell::new(0) };
         static REJECTIONS: Cell<(u32, u32)> = const { Cell::new((0, 0)) };
         static CSP_CHECKS: std::cell::RefCell<Vec<std::string::String>> = const { std::cell::RefCell::new(Vec::new()) };
+        static CSP_SAW_TRUSTED_EVAL_OBJECT: Cell<bool> = const { Cell::new(false) };
     }
 
     fn text(string: *mut JSString) -> std::string::String {
@@ -1408,11 +1409,14 @@ mod runtime_hooks {
         parameters: Handle<StackGCVector<*mut JSString>>,
         body: Handle<*mut JSString>,
         _arguments: Handle<StackGCVector<JSVal>>,
-        _body_argument: Handle<JSVal>,
+        body_argument: Handle<JSVal>,
         allowed: *mut bool,
     ) -> bool {
         // SAFETY: the checker's arguments are valid handles.
         let (code, body) = unsafe { (text(*code.ptr), text(*body.ptr)) };
+        if body_argument.get().is_object() {
+            CSP_SAW_TRUSTED_EVAL_OBJECT.with(|saw| saw.set(true));
+        }
         let parameters = unsafe { &*(parameters.ptr as *const Vec<*mut JSString>) };
         let parameters: Vec<std::string::String> = parameters.iter().map(|parameter| text(*parameter)).collect();
         CSP_CHECKS.with(|checks| checks.borrow_mut().push(format!("{kind:?} {compilation_type:?} {body} [{}]", parameters.join(","))));
@@ -1421,8 +1425,30 @@ mod runtime_hooks {
         true
     }
 
+    unsafe extern "C" fn code_for_eval_gets(
+        _cx: *mut JSContext,
+        code: HandleObject,
+        out: crate::jsapi::MutableHandleString,
+    ) -> bool {
+        let is_trusted = JSContext::current().with_scope(|scope| {
+            // SAFETY: V8 passed the live eval operand.
+            let value = unsafe { crate::cell::cell_value(scope, code.get() as *mut c_void) };
+            let Ok(object) = v8::Local::<v8::Object>::try_from(value) else { return false };
+            let Some(key) = v8::String::new(scope, "__rovesTrustedScript") else { return false };
+            object.get(scope, key.into()).is_some_and(|value| value.is_true())
+        });
+        if is_trusted {
+            JSContext::current().with_scope(|scope| {
+                let source = v8::String::new(scope, "40 + 2").unwrap();
+                let value = crate::jsval::from_v8(scope, source.into());
+                out.set(value.to_string());
+            });
+        }
+        true
+    }
+
     static SECURITY_CALLBACKS: JSSecurityCallbacks =
-        JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: None, subsumes: None };
+        JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: Some(code_for_eval_gets), subsumes: None };
 
     static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
@@ -1526,6 +1552,8 @@ mod runtime_hooks {
         assert_eq!(eval(&runtime, "new Function('a', 'b', 'return a + b')(2, 3)").to_int32(), 5);
         assert!(eval(&runtime, "try { Function('return \"blocked\"'); false } catch (e) { e instanceof EvalError }").to_boolean());
         assert!(eval(&runtime, "const o = {}; eval(o) === o").to_boolean(), "non-strings are returned unchanged");
+        assert_eq!(eval(&runtime, "eval({__rovesTrustedScript: true})").to_int32(), 42);
+        assert!(CSP_SAW_TRUSTED_EVAL_OBJECT.with(Cell::get), "the original TrustedScript operand reaches CSP");
         // V8 has no WebAssembly without its JIT.
         let wasm = "new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0])) instanceof WebAssembly.Module";
         if cfg!(not(feature = "jitless")) {
@@ -1536,6 +1564,7 @@ mod runtime_hooks {
         assert_eq!(checks[1], "JS DirectEval null []");
         assert_eq!(checks[2], "JS Function return a + b [a,b]");
         assert_eq!(checks[3], "JS Function return \"blocked\" []");
+        assert_eq!(checks[4], "JS DirectEval null []");
         if cfg!(not(feature = "jitless")) {
             assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));
         }

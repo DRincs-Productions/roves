@@ -50,7 +50,7 @@ come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
 | Realm | `realm_impl::register_realm` conserva un `Global<Context>` in `cx.realms`; `trace_realms` traccia ogni globale/proxy/drain. | Navigazioni ripetute con rilascio dei realm irraggiungibili; mantenere riferimenti cross-realm e bfcache ancora vivi. |
 | Script privates | `script_impl::Scripts::privates` è una mappa tracciata dal runtime; `globalscope/script_execution.rs` la alimenta con `SetScriptPrivate`. | Raccolta dopo perdita dello script e dei suoi callable; conservazione dei privati necessari ai callable ancora vivi. |
 | Module privates | `modules_impl::Modules::entries` e `trace_modules` tengono vivi record e privati; `script_module.rs` chiama `SetModulePrivate`. | Raccolta dei grafi modulo irraggiungibili senza rompere import dinamico, namespace conservati e risoluzione dei moduli. |
-| TrustedScript | `runtime_impl::code_generation_from_strings` permette i non-stringa senza usare `codeForEvalGets`; Servo registra quel callback in `script_runtime.rs`. | Eval con stringhe normali, oggetti normali e TrustedScript sotto CSP/Trusted Types; coercizioni e report nel realm corretto. Non attribuire bypass senza una riproduzione. |
+| TrustedScript | `runtime_impl::code_generation_from_strings` permetteva i non-stringa senza usare `codeForEvalGets`; Servo registra quel callback in `script_runtime.rs`. | Implementata estrazione del TrustedScript e inoltro del valore originale a CSP. Restano smoke browser/CI, Function constructor, Wasm e realm/report. |
 | Window cross-origin | `window/windowproxy.rs::PROXY_TRAPS` conserva TODO su same-origin e getPrototype; esiste già `maybe_cross_origin_set_prototype_rawcx` nei binding. | Pagina/iframe su due origini, permessi get/set/ownKeys/prototipo, navigazione tra origini e identità del proxy. Distinguere lacune Servo da regressioni V8. |
 | Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; esiste `callable_classes_follow_js_reachability_instead_of_runtime_lifetime` nei test roves-js. | Rieseguire il test normale/JIT-less in CI. La conservazione incondizionata fino alla fine del runtime è già stata rimossa dalla patch 0236. |
 
@@ -76,11 +76,24 @@ handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplich
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.
 
-Il callback CSP per stringhe e Wasm è già installato in `runtime_impl`; non ripianificarne
-l’intera implementazione. La lacuna TrustedScript riguarda il percorso degli oggetti code-like.
-La prossima modifica di ownership deve riusare weak handle/cppgc di V8 e conservare tutte le
-radici necessarie; eliminare una voce dalla mappa senza un contratto di raggiungibilità non è
-una correzione sicura.
+### Correzione TrustedScript in `eval` — 19 ottobre 2026
+
+L’hook rusty_v8 passa al callback il valore originale di `eval`. Per i valori stringa il
+callback CSP continua a controllare la compilazione; per gli oggetti usa ora il callback Servo
+`codeForEvalGets`, che estrae sorgente solo da `TrustedScript`, e inoltra l’oggetto originale
+come `bodyArg` al controllo Trusted Types/CSP. Gli oggetti ordinari restano invariati come
+richiesto dalla semantica di `eval`. Un test `roves-js` verifica sorgente estratta, passaggio
+dell’oggetto al callback e identità degli oggetti normali. Lo smoke CSP browser verifica
+`TrustedScript` consentito sotto una policy che richiede trusted types. Il test locale mirato e
+il parser smoke passano; la verifica browser e la matrice CI di questo aggiornamento sono ancora
+da attendere. La costruzione dinamica `Function(TrustedScript)` e i parametri trusted della
+Function constructor restano da verificare separatamente.
+
+Il callback CSP per stringhe e Wasm era già installato in `runtime_impl`; la lacuna era
+l’integrazione dell’operando oggetto di `eval` con il callback Servo esistente. La prossima
+modifica di ownership deve riusare weak handle/cppgc di V8 e conservare tutte le radici
+necessarie; eliminare una voce dalla mappa senza un contratto di raggiungibilità non è una
+correzione sicura.
 
 ### Verifica del runner — 19 ottobre 2026
 
@@ -132,7 +145,8 @@ terminano.
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
   Preservare identità, controlli di accesso, descrittori ed eccezioni previsti.
 - [ ] Correggere i prototipi immutabili dove l’API compatibile non applica il vincolo.
-- [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm;
+- [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
+  percorso `eval(TrustedScript)` è implementato e attende CI/browser, restano Function e Wasm;
   preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. Rilasciare gli oggetti
   non più raggiungibili dopo navigazione o chiusura, preservando quelli richiesti da

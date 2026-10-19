@@ -45,6 +45,8 @@ Desktop bundle smoke checks wait for their required page results (including synt
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
 The browser smoke also checks that `window` rejects prototype replacement while still allowing
 ordinary properties.
+Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks; the
+normal-string and ordinary-object paths retain their separate JavaScript behavior.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

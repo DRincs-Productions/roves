@@ -1,6 +1,6 @@
 <!doctype html>
 <html><head><meta charset="utf-8">
-<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'">
+<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline' 'unsafe-eval'; require-trusted-types-for 'script'; trusted-types smoke">
 <title>roves-js CSP smoke page</title></head>
 <body>
 <script>
@@ -8,5 +8,9 @@ function attempt(f) { try { f(); return "allowed"; } catch (e) { return e.constr
 console.log("ROVES-V8 csp eval " + attempt(() => eval("1")));
 console.log("ROVES-V8 csp function " + attempt(() => new Function("return 1")));
 console.log("ROVES-V8 csp settimeout-string " + attempt(() => setTimeout("1", 0)));
+const trusted = trustedTypes.createPolicy("smoke", { createScript: value => value }).createScript("40 + 2");
+console.log("ROVES-V8 csp trusted eval", attempt(() => eval(trusted)));
+const ordinary = { toString() { return "40 + 2"; } };
+console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
 </script>
 </body></html>

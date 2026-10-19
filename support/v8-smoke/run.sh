@@ -75,7 +75,7 @@ if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::no
 if grep -aFxq 'ROVES-V8 immutable window prototype true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
+for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp ordinary eval unchanged true"; do
   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
 ' ' '))"; fi
 done

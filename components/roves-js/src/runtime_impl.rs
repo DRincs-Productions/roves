@@ -506,7 +506,12 @@ fn function_constructor_parts(source: &str) -> Option<(&str, &str)> {
 
 /// Asks the embedder's CSP check whether `kind` code may be compiled in the realm of `context`
 /// (true without a check). `source` is the code (JS) or null (WebAssembly).
-fn csp_allows(scope: &mut v8::PinScope, kind: crate::jsapi::RuntimeCode, source: Option<v8::Local<v8::String>>) -> bool {
+fn csp_allows(
+    scope: &mut v8::PinScope,
+    kind: crate::jsapi::RuntimeCode,
+    source: Option<v8::Local<v8::String>>,
+    body_arg: crate::jsval::JSVal,
+) -> bool {
     use crate::jsapi::{CompilationType, JSString, StackGCVector};
     let Some(cx) = crate::rust::Runtime::get() else { return true };
     let cx = cx.as_ptr();
@@ -535,7 +540,7 @@ fn csp_allows(scope: &mut v8::PinScope, kind: crate::jsapi::RuntimeCode, source:
     }
     crate::rooted!(in(cx) let parameter = parameter);
     let arguments: Vec<crate::jsval::JSVal> = Vec::new();
-    crate::rooted!(in(cx) let body_argument = crate::jsval::UndefinedValue());
+    crate::rooted!(in(cx) let body_argument = body_arg);
     let parameter_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &parameters as *const Vec<*mut JSString> as *const StackGCVector<*mut JSString> };
     let argument_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &arguments as *const Vec<crate::jsval::JSVal> as *const StackGCVector<crate::jsval::JSVal> };
     // The check runs in the realm compiling the code.
@@ -558,18 +563,43 @@ fn code_generation_from_strings<'s>(
     source: v8::Local<'s, v8::Value>,
     _is_code_like: bool,
 ) -> v8::ModifyCodeGenerationFromStringsResult<'s> {
-    // A non-string `eval` argument is returned unchanged (nothing is compiled).
-    let Ok(string) = v8::Local::<v8::String>::try_from(source) else {
+    let source_value = crate::jsval::from_v8(scope, source);
+    if let Ok(string) = v8::Local::<v8::String>::try_from(source) {
+        let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value);
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) };
+    }
+
+    // V8 passes eval's original non-string operand here. Servo's codeForEvalGets hook
+    // recognizes TrustedScript and supplies its source; ordinary objects keep eval's
+    // specified identity-return behavior.
+    let Some(cx) = crate::rust::Runtime::get().map(|cx| cx.as_ptr()) else {
         return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
     };
-    let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string));
+    let Some(extract) = (unsafe { hooks(cx).security_callbacks.get().as_ref() }).and_then(|callbacks| callbacks.codeForEvalGets) else {
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+    };
+    let source_object = crate::jsval::from_v8(scope, source).to_object();
+    crate::rooted!(in(cx) let source_object = source_object);
+    crate::rooted!(in(cx) let mut extracted = std::ptr::null_mut::<crate::jsapi::JSString>());
+    let ok = unsafe { extract(cx, source_object.handle().into(), extracted.handle_mut().into()) };
+    if !ok {
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: false, modified_source: None };
+    }
+    let Some(extracted) = std::ptr::NonNull::new(extracted.get()) else {
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+    };
+    let extracted_value = unsafe { crate::jsval::to_v8(scope, crate::jsval::StringValue(unsafe { extracted.as_ref() })) };
+    let Ok(string) = v8::Local::<v8::String>::try_from(extracted_value) else {
+        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: false, modified_source: None };
+    };
+    let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value);
     v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) }
 }
 
 unsafe extern "C" fn wasm_code_generation(context: v8::Local<v8::Context>, _source: v8::Local<v8::String>) -> bool {
     // SAFETY: V8 calls this with the context entered.
     v8::callback_scope!(unsafe scope, context);
-    csp_allows(scope, crate::jsapi::RuntimeCode::WASM, None)
+    csp_allows(scope, crate::jsapi::RuntimeCode::WASM, None, crate::jsval::UndefinedValue())
 }
 
 pub unsafe fn SetDOMCallbacks(cx: *mut JSContext, callbacks: *const DOMCallbacks) {

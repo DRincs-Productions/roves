@@ -76,6 +76,8 @@ if page == 'test.html':
 elif page == 'csp.html':
     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
     print('ROVES-V8 csp function EvalError')
+    if scenario != 'trusted-script': print('ROVES-V8 csp trusted eval 42')
+    print('ROVES-V8 csp ordinary eval unchanged true')
 elif page == 'nav1.html':
     print('ROVES-V8 nav2 loaded nav2.html true second page')
     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=true')
@@ -111,7 +113,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'trusted-script', 'navigation', 'skip'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)

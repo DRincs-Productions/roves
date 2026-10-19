@@ -1,3 +1,17 @@
+## 2026-10-19 - Route TrustedScript eval through Servo CSP
+
+**Files:** `components/roves-js/src/{runtime_impl.rs,tests.rs}` and
+`support/v8-smoke/{csp.html,run.sh,test_runner.py}`
+(`0245-roves-js-trustedscript-eval.patch`), `README.md`.
+
+V8's code-generation callback receives the original eval operand. The adapter previously
+returned for non-strings without asking Servo's existing `codeForEvalGets` callback, so a
+`TrustedScript` object could not supply its trusted source to CSP/Trusted Types. Call that
+hook for object operands, compile only when it supplies a source, and pass the original
+operand into Servo's CSP callback. Ordinary objects still return unchanged per eval semantics.
+Extend the runtime regression and CSP browser smoke for trusted and ordinary objects. Reuse
+rusty_v8 and Servo's existing callbacks; no new dependency or build option is needed.
+
 ## 2026-10-19 - Verify immutable Window prototype in browser smoke
 
 **Files:** `support/v8-smoke/{test.html,run.sh,test_runner.py}`
