@@ -1,3 +1,15 @@
+## 2026-10-19 - Wait for all page-level bundle smoke results
+
+**File:** `.github/workflows/test.yml`.
+
+The fixed 25-second bundle smoke window was insufficient on slow Windows runners: MSI startup
+used nearly all of it, and the first event-based wait ended as soon as the virtual gamepad
+arrived, before the independent `roves:save_file` auto-check emitted its result. Both Windows
+package modes therefore failed on the missing save marker even though gamepad delivery worked.
+Wait up to 75 seconds for all required page-level markers (gamepad where enabled and save-file
+everywhere), and stop early once they are present. Linux also keeps its synthetic input checks
+mandatory. This changes CI timing only; no build/bundle flags or consumer workflow inputs change.
+
 ## 2026-10-19 - Resolve WebGPU requests without a host and fix the DOM smoke matcher
 
 **Files:** `components/constellation/constellation.rs` (`0242-webgpu-no-host-response.patch`),

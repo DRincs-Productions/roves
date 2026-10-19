@@ -669,6 +669,7 @@ jobs:
           rm -f "$SAVE_EXPORT_PATH"
           export ROVES_SAVE_FILE_AUTOTEST_PATH="$SAVE_EXPORT_PATH"
           export ROVES_PERF_LOG_INTERVAL_MS=1000
+          LOG_MARKER=$(mktemp)
 
           # `set -e` (this shell's default) would otherwise abort the whole step the
           # instant the launched process has already exited — right when this step most
@@ -677,17 +678,30 @@ jobs:
           set +e
           "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
           PID=$!
-          # 25s, not 15s: this step now also waits on test-page's own roves:save_file
-          # auto-check (App.tsx, 2s internal delay before it even starts) to both run and get
-          # captured before the process is killed -- 15s (itself already a bump from an
-          # original 10s, for the same reason) was still cutting it too close: confirmed by a
-          # real run (35519619799) where exactly this check came back empty specifically on
-          # the Windows/MSI leg, twice in a row, while the process itself launched fine both
-          # times -- MSI-installed cold-start latency (Windows Defender/SmartScreen scanning a
-          # freshly installed .exe) plus the SDL3 windowing migration's own extra
-          # startup work (gamepad subsystem, AccessKit adapter init) likely pushed this over
-          # the previous margin.
-          sleep 25
+          # Some runners need longer than 25s to load the diagnostic page. Wait for every
+          # page-level result this step asserts, rather than killing the process at a fixed
+          # time or stopping as soon as just one input check passes.
+          DEADLINE=$((SECONDS + 75))
+          LOG=""
+          while [ "$SECONDS" -lt "$DEADLINE" ]; do
+            SAVE_CHECK=false
+            grep -hq '\[roves-save-file-autotest\]' smoke-stdout.log && SAVE_CHECK=true
+            if [ -z "$LOG" ]; then
+              CACHE_ROOT="$HOME/.cache"
+              [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
+              LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$LOG_MARKER" 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+            fi
+            if [ "$SAVE_CHECK" = false ] && [ -n "$LOG" ]; then
+              grep -hq '\[roves-save-file-autotest\]' "$LOG" && SAVE_CHECK=true
+            fi
+            INPUT_CHECK=true
+            if [ "${{ matrix.os_name }}" = "linux" ]; then
+              grep -hq '\[roves-input\] kind=gamepadbuttondown ' smoke-stdout.log "$LOG" 2>/dev/null || INPUT_CHECK=false
+            fi
+            if [ "$SAVE_CHECK" = true ] && [ "$INPUT_CHECK" = true ]; then break; fi
+            kill -0 "$PID" 2>/dev/null || break
+            sleep 0.5
+          done
           if kill -0 "$PID" 2>/dev/null; then
             STILL_RUNNING=true
             kill "$PID"
@@ -719,7 +733,7 @@ jobs:
 
           CACHE_ROOT="$HOME/.cache"
           [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
-          LOG=$(find "$CACHE_ROOT" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
+          LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$LOG_MARKER" 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
           if [ -n "$LOG" ]; then
             echo "--- roves.log ($LOG) ---"; cat "$LOG"
           else
@@ -964,23 +978,28 @@ jobs:
           $env:ROVES_PERF_LOG_INTERVAL_MS = "1000"
           # SDL virtual gamepad, toggled by the shell itself: proves SDL -> Servo -> Web Gamepad API.
           $env:ROVES_TEST_VIRTUAL_GAMEPAD = "1"
+          $startedAt = Get-Date
           $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
             -RedirectStandardOutput $stdout -RedirectStandardError $stderr
           # MSI startup can take ~25s before the bundled game page is ready on shared runners.
           # Wait up to another 30s for the virtual SDL gamepad event, exiting early once the
           # page records it. This tests the installed bundle without imposing a timing threshold.
-          $deadline = [DateTime]::UtcNow.AddSeconds(55)
+          $deadline = [DateTime]::UtcNow.AddSeconds(75)
           $gamepadPattern = '\[roves-input\] kind=gamepadbuttondown '
+          $saveFilePattern = '\[roves-save-file-autotest\]'
           $logPath = $null
           do {
             $observed = Select-String -Path $stdout -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue
+            $saveCheckObserved = Select-String -Path $stdout -Pattern $saveFilePattern -Quiet -ErrorAction SilentlyContinue
             if ($logPath -and (Test-Path $logPath)) {
               $observed = $observed -or (Select-String -Path $logPath -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue)
+              $saveCheckObserved = $saveCheckObserved -or (Select-String -Path $logPath -Pattern $saveFilePattern -Quiet -ErrorAction SilentlyContinue)
             }
-            if ($observed -or $proc.HasExited -or [DateTime]::UtcNow -ge $deadline) { break }
+            if (($observed -and $saveCheckObserved) -or $proc.HasExited -or [DateTime]::UtcNow -ge $deadline) { break }
             Start-Sleep -Milliseconds 500
             if (-not $logPath) {
               $logPath = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+                Where-Object { $_.LastWriteTime -ge $startedAt } |
                 Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
             }
           } while ($true)
@@ -993,6 +1012,7 @@ jobs:
           Write-Host "--- stderr ---"; Get-Content $stderr -ErrorAction SilentlyContinue
 
           $log = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
+            Where-Object { $_.LastWriteTime -ge $startedAt } |
             Sort-Object LastWriteTime -Descending | Select-Object -First 1
           if ($log) {
             Write-Host "--- roves.log ($($log.FullName)) ---"

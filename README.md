@@ -41,6 +41,8 @@ Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly co
 missing audio/GPU devices are the only accepted exceptions. When WebGPU has no usable adapter,
 `requestAdapter()` resolves with `null`, including for local `file://` pages; a request that
 hangs still fails the smoke check.
+Desktop bundle smoke checks wait for their required page results (including synthetic input and
+save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

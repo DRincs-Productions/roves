@@ -104,8 +104,26 @@ DOM include anche titolo e numero di figli, mentre il confronto esatto cercava s
 il prefisso; ora il fixture riproduce l’output reale e il matcher verifica quel prefisso.
 
 Patch incrementali `0242-webgpu-no-host-response.patch` e
-`0243-v8-smoke-dom-output.patch`. Verifica locale e nuova CI normale/JIT-less ancora
-da eseguire; la fase 1 resta aperta fino all’esito.
+`0243-v8-smoke-dom-output.patch`. La run `39295524530` sul commit
+`37e1e3f9f12` è verde su Linux normale/JIT-less, Windows e macOS: tutti i test
+WebGPU (12/12, un hardware skip autorizzato) e gli smoke di DOM, Window/globalThis,
+CSP e navigazione passano in entrambe le modalità Linux. Il test locale del parser
+passa; i due test d’integrazione shell sono saltati su Windows perché richiedono Bash
+POSIX, e sono eseguiti nella matrice Linux/macOS. La fase 1 resta aperta per l’audit
+residuo del backlog e la copertura applicativa/WPT elencata nelle fasi successive.
+
+### Verifica della smoke MSI Windows — 19 ottobre 2026
+
+La matrice `39296023222` ha fallito solo il controllo del gamepad nell’MSI: l’installazione
+e l’avvio erano riusciti, ma la pagina di prova diventava pronta circa 24,5 secondi dopo
+l’avvio e il processo veniva terminato a 25 secondi, prima del primo evento (driver SDL
+ogni 500 ms). La prima correzione dinamica ha atteso il gamepad, poi ha terminato prima del
+risultato `roves:save_file`: Windows portable e MSI sono entrambi falliti con il marker di
+salvataggio mancante nella matrice `39302751406`. La nuova attesa richiede sia l’evento gamepad
+(dove il test è abilitato) sia il marker `roves:save_file`, con limite di 75 secondi;
+Linux/macOS usano la stessa condizione per il marker, Linux richiede anche l’input sintetico.
+La matrice è stata corretta e va rilanciata; non chiudere la verifica finché tutti i job non
+terminano.
 
 ## 2. Correggere semantica e ciclo di vita
 
