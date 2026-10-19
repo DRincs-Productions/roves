@@ -1,0 +1,38 @@
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 210bafd2e1a..962ec534374 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -72,6 +72,7 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true"
+   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
+ done
+ if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 immutable window prototype true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
+
+ run_page csp.html 30 csp.log
+ for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
+diff --git a/support/v8-smoke/test.html b/support/v8-smoke/test.html
+index 7dc189c4e5a..c4cdfa3c8ba 100644
+--- a/support/v8-smoke/test.html
++++ b/support/v8-smoke/test.html
+@@ -15,4 +15,9 @@ Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
+ setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
+ class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
+ console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
++const windowPrototype = Object.getPrototypeOf(window);
++const windowPrototypeChange = Reflect.setPrototypeOf(window, {});
++Object.defineProperty(window, "__rovesV8SmokeOrdinary", { value: 1, configurable: true });
++console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === false && Object.getPrototypeOf(window) === windowPrototype && window.__rovesV8SmokeOrdinary === 1);
++delete window.__rovesV8SmokeOrdinary;
+ </script></body></html>
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index c1c7900e198..2c752f0823e 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -72,6 +72,7 @@ if page == 'test.html':
+     print('ROVES-V8 promise 5')
+     print('ROVES-V8 timeout fired')
+     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
++    if scenario != 'immutable-prototype': print('ROVES-V8 immutable window prototype true')
+ elif page == 'csp.html':
+     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
+     print('ROVES-V8 csp function EvalError')

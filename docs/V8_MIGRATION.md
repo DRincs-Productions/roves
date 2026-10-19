@@ -69,7 +69,9 @@ cella, con regressione su un proxy DOM della stessa classe. Suite locale aggiorn
 `cargo test --locked --manifest-path components/roves-js/Cargo.toml` passa (41 passati,
 2 benchmark ignorati); con `--features jitless` passa (40 passati, 3 ignorati). La verifica
 browser `Object/Reflect` su global e vero `WindowProxy` resta da eseguire in CI prima di chiudere
-la voce nella tabella. Nessuna libreria aggiunta: rusty_v8 già offre
+la voce nella tabella. È stato aggiunto uno smoke browser che richiede il rifiuto della modifica
+del prototipo di `window`, verifica l’identità del prototipo e conferma che le proprietà ordinarie
+restano definibili; la matrice deve ancora eseguirlo. Nessuna libreria aggiunta: rusty_v8 già offre
 handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
 senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
 piano.

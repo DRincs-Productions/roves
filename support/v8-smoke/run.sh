@@ -72,6 +72,7 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" 
   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
 done
 if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
+if grep -aFxq 'ROVES-V8 immutable window prototype true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
 for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do

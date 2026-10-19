@@ -43,6 +43,8 @@ missing audio/GPU devices are the only accepted exceptions. When WebGPU has no u
 hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
+The browser smoke also checks that `window` rejects prototype replacement while still allowing
+ordinary properties.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

@@ -1,3 +1,15 @@
+## 2026-10-19 - Verify immutable Window prototype in browser smoke
+
+**Files:** `support/v8-smoke/{test.html,run.sh,test_runner.py}`
+(`0244-v8-immutable-window-prototype-smoke.patch`), `README.md`.
+
+The V8 binding now enforces immutable prototypes for class-backed DOM globals, but the
+existing browser smoke only checked `window === globalThis`. Extend the smoke to require
+`Reflect.setPrototypeOf(window, {})` to return false, preserve the original prototype, and
+still allow an ordinary property. Keep a simulated failure case in the runner fixture so
+missing browser output is rejected. This verifies the real global/WindowProxy path in the
+cross-platform smoke build without adding dependencies or changing build flags.
+
 ## 2026-10-19 - Wait for all page-level bundle smoke results
 
 **File:** `.github/workflows/test.yml`.
