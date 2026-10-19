@@ -1,0 +1,150 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 3436c40f8b2..79502ba1083 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -287,18 +287,33 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
+                 Some(proto) => proto.into(),
+                 None => v8::null(scope).into(),
+             };
++            if crate::object::has_immutable_prototype(target) {
++                let original = crate::object::immutable_prototype(target)?;
++                if v8::Local::new(scope, &original) == prototype {
++                    return Some(true);
++                }
++                crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
++                return None;
++            }
+             target.set_prototype(scope, prototype)
+         })
+         .unwrap_or(false)
+ }
+ 
+-/// SpiderMonkey's immutable-prototype flag (Servo sets it on its globals after giving them their
+-/// canonical prototype). V8 only has it on object templates (`SetImmutableProto`), where it holds
+-/// from the instance's creation, so `JS_SetPrototype` with the canonical prototype would then
+-/// fail: the prototype stays mutable (documented gap; `Object.prototype` is immutable in V8).
+-pub unsafe fn JS_SetImmutablePrototype(_cx: *mut JSContext, _obj: HandleObject, succeeded: *mut bool) -> bool {
++/// Marks a class object so only its current prototype can be assigned, matching
++/// SpiderMonkey's immutable-prototype flag for the objects Servo marks.
++pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool {
++    let result = raw(cx).catching(|scope| {
++        let target = object(scope, obj.get())?;
++        let Some(class_box) = crate::object::class_box_of_v8(target) else { return None };
++        let prototype = prototype_of(scope, target)?;
++        *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
++        class_box.immutable_prototype.set(true);
++        Some(true)
++    });
++    let Some(result) = result else { return false };
+     // SAFETY: JSAPI callers pass a valid out pointer.
+-    unsafe { *succeeded = true };
++    unsafe { *succeeded = result };
+     true
+ }
+ 
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index f5777fb7d42..edfcc99aeda 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -57,6 +57,9 @@ pub(crate) struct ClassBox {
+     /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
+     /// embedder's global state alongside the class hook.
+     pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
++    /// Whether SpiderMonkey's `JS_SetImmutablePrototype` has fixed this object's prototype.
++    pub(crate) immutable_prototype: StdCell<bool>,
++    pub(crate) immutable_prototype_value: RefCell<Option<v8::Global<v8::Value>>>,
+ }
+ 
+ thread_local! {
+@@ -190,6 +193,16 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
+     if raw.is_null() { None } else { box_from_raw(raw as *mut c_void) }
+ }
+ 
++/// Whether a class object was marked with SpiderMonkey's immutable-prototype flag.
++pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
++    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
++}
++
++/// The original prototype stored when the immutable flag was set.
++pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
++    class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
++}
++
+ impl ClassBox {
+     /// Replaces the reserved slots with `other`'s (`JS_TransplantObject`).
+     pub(crate) fn copy_slots_from(&self, other: &ClassBox) {
+@@ -669,6 +682,8 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) ->
+                 private: StdCell::new(UndefinedValue()),
+                 lazy_proto: StdCell::new(false),
+                 global_trace: StdCell::new(None),
++                immutable_prototype: StdCell::new(false),
++                immutable_prototype_value: RefCell::new(None),
+             },
+         )
+     }
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 89dfa2c4df7..ca40aac4b1e 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -507,7 +507,18 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+             result_to_bool(ok, &result, &mut retval, scope);
+         },
+         None => {
+-            let set = context.target.set_prototype(scope, args.get(1)).unwrap_or(false);
++            let set = if crate::object::has_immutable_prototype(context.target) {
++                match crate::object::immutable_prototype(context.target) {
++                    Some(original) if v8::Local::new(scope, &original) == args.get(1) => true,
++                    Some(_) => {
++                        crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
++                        return;
++                    },
++                    None => false,
++                }
++            } else {
++                context.target.set_prototype(scope, args.get(1)).unwrap_or(false)
++            };
+             retval.set_bool(set);
+         },
+     }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index e5fa5aa3ef7..7adcfda1281 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -777,6 +777,24 @@ mod object_model {
+         });
+         assert_eq!(json, r#"{"answer":42}"#);
+     }
++
++    #[test]
++    fn immutable_prototypes_reject_replacement_but_allow_properties() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
++        rooted!(in(cx) let prototype = unsafe { GetRealmObjectPrototype(cx) });
++        rooted!(in(cx) let mut replacement = unsafe { JS_NewPlainObject(cx) });
++        assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
++        let mut succeeded = false;
++        assert!(unsafe { JS_SetImmutablePrototype(cx, object.handle().into_handle(), &mut succeeded) });
++        assert!(succeeded);
++        assert!(!unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
++        rooted!(in(cx) let global = global(&runtime).to_object());
++        rooted!(in(cx) let object_value = ObjectValue(object.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"immutableTarget".as_ptr(), object_value.handle().into_handle()) });
++        assert_eq!(eval(&runtime, "(Object.defineProperty(immutableTarget, 'ordinary', { value: 7 }), immutableTarget.ordinary)").to_int32(), 7);
++    }
+ }
+ 
+ #[test]
+@@ -843,6 +861,12 @@ mod realms {
+         assert!(!realm.is_null() && realm != first_realm);
+         assert_eq!(unsafe { GetRealmGlobalOrNull(realm) }, global.get());
+ 
++        let mut immutable = false;
++        assert!(unsafe { JS_SetImmutablePrototype(cx, global.handle().into_handle(), &mut immutable) });
++        assert!(immutable, "the WebIDL global class must retain its immutable prototype");
++        rooted!(in(cx) let mut replacement_proto = unsafe { JS_NewPlainObject(cx) });
++        assert!(!unsafe { JS_SetPrototype(cx, global.handle().into_handle(), replacement_proto.handle().into_handle()) });
++
+         // Entering the realm switches where scripts run.
+         let old = unsafe { EnterRealm(cx, global.get()) };
+         assert_eq!(old, first_realm);

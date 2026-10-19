@@ -13290,6 +13290,20 @@ Synced in the same effort:
 
 `roves-api`'s `COMPATIBLE_SHELL_VERSION` is unchanged: no `roves:`/`steam:` protocol changed.
 
+## 2026-10-19 - Enforce immutable JSAPI prototypes in roves-js
+
+**Engine files:** `components/roves-js/src/jsapi_impl.rs`, `object.rs`, `proxy.rs`, and `tests.rs`.
+**Patch:** `0239-immutable-prototypes.patch` (V8 migration follow-up).
+
+`JS_SetImmutablePrototype` previously returned success without changing state. Class objects
+now keep the prototype selected at the call in a V8 `Global<Value>` owned by their cppgc
+`ClassBox`. `JS_SetPrototype` accepts that same prototype and throws on replacement; default
+proxy `setPrototypeOf` handling preserves the same invariant. This leaves property definition
+and object extensibility unchanged. Tests cover class objects and WebIDL globals in normal and
+JIT-less mode. Browser-level `Object/Reflect` behavior on WindowProxy remains an open migration
+acceptance check. No dependency was added: rusty_v8 already supplies the required handles and
+cppgc ownership primitives.
+
 ## 2026-10-11 - V8 migration: first results of the new test pages; the JavaScript stack budget
 
 **Servo files:** `support/v8-smoke/graphics.html`, `stress.html`.

@@ -507,7 +507,18 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
             result_to_bool(ok, &result, &mut retval, scope);
         },
         None => {
-            let set = context.target.set_prototype(scope, args.get(1)).unwrap_or(false);
+            let set = if crate::object::has_immutable_prototype(context.target) {
+                match crate::object::immutable_prototype(context.target) {
+                    Some(original) if v8::Local::new(scope, &original) == args.get(1) => true,
+                    Some(_) => {
+                        crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
+                        return;
+                    },
+                    None => false,
+                }
+            } else {
+                context.target.set_prototype(scope, args.get(1)).unwrap_or(false)
+            };
             retval.set_bool(set);
         },
     }

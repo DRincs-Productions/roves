@@ -57,6 +57,9 @@ pub(crate) struct ClassBox {
     /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
     /// embedder's global state alongside the class hook.
     pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
+    /// Whether SpiderMonkey's `JS_SetImmutablePrototype` has fixed this object's prototype.
+    pub(crate) immutable_prototype: StdCell<bool>,
+    pub(crate) immutable_prototype_value: RefCell<Option<v8::Global<v8::Value>>>,
 }
 
 thread_local! {
@@ -188,6 +191,16 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
     // SAFETY: class-based objects store their box under this tag.
     let raw = unsafe { object.get_aligned_pointer_from_internal_field(0, CLASS_BOX_TAG) };
     if raw.is_null() { None } else { box_from_raw(raw as *mut c_void) }
+}
+
+/// Whether a class object was marked with SpiderMonkey's immutable-prototype flag.
+pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
+    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
+}
+
+/// The original prototype stored when the immutable flag was set.
+pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
+    class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
 }
 
 impl ClassBox {
@@ -669,6 +682,8 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 private: StdCell::new(UndefinedValue()),
                 lazy_proto: StdCell::new(false),
                 global_trace: StdCell::new(None),
+                immutable_prototype: StdCell::new(false),
+                immutable_prototype_value: RefCell::new(None),
             },
         )
     }

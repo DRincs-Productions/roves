@@ -777,6 +777,24 @@ mod object_model {
         });
         assert_eq!(json, r#"{"answer":42}"#);
     }
+
+    #[test]
+    fn immutable_prototypes_reject_replacement_but_allow_properties() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
+        rooted!(in(cx) let prototype = unsafe { GetRealmObjectPrototype(cx) });
+        rooted!(in(cx) let mut replacement = unsafe { JS_NewPlainObject(cx) });
+        assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
+        let mut succeeded = false;
+        assert!(unsafe { JS_SetImmutablePrototype(cx, object.handle().into_handle(), &mut succeeded) });
+        assert!(succeeded);
+        assert!(!unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let object_value = ObjectValue(object.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"immutableTarget".as_ptr(), object_value.handle().into_handle()) });
+        assert_eq!(eval(&runtime, "(Object.defineProperty(immutableTarget, 'ordinary', { value: 7 }), immutableTarget.ordinary)").to_int32(), 7);
+    }
 }
 
 #[test]
@@ -842,6 +860,12 @@ mod realms {
         let realm = unsafe { GetObjectRealmOrNull(global.get()) };
         assert!(!realm.is_null() && realm != first_realm);
         assert_eq!(unsafe { GetRealmGlobalOrNull(realm) }, global.get());
+
+        let mut immutable = false;
+        assert!(unsafe { JS_SetImmutablePrototype(cx, global.handle().into_handle(), &mut immutable) });
+        assert!(immutable, "the WebIDL global class must retain its immutable prototype");
+        rooted!(in(cx) let mut replacement_proto = unsafe { JS_NewPlainObject(cx) });
+        assert!(!unsafe { JS_SetPrototype(cx, global.handle().into_handle(), replacement_proto.handle().into_handle()) });
 
         // Entering the realm switches where scripts run.
         let old = unsafe { EnterRealm(cx, global.get()) };

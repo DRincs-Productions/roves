@@ -287,18 +287,33 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
                 Some(proto) => proto.into(),
                 None => v8::null(scope).into(),
             };
+            if crate::object::has_immutable_prototype(target) {
+                let original = crate::object::immutable_prototype(target)?;
+                if v8::Local::new(scope, &original) == prototype {
+                    return Some(true);
+                }
+                crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
+                return None;
+            }
             target.set_prototype(scope, prototype)
         })
         .unwrap_or(false)
 }
 
-/// SpiderMonkey's immutable-prototype flag (Servo sets it on its globals after giving them their
-/// canonical prototype). V8 only has it on object templates (`SetImmutableProto`), where it holds
-/// from the instance's creation, so `JS_SetPrototype` with the canonical prototype would then
-/// fail: the prototype stays mutable (documented gap; `Object.prototype` is immutable in V8).
-pub unsafe fn JS_SetImmutablePrototype(_cx: *mut JSContext, _obj: HandleObject, succeeded: *mut bool) -> bool {
+/// Marks a class object so only its current prototype can be assigned, matching
+/// SpiderMonkey's immutable-prototype flag for the objects Servo marks.
+pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool {
+    let result = raw(cx).catching(|scope| {
+        let target = object(scope, obj.get())?;
+        let Some(class_box) = crate::object::class_box_of_v8(target) else { return None };
+        let prototype = prototype_of(scope, target)?;
+        *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
+        class_box.immutable_prototype.set(true);
+        Some(true)
+    });
+    let Some(result) = result else { return false };
     // SAFETY: JSAPI callers pass a valid out pointer.
-    unsafe { *succeeded = true };
+    unsafe { *succeeded = result };
     true
 }
 
