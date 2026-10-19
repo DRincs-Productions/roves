@@ -66,10 +66,6 @@ pub fn init() -> JSEngineSetup {
             "Disabling JIT for Javascript, since preference `js_disable_jit` is set to true. \
              This may cause subpar performance"
         );
-        // SAFETY: This function has no particular preconditions.
-        unsafe {
-            js::jsapi::DisableJitBackend();
-        }
     }
     proxyhandler::init();
 
@@ -84,5 +80,9 @@ pub fn init() -> JSEngineSetup {
 
     perform_platform_specific_initialization();
 
-    JSEngineSetup::default()
+    if pref!(js_disable_jit) {
+        JSEngineSetup::with_flags("--jitless")
+    } else {
+        JSEngineSetup::default()
+    }
 }

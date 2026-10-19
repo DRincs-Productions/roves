@@ -495,6 +495,28 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
     if context.handler.traps.setPrototype.is_none() && forward(scope, &context, "setPrototypeOf", &args, &mut retval) {
         return;
     }
+    // JS_SetImmutablePrototype applies to the proxy object itself. WebIDL globals and
+    // named-properties objects are represented by a proxy target, so enforce the
+    // immutable-prototype invariant even when their handler has a custom trap.
+    if crate::object::has_immutable_prototype(context.target) {
+        let same_prototype = crate::object::immutable_prototype(context.target)
+            .is_some_and(|original| v8::Local::new(scope, &original) == args.get(1));
+        let cx = context.cx;
+        crate::rooted!(in(cx) let proxy = context.proxy);
+        let proto = args.get(1);
+        crate::rooted!(in(cx) let proto = if proto.is_object() { from_v8(scope, proto).to_object() } else { std::ptr::null_mut() });
+        let mut result = ObjectOpResult { code_: if same_prototype { 0 } else { crate::jsapi::JSErrNum::JSMSG_CANT_SET_PROTO as usize } };
+        // SAFETY: SpiderMonkey's trap contract; the immutable result is already set.
+        if let Some(trap) = context.handler.traps.setPrototype {
+            let ok = unsafe { trap(cx, proxy.handle().into_handle(), proto.handle().into_handle(), &mut result) };
+            if !ok {
+                fail(scope);
+                return;
+            }
+        }
+        retval.set_bool(result.ok());
+        return;
+    }
     match context.handler.traps.setPrototype {
         Some(trap) => {
             let cx = context.cx;

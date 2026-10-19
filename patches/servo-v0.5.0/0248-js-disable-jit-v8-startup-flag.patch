@@ -1,0 +1,113 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 14586a7..b59bca4 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -485,8 +485,6 @@ pub unsafe fn JS_SetGlobalJitCompilerOption(_cx: *mut JSContext, _option: JSJitC
+ 
+ pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled: bool) {}
+ 
+-pub unsafe fn DisableJitBackend() {}
+-
+ /// Sets the security callbacks. Their CSP check (`contentSecurityPolicyAllows`) decides on
+ /// `eval`, `Function` and WebAssembly compilation: realms disallow code generation from
+ /// strings, so V8 asks [`code_generation_from_strings`] and [`wasm_code_generation`].
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 131e6ec..540586b 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -265,23 +265,36 @@ impl Drop for JSEngineHandle {
+     }
+ }
+ 
+-fn initialize_v8() {
++fn initialize_v8(extra_flags: &str) {
+     #[cfg(not(test))]
+-    roves_v8::initialize_engine();
++    if extra_flags.is_empty() {
++        roves_v8::initialize_engine();
++    } else {
++        roves_v8::initialize_engine_with_flags(extra_flags);
++    }
+     // Tests force collections, which V8 only allows with --expose-gc.
+     #[cfg(test)]
+-    roves_v8::initialize_engine_with_flags("--expose-gc");
++    {
++        let flags = format!("--expose-gc {extra_flags}");
++        roves_v8::initialize_engine_with_flags(&flags);
++    }
+ }
+ 
+ impl JSEngine {
+     pub fn init() -> Result<JSEngine, JSEngineError> {
++        Self::init_with_flags("")
++    }
++
++    /// Initializes the process-wide V8 engine with startup flags before the platform starts.
++    /// V8 flags are process-global and cannot be changed after initialization.
++    pub fn init_with_flags(flags: &str) -> Result<JSEngine, JSEngineError> {
+         let mut state = ENGINE_STATE.lock().unwrap();
+         match *state {
+             EngineState::Initialized => return Err(JSEngineError::AlreadyInitialized),
+             EngineState::ShutDown => return Err(JSEngineError::AlreadyShutDown),
+             EngineState::Uninitialized => (),
+         }
+-        initialize_v8();
++        initialize_v8(flags);
+         *state = EngineState::Initialized;
+         Ok(JSEngine { outstanding_handles: Default::default(), marker: std::marker::PhantomData })
+     }
+@@ -311,7 +324,7 @@ impl Drop for JSEngine {
+ impl JSEngineHandle {
+     /// A handle for tests, which create runtimes on many threads without one `JSEngine`.
+     pub(crate) fn for_tests() -> JSEngineHandle {
+-        initialize_v8();
++        initialize_v8("");
+         JSEngineHandle(Default::default())
+     }
+ }
+diff --git a/components/script/init.rs b/components/script/init.rs
+index 040c642..9381b4f 100644
+--- a/components/script/init.rs
++++ b/components/script/init.rs
+@@ -66,10 +66,6 @@ pub fn init() -> JSEngineSetup {
+             "Disabling JIT for Javascript, since preference `js_disable_jit` is set to true. \
+              This may cause subpar performance"
+         );
+-        // SAFETY: This function has no particular preconditions.
+-        unsafe {
+-            js::jsapi::DisableJitBackend();
+-        }
+     }
+     proxyhandler::init();
+ 
+@@ -84,5 +80,9 @@ pub fn init() -> JSEngineSetup {
+ 
+     perform_platform_specific_initialization();
+ 
+-    JSEngineSetup::default()
++    if pref!(js_disable_jit) {
++        JSEngineSetup::with_flags("--jitless")
++    } else {
++        JSEngineSetup::default()
++    }
+ }
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 38908a2..aa9fb2c 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -1076,7 +1076,14 @@ pub struct JSEngineSetup(JSEngine);
+ 
+ impl Default for JSEngineSetup {
+     fn default() -> Self {
+-        let engine = JSEngine::init().unwrap();
++        Self::with_flags("")
++    }
++}
++
++impl JSEngineSetup {
++    /// Starts V8 with process-wide flags before creating any runtime.
++    pub(crate) fn with_flags(flags: &str) -> Self {
++        let engine = JSEngine::init_with_flags(flags).unwrap();
+         *JS_ENGINE.lock().unwrap() = Some(engine.handle());
+         Self(engine)
+     }

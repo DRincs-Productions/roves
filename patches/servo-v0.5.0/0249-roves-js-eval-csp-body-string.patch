@@ -1,0 +1,28 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -530,5 +530,7 @@ fn csp_allows(
+     };
+     let code = to_string(scope, text.as_deref());
+-    let body = to_string(scope, function.map(|(_, body)| body));
++    // Servo's CSP hook compares `bodyString` with TrustedScript's data for direct eval.
++    // V8 only exposes the parsed Function body separately; direct eval uses the full source.
++    let body = to_string(scope, function.map(|(_, body)| body).or(text.as_deref()));
+     let parameter = to_string(scope, function.map(|(parameters, _)| parameters));
+     crate::rooted!(in(cx) let code = code);
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1561,9 +1561,9 @@ mod runtime_hooks {
+         }
+         let checks = CSP_CHECKS.with(|checks| checks.take());
+-        assert_eq!(checks[0], "JS DirectEval null []");
+-        assert_eq!(checks[1], "JS DirectEval null []");
++        assert_eq!(checks[0], "JS DirectEval 2 + 2 []");
++        assert_eq!(checks[1], "JS DirectEval \"blocked\" []");
+         assert_eq!(checks[2], "JS Function return a + b [a,b]");
+         assert_eq!(checks[3], "JS Function return \"blocked\" []");
+-        assert_eq!(checks[4], "JS DirectEval null []");
++        assert_eq!(checks[4], "JS DirectEval 40 + 2 []");
+         if cfg!(not(feature = "jitless")) {
+             assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));

@@ -1076,7 +1076,14 @@ pub struct JSEngineSetup(JSEngine);
 
 impl Default for JSEngineSetup {
     fn default() -> Self {
-        let engine = JSEngine::init().unwrap();
+        Self::with_flags("")
+    }
+}
+
+impl JSEngineSetup {
+    /// Starts V8 with process-wide flags before creating any runtime.
+    pub(crate) fn with_flags(flags: &str) -> Self {
+        let engine = JSEngine::init_with_flags(flags).unwrap();
         *JS_ENGINE.lock().unwrap() = Some(engine.handle());
         Self(engine)
     }

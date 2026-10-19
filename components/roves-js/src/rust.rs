@@ -265,23 +265,36 @@ impl Drop for JSEngineHandle {
     }
 }
 
-fn initialize_v8() {
+fn initialize_v8(extra_flags: &str) {
     #[cfg(not(test))]
-    roves_v8::initialize_engine();
+    if extra_flags.is_empty() {
+        roves_v8::initialize_engine();
+    } else {
+        roves_v8::initialize_engine_with_flags(extra_flags);
+    }
     // Tests force collections, which V8 only allows with --expose-gc.
     #[cfg(test)]
-    roves_v8::initialize_engine_with_flags("--expose-gc");
+    {
+        let flags = format!("--expose-gc {extra_flags}");
+        roves_v8::initialize_engine_with_flags(&flags);
+    }
 }
 
 impl JSEngine {
     pub fn init() -> Result<JSEngine, JSEngineError> {
+        Self::init_with_flags("")
+    }
+
+    /// Initializes the process-wide V8 engine with startup flags before the platform starts.
+    /// V8 flags are process-global and cannot be changed after initialization.
+    pub fn init_with_flags(flags: &str) -> Result<JSEngine, JSEngineError> {
         let mut state = ENGINE_STATE.lock().unwrap();
         match *state {
             EngineState::Initialized => return Err(JSEngineError::AlreadyInitialized),
             EngineState::ShutDown => return Err(JSEngineError::AlreadyShutDown),
             EngineState::Uninitialized => (),
         }
-        initialize_v8();
+        initialize_v8(flags);
         *state = EngineState::Initialized;
         Ok(JSEngine { outstanding_handles: Default::default(), marker: std::marker::PhantomData })
     }
@@ -311,7 +324,7 @@ impl Drop for JSEngine {
 impl JSEngineHandle {
     /// A handle for tests, which create runtimes on many threads without one `JSEngine`.
     pub(crate) fn for_tests() -> JSEngineHandle {
-        initialize_v8();
+        initialize_v8("");
         JSEngineHandle(Default::default())
     }
 }

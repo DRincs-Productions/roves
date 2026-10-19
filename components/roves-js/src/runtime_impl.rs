@@ -485,8 +485,6 @@ pub unsafe fn JS_SetGlobalJitCompilerOption(_cx: *mut JSContext, _option: JSJitC
 
 pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled: bool) {}
 
-pub unsafe fn DisableJitBackend() {}
-
 /// Sets the security callbacks. Their CSP check (`contentSecurityPolicyAllows`) decides on
 /// `eval`, `Function` and WebAssembly compilation: realms disallow code generation from
 /// strings, so V8 asks [`code_generation_from_strings`] and [`wasm_code_generation`].
@@ -529,7 +527,9 @@ fn csp_allows(
         }
     };
     let code = to_string(scope, text.as_deref());
-    let body = to_string(scope, function.map(|(_, body)| body));
+    // Servo's CSP hook compares `bodyString` with TrustedScript's data for direct eval.
+    // V8 only exposes the parsed Function body separately; direct eval uses the full source.
+    let body = to_string(scope, function.map(|(_, body)| body).or(text.as_deref()));
     let parameter = to_string(scope, function.map(|(parameters, _)| parameters));
     crate::rooted!(in(cx) let code = code);
     crate::rooted!(in(cx) let body = body);

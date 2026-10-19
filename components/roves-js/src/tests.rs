@@ -1035,6 +1035,11 @@ mod proxies {
             assert!(immutable, "proxy class boxes are reached through the JSAPI cell");
             rooted!(in(cx) let mut replacement_proto = unsafe { JS_NewPlainObject(cx) });
             assert!(!unsafe { JS_SetPrototype(cx, proxy.handle().into_handle(), replacement_proto.handle().into_handle()) });
+            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+            rooted!(in(cx) let value = ObjectValue(proxy.get()));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"immutableProxy".as_ptr(), value.handle().into_handle()) });
+            assert!(eval(&runtime, "Reflect.setPrototypeOf(immutableProxy, Object.getPrototypeOf(immutableProxy))").to_boolean());
+            assert!(!eval(&runtime, "Reflect.setPrototypeOf(immutableProxy, {})").to_boolean());
             assert!(unsafe { IsProxyHandlerFamily(proxy.get()) });
             rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
             assert!(unsafe { JS_GetPrototype(cx, proxy.handle().into_handle(), prototype.handle_mut().into_handle()) });
@@ -1043,8 +1048,6 @@ mod proxies {
             assert_eq!(unsafe { GetProxyHandlerExtra(proxy.get()) }, &EXTRA as *const u8 as *const std::ffi::c_void);
             assert!(unsafe { crate::object::object_class(proxy.get()).as_ref() }.unwrap().flags & crate::object::JSCLASS_IS_PROXY != 0);
 
-            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
-            rooted!(in(cx) let value = ObjectValue(proxy.get()));
             assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"p".as_ptr(), value.handle().into_handle()) });
             assert_eq!(eval(&runtime, "p").to_object(), proxy.get(), "a proxy keeps its identity");
 
@@ -1560,11 +1563,11 @@ mod runtime_hooks {
             assert!(eval(&runtime, wasm).to_boolean());
         }
         let checks = CSP_CHECKS.with(|checks| checks.take());
-        assert_eq!(checks[0], "JS DirectEval null []");
-        assert_eq!(checks[1], "JS DirectEval null []");
+        assert_eq!(checks[0], "JS DirectEval 2 + 2 []");
+        assert_eq!(checks[1], "JS DirectEval \"blocked\" []");
         assert_eq!(checks[2], "JS Function return a + b [a,b]");
         assert_eq!(checks[3], "JS Function return \"blocked\" []");
-        assert_eq!(checks[4], "JS DirectEval null []");
+        assert_eq!(checks[4], "JS DirectEval 40 + 2 []");
         if cfg!(not(feature = "jitless")) {
             assert_eq!(checks.last().map(std::string::String::as_str), Some("WASM DirectEval null []"));
         }

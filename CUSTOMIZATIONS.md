@@ -1,3 +1,40 @@
+## 2026-10-19 - Enforce immutable prototypes through V8 proxy traps
+
+**Files:** `components/roves-js/src/{proxy.rs,tests.rs}`
+(`0250-roves-js-immutable-prototype-proxy-trap.patch`), V8 smoke.
+
+The V8 proxy dispatcher previously skipped `JS_SetImmutablePrototype` state whenever a
+SpiderMonkey `setPrototypeOf` trap was present. WebIDL global and named-properties proxies use
+custom traps, so JavaScript could replace their prototype despite the JSAPI flag. Keep the
+original prototype identity in the existing cppgc-traced `ClassBox`, seed `ObjectOpResult` with
+the immutable-prototype outcome, and still invoke the custom trap so origin checks run. The
+regression covers accepting the original prototype and rejecting a different one through
+`Reflect.setPrototypeOf`. No new dependency is needed.
+
+## 2026-10-19 - Pass direct eval source to Trusted Types CSP validation
+
+**Files:** `components/roves-js/src/{runtime_impl.rs,tests.rs}`
+(`0249-roves-js-eval-csp-body-string.patch`), `README.md`.
+
+Servo's Trusted Types CSP hook compares `bodyString` with the original `TrustedScript` data
+before allowing `eval`. The V8 adapter populated `bodyString` only for `Function` constructors,
+so `eval(TrustedScript)` reached the hook with an empty body and was rejected. For direct eval,
+pass the full source as `bodyString`; retain the parsed body for `Function`. No new dependency is
+needed: use Servo's existing check and rusty_v8's source callback.
+
+## 2026-10-19 - Honor js_disable_jit with V8 startup flags
+
+**Files:** `components/roves-js/src/{rust.rs,runtime_impl.rs}` and
+`components/script/{init.rs,script_runtime.rs}`
+(`0248-js-disable-jit-v8-startup-flag.patch`), `README.md`.
+
+Servo's `js_disable_jit` preference called an empty `DisableJitBackend` compatibility stub,
+so it logged that JIT was disabled while V8 kept its default compiler configuration. Pass
+V8's process-startup `--jitless` flag when the preference is enabled, before V8 initializes;
+V8 startup flags are process-global and cannot be applied to an already initialized engine.
+The default path and the independent `roves-js/jitless` build feature remain unchanged. No new
+dependency is needed: use rusty_v8's existing V8 startup initialization API.
+
 ## 2026-10-19 - Implement WindowProxy prototype traps with origin checks
 
 **Files:** `components/script/dom/window/windowproxy.rs`,

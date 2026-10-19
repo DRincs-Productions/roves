@@ -29,7 +29,8 @@ and Web APIs, not on the engine. Roves's engine layer is `components/roves-js`, 
 implements the JavaScript API Servo's DOM code expects on top of V8.
 
 V8 also has a **JIT-less** mode, the configuration for platforms that forbid generating
-executable code at runtime, such as consoles. In that mode there is no WebAssembly, so
+executable code at runtime, such as consoles. The Servo `js_disable_jit` preference selects
+this mode at engine startup; V8 flags cannot change after initialization. In that mode there is no WebAssembly, so
 WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
 JavaScript debugging is not available on V8 yet. The migration plan and its status are in
 `docs/V8_MIGRATION.md`; the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
@@ -44,9 +45,11 @@ hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
 The browser smoke also checks that `window` rejects prototype replacement while still allowing
-ordinary properties.
-Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks; the
-normal-string and ordinary-object paths retain their separate JavaScript behavior.
+ordinary properties. The V8 proxy dispatcher enforces the same immutable-prototype rule for
+WebIDL proxy objects and still invokes their origin-aware traps.
+Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
+the source-body value used by the check; the normal-string and ordinary-object paths retain their
+separate JavaScript behavior.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke
