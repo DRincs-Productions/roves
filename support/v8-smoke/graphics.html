@@ -210,9 +210,9 @@ check("Path2D and isPointInPath", () => {
 });
 check("WebGPU adapter request (when available)", async () => {
   if (!navigator.gpu) return "skip";
-  // Without a GPU (CI runners) the request may never settle: that is the environment.
+  // An unavailable adapter may be skipped; a request that never settles is a failure.
   const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
-  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
+  if (adapter === "unsettled") return "requestAdapter did not settle in 25 s";
   return adapter ? true : "skip";
 }, 30000);
 finish();

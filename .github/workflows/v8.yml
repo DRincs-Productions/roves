@@ -48,6 +48,9 @@ jobs:
           if [ -f components/roves-v8/build.rs ]; then
             cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
           fi
+      - name: test smoke runner failure contracts
+        shell: bash
+        run: python -m unittest discover -s support/v8-smoke -p test_runner.py
       - name: test V8 WebIDL generator contracts
         shell: bash
         run: python -m unittest discover -s components/script_bindings/codegen -p test_v8.py
@@ -169,6 +172,9 @@ jobs:
           ls target/v8-cutover/debug/servoshell*
       - name: run the V8 smoke pages headlessly
         if: runner.os == 'Linux'
+        env:
+          V8_SMOKE_MODE: ${{ matrix.mode }}
+          V8_SMOKE_ALLOW_MISSING_DEVICES: '1'
         run: |
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh

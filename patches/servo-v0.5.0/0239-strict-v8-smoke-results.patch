@@ -1,0 +1,293 @@
+diff --git a/support/v8-smoke/graphics.html b/support/v8-smoke/graphics.html
+index 433666bceac..6e40daa800d 100644
+--- a/support/v8-smoke/graphics.html
++++ b/support/v8-smoke/graphics.html
+@@ -210,9 +210,9 @@ check("Path2D and isPointInPath", () => {
+ });
+ check("WebGPU adapter request (when available)", async () => {
+   if (!navigator.gpu) return "skip";
+-  // Without a GPU (CI runners) the request may never settle: that is the environment.
++  // An unavailable adapter may be skipped; a request that never settles is a failure.
+   const adapter = await Promise.race([navigator.gpu.requestAdapter(), new Promise(resolve => setTimeout(() => resolve("unsettled"), 25000))]);
+-  if (adapter === "unsettled") { console.log("ROVES-V8 webgpu requestAdapter did not settle in 25 s"); return "skip"; }
++  if (adapter === "unsettled") return "requestAdapter did not settle in 25 s";
+   return adapter ? true : "skip";
+ }, 30000);
+ finish();
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 6cc5a3fe601..f3247ff58d3 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -6,6 +6,9 @@
+ #
+ #     support/v8-smoke/run.sh path/to/servoshell [runner args...]
+ set -u
++MODE="${V8_SMOKE_MODE:-normal}"
++case "$MODE" in normal|jitless) ;; *) echo "::error::Invalid V8_SMOKE_MODE: $MODE"; exit 1 ;; esac
++PYTHON="${PYTHON3:-python3}"
+ BIN="$1"
+ shift
+ RUNNER=("$@")
+@@ -30,13 +33,11 @@ run_suite() {
+   local page="$1" log="$2" seconds="${3:-60}"
+   run_page "$page" "$seconds" "$log"
+   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+-  local total failures
++  local total
+   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+-  failures=$(grep -a "^SUITE FAIL " "$log" | sed 's/^SUITE FAIL //' | tr '
+-' '|' | sed 's/|/%0A/g')
+-  if [ -n "$failures" ]; then
+-    echo "::warning title=$page failures (${total#SUITE TOTAL })::$failures"
+-  fi
++  local validator_args=(--mode "$MODE")
++  if [ "${V8_SMOKE_ALLOW_MISSING_DEVICES:-0}" = 1 ]; then validator_args+=(--allow-missing-devices); fi
++  if ! "$PYTHON" "$DIR/check_results.py" "$page" "$log" "${validator_args[@]}"; then STATUS=1; fi
+   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+   fi
+@@ -62,19 +63,19 @@ echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
+ 
+ run_page test.html 30 test.log
+ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
+-  if grep -aq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
++  if grep -aFxq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
+ done
+-if grep -aq "ROVES-V8 class 2 {\"a\":\[1,2\]} true true" test.log; then echo "::notice::test.html: window === globalThis"; else echo "::warning::test.html: window === globalThis not confirmed"; fi
++if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+ for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError"; do
+-  if grep -aq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else echo "::warning::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
++  if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
+ 
+ run_page nav1.html 30 nav.log
+ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
+-  if grep -aq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
++  if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
+ done
+ 
+ exit $STATUS
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+new file mode 100644
+index 00000000000..64b2c17feac
+--- /dev/null
++++ b/support/v8-smoke/check_results.py
+@@ -0,0 +1,94 @@
++#!/usr/bin/env python3
++"""Validate the smoke harness protocol; no browser or third-party packages required."""
++
++import argparse
++from collections import Counter
++from pathlib import Path
++import re
++
++# Explicit exceptions for runners without physical output devices. A hung GPU request
++# is not an unavailable device: the page must report that as a failure.
++HARDWARE_SKIPS = {
++    ("games.html", "AudioContext decodes and plays a buffer"),
++    ("graphics.html", "WebGPU adapter request (when available)"),
++}
++WASM_SKIPS = {
++    ("suite2.html", "WebAssembly.instantiate (async compile)"),
++    ("suite2.html", "WebAssembly.compileStreaming (fetched)"),
++    ("games.html", "module Worker instantiates WebAssembly"),
++}
++TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
++
++
++def validate(page, output, mode="normal", allow_missing_devices=False):
++    errors = []
++    counts = Counter()
++    names = set()
++    summary = None
++    finished = False
++    for line in output.splitlines():
++        if not line.startswith("SUITE "):
++            continue
++        if finished:
++            errors.append("harness output after its final total")
++        if line.startswith("SUITE TOTAL "):
++            match = TOTAL.fullmatch(line)
++            if match is None:
++                errors.append("malformed total")
++            elif summary is not None:
++                errors.append("duplicate total")
++            else:
++                summary = tuple(int(n or 0) for n in match.groups())
++            finished = True
++            continue
++        match = re.fullmatch(r"SUITE (PASS|FAIL|SKIP) (.+)", line)
++        if match is None:
++            errors.append("malformed harness result")
++            continue
++        status, detail = match.groups()
++        name = detail.split(" :: ", 1)[0]
++        if name in names:
++            errors.append(f"duplicate check: {name}")
++        names.add(name)
++        counts[status] += 1
++        if status == "FAIL":
++            errors.append(f"failed check: {detail}")
++        elif status == "SKIP":
++            key = (page, name)
++            allowed = (mode == "jitless" and key in WASM_SKIPS) or (
++                allow_missing_devices and key in HARDWARE_SKIPS
++            )
++            if not allowed:
++                errors.append(f"unexpected skip: {name}")
++        elif mode == "jitless" and (page, name) in WASM_SKIPS:
++            errors.append(f"WebAssembly unexpectedly available in JIT-less: {name}")
++    if summary is None:
++        errors.append("missing final total (suite incomplete or timed out)")
++    else:
++        passed, total, skipped = summary
++        if (passed, total, skipped) != (
++            counts["PASS"], counts["PASS"] + counts["FAIL"], counts["SKIP"]
++        ):
++            errors.append("total does not match individual results")
++        if not total:
++            errors.append("suite executed no checks")
++    return errors
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("page")
++    parser.add_argument("log", type=Path)
++    parser.add_argument("--mode", choices=("normal", "jitless"), default="normal")
++    parser.add_argument("--allow-missing-devices", action="store_true")
++    args = parser.parse_args()
++    errors = validate(args.page, args.log.read_text(errors="replace"), args.mode, args.allow_missing_devices)
++    for error in errors:
++        # Escape untrusted log text before emitting a GitHub annotation.
++        message = error.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
++        print(f"::error::{args.page}: {message}")
++    return bool(errors)
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+new file mode 100644
+index 00000000000..f149720208f
+--- /dev/null
++++ b/support/v8-smoke/test_runner.py
+@@ -0,0 +1,115 @@
++"""Regression tests for the smoke protocol and the complete shell runner."""
++
++import os
++from pathlib import Path
++import shutil
++import subprocess
++import tempfile
++import unittest
++
++from check_results import validate
++
++HERE = Path(__file__).resolve().parent
++
++
++class ResultsTests(unittest.TestCase):
++    def test_complete(self):
++        self.assertEqual([], validate('suite.html', 'noise\nSUITE PASS example\nSUITE TOTAL 1/1\n'))
++
++    def test_rejects_false_green(self):
++        for output in (
++            '',
++            'SUITE PASS example\n',
++            'SUITE FAIL example :: false\nSUITE TOTAL 0/1\n',
++            'SUITE FAIL example :: false\nSUITE TOTAL 1/1\n',
++            'SUITE TOTAL 0/0\n',
++            'SUITE PASS a\nSUITE TOTAL 2/2\n',
++            'SUITE PASS a\nSUITE TOTAL 1/1\nSUITE TOTAL 1/1\n',
++            'SUITE PASS a\nSUITE TOTAL 1/1\nSUITE PASS b\n',
++            'SUITE PASS a\nSUITE PASS a\nSUITE TOTAL 2/2\n',
++            'SUITE PASS a\nSUITE TOTAL broken\n',
++            'SUITE BOGUS a\nSUITE TOTAL 0/0\n',
++        ):
++            with self.subTest(output=output):
++                self.assertTrue(validate('suite.html', output))
++
++    def test_skip_policy(self):
++        output = 'SUITE PASS base\nSUITE SKIP WebAssembly.instantiate (async compile)\nSUITE TOTAL 1/1 (1 skipped)\n'
++        self.assertTrue(validate('suite2.html', output))
++        self.assertEqual([], validate('suite2.html', output, 'jitless'))
++        self.assertTrue(validate('other.html', output, 'jitless'))
++        output = 'SUITE PASS base\nSUITE SKIP WebGPU adapter request (when available)\nSUITE TOTAL 1/1 (1 skipped)\n'
++        self.assertTrue(validate('graphics.html', output))
++        self.assertEqual([], validate('graphics.html', output, allow_missing_devices=True))
++        self.assertTrue(validate('saves.html', 'SUITE SKIP saves: protocol is available\nSUITE TOTAL 0/0 (1 skipped)'))
++
++    def test_jitless_cannot_silently_enable_wasm(self):
++        output = 'SUITE PASS WebAssembly.instantiate (async compile)\nSUITE TOTAL 1/1'
++        self.assertTrue(validate('suite2.html', output, 'jitless'))
++        self.assertEqual([], validate('suite2.html', output))
++
++
++@unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
++class RunnerTests(unittest.TestCase):
++    def run_fixture(self, scenario):
++        with tempfile.TemporaryDirectory() as directory:
++            directory = Path(directory)
++            # Substitute only the process launcher; execute the real runner and validator.
++            launcher = directory / 'timeout'
++            launcher.write_text('''#!/usr/bin/env python3
++import os, sys
++page = sys.argv[-1].rsplit('/', 1)[-1]
++scenario = os.environ['SMOKE_TEST_SCENARIO']
++if scenario == 'crash' and page == 'suite.html':
++    raise SystemExit(139)
++if page == 'test.html':
++    print('ROVES-V8 dom: changed by js')
++    print('ROVES-V8 click event click true')
++    print('ROVES-V8 promise 5')
++    print('ROVES-V8 timeout fired')
++    if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
++elif page == 'csp.html':
++    if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
++    print('ROVES-V8 csp function EvalError')
++elif page == 'nav1.html':
++    print('ROVES-V8 nav2 loaded nav2.html true second page')
++    if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=true')
++else:
++    if page == 'suite.html' and scenario == 'assertion':
++        print('SUITE FAIL example :: intentionally false')
++        print('SUITE TOTAL 0/1')
++    elif page == 'suite.html' and scenario == 'incomplete':
++        print('SUITE PASS example')
++    elif page == 'suite.html' and scenario == 'skip':
++        print('SUITE SKIP unexpected capability')
++        print('SUITE TOTAL 0/0 (1 skipped)')
++    else:
++        print('SUITE PASS example')
++        print('SUITE TOTAL 1/1')
++# Browsers may stay open after reporting all results; that timeout is acceptable.
++raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0)
++''')
++            launcher.chmod(0o755)
++            env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
++                       SMOKE_TEST_SCENARIO=scenario, V8_SMOKE_MODE='normal',
++                       V8_SMOKE_ALLOW_MISSING_DEVICES='0')
++            env.pop('GITHUB_STEP_SUMMARY', None)
++            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser'],
++                                  cwd=directory, env=env, capture_output=True, text=True, timeout=20)
++
++    def test_complete_and_post_completion_timeout(self):
++        for scenario in ('pass', 'timeout'):
++            with self.subTest(scenario=scenario):
++                result = self.run_fixture(scenario)
++                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++
++    def test_failure_paths(self):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'navigation', 'skip'):
++            with self.subTest(scenario=scenario):
++                result = self.run_fixture(scenario)
++                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
++                self.assertIn('::error', result.stdout)
++
++
++if __name__ == '__main__':
++    unittest.main()

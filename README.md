@@ -36,6 +36,9 @@ JavaScript debugging is not available on V8 yet. The migration plan and its stat
 explains what the engine means for your game. How Roves performs against Chrome with PixiJS,
 three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
 [Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
+The V8 smoke CI treats failed assertions, incomplete reports, unexpected skips and missing
+Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly configured
+missing audio/GPU devices are the only accepted exceptions.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

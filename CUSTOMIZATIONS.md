@@ -1,3 +1,35 @@
+## 2026-10-19 - Make V8 smoke results fail closed
+
+**Files:** `support/v8-smoke/{run.sh,check_results.py,test_runner.py,graphics.html}`,
+`.github/workflows/v8.yml`, `README.md`, `docs/V8_MIGRATION.md`.
+**Patch:** `0239-strict-v8-smoke-results.patch` (ordered after 0238).
+
+Previously suite assertion failures and missing Window/CSP checks could leave the V8 workflow
+green. Validate each result and final count using Python's standard library; reject failures,
+missing/duplicate/malformed totals, inconsistent counts, duplicate checks and unexpected skips.
+Keep the process timeout acceptable only after the required results completed. JIT-less alone
+allows the named Wasm skips; absent audio/GPU devices require an explicit opt-in, and a hung
+GPU adapter request now fails. Saves protocol availability cannot silently skip.
+
+Test parser and actual shell runner using a fake browser launcher, including crashes, early
+and post-completion timeouts, assertion failures, and missing mandatory outputs. Run the runner
+regressions in the existing V8 matrix before compilation. Reuse unittest/stdlib instead of
+adding a test framework or runtime dependency; the validator has no GPU or browser dependency.
+Update the wiki and roves-action's description of the separate V8 validation workflow; no build
+flags, consumer pins, packaging behavior or shipped runtime change.
+
+## 2026-10-19 - Replace the V8 migration notes with the approved completion plan
+
+**File:** `docs/V8_MIGRATION.md` (Roves-only maintainer documentation).
+
+Replace the historical architecture/backlog mixture with the approved executable checklist:
+strict smoke CI, current-code audit, runtime semantics and lifetime fixes, maintained-library
+evaluation, regression coverage, release verification and final documentation removal.
+Keep independent WebAudio, worker rendering and general performance work in the performance
+backlog. Record dependency adoption criteria and preserve existing V8/Servo facilities before
+adding libraries. No runtime or build behavior changes; no upstream source patch is required
+for this Roves-only planning document.
+
 ## 2026-10-18 - Audio render thread: cached plan, constant parameters, batched sink pushes
 
 **Files:** `components/media/audio/{graph,param,gain_node,constant_source_node}.rs`,
