@@ -29,7 +29,9 @@ console.log("ROVES-V8 window prototype diagnostics", typeof windowPrototype, Str
 delete window.__rovesV8SmokeOrdinary;
 const crossOriginFrame = document.createElement("iframe");
 crossOriginFrame.src = "http://127.0.0.1:18765/cross-origin.html";
+const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout", crossOriginFrame.contentWindow !== null), 5000);
 crossOriginFrame.addEventListener("load", () => {
+  clearTimeout(crossOriginTimeout);
   const otherWindow = crossOriginFrame.contentWindow;
   let prototypeIsNull = false;
   let prototypeReplacementRejected = false;
@@ -37,7 +39,9 @@ crossOriginFrame.addEventListener("load", () => {
   try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
   console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
 });
-crossOriginFrame.addEventListener("error", () => console.log("ROVES-V8 cross-origin iframe error"));
+crossOriginFrame.addEventListener("error", () => {
+  clearTimeout(crossOriginTimeout);
+  console.log("ROVES-V8 cross-origin iframe error");
+});
 document.body.appendChild(crossOriginFrame);
-setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout", crossOriginFrame.contentWindow !== null), 5000);
 </script></body></html>

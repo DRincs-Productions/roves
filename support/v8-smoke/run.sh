@@ -101,10 +101,27 @@ if grep -aFq 'ROVES-V8 cross-origin iframe timeout ' test.log; then echo "::erro
 if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp ordinary eval unchanged true"; do
+for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp ordinary eval unchanged true"; do
   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
 ' ' '))"; fi
 done
+
+run_page wasm-csp.html 30 wasm-csp.log
+if [ "$MODE" = normal ]; then
+  if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
+    echo "::notice::wasm-csp.html: blocked without wasm-unsafe-eval"
+  else
+    echo "::error::wasm-csp.html: WebAssembly compilation was not blocked by CSP"
+    STATUS=1
+  fi
+else
+  if grep -aFxq 'ROVES-V8 csp wasm unavailable' wasm-csp.log || grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
+    echo "::notice::wasm-csp.html: Wasm unavailable or rejected in JIT-less mode"
+  else
+    echo "::error::wasm-csp.html: unexpected JIT-less WebAssembly CSP result"
+    STATUS=1
+  fi
+fi
 
 run_page nav1.html 30 nav.log
 for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do

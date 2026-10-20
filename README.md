@@ -32,7 +32,9 @@ V8 also has a **JIT-less** mode, the configuration for platforms that forbid gen
 executable code at runtime, such as consoles. The Servo `js_disable_jit` preference selects
 this mode at engine startup; V8 flags cannot change after initialization. In that mode there is no WebAssembly, so
 WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
-JavaScript debugging is not available on V8 yet. The migration plan and its status are in
+JavaScript debugging is not available on V8 yet. SpiderMonkey-only Baseline/Ion, asm.js and
+per-tier Wasm tuning preferences were removed because V8 ignored them; use `js_disable_jit`
+for the supported startup JIT switch. The migration plan and its status are in
 `docs/V8_MIGRATION.md`; the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
 explains what the engine means for your game. How Roves performs against Chrome with PixiJS,
 three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
@@ -47,12 +49,14 @@ save-file checks) with a bounded timeout, so slow cold starts do not truncate la
 The browser smoke also checks that `window` rejects prototype replacement while still allowing
 ordinary properties. The V8 proxy dispatcher enforces the same immutable-prototype rule for
 WebIDL proxy objects and still invokes their origin-aware traps.
-The smoke reports the trusted-eval result and isolates Window prototype diagnostics. Its
+The smoke reports trusted eval and Function results, checks the separate Wasm CSP directive and
+isolates Window prototype diagnostics. Its
 cross-origin WindowProxy fixture uses a temporary loopback HTTP page because Servo does not
 complete navigation of the equivalent `data:` iframe.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
-separate JavaScript behavior.
+separate JavaScript behavior. The smoke also checks that `new Function(TrustedScript)` is allowed
+and executes the trusted body.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke

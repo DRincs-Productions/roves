@@ -7,7 +7,6 @@
 
 #![expect(dead_code)]
 
-use core::ffi::c_char;
 use std::cell::Cell;
 use std::ffi::{CStr, CString};
 use std::io::{Write, stdout};
@@ -26,18 +25,18 @@ use js::gc::StackGCVector;
 use js::glue::{
     CreateJobQueue, DeleteJobQueue, DispatchablePointer, JS_GetReservedSlot, JobQueueTraps,
     RUST_js_GetErrorMessage, RegisterScriptEnvironmentPreparer,
-    RunScriptEnvironmentPreparerClosure, SetBuildId, StreamConsumerConsumeChunk,
+    RunScriptEnvironmentPreparerClosure, StreamConsumerConsumeChunk,
     StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
 };
 use js::jsapi::{
-    AsmJSOption, BuildIdCharVector, CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
+    CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
     GCOptions, GCProgress, GCReason, GetPromiseUserInputEventHandlingState, Handle as RawHandle,
     HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
     JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
-    JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSJitCompilerOption, JSObject,
+    JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
     JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
     MutableHandleString, PromiseRejectionHandlingState, PromiseUserInputEventHandlingState,
-    RuntimeCode, ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp,
+    RuntimeCode, ScriptEnvironmentPreparer_Closure,
     StreamConsumer as JSStreamConsumer,
 };
 use js::jsval::{JSVal, UndefinedValue};
@@ -48,7 +47,7 @@ use js::rust::wrappers2::{
     CollectServoSizes, ContextOptionsRef, DispatchableRun, InitConsumeStreamCallback,
     JS_AddExtraGCRootsTracer, JS_InitDestroyPrincipalsCallback,
     JS_InitReadPrincipalsCallback, JS_NewObject, JS_NewStringCopyUTF8N, JS_SetGCCallback,
-    JS_SetGCParameter, JS_SetGlobalJitCompilerOption, JS_SetOffthreadIonCompilationEnabled,
+    JS_SetGCParameter,
     JS_SetSecurityCallbacks, SetDOMCallbacks, SetGCSliceCallback, SetJobQueue,
     SetPreserveWrapperCallbacks, SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
 };
@@ -896,68 +895,12 @@ impl Runtime {
 
             set_gc_zeal_options(cx.raw_cx());
 
-            // Enable or disable the JITs.
             cx_opts = &mut *ContextOptionsRef(cx);
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE,
-                pref!(js_baseline_interpreter_enabled) as u32,
-            );
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_ENABLE,
-                pref!(js_baseline_jit_enabled) as u32,
-            );
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_ION_ENABLE,
-                pref!(js_ion_enabled) as u32,
-            );
         }
-        cx_opts.compileOptions_.asmJSOption_ = if pref!(js_asmjs_enabled) {
-            AsmJSOption::Enabled
-        } else {
-            AsmJSOption::DisabledByAsmJSPref
-        };
         cx_opts.compileOptions_.set_importAttributes_(true);
-        let wasm_enabled = pref!(js_wasm_enabled);
-        cx_opts.set_wasm_(wasm_enabled);
-        if wasm_enabled {
-            // If WASM is enabled without setting the buildIdOp,
-            // initializing a module will report an out of memory error.
-            // https://dxr.mozilla.org/mozilla-central/source/js/src/wasm/WasmTypes.cpp#458
-            unsafe { SetProcessBuildIdOp(Some(servo_build_id)) };
-        }
-        cx_opts.set_wasmBaseline_(pref!(js_wasm_baseline_enabled));
-        cx_opts.set_wasmIon_(pref!(js_wasm_ion_enabled));
 
         unsafe {
             let cx = runtime.cx();
-            // TODO: handle js.throw_on_asmjs_validation_failure (needs new Spidermonkey)
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_NATIVE_REGEXP_ENABLE,
-                pref!(js_native_regex_enabled) as u32,
-            );
-            JS_SetOffthreadIonCompilationEnabled(cx, pref!(js_offthread_compilation_enabled));
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_WARMUP_TRIGGER,
-                if pref!(js_baseline_jit_unsafe_eager_compilation_enabled) {
-                    0
-                } else {
-                    u32::MAX
-                },
-            );
-            JS_SetGlobalJitCompilerOption(
-                cx,
-                JSJitCompilerOption::JSJITCOMPILER_ION_NORMAL_WARMUP_TRIGGER,
-                if pref!(js_ion_unsafe_eager_compilation_enabled) {
-                    0
-                } else {
-                    u32::MAX
-                },
-            );
             // TODO: handle js.discard_system_source.enabled
             // TODO: handle js.asyncstack.enabled (needs new Spidermonkey)
             // TODO: handle js.throw_on_debugee_would_run (needs new Spidermonkey)
@@ -1204,12 +1147,6 @@ unsafe extern "C" fn trace_rust_roots(tr: *mut JSTracer, data: *mut os::raw::c_v
         settings_stack::trace(tr);
     }
     trace!("done custom root handler");
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
-    let servo_id = b"Servo\0";
-    unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
 }
 
 /// GC zeal (`js_mem_gc_zeal_*`) was a debugging mode of SpiderMonkey's debug builds; V8 has

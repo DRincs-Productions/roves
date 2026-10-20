@@ -14469,6 +14469,53 @@ context creation returns null and requestAnimationFrame is absent. Chrome DevToo
 both context types and red-pixel readback on the same page. Record this limitation separately
 from working DOM-thread OffscreenCanvas tests. The probe does not test presentation into a
 transferred DOM canvas; it prevents suggesting worker rendering before the platform path exists.
+
+## 2026-10-20 - Remove unsupported SpiderMonkey JIT and Wasm preferences
+
+**Files:** `components/config/prefs.rs`, `components/script/script_runtime.rs`,
+`ports/servoshell/prefs.rs` (`0251-remove-spidermonkey-only-js-preferences.patch`),
+`README.md`, `docs/V8_MIGRATION.md`, `roves-wiki/content/docs/shell.mdx`.
+
+`script_runtime` passed SpiderMonkey's Baseline/Ion, warmup, regexp, asm.js and Wasm controls to
+no-op compatibility functions in roves-js; V8 ignored all of them. Remove those preferences,
+their default values, the dead setup calls, the SpiderMonkey-only build ID callback and the
+32-bit Android workaround that set the removed JIT tiers. Keep `js_disable_jit`, which now
+selects V8's startup `--jitless` flag. Normal V8 builds keep their standard Wasm support, while
+JIT-less remains without Wasm. No maintained library provides equivalent per-tier SpiderMonkey
+controls; no dependency is added.
+
+## 2026-10-20 - Cover trusted Function constructor in the V8 CSP smoke
+
+**Files:** `support/v8-smoke/{csp.html,wasm-csp.html,test.html,run.sh,test_runner.py}` (repository-only; no Servo source patch),
+`README.md`, `docs/V8_MIGRATION.md`, `roves-wiki/content/docs/shell.mdx`.
+
+Servo's `CanCompileStrings` integration already checks Trusted Types for both `eval` and
+`Function`, including trusted constructor arguments. The browser smoke only tested the rejected
+untrusted `Function` case. It now creates a body with a `TrustedScript`, calls
+`new Function(trustedParameter, trustedBody)(41)`, and requires the result `42`. The parameter
+and body use the same policy allowed by the page's CSP. This matches the WPT
+`trusted-types/eval-function-constructor.html` case where every constructor argument is a
+`TrustedScript`. The synthetic runner has a negative case for a missing trusted-Function result.
+This is coverage for the existing CSP path, not a claim that the new browser assertion has
+passed; the next V8 CI run must confirm it.
+
+Chrome DevTools MCP on Chrome `155.0.0.0` returned `EvalError` for a TrustedScript-only Function
+constructor on the local file fixture. This differs from the current WPT expectation; record it
+as a browser compatibility discrepancy, not as a reason to weaken the WPT-based assertion.
+
+The CSP page used `'unsafe-eval'`, which also permits Wasm compilation and could not verify the
+separate Wasm directive. A new page allows inline JS but omits `wasm-unsafe-eval`; normal mode
+requires `WebAssembly.compile` to reject with `CompileError`, while JIT-less accepts only an
+unavailable/rejected Wasm result. Chrome DevTools MCP on the same file fixture reported
+`ROVES-V8 csp wasm blocked CompileError`. The browser smoke must still confirm Servo's behavior.
+
+On macOS, the runner's shell integration test exceeded its 20-second timeout; the log does not
+establish which operation stalled. The test now substitutes the Python HTTP server and readiness
+probe while still running the real shell runner and result validator. The production browser smoke
+continues to start its real loopback server. The correction is awaiting CI verification.
+The cross-origin browser fixture clears its watchdog on load/error: previously it emitted a
+timeout even after successful navigation. Missing prototype markers remain mandatory failures.
+
 ## 2026-10-20 - Correct V8 smoke expectations for trusted eval and isolate Window failures
 
 **Files:** `support/v8-smoke/{cross-origin.html,csp.html,test.html,run.sh,test_runner.py}` (repository-only; no Servo source patch),

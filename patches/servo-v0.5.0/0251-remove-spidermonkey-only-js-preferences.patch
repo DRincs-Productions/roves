@@ -1,0 +1,204 @@
+diff --git a/components/config/prefs.rs b/components/config/prefs.rs
+index fe8a8f943d1..ad39617f268 100644
+--- a/components/config/prefs.rs
++++ b/components/config/prefs.rs
+@@ -254,14 +254,8 @@ pub struct Preferences {
+     /// An empty string represents no override.
+     /// TODO: Option<> support in PrefValue
+     pub intl_locale_override: String,
+-    pub js_asmjs_enabled: bool,
+-    pub js_baseline_interpreter_enabled: bool,
+-    /// Whether to disable the jit within SpiderMonkey
++    /// Whether to disable the JavaScript JIT; V8 applies this at engine startup.
+     pub js_disable_jit: bool,
+-    pub js_baseline_jit_enabled: bool,
+-    pub js_baseline_jit_unsafe_eager_compilation_enabled: bool,
+-    pub js_ion_enabled: bool,
+-    pub js_ion_unsafe_eager_compilation_enabled: bool,
+     pub js_mem_gc_compacting_enabled: bool,
+     pub js_mem_gc_empty_chunk_count_min: i64,
+     pub js_mem_gc_high_frequency_heap_growth_max: i64,
+@@ -281,12 +275,7 @@ pub struct Preferences {
+     pub js_mem_gc_zeal_frequency: i64,
+     pub js_mem_gc_zeal_level: i64,
+     pub js_mem_max: i64,
+-    pub js_native_regex_enabled: bool,
+-    pub js_offthread_compilation_enabled: bool,
+     pub js_timers_minimum_duration: i64,
+-    pub js_wasm_baseline_enabled: bool,
+-    pub js_wasm_enabled: bool,
+-    pub js_wasm_ion_enabled: bool,
+     // feature: Largest Contentful Paint | #42000 | Web/API/LargestContentfulPaint
+     pub largest_contentful_paint_enabled: bool,
+     pub layout_animations_test_enabled: bool,
+@@ -510,13 +499,7 @@ impl Preferences {
+             gfx_texture_swizzling_enabled: true,
+             image_key_batch_size: 10,
+             intl_locale_override: String::new(),
+-            js_asmjs_enabled: true,
+-            js_baseline_interpreter_enabled: true,
+-            js_baseline_jit_enabled: true,
+-            js_baseline_jit_unsafe_eager_compilation_enabled: false,
+             js_disable_jit: false,
+-            js_ion_enabled: true,
+-            js_ion_unsafe_eager_compilation_enabled: false,
+             js_mem_gc_compacting_enabled: true,
+             js_mem_gc_empty_chunk_count_min: 1,
+             js_mem_gc_high_frequency_heap_growth_max: 300,
+@@ -531,12 +514,7 @@ impl Preferences {
+             js_mem_gc_zeal_frequency: 100,
+             js_mem_gc_zeal_level: 0,
+             js_mem_max: -1,
+-            js_native_regex_enabled: true,
+-            js_offthread_compilation_enabled: true,
+             js_timers_minimum_duration: 1000,
+-            js_wasm_baseline_enabled: true,
+-            js_wasm_enabled: true,
+-            js_wasm_ion_enabled: true,
+             largest_contentful_paint_enabled: false,
+             layout_animations_test_enabled: false,
+             // Roves: on by default — EXPERIMENTAL_PREFS bundle, see the
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index aa9fb2c15c4..7bb45d8d656 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -7,7 +7,6 @@
+ 
+ #![expect(dead_code)]
+ 
+-use core::ffi::c_char;
+ use std::cell::Cell;
+ use std::ffi::{CStr, CString};
+ use std::io::{Write, stdout};
+@@ -26,18 +25,18 @@ use js::gc::StackGCVector;
+ use js::glue::{
+     CreateJobQueue, DeleteJobQueue, DispatchablePointer, JS_GetReservedSlot, JobQueueTraps,
+     RUST_js_GetErrorMessage, RegisterScriptEnvironmentPreparer,
+-    RunScriptEnvironmentPreparerClosure, SetBuildId, StreamConsumerConsumeChunk,
++    RunScriptEnvironmentPreparerClosure, StreamConsumerConsumeChunk,
+     StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
+ };
+ use js::jsapi::{
+-    AsmJSOption, BuildIdCharVector, CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
++    CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
+     GCOptions, GCProgress, GCReason, GetPromiseUserInputEventHandlingState, Handle as RawHandle,
+     HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
+     JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
+-    JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSJitCompilerOption, JSObject,
++    JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
+     JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
+     MutableHandleString, PromiseRejectionHandlingState, PromiseUserInputEventHandlingState,
+-    RuntimeCode, ScriptEnvironmentPreparer_Closure, SetProcessBuildIdOp,
++    RuntimeCode, ScriptEnvironmentPreparer_Closure,
+     StreamConsumer as JSStreamConsumer,
+ };
+ use js::jsval::{JSVal, UndefinedValue};
+@@ -48,7 +47,7 @@ use js::rust::wrappers2::{
+     CollectServoSizes, ContextOptionsRef, DispatchableRun, InitConsumeStreamCallback,
+     JS_AddExtraGCRootsTracer, JS_InitDestroyPrincipalsCallback,
+     JS_InitReadPrincipalsCallback, JS_NewObject, JS_NewStringCopyUTF8N, JS_SetGCCallback,
+-    JS_SetGCParameter, JS_SetGlobalJitCompilerOption, JS_SetOffthreadIonCompilationEnabled,
++    JS_SetGCParameter,
+     JS_SetSecurityCallbacks, SetDOMCallbacks, SetGCSliceCallback, SetJobQueue,
+     SetPreserveWrapperCallbacks, SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
+ };
+@@ -896,68 +895,12 @@ impl Runtime {
+ 
+             set_gc_zeal_options(cx.raw_cx());
+ 
+-            // Enable or disable the JITs.
+             cx_opts = &mut *ContextOptionsRef(cx);
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_INTERPRETER_ENABLE,
+-                pref!(js_baseline_interpreter_enabled) as u32,
+-            );
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_ENABLE,
+-                pref!(js_baseline_jit_enabled) as u32,
+-            );
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_ION_ENABLE,
+-                pref!(js_ion_enabled) as u32,
+-            );
+         }
+-        cx_opts.compileOptions_.asmJSOption_ = if pref!(js_asmjs_enabled) {
+-            AsmJSOption::Enabled
+-        } else {
+-            AsmJSOption::DisabledByAsmJSPref
+-        };
+         cx_opts.compileOptions_.set_importAttributes_(true);
+-        let wasm_enabled = pref!(js_wasm_enabled);
+-        cx_opts.set_wasm_(wasm_enabled);
+-        if wasm_enabled {
+-            // If WASM is enabled without setting the buildIdOp,
+-            // initializing a module will report an out of memory error.
+-            // https://dxr.mozilla.org/mozilla-central/source/js/src/wasm/WasmTypes.cpp#458
+-            unsafe { SetProcessBuildIdOp(Some(servo_build_id)) };
+-        }
+-        cx_opts.set_wasmBaseline_(pref!(js_wasm_baseline_enabled));
+-        cx_opts.set_wasmIon_(pref!(js_wasm_ion_enabled));
+ 
+         unsafe {
+             let cx = runtime.cx();
+-            // TODO: handle js.throw_on_asmjs_validation_failure (needs new Spidermonkey)
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_NATIVE_REGEXP_ENABLE,
+-                pref!(js_native_regex_enabled) as u32,
+-            );
+-            JS_SetOffthreadIonCompilationEnabled(cx, pref!(js_offthread_compilation_enabled));
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_BASELINE_WARMUP_TRIGGER,
+-                if pref!(js_baseline_jit_unsafe_eager_compilation_enabled) {
+-                    0
+-                } else {
+-                    u32::MAX
+-                },
+-            );
+-            JS_SetGlobalJitCompilerOption(
+-                cx,
+-                JSJitCompilerOption::JSJITCOMPILER_ION_NORMAL_WARMUP_TRIGGER,
+-                if pref!(js_ion_unsafe_eager_compilation_enabled) {
+-                    0
+-                } else {
+-                    u32::MAX
+-                },
+-            );
+             // TODO: handle js.discard_system_source.enabled
+             // TODO: handle js.asyncstack.enabled (needs new Spidermonkey)
+             // TODO: handle js.throw_on_debugee_would_run (needs new Spidermonkey)
+@@ -1206,12 +1149,6 @@ unsafe extern "C" fn trace_rust_roots(tr: *mut JSTracer, data: *mut os::raw::c_v
+     trace!("done custom root handler");
+ }
+ 
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn servo_build_id(build_id: *mut BuildIdCharVector) -> bool {
+-    let servo_id = b"Servo\0";
+-    unsafe { SetBuildId(build_id, servo_id[0] as *const c_char, servo_id.len()) }
+-}
+-
+ /// GC zeal (`js_mem_gc_zeal_*`) was a debugging mode of SpiderMonkey's debug builds; V8 has
+ /// no counterpart, so the preferences have no effect.
+ #[expect(unsafe_code)]
+diff --git a/ports/servoshell/prefs.rs b/ports/servoshell/prefs.rs
+index 96c2716417f..b2e8f780206 100644
+--- a/ports/servoshell/prefs.rs
++++ b/ports/servoshell/prefs.rs
+@@ -663,13 +663,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
+ 
+     update_preferences_from_command_line_arguments(&mut preferences, &cmd_args);
+ 
+-    // FIXME: enable JIT compilation on 32-bit Android after the startup crash issue (#31134) is fixed.
+-    if cfg!(target_os = "android") && cfg!(target_pointer_width = "32") {
+-        preferences.js_baseline_interpreter_enabled = false;
+-        preferences.js_baseline_jit_enabled = false;
+-        preferences.js_ion_enabled = false;
+-    }
+-
+     // Make sure the default window size is not larger than any provided screen size.
+     let default_window_size = Size2D::new(1024, 740);
+     let default_window_size = cmd_args

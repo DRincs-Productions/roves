@@ -4,6 +4,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -54,7 +55,20 @@ class RunnerTests(unittest.TestCase):
     def run_fixture(self, scenario, wrapped=False):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
-            # Substitute only the process launcher; execute the real runner and validator.
+            python = shutil.which('python3') or sys.executable
+            python_stub = directory / 'python3'
+            python_stub.write_text(f'''#!{sys.executable}
+import os, sys, time
+args = sys.argv[1:]
+if args[:2] == ['-m', 'http.server']:
+    time.sleep(120)
+elif args[:1] == ['-c']:
+    raise SystemExit(0)
+else:
+    os.execv(os.environ['SMOKE_TEST_REAL_PYTHON'], [os.environ['SMOKE_TEST_REAL_PYTHON'], *args])
+''')
+            python_stub.chmod(0o755)
+            # Stub browser launches and HTTP setup; execute the real runner and validator.
             launcher = directory / 'timeout'
             launcher.write_text('''#!/usr/bin/env python3
 import os, sys
@@ -80,7 +94,10 @@ elif page == 'csp.html':
     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
     print('ROVES-V8 csp function EvalError')
     if scenario != 'trusted-script': print('ROVES-V8 csp trusted eval 42')
+    if scenario != 'trusted-function': print('ROVES-V8 csp trusted function 42')
     print('ROVES-V8 csp ordinary eval unchanged true')
+elif page == 'wasm-csp.html':
+    if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
 elif page == 'nav1.html':
     print('ROVES-V8 nav2 loaded nav2.html true second page')
     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=true')
@@ -102,7 +119,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             launcher.chmod(0o755)
             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
-                       V8_SMOKE_ALLOW_MISSING_DEVICES='0')
+                       V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
+                       SMOKE_TEST_REAL_PYTHON=python)
             env.pop('GITHUB_STEP_SUMMARY', None)
             return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
                                    *(['wrapper with spaces', '--option'] if wrapped else [])],
@@ -116,7 +134,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'cross-origin-prototype', 'cross-origin-timeout', 'csp', 'trusted-script', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'cross-origin-prototype', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'csp-wasm', 'navigation', 'skip'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)

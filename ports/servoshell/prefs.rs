@@ -663,13 +663,6 @@ fn parse_arguments_helper(args_without_binary: Args) -> ArgumentParsingResult {
 
     update_preferences_from_command_line_arguments(&mut preferences, &cmd_args);
 
-    // FIXME: enable JIT compilation on 32-bit Android after the startup crash issue (#31134) is fixed.
-    if cfg!(target_os = "android") && cfg!(target_pointer_width = "32") {
-        preferences.js_baseline_interpreter_enabled = false;
-        preferences.js_baseline_jit_enabled = false;
-        preferences.js_ion_enabled = false;
-    }
-
     // Make sure the default window size is not larger than any provided screen size.
     let default_window_size = Size2D::new(1024, 740);
     let default_window_size = cmd_args
