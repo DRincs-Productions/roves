@@ -14530,3 +14530,15 @@ a temporary Python stdlib HTTP server and the file-origin page loads the cross-o
 from loopback. The runner reports frame timeout/load errors and always stops the server. This
 makes the existing failures diagnosable without claiming the underlying global-proxy behavior
 is fixed. No dependency is needed.
+
+## 2026-10-20 - Add browser smoke diagnostics for V8 Window failures
+
+**Files:** `support/v8-smoke/run.sh`, `support/v8-smoke/test_runner.py` (repository-only; no Servo source patch),
+`docs/V8_MIGRATION.md`, `README.md`, `roves-wiki/content/docs/shell.mdx`.
+
+The 394735 CI smoke still failed to print the immutable Window prototype marker and the
+cross-origin WindowProxy marker. Include the captured Window prototype diagnostic and iframe
+event markers directly in the GitHub error annotations, and have the synthetic runner assert
+those diagnostic paths remain visible. These details should distinguish a WebIDL/global-proxy
+behavior mismatch from an iframe navigation that did not reach load, error or watchdog. The local
+runner suite and bash syntax check pass on Windows; browser behavior awaits the next online CI run.

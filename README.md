@@ -55,8 +55,9 @@ cross-origin WindowProxy fixture uses a temporary loopback HTTP page because Ser
 complete navigation of the equivalent `data:` iframe.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
-separate JavaScript behavior. The smoke also checks that `new Function(TrustedScript)` is allowed
-and executes the trusted body.
+separate JavaScript behavior. The smoke also checks the WPT-required case where every
+`new Function` argument is a `TrustedScript`; this currently fails in the browser integration and
+is tracked in [`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md).
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke

@@ -1,8 +1,8 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, revisione prima del push
+## Punto della situazione — 20 ottobre 2026, CI 39473515801
 
-Rilevazione sul commit `a8fda9329713` (`main`) e sulle modifiche locali non ancora committate.
+Rilevazione sul commit `959d7c4007e1` (`main`) e sulla diagnostica smoke locale in corso.
 **La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
 ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
 sulla macchina locale.
@@ -11,6 +11,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39473515801](https://github.com/DRincs-Productions/roves/actions/runs/39473515801) | Fallito: browser smoke Linux falliti; job macOS normal in retry nell’attempt 2 | Build servoshell Windows normal e Linux normal/JIT-less verdi. Tutte le nove suite superano gli smoke Linux; restano i marker browser di prototipo Window, WindowProxy cross-origin e Function(TrustedScript). CSP Wasm e trusted eval passano nelle due modalità. Il runtime macOS normal del primo tentativo era cancellato; smoke browser macOS non verificato. |
 | [V8 migration checks — 39467094586](https://github.com/DRincs-Productions/roves/actions/runs/39467094586) | Fallito: 6 job verdi, 3 falliti, 1 cancellato | Runtime Linux/Windows normal e JIT-less verdi; macOS normal supera il timeout nel test del runner, macOS JIT-less cancellato. Le quattro build servoshell passano; gli smoke Linux falliscono su Window e iframe. I nuovi controlli trusted Function e Wasm CSP non sono inclusi. |
 | [V8 migration checks — 39320063351](https://github.com/DRincs-Productions/roves/actions/runs/39320063351) | Fallito, 8 job verdi su 10 | Tutti i 6 job runtime (Linux/Windows/macOS, normal/JIT-less) passano. Build servoshell Windows/macOS verdi. Le due build Linux passano, ma entrambi gli smoke browser falliscono. |
 | [Build Servo Test Binaries — 39320063236](https://github.com/DRincs-Productions/roves/actions/runs/39320063236) | Verde, 13/13 job | Replay patch, SDL3, sei bundle portable/installer e smoke Steam verdi; Windows MSI incluso. |
@@ -19,8 +20,10 @@ sulla macchina locale.
 
 Le nove suite Linux (`suite`, `suite2`, `games`, `modules`, `errors`, `events`, `graphics`,
 `stress`, `saves`) riportano riepiloghi validi in entrambe le modalità, con gli skip consentiti.
-Anche DOM, eventi, Promise, timer e identità `window === globalThis` sono confermati.
-Restano aperti i controlli browser su prototipi Window, `Function(TrustedScript)` e CSP Wasm:
+Anche DOM, eventi, Promise, timer e identità `window === globalThis` sono confermati. La run
+394735 conferma CSP Wasm (bloccato in normal; indisponibile o rifiutato in JIT-less) e
+TrustedScript in eval. Restano aperti i controlli browser su prototipi Window, WindowProxy e
+`Function(TrustedScript)`:
 
 1. **Prototipo immutabile Window non confermato.** Diagnosi aggiornata ancora aperta. V8
    crea un global proxy nativo distinto dal globale sottostante; i trap di roves-js non vengono
@@ -29,17 +32,16 @@ Restano aperti i controlli browser su prototipi Window, `Function(TrustedScript)
    runtime sui globali lo confermano. Non applicare workaround che cambino il prototipo che V8
    usa internamente; serve un’integrazione corretta del global proxy o una revisione della
    strategia Window.
-2. **Prototipo cross-origin WindowProxy non confermato.** La run `39462392615` ha mostrato che
-   la navigazione `data:` del frame non termina in Servo; la fixture ora usa una pagina HTTP di
-   loopback (origine distinta da `file://`). La run `39467094586` non conferma ancora il
-   prototipo cross-origin. La fixture emetteva inoltre un timeout incondizionato: ora viene
-   annullato su load/error, senza nascondere il marker prototipo mancante.
-3. **TrustedScript in `eval` verificato; `Function` e Wasm CSP in attesa di CI.** La run precedente conferma
-   il valore `42` per eval in normal e JIT-less. È stato aggiunto uno smoke per
+2. **Prototipo cross-origin WindowProxy non confermato.** La fixture usa una pagina HTTP di
+   loopback (origine distinta da `file://`) e annulla il watchdog su load/error. In 394735 non
+   compare né marker di caricamento né timeout/error, perciò occorre esporre log del server e
+   diagnostica di navigazione per distinguere un blocco del thread da un evento mancante.
+3. **TrustedScript in `eval` e CSP Wasm verificati; `Function` fallisce.** La run conferma il
+   valore `42` per eval in normal e JIT-less, ma fallisce il caso aggiunto per
    `new Function(trustedParameter, trustedBody)(41)` con entrambi gli argomenti `TrustedScript`;
    il test WPT [eval-function-constructor.html](https://github.com/web-platform-tests/wpt/blob/master/trusted-types/eval-function-constructor.html)
-   richiede che il caso all-trusted funzioni. Una seconda pagina isola il controllo Wasm senza
-   `wasm-unsafe-eval`; entrambi i casi attendono una run CI.
+   richiede che il caso all-trusted funzioni. La run verifica il blocco Wasm senza
+   `wasm-unsafe-eval` in normal e l’indisponibilità/rifiuto in JIT-less.
 
 Il controllo con Chrome DevTools MCP (20 ottobre 2026, Chrome `155.0.0.0`, fixture locali
 `file://`, pagina headless/visibile non determinata) conferma `window === globalThis`,
@@ -48,13 +50,12 @@ Il controllo con Chrome DevTools MCP (20 ottobre 2026, Chrome `155.0.0.0`, fixtu
 argomenti solo `TrustedScript`, in disaccordo con il test WPT corrente citato sopra. È un
 riferimento funzionale, non una misura prestazionale.
 
-La run `39462392615` passa cinque job runtime su sei (macOS normal cancellato); gli smoke Linux
-falliscono su prototipo immutabile Window e caricamento `data:` cross-origin. CSP trusted eval
-stampa e supera `42` in normal e JIT-less. Nella run `39467094586` quattro job runtime sono verdi;
-quello macOS normal supera il timeout di 20 secondi nel test del runner; il log non dimostra
-quale operazione sia bloccata. La fixture del test simula ora il server senza aprire una porta;
-la correzione attende la prossima CI. I quattro job servoshell compilano, gli smoke Linux
-falliscono e il runtime macOS JIT-less è cancellato.
+In 394735 le suite e le build Windows/Linux indicate sopra sono verdi, ma gli smoke browser Linux
+falliscono sui tre casi residui. Il log del runner non mostra marker di timeout/load/error
+dell’iframe; la diagnostica aggiunta per il prossimo tentativo deve chiarire sia questo punto sia
+i valori di Window osservati. Il retry runtime macOS normal è in attempt 2; gli smoke macOS non
+sono stati verificati. Nella run 394670 quattro build servoshell compilano, mentre il runtime
+macOS normal supera il timeout di 20 secondi nel test runner e quello JIT-less è cancellato.
 Il test locale `roves-js::immutable_prototypes_reject_replacement_but_allow_properties` passa.
 La build completa locale di servoshell è stata interrotta su indicazione dell’utente per evitare
 carico elevato; non ha modificato Cargo.toml/Cargo.lock e non ha prodotto una nuova build
@@ -78,9 +79,9 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
   piano e `roves-wiki/content/docs/shell.mdx`. Le fixture modificate sono file
   repository-only: la workflow V8 le usa direttamente e non le include nel replay delle patch Servo.
 - Aggiunti i casi browser per `Function` con parametro e corpo `TrustedScript` e per CSP Wasm
-  senza `wasm-unsafe-eval`; i test sintetici verificano il fallimento se mancano i marker. Test
-  locale del runner: 6 eseguiti, 4 passati e 2 integrazioni POSIX saltate su Windows. I casi
-  browser restano in attesa della CI.
+  senza `wasm-unsafe-eval`; in 394735 il secondo passa e il primo espone una lacuna runtime. I
+  test sintetici verificano il fallimento se mancano i marker. Test locale del runner: 6 eseguiti,
+  4 passati e 2 integrazioni POSIX saltate su Windows.
 - Patch 0251: rimosse preferenze Baseline/Ion, warmup, regexp, asm.js e Wasm ignorate da V8,
   setup senza effetto, callback build ID SpiderMonkey e workaround Android sui tier rimossi.
   `js_disable_jit` rimane. Replay sequenziale dei tre file da Servo v0.5.0 pristine, dry-run
@@ -92,10 +93,11 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
 - La validazione finale resta aperta: WPT selezionati, stress GC/lifecycle, copertura applicativa,
   misure per modifiche di ownership, artefatti e release/pin. Il dettaglio resta nelle fasi 1–4.
 
-Prossimi passi: completare l’audit statico delle API e avviare la CI online per ottenere il
-diagnostico browser completo. Usare i log per risolvere Window/WindowProxy e continuare le fasi
-2–4 senza fermarsi al checkpoint CI. La patch 0251 modifica i sorgenti Servo e attende verifica
-CI. Release e aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
+Prossimi passi: attendere il retry macOS e verificare la nuova CI con diagnostica Window/iframe,
+poi correggere il comportamento browser. Indagare la perdita degli argomenti originali
+TrustedScript nel callback V8 `ModifyCodeGenerationFromStrings`. Continuare le fasi 1–4 oltre
+questo checkpoint. La patch 0251 modifica sorgenti Servo e attende verifica CI. Release e
+aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
 
 ## Obiettivo e stato iniziale
 

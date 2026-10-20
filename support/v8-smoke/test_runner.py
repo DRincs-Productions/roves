@@ -87,7 +87,7 @@ if page == 'test.html':
     print('ROVES-V8 timeout fired')
     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
     if scenario != 'immutable-prototype': print('ROVES-V8 immutable window prototype true')
-    if scenario != 'immutable-prototype': print('ROVES-V8 window prototype diagnostics object false true')
+    print('ROVES-V8 window prototype diagnostics object false true')
     if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
     if scenario == 'cross-origin-timeout': print('ROVES-V8 cross-origin iframe timeout true')
 elif page == 'csp.html':
@@ -139,6 +139,10 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertIn('::error', result.stdout)
+                if scenario == 'immutable-prototype':
+                    self.assertIn('ROVES-V8 window prototype diagnostics', result.stdout)
+                if scenario == 'cross-origin-prototype':
+                    self.assertIn('ROVES-V8 cross-origin iframe', result.stdout)
 
 
 if __name__ == '__main__':
