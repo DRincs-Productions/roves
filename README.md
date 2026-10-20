@@ -47,17 +47,20 @@ hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
 The browser smoke also checks that `window` rejects prototype replacement while still allowing
-ordinary properties. The V8 proxy dispatcher enforces the same immutable-prototype rule for
-WebIDL proxy objects and still invokes their origin-aware traps.
+ordinary properties. Roves marks the native V8 global template for the Web `Window` class as
+immutable, while the V8 proxy dispatcher enforces the same rule for WebIDL proxy objects and
+still invokes their origin-aware traps.
 The smoke reports trusted eval and Function results, checks the separate Wasm CSP directive and
-isolates Window prototype diagnostics. Its
-cross-origin WindowProxy fixture uses a temporary loopback HTTP page because Servo does not
-complete navigation of the equivalent `data:` iframe.
+isolates Window prototype diagnostics. Its main Window fixture and cross-origin iframe use
+temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
+iframe has a distinct origin.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
 separate JavaScript behavior. The smoke also checks the WPT-required case where every
 `new Function` argument is a `TrustedScript`; this currently fails in the browser integration and
-is tracked in [`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md).
+is tracked in [`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md). Chrome 155 also rejects this case,
+while the current WPT expects it to succeed; resolving it requires preserving the original trusted
+arguments through V8's Function compilation hook.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke

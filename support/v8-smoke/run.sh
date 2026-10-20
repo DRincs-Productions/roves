@@ -18,35 +18,42 @@ STATUS=0
 # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
 TOTALS=""
 HTTP_PORT=18765
+HTTP_CROSS_ORIGIN_PORT=18766
 HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
 "$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
 HTTP_PID=$!
+HTTP_CROSS_ORIGIN_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-cross-origin-$$.log"
+"$PYTHON" -m http.server "$HTTP_CROSS_ORIGIN_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_CROSS_ORIGIN_LOG" 2>&1 &
+HTTP_CROSS_ORIGIN_PID=$!
 cleanup_http_server() {
   kill "$HTTP_PID" 2>/dev/null || true
+  kill "$HTTP_CROSS_ORIGIN_PID" 2>/dev/null || true
   wait "$HTTP_PID" 2>/dev/null || true
+  wait "$HTTP_CROSS_ORIGIN_PID" 2>/dev/null || true
   rm -f "$HTTP_LOG"
+  rm -f "$HTTP_CROSS_ORIGIN_LOG"
 }
 trap cleanup_http_server EXIT
 http_ready=0
 for _ in $(seq 1 50); do
-  if "$PYTHON" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$HTTP_PORT/cross-origin.html', timeout=0.2).close()" 2>/dev/null; then
+  if "$PYTHON" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$HTTP_PORT/cross-origin.html', timeout=0.2).close(); urllib.request.urlopen('http://127.0.0.1:$HTTP_CROSS_ORIGIN_PORT/cross-origin.html', timeout=0.2).close()" 2>/dev/null; then
     http_ready=1
     break
   fi
   sleep 0.1
 done
 if [ "$http_ready" -ne 1 ]; then
-  echo "::error::V8 smoke local HTTP fixture server did not start on 127.0.0.1:$HTTP_PORT"
+  echo "::error::V8 smoke local HTTP fixture servers did not start on 127.0.0.1:$HTTP_PORT and 127.0.0.1:$HTTP_CROSS_ORIGIN_PORT"
   exit 1
 fi
 
 run_page() {
-  local page="$1" seconds="$2" log="$3"
+  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}"
   # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
   if [ "$RUNNER_COUNT" -gt 0 ]; then
-    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
+    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1
   else
-    timeout "$seconds" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
+    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1
   fi
   local code=$?
   # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
@@ -89,7 +96,7 @@ run_suite stress.html stress.log 240
 run_suite saves.html saves.log 120
 echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
 
-run_page test.html 30 test.log
+run_page test.html 30 test.log "http://127.0.0.1:$HTTP_PORT/test.html"
 for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
 done
@@ -127,5 +134,13 @@ run_page nav1.html 30 nav.log
 for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
   if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
 done
+
+if [ "$STATUS" -ne 0 ]; then
+  for server_log in "$HTTP_LOG" "$HTTP_CROSS_ORIGIN_LOG"; do
+    if [ -s "$server_log" ]; then
+      sed 's/^/::notice::V8 smoke HTTP: /' "$server_log"
+    fi
+  done
+fi
 
 exit $STATUS

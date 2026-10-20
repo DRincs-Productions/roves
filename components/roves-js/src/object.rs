@@ -257,6 +257,17 @@ impl ClassTemplates {
         }
         let template = v8::ObjectTemplate::new(scope);
         template.set_internal_field_count(1);
+        // V8 exposes a context's global object through its native global proxy. Marking only
+        // the JSAPI cell immutable cannot constrain that proxy's [[SetPrototypeOf]], which
+        // V8 forwards to this hidden global object. Window is the one Servo global represented
+        // by a WindowProxy; worker globals do not use this browser wrapper.
+        let is_window_global = unsafe {
+            (*class).flags & JSCLASS_IS_GLOBAL != 0 &&
+                std::ffi::CStr::from_ptr((*class).name).to_bytes() == b"Window"
+        };
+        if is_window_global {
+            template.set_immutable_proto();
+        }
         // SAFETY: classes are static.
         let ops = unsafe { (*class).cOps.as_ref() };
         if ops.is_some_and(|ops| ops.call.is_some() || ops.construct.is_some()) {

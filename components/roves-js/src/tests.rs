@@ -835,6 +835,16 @@ mod realms {
         oOps: ptr::null(),
     };
 
+    static WINDOW_GLOBAL_CLASS: JSClass = JSClass {
+        name: c"Window".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL |
+            ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT + 1) << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
     thread_local! {
         static GLOBAL_TRACED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
@@ -852,7 +862,7 @@ mod realms {
         let mut options = crate::rust::RealmOptions::default();
         options.creationOptions_.traceGlobal_ = Some(trace_global);
         rooted!(in(cx) let global = unsafe {
-            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
+            JS_NewGlobalObject(cx, &WINDOW_GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::FireOnNewGlobalHook, &*options)
         });
         assert!(!global.get().is_null());
         assert!(unsafe { JS_IsGlobalObject(global.get()) });
@@ -871,6 +881,8 @@ mod realms {
         let old = unsafe { EnterRealm(cx, global.get()) };
         assert_eq!(old, first_realm);
         assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, realm);
+        assert!(eval(&runtime, "(() => { const proto = Object.getPrototypeOf(globalThis); return Reflect.setPrototypeOf(globalThis, {}) === false && Object.getPrototypeOf(globalThis) === proto; })()")
+            .to_boolean(), "V8's global proxy must preserve the Window prototype");
         assert_eq!(eval(&runtime, "globalThis").to_object(), global.get(), "the global proxy is the class object");
         assert_ne!(eval(&runtime, "Object.prototype").to_object(), first_object_prototype);
         assert_eq!(unsafe { CurrentGlobalOrNull(cx) }, global.get());

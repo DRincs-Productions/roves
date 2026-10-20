@@ -1,12 +1,11 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, commit 68f318bc645 e CI 39478697257
+## Punto della situazione — 20 ottobre 2026, commit 6fe04d86e51 e CI 39480383126
 
-Rilevazione sul commit `68f318bc645` (`main`) e sulla CI avviata da quel push. La diagnostica
-aggiunta riporta i valori Window e gli eventi iframe negli errori smoke. L’API anonima ha
-raggiunto il rate limit; il PAT fornito dall’utente è stato rifiutato da GitHub con `401 Bad
-credentials`, quindi non sono disponibili i log protetti della run `39478697257`. Il token non è
-stato salvato né riutilizzato.
+Rilevazione sul commit `6fe04d86e51a` (`main`) e sulla CI avviata da quel push. Il PAT fornito
+dall’utente ha consentito inizialmente di leggere run e job; in seguito GitHub ha risposto
+`401 Bad credentials`. I log dei job Linux sono stati recuperati tramite il connettore GitHub
+già collegato. Il PAT non è stato salvato.
 **La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
 ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
 sulla macchina locale.
@@ -15,6 +14,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39480383126](https://github.com/DRincs-Productions/roves/actions/runs/39480383126) | Fallita: 6 job verdi, 2 smoke falliti, 2 runtime macOS cancellati | Runtime Linux e Windows normal/JIT-less verdi; build servoshell Windows/macOS normal e Linux normal/JIT-less verdi. Entrambi gli smoke Linux falliscono su Window, iframe cross-origin e Function con TrustedScript. Runtime macOS cancellati dopo i fallimenti Linux. |
 | [V8 migration checks — 39478697257](https://github.com/DRincs-Productions/roves/actions/runs/39478697257) | Esito non verificabile dai log accessibili | L’ultima lettura della pagina pubblica mostrava 3/6 runtime completati, 2 errori Ubuntu e 0/4 build servoshell conclusi. I dettagli degli errori sono protetti; il rate limit API impedisce di verificare se i job siano poi terminati. |
 | [V8 migration checks — 39473515801](https://github.com/DRincs-Productions/roves/actions/runs/39473515801) | Fallito: browser smoke Linux falliti; job macOS normal in retry nell’attempt 2 | Build servoshell Windows normal e Linux normal/JIT-less verdi. Tutte le nove suite superano gli smoke Linux; restano i marker browser di prototipo Window, WindowProxy cross-origin e Function(TrustedScript). CSP Wasm e trusted eval passano nelle due modalità. Il runtime macOS normal del primo tentativo era cancellato; smoke browser macOS non verificato. |
 | [V8 migration checks — 39467094586](https://github.com/DRincs-Productions/roves/actions/runs/39467094586) | Fallito: 6 job verdi, 3 falliti, 1 cancellato | Runtime Linux/Windows normal e JIT-less verdi; macOS normal supera il timeout nel test del runner, macOS JIT-less cancellato. Le quattro build servoshell passano; gli smoke Linux falliscono su Window e iframe. I nuovi controlli trusted Function e Wasm CSP non sono inclusi. |
@@ -26,40 +26,43 @@ sulla macchina locale.
 Le nove suite Linux (`suite`, `suite2`, `games`, `modules`, `errors`, `events`, `graphics`,
 `stress`, `saves`) riportano riepiloghi validi in entrambe le modalità, con gli skip consentiti.
 Anche DOM, eventi, Promise, timer e identità `window === globalThis` sono confermati. La run
-394735 conferma CSP Wasm (bloccato in normal; indisponibile o rifiutato in JIT-less) e
-TrustedScript in eval. Restano aperti i controlli browser su prototipi Window, WindowProxy e
-`Function(TrustedScript)`:
+394803 ripete i risultati delle nove suite, ma individua in entrambe le modalità tre failure
+browser da risolvere o qualificare:
 
-1. **Prototipo immutabile Window non confermato.** Diagnosi aggiornata ancora aperta. V8
-   crea un global proxy nativo distinto dal globale sottostante; i trap di roves-js non vengono
-   invocati per questo oggetto. Il flag `ObjectTemplate::set_immutable_proto()` non viene
-   trasferito al template interno del global proxy: esame del sorgente rusty_v8/V8 e test
-   runtime sui globali lo confermano. Non applicare workaround che cambino il prototipo che V8
-   usa internamente; serve un’integrazione corretta del global proxy o una revisione della
-   strategia Window.
-2. **Prototipo cross-origin WindowProxy non confermato.** La fixture usa una pagina HTTP di
-   loopback (origine distinta da `file://`) e annulla il watchdog su load/error. In 394735 non
-   compare né marker di caricamento né timeout/error, perciò occorre esporre log del server e
-   diagnostica di navigazione per distinguere un blocco del thread da un evento mancante.
-3. **TrustedScript in `eval` e CSP Wasm verificati; `Function` fallisce.** La run conferma il
+1. **Prototipo immutabile Window non confermato.** In 394803 il log riporta `object true true`:
+   `Reflect.setPrototypeOf(window, {})` è riuscito, mentre le proprietà ordinarie funzionano.
+   L’ipotesi precedente che `ObjectTemplate::set_immutable_proto()` non funzionasse sul global
+   era errata: i test V8 `object_template_immutable_proto` provano la flag sul global di un
+   `Context`. La nuova modifica la applica al template della classe Servo `Window`; regressione
+   roves-js e smoke CI devono ancora confermare la correzione di produzione.
+2. **Prototipo cross-origin WindowProxy non confermato.** In 394803 non compare alcun evento
+   iframe. La nuova fixture carica la pagina principale da loopback e l’iframe dallo stesso
+   host su una porta diversa, così entrambe le pagine hanno origine HTTP e l’iframe è davvero
+   cross-origin. Il runner conserva i log HTTP quando fallisce, per distinguere richiesta,
+   navigazione e dispatch degli eventi.
+3. **TrustedScript in `eval` e CSP Wasm verificati; `Function` resta aperto.** La run conferma il
    valore `42` per eval in normal e JIT-less, ma fallisce il caso aggiunto per
    `new Function(trustedParameter, trustedBody)(41)` con entrambi gli argomenti `TrustedScript`;
    il test WPT [eval-function-constructor.html](https://github.com/web-platform-tests/wpt/blob/master/trusted-types/eval-function-constructor.html)
    richiede che il caso all-trusted funzioni. La run verifica il blocco Wasm senza
    `wasm-unsafe-eval` in normal e l’indisponibilità/rifiuto in JIT-less.
 
-Il controllo con Chrome DevTools MCP (20 ottobre 2026, Chrome `155.0.0.0`, fixture locali
-`file://`, pagina headless/visibile non determinata) conferma `window === globalThis`,
-`Reflect.setPrototypeOf(window, {}) === false` e il blocco della compilazione Wasm senza
-`wasm-unsafe-eval`. Sulla fixture CSP Chrome restituisce invece `EvalError` per `Function` con
-argomenti solo `TrustedScript`, in disaccordo con il test WPT corrente citato sopra. È un
-riferimento funzionale, non una misura prestazionale.
+Chrome DevTools MCP è ora disponibile. Il 20 ottobre 2026 Chrome `155.0.0.0` su Windows x64,
+scheda MCP in background, condizione visibile/headless non determinata, ha eseguito le fixture
+CSP locale `file://` e Window su `http://127.0.0.1:18765` con iframe su porta 18766. Window
+rifiuta la sostituzione del prototipo, l’iframe dispatcha `load` e il controllo cross-origin dà
+`true true`; questo verifica la fixture, non Servo. TrustedScript eval produce `42`, ma Function
+con soli argomenti TrustedScript produce `EvalError`. La WPT corrente citata sopra richiede invece
+successo; Chrome non è quindi un oracolo per quel caso. L’API V8 `ModifyCodeGenerationFromStrings` riceve il testo
+già composto per il costruttore Function, non gli argomenti originali; consentire il codice in
+base al solo testo perderebbe il controllo del brand TrustedScript e dell’eventuale `toString`
+contraffatto. Serve un’integrazione che conservi gli argomenti originali; non aggirare il
+controllo CSP. Le verifiche Chrome sono funzionali, non prestazionali.
 
-In 394735 le suite e le build Windows/Linux indicate sopra sono verdi, ma gli smoke browser Linux
-falliscono sui tre casi residui. Il log del runner non mostra marker di timeout/load/error
-dell’iframe; la diagnostica aggiunta per il prossimo tentativo deve chiarire sia questo punto sia
-i valori di Window osservati. Il retry runtime macOS normal è in attempt 2; gli smoke macOS non
-sono stati verificati. Nella run 394670 quattro build servoshell compilano, mentre il runtime
+In 394803 gli smoke browser Linux falliscono sui tre casi residui; entrambi i job runtime Linux e
+Windows sono verdi. Le build servoshell Linux compilano e le build Windows/macOS normal sono
+verdi; gli smoke macOS non sono previsti dalla matrice. Nella run 394670 quattro build
+servoshell compilano, mentre il runtime
 macOS normal supera il timeout di 20 secondi nel test runner e quello JIT-less è cancellato.
 Il test locale `roves-js::immutable_prototypes_reject_replacement_but_allow_properties` passa.
 La build completa locale di servoshell è stata interrotta su indicazione dell’utente per evitare
