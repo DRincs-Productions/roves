@@ -14542,3 +14542,14 @@ event markers directly in the GitHub error annotations, and have the synthetic r
 those diagnostic paths remain visible. These details should distinguish a WebIDL/global-proxy
 behavior mismatch from an iframe navigation that did not reach load, error or watchdog. The local
 runner suite and bash syntax check pass on Windows; browser behavior awaits the next online CI run.
+
+## 2026-10-20 - Fix the cross-origin diagnostic runner assertion
+
+**Files:** `support/v8-smoke/test_runner.py` (repository-only; no Servo source patch),
+`docs/V8_MIGRATION.md`.
+
+Both Linux runtime jobs in CI 394786 failed before running engine tests because the synthetic
+`cross-origin-prototype` scenario intentionally omitted iframe event markers, while its assertion
+expected one. Check the actual diagnostic annotation instead. Windows runtime jobs passed, but the
+Linux runner integration and full V8 matrix must pass in the next run before treating the smoke
+diagnostics as verified.

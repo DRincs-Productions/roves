@@ -142,7 +142,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 if scenario == 'immutable-prototype':
                     self.assertIn('ROVES-V8 window prototype diagnostics', result.stdout)
                 if scenario == 'cross-origin-prototype':
-                    self.assertIn('ROVES-V8 cross-origin iframe', result.stdout)
+                    self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
 
 
 if __name__ == '__main__':

@@ -87,6 +87,12 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
   senza `wasm-unsafe-eval`; in 394735 il secondo passa e il primo espone una lacuna runtime. I
   test sintetici verificano il fallimento se mancano i marker. Test locale del runner: 6 eseguiti,
   4 passati e 2 integrazioni POSIX saltate su Windows.
+- La run 394786 si è fermata nei due test runtime Linux, prima delle suite V8: il caso
+  sintetico `cross-origin-prototype` si aspettava un marker iframe che quello scenario non emette.
+  La diagnostica smoke include invece correttamente il testo “cross-origin WindowProxy prototype
+  not confirmed”. L’asserzione è stata corretta per verificare quel messaggio; la nuova CI deve
+  confermare l’intero runner Linux. Runtime Windows normal/JIT-less passano; la matrice servoshell
+  era ancora in corso al momento della diagnosi.
 - Patch 0251: rimosse preferenze Baseline/Ion, warmup, regexp, asm.js e Wasm ignorate da V8,
   setup senza effetto, callback build ID SpiderMonkey e workaround Android sui tier rimossi.
   `js_disable_jit` rimane. Replay sequenziale dei tre file da Servo v0.5.0 pristine, dry-run
@@ -98,9 +104,9 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
 - La validazione finale resta aperta: WPT selezionati, stress GC/lifecycle, copertura applicativa,
   misure per modifiche di ownership, artefatti e release/pin. Il dettaglio resta nelle fasi 1–4.
 
-Prossimi passi: recuperare un token Actions valido o attendere il reset delle richieste anonime,
-verificare l’esito terminale di `39478697257` e usare annotazioni/log per correggere i fallimenti
-Linux. Poi continuare sui comportamenti browser Window/WindowProxy e sulla perdita degli
+Prossimi passi: verificare nella nuova CI che la correzione del test runner passi; recuperare
+annotazioni/log accessibili per i risultati browser di `39478697257` e poi correggere i
+comportamenti Window/WindowProxy e la perdita degli
 argomenti originali `TrustedScript` nel callback V8 `ModifyCodeGenerationFromStrings`. Continuare
 le fasi 1–4 oltre questo checkpoint. La patch 0251 modifica sorgenti Servo e attende verifica CI.
 Release e aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
