@@ -1,11 +1,10 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, commit 6fe04d86e51 e CI 39480383126
+## Punto della situazione — 20 ottobre 2026, commit 273c1d9db2e e CI 39491426868
 
-Rilevazione sul commit `6fe04d86e51a` (`main`) e sulla CI avviata da quel push. Il PAT fornito
-dall’utente ha consentito inizialmente di leggere run e job; in seguito GitHub ha risposto
-`401 Bad credentials`. I log dei job Linux sono stati recuperati tramite il connettore GitHub
-già collegato. Il PAT non è stato salvato.
+Rilevazione sul commit `273c1d9db2e` (`main`) e sulla CI avviata dal rollback
+`a26cb6ca39b`. Il PAT condiviso in chat ha restituito `401 Bad credentials`; non è stato
+salvato né riutilizzato. Run e job sono stati controllati tramite il connettore GitHub.
 **La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
 ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
 sulla macchina locale.
@@ -14,6 +13,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | In corso al checkpoint | Runtime Linux/Windows normal e JIT-less verdi; build e smoke Windows verdi. Smoke Linux normal/JIT-less in corso; servoshell macOS normal in build e runtime macOS in coda. |
 | [V8 migration checks — 39480383126](https://github.com/DRincs-Productions/roves/actions/runs/39480383126) | Fallita: 6 job verdi, 2 smoke falliti, 2 runtime macOS cancellati | Runtime Linux e Windows normal/JIT-less verdi; build servoshell Windows/macOS normal e Linux normal/JIT-less verdi. Entrambi gli smoke Linux falliscono su Window, iframe cross-origin e Function con TrustedScript. Runtime macOS cancellati dopo i fallimenti Linux. |
 | [V8 migration checks — 39478697257](https://github.com/DRincs-Productions/roves/actions/runs/39478697257) | Esito non verificabile dai log accessibili | L’ultima lettura della pagina pubblica mostrava 3/6 runtime completati, 2 errori Ubuntu e 0/4 build servoshell conclusi. I dettagli degli errori sono protetti; il rate limit API impedisce di verificare se i job siano poi terminati. |
 | [V8 migration checks — 39473515801](https://github.com/DRincs-Productions/roves/actions/runs/39473515801) | Fallito: browser smoke Linux falliti; job macOS normal in retry nell’attempt 2 | Build servoshell Windows normal e Linux normal/JIT-less verdi. Tutte le nove suite superano gli smoke Linux; restano i marker browser di prototipo Window, WindowProxy cross-origin e Function(TrustedScript). CSP Wasm e trusted eval passano nelle due modalità. Il runtime macOS normal del primo tentativo era cancellato; smoke browser macOS non verificato. |
