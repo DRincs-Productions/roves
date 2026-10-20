@@ -31,10 +31,10 @@ browser da risolvere o qualificare:
 
 1. **Prototipo immutabile Window non confermato.** In 394803 il log riporta `object true true`:
    `Reflect.setPrototypeOf(window, {})` è riuscito, mentre le proprietà ordinarie funzionano.
-   L’ipotesi precedente che `ObjectTemplate::set_immutable_proto()` non funzionasse sul global
-   era errata: i test V8 `object_template_immutable_proto` provano la flag sul global di un
-   `Context`. La nuova modifica la applica al template della classe Servo `Window`; regressione
-   roves-js e smoke CI devono ancora confermare la correzione di produzione.
+   Applicare `ObjectTemplate::set_immutable_proto()` al template di `Window` fa abortire
+   `JS_SetPrototype` durante l’inizializzazione WebIDL (`WindowBinding`), prima di avviare gli
+   script. La patch 0252 è ritirata. Il percorso deve permettere l’installazione iniziale del
+   prototipo e renderlo immutabile soltanto dopo.
 2. **Prototipo cross-origin WindowProxy non confermato.** In 394803 non compare alcun evento
    iframe. La nuova fixture carica la pagina principale da loopback e l’iframe dallo stesso
    host su una porta diversa, così entrambe le pagine hanno origine HTTP e l’iframe è davvero
@@ -60,9 +60,11 @@ contraffatto. Serve un’integrazione che conservi gli argomenti originali; non 
 controllo CSP. Le verifiche Chrome sono funzionali, non prestazionali.
 
 In 394803 gli smoke browser Linux falliscono sui tre casi residui; entrambi i job runtime Linux e
-Windows sono verdi. Le build servoshell Linux compilano e le build Windows/macOS normal sono
-verdi; gli smoke macOS non sono previsti dalla matrice. Nella run 394670 quattro build
-servoshell compilano, mentre il runtime
+Windows sono verdi. La CI 39486988220 compila Linux normal/JIT-less e Windows, ma lo smoke Linux
+normal fallisce perché la flag V8 causa l’assertion `JS_SetPrototype` durante il setup dei
+binding; le successive pagine vuote derivano da quell’abort. Gli altri job macOS sono cancellati
+dal `fail-fast`; runtime macOS normal passa.
+Nella run 394670 quattro build servoshell compilano, mentre il runtime
 macOS normal supera il timeout di 20 secondi nel test runner e quello JIT-less è cancellato.
 Il test locale `roves-js::immutable_prototypes_reject_replacement_but_allow_properties` passa.
 La build completa locale di servoshell è stata interrotta su indicazione dell’utente per evitare

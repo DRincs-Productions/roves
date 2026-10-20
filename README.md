@@ -46,12 +46,11 @@ missing audio/GPU devices are the only accepted exceptions. When WebGPU has no u
 hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
-The browser smoke also checks that `window` rejects prototype replacement while still allowing
-ordinary properties. Roves marks the native V8 global template for the Web `Window` class as
-immutable, while the V8 proxy dispatcher enforces the same rule for WebIDL proxy objects and
-still invokes their origin-aware traps.
-The smoke reports trusted eval and Function results, checks the separate Wasm CSP directive and
-isolates Window prototype diagnostics. Its main Window fixture and cross-origin iframe use
+The browser smoke checks ordinary JavaScript prototype mutation. Window and WindowProxy prototype
+behavior remain separate open integration checks; a V8 template-level restriction conflicted
+with Servo's generated Window binding initialization and was reverted. The smoke reports trusted
+eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
+Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including

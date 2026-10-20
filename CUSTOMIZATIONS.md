@@ -14554,21 +14554,21 @@ expected one. Check the actual diagnostic annotation instead. Windows runtime jo
 Linux runner integration and full V8 matrix must pass in the next run before treating the smoke
 diagnostics as verified.
 
-## 2026-10-20 - Apply immutable-prototype behavior to V8 Window globals
+## 2026-10-20 - Revert V8 immutable Window template experiment
 
-**Files:** `components/roves-js/src/object.rs`, `components/roves-js/src/tests.rs`
-(`0252-immutable-v8-window-global-template.patch`); repository-only smoke fixtures and runner,
-`README.md`, `docs/V8_MIGRATION.md`, and `roves-wiki/content/docs/shell.mdx`.
+**Files:** reverted `components/roves-js/src/object.rs` and `components/roves-js/src/tests.rs`;
+repository-only smoke fixtures and runner, `README.md`, `docs/V8_MIGRATION.md`, and
+`roves-wiki/content/docs/shell.mdx`. Patch 0252 has been removed.
 
-CI 394803 shows the browser global proxy accepts a different prototype (`object true true`). The
-previous plan incorrectly concluded that `ObjectTemplate::set_immutable_proto()` does not cover a
-context global. V8's own `object_template_immutable_proto` test constructs a context from such a
-template and confirms that changing `globalThis`'s prototype throws. Mark only the Servo `Window`
-global template immutable; worker globals do not use a WindowProxy. Add a `roves-js` regression
-that checks the global proxy through JavaScript.
+CI 394803 shows the browser global proxy accepts a different prototype (`object true true`). CI
+39486988220 then showed that making the V8 template immutable aborts while generated
+`WindowBinding` code installs Servo's canonical prototype with `JS_SetPrototype`. This V8 API
+test did not model Servo's binding-initialization lifecycle, so the experiment was removed.
+Preserve the JSAPI cell's mutable setup path and design an explicit transition after prototype
+installation before enforcing the browser invariant.
 
 The smoke main page now loads over loopback HTTP and its iframe uses the same host on a separate
 port, avoiding the earlier file-origin navigation ambiguity. Failure output includes both HTTP
-server logs. The current CI has not yet verified these changes. The `Function(TrustedScript)` WPT
+server logs. The `Function(TrustedScript)` WPT
 case remains open: the V8 callback receives the already-composed source rather than the original
 arguments, and trusting that source without the original branded values would weaken CSP.
