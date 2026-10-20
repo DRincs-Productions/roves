@@ -1,8 +1,12 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, CI 39473515801
+## Punto della situazione — 20 ottobre 2026, commit 68f318bc645 e CI 39478697257
 
-Rilevazione sul commit `959d7c4007e1` (`main`) e sulla diagnostica smoke locale in corso.
+Rilevazione sul commit `68f318bc645` (`main`) e sulla CI avviata da quel push. La diagnostica
+aggiunta riporta i valori Window e gli eventi iframe negli errori smoke. L’API anonima ha
+raggiunto il rate limit; il PAT fornito dall’utente è stato rifiutato da GitHub con `401 Bad
+credentials`, quindi non sono disponibili i log protetti della run `39478697257`. Il token non è
+stato salvato né riutilizzato.
 **La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
 ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
 sulla macchina locale.
@@ -11,6 +15,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39478697257](https://github.com/DRincs-Productions/roves/actions/runs/39478697257) | Esito non verificabile dai log accessibili | L’ultima lettura della pagina pubblica mostrava 3/6 runtime completati, 2 errori Ubuntu e 0/4 build servoshell conclusi. I dettagli degli errori sono protetti; il rate limit API impedisce di verificare se i job siano poi terminati. |
 | [V8 migration checks — 39473515801](https://github.com/DRincs-Productions/roves/actions/runs/39473515801) | Fallito: browser smoke Linux falliti; job macOS normal in retry nell’attempt 2 | Build servoshell Windows normal e Linux normal/JIT-less verdi. Tutte le nove suite superano gli smoke Linux; restano i marker browser di prototipo Window, WindowProxy cross-origin e Function(TrustedScript). CSP Wasm e trusted eval passano nelle due modalità. Il runtime macOS normal del primo tentativo era cancellato; smoke browser macOS non verificato. |
 | [V8 migration checks — 39467094586](https://github.com/DRincs-Productions/roves/actions/runs/39467094586) | Fallito: 6 job verdi, 3 falliti, 1 cancellato | Runtime Linux/Windows normal e JIT-less verdi; macOS normal supera il timeout nel test del runner, macOS JIT-less cancellato. Le quattro build servoshell passano; gli smoke Linux falliscono su Window e iframe. I nuovi controlli trusted Function e Wasm CSP non sono inclusi. |
 | [V8 migration checks — 39320063351](https://github.com/DRincs-Productions/roves/actions/runs/39320063351) | Fallito, 8 job verdi su 10 | Tutti i 6 job runtime (Linux/Windows/macOS, normal/JIT-less) passano. Build servoshell Windows/macOS verdi. Le due build Linux passano, ma entrambi gli smoke browser falliscono. |
@@ -93,11 +98,12 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
 - La validazione finale resta aperta: WPT selezionati, stress GC/lifecycle, copertura applicativa,
   misure per modifiche di ownership, artefatti e release/pin. Il dettaglio resta nelle fasi 1–4.
 
-Prossimi passi: attendere il retry macOS e verificare la nuova CI con diagnostica Window/iframe,
-poi correggere il comportamento browser. Indagare la perdita degli argomenti originali
-TrustedScript nel callback V8 `ModifyCodeGenerationFromStrings`. Continuare le fasi 1–4 oltre
-questo checkpoint. La patch 0251 modifica sorgenti Servo e attende verifica CI. Release e
-aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
+Prossimi passi: recuperare un token Actions valido o attendere il reset delle richieste anonime,
+verificare l’esito terminale di `39478697257` e usare annotazioni/log per correggere i fallimenti
+Linux. Poi continuare sui comportamenti browser Window/WindowProxy e sulla perdita degli
+argomenti originali `TrustedScript` nel callback V8 `ModifyCodeGenerationFromStrings`. Continuare
+le fasi 1–4 oltre questo checkpoint. La patch 0251 modifica sorgenti Servo e attende verifica CI.
+Release e aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
 
 ## Obiettivo e stato iniziale
 
