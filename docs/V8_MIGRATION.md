@@ -1,8 +1,9 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, ore 00:30 CEST
+## Punto della situazione — 20 ottobre 2026, ore 17:35 UTC
 
-Rilevazione sul commit `4d0579409ed` (`main`), con modifiche locali non ancora committate.
+Rilevazione sui commit `7f3cd796c04` e `b4074d6baec` (`main`), con ulteriori modifiche locali
+non ancora committate.
 **La migrazione resta incompleta.** L’utente ha autorizzato di continuare l’implementazione e
 ha indicato di preferire build pesanti nella CI online dopo lo sviluppo, per ridurre il carico
 sulla macchina locale.
@@ -19,7 +20,7 @@ sulla macchina locale.
 Le nove suite Linux (`suite`, `suite2`, `games`, `modules`, `errors`, `events`, `graphics`,
 `stress`, `saves`) riportano riepiloghi validi in entrambe le modalità, con gli skip consentiti.
 Anche DOM, eventi, Promise, timer e identità `window === globalThis` sono confermati.
-I tre errori residui dello smoke sono:
+Restano due lacune browser; il controllo CSP è corretto:
 
 1. **Prototipo immutabile Window non confermato.** Diagnosi aggiornata ancora aperta. V8
    crea un global proxy nativo distinto dal globale sottostante; i trap di roves-js non vengono
@@ -28,14 +29,20 @@ I tre errori residui dello smoke sono:
    runtime sui globali lo confermano. Non applicare workaround che cambino il prototipo che V8
    usa internamente; serve un’integrazione corretta del global proxy o una revisione della
    strategia Window.
-2. **Prototipo cross-origin WindowProxy non confermato.** Il controllo runtime non è ancora
-   stato separato dal caricamento iframe. La fixture locale ora cattura gli errori Window
-   indipendentemente, segnala un errore di caricamento e stampa un marker dopo 5 secondi se
-   l’iframe non completa il caricamento.
-3. **Matcher CSP corretto localmente.** La pagina scartava il risultato di `eval(TrustedScript)`
-   e stampava `allowed`; ora stampa il valore restituito o il nome dell’eccezione. La CI non ha
-   ancora verificato la fixture corretta.
+2. **Prototipo cross-origin WindowProxy non confermato.** Run `39462392615` ha mostrato che
+   la navigazione `data:` del frame non termina in Servo; il marker cross-origin mancava e il
+   marker timeout è apparso. La fixture usa ora una pagina HTTP di loopback (origine distinta
+   da `file://`) servita da Python stdlib, e il runner termina il server a fine esecuzione.
+   Attendere la CI successiva per valutare i trap cross-origin dopo il caricamento riuscito.
+3. **CSP TrustedScript verificato.** Dopo la correzione la CI stampa e conferma il valore `42`
+   sia in normal sia in JIT-less; rimangono da esaminare `Function(TrustedScript)` e i parametri
+   trusted del costruttore Function.
 
+La run V8 `39462392615` passa cinque job runtime su sei (macOS normal cancellato), il build
+servoshell Windows e i build
+Linux; gli smoke Linux falliscono su prototipo immutabile Window, caricamento `data:` cross-origin
+e quindi marker WindowProxy. CSP trusted eval ora stampa e supera `42` in normal e JIT-less.
+Il job macOS normal è stato cancellato, mentre macOS JIT-less e gli altri runtime sono verdi.
 Il test locale `roves-js::immutable_prototypes_reject_replacement_but_allow_properties` passa.
 La build completa locale di servoshell è stata interrotta su indicazione dell’utente per evitare
 carico elevato; non ha modificato Cargo.toml/Cargo.lock e non ha prodotto una nuova build

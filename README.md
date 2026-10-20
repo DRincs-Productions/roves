@@ -47,8 +47,9 @@ save-file checks) with a bounded timeout, so slow cold starts do not truncate la
 The browser smoke also checks that `window` rejects prototype replacement while still allowing
 ordinary properties. The V8 proxy dispatcher enforces the same immutable-prototype rule for
 WebIDL proxy objects and still invokes their origin-aware traps.
-The smoke reports the trusted-eval result and isolates Window prototype and cross-origin iframe
-diagnostics so one failure cannot hide the other.
+The smoke reports the trusted-eval result and isolates Window prototype diagnostics. Its
+cross-origin WindowProxy fixture uses a temporary loopback HTTP page because Servo does not
+complete navigation of the equivalent `data:` iframe.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
 separate JavaScript behavior.

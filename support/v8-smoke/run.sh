@@ -17,6 +17,28 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS=0
 # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
 TOTALS=""
+HTTP_PORT=18765
+HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
+"$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
+HTTP_PID=$!
+cleanup_http_server() {
+  kill "$HTTP_PID" 2>/dev/null || true
+  wait "$HTTP_PID" 2>/dev/null || true
+  rm -f "$HTTP_LOG"
+}
+trap cleanup_http_server EXIT
+http_ready=0
+for _ in $(seq 1 50); do
+  if "$PYTHON" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$HTTP_PORT/cross-origin.html', timeout=0.2).close()" 2>/dev/null; then
+    http_ready=1
+    break
+  fi
+  sleep 0.1
+done
+if [ "$http_ready" -ne 1 ]; then
+  echo "::error::V8 smoke local HTTP fixture server did not start on 127.0.0.1:$HTTP_PORT"
+  exit 1
+fi
 
 run_page() {
   local page="$1" seconds="$2" log="$3"

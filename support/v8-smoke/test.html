@@ -28,7 +28,7 @@ console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === fal
 console.log("ROVES-V8 window prototype diagnostics", typeof windowPrototype, String(windowPrototypeChange), String(windowOrdinaryProperty));
 delete window.__rovesV8SmokeOrdinary;
 const crossOriginFrame = document.createElement("iframe");
-crossOriginFrame.src = "data:text/html,%3C!doctype%20html%3E%3Ctitle%3Eopaque%20origin%3C/title%3E";
+crossOriginFrame.src = "http://127.0.0.1:18765/cross-origin.html";
 crossOriginFrame.addEventListener("load", () => {
   const otherWindow = crossOriginFrame.contentWindow;
   let prototypeIsNull = false;
