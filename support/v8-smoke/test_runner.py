@@ -53,9 +53,19 @@ class ResultsTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
-    def run_fixture(self, scenario, wrapped=False):
+    def run_fixture(self, scenario, wrapped=False, pref_flag=None):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
+            runner = HERE / 'run.sh'
+            if pref_flag is not None:
+                # Simulate a runner regression that drops or changes the preference flag.
+                copy = directory / 'smoke'
+                copy.mkdir()
+                shutil.copy(HERE / 'check_results.py', copy)
+                source = runner.read_text()
+                self.assertEqual(1, source.count(" --pref js_disable_jit=true\n"))
+                (copy / 'run.sh').write_text(source.replace(" --pref js_disable_jit=true\n", pref_flag + "\n"))
+                runner = copy / 'run.sh'
             python = shutil.which('python3') or sys.executable
             python_stub = directory / 'python3'
             python_stub.write_text(f'''#!{sys.executable}
@@ -75,13 +85,41 @@ else:
 import os, sys
 if os.environ['SMOKE_TEST_WRAPPED'] == '1':
     assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
+    browser = 4
 else:
-    assert sys.argv[2] == 'unused-browser', sys.argv
+    browser = 2
+assert sys.argv[browser] == 'unused-browser', sys.argv
+assert sys.argv[-2] == '-z', sys.argv
+options = sys.argv[browser + 1:-2]
 page = sys.argv[-1].rsplit('/', 1)[-1]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
-if page == 'test.html':
+if page != 'pref-jitless.html':
+    # Only the dedicated fresh process may change the engine preference.
+    assert options == [], sys.argv
+if page == 'pref-jitless.html':
+    with open('pref-args.txt', 'w') as received:
+        received.write('\\n'.join(sys.argv[2:browser + 1] + options))
+    if scenario == 'pref-cli' and '--pref' in options:
+        print('error: --pref is not expected in this context', file=sys.stderr)
+        raise SystemExit(1)
+    # Like servoshell: each `--pref name[=value]` must name a real preference.
+    jitless = False
+    for flag, value in zip(options[::2], options[1::2]):
+        assert flag == '--pref', sys.argv
+        name, _, setting = value.partition('=')
+        if name != 'js_disable_jit':
+            print(f'panicked: Unknown preference: "{name}"', file=sys.stderr)
+            raise SystemExit(101)
+        jitless = setting in ('', 'true')
+    if scenario == 'pref-crash':
+        raise SystemExit(139)
+    if scenario == 'pref-wasm':
+        jitless = False
+    if scenario != 'pref-result':
+        print('ROVES-V8 pref js_disable_jit js true wasm ' + ('unavailable' if jitless else 'available'))
+elif page == 'test.html':
     print('ROVES-V8 dom: changed by js v8 test 1')
     print('ROVES-V8 click event click true')
     print('ROVES-V8 promise 5')
@@ -131,9 +169,12 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
                        SMOKE_TEST_REAL_PYTHON=python)
             env.pop('GITHUB_STEP_SUMMARY', None)
-            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
-                                   *(['wrapper with spaces', '--option'] if wrapped else [])],
-                                  cwd=directory, env=env, capture_output=True, text=True, timeout=20)
+            result = subprocess.run(['bash', str(runner), 'unused-browser',
+                                     *(['wrapper with spaces', '--option'] if wrapped else [])],
+                                    cwd=directory, env=env, capture_output=True, text=True, timeout=20)
+            received = directory / 'pref-args.txt'
+            result.pref_args = received.read_text().split('\n') if received.exists() else None
+            return result
 
     def test_complete_and_post_completion_timeout(self):
         for wrapped in (False, True):
@@ -141,6 +182,26 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 with self.subTest(scenario=scenario, wrapped=wrapped):
                     result = self.run_fixture(scenario, wrapped=wrapped)
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                    wrapper = ['wrapper with spaces', '--option'] if wrapped else []
+                    self.assertEqual(wrapper + ['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
+                    self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
+
+    def test_preference_probe_failures(self):
+        cases = (
+            ('pass', '', 'wasm available'),
+            ('pass', ' --pref js_disable_jit=false', 'wasm available'),
+            ('pref-wasm', None, 'wasm available'),
+            ('pref-result', None, 'not confirmed ()'),
+            ('pref-crash', None, 'pref-jitless.html: servoshell exited with 139'),
+            ('pref-cli', None, 'pref-jitless.html: servoshell exited with 1'),
+        )
+        for scenario, pref_flag, message in cases:
+            with self.subTest(scenario=scenario, pref_flag=pref_flag):
+                result = self.run_fixture(scenario, pref_flag=pref_flag)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn('::error::pref-jitless.html: --pref js_disable_jit=true not confirmed', result.stdout)
+                self.assertIn(message, result.stdout)
+                self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
         for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):

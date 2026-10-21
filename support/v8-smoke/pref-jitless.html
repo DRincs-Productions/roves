@@ -1,0 +1,14 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js js_disable_jit preference smoke page</title></head>
+<body>
+<script>
+// Loaded in a fresh servoshell process started with `--pref js_disable_jit=true`. V8's
+// `--jitless` flag removes the WebAssembly global, the same observable suite2.html uses.
+addEventListener("error", event => console.log("ROVES-V8 pref js_disable_jit error", event.message));
+Promise.resolve([1, 2, 3]).then(values => {
+  const js = values.map(value => value * 2).join() === "2,4,6";
+  const wasm = typeof WebAssembly === "undefined" ? "unavailable" : "available";
+  console.log("ROVES-V8 pref js_disable_jit js " + js + " wasm " + wasm);
+});
+</script>
+</body></html>

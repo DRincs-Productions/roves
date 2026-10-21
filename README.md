@@ -30,7 +30,9 @@ implements the JavaScript API Servo's DOM code expects on top of V8.
 
 V8 also has a **JIT-less** mode, the configuration for platforms that forbid generating
 executable code at runtime, such as consoles. The Servo `js_disable_jit` preference selects
-this mode at engine startup; V8 flags cannot change after initialization. In that mode there is no WebAssembly, so
+this mode at engine startup (for example `--pref js_disable_jit=true`); V8 flags cannot change
+after initialization. The V8 smoke checks this preference in a separate fresh process; that
+browser check is still awaiting its first CI result. In that mode there is no WebAssembly, so
 WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
 JavaScript debugging is not available on V8 yet. SpiderMonkey-only Baseline/Ion, asm.js and
 per-tier Wasm tuning preferences were removed because V8 ignored them; use `js_disable_jit`

@@ -47,21 +47,23 @@ if [ "$http_ready" -ne 1 ]; then
   exit 1
 fi
 
+# run_page PAGE SECONDS LOG [URL] [COMPLETION-REGEX] [BROWSER ARGS...]
 run_page() {
-  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}"
+  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}" done_pattern="${5:-}"
   local completed=0 pid code
-  # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
-  if [ "$RUNNER_COUNT" -gt 0 ]; then
-    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1 &
-  else
-    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1 &
-  fi
+  # Bash 3.2 treats an empty array as unset under nounset. Only expand non-empty arrays.
+  local argv=()
+  if [ "$RUNNER_COUNT" -gt 0 ]; then argv=("${RUNNER[@]}"); fi
+  argv+=("$BIN")
+  if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
+  argv+=(-z "$url")
+  timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
   pid=$!
-  if [ "${5:-}" = suite ]; then
-    # A suite emits its total only after settling all its checks. GNU timeout forwards
-    # TERM to the browser; the existing validator still rejects failed/incomplete totals.
+  if [ -n "$done_pattern" ]; then
+    # The page reports completion before the deadline. GNU timeout forwards TERM to the
+    # browser; callers still validate the reported results.
     while kill -0 "$pid" 2>/dev/null; do
-      if grep -aq '^SUITE TOTAL ' "$log"; then
+      if grep -aq "$done_pattern" "$log"; then
         completed=1
         kill -TERM "$pid" 2>/dev/null || true
         break
@@ -82,7 +84,7 @@ run_page() {
 
 run_suite() {
   local page="$1" log="$2" seconds="${3:-60}"
-  run_page "$page" "$seconds" "$log" "" suite
+  run_page "$page" "$seconds" "$log" "" '^SUITE TOTAL '
   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
   local total
   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
@@ -152,10 +154,21 @@ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1
   if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
 done
 
+# V8 flags are process-wide and fixed before the first isolate: the preference needs its own
+# fresh process. Wasm stays required in the normal pages above, so a build that is jitless
+# globally cannot pass. In JIT-less mode this cannot tell the preference from the feature.
+run_page pref-jitless.html 15 pref-jitless.log "" '^ROVES-V8 pref js_disable_jit ' --pref js_disable_jit=true
+if grep -aFxq 'ROVES-V8 pref js_disable_jit js true wasm unavailable' pref-jitless.log; then
+  echo "::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly"
+else
+  echo "::error::pref-jitless.html: --pref js_disable_jit=true not confirmed ($(grep -aF 'ROVES-V8 pref ' pref-jitless.log | tr '\n' ' '))"
+  STATUS=1
+fi
+
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log wasm-csp.log nav.log; do
+  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done

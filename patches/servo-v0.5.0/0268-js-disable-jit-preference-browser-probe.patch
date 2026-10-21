@@ -1,0 +1,203 @@
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index afb28aeb544..6f200c37792 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -47,21 +47,23 @@ if [ "$http_ready" -ne 1 ]; then
+   exit 1
+ fi
+ 
++# run_page PAGE SECONDS LOG [URL] [COMPLETION-REGEX] [BROWSER ARGS...]
+ run_page() {
+-  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}"
++  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}" done_pattern="${5:-}"
+   local completed=0 pid code
+-  # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
+-  if [ "$RUNNER_COUNT" -gt 0 ]; then
+-    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1 &
+-  else
+-    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1 &
+-  fi
++  # Bash 3.2 treats an empty array as unset under nounset. Only expand non-empty arrays.
++  local argv=()
++  if [ "$RUNNER_COUNT" -gt 0 ]; then argv=("${RUNNER[@]}"); fi
++  argv+=("$BIN")
++  if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
++  argv+=(-z "$url")
++  timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+   pid=$!
+-  if [ "${5:-}" = suite ]; then
+-    # A suite emits its total only after settling all its checks. GNU timeout forwards
+-    # TERM to the browser; the existing validator still rejects failed/incomplete totals.
++  if [ -n "$done_pattern" ]; then
++    # The page reports completion before the deadline. GNU timeout forwards TERM to the
++    # browser; callers still validate the reported results.
+     while kill -0 "$pid" 2>/dev/null; do
+-      if grep -aq '^SUITE TOTAL ' "$log"; then
++      if grep -aq "$done_pattern" "$log"; then
+         completed=1
+         kill -TERM "$pid" 2>/dev/null || true
+         break
+@@ -82,7 +84,7 @@ run_page() {
+ 
+ run_suite() {
+   local page="$1" log="$2" seconds="${3:-60}"
+-  run_page "$page" "$seconds" "$log" "" suite
++  run_page "$page" "$seconds" "$log" "" '^SUITE TOTAL '
+   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+   local total
+   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+@@ -152,10 +154,21 @@ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1
+   if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
+ done
+ 
++# V8 flags are process-wide and fixed before the first isolate: the preference needs its own
++# fresh process. Wasm stays required in the normal pages above, so a build that is jitless
++# globally cannot pass. In JIT-less mode this cannot tell the preference from the feature.
++run_page pref-jitless.html 15 pref-jitless.log "" '^ROVES-V8 pref js_disable_jit ' --pref js_disable_jit=true
++if grep -aFxq 'ROVES-V8 pref js_disable_jit js true wasm unavailable' pref-jitless.log; then
++  echo "::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly"
++else
++  echo "::error::pref-jitless.html: --pref js_disable_jit=true not confirmed ($(grep -aF 'ROVES-V8 pref ' pref-jitless.log | tr '\n' ' '))"
++  STATUS=1
++fi
++
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+-  for page_log in test.log csp.log wasm-csp.log nav.log; do
++  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log; do
+     echo "V8 smoke diagnostics: $page_log"
+     tail -80 "$page_log"
+   done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 3be5ba46b0b..4f406467c63 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -53,9 +53,19 @@ class ResultsTests(unittest.TestCase):
+ 
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+-    def run_fixture(self, scenario, wrapped=False):
++    def run_fixture(self, scenario, wrapped=False, pref_flag=None):
+         with tempfile.TemporaryDirectory() as directory:
+             directory = Path(directory)
++            runner = HERE / 'run.sh'
++            if pref_flag is not None:
++                # Simulate a runner regression that drops or changes the preference flag.
++                copy = directory / 'smoke'
++                copy.mkdir()
++                shutil.copy(HERE / 'check_results.py', copy)
++                source = runner.read_text()
++                self.assertEqual(1, source.count(" --pref js_disable_jit=true\n"))
++                (copy / 'run.sh').write_text(source.replace(" --pref js_disable_jit=true\n", pref_flag + "\n"))
++                runner = copy / 'run.sh'
+             python = shutil.which('python3') or sys.executable
+             python_stub = directory / 'python3'
+             python_stub.write_text(f'''#!{sys.executable}
+@@ -75,13 +85,41 @@ else:
+ import os, sys
+ if os.environ['SMOKE_TEST_WRAPPED'] == '1':
+     assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
++    browser = 4
+ else:
+-    assert sys.argv[2] == 'unused-browser', sys.argv
++    browser = 2
++assert sys.argv[browser] == 'unused-browser', sys.argv
++assert sys.argv[-2] == '-z', sys.argv
++options = sys.argv[browser + 1:-2]
+ page = sys.argv[-1].rsplit('/', 1)[-1]
+ scenario = os.environ['SMOKE_TEST_SCENARIO']
+ if scenario == 'crash' and page == 'suite.html':
+     raise SystemExit(139)
+-if page == 'test.html':
++if page != 'pref-jitless.html':
++    # Only the dedicated fresh process may change the engine preference.
++    assert options == [], sys.argv
++if page == 'pref-jitless.html':
++    with open('pref-args.txt', 'w') as received:
++        received.write('\\n'.join(sys.argv[2:browser + 1] + options))
++    if scenario == 'pref-cli' and '--pref' in options:
++        print('error: --pref is not expected in this context', file=sys.stderr)
++        raise SystemExit(1)
++    # Like servoshell: each `--pref name[=value]` must name a real preference.
++    jitless = False
++    for flag, value in zip(options[::2], options[1::2]):
++        assert flag == '--pref', sys.argv
++        name, _, setting = value.partition('=')
++        if name != 'js_disable_jit':
++            print(f'panicked: Unknown preference: "{name}"', file=sys.stderr)
++            raise SystemExit(101)
++        jitless = setting in ('', 'true')
++    if scenario == 'pref-crash':
++        raise SystemExit(139)
++    if scenario == 'pref-wasm':
++        jitless = False
++    if scenario != 'pref-result':
++        print('ROVES-V8 pref js_disable_jit js true wasm ' + ('unavailable' if jitless else 'available'))
++elif page == 'test.html':
+     print('ROVES-V8 dom: changed by js v8 test 1')
+     print('ROVES-V8 click event click true')
+     print('ROVES-V8 promise 5')
+@@ -131,9 +169,12 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
+                        SMOKE_TEST_REAL_PYTHON=python)
+             env.pop('GITHUB_STEP_SUMMARY', None)
+-            return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
+-                                   *(['wrapper with spaces', '--option'] if wrapped else [])],
+-                                  cwd=directory, env=env, capture_output=True, text=True, timeout=20)
++            result = subprocess.run(['bash', str(runner), 'unused-browser',
++                                     *(['wrapper with spaces', '--option'] if wrapped else [])],
++                                    cwd=directory, env=env, capture_output=True, text=True, timeout=20)
++            received = directory / 'pref-args.txt'
++            result.pref_args = received.read_text().split('\n') if received.exists() else None
++            return result
+ 
+     def test_complete_and_post_completion_timeout(self):
+         for wrapped in (False, True):
+@@ -141,6 +182,26 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 with self.subTest(scenario=scenario, wrapped=wrapped):
+                     result = self.run_fixture(scenario, wrapped=wrapped)
+                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++                    wrapper = ['wrapper with spaces', '--option'] if wrapped else []
++                    self.assertEqual(wrapper + ['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
++                    self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
++
++    def test_preference_probe_failures(self):
++        cases = (
++            ('pass', '', 'wasm available'),
++            ('pass', ' --pref js_disable_jit=false', 'wasm available'),
++            ('pref-wasm', None, 'wasm available'),
++            ('pref-result', None, 'not confirmed ()'),
++            ('pref-crash', None, 'pref-jitless.html: servoshell exited with 139'),
++            ('pref-cli', None, 'pref-jitless.html: servoshell exited with 1'),
++        )
++        for scenario, pref_flag, message in cases:
++            with self.subTest(scenario=scenario, pref_flag=pref_flag):
++                result = self.run_fixture(scenario, pref_flag=pref_flag)
++                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
++                self.assertIn('::error::pref-jitless.html: --pref js_disable_jit=true not confirmed', result.stdout)
++                self.assertIn(message, result.stdout)
++                self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
+ 
+     def test_failure_paths(self):
+         for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):
+diff --git a/support/v8-smoke/pref-jitless.html b/support/v8-smoke/pref-jitless.html
+new file mode 100644
+index 00000000000..a1ffdc29e81
+--- /dev/null
++++ b/support/v8-smoke/pref-jitless.html
+@@ -0,0 +1,14 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js js_disable_jit preference smoke page</title></head>
++<body>
++<script>
++// Loaded in a fresh servoshell process started with `--pref js_disable_jit=true`. V8's
++// `--jitless` flag removes the WebAssembly global, the same observable suite2.html uses.
++addEventListener("error", event => console.log("ROVES-V8 pref js_disable_jit error", event.message));
++Promise.resolve([1, 2, 3]).then(values => {
++  const js = values.map(value => value * 2).join() === "2,4,6";
++  const wasm = typeof WebAssembly === "undefined" ? "unavailable" : "available";
++  console.log("ROVES-V8 pref js_disable_jit js " + js + " wasm " + wasm);
++});
++</script>
++</body></html>

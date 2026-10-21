@@ -14989,3 +14989,42 @@ Remaining difference: V8 stringifies the callable proxies as `function () { [nat
 Proxy and `Object.setPrototypeOf` only; no dependency, license or platform change. Cost: three
 prototype relinks at realm creation; inherited property lookups on the three derived
 constructors traverse the Function proxy. Not measured; no GPU effect.
+
+## 2026-10-21 - Probe the js_disable_jit preference in a fresh browser process
+
+**Files:** `support/v8-smoke/{run.sh,test_runner.py,pref-jitless.html}`
+(`0268-js-disable-jit-preference-browser-probe.patch`), README, migration plan and wiki.
+
+`script::init` maps `pref!(js_disable_jit)` to `JSEngineSetup::with_flags("--jitless")`, which
+reaches `JSEngine::init_with_flags` before V8 starts, but no check exercised that path: the
+JIT-less CI matrix enables the `roves-js/jitless` Cargo feature instead. The V8 smoke runner now
+starts one extra, short servoshell process with the normal executable and the existing
+`--pref js_disable_jit=true` command-line option. V8 flags are process-wide and fixed before the
+first isolate, so the probe needs its own fresh process rather than a preference change at
+runtime. The new `pref-jitless.html` prints `ROVES-V8 pref js_disable_jit js true wasm
+unavailable` only when JavaScript runs (a Promise job and array computation) and the
+`WebAssembly` global is absent, the `--jitless` observable that `suite2.html` already relies on
+for the JIT-less matrix. Any other result, a missing marker, a crash or a rejected `--pref`
+option fails the run with a clear annotation, and the page log joins the bounded diagnostics
+kept on failure, next to the HTTP logs.
+
+`run_page` gained an optional completion pattern (the suites now pass `^SUITE TOTAL `) and
+optional extra browser arguments, assembled into one array so empty runner arrays are never
+expanded under Bash 3.2 `nounset` and wrapped invocations with spaces in paths still work. The
+probe uses a 15-second deadline and ends as soon as its result line appears. The normal pages
+still require working Wasm (suite2 and `wasm-csp.html`), so a build that is accidentally
+JIT-less globally cannot pass. In JIT-less mode the probe also runs, but it cannot distinguish
+the preference from the Cargo feature there.
+
+The runner contract fixture now checks the exact arguments (wrapper, binary, `--pref
+js_disable_jit=true`), rejects options on every other page, and derives the probe's answer
+from the arguments like servoshell would. New failures: flag removed, flag set to `false`,
+WebAssembly still present, missing result, crash, and a binary rejecting `--pref`. WSL Python
+runner contracts 8/8 pass. Replayed the 14 preceding custom patches for these files, WSL
+`patch -p1` dry-run/apply and source comparison pass. **Browser verification is pending CI**;
+no local servoshell build was run.
+
+Library evaluation: V8's own `--jitless` startup flag and the existing Bash/Python stdlib
+runner; no dependency, license, build flag, CLI default, workflow matrix or platform change.
+Cost: one short additional CI browser process; no production hot path changes and no
+performance claim.

@@ -22,6 +22,8 @@ GitHub «The job was not acquired by Runner of type hosted even after multiple a
 e capacità macOS ARM64 limitata. Un altro retry è in corso. Nessun nuovo push finché
 le verifiche precedenti non sono concluse e risolte, secondo AGENTS.md.
 La patch 0267 è verificata localmente e non ancora pubblicata.
+La patch 0268 (probe browser della preferenza `js_disable_jit`) è verificata solo nei
+contratti del runner; il probe browser reale attende la CI.
 
 Le diagnosi storiche seguenti vanno lette alla luce di questo aggiornamento.
 
@@ -107,7 +109,8 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
 
 - Patch 0248: `js_disable_jit` passa `--jitless` all’inizializzazione V8; rimosso il no-op
   `DisableJitBackend`. Compilazione e CI runtime verdi; la selezione effettiva della preferenza
-  richiede ancora una verifica dedicata, distinta dalla feature Cargo JIT-less.
+  richiede ancora una verifica dedicata, distinta dalla feature Cargo JIT-less. La patch 0268
+  aggiunge quel probe browser in un processo separato; esito CI ancora pendente.
 - Patch 0249: direct eval inoltra `bodyString` a CSP. Test runtime verdi; la fixture aggiornata
   controlla adesso il risultato numerico, ancora da verificare in browser CI.
 - Patch 0250: gestione del prototipo immutabile nei proxy e regressione JSAPI. Il commit
@@ -475,6 +478,29 @@ L’audit ha trovato `script::init` che dichiarava di disabilitare JIT chiamando
 predefinita e la feature di build `roves-js/jitless` restano invariate. Rimossa la funzione
 compatibilità senza effetto. Replay patch e CI runtime `39320063351` verdi. Resta da verificare
 direttamente la preferenza, poiché la matrice JIT-less usa anche la feature Cargo dedicata.
+
+**Probe browser della preferenza — 21 ottobre 2026 (patch 0268, CI da eseguire).** Lo smoke
+avvia un processo servoshell aggiuntivo e breve con l'eseguibile normale e l'opzione esistente
+`--pref js_disable_jit=true`: i flag V8 sono process-wide e fissati prima del primo isolate,
+quindi serve un processo nuovo, non un cambio di preferenza dopo l'avvio. `pref-jitless.html`
+emette `ROVES-V8 pref js_disable_jit js true wasm unavailable` solo se JS esegue (job Promise e
+calcolo) e il globale `WebAssembly` manca, lo stesso osservabile di `--jitless` già usato da
+suite2 nella matrice JIT-less. Marker mancante o diverso, crash e opzione `--pref` rifiutata
+falliscono con annotazione; il log della pagina entra nella diagnostica, accanto ai log HTTP.
+Timeout 15 secondi, chiusura anticipata sul marker tramite il pattern di completamento ora
+generico di `run_page` (le suite passano `^SUITE TOTAL `). Le pagine normali continuano a
+richiedere Wasm funzionante, quindi una build accidentalmente JIT-less non passa. In modalità
+JIT-less il probe gira ugualmente ma non distingue la preferenza dalla feature Cargo.
+
+Contratti runner WSL 8/8: argomenti esatti (anche con wrapper con spazi), nessuna opzione sulle
+altre pagine, risposta derivata dagli argomenti; failure per flag assente, flag `false`, Wasm
+ancora presente, risultato mancante, crash e `--pref` non supportato. Replay delle 14 patch
+precedenti sui file smoke, dry-run `patch -p1` WSL e confronto sorgenti riusciti. **Nessun
+probe browser locale** (richiede una build servoshell pesante): non chiudere la voce prima
+dell'esito CI. Valutazione librerie: flag di avvio V8 `--jitless` e runner Bash/Python stdlib
+esistente; nessuna dipendenza, licenza, piattaforma, flag build/bundle, default CLI o matrice
+workflow cambiati. Costo: un processo CI breve in più, nessun percorso caldo di produzione;
+nessuna misura prestazionale. Totali runtime invariati (normal 55/2 ignorati, JIT-less 54/3).
 
 ### Esito dell’audit mirato delle API JSAPI — 19 ottobre 2026
 
