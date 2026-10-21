@@ -18,7 +18,14 @@ class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
 console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
 const immutableProbe = {};
 Object.setPrototypeOf(immutableProbe, {});
-console.log("ROVES-V8 immutable prototype JSAPI target", Object.getPrototypeOf(immutableProbe) !== null);
+console.log("ROVES-V8 ordinary prototype mutation", Object.getPrototypeOf(immutableProbe) !== null);
+const windowPrototype = Object.getPrototypeOf(window);
+const acceptsCurrentWindowPrototype = Reflect.setPrototypeOf(window, windowPrototype);
+const rejectsNewWindowPrototype = !Reflect.setPrototypeOf(window, {});
+let throwsForNewWindowPrototype = false;
+try { Object.setPrototypeOf(window, {}); } catch (error) { throwsForNewWindowPrototype = error instanceof TypeError; }
+window.mutableWindowProperty = 42;
+console.log("ROVES-V8 immutable Window prototype", acceptsCurrentWindowPrototype, rejectsNewWindowPrototype, throwsForNewWindowPrototype, window.mutableWindowProperty === 42);
 const crossOriginFrame = document.createElement("iframe");
 crossOriginFrame.src = "http://127.0.0.1:18766/cross-origin.html";
 const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout"), 5000);

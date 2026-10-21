@@ -14624,3 +14624,32 @@ Bash and Python stdlib, with no new dependency or change to the build/bundle sur
 
 Validation: all seven runner tests pass on Ubuntu WSL in 30.491 seconds; Bash syntax and
 `git diff --check` pass. The test keeps checking the existing crash/failure/timeout contracts.
+
+## 2026-10-21 - Initialize Servo's canonical Window prototype through V8 templates
+
+**Files:** `components/roves-js/src/{object.rs,realm_impl.rs,tests.rs}`
+(`0253-v8-window-canonical-template-prototype.patch`), repository-only browser smoke,
+`README.md`, `docs/V8_MIGRATION.md`, and wiki shell docs.
+
+A plain immutable ObjectTemplate rejected Servo's later canonical Window prototype installation.
+Use V8's maintained FunctionTemplate instance/prototype templates instead: create the Window
+with a dedicated prototype already connected, reserve its class-box field, and initialize that
+field as a null tagged pointer immediately after creating the context. The first WindowPrototype
+binding allocation initializes this pre-existing object and its parent chain. Servo's generated
+JS_SetPrototype then assigns the same prototype identity, which immutable V8 objects permit.
+Later allocations use fresh objects. The Window is immutable to JavaScript from creation while
+ordinary global properties stay writable. This replaces the withdrawn experiment's lifecycle
+assumption rather than bypassing its failed JS_SetPrototype assertion.
+
+No new dependency or V8 fork is needed. The V8 constructor template creates the per-context
+prototype which replaces Servo's separate initial prototype allocation; an internal constructor
+function is also associated with it. No GPU work or per-property interception is added. Browser
+performance has not been measured. The native field must be initialized before converting the
+prototype to a JSAPI value; the initialization regression exposed and fixed that requirement.
+
+Local runtime suites pass in normal (43 passed, 2 benchmark ignores) and JIT-less (42 passed,
+3 ignores including Wasm). The regression models canonical-prototype installation, accepts the
+current prototype, rejects another through Reflect/Object, and checks mutable global properties.
+Replayed 33 preceding patches for the three custom files, performed a WSL patch dry-run, applied
+0253 and compared sources. Browser smoke now checks the actual Window separately from ordinary
+prototype mutation; generated Servo bindings and cross-origin WindowProxy still require CI.

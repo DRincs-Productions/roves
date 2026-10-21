@@ -198,6 +198,7 @@ pub unsafe fn JS_NewGlobalObject(
         // The class box goes on the global proxy (what scripts see as `globalThis`) before
         // anything converts it.
         let global = context.global(scope);
+        crate::object::initialize_window_prototype(scope, global, clasp)?;
         let cell = crate::object::attach_class_box(scope, global, clasp);
         // SAFETY: callers pass valid options (or null).
         if let Some(options) = unsafe { options.as_ref() } {

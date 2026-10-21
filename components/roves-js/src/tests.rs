@@ -2214,6 +2214,35 @@ mod window_proxies {
     };
 
     #[test]
+    fn window_global_initializes_its_canonical_prototype_without_replacing_it() {
+        static PROTOTYPE: JSClass = JSClass { name: c"WindowPrototype".as_ptr(), flags: 0, ..WINDOW_CLASS };
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let window = unsafe {
+            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, window.get()) };
+        eval(&runtime, "globalThis.initialPrototype = Object.getPrototypeOf(globalThis)");
+        rooted!(in(cx) let parent = unsafe { JS_NewPlainObject(cx) });
+        rooted!(in(cx) let canonical = unsafe { JS_NewObjectWithGivenProto(cx, &PROTOTYPE, parent.handle().into()) });
+        assert!(!canonical.get().is_null());
+        assert!(unsafe { JS_SetPrototype(cx, window.handle().into(), canonical.handle().into()) });
+        assert_eq!(unsafe { GetStaticPrototype(canonical.get()) }, parent.get());
+        rooted!(in(cx) let second = unsafe { JS_NewObjectWithGivenProto(cx, &PROTOTYPE, parent.handle().into()) });
+        assert_ne!(second.get(), canonical.get(), "only the initial binding adopts the template prototype");
+        let mut immutable = false;
+        assert!(unsafe { JS_SetImmutablePrototype(cx, window.handle().into(), &mut immutable) });
+        assert!(immutable);
+        rooted!(in(cx) let value = ObjectValue(canonical.get()));
+        assert!(unsafe { JS_SetProperty(cx, window.handle().into(), c"canonicalPrototype".as_ptr(), value.handle().into()) });
+        assert!(eval(&runtime, "initialPrototype === canonicalPrototype && Object.getPrototypeOf(globalThis) === canonicalPrototype").to_boolean());
+        assert!(eval(&runtime, "Reflect.setPrototypeOf(globalThis, canonicalPrototype) && !Reflect.setPrototypeOf(globalThis, {})").to_boolean());
+        assert!(eval(&runtime, "(() => { try { Object.setPrototypeOf(globalThis, {}); return false; } catch (e) { return e instanceof TypeError; } })()").to_boolean());
+        assert_eq!(eval(&runtime, "globalThis.mutableProperty = 42; mutableProperty").to_int32(), 42);
+        unsafe { LeaveRealm(cx, old) };
+    }
+
+    #[test]
     fn window_proxies_forward_outerize_and_transplant() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

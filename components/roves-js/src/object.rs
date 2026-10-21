@@ -12,7 +12,7 @@
 //! is gone). The box's trace calls the class trace hook, its destruction the finalize hook.
 
 use std::cell::{Cell as StdCell, RefCell};
-use std::ffi::c_void;
+use std::ffi::{CStr, c_void};
 
 use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
 
@@ -255,7 +255,17 @@ impl ClassTemplates {
         if let Some(template) = self.templates.borrow().get(&(class as usize)) {
             return v8::Local::new(scope, template);
         }
-        let template = v8::ObjectTemplate::new(scope);
+        let template = if is_window_global_class(class) {
+            // Give V8 its own canonical Window prototype before freezing the global's
+            // prototype. Servo initializes that object later instead of replacing it.
+            let constructor = v8::FunctionTemplate::new(scope, window_constructor);
+            constructor.prototype_template(scope).set_internal_field_count(1);
+            let template = constructor.instance_template(scope);
+            template.set_immutable_proto();
+            template
+        } else {
+            v8::ObjectTemplate::new(scope)
+        };
         template.set_internal_field_count(1);
         // SAFETY: classes are static.
         let ops = unsafe { (*class).cOps.as_ref() };
@@ -280,6 +290,29 @@ impl ClassTemplates {
         self.templates.borrow_mut().insert(class as usize, v8::Global::new(scope, template));
         template
     }
+}
+
+fn is_window_global_class(class: *const JSClass) -> bool {
+    // SAFETY: all class pointers passed to the object adapter refer to static classes.
+    let class = unsafe { &*class };
+    class.flags & JSCLASS_IS_GLOBAL != 0 && !class.name.is_null() &&
+        unsafe { CStr::from_ptr(class.name) }.to_bytes() == b"Window"
+}
+
+fn window_constructor(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    crate::native::throw_type_error(scope, "Illegal constructor");
+}
+
+/// V8 initializes API-object fields as JavaScript values, not tagged native pointers.
+/// Prepare the still-unbound prototype before any conversion tries to read its class box.
+pub(crate) fn initialize_window_prototype(scope: &mut v8::PinScope, global: v8::Local<v8::Object>, class: *const JSClass) -> Option<()> {
+    if is_window_global_class(class) {
+        let prototype = global.get_prototype(scope)?;
+        let prototype = v8::Local::<v8::Object>::try_from(prototype).ok()?;
+        // The Window template reserves this field and no class box is attached yet.
+        prototype.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), CLASS_BOX_TAG);
+    }
+    Some(())
 }
 
 /// Servo's DOM globals enumerate their lazy interface data properties. V8 can own
@@ -640,7 +673,26 @@ pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSOb
     }
     cx.catching(|scope| {
         let template = cx.class_templates.template(scope, class);
-        let object = template.new_instance(scope)?;
+        let object = if !default_proto && !unsafe { (*class).name }.is_null() &&
+            unsafe { CStr::from_ptr((*class).name) }.to_bytes() == b"WindowPrototype" {
+            let realm = crate::realm_impl::realm_data(cx.current_realm.get())?;
+            let global = realm.global.get();
+            if class_box(global).is_some_and(|global| is_window_global_class(global.class)) {
+                let value = unsafe { crate::cell::cell_value(scope, global as *mut c_void) };
+                let global = v8::Local::<v8::Object>::try_from(value).ok()?;
+                let prototype = global.get_prototype(scope)?;
+                let prototype = v8::Local::<v8::Object>::try_from(prototype).ok()?;
+                if prototype.internal_field_count() == 1 && class_box_of_v8(prototype).is_none() {
+                    prototype
+                } else {
+                    template.new_instance(scope)?
+                }
+            } else {
+                template.new_instance(scope)?
+            }
+        } else {
+            template.new_instance(scope)?
+        };
         if !proto.is_null() {
             // SAFETY: JSAPI callers pass live (rooted) prototypes.
             let proto = unsafe { crate::cell::cell_value(scope, proto as *mut c_void) };

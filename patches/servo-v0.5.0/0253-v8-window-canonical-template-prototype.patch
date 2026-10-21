@@ -1,0 +1,142 @@
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 95a090dca06..f5f122e630c 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -12,7 +12,7 @@
+ //! is gone). The box's trace calls the class trace hook, its destruction the finalize hook.
+ 
+ use std::cell::{Cell as StdCell, RefCell};
+-use std::ffi::c_void;
++use std::ffi::{CStr, c_void};
+ 
+ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor};
+ 
+@@ -255,7 +255,17 @@ impl ClassTemplates {
+         if let Some(template) = self.templates.borrow().get(&(class as usize)) {
+             return v8::Local::new(scope, template);
+         }
+-        let template = v8::ObjectTemplate::new(scope);
++        let template = if is_window_global_class(class) {
++            // Give V8 its own canonical Window prototype before freezing the global's
++            // prototype. Servo initializes that object later instead of replacing it.
++            let constructor = v8::FunctionTemplate::new(scope, window_constructor);
++            constructor.prototype_template(scope).set_internal_field_count(1);
++            let template = constructor.instance_template(scope);
++            template.set_immutable_proto();
++            template
++        } else {
++            v8::ObjectTemplate::new(scope)
++        };
+         template.set_internal_field_count(1);
+         // SAFETY: classes are static.
+         let ops = unsafe { (*class).cOps.as_ref() };
+@@ -282,6 +292,29 @@ impl ClassTemplates {
+     }
+ }
+ 
++fn is_window_global_class(class: *const JSClass) -> bool {
++    // SAFETY: all class pointers passed to the object adapter refer to static classes.
++    let class = unsafe { &*class };
++    class.flags & JSCLASS_IS_GLOBAL != 0 && !class.name.is_null() &&
++        unsafe { CStr::from_ptr(class.name) }.to_bytes() == b"Window"
++}
++
++fn window_constructor(scope: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
++    crate::native::throw_type_error(scope, "Illegal constructor");
++}
++
++/// V8 initializes API-object fields as JavaScript values, not tagged native pointers.
++/// Prepare the still-unbound prototype before any conversion tries to read its class box.
++pub(crate) fn initialize_window_prototype(scope: &mut v8::PinScope, global: v8::Local<v8::Object>, class: *const JSClass) -> Option<()> {
++    if is_window_global_class(class) {
++        let prototype = global.get_prototype(scope)?;
++        let prototype = v8::Local::<v8::Object>::try_from(prototype).ok()?;
++        // The Window template reserves this field and no class box is attached yet.
++        prototype.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), CLASS_BOX_TAG);
++    }
++    Some(())
++}
++
+ /// Servo's DOM globals enumerate their lazy interface data properties. V8 can own
+ /// their initialization without intercepting every access to standard intrinsics.
+ pub(crate) fn uses_native_global_properties(class: *const JSClass) -> bool {
+@@ -640,7 +673,26 @@ pub(crate) fn new_object(cx: &JSContext, class: *const JSClass, proto: *mut JSOb
+     }
+     cx.catching(|scope| {
+         let template = cx.class_templates.template(scope, class);
+-        let object = template.new_instance(scope)?;
++        let object = if !default_proto && !unsafe { (*class).name }.is_null() &&
++            unsafe { CStr::from_ptr((*class).name) }.to_bytes() == b"WindowPrototype" {
++            let realm = crate::realm_impl::realm_data(cx.current_realm.get())?;
++            let global = realm.global.get();
++            if class_box(global).is_some_and(|global| is_window_global_class(global.class)) {
++                let value = unsafe { crate::cell::cell_value(scope, global as *mut c_void) };
++                let global = v8::Local::<v8::Object>::try_from(value).ok()?;
++                let prototype = global.get_prototype(scope)?;
++                let prototype = v8::Local::<v8::Object>::try_from(prototype).ok()?;
++                if prototype.internal_field_count() == 1 && class_box_of_v8(prototype).is_none() {
++                    prototype
++                } else {
++                    template.new_instance(scope)?
++                }
++            } else {
++                template.new_instance(scope)?
++            }
++        } else {
++            template.new_instance(scope)?
++        };
+         if !proto.is_null() {
+             // SAFETY: JSAPI callers pass live (rooted) prototypes.
+             let proto = unsafe { crate::cell::cell_value(scope, proto as *mut c_void) };
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index e457eb04fe5..46d51fa1bd9 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -198,6 +198,7 @@ pub unsafe fn JS_NewGlobalObject(
+         // The class box goes on the global proxy (what scripts see as `globalThis`) before
+         // anything converts it.
+         let global = context.global(scope);
++        crate::object::initialize_window_prototype(scope, global, clasp)?;
+         let cell = crate::object::attach_class_box(scope, global, clasp);
+         // SAFETY: callers pass valid options (or null).
+         if let Some(options) = unsafe { options.as_ref() } {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 4fbc6678144..07461717177 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2213,6 +2213,35 @@ mod window_proxies {
+         oOps: ptr::null(),
+     };
+ 
++    #[test]
++    fn window_global_initializes_its_canonical_prototype_without_replacing_it() {
++        static PROTOTYPE: JSClass = JSClass { name: c"WindowPrototype".as_ptr(), flags: 0, ..WINDOW_CLASS };
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let window = unsafe {
++            JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        eval(&runtime, "globalThis.initialPrototype = Object.getPrototypeOf(globalThis)");
++        rooted!(in(cx) let parent = unsafe { JS_NewPlainObject(cx) });
++        rooted!(in(cx) let canonical = unsafe { JS_NewObjectWithGivenProto(cx, &PROTOTYPE, parent.handle().into()) });
++        assert!(!canonical.get().is_null());
++        assert!(unsafe { JS_SetPrototype(cx, window.handle().into(), canonical.handle().into()) });
++        assert_eq!(unsafe { GetStaticPrototype(canonical.get()) }, parent.get());
++        rooted!(in(cx) let second = unsafe { JS_NewObjectWithGivenProto(cx, &PROTOTYPE, parent.handle().into()) });
++        assert_ne!(second.get(), canonical.get(), "only the initial binding adopts the template prototype");
++        let mut immutable = false;
++        assert!(unsafe { JS_SetImmutablePrototype(cx, window.handle().into(), &mut immutable) });
++        assert!(immutable);
++        rooted!(in(cx) let value = ObjectValue(canonical.get()));
++        assert!(unsafe { JS_SetProperty(cx, window.handle().into(), c"canonicalPrototype".as_ptr(), value.handle().into()) });
++        assert!(eval(&runtime, "initialPrototype === canonicalPrototype && Object.getPrototypeOf(globalThis) === canonicalPrototype").to_boolean());
++        assert!(eval(&runtime, "Reflect.setPrototypeOf(globalThis, canonicalPrototype) && !Reflect.setPrototypeOf(globalThis, {})").to_boolean());
++        assert!(eval(&runtime, "(() => { try { Object.setPrototypeOf(globalThis, {}); return false; } catch (e) { return e instanceof TypeError; } })()").to_boolean());
++        assert_eq!(eval(&runtime, "globalThis.mutableProperty = 42; mutableProperty").to_int32(), 42);
++        unsafe { LeaveRealm(cx, old) };
++    }
++
+     #[test]
+     fn window_proxies_forward_outerize_and_transplant() {
+         let runtime = Runtime::new(JSEngineHandle::for_tests());

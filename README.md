@@ -47,9 +47,10 @@ without waiting for the full deadline, then undergo the same strict result valid
 hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
-The browser smoke checks ordinary JavaScript prototype mutation. Window and WindowProxy prototype
-behavior remain separate open integration checks; a V8 template-level restriction conflicted
-with Servo's generated Window binding initialization and was reverted. The smoke reports trusted
+The browser smoke checks ordinary JavaScript prototype mutation and the actual Window separately.
+Window now reuses V8's template-created canonical prototype during Servo binding initialization,
+so V8 can reject prototype replacement while leaving ordinary properties writable. This path
+awaits full browser CI confirmation; cross-origin WindowProxy remains open. The smoke reports trusted
 eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the

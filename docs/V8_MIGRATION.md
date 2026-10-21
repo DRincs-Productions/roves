@@ -33,8 +33,9 @@ browser da risolvere o qualificare:
    `Reflect.setPrototypeOf(window, {})` è riuscito, mentre le proprietà ordinarie funzionano.
    Applicare `ObjectTemplate::set_immutable_proto()` al template di `Window` fa abortire
    `JS_SetPrototype` durante l’inizializzazione WebIDL (`WindowBinding`), prima di avviare gli
-   script. La patch 0252 è ritirata. Il percorso deve permettere l’installazione iniziale del
-   prototipo e renderlo immutabile soltanto dopo.
+   script. La patch 0252 è ritirata. La nuova patch 0253 riusa un prototipo
+   creato dal FunctionTemplate V8, consentendo il setup canonico senza sostituirlo; verifica
+   browser CI pendente.
 2. **Prototipo cross-origin WindowProxy non confermato.** In 394803 non compare alcun evento
    iframe. La nuova fixture carica la pagina principale da loopback e l’iframe dallo stesso
    host su una porta diversa, così entrambe le pagine hanno origine HTTP e l’iframe è davvero
@@ -186,6 +187,30 @@ non determinata. La pagina `http://127.0.0.1:18765/test.html` con iframe su port
 append, appended, load, contentWindow true e prototipo `true true`, senza errori script
 (solo favicon 404). Il nuovo timeout non scatta dopo il load. È una verifica funzionale della
 fixture aggiornata e della diagnostica, non una misura prestazionale né un risultato Servo.
+
+### Prototipo canonico Window nei template V8 — 21 ottobre 2026
+
+Patch `0253-v8-window-canonical-template-prototype.patch`: usare FunctionTemplate con
+InstanceTemplate immutabile e PrototypeTemplate dedicato consente a V8 di collegare il
+prototipo prima dell’immutabilità. La prima allocazione WebIDL `WindowPrototype` inizializza
+quel prototipo e la sua catena parent, invece di crearne uno da sostituire. L’assegnazione
+canonica generata da Servo mantiene così la stessa identità ed è ammessa da V8.
+Il campo nativo del prototipo è inizializzato subito dopo Context::new, prima di esporlo alle
+conversioni JSAPI; le allocazioni successive restano oggetti nuovi.
+
+Valutazione librerie: riusate le API pubbliche FunctionTemplate/InstanceTemplate/PrototypeTemplate
+in rusty_v8 152.2.0, senza shim C++, nuova dipendenza o fork V8. Il modello di template
+istanza/prototipo immutabili è documentato anche dal
+[generatore Blink](https://chromium.googlesource.com/chromium/src/+/24884fb748326f3a4f736b6e5638d36fa9e6a010/third_party/blink/renderer/bindings/scripts/bind_gen/interface.py).
+Nessun trap per accesso proprietà e nessun lavoro GPU; un costruttore template interno resta
+associato al prototipo. Prestazioni browser non misurate.
+
+Regressione locale: inizializzazione canonica, prototipo accettato se identico e rifiutato
+se diverso tramite Object/Reflect, proprietà globali ancora modificabili. Runtime normal:
+43 passati / 2 ignorati; JIT-less: 42 / 3. Replay di 33 patch precedenti, dry-run WSL e
+confronto sorgenti passati. La smoke richiede di nuovo il comportamento del vero Window,
+con marker distinto dall’oggetto ordinario. **Non ancora confermato con i binding Servo in CI**;
+WindowProxy cross-origin, TrustedScript Function e lifecycle restano aperti.
 
 ### Audit callback e incumbent — 21 ottobre 2026
 
