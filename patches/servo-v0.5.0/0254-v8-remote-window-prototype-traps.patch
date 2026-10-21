@@ -1,0 +1,122 @@
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index f5f122e630c..71fb3110501 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -292,7 +292,7 @@ impl ClassTemplates {
+     }
+ }
+ 
+-fn is_window_global_class(class: *const JSClass) -> bool {
++pub(crate) fn is_window_global_class(class: *const JSClass) -> bool {
+     // SAFETY: all class pointers passed to the object adapter refer to static classes.
+     let class = unsafe { &*class };
+     class.flags & JSCLASS_IS_GLOBAL != 0 && !class.name.is_null() &&
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 7e790ae4336..b12049bcfc1 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -868,19 +868,22 @@ pub fn GetWindowProxyClass() -> *const JSClass {
+ 
+ /// A window proxy for `obj`.
+ ///
+-/// For a global (a V8 context's global, as a Window is), the window proxy is V8's own global
++/// For a local Window global, the window proxy is V8's own global
+ /// proxy, the object scripts see as `globalThis`: a second cell on it carries the proxy state
+ /// (handler, private = the window, reserved slots), and conversions of the global proxy yield
+ /// that cell once `SetWindowProxy` registers it, so `window === globalThis`. Script property
+-/// accesses use V8's global object semantics; the handler's traps are not run. For other
+-/// objects it is a wrapper proxy whose private is `obj`.
++/// accesses use V8's global object semantics; the handler's traps are not run. Remote
++/// DissimilarOriginWindow globals never execute script and must instead use a real V8
++/// Proxy so their cross-origin security traps run. Other objects use that wrapper too.
+ pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
+     let window = obj.get();
+     // SAFETY: callers pass a live context.
+     let raw = unsafe { &*cx };
+     let realm = crate::realm_impl::realm_of_object(raw, window);
+     let is_global = crate::realm_impl::realm_data(realm).is_some_and(|data| data.global.get() == window);
+-    if !is_global {
++    let is_local_window = is_global && crate::object::class_box(window)
++        .is_some_and(|class_box| crate::object::is_window_global_class(class_box.class));
++    if !is_local_window {
+         crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(window));
+         // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
+         return unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) };
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 07461717177..a2c29d7a0c4 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2242,6 +2242,40 @@ mod window_proxies {
+         unsafe { LeaveRealm(cx, old) };
+     }
+ 
++    #[test]
++    fn remote_window_globals_dispatch_their_prototype_security_traps() {
++        static REMOTE: JSClass = JSClass { name: c"DissimilarOriginWindow".as_ptr(), ..WINDOW_CLASS };
++        unsafe extern "C" fn get_prototype(_cx: *mut JSContext, _proxy: HandleObject, proto: MutableHandleObject) -> bool {
++            proto.set(ptr::null_mut());
++            true
++        }
++        unsafe extern "C" fn set_prototype(_cx: *mut JSContext, _proxy: HandleObject, proto: HandleObject, result: *mut ObjectOpResult) -> bool {
++            if proto.get().is_null() { unsafe { (*result).succeed() }; } else { unsafe { (*result).fail_cant_set_proto() }; }
++            true
++        }
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let remote = unsafe {
++            JS_NewGlobalObject(cx, &REMOTE, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, remote.get()) };
++        let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        traps.getPrototype = Some(get_prototype);
++        traps.setPrototype = Some(set_prototype);
++        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
++        rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, remote.handle().into(), handler) });
++        assert!(!proxy.get().is_null());
++        assert!(unsafe { IsWindowProxy(proxy.get()) });
++        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, remote.get());
++        unsafe { SetWindowProxy(cx, remote.handle().into(), proxy.handle().into()) };
++        unsafe { LeaveRealm(cx, old) };
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = ObjectValue(proxy.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"remoteWindow".as_ptr(), value.handle().into()) });
++        assert!(eval(&runtime, "Object.getPrototypeOf(remoteWindow) === null").to_boolean());
++        assert!(eval(&runtime, "Reflect.setPrototypeOf(remoteWindow, null) && !Reflect.setPrototypeOf(remoteWindow, {})").to_boolean());
++    }
++
+     #[test]
+     fn window_proxies_forward_outerize_and_transplant() {
+         let runtime = Runtime::new(JSEngineHandle::for_tests());
+diff --git a/components/script/dom/window/windowproxy.rs b/components/script/dom/window/windowproxy.rs
+index bb85e7bf829..fd04507d9ca 100644
+--- a/components/script/dom/window/windowproxy.rs
++++ b/components/script/dom/window/windowproxy.rs
+@@ -1438,6 +1438,19 @@ unsafe extern "C" fn preventExtensions_xorigin(
+     throw_security_error(&mut realm)
+ }
+ 
++// A DissimilarOriginWindow is always a remote cross-origin representative. Its
++// synthetic realm clones the creator's principals, so a same-origin comparison
++// against those principals cannot decide the remote WindowProxy's prototype.
++#[expect(unsafe_code)]
++unsafe extern "C" fn get_prototype_xorigin(
++    _cx: *mut RawJSContext,
++    _proxy: RawHandleObject,
++    proto: RawMutableHandleObject,
++) -> bool {
++    proto.set(ptr::null_mut());
++    true
++}
++
+ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
+     enter: None,
+     getOwnPropertyDescriptor: Some(getOwnPropertyDescriptor_xorigin),
+@@ -1446,7 +1459,7 @@ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
+     delete_: Some(delete_xorigin),
+     enumerate: None,
+     getPrototypeIfOrdinary: Some(maybe_cross_origin_get_prototype_if_ordinary_rawcx),
+-    getPrototype: Some(get_prototype),
++    getPrototype: Some(get_prototype_xorigin),
+     setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
+     setImmutablePrototype: None,
+     preventExtensions: Some(preventExtensions_xorigin),

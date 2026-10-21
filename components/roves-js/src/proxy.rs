@@ -868,19 +868,22 @@ pub fn GetWindowProxyClass() -> *const JSClass {
 
 /// A window proxy for `obj`.
 ///
-/// For a global (a V8 context's global, as a Window is), the window proxy is V8's own global
+/// For a local Window global, the window proxy is V8's own global
 /// proxy, the object scripts see as `globalThis`: a second cell on it carries the proxy state
 /// (handler, private = the window, reserved slots), and conversions of the global proxy yield
 /// that cell once `SetWindowProxy` registers it, so `window === globalThis`. Script property
-/// accesses use V8's global object semantics; the handler's traps are not run. For other
-/// objects it is a wrapper proxy whose private is `obj`.
+/// accesses use V8's global object semantics; the handler's traps are not run. Remote
+/// DissimilarOriginWindow globals never execute script and must instead use a real V8
+/// Proxy so their cross-origin security traps run. Other objects use that wrapper too.
 pub unsafe fn NewWindowProxy(cx: *mut JSContext, obj: HandleObject, handler: *const c_void) -> *mut JSObject {
     let window = obj.get();
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
     let realm = crate::realm_impl::realm_of_object(raw, window);
     let is_global = crate::realm_impl::realm_data(realm).is_some_and(|data| data.global.get() == window);
-    if !is_global {
+    let is_local_window = is_global && crate::object::class_box(window)
+        .is_some_and(|class_box| crate::object::is_window_global_class(class_box.class));
+    if !is_local_window {
         crate::rooted!(in(cx) let window = crate::jsval::ObjectValue(window));
         // SAFETY: forwarded; the prototype comes from the window (lazy, forwarded).
         return unsafe { NewProxyObject(cx, handler, window.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true) };

@@ -13,6 +13,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39587009751](https://github.com/DRincs-Productions/roves/actions/runs/39587009751) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i 6 runtime e tutte le 4 build servoshell verdi. Le 9 suite passano nelle due modalità. Iframe append/load/contentWindow presenti; prototipo cross-origin false/false. Trusted Function fallisce; eval 42, CSP Wasm e navigazione passano. |
 | [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | Fallita: 6 job verdi, 2 falliti e 2 cancellati | Quattro runtime Linux/Windows normal/JIT-less e tutte le quattro build servoshell verdi. Smoke Linux normal/JIT-less falliti su iframe cross-origin e Function(TrustedScript); smoke Windows/macOS saltati, runtime macOS cancellati. |
 | [V8 migration checks — 39480383126](https://github.com/DRincs-Productions/roves/actions/runs/39480383126) | Fallita: 6 job verdi, 2 smoke falliti, 2 runtime macOS cancellati | Runtime Linux e Windows normal/JIT-less verdi; build servoshell Windows/macOS normal e Linux normal/JIT-less verdi. Entrambi gli smoke Linux falliscono su Window, iframe cross-origin e Function con TrustedScript. Runtime macOS cancellati dopo i fallimenti Linux. |
 | [V8 migration checks — 39478697257](https://github.com/DRincs-Productions/roves/actions/runs/39478697257) | Esito non verificabile dai log accessibili | L’ultima lettura della pagina pubblica mostrava 3/6 runtime completati, 2 errori Ubuntu e 0/4 build servoshell conclusi. I dettagli degli errori sono protetti; il rate limit API impedisce di verificare se i job siano poi terminati. |
@@ -211,6 +212,26 @@ se diverso tramite Object/Reflect, proprietà globali ancora modificabili. Runti
 confronto sorgenti passati. La smoke richiede di nuovo il comportamento del vero Window,
 con marker distinto dall’oggetto ordinario. **Non ancora confermato con i binding Servo in CI**;
 WindowProxy cross-origin, TrustedScript Function e lifecycle restano aperti.
+
+### WindowProxy remoto — 21 ottobre 2026
+
+Diagnosi conclusiva della CI 39587009751: normal e JIT-less emettono append, appended,
+load e contentWindow true; il marker prototipo è `false false`. Tutti i runtime e le build
+passano. Il problema è l’accesso al prototipo remoto, non il caricamento dell’iframe.
+
+Patch `0254-v8-remote-window-prototype-traps.patch`: mantenere il global proxy nativo V8
+solo per il Window locale che esegue JS. DissimilarOriginWindow è un rappresentante remoto:
+usa ora il dispatcher V8 Proxy esistente, attivando i trap cross-origin Servo. Il suo getter
+prototipo restituisce null direttamente, perché il realm sintetico clona le principals del
+creatore e non può provare l’origine della finestra remota. Il setter immutabile già esistente
+accetta null e rifiuta un altro prototipo usando quel getter.
+
+Nessuna nuova libreria: riusati V8 Proxy e i security handler Servo. La regressione runtime
+crea un globale remoto e verifica tramite JS che i suoi trap vengano eseguiti. Normal 44
+passati / 2 ignorati, JIT-less 43 / 3. Replay di 35 patch precedenti da Servo v0.5.0 pristine
+per windowproxy.rs e file custom assenti, dry-run/applicazione e confronto passati.
+**Verifica browser CI pendente**: non chiudere la voce sui soli test del dispatcher.
+Restano aperti anche identità durante navigazioni/transplant e trap origin-aware locali.
 
 ### Audit callback e incumbent — 21 ottobre 2026
 

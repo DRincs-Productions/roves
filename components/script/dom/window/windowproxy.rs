@@ -1438,6 +1438,19 @@ unsafe extern "C" fn preventExtensions_xorigin(
     throw_security_error(&mut realm)
 }
 
+// A DissimilarOriginWindow is always a remote cross-origin representative. Its
+// synthetic realm clones the creator's principals, so a same-origin comparison
+// against those principals cannot decide the remote WindowProxy's prototype.
+#[expect(unsafe_code)]
+unsafe extern "C" fn get_prototype_xorigin(
+    _cx: *mut RawJSContext,
+    _proxy: RawHandleObject,
+    proto: RawMutableHandleObject,
+) -> bool {
+    proto.set(ptr::null_mut());
+    true
+}
+
 static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
     enter: None,
     getOwnPropertyDescriptor: Some(getOwnPropertyDescriptor_xorigin),
@@ -1446,7 +1459,7 @@ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
     delete_: Some(delete_xorigin),
     enumerate: None,
     getPrototypeIfOrdinary: Some(maybe_cross_origin_get_prototype_if_ordinary_rawcx),
-    getPrototype: Some(get_prototype),
+    getPrototype: Some(get_prototype_xorigin),
     setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
     setImmutablePrototype: None,
     preventExtensions: Some(preventExtensions_xorigin),

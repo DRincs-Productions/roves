@@ -2243,6 +2243,40 @@ mod window_proxies {
     }
 
     #[test]
+    fn remote_window_globals_dispatch_their_prototype_security_traps() {
+        static REMOTE: JSClass = JSClass { name: c"DissimilarOriginWindow".as_ptr(), ..WINDOW_CLASS };
+        unsafe extern "C" fn get_prototype(_cx: *mut JSContext, _proxy: HandleObject, proto: MutableHandleObject) -> bool {
+            proto.set(ptr::null_mut());
+            true
+        }
+        unsafe extern "C" fn set_prototype(_cx: *mut JSContext, _proxy: HandleObject, proto: HandleObject, result: *mut ObjectOpResult) -> bool {
+            if proto.get().is_null() { unsafe { (*result).succeed() }; } else { unsafe { (*result).fail_cant_set_proto() }; }
+            true
+        }
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let remote = unsafe {
+            JS_NewGlobalObject(cx, &REMOTE, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        });
+        let old = unsafe { EnterRealm(cx, remote.get()) };
+        let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        traps.getPrototype = Some(get_prototype);
+        traps.setPrototype = Some(set_prototype);
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, remote.handle().into(), handler) });
+        assert!(!proxy.get().is_null());
+        assert!(unsafe { IsWindowProxy(proxy.get()) });
+        assert_eq!(unsafe { ToWindowIfWindowProxy(proxy.get()) }, remote.get());
+        unsafe { SetWindowProxy(cx, remote.handle().into(), proxy.handle().into()) };
+        unsafe { LeaveRealm(cx, old) };
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"remoteWindow".as_ptr(), value.handle().into()) });
+        assert!(eval(&runtime, "Object.getPrototypeOf(remoteWindow) === null").to_boolean());
+        assert!(eval(&runtime, "Reflect.setPrototypeOf(remoteWindow, null) && !Reflect.setPrototypeOf(remoteWindow, {})").to_boolean());
+    }
+
+    #[test]
     fn window_proxies_forward_outerize_and_transplant() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

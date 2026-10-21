@@ -14653,3 +14653,28 @@ current prototype, rejects another through Reflect/Object, and checks mutable gl
 Replayed 33 preceding patches for the three custom files, performed a WSL patch dry-run, applied
 0253 and compared sources. Browser smoke now checks the actual Window separately from ordinary
 prototype mutation; generated Servo bindings and cross-origin WindowProxy still require CI.
+
+## 2026-10-21 - Dispatch remote WindowProxy prototype security traps
+
+**Files:** `components/roves-js/src/{object.rs,proxy.rs,tests.rs}` and
+`components/script/dom/window/windowproxy.rs`
+(`0254-v8-remote-window-prototype-traps.patch`), README, migration plan and wiki shell docs.
+
+CI 39587009751 completes all six runtime jobs and all four desktop builds. Both Linux browser
+smoke jobs still fail: iframe append/load and contentWindow succeed, but prototype results are
+false/false. NewWindowProxy incorrectly treated remote DissimilarOriginWindow globals like
+local executing Window globals, using V8's native global proxy and bypassing Servo's traps.
+Only local Window globals need that native identity; remote representatives now use the existing
+real V8 Proxy adapter. This also routes remote property operations through their existing
+cross-origin handlers instead of silently bypassing them.
+
+The remote prototype getter returns null directly: DissimilarOriginWindow's synthetic realm
+clones creator principals, which cannot establish the represented remote window's origin.
+The existing immutable-prototype setter compares against this getter, allowing null and
+rejecting replacement. Local windows retain their separate template-based path.
+Reuse rusty_v8 Proxy and Servo's current security handlers, without a dependency or duplicate
+trap dispatcher. The extra proxy overhead applies to remote window access, where the security
+checks are required; no measured performance result is claimed. Local runtime tests pass:
+normal 44 / 2 ignores, JIT-less 43 / 3 ignores. Replayed 35 prior patches against pristine
+Servo v0.5.0 windowproxy.rs and absent custom files, dry-run/apply and source comparison pass.
+The browser fixture and generated binding build remain subject to the next CI run.
