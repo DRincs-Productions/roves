@@ -1,19 +1,21 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 21 ottobre 2026, CI 39595584589 verde
+## Punto della situazione — 21 ottobre 2026, commit 8442f4998b9
 
-Aggiornamento sul commit `dfa367ed8ee`: la CI V8
-[39595584589](https://github.com/DRincs-Productions/roves/actions/runs/39595584589)
-è verde in tutti i 10 job. Sei runtime e quattro build passano; gli smoke Linux
-normal/JIT-less confermano prototipo Window e cross-origin, trusted Function 42 e guardie
-contro argomenti misti/contraffatti, nove suite, CSP Wasm e navigazione. Gli smoke browser
-Windows/macOS sono saltati. Anche la CI generale
-[39595584650](https://github.com/DRincs-Productions/roves/actions/runs/39595584650)
-è verde (13/13), incluso il replay delle patch.
-Restano aperti SOP delle proprietà WindowProxy, identità dopo navigazione, retention
-realm/script/module, WPT selezionate e verifiche su applicazioni e artefatti.
-Le sezioni seguenti conservano la diagnosi delle run precedenti: le indicazioni di verifica
-pendente per prototipo e trusted Function sono superate da questo risultato.
+La CI V8 [39636431164](https://github.com/DRincs-Productions/roves/actions/runs/39636431164)
+è conclusa: **8 job verdi, 2 macOS cancellati**. Runtime Linux/Windows normal e JIT-less,
+runtime macOS normal e tre build servoshell passano. Gli smoke Linux normal/JIT-less
+confermano proprietà WindowProxy e matrice Trusted Types true/true/true, anche con 0266.
+Gli smoke Windows sono saltati; runtime macOS JIT-less e build macOS non verificati.
+La CI generale [39636431492](https://github.com/DRincs-Productions/roves/actions/runs/39636431492)
+conferma replay patch, contratti SDL3 e probe Linux/Windows. Probe macOS cancellato,
+bundle e smoke Steam saltati: gli artefatti non sono verificati da questa run.
+
+Restano aperti identità dopo navigazione, completamento SOP/WPT, retention realm/moduli,
+stress GC browser, applicazioni reali e artefatti. Gli smoke ordinari non dimostrano
+raccolta durante navigazioni ripetute né risparmio RAM. L'ultima matrice interamente verde
+resta 39595584589 sul precedente commit dfa367ed8ee.
+Le diagnosi storiche seguenti vanno lette alla luce di questo aggiornamento.
 
 Rilevazione sul commit `273c1d9db2e` (`main`) e sulla CI avviata dal rollback
 `a26cb6ca39b`. Il PAT condiviso in chat ha restituito `401 Bad credentials`; non è stato
@@ -326,7 +328,7 @@ eliminata dall'hook nativo di risoluzione; lo shutdown conserva la pulizia espli
 Le compilazioni identiche hanno dati distinti; CompileFunction non alloca token inutilizzati.
 Regressioni con conteggi Rc, GC, cicli, realm diverso, intrinseci alterati e Promise mantenuti
 dopo settlement: normal 53 passati / 2 ignorati, JIT-less 52 / 3. Replay 48 patch precedenti,
-dry-run e confronto dieci sorgenti riusciti. **Verifica browser della 0266 pendente**.
+dry-run e confronto dieci sorgenti riusciti. **Smoke Linux normal/JIT-less verdi nella CI 39636431164**; stress GC browser ancora aperto.
 Costo da misurare: token/host-options per compilazione, holder su prima assegnazione,
 possibile effetto sulla compilation cache e lookup privato alla risoluzione Promise.
 Non chiudere retention di realm/moduli né dichiarare un miglioramento RAM/CPU browser.
@@ -334,7 +336,7 @@ Non chiudere retention di realm/moduli né dichiarare un miglioramento RAM/CPU b
 Patch 0265 sostituisce nei callback nativi la ricostruzione Rc/clone/forget con
 increment_strong_count/decrement_strong_count della libreria standard, rimuovendo l'import
 mem. Stessa operazione di ownership con meno codice; nessuna dipendenza. La regressione
-adapter 0264 usa già queste API ed è verde; compilazione dei callback Servo online pendente.
+adapter 0264 usa già queste API ed è verde; compilazione Servo confermata su Linux normal/JIT-less e Windows nella CI 39636431164.
 Replay due patch precedenti sul file pristine, dry-run e confronto sorgenti riusciti.
 
 Patch 0264 bilancia gli hook privati di script/moduli e li rilascia prima del teardown del

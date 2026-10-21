@@ -87,7 +87,8 @@ Script/module private references now share the existing ownership hooks and are 
 before runtime teardown; collection of unused metadata during navigation remains under audit.
 The native reference callbacks use Rust's standard Rc count APIs directly.
 Classic-script metadata now follows V8 source/function reachability; pending imports retain
-it until resolution. This lifecycle change awaits browser CI; realm/module retention remains open.
+it until resolution. Linux normal/JIT-less browser smoke passes on commit 8442f4998b9; realm/module retention
+and browser GC stress remain open.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

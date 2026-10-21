@@ -1,5 +1,14 @@
 # Roves — Prestazioni
 
+## Aggiornamento migrazione, 21 ottobre 2026
+
+Il commit 8442f4998b9 introduce ownership dei metadati classici con token V8 e WeakMap/cppgc.
+CI V8 39636431164: smoke Linux normal/JIT-less verdi, 8 job verdi e 2 macOS cancellati.
+Sono verifiche funzionali: nessuna nuova misura CPU/RAM/GPU/startup. Il costo di token,
+holder e host options sulla compilation cache va misurato; retention realm/moduli aperta.
+I numeri sotto appartengono alla release v0.7.13, non a queste modifiche.
+Dettagli in [V8_MIGRATION.md](V8_MIGRATION.md).
+
 ## Stato verificato, 18 ottobre 2026
 
 Engine **v0.7.13**, sorgente `a3963eae5c6`: desktop CI `39122648517` 13/13,

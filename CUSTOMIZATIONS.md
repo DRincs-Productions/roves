@@ -14943,7 +14943,9 @@ dead source release before shutdown, identical compilations, poisoned WeakMap in
 JS/private/function cycles, execution in another realm, pending imports and retained settled
 Promises, and release callbacks during GC. Existing ownership/shutdown tests still pass.
 Replayed 48 preceding custom patches, WSL patch dry-run/apply and all ten source comparisons
-pass. Browser CI confirmation of this change remains pending.
+pass. CI 39636431164 on 8442f4998b9 subsequently confirms Linux normal/JIT-less browser
+smoke and Linux/Windows builds, plus five runtime jobs including macOS normal: 8 successful
+jobs, 2 macOS cancelled. Browser GC stress and navigation collection remain open.
 
 Tradeoffs: a token/host-options array per classic compilation, weak index entries and a
 wrapper/cppgc holder only when non-undefined private data is assigned. Unique host options
