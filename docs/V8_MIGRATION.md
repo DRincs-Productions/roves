@@ -1,5 +1,35 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Checkpoint di spegnimento — 21 ottobre 2026, sera
+
+Su richiesta dell'utente il lavoro viene fermato e i commit locali vengono pubblicati
+senza attendere la CI precedente. Questa è un'eccezione esplicita al normale blocco dei push
+durante le run, per poter spegnere il PC; non indica una migrazione completata.
+
+Implementazioni complete da riprendere dai risultati CI:
+- 0267: grafo dei quattro costruttori dinamici corretto; runtime normal 55 passati / 2
+  ignorati, JIT-less 54 / 3; contratti runner 7/7 e replay verificati.
+- 0268: processo browser separato con --pref js_disable_jit=true, marker obbligatorio e
+  contratti runner 8/8; replay verificato. Prova browser reale ancora pendente.
+- AGENTS.md: delega implementativa a Claude e regole di lavoro/pubblicazione durante la CI.
+
+Ultima lettura della CI precedente (codice 8442f4998b9, prima di 0267/0268):
+- V8 39636431164: nove job verdi; build macOS ancora in coda nel retry.
+- Generale 39636431492: undici job verdi, due bundle macOS cancellati.
+- iOS 39670211302 (commit d268a91932c): build e preparazione release verdi,
+  firma smoke cancellata; Android verde.
+Le cancellazioni macOS consultate riportano mancata assegnazione del runner e capacità
+ARM64 limitata. Non confonderle con failure di compilazione; le verifiche mancanti restano aperte.
+Il push di questo checkpoint avvia nuove run e può sostituire quella V8 ancora in coda:
+domani controllare prima i risultati del nuovo HEAD e correggere eventuali errori.
+
+L'incarico successivo sul GC browser è stato interrotto durante l'analisi: nessun sorgente,
+fixture o patch 0269 è stato modificato. Candidato studiato: riusare TestUtils.gc già presente
+in Servo, mantenendo dom_testutils_enabled false di default e valutando la compilazione del
+solo namespace fuori dal feature gate testbinding. Restano da implementare e verificare
+il collegamento, la fixture e i contratti. HideScriptedCaller resta al blocco descritto
+nell'audit; retention realm/moduli e identità dopo navigazione restano aperte.
+
 ## Punto della situazione — 21 ottobre 2026, commit 8442f4998b9
 
 La CI V8 [39636431164](https://github.com/DRincs-Productions/roves/actions/runs/39636431164)
