@@ -73,7 +73,7 @@ compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke
 checks same-origin and cross-origin access, confirmed in Linux normal/JIT-less browser CI.
 Property traps now reuse Servo's origin checks and WebIDL cross-origin annotations; a V8
-WeakMap caches accessors without rooting dead receivers. These new property checks await browser CI.
+WeakMap caches accessors without rooting dead receivers. Linux normal/JIT-less browser CI confirms these property checks.
 The CSP smoke also covers all four dynamic constructors with trusted/plain argument combinations.
 Runtime regressions check that constructor authorization cannot escape into a newTarget getter.
 The patch set includes its cross-origin HTTP and Wasm CSP fixture pages for pristine-source reconstruction.
@@ -86,6 +86,8 @@ WindowProxy GC hooks also tolerate an uninitialized native-owner slot during con
 Script/module private references now share the existing ownership hooks and are released
 before runtime teardown; collection of unused metadata during navigation remains under audit.
 The native reference callbacks use Rust's standard Rc count APIs directly.
+Classic-script metadata now follows V8 source/function reachability; pending imports retain
+it until resolution. This lifecycle change awaits browser CI; realm/module retention remains open.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

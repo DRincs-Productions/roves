@@ -7,12 +7,11 @@
 //!
 //! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
 //! - Script privates are kept by script id, so the private of the script a running function
-//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. They live as
-//!   long as the runtime (SpiderMonkey frees them with the script).
+//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. A host token
+//!   and native WeakMap tie their metadata to the source and its live functions.
 //! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
 //!   current stack trace when captured.
 
-use std::collections::HashMap;
 use std::ffi::{CStr, CString, c_char, c_void};
 
 use crate::glue::StringCallback;
@@ -33,7 +32,7 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
 /// error report handed out (with the strings it points at).
 #[derive(Default)]
 pub(crate) struct Scripts {
-    privates: std::cell::RefCell<HashMap<i32, JSVal>>,
+    metadata: crate::script_metadata::ScriptMetadata,
     reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
 }
@@ -56,25 +55,21 @@ pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
 
 /// Balance embedder-owned private references before the live runtime is dismantled.
 pub(crate) fn release_runtime_privates(cx: &JSContext) {
-    let privates = std::mem::take(&mut *cx.scripts.privates.borrow_mut());
-    for value in privates.into_values() {
-        release_private(cx, value);
-    }
+    cx.scripts.metadata.release_all();
     crate::modules_impl::release_privates(cx);
 }
 
-/// Keeps the script privates alive.
-pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
-    use crate::gc::RootKind;
-    let Ok(privates) = cx.scripts.privates.try_borrow() else { return };
-    for private in privates.values() {
-        private.trace_root(visitor);
-    }
+pub(crate) fn private_release_hook(cx: &JSContext) -> ScriptPrivateReferenceHook {
+    cx.scripts.reference_hooks.get().1
+}
+
+pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> Option<()> {
+    cx.scripts.metadata.initialize(scope)
 }
 
 /// The private of the script with V8 id `script_id`.
 pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
-    cx.scripts.privates.borrow().get(&script_id).copied()
+    cx.scripts.metadata.private(script_id)
 }
 
 // --- Compile options and sources -----------------------------------------------------------
@@ -104,6 +99,13 @@ pub(crate) fn options_filename(options: &ReadOnlyCompileOptions) -> String {
 }
 
 pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
+    script_origin_with_data(scope, options, is_module, None)
+}
+
+fn script_origin_with_data<'s>(
+    scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool,
+    host_data: Option<v8::Local<'s, v8::Data>>,
+) -> v8::ScriptOrigin<'s> {
     let name = v8::String::new(scope, &options_filename(options)).unwrap_or_else(|| v8::String::empty(scope));
     v8::ScriptOrigin::new(
         scope,
@@ -116,8 +118,17 @@ pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &Read
         options._base.mutedErrors_,
         false,
         is_module,
-        None,
+        host_data,
     )
+}
+
+fn classic_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions)
+    -> (v8::ScriptOrigin<'s>, v8::Local<'s, v8::Symbol>)
+{
+    let token = v8::Symbol::new(scope, None);
+    let data = v8::PrimitiveArray::new(scope, 1);
+    data.set(scope, 0, token.into());
+    (script_origin_with_data(scope, options, false, Some(data.into())), token)
 }
 
 fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
@@ -144,14 +155,16 @@ pub(crate) fn compile_script<'s>(
     options: &ReadOnlyCompileOptions,
     code: v8::Local<'s, v8::String>,
 ) -> Option<v8::Local<'s, v8::UnboundScript>> {
-    let origin = script_origin(scope, options, false);
+    let (origin, token) = classic_origin(scope, options);
     let mut source = v8::script_compiler::Source::new(code, Some(&origin));
-    v8::script_compiler::compile_unbound_script(
+    let script = v8::script_compiler::compile_unbound_script(
         scope,
         &mut source,
         v8::script_compiler::CompileOptions::NoCompileOptions,
         v8::script_compiler::NoCacheReason::NoReason,
-    )
+    )?;
+    JSContext::current().scripts.metadata.register(scope, script.script_id(), token);
+    Some(script)
 }
 
 pub unsafe fn Compile1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSScript {
@@ -300,17 +313,13 @@ pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {
     let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
     // SAFETY: callers pass a valid value.
     let value = unsafe { *value };
-    retain_private(cx, value);
-    let old = cx.scripts.privates.borrow_mut().insert(id, value);
-    if let Some(old) = old {
-        release_private(cx, old);
-    }
+    cx.catching(|scope| cx.scripts.metadata.set(cx, scope, id, value));
 }
 
 pub unsafe fn JS_GetScriptPrivate(script: *mut JSScript, mut dest: MutableHandleValue) {
     let cx = JSContext::current();
     let id = cx.with_scope(|scope| script_id(scope, script));
-    let private = id.and_then(|id| cx.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
+    let private = id.and_then(|id| script_private(cx, id)).unwrap_or(UndefinedValue());
     dest.set(private);
 }
 
@@ -333,7 +342,7 @@ fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
 pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {
     let raw = raw(cx);
     let id = raw.with_scope(|scope| caller_frame(scope).map(|frame| frame.0));
-    let private = id.and_then(|id| raw.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
+    let private = id.and_then(|id| script_private(raw, id)).unwrap_or(UndefinedValue());
     dest.set(private);
 }
 

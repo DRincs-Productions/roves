@@ -344,6 +344,13 @@ thread_local! {
 /// V8's promise hook: a promise created or resolved may have queued promise jobs.
 unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
     if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
+        // V8's private property API executes no user code. A pending import's
+        // metadata must not remain rooted by an already-resolved promise.
+        if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
+            v8::callback_scope!(unsafe scope, promise);
+            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+            promise.delete_private(scope, key);
+        }
         if DRAIN_PENDING.with(Cell::get) {
             return;
         }

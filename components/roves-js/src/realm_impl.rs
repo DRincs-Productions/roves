@@ -57,6 +57,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     cx.realms.borrow_mut().push(data);
     let scope = &mut v8::ContextScope::new(scope, context);
     assert!(crate::proxy::initialize_window_wrappers(scope).is_some(), "initialize Window wrapper cache");
+    assert!(crate::script_impl::initialize_metadata(cx, scope).is_some(), "initialize script metadata cache");
     assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
     pointer as *mut Realm
 }

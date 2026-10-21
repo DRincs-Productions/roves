@@ -26,6 +26,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39630711476](https://github.com/DRincs-Productions/roves/actions/runs/39630711476) | 7 verdi, 3 macOS cancellati | Commit d5e8e5584c0: tutti i runtime Linux/Windows e tre build verdi. Smoke Linux normal/JIT-less confermano proprietà WindowProxy e matrice Trusted Types true/true/true. MacOS non verificato. |
 | [V8 migration checks — 39625090343](https://github.com/DRincs-Productions/roves/actions/runs/39625090343) | 7 verdi, 3 macOS cancellati | Commit 438d3a30b54: runtime Linux/Windows, entrambe le build e smoke Linux, build Windows verdi. Nessuna compilazione/verifica macOS di questa run. GitHub segnala incidente Actions/webhook; non attribuire le cancellazioni al codice senza evidenze. |
 | [V8 migration checks — 39595584589](https://github.com/DRincs-Productions/roves/actions/runs/39595584589) | Verde, 10/10 | Sei runtime e quattro build verdi. Smoke Linux normal/JIT-less: prototipi, trusted Function 42/guardie, nove suite, CSP Wasm e navigazione passano. Smoke browser Windows/macOS saltati. |
 | [Build Servo Test Binaries — 39595584650](https://github.com/DRincs-Productions/roves/actions/runs/39595584650) | Verde, 13/13 | Replay patch, SDL3, bundle portable/installer e smoke Steam verdi. |
@@ -317,6 +318,19 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
 
+Patch 0266 lega i metadati privati classici al sorgente V8, usando token host Symbol,
+WeakMap/cppgc e un indice debole per script id. Rimosso lo scan che li radicava sempre nel
+runtime. Funzioni vive mantengono i dati; sorgenti morti e cicli JS/private/funzione li
+rilasciano. Gli import pendenti tengono il token in una proprietà privata del Promise,
+eliminata dall'hook nativo di risoluzione; lo shutdown conserva la pulizia esplicita residua.
+Le compilazioni identiche hanno dati distinti; CompileFunction non alloca token inutilizzati.
+Regressioni con conteggi Rc, GC, cicli, realm diverso, intrinseci alterati e Promise mantenuti
+dopo settlement: normal 53 passati / 2 ignorati, JIT-less 52 / 3. Replay 48 patch precedenti,
+dry-run e confronto dieci sorgenti riusciti. **Verifica browser della 0266 pendente**.
+Costo da misurare: token/host-options per compilazione, holder su prima assegnazione,
+possibile effetto sulla compilation cache e lookup privato alla risoluzione Promise.
+Non chiudere retention di realm/moduli né dichiarare un miglioramento RAM/CPU browser.
+
 Patch 0265 sostituisce nei callback nativi la ricostruzione Rc/clone/forget con
 increment_strong_count/decrement_strong_count della libreria standard, rimuovendo l'import
 mem. Stessa operazione di ownership con meno codice; nessuna dipendenza. La regressione
@@ -576,7 +590,9 @@ risulta superata nella CI corrente.
   CI `39595584589` conferma eval, Function trusted/guardie e Wasm CSP Linux normal/JIT-less.
   Restano matrice estesa sui quattro costruttori, identità/stringificazione degli intrinseci
   e import dinamico; preservare le decisioni di sicurezza del runtime web.
-- [ ] Esaminare proprietà e radici di realm, script, moduli e callback. Rilasciare gli oggetti
+- [ ] Esaminare proprietà e radici di realm, script, moduli e callback. La 0266 implementa
+  ownership dei metadati classici tramite token/WeakMap/cppgc, con regressioni locali verdi;
+  restano verifica browser e misure, realm/moduli e callback. Rilasciare gli oggetti
   non più raggiungibili dopo navigazione o chiusura, preservando quelli richiesti da
   riferimenti JS e bfcache.
 - [x] Ricontrollare i costruttori callable: il collegamento alla raggiungibilità JS è già stato

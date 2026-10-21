@@ -1,0 +1,692 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index d325585af72..63c7514c069 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -921,13 +921,14 @@ pub(crate) enum PrivateKey {
+     NativeReserved0,
+     NativeReserved1,
+     CallableClassBox,
++    DynamicImportSourceToken,
+ }
+ 
+-const PRIVATE_KEY_NAMES: [&str; 4] =
+-    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box"];
++const PRIVATE_KEY_NAMES: [&str; 5] =
++    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box", "roves-js dynamic import source token"];
+ 
+ #[derive(Default)]
+-pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 4]);
++pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 5]);
+ 
+ /// The private key `key` of this thread's runtime.
+ pub(crate) fn private_key<'s>(scope: &mut v8::PinScope<'s, '_>, key: PrivateKey) -> v8::Local<'s, v8::Private> {
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index fd4c792c09a..811293a52e4 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -30,6 +30,7 @@ mod dynamic_code;
+ mod proxy;
+ mod runtime_impl;
+ mod script_impl;
++mod script_metadata;
+ mod values_impl;
+ mod modules_impl;
+ mod structured_clone_impl;
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 27205b787db..9cbd5f70acb 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -409,7 +409,7 @@ fn caller_private(scope: &mut v8::PinScope) -> JSVal {
+ /// which settles the promise later through `FinishDynamicModuleImport`.
+ fn dynamic_import<'s>(
+     scope: &mut v8::PinScope<'s, '_>,
+-    _host_defined_options: v8::Local<'s, v8::Data>,
++    host_defined_options: v8::Local<'s, v8::Data>,
+     _resource_name: v8::Local<'s, v8::Value>,
+     specifier: v8::Local<'s, v8::String>,
+     attributes: v8::Local<'s, v8::FixedArray>,
+@@ -418,6 +418,19 @@ fn dynamic_import<'s>(
+     let raw_cx = cx as *const JSContext as *mut JSContext;
+     let resolver = v8::PromiseResolver::new(scope)?;
+     let promise = resolver.get_promise(scope);
++    // Keep classic source metadata available to the asynchronous host until the
++    // promise is resolved/rejected or abandoned. The token is not exposed to JS.
++    if host_defined_options.is_fixed_array() {
++        // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
++        let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(host_defined_options) };
++        if options.length() == 1 {
++            let token = options.get(scope, 0);
++            if token.is_symbol() {
++                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
++                promise.set_private(scope, key, token.into())?;
++            }
++        }
++    }
+     let Some(hook) = cx.modules.dynamic_import_hook.get() else {
+         let message = v8::String::new(scope, "dynamic import is not supported here")?;
+         let error = v8::Exception::type_error(scope, message);
+@@ -458,6 +471,8 @@ pub unsafe fn FinishDynamicModuleImport(
+         return raw
+             .catching(|scope| {
+                 let promise = promise_of(scope, promise_obj)?;
++                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
++                let _source_token = promise.get_private(scope, key)?;
+                 // SAFETY: a V8 promise is its own resolver.
+                 let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
+                 let reason: v8::Local<v8::Value> = match &exception {
+@@ -481,6 +496,8 @@ pub unsafe fn FinishDynamicModuleImport(
+         let namespace = module.get_module_namespace();
+         let evaluation = promise_of(scope, evaluation)?;
+         let promise = promise_of(scope, promise_obj)?;
++        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
++        let _source_token = promise.get_private(scope, key)?;
+         // SAFETY: as above.
+         let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
+         let source = "(function (evaluation, namespace) { return evaluation.then(() => namespace); })";
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 85bde38b601..4772af366ee 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -121,10 +121,10 @@ unsafe impl GarbageCollected for ClassBox {
+ type Slots = smallvec::SmallVec<[JSVal; 4]>;
+ 
+ /// Marks the extent of GC work run by roves-js (traces and finalizers).
+-struct GcScope;
++pub(crate) struct GcScope;
+ 
+ impl GcScope {
+-    fn enter() -> GcScope {
++    pub(crate) fn enter() -> GcScope {
+         IN_GC.with(|depth| depth.set(depth.get() + 1));
+         GcScope
+     }
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index cd219318280..3792ccca0bd 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -57,6 +57,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+     cx.realms.borrow_mut().push(data);
+     let scope = &mut v8::ContextScope::new(scope, context);
+     assert!(crate::proxy::initialize_window_wrappers(scope).is_some(), "initialize Window wrapper cache");
++    assert!(crate::script_impl::initialize_metadata(cx, scope).is_some(), "initialize script metadata cache");
+     assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
+     pointer as *mut Realm
+ }
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index b6b51d7aa3c..825612558f6 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -344,6 +344,13 @@ thread_local! {
+ /// V8's promise hook: a promise created or resolved may have queued promise jobs.
+ unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
+     if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
++        // V8's private property API executes no user code. A pending import's
++        // metadata must not remain rooted by an already-resolved promise.
++        if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
++            v8::callback_scope!(unsafe scope, promise);
++            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
++            promise.delete_private(scope, key);
++        }
+         if DRAIN_PENDING.with(Cell::get) {
+             return;
+         }
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 51498d51955..94034903445 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -209,8 +209,6 @@ unsafe impl GarbageCollected for RootSet {
+             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
+             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+-            crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
+-            // SAFETY: as above.
+             crate::modules_impl::trace_modules(unsafe { cx.as_ref() }, visitor);
+         }
+         // RootedVec / RootedTraceableBox contents.
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index e7063db8cef..84d05d76e9e 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -7,12 +7,11 @@
+ //!
+ //! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
+ //! - Script privates are kept by script id, so the private of the script a running function
+-//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. They live as
+-//!   long as the runtime (SpiderMonkey frees them with the script).
++//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. A host token
++//!   and native WeakMap tie their metadata to the source and its live functions.
+ //! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
+ //!   current stack trace when captured.
+ 
+-use std::collections::HashMap;
+ use std::ffi::{CStr, CString, c_char, c_void};
+ 
+ use crate::glue::StringCallback;
+@@ -33,7 +32,7 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
+ /// error report handed out (with the strings it points at).
+ #[derive(Default)]
+ pub(crate) struct Scripts {
+-    privates: std::cell::RefCell<HashMap<i32, JSVal>>,
++    metadata: crate::script_metadata::ScriptMetadata,
+     reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
+     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
+ }
+@@ -56,25 +55,21 @@ pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
+ 
+ /// Balance embedder-owned private references before the live runtime is dismantled.
+ pub(crate) fn release_runtime_privates(cx: &JSContext) {
+-    let privates = std::mem::take(&mut *cx.scripts.privates.borrow_mut());
+-    for value in privates.into_values() {
+-        release_private(cx, value);
+-    }
++    cx.scripts.metadata.release_all();
+     crate::modules_impl::release_privates(cx);
+ }
+ 
+-/// Keeps the script privates alive.
+-pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+-    use crate::gc::RootKind;
+-    let Ok(privates) = cx.scripts.privates.try_borrow() else { return };
+-    for private in privates.values() {
+-        private.trace_root(visitor);
+-    }
++pub(crate) fn private_release_hook(cx: &JSContext) -> ScriptPrivateReferenceHook {
++    cx.scripts.reference_hooks.get().1
++}
++
++pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> Option<()> {
++    cx.scripts.metadata.initialize(scope)
+ }
+ 
+ /// The private of the script with V8 id `script_id`.
+ pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
+-    cx.scripts.privates.borrow().get(&script_id).copied()
++    cx.scripts.metadata.private(script_id)
+ }
+ 
+ // --- Compile options and sources -----------------------------------------------------------
+@@ -104,6 +99,13 @@ pub(crate) fn options_filename(options: &ReadOnlyCompileOptions) -> String {
+ }
+ 
+ pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
++    script_origin_with_data(scope, options, is_module, None)
++}
++
++fn script_origin_with_data<'s>(
++    scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool,
++    host_data: Option<v8::Local<'s, v8::Data>>,
++) -> v8::ScriptOrigin<'s> {
+     let name = v8::String::new(scope, &options_filename(options)).unwrap_or_else(|| v8::String::empty(scope));
+     v8::ScriptOrigin::new(
+         scope,
+@@ -116,10 +118,19 @@ pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &Read
+         options._base.mutedErrors_,
+         false,
+         is_module,
+-        None,
++        host_data,
+     )
+ }
+ 
++fn classic_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions)
++    -> (v8::ScriptOrigin<'s>, v8::Local<'s, v8::Symbol>)
++{
++    let token = v8::Symbol::new(scope, None);
++    let data = v8::PrimitiveArray::new(scope, 1);
++    data.set(scope, 0, token.into());
++    (script_origin_with_data(scope, options, false, Some(data.into())), token)
++}
++
+ fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
+     // SAFETY: callers pass a valid source text whose units outlive the call.
+     let source = unsafe { &*source };
+@@ -144,14 +155,16 @@ pub(crate) fn compile_script<'s>(
+     options: &ReadOnlyCompileOptions,
+     code: v8::Local<'s, v8::String>,
+ ) -> Option<v8::Local<'s, v8::UnboundScript>> {
+-    let origin = script_origin(scope, options, false);
++    let (origin, token) = classic_origin(scope, options);
+     let mut source = v8::script_compiler::Source::new(code, Some(&origin));
+-    v8::script_compiler::compile_unbound_script(
++    let script = v8::script_compiler::compile_unbound_script(
+         scope,
+         &mut source,
+         v8::script_compiler::CompileOptions::NoCompileOptions,
+         v8::script_compiler::NoCacheReason::NoReason,
+-    )
++    )?;
++    JSContext::current().scripts.metadata.register(scope, script.script_id(), token);
++    Some(script)
+ }
+ 
+ pub unsafe fn Compile1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSScript {
+@@ -300,17 +313,13 @@ pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {
+     let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
+     // SAFETY: callers pass a valid value.
+     let value = unsafe { *value };
+-    retain_private(cx, value);
+-    let old = cx.scripts.privates.borrow_mut().insert(id, value);
+-    if let Some(old) = old {
+-        release_private(cx, old);
+-    }
++    cx.catching(|scope| cx.scripts.metadata.set(cx, scope, id, value));
+ }
+ 
+ pub unsafe fn JS_GetScriptPrivate(script: *mut JSScript, mut dest: MutableHandleValue) {
+     let cx = JSContext::current();
+     let id = cx.with_scope(|scope| script_id(scope, script));
+-    let private = id.and_then(|id| cx.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
++    let private = id.and_then(|id| script_private(cx, id)).unwrap_or(UndefinedValue());
+     dest.set(private);
+ }
+ 
+@@ -333,7 +342,7 @@ fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
+ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {
+     let raw = raw(cx);
+     let id = raw.with_scope(|scope| caller_frame(scope).map(|frame| frame.0));
+-    let private = id.and_then(|id| raw.scripts.privates.borrow().get(&id).copied()).unwrap_or(UndefinedValue());
++    let private = id.and_then(|id| script_private(raw, id)).unwrap_or(UndefinedValue());
+     dest.set(private);
+ }
+ 
+diff --git a/components/roves-js/src/script_metadata.rs b/components/roves-js/src/script_metadata.rs
+new file mode 100644
+index 00000000000..11c5c8d2eca
+--- /dev/null
++++ b/components/roves-js/src/script_metadata.rs
+@@ -0,0 +1,172 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Script-owned metadata: V8 retains a host token with the compiled source;
++//! a native WeakMap owns the cppgc metadata only while that token is reachable.
++
++use std::cell::{Cell, RefCell};
++use std::collections::HashMap;
++
++use v8::cppgc::{GarbageCollected, Visitor, WeakPersistent};
++
++use crate::gc::RootKind;
++use crate::jsapi::{JSContext, ScriptPrivateReferenceHook};
++use crate::jsval::{JSVal, UndefinedValue};
++
++const PRIVATE_WRAP_TAG: u16 = 2;
++const SWEEP_MIN: usize = 256;
++
++struct PrivateData {
++    value: Cell<JSVal>,
++    release: Cell<ScriptPrivateReferenceHook>,
++}
++
++impl PrivateData {
++    fn replace(&self, value: JSVal, release: ScriptPrivateReferenceHook) {
++        let old = self.value.replace(value);
++        let old_release = self.release.replace(release);
++        if !old.is_undefined() {
++            if let Some(release) = old_release {
++                // Reference hooks follow SpiderMonkey's non-GC retain/release contract.
++                unsafe { release(&old) };
++            }
++        }
++    }
++
++    fn clear(&self) {
++        self.replace(UndefinedValue(), None);
++    }
++}
++
++unsafe impl GarbageCollected for PrivateData {
++    fn trace(&self, visitor: &mut Visitor) {
++        self.value.get().trace_root(visitor);
++    }
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"RovesScriptPrivate"
++    }
++}
++
++impl Drop for PrivateData {
++    fn drop(&mut self) {
++        let _gc = crate::object::GcScope::enter();
++        self.clear();
++    }
++}
++
++struct ScriptEntry {
++    token: v8::Weak<v8::Symbol>,
++    data: Option<WeakPersistent<PrivateData>>,
++}
++
++#[derive(Default)]
++pub(crate) struct ScriptMetadata {
++    entries: RefCell<HashMap<i32, ScriptEntry>>,
++    // Captured in the initial runtime realm, before user code can replace intrinsics.
++    cache: RefCell<Option<v8::Global<v8::Array>>>,
++    template: RefCell<Option<v8::Global<v8::ObjectTemplate>>>,
++    insertions: Cell<usize>,
++    next_sweep: Cell<usize>,
++}
++
++impl ScriptMetadata {
++    pub(crate) fn initialize(&self, scope: &mut v8::PinScope) -> Option<()> {
++        if self.cache.borrow().is_some() {
++            return Some(());
++        }
++        let source = v8::String::new(scope, "[new WeakMap(), WeakMap.prototype.set]")?;
++        let cache = v8::Script::compile(scope, source, None)?.run(scope)?;
++        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
++        *self.cache.borrow_mut() = Some(v8::Global::new(scope, cache));
++        let template = v8::ObjectTemplate::new(scope);
++        // A field makes ObjectTemplate instances API wrappers for cppgc.
++        template.set_internal_field_count(1);
++        *self.template.borrow_mut() = Some(v8::Global::new(scope, template));
++        Some(())
++    }
++
++    pub(crate) fn register(&self, scope: &mut v8::PinScope, id: i32, token: v8::Local<v8::Symbol>) {
++        let token = v8::Weak::new(scope, token);
++        let mut entries = self.entries.borrow_mut();
++        entries.insert(id, ScriptEntry { token, data: None });
++        let insertions = self.insertions.get() + 1;
++        self.insertions.set(insertions);
++        if insertions >= self.next_sweep.get().max(SWEEP_MIN) {
++            // Keep a pending cppgc finalization discoverable for explicit shutdown cleanup.
++            entries.retain(|_, entry| {
++                !entry.token.is_empty()
++                    || entry.data.as_ref().is_some_and(|data| data.get().is_some())
++            });
++            self.insertions.set(0);
++            self.next_sweep.set(entries.len());
++        }
++    }
++
++    pub(crate) fn private(&self, id: i32) -> Option<JSVal> {
++        let entries = self.entries.borrow();
++        Some(entries.get(&id)?.data.as_ref()?.get()?.value.get())
++    }
++
++    pub(crate) fn set(
++        &self,
++        cx: &JSContext,
++        scope: &mut v8::PinScope,
++        id: i32,
++        value: JSVal,
++    ) -> Option<()> {
++        let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
++        let existing = self
++            .entries
++            .borrow()
++            .get(&id)?
++            .data
++            .as_ref()
++            .and_then(|data| data.get())
++            .map(|data| data as *const PrivateData);
++        if existing.is_none() && value.is_undefined() {
++            return Some(());
++        }
++        let data = if let Some(data) = existing {
++            data
++        } else {
++            let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
++            let holder = template.new_instance(scope)?;
++            // This is not a ClassBox; generic JSAPI class inspection must see null.
++            holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
++            let heap = scope.get_cpp_heap()?;
++            let data = unsafe {
++                v8::cppgc::make_garbage_collected(
++                    heap,
++                    PrivateData {
++                        value: Cell::new(UndefinedValue()),
++                        release: Cell::new(None),
++                    },
++                )
++            };
++            // Unique tag; the local holder owns the cppgc object before another allocation.
++            unsafe { v8::Object::wrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder, &data) };
++            let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
++            let map = cache.get_index(scope, 0)?;
++            let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
++            set.call(scope, map, &[token.into(), holder.into()])?;
++            self.entries.borrow_mut().get_mut(&id)?.data = Some(WeakPersistent::new(&data));
++            (unsafe { data.as_ref() }) as *const PrivateData
++        };
++        // The script/token and WeakMap keep this data alive. Reference hooks cannot GC;
++        // call them outside the index borrow and retain before releasing identical data.
++        crate::script_impl::retain_private(cx, value);
++        unsafe { &*data }.replace(value, crate::script_impl::private_release_hook(cx));
++        Some(())
++    }
++
++    pub(crate) fn release_all(&self) {
++        let entries = std::mem::take(&mut *self.entries.borrow_mut());
++        for entry in entries.into_values() {
++            if let Some(data) = entry.data.as_ref().and_then(|data| data.get()) {
++                data.clear();
++            }
++        }
++    }
++}
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 03b7e2877c0..8b89cfa5fe2 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -900,6 +900,40 @@ mod realms {
+         GLOBAL_TRACED.with(|count| count.set(count.get() + 1));
+     }
+ 
++    #[test]
++    fn classic_source_metadata_survives_execution_in_another_realm() {
++        unsafe extern "C" fn read_private(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++            rooted!(in(cx) let mut private = UndefinedValue());
++            unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++            unsafe { *vp = private.get() };
++            true
++        }
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let options = crate::rust::CompileOptionsWrapper::new(runtime.cx_no_gc(),
++            std::ffi::CString::new("cross-realm-source.js").unwrap(), 1);
++        let mut source = crate::rust::transform_str_to_source_text("globalThis.crossPrivate = function(){ return readPrivate() }");
++        rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++        rooted!(in(cx) let global = unsafe {
++            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        });
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        eval(&runtime, "WeakMap.prototype.set = () => { throw 1 }; globalThis.WeakMap = () => { throw 2 }");
++        unsafe { SetScriptPrivate(script.get(), &Int32Value(43)) };
++        let reader = unsafe { JS_NewFunction(cx, Some(read_private), 0, 0, c"readPrivate".as_ptr()) };
++        rooted!(in(cx) let reader = ObjectValue(reader.cast()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"readPrivate".as_ptr(), reader.handle().into()) });
++        rooted!(in(cx) let mut result = UndefinedValue());
++        assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++        assert_eq!(eval(&runtime, "crossPrivate()").to_int32(), 43);
++        unsafe { LeaveRealm(cx, old) };
++        runtime.gc_for_testing();
++        unsafe { &mut *(*cx).isolate }.low_memory_notification();
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        assert_eq!(eval(&runtime, "crossPrivate()").to_int32(), 43);
++        unsafe { LeaveRealm(cx, old) };
++    }
++
+     #[test]
+     fn new_globals_are_separate_realms_with_class_identity() {
+         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+@@ -1888,6 +1922,177 @@ mod scripts {
+         assert_eq!(unsafe { (*report)._base.column._base }, 0);
+     }
+ 
++    #[test]
++    fn pending_classic_import_retains_source_metadata_only_until_resolution() {
++        use std::rc::Rc;
++        thread_local! {
++            static PENDING: RefCell<Option<(v8::Global<v8::Object>, v8::Global<v8::Object>)>> = const { RefCell::new(None) };
++        }
++        unsafe extern "C" fn retain(value: *const JSVal) {
++            unsafe { Rc::increment_strong_count((*value).to_private() as *const i32) };
++        }
++        unsafe extern "C" fn release(value: *const JSVal) {
++            unsafe { Rc::decrement_strong_count((*value).to_private() as *const i32) };
++        }
++        unsafe extern "C" fn queue_import(
++            cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>, promise: Handle<*mut JSObject>,
++        ) -> bool {
++            let pending = unsafe { &*cx }.with_scope(|scope| {
++                let request = unsafe { to_v8(scope, ObjectValue(request.get())) }.to_object(scope).unwrap();
++                let promise = unsafe { to_v8(scope, ObjectValue(promise.get())) }.to_object(scope).unwrap();
++                (v8::Global::new(scope, request), v8::Global::new(scope, promise))
++            });
++            PENDING.with(|pending_slot| *pending_slot.borrow_mut() = Some(pending));
++            true
++        }
++        let owner = Rc::new(42);
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        unsafe {
++            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
++            SetModuleDynamicImportHook(runtime.rt(), Some(queue_import));
++        }
++        {
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("pending-source.js").unwrap(), 1);
++            let mut source = transform_str_to_source_text("import('deferred.js')");
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            rooted!(in(cx) let mut result = UndefinedValue());
++            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++        }
++        let (request, promise) = PENDING.with(|pending| pending.borrow_mut().take()).unwrap();
++        fn collect(runtime: &mut Runtime) {
++            runtime.gc_for_testing();
++            for _ in 0..3 {
++                unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
++                runtime.gc_for_testing();
++            }
++        }
++        collect(&mut runtime);
++        assert_eq!(Rc::strong_count(&owner), 2, "the host's pending import retains source metadata");
++        let (request_object, promise_object) = unsafe { &*cx }.with_scope(|scope| {
++            let request = v8::Local::new(scope, &request);
++            let promise = v8::Local::new(scope, &promise);
++            (from_v8(scope, request.into()).to_object(), from_v8(scope, promise.into()).to_object())
++        });
++        rooted!(in(cx) let request_object = request_object);
++        rooted!(in(cx) let promise_object = promise_object);
++        rooted!(in(cx) let no_evaluation = std::ptr::null_mut::<JSObject>());
++        rooted!(in(cx) let private = PrivateValue(Rc::as_ptr(&owner).cast()));
++        assert!(unsafe { FinishDynamicModuleImport(cx, no_evaluation.handle().into(), private.handle().into(),
++            request_object.handle().into(), promise_object.handle().into()) });
++        collect(&mut runtime);
++        assert_eq!(Rc::strong_count(&owner), 1, "even a retained settled promise releases the source token");
++    }
++
++    #[test]
++    fn classic_private_js_cycles_are_traced_and_collect_with_the_source() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let weak = {
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("private-cycle.js").unwrap(), 1);
++            let mut source = transform_str_to_source_text("globalThis.cyclicFunction = function(){ return 42 }");
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++            rooted!(in(cx) let mut result = UndefinedValue());
++            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++            let weak = {
++                rooted!(in(cx) let value = eval(&runtime, "({ callback: cyclicFunction })"));
++                unsafe { SetScriptPrivate(script.get(), &value.get()) };
++                unsafe { &*cx }.with_scope(|scope| {
++                    let value = unsafe { to_v8(scope, value.get()) };
++                    v8::Weak::new(scope, v8::Local::<v8::Object>::try_from(value).unwrap())
++                })
++            };
++            eval(&runtime, "delete globalThis.cyclicFunction");
++            runtime.gc_for_testing();
++            unsafe { &mut *(*cx).isolate }.low_memory_notification();
++            assert!(!weak.is_empty(), "the rooted source retains its JS private value");
++            rooted!(in(cx) let mut private = UndefinedValue());
++            unsafe { JS_GetScriptPrivate(script.get(), private.handle_mut().into()) };
++            assert!(private.get().is_object());
++            rooted!(in(cx) let object = private.get().to_object());
++            rooted!(in(cx) let mut callback = UndefinedValue());
++            assert!(unsafe { JS_GetProperty(cx, object.handle().into(), c"callback".as_ptr(), callback.handle_mut().into()) });
++            assert!(callback.get().is_object());
++            weak
++        };
++        runtime.gc_for_testing();
++        for _ in 0..3 {
++            unsafe { &mut *(*cx).isolate }.low_memory_notification();
++            runtime.gc_for_testing();
++        }
++        assert!(weak.is_empty(), "an unrooted source/private/function cycle must not become a runtime root");
++    }
++
++    #[test]
++    fn classic_private_metadata_follows_functions_and_releases_dead_sources() {
++        use std::rc::Rc;
++        thread_local! {
++            static RELEASE_DURING_GC: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++        }
++        unsafe extern "C" fn retain(value: *const JSVal) {
++            unsafe { Rc::increment_strong_count((*value).to_private() as *const i32) };
++        }
++        unsafe extern "C" fn release(value: *const JSVal) {
++            if unsafe { RuntimeHeapState() } == HeapState::MajorCollecting {
++                RELEASE_DURING_GC.with(|flag| flag.set(true));
++            }
++            unsafe { Rc::decrement_strong_count((*value).to_private() as *const i32) };
++        }
++        unsafe extern "C" fn read_private(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++            rooted!(in(cx) let mut private = UndefinedValue());
++            unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++            let number = if private.get().is_undefined() { -1 } else {
++                unsafe { *(private.get().to_private() as *const i32) }
++            };
++            unsafe { *vp = Int32Value(number) };
++            true
++        }
++        let owners = [Rc::new(11), Rc::new(22)];
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        unsafe { SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release)) };
++        {
++            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++            let reader = unsafe { JS_NewFunction(cx, Some(read_private), 0, 0, c"readPrivate".as_ptr()) };
++            rooted!(in(cx) let reader = ObjectValue(reader.cast()));
++            assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"readPrivate".as_ptr(), reader.handle().into()) });
++        }
++        eval(&runtime, "globalThis.keptFunctions = []; WeakMap.prototype.set = () => { throw 1 }; globalThis.WeakMap = () => { throw 2 }");
++        // Identical code/name must still preserve each compilation's own source metadata.
++        for owner in &owners {
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("shared-name.js").unwrap(), 1);
++            let mut source = transform_str_to_source_text("keptFunctions.push(function(){ return readPrivate() })");
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++            assert!(!script.get().is_null());
++            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(owner).cast())) };
++            rooted!(in(cx) let mut result = UndefinedValue());
++            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++        }
++        fn collect(runtime: &mut Runtime) {
++            runtime.gc_for_testing();
++            for _ in 0..3 {
++                unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
++                runtime.gc_for_testing();
++            }
++        }
++        collect(&mut runtime);
++        assert_eq!(describe(&runtime, eval(&runtime, "keptFunctions.map(f => f()).join(',')")), "11,22");
++        assert_eq!(Rc::strong_count(&owners[0]), 2);
++        assert_eq!(Rc::strong_count(&owners[1]), 2);
++        eval(&runtime, "keptFunctions.shift(); 0");
++        collect(&mut runtime);
++        assert_eq!(Rc::strong_count(&owners[0]), 1, "dead source releases its private before shutdown");
++        assert!(RELEASE_DURING_GC.with(std::cell::Cell::get));
++        assert_eq!(Rc::strong_count(&owners[1]), 2, "the remaining function retains its own source metadata");
++        assert_eq!(eval(&runtime, "keptFunctions[0]()").to_int32(), 22);
++        eval(&runtime, "delete globalThis.keptFunctions");
++        collect(&mut runtime);
++        assert_eq!(Rc::strong_count(&owners[1]), 1);
++        drop(runtime);
++        assert_eq!(Rc::strong_count(&owners[0]), 1, "no duplicate release at shutdown");
++    }
++
+     #[test]
+     fn script_and_module_private_references_balance_replacement_and_shutdown() {
+         use std::cell::Cell;

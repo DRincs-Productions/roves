@@ -14914,3 +14914,40 @@ adapter ownership regression already uses these standard APIs and passes normal/
 it does not directly link Servo's callbacks. Callback compilation remains an online check.
 Replayed both preceding patches for this pristine v0.5.0 file, WSL dry-run/apply and exact
 source comparison pass. No browser performance or memory result claimed.
+
+## 2026-10-21 - Tie classic private metadata to V8 source reachability
+
+**Files:** `components/roves-js/src/{script_metadata.rs,script_impl.rs,lib.rs,realm_impl.rs,
+jsapi_impl.rs,modules_impl.rs,runtime_impl.rs,rust.rs,object.rs,tests.rs}`
+(`0266-classic-script-metadata-source-lifetime.patch`), README, migration plan and wiki.
+
+Library evaluation: use rusty_v8's ScriptOrigin host options, unregistered Symbols, native
+WeakMap, Weak handles and cppgc, with the existing reference hooks and GC scope. No dependency,
+V8 fork, C++ shim or manual tracing/sweeping of a JS graph. A weak script-id index locates data;
+V8's source token remains with compiled source/functions and makes a WeakMap-owned API wrapper
+keep the cppgc private holder alive. Capture the map method before user code, in the initial
+runtime realm. The wrapper's required API field is initialized to null, distinct from ClassBox.
+Remove the unconditional private-value root scan. Sweep dead weak index entries amortized
+with insertions. Holders release the original reference hook once on replacement/GC/shutdown;
+GC release uses the same RuntimeHeapState scope as class finalizers.
+
+Classic compilation gets a distinct token so identical code/name compilations cannot overwrite
+one another's private metadata. CompileFunction has no script-private setter path and keeps
+its existing origin without unused token allocation. A pending dynamic import keeps the source
+token on a hidden Promise private; the existing native Promise resolve hook deletes it without
+executing user code. FinishDynamicModuleImport keeps a local token through settlement. A
+retained settled Promise therefore does not permanently retain its source metadata.
+
+Local runtime normal 53 passed / 2 ignored; JIT-less 52 / 3. Regressions cover live functions,
+dead source release before shutdown, identical compilations, poisoned WeakMap intrinsics,
+JS/private/function cycles, execution in another realm, pending imports and retained settled
+Promises, and release callbacks during GC. Existing ownership/shutdown tests still pass.
+Replayed 48 preceding custom patches, WSL patch dry-run/apply and all ten source comparisons
+pass. Browser CI confirmation of this change remains pending.
+
+Tradeoffs: a token/host-options array per classic compilation, weak index entries and a
+wrapper/cppgc holder only when non-undefined private data is assigned. Unique host options
+can affect V8 compilation-cache reuse; one private-property deletion is added to Promise
+resolve notification. No browser startup/CPU/RAM improvement claimed or measured, no GPU
+behavior change. Runtime-owned realm and module records, navigation identity and broader
+lifecycle/WPT criteria remain open.

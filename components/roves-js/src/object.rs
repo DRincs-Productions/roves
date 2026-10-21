@@ -121,10 +121,10 @@ unsafe impl GarbageCollected for ClassBox {
 type Slots = smallvec::SmallVec<[JSVal; 4]>;
 
 /// Marks the extent of GC work run by roves-js (traces and finalizers).
-struct GcScope;
+pub(crate) struct GcScope;
 
 impl GcScope {
-    fn enter() -> GcScope {
+    pub(crate) fn enter() -> GcScope {
         IN_GC.with(|depth| depth.set(depth.get() + 1));
         GcScope
     }

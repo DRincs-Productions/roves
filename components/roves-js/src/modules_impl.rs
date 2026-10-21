@@ -409,7 +409,7 @@ fn caller_private(scope: &mut v8::PinScope) -> JSVal {
 /// which settles the promise later through `FinishDynamicModuleImport`.
 fn dynamic_import<'s>(
     scope: &mut v8::PinScope<'s, '_>,
-    _host_defined_options: v8::Local<'s, v8::Data>,
+    host_defined_options: v8::Local<'s, v8::Data>,
     _resource_name: v8::Local<'s, v8::Value>,
     specifier: v8::Local<'s, v8::String>,
     attributes: v8::Local<'s, v8::FixedArray>,
@@ -418,6 +418,19 @@ fn dynamic_import<'s>(
     let raw_cx = cx as *const JSContext as *mut JSContext;
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
+    // Keep classic source metadata available to the asynchronous host until the
+    // promise is resolved/rejected or abandoned. The token is not exposed to JS.
+    if host_defined_options.is_fixed_array() {
+        // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
+        let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(host_defined_options) };
+        if options.length() == 1 {
+            let token = options.get(scope, 0);
+            if token.is_symbol() {
+                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+                promise.set_private(scope, key, token.into())?;
+            }
+        }
+    }
     let Some(hook) = cx.modules.dynamic_import_hook.get() else {
         let message = v8::String::new(scope, "dynamic import is not supported here")?;
         let error = v8::Exception::type_error(scope, message);
@@ -458,6 +471,8 @@ pub unsafe fn FinishDynamicModuleImport(
         return raw
             .catching(|scope| {
                 let promise = promise_of(scope, promise_obj)?;
+                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+                let _source_token = promise.get_private(scope, key)?;
                 // SAFETY: a V8 promise is its own resolver.
                 let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
                 let reason: v8::Local<v8::Value> = match &exception {
@@ -481,6 +496,8 @@ pub unsafe fn FinishDynamicModuleImport(
         let namespace = module.get_module_namespace();
         let evaluation = promise_of(scope, evaluation)?;
         let promise = promise_of(scope, promise_obj)?;
+        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+        let _source_token = promise.get_private(scope, key)?;
         // SAFETY: as above.
         let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
         let source = "(function (evaluation, namespace) { return evaluation.then(() => namespace); })";

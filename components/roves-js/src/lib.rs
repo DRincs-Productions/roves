@@ -30,6 +30,7 @@ mod dynamic_code;
 mod proxy;
 mod runtime_impl;
 mod script_impl;
+mod script_metadata;
 mod values_impl;
 mod modules_impl;
 mod structured_clone_impl;

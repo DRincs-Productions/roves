@@ -209,8 +209,6 @@ unsafe impl GarbageCollected for RootSet {
             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.
-            crate::script_impl::trace_scripts(unsafe { cx.as_ref() }, visitor);
-            // SAFETY: as above.
             crate::modules_impl::trace_modules(unsafe { cx.as_ref() }, visitor);
         }
         // RootedVec / RootedTraceableBox contents.
