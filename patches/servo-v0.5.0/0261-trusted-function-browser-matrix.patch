@@ -1,0 +1,100 @@
+diff --git a/support/v8-smoke/csp.html b/support/v8-smoke/csp.html
+--- a/support/v8-smoke/csp.html
++++ b/support/v8-smoke/csp.html
+@@ -8,8 +8,62 @@
+ console.log("ROVES-V8 csp eval " + attempt(() => eval("1")));
+ console.log("ROVES-V8 csp function " + attempt(() => new Function("return 1")));
+ console.log("ROVES-V8 csp settimeout-string " + attempt(() => setTimeout("1", 0)));
+-const trusted = trustedTypes.createPolicy("smoke", { createScript: value => value }).createScript("40 + 2");
+-console.log("ROVES-V8 csp trusted eval", attempt(() => eval(trusted)));
++const smokePolicy = trustedTypes.createPolicy("smoke", { createScript: value => value });
++const trusted = smokePolicy.createScript("40 + 2");
++let trustedEval;
++try { trustedEval = eval(trusted); } catch (error) { trustedEval = error.constructor.name; }
++console.log("ROVES-V8 csp trusted eval", trustedEval);
++let trustedFunction;
++const trustedParameter = smokePolicy.createScript("input");
++const trustedBody = smokePolicy.createScript("return input + 1");
++try { trustedFunction = new Function(trustedParameter, trustedBody)(41); } catch (error) { trustedFunction = error.constructor.name; }
++console.log("ROVES-V8 csp trusted function", trustedFunction);
++const counterfeitParameter = { toString() { return "input"; } };
++const alteredBody = smokePolicy.createScript("return input + 1");
++let alteredBodyCalls = 0;
++alteredBody.toString = () => { alteredBodyCalls++; return "return 0"; };
++let usesTrustedBodyData = false;
++try { usesTrustedBodyData = new Function(trustedParameter, alteredBody)(41) === 42 && alteredBodyCalls === 0; } catch (_) {}
++const functionGuards =
++  attempt(() => new Function("input", trustedBody)) === "EvalError" &&
++  attempt(() => new Function(trustedParameter, "return input + 1")) === "EvalError" &&
++  attempt(() => new Function(counterfeitParameter, trustedBody)) === "EvalError" && usesTrustedBodyData;
++console.log("ROVES-V8 csp trusted function guards", functionGuards);
++// Exercise the four native dynamic constructors with every trusted/plain mask.
++// Reference: WPT trusted-types/eval-function-constructor.html (2026-10-21).
++const constructors = [Function, (function*() {}).constructor,
++  (async function() {}).constructor, (async function*() {}).constructor];
++const pieces = ["first", "second", "factor = 7", "return (first - second) * factor"];
++let rejectedCombinations = 0;
++const results = [];
++for (const Constructor of constructors) {
++  for (let mask = 0; mask < 15; mask++) {
++    const parameters = pieces.map((text, index) => mask & (1 << index) ? smokePolicy.createScript(text) : text);
++    if (attempt(() => Reflect.construct(Constructor, parameters)) === "EvalError") rejectedCombinations++;
++  }
++  try {
++    const callable = Reflect.construct(Constructor, pieces.map(text => smokePolicy.createScript(text)));
++    let result = callable(8, 2);
++    if (result && typeof result.next === "function") result = Promise.resolve(result.next()).then(step => step.value);
++    results.push(Promise.resolve(result).then(value => value === 42));
++  } catch (_) { results.push(Promise.resolve(false)); }
++}
++let preservedArguments = 0;
++for (let changed = 0; changed < pieces.length; changed++) {
++  let conversions = 0;
++  const parameters = pieces.map((text, index) => {
++    const argument = smokePolicy.createScript(text);
++    if (index === changed) {
++      argument.toString = argument[Symbol.toPrimitive] = () => { conversions++; return "broken"; };
++    }
++    return argument;
++  });
++  try {
++    if (Reflect.construct(Function, parameters)(8, 2) === 42 && conversions === 0) preservedArguments++;
++  } catch (_) {}
++}
++Promise.all(results).then(values => console.log("ROVES-V8 csp trusted function matrix",
++  rejectedCombinations === 60, values.every(Boolean), preservedArguments === 4));
+ const ordinary = { toString() { return "40 + 2"; } };
+ console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
+ </script>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -125,7 +125,7 @@
+ if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp ordinary eval unchanged true"; do
++for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
+   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -98,6 +98,7 @@
+     if scenario != 'trusted-script': print('ROVES-V8 csp trusted eval 42')
+     if scenario != 'trusted-function': print('ROVES-V8 csp trusted function 42')
+     if scenario != 'trusted-function-guards': print('ROVES-V8 csp trusted function guards true')
++    if scenario != 'trusted-function-matrix': print('ROVES-V8 csp trusted function matrix true true true')
+     print('ROVES-V8 csp ordinary eval unchanged true')
+ elif page == 'wasm-csp.html':
+     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
+@@ -141,7 +142,7 @@
+                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'csp-wasm', 'navigation', 'skip'):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'csp-wasm', 'navigation', 'skip'):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)

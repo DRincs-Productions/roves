@@ -29,6 +29,41 @@ const functionGuards =
   attempt(() => new Function(trustedParameter, "return input + 1")) === "EvalError" &&
   attempt(() => new Function(counterfeitParameter, trustedBody)) === "EvalError" && usesTrustedBodyData;
 console.log("ROVES-V8 csp trusted function guards", functionGuards);
+// Exercise the four native dynamic constructors with every trusted/plain mask.
+// Reference: WPT trusted-types/eval-function-constructor.html (2026-10-21).
+const constructors = [Function, (function*() {}).constructor,
+  (async function() {}).constructor, (async function*() {}).constructor];
+const pieces = ["first", "second", "factor = 7", "return (first - second) * factor"];
+let rejectedCombinations = 0;
+const results = [];
+for (const Constructor of constructors) {
+  for (let mask = 0; mask < 15; mask++) {
+    const parameters = pieces.map((text, index) => mask & (1 << index) ? smokePolicy.createScript(text) : text);
+    if (attempt(() => Reflect.construct(Constructor, parameters)) === "EvalError") rejectedCombinations++;
+  }
+  try {
+    const callable = Reflect.construct(Constructor, pieces.map(text => smokePolicy.createScript(text)));
+    let result = callable(8, 2);
+    if (result && typeof result.next === "function") result = Promise.resolve(result.next()).then(step => step.value);
+    results.push(Promise.resolve(result).then(value => value === 42));
+  } catch (_) { results.push(Promise.resolve(false)); }
+}
+let preservedArguments = 0;
+for (let changed = 0; changed < pieces.length; changed++) {
+  let conversions = 0;
+  const parameters = pieces.map((text, index) => {
+    const argument = smokePolicy.createScript(text);
+    if (index === changed) {
+      argument.toString = argument[Symbol.toPrimitive] = () => { conversions++; return "broken"; };
+    }
+    return argument;
+  });
+  try {
+    if (Reflect.construct(Function, parameters)(8, 2) === 42 && conversions === 0) preservedArguments++;
+  } catch (_) {}
+}
+Promise.all(results).then(values => console.log("ROVES-V8 csp trusted function matrix",
+  rejectedCombinations === 60, values.every(Boolean), preservedArguments === 4));
 const ordinary = { toString() { return "40 + 2"; } };
 console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
 </script>

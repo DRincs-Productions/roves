@@ -311,6 +311,13 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Stato realm per oggetto inutilizzato — 21 ottobre 2026
 
+Patch 0261 estende lo smoke browser CSP: 60 combinazioni miste sui quattro costruttori
+dinamici, quattro esecuzioni all-trusted e quattro conversioni contraffatte. Contratto derivato
+dalla [WPT corrente](https://github.com/web-platform-tests/wpt/blob/master/trusted-types/eval-function-constructor.html),
+non una run WPT completa. Runner POSIX 7 test verdi; replay 12 patch, dry-run e confronto
+sorgenti riusciti. Chrome 155 MCP produce true/false/false (nega già il caso all-trusted);
+non abbassare il requisito WPT per imitare quel comportamento. Risultato Roves CI pendente.
+
 Patch 0260 applica ai callback trace/finalize WindowProxy la convenzione già presente in
 `private_from_object`: slot owner undefined durante la costruzione significa assenza del
 proprietario, prima di chiamare `to_private`. Evita un'asserzione nel JSVal V8, mantenendo

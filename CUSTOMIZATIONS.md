@@ -14821,3 +14821,23 @@ V8 JSVal adapter. Return before conversion for undefined, while preserving priva
 handling after transplant and normal owner tracing/finalization. No dependency, allocation,
 root or per-object storage. Validation is source/patch replay; actual browser GC stress
 remains required. Do not claim that the general runtime suites execute these Servo hooks.
+
+## 2026-10-21 - Extend browser Trusted Types checks to all dynamic constructors
+
+**Files:** `support/v8-smoke/{csp.html,run.sh,test_runner.py}`
+(`0261-trusted-function-browser-matrix.patch`), README, migration plan and wiki.
+
+Use the maintained WPT trusted-types/eval-function-constructor.html contract (read 2026-10-21)
+instead of inventing a separate policy. The focused smoke covers 60 mixed trusted/plain
+argument combinations across all four dynamic constructors, four all-trusted executions
+(including generator/async results) and four forged conversions using toString and
+Symbol.toPrimitive. Require a final matrix marker and reject its absence in runner tests.
+This is selected WPT-derived coverage, not running the complete WPT harness or claiming
+general conformance. Native parsing and TrustedScript extraction remain delegated to V8
+and the existing Servo host callback. No new dependency or runtime change.
+
+POSIX runner 7 tests pass. Chrome DevTools MCP, Chrome 155 Windows x64, background visible
+tab, local CSP fixture, produces true/false/false: mixed arguments are denied, while Chrome
+still rejects all-trusted Function as recorded previously. Roves browser confirmation waits
+for CI. The replay also repairs prior csp.html drift for the already committed trusted-body
+guards. Replayed 12 preceding patches, WSL dry-run/apply and exact source comparison pass.
