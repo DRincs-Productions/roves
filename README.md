@@ -79,6 +79,7 @@ callback settings stack when no JavaScript caller is active. Callback activation
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional
 context storage was removed from per-object bookkeeping. During proxy construction, GC
 traces owned values before invoking native hooks only once the object cell is initialized.
+WindowProxy GC hooks also tolerate an uninitialized native-owner slot during construction.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

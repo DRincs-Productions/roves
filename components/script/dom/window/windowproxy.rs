@@ -1654,6 +1654,11 @@ static XORIGIN_PROXY_TRAPS: ProxyTraps = ProxyTraps {
 unsafe extern "C" fn finalize(_fop: *mut GCContext, obj: *mut JSObject) {
     let mut slot = UndefinedValue();
     unsafe { GetProxyReservedSlot(obj, 0, &mut slot) };
+    // As in bindings::conversions::private_from_object, the initial DOM slot
+    // has no native owner yet. V8 may collect during proxy construction.
+    if slot.is_undefined() {
+        return;
+    }
     let this = slot.to_private() as *mut WindowProxy;
     if this.is_null() {
         // GC during obj creation or after transplanting.
@@ -1674,6 +1679,9 @@ unsafe extern "C" fn finalize(_fop: *mut GCContext, obj: *mut JSObject) {
 unsafe extern "C" fn trace(trc: *mut JSTracer, obj: *mut JSObject) {
     let mut slot = UndefinedValue();
     unsafe { GetProxyReservedSlot(obj, 0, &mut slot) };
+    if slot.is_undefined() {
+        return;
+    }
     let this = slot.to_private() as *const WindowProxy;
     if this.is_null() {
         // GC during obj creation or after transplanting.

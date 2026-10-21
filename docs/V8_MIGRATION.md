@@ -311,6 +311,12 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Stato realm per oggetto inutilizzato — 21 ottobre 2026
 
+Patch 0260 applica ai callback trace/finalize WindowProxy la convenzione già presente in
+`private_from_object`: slot owner undefined durante la costruzione significa assenza del
+proprietario, prima di chiamare `to_private`. Evita un'asserzione nel JSVal V8, mantenendo
+il controllo private-null dopo transplant. Replay sorgente verificato; GC stress browser
+resta da eseguire e le suite runtime isolate non esercitano questi callback Servo.
+
 Patch 0259 implementa i trap locali delle proprietà WindowProxy riusando gli algoritmi Servo
 e le annotazioni WebIDL, inclusi getter/setter consentiti, fallback e rifiuti SecurityError.
 Cache WeakMap V8 per i property holder: niente rigenerazione degli accessori a ogni lettura,

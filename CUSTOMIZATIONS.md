@@ -14808,3 +14808,16 @@ Patch replay also detected pre-existing drift for test.html/run.sh/test_runner.p
 their previously committed HTTP fixtures, CSP guards, raw diagnostics and early suite exit
 changes in this patch so reconstruction matches the tracked files exactly. Verified fresh
 v0.5.0 upstream files plus preceding custom patches, WSL patch dry-run and source comparison.
+
+## 2026-10-21 - Accept the initial WindowProxy owner slot in GC hooks
+
+**Files:** `components/script/dom/window/windowproxy.rs`
+(`0260-windowproxy-uninitialized-owner-slot.patch`), README, migration plan and wiki.
+
+Reuse the existing DOM conversion convention in bindings::conversions::private_from_object:
+an undefined native-owner slot means construction is incomplete. WindowProxy trace/finalize
+previously converted this slot to a private pointer before checking null, asserting in the
+V8 JSVal adapter. Return before conversion for undefined, while preserving private-null
+handling after transplant and normal owner tracing/finalization. No dependency, allocation,
+root or per-object storage. Validation is source/patch replay; actual browser GC stress
+remains required. Do not claim that the general runtime suites execute these Servo hooks.
