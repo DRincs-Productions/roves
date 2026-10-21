@@ -52,7 +52,8 @@ with Servo's generated Window binding initialization and was reverted. The smoke
 eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
-iframe has a distinct origin.
+iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe
+append, load and contentWindow access separately.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
 separate JavaScript behavior. The smoke also checks the WPT-required case where every
@@ -63,7 +64,7 @@ arguments through V8's Function compilation hook.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke
-checks same-origin and opaque-origin access, and cross-origin prototypes cannot be replaced.
+checks same-origin and cross-origin access; the browser cross-origin result remains unverified.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

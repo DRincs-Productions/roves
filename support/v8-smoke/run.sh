@@ -103,7 +103,7 @@ done
 if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 immutable prototype JSAPI target true' test.log; then echo "::notice::test.html: ordinary JSAPI prototype mutation"; else echo "::error::test.html: ordinary JSAPI prototype mutation failed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed ($(grep -aF 'ROVES-V8 cross-origin iframe ' test.log | tr '\n' ' '))"; STATUS=1; fi
-if grep -aFq 'ROVES-V8 cross-origin iframe timeout ' test.log; then echo "::error::test.html: cross-origin iframe did not load"; STATUS=1; fi
+if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error::test.html: cross-origin iframe did not load"; STATUS=1; fi
 if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
@@ -135,6 +135,12 @@ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1
 done
 
 if [ "$STATUS" -ne 0 ]; then
+  # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+  # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+  for page_log in test.log csp.log wasm-csp.log nav.log; do
+    echo "V8 smoke diagnostics: $page_log"
+    tail -80 "$page_log"
+  done
   for server_log in "$HTTP_LOG" "$HTTP_CROSS_ORIGIN_LOG"; do
     if [ -s "$server_log" ]; then
       sed 's/^/::notice::V8 smoke HTTP: /' "$server_log"

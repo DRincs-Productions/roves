@@ -14572,3 +14572,16 @@ port, avoiding the earlier file-origin navigation ambiguity. Failure output incl
 server logs. The `Function(TrustedScript)` WPT
 case remains open: the V8 callback receives the already-composed source rather than the original
 arguments, and trusting that source without the original branded values would weaken CSP.
+
+## 2026-10-21 - Preserve failing V8 iframe smoke diagnostics
+
+**Files:** repository-only `support/v8-smoke/{test.html,run.sh}`, `README.md`,
+`docs/V8_MIGRATION.md`, and `roves-wiki/content/docs/shell.mdx`. No upstream Servo source
+changes and no additional Servo replay patch are needed for these repository-only fixtures.
+
+CI 394914 compiles all desktop servoshell builds but fails both Linux browser smoke jobs on
+cross-origin WindowProxy and TrustedScript Function. Windows and macOS browser smoke steps
+are skipped, not passed. Record iframe append, load and contentWindow access separately;
+the watchdog no longer reads contentWindow before logging. Add a script error listener and
+retain bounded raw browser logs on failure, using the existing Bash/Python standard-library
+runner without new dependencies. This improves diagnosis without relaxing acceptance checks.

@@ -1,6 +1,6 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 20 ottobre 2026, commit 273c1d9db2e e CI 39491426868
+## Punto della situazione — 21 ottobre 2026, ripresa dalla CI 39491426868
 
 Rilevazione sul commit `273c1d9db2e` (`main`) e sulla CI avviata dal rollback
 `a26cb6ca39b`. Il PAT condiviso in chat ha restituito `401 Bad credentials`; non è stato
@@ -13,7 +13,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
-| [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | In corso al checkpoint | Runtime Linux/Windows normal e JIT-less verdi; build e smoke Windows verdi. Smoke Linux normal/JIT-less ancora in corso; servoshell macOS normal in build, runtime macOS normal/JIT-less cancellati. La run complessiva non è conclusa. |
+| [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | Fallita: 6 job verdi, 2 falliti e 2 cancellati | Quattro runtime Linux/Windows normal/JIT-less e tutte le quattro build servoshell verdi. Smoke Linux normal/JIT-less falliti su iframe cross-origin e Function(TrustedScript); smoke Windows/macOS saltati, runtime macOS cancellati. |
 | [V8 migration checks — 39480383126](https://github.com/DRincs-Productions/roves/actions/runs/39480383126) | Fallita: 6 job verdi, 2 smoke falliti, 2 runtime macOS cancellati | Runtime Linux e Windows normal/JIT-less verdi; build servoshell Windows/macOS normal e Linux normal/JIT-less verdi. Entrambi gli smoke Linux falliscono su Window, iframe cross-origin e Function con TrustedScript. Runtime macOS cancellati dopo i fallimenti Linux. |
 | [V8 migration checks — 39478697257](https://github.com/DRincs-Productions/roves/actions/runs/39478697257) | Esito non verificabile dai log accessibili | L’ultima lettura della pagina pubblica mostrava 3/6 runtime completati, 2 errori Ubuntu e 0/4 build servoshell conclusi. I dettagli degli errori sono protetti; il rate limit API impedisce di verificare se i job siano poi terminati. |
 | [V8 migration checks — 39473515801](https://github.com/DRincs-Productions/roves/actions/runs/39473515801) | Fallito: browser smoke Linux falliti; job macOS normal in retry nell’attempt 2 | Build servoshell Windows normal e Linux normal/JIT-less verdi. Tutte le nove suite superano gli smoke Linux; restano i marker browser di prototipo Window, WindowProxy cross-origin e Function(TrustedScript). CSP Wasm e trusted eval passano nelle due modalità. Il runtime macOS normal del primo tentativo era cancellato; smoke browser macOS non verificato. |
@@ -109,12 +109,20 @@ preferire il flusso online della CI dopo aver finito e revisionato le modifiche.
 - La validazione finale resta aperta: WPT selezionati, stress GC/lifecycle, copertura applicativa,
   misure per modifiche di ownership, artefatti e release/pin. Il dettaglio resta nelle fasi 1–4.
 
-Prossimi passi: verificare nella nuova CI che la correzione del test runner passi; recuperare
-annotazioni/log accessibili per i risultati browser di `39478697257` e poi correggere i
-comportamenti Window/WindowProxy e la perdita degli
-argomenti originali `TrustedScript` nel callback V8 `ModifyCodeGenerationFromStrings`. Continuare
-le fasi 1–4 oltre questo checkpoint. La patch 0251 modifica sorgenti Servo e attende verifica CI.
-Release e aggiornamento dei pin consumer restano subordinati alla validazione della migrazione.
+Prossimi passi: diagnosticare l’accesso `contentWindow` e i callback iframe nella nuova CI,
+poi correggere Window/WindowProxy e conservare gli argomenti originali TrustedScript di Function.
+La CI 394914 conferma le nove suite, eval trusted (42), CSP Wasm e navigazione nelle due modalità
+Linux; conferma inoltre la compilazione della patch 0251 sulle tre piattaforme. Non verifica
+l’immutabilità del Window browser. Il precedente checkpoint chiamava erroneamente “smoke
+Windows verde” lo step saltato: Windows e macOS verificano soltanto la build servoshell.
+
+La fixture ora registra append, load e accesso contentWindow separatamente; il timeout non
+legge il proxy e quindi può segnalare il mancato caricamento anche se quel getter fallisce.
+Un listener registra gli errori script. In caso di fallimento il runner conserva le ultime 80
+righe di ciascuna pagina browser, oltre ai log HTTP. Riutilizzati Bash e Python stdlib:
+nessuna dipendenza nuova e nessuna variazione al comportamento runtime. Il risultato browser
+della nuova diagnostica resta da confermare in CI. Continuare le fasi 1–4 oltre il checkpoint;
+release e pin restano subordinati alla validazione della migrazione.
 
 ## Obiettivo e stato iniziale
 

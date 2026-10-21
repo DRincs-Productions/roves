@@ -2,6 +2,7 @@
 <html><head><title>v8 test</title></head>
 <body><div id="out">initial</div>
 <script>
+window.addEventListener("error", event => console.log("ROVES-V8 script error", event.message, event.filename, event.lineno));
 console.log("ROVES-V8 URL", typeof URL, typeof URLSearchParams, typeof HTMLDivElement);
 console.log("ROVES-V8 script start, engine typeof window:", typeof window);
 const div = document.getElementById("out");
@@ -20,10 +21,12 @@ Object.setPrototypeOf(immutableProbe, {});
 console.log("ROVES-V8 immutable prototype JSAPI target", Object.getPrototypeOf(immutableProbe) !== null);
 const crossOriginFrame = document.createElement("iframe");
 crossOriginFrame.src = "http://127.0.0.1:18766/cross-origin.html";
-const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout", crossOriginFrame.contentWindow !== null), 5000);
+const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout"), 5000);
 crossOriginFrame.addEventListener("load", () => {
+  console.log("ROVES-V8 cross-origin iframe load");
   clearTimeout(crossOriginTimeout);
   const otherWindow = crossOriginFrame.contentWindow;
+  console.log("ROVES-V8 cross-origin iframe contentWindow", otherWindow !== null);
   let prototypeIsNull = false;
   let prototypeReplacementRejected = false;
   try { prototypeIsNull = Object.getPrototypeOf(otherWindow) === null; } catch (_) {}
@@ -34,5 +37,7 @@ crossOriginFrame.addEventListener("error", () => {
   clearTimeout(crossOriginTimeout);
   console.log("ROVES-V8 cross-origin iframe error");
 });
+console.log("ROVES-V8 cross-origin iframe append");
 document.body.appendChild(crossOriginFrame);
+console.log("ROVES-V8 cross-origin iframe appended");
 </script></body></html>
