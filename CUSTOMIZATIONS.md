@@ -14845,3 +14845,17 @@ guards. Replayed 12 preceding patches, WSL dry-run/apply and exact source compar
 The migration plan now distinguishes historical failed runs from the confirmed green
 39595584589/39595584650 checkpoint and marks production Window prototype initialization
 verified. Later property/GC/matrix changes and the remaining lifecycle criteria stay open.
+
+## 2026-10-21 - Include the existing cross-origin and Wasm CSP fixtures in patch replay
+
+**Files:** `patches/servo-v0.5.0/0262-include-cross-origin-and-wasm-csp-fixtures.patch`,
+README, migration plan and wiki. No fixture behavior changed.
+
+A reconstruction audit replayed 154 preceding patches over the absent-upstream custom
+runtime/tool paths and compared all 146 tracked files in roves-js, roves-v8, roves-v8-derive,
+support/v8-smoke and four V8 tools. Only cross-origin.html and wasm-csp.html were missing;
+the previous incremental changes had committed these fixture pages without a matching patch.
+Add both existing pages to the reconstruction. Reuse their existing static HTML and CSP;
+no dependency or runtime code. WSL patch dry-run/apply and byte-normalized comparison of all
+146 files pass after the repair. This is source consistency evidence, not a browser test or
+proof that every upstream Servo customization has been exhaustively compared.

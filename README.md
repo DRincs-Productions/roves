@@ -75,6 +75,7 @@ checks same-origin and cross-origin access, confirmed in Linux normal/JIT-less b
 Property traps now reuse Servo's origin checks and WebIDL cross-origin annotations; a V8
 WeakMap caches accessors without rooting dead receivers. These new property checks await browser CI.
 The CSP smoke also covers all four dynamic constructors with trusted/plain argument combinations.
+The patch set includes its cross-origin HTTP and Wasm CSP fixture pages for pristine-source reconstruction.
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional

@@ -1,0 +1,34 @@
+diff --git a/support/v8-smoke/cross-origin.html b/support/v8-smoke/cross-origin.html
+new file mode 100644
+--- /dev/null
++++ b/support/v8-smoke/cross-origin.html
+@@ -0,0 +1,3 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>cross-origin smoke frame</title></head>
++<body>cross-origin WindowProxy fixture</body></html>
+diff --git a/support/v8-smoke/wasm-csp.html b/support/v8-smoke/wasm-csp.html
+new file mode 100644
+--- /dev/null
++++ b/support/v8-smoke/wasm-csp.html
+@@ -0,0 +1,21 @@
++<!doctype html>
++<html><head><meta charset="utf-8">
++<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'; require-trusted-types-for 'script'; trusted-types smoke">
++<title>roves-js WebAssembly CSP smoke page</title></head>
++<body>
++<script>
++async function checkWasmCsp() {
++  if (typeof WebAssembly === "undefined") {
++    console.log("ROVES-V8 csp wasm unavailable");
++    return;
++  }
++  try {
++    await WebAssembly.compile(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]));
++    console.log("ROVES-V8 csp wasm allowed");
++  } catch (error) {
++    console.log("ROVES-V8 csp wasm blocked", error.constructor.name);
++  }
++}
++checkWasmCsp();
++</script>
++</body></html>

@@ -316,6 +316,12 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
 
+Patch 0262 include le due fixture già esistenti cross-origin.html e wasm-csp.html, prima
+assenti dal replay. Audit: 154 patch precedenti ricostruite e 146 file tracked confrontati
+nei tre runtime custom, smoke e quattro tool V8; dopo questa aggiunta tutti coincidono.
+Dry-run/applicazione WSL riusciti. È una verifica di coerenza dei sorgenti, non un test
+browser né un confronto esaustivo di tutte le personalizzazioni dei file upstream Servo.
+
 Patch 0261 estende lo smoke browser CSP: 60 combinazioni miste sui quattro costruttori
 dinamici, quattro esecuzioni all-trusted e quattro conversioni contraffatte. Contratto derivato
 dalla [WPT corrente](https://github.com/web-platform-tests/wpt/blob/master/trusted-types/eval-function-constructor.html),
