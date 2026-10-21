@@ -14759,3 +14759,19 @@ identity; no mirror-only layout test is added. No browser memory/performance mea
 Validation: normal runtime 46 passed / 2 ignored; JIT-less 45 / 3. Replayed 20 preceding
 patches, WSL patch dry-run/apply and source comparison passed. The preceding commit
 dfa367ed8ee passed all 10 V8 CI jobs and all 13 general CI jobs; this cleanup awaits CI.
+
+## 2026-10-21 - Keep native trace hooks out of partial ClassBox construction
+
+**Files:** `components/roves-js/src/{object.rs,tests.rs}`
+(`0258-v8-classbox-construction-trace.patch`), README, migration plan and wiki shell docs.
+
+Reuse V8/cppgc ownership and collection. ClassBox may already be wrapped while allocation
+of proxy handlers and the proxy itself precedes initialization of its JSAPI cell. Continue
+tracing slots and private values at this stage, but defer native trace hooks until the cell
+exists: those hooks read reserved slots through the supplied object and cannot accept null.
+No dependency, extra root, allocation or per-object field; one null check in native tracing.
+The regression forces GC before and after cell initialization and checks value retention
+and hook dispatch. Normal runtime 47 passed / 2 ignored; JIT-less 46 / 3.
+Replayed preceding source patches, normalized checkout line endings, verified WSL patch
+dry-run/apply and exact source comparison. Full browser GC stress remains open; no browser
+memory or performance measurement is claimed.

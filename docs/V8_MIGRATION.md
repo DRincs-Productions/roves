@@ -311,6 +311,13 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Stato realm per oggetto inutilizzato — 21 ottobre 2026
 
+Patch 0258: ClassBox conserva slot/private durante la costruzione ma differisce i callback
+trace nativi finché esiste la cella JSAPI. La creazione di handler/proxy può allocare prima
+di quel momento. Regressione con GC prima/dopo l'inizializzazione e valori conservati verde;
+runtime normal 47 passati / 2 ignorati, JIT-less 46 / 3; replay patch e dry-run verificati.
+Questo corregge il passaggio di un oggetto null ai callback, non dimostra l'intero ciclo
+di vita DOM né chiude l'audit retention. Verifica browser online pendente.
+
 Patch `0257-remove-unused-classbox-context.patch`: rimosso da ClassBox il campo
 RefCell<Option<Global<Context>>> sempre None e senza assegnazioni. Rimosso il ramo di lookup
 mai eseguito: gli oggetti usano già `Object::get_creation_context` di V8, mentre i wrapper

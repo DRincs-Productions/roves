@@ -1,0 +1,51 @@
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index c9a9ca2e36c..85bde38b601 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -84,7 +84,10 @@ unsafe impl GarbageCollected for ClassBox {
+         if private.is_gcthing() {
+             trace_cell(private.to_gcthing(), visitor);
+         }
+-        if self.window_wrapper.get() {
++        // Proxy handler creation may allocate after this box has been wrapped but before
++        // its JSAPI cell exists. Trace owned values above, but never expose a null object
++        // to native hooks that read reserved slots through that cell.
++        if self.window_wrapper.get() || self.cell.get().is_null() {
+             return;
+         }
+         // SAFETY: handlers live for the whole process (`CreateProxyHandler`).
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7926ec15b23..d49fd644b72 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -280,6 +280,30 @@ mod object_model {
+         eval(runtime, "globalThis")
+     }
+ 
++    #[test]
++    fn partially_constructed_class_boxes_trace_values_before_native_hooks() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let raw = unsafe { &*runtime.raw_cx() };
++        let owner = raw.with_scope(|scope| {
++            let owner = crate::object::new_class_box(scope, &CLASS);
++            v8::cppgc::Persistent::new(&owner)
++        });
++        let owner_ref = owner.get().unwrap();
++        owner_ref.set_reserved_slot(1, eval(&runtime, "({marker: 'slot'})"));
++        owner_ref.private.set(eval(&runtime, "({marker: 'private'})"));
++        let traced_before = HOOK_TRACED.with(Cell::get);
++        runtime.gc_for_testing();
++        assert_eq!(HOOK_TRACED.with(Cell::get), traced_before,
++            "native hooks cannot inspect an object before its cell is initialized");
++        assert_eq!(describe(&runtime, owner_ref.reserved_slot(1)), "[object Object]");
++        assert_eq!(describe(&runtime, owner_ref.private.get()), "[object Object]");
++        // Finish the construction stage: subsequent collections must invoke the hook.
++        owner_ref.cell.set(eval(&runtime, "({})").to_object().cast());
++        runtime.gc_for_testing();
++        assert!(HOOK_TRACED.with(Cell::get) > traced_before);
++        drop(owner);
++    }
++
+     #[test]
+     fn class_objects_keep_identity_reserved_slots_and_run_hooks() {
+         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());

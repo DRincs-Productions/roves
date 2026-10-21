@@ -281,6 +281,30 @@ mod object_model {
     }
 
     #[test]
+    fn partially_constructed_class_boxes_trace_values_before_native_hooks() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let raw = unsafe { &*runtime.raw_cx() };
+        let owner = raw.with_scope(|scope| {
+            let owner = crate::object::new_class_box(scope, &CLASS);
+            v8::cppgc::Persistent::new(&owner)
+        });
+        let owner_ref = owner.get().unwrap();
+        owner_ref.set_reserved_slot(1, eval(&runtime, "({marker: 'slot'})"));
+        owner_ref.private.set(eval(&runtime, "({marker: 'private'})"));
+        let traced_before = HOOK_TRACED.with(Cell::get);
+        runtime.gc_for_testing();
+        assert_eq!(HOOK_TRACED.with(Cell::get), traced_before,
+            "native hooks cannot inspect an object before its cell is initialized");
+        assert_eq!(describe(&runtime, owner_ref.reserved_slot(1)), "[object Object]");
+        assert_eq!(describe(&runtime, owner_ref.private.get()), "[object Object]");
+        // Finish the construction stage: subsequent collections must invoke the hook.
+        owner_ref.cell.set(eval(&runtime, "({})").to_object().cast());
+        runtime.gc_for_testing();
+        assert!(HOOK_TRACED.with(Cell::get) > traced_before);
+        drop(owner);
+    }
+
+    #[test]
     fn class_objects_keep_identity_reserved_slots_and_run_hooks() {
         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

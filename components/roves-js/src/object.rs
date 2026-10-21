@@ -84,7 +84,10 @@ unsafe impl GarbageCollected for ClassBox {
         if private.is_gcthing() {
             trace_cell(private.to_gcthing(), visitor);
         }
-        if self.window_wrapper.get() {
+        // Proxy handler creation may allocate after this box has been wrapped but before
+        // its JSAPI cell exists. Trace owned values above, but never expose a null object
+        // to native hooks that read reserved slots through that cell.
+        if self.window_wrapper.get() || self.cell.get().is_null() {
             return;
         }
         // SAFETY: handlers live for the whole process (`CreateProxyHandler`).

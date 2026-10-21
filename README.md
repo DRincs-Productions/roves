@@ -75,7 +75,8 @@ checks same-origin and cross-origin access; the browser cross-origin result rema
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional
-context storage was removed from per-object bookkeeping.
+context storage was removed from per-object bookkeeping. During proxy construction, GC
+traces owned values before invoking native hooks only once the object cell is initialized.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
