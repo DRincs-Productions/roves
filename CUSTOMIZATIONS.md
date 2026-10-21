@@ -15028,3 +15028,11 @@ Library evaluation: V8's own `--jitless` startup flag and the existing Bash/Pyth
 runner; no dependency, license, build flag, CLI default, workflow matrix or platform change.
 Cost: one short additional CI browser process; no production hot path changes and no
 performance claim.
+
+## 2026-10-21 - Record the overnight migration handoff
+
+Documentation-only follow-up: AGENTS.md points contributors to the next-resume section in
+docs/V8_MIGRATION.md, which records published code b50c6d99ce1, CI run IDs, completed local
+checks and the unimplemented GC-browser candidate. docs/ROVES_PERFORMANCE.md explicitly
+separates functional checks from the older release measurements. No source or patch changes;
+no claim that the migration or pending CI is complete.

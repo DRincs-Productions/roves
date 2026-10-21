@@ -1,6 +1,17 @@
 # Roves — Prestazioni
 
-## Aggiornamento migrazione, 21 ottobre 2026
+## Consegna serale e prossima ripresa
+
+Pubblicate anche le patch 0267 (grafo costruttori) e 0268 (probe preferenza JIT-less),
+incluse nel codice b50c6d99ce1. Runtime locali: 55 passati normal / 54 JIT-less;
+contratti runner aggiornati: 8/8. Sono risultati funzionali, non benchmark.
+Nessuna nuova misura browser CPU/RAM/GPU/startup; non attribuire alle modifiche
+i valori della release v0.7.13 riportati sotto. Prima delle nuove misure completare
+CI e lifecycle; il controllo GC browser è solo pianificato, non implementato.
+Per run esatte e ordine di lavoro usare la sezione di ripresa in
+[V8_MIGRATION.md](V8_MIGRATION.md).
+
+## Aggiornamento migrazione, 21 ottobre 2026 (risultato storico prima dei retry)
 
 Il commit 8442f4998b9 introduce ownership dei metadati classici con token V8 e WeakMap/cppgc.
 CI V8 39636431164: smoke Linux normal/JIT-less verdi, 8 job verdi e 2 macOS cancellati.

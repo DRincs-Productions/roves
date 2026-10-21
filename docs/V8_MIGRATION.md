@@ -1,5 +1,43 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Da leggere alla prossima ripresa
+
+**Stato consegnato:** codice pubblicato fino a b50c6d99ce1; wiki a 56a0444.
+Le successive modifiche di sola documentazione non cambiano quel codice e non avviano
+la workflow V8, che filtra i percorsi. Non cercare necessariamente una run V8 sullo SHA
+dell'ultimo commit documentale: partire dalle run sotto e controllare il loro head_sha.
+
+| Verifica sul codice pubblicato | Run | Stato alla consegna |
+| --- | --- | --- |
+| V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | In coda |
+| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | In coda |
+| Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | In esecuzione |
+
+Nessun risultato della tabella è ancora un esito finale. La run iOS del nuovo push non
+era ancora visibile alla lettura: cercarla per commit b50c6d99ce1 prima di concludere.
+Non ci sono implementazioni parziali o incarichi Claude attivi lasciati per la notte.
+
+### Ordine operativo per domani
+
+1. Leggere AGENTS.md e questo riepilogo; verificare stato Git e SHA delle run.
+2. Analizzare tutte le CI del push b50c6d99ce1. Se ci sono errori, dare a Claude un incarico
+   preciso per correggerli; revisionare il risultato, aggiornare patch/MD e committare.
+   Attendere la conclusione delle altre run prima del prossimo push.
+3. Confermare nei log Linux normal/JIT-less il nuovo marker constructor graph e il probe
+   js_disable_jit. Solo il probe su build normal distingue la preferenza dalla feature Cargo.
+4. Riprendere il candidato GC browser descritto sotto: è analisi da completare, non patch
+   già pronta. Codex definisce il compito; Claude implementa e si ferma; Codex revisiona.
+5. Continuare con le priorità strutturali: raggiungibilità realm/moduli, identità WindowProxy
+   dopo navigazione, callback/incumbent, worker e shutdown. Ogni incarico deve produrre
+   una modifica coerente, completa e verificabile prima di passare al controllo CI.
+6. Chiudere le verifiche WPT selezionate, applicazioni reali Pixi/Three, prestazioni e
+   artefatti; solo dopo valutare release e aggiornamento pin dei consumer.
+
+**Non completato:** migrazione complessiva, binding nativi incumbent, GC browser,
+retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
+Le stringhe toString dei costruttori Proxy restano diverse da Chrome; non introdurre
+una sostituzione globale di Function.prototype.toString per nascondere la differenza.
+
 ## Checkpoint di spegnimento — 21 ottobre 2026, sera
 
 Su richiesta dell'utente il lavoro viene fermato e i commit locali vengono pubblicati
@@ -51,7 +89,7 @@ La firma iOS è stata nuovamente cancellata prima di ottenere un runner: annotaz
 GitHub «The job was not acquired by Runner of type hosted even after multiple attempts»
 e capacità macOS ARM64 limitata. Un altro retry è in corso. Nessun nuovo push finché
 le verifiche precedenti non sono concluse e risolte, secondo AGENTS.md.
-La patch 0267 è verificata localmente e non ancora pubblicata.
+La patch 0267 è verificata localmente e pubblicata nel push b50c6d99ce1; CI nuova pendente.
 La patch 0268 (probe browser della preferenza `js_disable_jit`) è verificata solo nei
 contratti del runner; il probe browser reale attende la CI.
 
