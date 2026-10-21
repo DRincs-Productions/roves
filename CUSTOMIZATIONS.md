@@ -14859,3 +14859,17 @@ Add both existing pages to the reconstruction. Reuse their existing static HTML 
 no dependency or runtime code. WSL patch dry-run/apply and byte-normalized comparison of all
 146 files pass after the repair. This is source consistency evidence, not a browser test or
 proof that every upstream Servo customization has been exhaustively compared.
+
+## 2026-10-21 - Exercise exact-source authorization reentry in constructor regressions
+
+**Files:** `components/roves-js/src/tests.rs`
+(`0263-exact-function-authorization-reentry-regression.patch`), README, migration plan and wiki.
+
+The old newTarget.prototype getter test used double-escaped newline text, which did not
+exactly match the pending authorization. Derive the exact compilation text from a native
+constructed function's toString, then try eval of that text from the newTarget getter for
+Function, GeneratorFunction, AsyncFunction and AsyncGeneratorFunction. All remain denied
+while the intended construction succeeds. Reuse native V8 construction and the existing
+strict CSP callback: no implementation change or dependency is needed.
+Full runtime normal 48 passed / 2 ignored, JIT-less 47 / 3. Patch dry-run/apply and source
+comparison against the complete custom reconstruction pass. Browser-wide CSP/WPT work remains open.

@@ -1595,7 +1595,26 @@ mod runtime_hooks {
         assert!(eval(&runtime, "(() => { let order = '', blocked = false, denied = false; const p = {toString() { order += 'p'; try { eval('42'); } catch(e) { blocked = e instanceof EvalError; } return 'value'; }}, b = {toString() { order += 'b'; return 'return value + 1'; }}; try { Function(p,b); } catch(e) { denied = e instanceof EvalError; } return order === 'pb' && blocked && denied; })()").to_boolean(), "ordinary conversions run once, in order, without a CSP bypass");
         assert!(eval(&runtime, "(() => { class Derived extends Function {} const f = new Derived(trust('return 42')); return f() === 42 && f instanceof Derived && Function.prototype.constructor === Function; })()").to_boolean());
         assert!(eval(&runtime, r#"Function(trust('return "\uD800"'))().charCodeAt(0) === 0xD800"#).to_boolean(), "source stays UTF-16 without a lossy Rust conversion");
-        assert!(eval(&runtime, "(() => { let blocked = false; const nt = new Proxy(function(){}, {get(target, key) { if (key === 'prototype') { try { eval('(function anonymous(\\n) {\\nreturn 42\\n})'); } catch(e) { blocked = e instanceof EvalError; } } return Reflect.get(target, key); }}); const f = Reflect.construct(Function, [trust('return 42')], nt); return f() === 42 && blocked; })()").to_boolean(), "authorization cannot escape into a newTarget prototype getter");
+        assert!(eval(&runtime, r#"(() => {
+            const constructors = [Function, (function*(){}).constructor,
+                (async function(){}).constructor, (async function*(){}).constructor];
+            for (const Constructor of constructors) {
+                const probe = Constructor(trust('return 42'));
+                const exactSource = '(' + Function.prototype.toString.call(probe) + ')';
+                let blocked = false;
+                const newTarget = new Proxy(function(){}, {
+                    get(target, key) {
+                        if (key === 'prototype') {
+                            try { eval(exactSource); } catch (error) { blocked = error instanceof EvalError; }
+                        }
+                        return Reflect.get(target, key);
+                    }
+                });
+                const compiled = Reflect.construct(Constructor, [trust('return 42')], newTarget);
+                if (typeof compiled !== 'function' || !blocked) return false;
+            }
+            return true;
+        })()"#).to_boolean(), "exact-source authorization cannot escape into a newTarget prototype getter");
         assert!(eval(&runtime, "(() => { const G = Object.getPrototypeOf(function*(){}).constructor; return G(trust('yield 42'))().next().value === 42; })()").to_boolean());
         assert!(eval(&runtime, "(() => { const A = Object.getPrototypeOf(async function(){}).constructor; const AG = Object.getPrototypeOf(async function*(){}).constructor; return A(trust('return 42'))() instanceof Promise && AG(trust('yield 42'))().next() instanceof Promise; })()").to_boolean());
         assert!(eval(&runtime, "(() => { try { Function(Symbol()); return false; } catch(e) { return e instanceof TypeError; } })()").to_boolean());

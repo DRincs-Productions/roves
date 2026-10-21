@@ -316,6 +316,12 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
 
+Patch 0263 rafforza la regressione newTarget: il precedente testo con escape doppi non
+coincideva con l'autorizzazione. Ora eval tenta il testo esatto ricavato dalla funzione nativa,
+nel getter prototype del newTarget, per tutti e quattro i costruttori. Negato in normal e
+JIT-less mentre la costruzione prevista riesce; suite complete 48/2 ignorati e 47/3.
+Nessun cambio dell'implementazione o dipendenza; dry-run e confronto replay riusciti.
+
 Patch 0262 include le due fixture già esistenti cross-origin.html e wasm-csp.html, prima
 assenti dal replay. Audit: 154 patch precedenti ricostruite e 146 file tracked confrontati
 nei tre runtime custom, smoke e quattro tool V8; dopo questa aggiunta tutti coincidono.
