@@ -14841,3 +14841,7 @@ tab, local CSP fixture, produces true/false/false: mixed arguments are denied, w
 still rejects all-trusted Function as recorded previously. Roves browser confirmation waits
 for CI. The replay also repairs prior csp.html drift for the already committed trusted-body
 guards. Replayed 12 preceding patches, WSL dry-run/apply and exact source comparison pass.
+
+The migration plan now distinguishes historical failed runs from the confirmed green
+39595584589/39595584650 checkpoint and marks production Window prototype initialization
+verified. Later property/GC/matrix changes and the remaining lifecycle criteria stay open.

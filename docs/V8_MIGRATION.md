@@ -26,6 +26,8 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39595584589](https://github.com/DRincs-Productions/roves/actions/runs/39595584589) | Verde, 10/10 | Sei runtime e quattro build verdi. Smoke Linux normal/JIT-less: prototipi, trusted Function 42/guardie, nove suite, CSP Wasm e navigazione passano. Smoke browser Windows/macOS saltati. |
+| [Build Servo Test Binaries — 39595584650](https://github.com/DRincs-Productions/roves/actions/runs/39595584650) | Verde, 13/13 | Replay patch, SDL3, bundle portable/installer e smoke Steam verdi. |
 | [V8 migration checks — 39590810430](https://github.com/DRincs-Productions/roves/actions/runs/39590810430) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i runtime e le build compilano. Window immutabile confermato normal/JIT-less; iframe carica ma prototipo false/true. Trusted Function ancora EvalError (0255 non inclusa). Le nove suite, CSP eval/Wasm e navigazione passano. |
 | [V8 migration checks — 39587009751](https://github.com/DRincs-Productions/roves/actions/runs/39587009751) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i 6 runtime e tutte le 4 build servoshell verdi. Le 9 suite passano nelle due modalità. Iframe append/load/contentWindow presenti; prototipo cross-origin false/false. Trusted Function fallisce; eval 42, CSP Wasm e navigazione passano. |
 | [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | Fallita: 6 job verdi, 2 falliti e 2 cancellati | Quattro runtime Linux/Windows normal/JIT-less e tutte le quattro build servoshell verdi. Smoke Linux normal/JIT-less falliti su iframe cross-origin e Function(TrustedScript); smoke Windows/macOS saltati, runtime macOS cancellati. |
@@ -224,8 +226,8 @@ Regressione locale: inizializzazione canonica, prototipo accettato se identico e
 se diverso tramite Object/Reflect, proprietà globali ancora modificabili. Runtime normal:
 43 passati / 2 ignorati; JIT-less: 42 / 3. Replay di 33 patch precedenti, dry-run WSL e
 confronto sorgenti passati. La smoke richiede di nuovo il comportamento del vero Window,
-con marker distinto dall’oggetto ordinario. **Non ancora confermato con i binding Servo in CI**;
-WindowProxy cross-origin, TrustedScript Function e lifecycle restano aperti.
+con marker distinto dall’oggetto ordinario. **Confermato con i binding Servo nella CI
+39595584589, Linux normal/JIT-less.** Lifecycle e copertura WindowProxy più ampia restano aperti.
 
 ### WindowProxy remoto — 21 ottobre 2026
 
@@ -249,7 +251,8 @@ Restano aperti anche identità durante navigazioni/transplant e trap origin-awar
 
 ### Argomenti trusted dei costruttori dinamici — 21 ottobre 2026
 
-Patch `0255-v8-trusted-function-arguments.patch`, implementazione locale in attesa di CI.
+Patch `0255-v8-trusted-function-arguments.patch`: trusted Function e guardie confermati
+nella CI 39595584589 Linux normal/JIT-less; matrice estesa della 0261 ancora da verificare.
 Quattro adattatori V8 Proxy per realm conservano gli argomenti di Function/GeneratorFunction/
 AsyncFunction/AsyncGeneratorFunction. Prima di convertire un oggetto, richiamano il callback
 Servo `codeForEvalGets`: per TrustedScript si usano i dati interni e non si invoca toString,
@@ -303,13 +306,15 @@ resta da correggere. Nessuna nuova dipendenza, benchmark browser non eseguito.
 
 Regressione locale: identità cache, realm corretto, WeakMap globale alterata, slot aggiornati
 sul proprietario, GC, getter null e rifiuto sostituzione, unwrap al ritorno e un solo finalize.
-Normal 46 passati / 2 ignorati, JIT-less 45 / 3. **Verifica browser pendente**.
-Non chiudere l’audit WindowProxy: altri trap locali riportano ancora TODO origin-aware e il
+Normal 46 passati / 2 ignorati, JIT-less 45 / 3. **Prototipo cross-origin confermato
+nella CI 39595584589 Linux normal/JIT-less.**
+Non chiudere l’audit WindowProxy: la 0259 collega gli altri trap locali agli helper origin-aware,
+ma il suo smoke proprietà è ancora da verificare in browser; il
 transplant di navigazione non preserva ancora tutte le identità. La chiusura anticipata delle
 suite ha portato il riepilogo CI da 13 minuti di deadline a circa 39 secondi; questo è tempo
 di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del browser.
 
-### Stato realm per oggetto inutilizzato — 21 ottobre 2026
+### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
 
 Patch 0261 estende lo smoke browser CSP: 60 combinazioni miste sui quattro costruttori
 dinamici, quattro esecuzioni all-trusted e quattro conversioni contraffatte. Contratto derivato
@@ -538,13 +543,12 @@ risulta superata nella CI corrente.
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
   I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
   `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
-- [ ] Completare la correzione di `JS_SetImmutablePrototype` sul percorso Window di produzione:
-  test JSAPI verdi, smoke browser ancora fallito in `39320063351`.
+- [x] Correggere `JS_SetImmutablePrototype` sul percorso Window di produzione:
+  template canonico V8 e smoke browser Linux normal/JIT-less verdi in `39595584589`.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
-  CI V8 `39462392615` conferma il risultato `eval(TrustedScript)`; la nuova fixture controlla
-  parametri/corpo trusted di Function secondo WPT e la compilazione Wasm senza
-  `wasm-unsafe-eval`. Attendere la CI per chiudere questi due percorsi e preservare le decisioni
-  di sicurezza del runtime web.
+  CI `39595584589` conferma eval, Function trusted/guardie e Wasm CSP Linux normal/JIT-less.
+  Restano matrice estesa sui quattro costruttori, identità/stringificazione degli intrinseci
+  e import dinamico; preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. Rilasciare gli oggetti
   non più raggiungibili dopo navigazione o chiusura, preservando quelli richiesti da
   riferimenti JS e bfcache.
@@ -635,11 +639,10 @@ alle API native.
 La migrazione è conclusa quando le verifiche obbligatorie sono bloccanti e verdi, le lacune
 d’integrazione individuate sono risolte, i test di ciclo di vita passano e il codice obsoleto
 sostituito è rimosso. Le attività indipendenti del runtime web restano nel backlog performance.
-Alla revisione del 20 ottobre 2026 la CI V8 `39467094586` è fallita: quattro job runtime e
-quattro compilazioni servoshell passano, il runtime macOS normal supera il timeout del test
-runner e gli smoke Linux falliscono; macOS JIT-less è cancellato. Il dettaglio e i limiti
-delle evidenze sono in apertura. Le nuove asserzioni trusted Function e Wasm CSP attendono CI.
-Il workflow generale precedente `39320063236` è verde, 13/13 job.
+Al 21 ottobre la CI V8 `39595584589` è verde (10/10) e quella generale `39595584650`
+è verde (13/13). La run `39625090343` verifica le pulizie successive; i nuovi controlli
+delle proprietà WindowProxy, slot iniziale GC e matrice Trusted Types attendono ancora
+la pubblicazione e la verifica online. I criteri aperti sopra restano vincolanti.
 
 I tipi V8 restano confinati al livello scripting. Non sono previste nuove API pubbliche Roves;
 eventuali cambiamenti del comportamento web devono seguire gli standard e avere test dedicati.
