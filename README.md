@@ -41,7 +41,8 @@ three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
 [Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
 The V8 smoke CI treats failed assertions, incomplete reports, unexpected skips and missing
 Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly configured
-missing audio/GPU devices are the only accepted exceptions. When WebGPU has no usable adapter,
+missing audio/GPU devices are the only accepted exceptions. Completed suites stop their browser
+without waiting for the full deadline, then undergo the same strict result validation. When WebGPU has no usable adapter,
 `requestAdapter()` resolves with `null`, including for local `file://` pages; a request that
 hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and

@@ -178,6 +178,15 @@ come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
 | Window cross-origin | `window/windowproxy.rs` collega i trap prototipo agli helper Servo; gli altri trap conservano TODO origin-aware. | Le fixture `data:` e HTTP delle run `39462392615` e `39467094586` non confermano il marker. Il watchdog ora viene annullato su load/error. Verificare accessi, navigazione e identità. |
 | Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; test di raggiungibilità presente. | I sei job runtime di `39320063351` sono verdi. La retention incondizionata è rimossa dalla patch 0236; l’audit lifecycle complessivo resta aperto. |
 
+### Riferimento fixture Chrome — 21 ottobre 2026
+
+Chrome DevTools MCP, Chrome 155.0.0.0 su Windows x64, scheda aperta in background ma
+`document.visibilityState === "visible"`, `navigator.webdriver === true`; modalità headless
+non determinata. La pagina `http://127.0.0.1:18765/test.html` con iframe su porta 18766 emette
+append, appended, load, contentWindow true e prototipo `true true`, senza errori script
+(solo favicon 404). Il nuovo timeout non scatta dopo il load. È una verifica funzionale della
+fixture aggiornata e della diagnostica, non una misura prestazionale né un risultato Servo.
+
 ### Audit callback e incumbent — 21 ottobre 2026
 
 Patch `0252-v8-empty-scripted-caller.patch`: `GetScriptedCallerGlobal` richiede ora un frame
@@ -334,6 +343,17 @@ Il marker cross-origin resta senza diagnosi e potrebbe non essere eseguito dopo 
 nei controlli Window che lo precedono.
 Il controllo Chrome DevTools conferma soltanto il comportamento di Chrome 155, non quello di
 Servo. La diagnosi di queste regressioni precede la chiusura della migrazione.
+
+### Chiusura delle suite completate — 21 ottobre 2026
+
+Il runner prima attendeva tutte le deadline anche dopo `SUITE TOTAL`, circa tredici minuti
+per le nove suite. Ora sorveglia il log e invia TERM al processo GNU timeout dopo il totale;
+accetta soltanto quel TERM richiesto, poi applica comunque il validatore completo. Crash,
+errori e conteggi non validi restano failure. Le pagine browser extra conservano i timeout.
+La regressione POSIX `linger` mantiene vivo il browser simulato per 120 secondi dopo il
+riepilogo e richiede che l’intero runner termini entro 15 secondi. Controlli locali Windows:
+parser 4 passati e 3 integrazioni POSIX saltate; sintassi Bash valida. Tutti i 7 test, inclusi i casi POSIX, passano su Ubuntu WSL in 30,491 secondi.
+Nessuna nuova dipendenza.
 
 ### Verifica della smoke MSI Windows — 19 ottobre 2026
 

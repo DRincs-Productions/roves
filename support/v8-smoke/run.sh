@@ -49,13 +49,29 @@ fi
 
 run_page() {
   local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}"
+  local completed=0 pid code
   # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
   if [ "$RUNNER_COUNT" -gt 0 ]; then
-    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1
+    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1 &
   else
-    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1
+    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1 &
   fi
-  local code=$?
+  pid=$!
+  if [ "${5:-}" = suite ]; then
+    # A suite emits its total only after settling all its checks. GNU timeout forwards
+    # TERM to the browser; the existing validator still rejects failed/incomplete totals.
+    while kill -0 "$pid" 2>/dev/null; do
+      if grep -aq '^SUITE TOTAL ' "$log"; then
+        completed=1
+        kill -TERM "$pid" 2>/dev/null || true
+        break
+      fi
+      sleep 0.1
+    done
+  fi
+  wait "$pid"
+  code=$?
+  if [ "$completed" -eq 1 ] && [ "$code" -eq 143 ]; then code=0; fi
   # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
   if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
     echo "::error::$page: servoshell exited with $code"
@@ -66,7 +82,7 @@ run_page() {
 
 run_suite() {
   local page="$1" log="$2" seconds="${3:-60}"
-  run_page "$page" "$seconds" "$log"
+  run_page "$page" "$seconds" "$log" "" suite
   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
   local total
   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)

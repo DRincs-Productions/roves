@@ -6,6 +6,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 from check_results import validate
@@ -113,6 +114,10 @@ else:
         print('SUITE PASS example')
         print('SUITE TOTAL 1/1')
 # Browsers may stay open after reporting all results; that timeout is acceptable.
+if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'wasm-csp.html', 'nav1.html'):
+    sys.stdout.flush()
+    import time
+    time.sleep(120)
 raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0)
 ''')
             launcher.chmod(0o755)
@@ -142,6 +147,12 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('ordinary JSAPI prototype mutation failed', result.stdout)
                 if scenario == 'cross-origin-prototype':
                     self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
+
+    def test_completed_suites_do_not_wait_for_the_deadline(self):
+        started = time.monotonic()
+        result = self.run_fixture('linger')
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertLess(time.monotonic() - started, 15)
 
 
 if __name__ == '__main__':

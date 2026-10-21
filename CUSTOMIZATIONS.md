@@ -14606,3 +14606,21 @@ from their absent Servo v0.5.0 baseline through 33 preceding patches (LF-normali
 0252 applies, applied it and compared with the working sources. Browser CI remains required.
 The activation-scoped HideScriptedCaller contract is a separate audit item: the existing global
 counter is not sufficient for nested JS reentry and is deliberately not used as an implementation.
+
+## 2026-10-21 - Stop completed V8 smoke suites before their deadlines
+
+**Files:** repository-only `support/v8-smoke/{run.sh,test_runner.py}`, `README.md`,
+`docs/V8_MIGRATION.md`, and wiki shell docs; no upstream Servo source patch required.
+
+Suite pages kept their browser open after printing their final total. The runner waited every
+full deadline (including the four-minute stress deadline), adding about thirteen minutes of
+idle time to each CI browser smoke. Monitor the existing log and signal GNU timeout after a
+suite total appears; timeout forwards TERM to its child. Accept that requested TERM exit only
+for a reported total. The existing result validator still rejects failures, incomplete counts
+and unauthorized skips, and browser crashes retain their failure status. Other browser pages
+keep their existing deadlines. Add an integration scenario whose fake browser sleeps after
+reporting all checks, proving that the runner finishes before the deadline. Reuse GNU timeout,
+Bash and Python stdlib, with no new dependency or change to the build/bundle surface.
+
+Validation: all seven runner tests pass on Ubuntu WSL in 30.491 seconds; Bash syntax and
+`git diff --check` pass. The test keeps checking the existing crash/failure/timeout contracts.
