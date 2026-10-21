@@ -10,9 +10,8 @@ use std::cell::{OnceCell, RefCell};
 use std::collections::hash_map::Entry;
 use std::ffi::CStr;
 use std::fmt::Debug;
-use std::ptr::NonNull;
+use std::ptr::{self, NonNull};
 use std::rc::Rc;
-use std::{mem, ptr};
 
 use encoding_rs::UTF_8;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
@@ -881,14 +880,12 @@ pub(crate) unsafe fn EnsureModuleHooksInitialized(rt: *mut JSRuntime) {
 
 #[expect(unsafe_code)]
 unsafe extern "C" fn host_add_ref_top_level_script(value: *const Value) {
-    let val = unsafe { Rc::from_raw((*value).to_private() as *const ModuleScript) };
-    mem::forget(val.clone());
-    mem::forget(val);
+    unsafe { Rc::increment_strong_count((*value).to_private() as *const ModuleScript) };
 }
 
 #[expect(unsafe_code)]
 unsafe extern "C" fn host_release_top_level_script(value: *const Value) {
-    let _val = unsafe { Rc::from_raw((*value).to_private() as *const ModuleScript) };
+    unsafe { Rc::decrement_strong_count((*value).to_private() as *const ModuleScript) };
 }
 
 #[expect(unsafe_code)]

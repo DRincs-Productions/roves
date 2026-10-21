@@ -14900,3 +14900,17 @@ Runtime-lived metadata tables remain: this fixes assignment and shutdown ownersh
 collection after individual scripts, navigation or bfcache eviction. No browser RAM/CPU
 measurement claimed; assignments gain the standard constant-time module retain/release,
 and shutdown walks retained metadata once. No GPU impact or build/bundle surface change.
+
+## 2026-10-21 - Delegate native private reference callbacks directly to std Rc
+
+**Files:** `components/script/script_module.rs`
+(`0265-use-standard-rc-reference-hooks.patch`), README, migration plan and wiki.
+
+Replace Rc::from_raw/clone/mem::forget retain bookkeeping with Rc::increment_strong_count,
+and the temporary Rc drop with Rc::decrement_strong_count. Remove the now-unused mem import.
+The standard library provides the same concrete ownership operation with fewer local steps;
+no dependency, allocation, extra reference, platform restriction or GPU work. The existing
+adapter ownership regression already uses these standard APIs and passes normal/JIT-less;
+it does not directly link Servo's callbacks. Callback compilation remains an online check.
+Replayed both preceding patches for this pristine v0.5.0 file, WSL dry-run/apply and exact
+source comparison pass. No browser performance or memory result claimed.

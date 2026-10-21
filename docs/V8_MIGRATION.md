@@ -317,6 +317,12 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
 
+Patch 0265 sostituisce nei callback nativi la ricostruzione Rc/clone/forget con
+increment_strong_count/decrement_strong_count della libreria standard, rimuovendo l'import
+mem. Stessa operazione di ownership con meno codice; nessuna dipendenza. La regressione
+adapter 0264 usa già queste API ed è verde; compilazione dei callback Servo online pendente.
+Replay due patch precedenti sul file pristine, dry-run e confronto sorgenti riusciti.
+
 Patch 0264 bilancia gli hook privati di script/moduli e li rilascia prima del teardown del
 runtime. Riusa il contratto SpiderMonkey 140.14 installato e Rc; i chiamanti Servo passano
 Rc::as_ptr mantenendo il proprietario Rust fino all'assegnazione. Regressione con conteggi
