@@ -99,6 +99,7 @@ elif page == 'csp.html':
     if scenario != 'trusted-function': print('ROVES-V8 csp trusted function 42')
     if scenario != 'trusted-function-guards': print('ROVES-V8 csp trusted function guards true')
     if scenario != 'trusted-function-matrix': print('ROVES-V8 csp trusted function matrix true true true')
+    if scenario != 'constructor-graph': print('ROVES-V8 csp constructor graph true true true')
     print('ROVES-V8 csp ordinary eval unchanged true')
 elif page == 'wasm-csp.html':
     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
@@ -142,7 +143,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'csp-wasm', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -155,6 +156,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
                 if scenario == 'cross-origin-properties':
                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
+                if scenario == 'constructor-graph':
+                    self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
 
     def test_completed_suites_do_not_wait_for_the_deadline(self):
         started = time.monotonic()

@@ -14953,3 +14953,39 @@ can affect V8 compilation-cache reuse; one private-property deletion is added to
 resolve notification. No browser startup/CPU/RAM improvement claimed or measured, no GPU
 behavior change. Runtime-owned realm and module records, navigation identity and broader
 lifecycle/WPT criteria remain open.
+
+## 2026-10-21 - Link dynamic Function constructors to the exposed Function
+
+**Files:** `components/roves-js/src/{dynamic_code.rs,tests.rs}`,
+`support/v8-smoke/{csp.html,run.sh,test_runner.py}`
+(`0267-dynamic-constructor-prototype-graph.patch`), README, migration plan and wiki.
+
+The per-realm Proxy adapters for Function, GeneratorFunction, AsyncFunction and
+AsyncGeneratorFunction replaced each `prototype.constructor` and `globalThis.Function`, but the
+three derived targets still had the original, unwrapped `Function` as their [[Prototype]], so
+`Object.getPrototypeOf(GeneratorFunction)` leaked it and the intrinsic graph differed from
+ECMA-262 (27.3.2, 27.4.2, 27.7.2) and Chrome. The installer now creates all four proxies first,
+then checks each derived target's parent is still the original `Function` and relinks it with
+the captured `Object.setPrototypeOf` to the exposed wrapper. `Function` keeps
+`Function.prototype`. The proxies still define only `apply`/`construct` traps, so prototype
+reads, `setPrototypeOf`, `preventExtensions` and `freeze` forward to the targets: Proxy
+invariants hold and later script mutations behave as on the original constructors. No security
+check removed; no `Function.prototype.toString` patch.
+
+Reference: Chrome 155 Windows x64, visible `about:blank` (Codex via Chrome DevTools MCP,
+headless unknown): parent is `Function` for [Function, G, A, AG] = [false, true, true, true];
+`C.prototype.constructor === C` and `C instanceof Function` for all four.
+
+Runtime regressions check names, lengths, descriptors, prototype back-links, parents, calls,
+`Reflect.construct`, subclasses and script relinking, plus a separate runtime with
+non-extensible/frozen constructors. `csp.html` prints the required marker
+`ROVES-V8 csp constructor graph true true true`, wired into `run.sh` and the runner contract
+fixture. Local runtime normal 55 passed / 2 ignored; JIT-less 54 / 3; Python runner contracts
+7/7 under WSL. Replayed 50 preceding custom patches for the five files, WSL patch dry-run/apply
+and source comparison pass. Browser smoke not yet run.
+
+Remaining difference: V8 stringifies the callable proxies as `function () { [native code] }`
+(valid NativeFunction syntax) whereas Chrome includes the name. Library evaluation: existing V8
+Proxy and `Object.setPrototypeOf` only; no dependency, license or platform change. Cost: three
+prototype relinks at realm creation; inherited property lookups on the three derived
+constructors traverse the Function proxy. Not measured; no GPU effect.

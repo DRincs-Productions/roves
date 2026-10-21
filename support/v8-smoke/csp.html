@@ -64,6 +64,21 @@ for (let changed = 0; changed < pieces.length; changed++) {
 }
 Promise.all(results).then(values => console.log("ROVES-V8 csp trusted function matrix",
   rejectedCombinations === 60, values.every(Boolean), preservedArguments === 4));
+// The wrapped constructors keep Chrome's intrinsic graph: only the exposed Function is a parent.
+const graphConstructors = [Function, (function*() {}).constructor,
+  (async function() {}).constructor, (async function*() {}).constructor];
+const graphParents = graphConstructors.every((Constructor, kind) =>
+  Object.getPrototypeOf(Constructor) === (kind === 0 ? Function.prototype : Function));
+const graphLinks = graphConstructors.every(Constructor =>
+  Constructor.prototype.constructor === Constructor && Constructor instanceof Function);
+let graphSubclasses = false;
+try {
+  graphSubclasses = graphConstructors.every(Constructor => {
+    class Derived extends Constructor {}
+    return new Derived(smokePolicy.createScript("return 1")) instanceof Derived;
+  });
+} catch (_) {}
+console.log("ROVES-V8 csp constructor graph", graphParents, graphLinks, graphSubclasses);
 const ordinary = { toString() { return "40 + 2"; } };
 console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
 </script>

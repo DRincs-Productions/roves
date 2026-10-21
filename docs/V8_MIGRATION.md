@@ -15,6 +15,14 @@ Restano aperti identità dopo navigazione, completamento SOP/WPT, retention real
 stress GC browser, applicazioni reali e artefatti. Gli smoke ordinari non dimostrano
 raccolta durante navigazioni ripetute né risparmio RAM. L'ultima matrice interamente verde
 resta 39595584589 sul precedente commit dfa367ed8ee.
+Ripresa serale: i retry confermano tutti i sei runtime V8, compreso macOS JIT-less;
+la build V8 macOS è ancora in coda. Il retry SDL3 macOS è verde e ha sbloccato i bundle.
+La firma iOS è stata nuovamente cancellata prima di ottenere un runner: annotazioni
+GitHub «The job was not acquired by Runner of type hosted even after multiple attempts»
+e capacità macOS ARM64 limitata. Un altro retry è in corso. Nessun nuovo push finché
+le verifiche precedenti non sono concluse e risolte, secondo AGENTS.md.
+La patch 0267 è verificata localmente e non ancora pubblicata.
+
 Le diagnosi storiche seguenti vanno lette alla luce di questo aggiornamento.
 
 Rilevazione sul commit `273c1d9db2e` (`main`) e sulla CI avviata dal rollback
@@ -333,6 +341,34 @@ Costo da misurare: token/host-options per compilazione, holder su prima assegnaz
 possibile effetto sulla compilation cache e lookup privato alla risoluzione Promise.
 Non chiudere retention di realm/moduli né dichiarare un miglioramento RAM/CPU browser.
 
+### Grafo intrinseco dei costruttori dinamici — 21 ottobre 2026 (locale, CI da eseguire)
+
+Patch 0267: i target originali di GeneratorFunction/AsyncFunction/AsyncGeneratorFunction
+ereditavano ancora dal `Function` originale, quindi `Object.getPrototypeOf(C)` esponeva il
+costruttore non avvolto. `INSTALL` crea ora i quattro proxy in una prima fase; poi, per i tre
+target derivati, verifica che il genitore sia ancora l'originale e lo ricollega con
+`Object.setPrototypeOf` catturato al `Function` esposto (ECMA-262 27.3.2, 27.4.2, 27.7.2).
+`Function` mantiene `Function.prototype`. I proxy restano senza trap
+`getPrototypeOf`/`setPrototypeOf`/`preventExtensions`: le operazioni passano ai target, così
+gli invarianti Proxy valgono anche dopo `Object.preventExtensions`/`freeze` e le mutazioni
+successive dell'utente sono rispettate. Nessun controllo di sicurezza rimosso.
+Riferimento Chrome 155 Windows x64 (`about:blank` visibile, misurato da Codex con Chrome
+DevTools MCP; headless non noto): genitore === `Function` per [F, G, A, AG] =
+[false, true, true, true], `C.prototype.constructor === C` e `C instanceof Function` sempre veri.
+
+Regressioni runtime: nomi/length/descrittori, `prototype` e back-link `constructor`, genitori,
+chiamate, `Reflect.construct`, sottoclassi, mutazioni utente e un runtime separato con
+costruttori non estendibili/congelati. Smoke `csp.html`: marker obbligatorio
+`ROVES-V8 csp constructor graph true true true`. Locale: normal 55 passati / 2 ignorati,
+JIT-less 54 / 3; contratti runner Python 7/7 via WSL. Replay delle 50 patch precedenti sui
+cinque file, dry-run `patch -p1` e confronto sorgenti riusciti. Smoke browser non eseguito.
+Limite residuo: `Function.prototype.toString` sui quattro proxy V8 restituisce
+`function () { [native code] }` (sintassi NativeFunction valida), mentre Chrome include il nome
+(`function Function() { [native code] }`). Nessuna patch a toString introdotta.
+Valutazione librerie: solo V8 Proxy e `Object.setPrototypeOf` esistenti; nessuna dipendenza,
+licenza o piattaforma cambiata. Costo: tre ricollegamenti alla creazione del realm; le ricerche
+di proprietà ereditate sui tre costruttori attraversano il proxy `Function`. Nessuna misura.
+
 Patch 0265 sostituisce nei callback nativi la ricostruzione Rc/clone/forget con
 increment_strong_count/decrement_strong_count della libreria standard, rimuovendo l'import
 mem. Stessa operazione di ownership con meno codice; nessuna dipendenza. La regressione
@@ -414,10 +450,21 @@ Due problemi ulteriori sono confermati dal codice e restano aperti:
 - `HideScriptedCaller` modifica un contatore globale che nessun lookup usa. Il contratto upstream
   è per attivazione: nascondere tutto il thread romperebbe il rientro JS durante callback.
   Progettare il collegamento al confine di ingresso JS e verificare callback annidati/cross-realm.
-- `NewWindowProxy` usa direttamente il global proxy nativo di V8 per i globali e il suo commento
-  documenta che i trap Servo non vengono invocati dagli accessi JS. I test JSAPI dei trap non
-  coprono questo percorso. La soluzione browser deve preservare identità e navigazione e
-  applicare davvero i controlli d’origine; non basta collegare un trap che V8 non chiama.
+  Audit 21 ottobre: un tentativo basato sul numero di frame di `StackTrace` è stato scartato
+  (microtask, Wasm, frame interni e cambi di realm alterano la profondità; costo sul percorso
+  caldo). La sola contabilità Roves (trampolini nativi + guardie RAII sulle API che eseguono JS)
+  non distingue un nativo chiamato direttamente da V8 da uno chiamato da un frame JS nuovo:
+  `JS_CallFunctionValue` o un getter possono raggiungere il nativo con o senza frame intermedi.
+  Il candidato nativo da verificare esiste in V8 (`Context::BackupIncumbentScope` +
+  `Isolate::GetIncumbentContext`, che confronta lo `sp` del frame JS più interno con lo scope e
+  restituisce il realm reale del chiamante), ma rusty_v8 152.2 non lo espone. Sblocco: binding
+  upstream in rusty_v8 (o shim C++ minimo), poi valutare Hide/Unhide come pila di scope con un contesto
+  sentinella per runtime e regressioni dedicate; `JS_GetScriptedCallerPrivate` resta non nascosto. Nessun codice cambiato.
+- Nel percorso globale NewWindowProxy usa il global proxy nativo V8. La patch 0259
+  aggiunge wrapper cross-origin che invocano i trap Servo, confermati negli smoke Linux;
+  questa copertura supera la diagnosi iniziale dei trap non invocati, ma non chiude
+  l'identità durante navigazione: il ramo globale di JS_TransplantObject restituisce
+  ancora il sostituto invece di preservare tutti i riferimenti esistenti.
 
 ### Preferenza js_disable_jit — 19 ottobre 2026
 
@@ -590,8 +637,9 @@ risulta superata nella CI corrente.
   template canonico V8 e smoke browser Linux normal/JIT-less verdi in `39595584589`.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
   CI `39595584589` conferma eval, Function trusted/guardie e Wasm CSP Linux normal/JIT-less.
-  Restano matrice estesa sui quattro costruttori, identità/stringificazione degli intrinseci
-  e import dinamico; preservare le decisioni di sicurezza del runtime web.
+  Restano matrice estesa sui quattro costruttori, stringificazione degli intrinseci proxy
+  e import dinamico; la 0267 corregge localmente il grafo dei genitori (CI e smoke browser da
+  verificare). Preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. La 0266 implementa
   ownership dei metadati classici tramite token/WeakMap/cppgc, con regressioni locali verdi;
   restano verifica browser e misure, realm/moduli e callback. Rilasciare gli oggetti

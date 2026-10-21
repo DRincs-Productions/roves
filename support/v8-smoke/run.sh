@@ -125,7 +125,7 @@ if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error
 if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
+for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp constructor graph true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
 ' ' '))"; fi
 done

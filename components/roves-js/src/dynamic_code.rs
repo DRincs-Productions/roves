@@ -19,19 +19,28 @@ const INSTALL: &str = r#"(function(invoke) {
   const define = Object.defineProperty;
   const descriptor = Object.getOwnPropertyDescriptor;
   const getPrototype = Object.getPrototypeOf;
+  const setPrototype = Object.setPrototypeOf;
   const constructors = [Function, getPrototype(function*(){}).constructor,
     getPrototype(async function(){}).constructor, getPrototype(async function*(){}).constructor];
+  // Trap-less [[GetPrototypeOf]] and [[PreventExtensions]] forward to the targets,
+  // so Proxy invariants hold whatever scripts later do to the constructors.
+  const wrappers = constructors.map((target, kind) => new Proxy(target, {
+    apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
+    construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
+  }));
   for (let kind = 0; kind < constructors.length; ++kind) {
     const target = constructors[kind];
-    const wrapper = new Proxy(target, {
-      apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
-      construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
-    });
+    // %GeneratorFunction% and its siblings inherit from %Function% (ECMA-262
+    // 27.3.2, 27.4.2, 27.7.2); relink them so the original never leaks.
+    if (kind !== 0) {
+      if (getPrototype(target) !== Function) throw new TypeError('unexpected constructor parent');
+      setPrototype(target, wrappers[0]);
+    }
     const property = descriptor(target.prototype, 'constructor');
-    property.value = wrapper;
+    property.value = wrappers[kind];
     define(target.prototype, 'constructor', property);
-    if (kind === 0) globalThis.Function = wrapper;
   }
+  globalThis.Function = wrappers[0];
   return true;
 })"#;
 

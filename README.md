@@ -68,6 +68,8 @@ checker, extracting trusted data without invoking altered `toString` methods and
 V8's native constructor/parser. Mixed strings and counterfeit objects remain blocked. This
 path passed Linux normal/JIT-less browser CI; migration status and remaining limitations are tracked in
 [`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md). Chrome 155 still rejects the all-trusted case.
+GeneratorFunction, AsyncFunction and AsyncGeneratorFunction inherit from the exposed `Function`,
+as in the language specification, so the unwrapped constructor is not reachable through them.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke

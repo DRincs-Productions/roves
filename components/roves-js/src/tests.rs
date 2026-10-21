@@ -1655,6 +1655,80 @@ mod runtime_hooks {
         assert!(eval(&runtime, "(() => { globalThis.escapedFunctionBody = false; try { Function(trust('a) { globalThis.escapedFunctionBody = true; } ('), trust('return 42')); return false; } catch(e) { return e instanceof SyntaxError && !escapedFunctionBody; } })()").to_boolean(), "V8 still validates parameters separately from the body");
     }
 
+    /// The four dynamic-code constructors and their prototypes, as Chrome links them
+    /// (ECMA-262 20.2.2, 27.3.2, 27.4.2, 27.7.2): only the wrapped `Function` is reachable.
+    const CONSTRUCTOR_GRAPH: &str = r#"(() => {
+        const prototypes = [Function.prototype, Object.getPrototypeOf(function*(){}),
+            Object.getPrototypeOf(async function(){}), Object.getPrototypeOf(async function*(){})];
+        const constructors = prototypes.map(prototype => prototype.constructor);
+        const names = ['Function', 'GeneratorFunction', 'AsyncFunction', 'AsyncGeneratorFunction'];
+        const instances = [function(){}, function*(){}, async function(){}, async function*(){}];
+        if (constructors[0] !== Function) return 'global Function';
+        for (let kind = 0; kind < 4; kind++) {
+            const C = constructors[kind], prototype = prototypes[kind];
+            const name = Object.getOwnPropertyDescriptor(C, 'name'), length = Object.getOwnPropertyDescriptor(C, 'length');
+            // Object.freeze only clears these properties' [[Configurable]].
+            const configurable = !Object.isFrozen(C);
+            if (name.value !== names[kind] || name.writable || name.enumerable || name.configurable !== configurable) return 'name ' + kind;
+            if (length.value !== 1 || length.writable || length.enumerable || length.configurable !== configurable) return 'length ' + kind;
+            const own = Object.getOwnPropertyDescriptor(C, 'prototype');
+            if (own.value !== prototype || own.writable || own.enumerable || own.configurable) return 'prototype ' + kind;
+            const back = Object.getOwnPropertyDescriptor(prototype, 'constructor');
+            if (back.value !== C || back.enumerable || !back.configurable || back.writable !== (kind === 0)) return 'constructor ' + kind;
+            if (instances[kind].constructor !== C || !(instances[kind] instanceof C)) return 'instance ' + kind;
+            if (Object.getPrototypeOf(C) !== (kind === 0 ? Function.prototype : Function)) return 'parent ' + kind;
+            if (kind !== 0 && Object.getPrototypeOf(prototype) !== Function.prototype) return 'prototype parent ' + kind;
+            if (typeof C !== 'function' || !(C instanceof Function)) return 'instanceof ' + kind;
+            if (!/^function \w*\(\) \{ \[native code\] \}$/.test(Function.prototype.toString.call(C))) return 'source ' + kind;
+        }
+        return 'ok';
+    })()"#;
+
+    #[test]
+    fn dynamic_constructors_keep_the_intrinsic_graph() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
+        assert!(eval(&runtime, r#"(() => {
+            const [F, G, A, AG] = [Function, (function*(){}).constructor, (async function(){}).constructor, (async function*(){}).constructor];
+            if (F('return 42')() !== 42 || new F('a', 'return a')(7) !== 7) return false;
+            if (G('yield 42')().next().value !== 42 || Object.getPrototypeOf(G('')) !== G.prototype) return false;
+            if (!(Reflect.construct(A, ['return 1'])() instanceof Promise)) return false;
+            if (!(Reflect.construct(AG, ['yield 1'])().next() instanceof Promise)) return false;
+            for (const C of [F, G, A, AG]) {
+                class Derived extends C {}
+                const derived = new Derived('return 1');
+                const constructed = Reflect.construct(C, ['return 1'], Derived);
+                if (Object.getPrototypeOf(Derived) !== C || !(derived instanceof Derived) || !(derived instanceof C)) return false;
+                if (Object.getPrototypeOf(constructed) !== Derived.prototype) return false;
+            }
+            return true;
+        })()"#).to_boolean(), "calls, construction and subclassing go through the wrappers");
+        assert!(eval(&runtime, r#"(() => {
+            const A = (async function(){}).constructor, other = function(){};
+            if (Object.setPrototypeOf(A, other) !== A || Object.getPrototypeOf(A) !== other) return false;
+            if (!Reflect.setPrototypeOf(A, null) || Object.getPrototypeOf(A) !== null) return false;
+            Object.setPrototypeOf(A, Function);
+            return Object.getPrototypeOf(A) === Function;
+        })()"#).to_boolean(), "scripts may still relink the constructors");
+        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
+    }
+
+    #[test]
+    fn dynamic_constructors_keep_the_graph_when_frozen() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        assert!(eval(&runtime, r#"(() => {
+            const constructors = [Function, (function*(){}).constructor, (async function(){}).constructor, (async function*(){}).constructor];
+            constructors.forEach(Object.preventExtensions);
+            Object.freeze(constructors[1]);
+            if (constructors.some(Object.isExtensible) || !Object.isFrozen(constructors[1])) return false;
+            if (Object.setPrototypeOf(constructors[2], Function) !== constructors[2]) return false;
+            if (Reflect.setPrototypeOf(constructors[2], {})) return false;
+            try { Object.setPrototypeOf(constructors[3], null); return false; } catch (error) { if (!(error instanceof TypeError)) return false; }
+            return Function('return 42')() === 42 && constructors[1]('yield 1')().next().value === 1;
+        })()"#).to_boolean(), "non-extensible constructors keep their parents and still work");
+        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
+    }
+
     static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
     /// An embedder's dispatch callback: may run on any thread.

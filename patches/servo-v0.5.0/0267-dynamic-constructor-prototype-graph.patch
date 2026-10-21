@@ -1,0 +1,193 @@
+diff --git a/components/roves-js/src/dynamic_code.rs b/components/roves-js/src/dynamic_code.rs
+index b422608318d..21812893cd1 100644
+--- a/components/roves-js/src/dynamic_code.rs
++++ b/components/roves-js/src/dynamic_code.rs
+@@ -19,19 +19,28 @@ const INSTALL: &str = r#"(function(invoke) {
+   const define = Object.defineProperty;
+   const descriptor = Object.getOwnPropertyDescriptor;
+   const getPrototype = Object.getPrototypeOf;
++  const setPrototype = Object.setPrototypeOf;
+   const constructors = [Function, getPrototype(function*(){}).constructor,
+     getPrototype(async function(){}).constructor, getPrototype(async function*(){}).constructor];
++  // Trap-less [[GetPrototypeOf]] and [[PreventExtensions]] forward to the targets,
++  // so Proxy invariants hold whatever scripts later do to the constructors.
++  const wrappers = constructors.map((target, kind) => new Proxy(target, {
++    apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
++    construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
++  }));
+   for (let kind = 0; kind < constructors.length; ++kind) {
+     const target = constructors[kind];
+-    const wrapper = new Proxy(target, {
+-      apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
+-      construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
+-    });
++    // %GeneratorFunction% and its siblings inherit from %Function% (ECMA-262
++    // 27.3.2, 27.4.2, 27.7.2); relink them so the original never leaks.
++    if (kind !== 0) {
++      if (getPrototype(target) !== Function) throw new TypeError('unexpected constructor parent');
++      setPrototype(target, wrappers[0]);
++    }
+     const property = descriptor(target.prototype, 'constructor');
+-    property.value = wrapper;
++    property.value = wrappers[kind];
+     define(target.prototype, 'constructor', property);
+-    if (kind === 0) globalThis.Function = wrapper;
+   }
++  globalThis.Function = wrappers[0];
+   return true;
+ })"#;
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8b89cfa5fe2..d02413b4bda 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1655,6 +1655,80 @@ mod runtime_hooks {
+         assert!(eval(&runtime, "(() => { globalThis.escapedFunctionBody = false; try { Function(trust('a) { globalThis.escapedFunctionBody = true; } ('), trust('return 42')); return false; } catch(e) { return e instanceof SyntaxError && !escapedFunctionBody; } })()").to_boolean(), "V8 still validates parameters separately from the body");
+     }
+ 
++    /// The four dynamic-code constructors and their prototypes, as Chrome links them
++    /// (ECMA-262 20.2.2, 27.3.2, 27.4.2, 27.7.2): only the wrapped `Function` is reachable.
++    const CONSTRUCTOR_GRAPH: &str = r#"(() => {
++        const prototypes = [Function.prototype, Object.getPrototypeOf(function*(){}),
++            Object.getPrototypeOf(async function(){}), Object.getPrototypeOf(async function*(){})];
++        const constructors = prototypes.map(prototype => prototype.constructor);
++        const names = ['Function', 'GeneratorFunction', 'AsyncFunction', 'AsyncGeneratorFunction'];
++        const instances = [function(){}, function*(){}, async function(){}, async function*(){}];
++        if (constructors[0] !== Function) return 'global Function';
++        for (let kind = 0; kind < 4; kind++) {
++            const C = constructors[kind], prototype = prototypes[kind];
++            const name = Object.getOwnPropertyDescriptor(C, 'name'), length = Object.getOwnPropertyDescriptor(C, 'length');
++            // Object.freeze only clears these properties' [[Configurable]].
++            const configurable = !Object.isFrozen(C);
++            if (name.value !== names[kind] || name.writable || name.enumerable || name.configurable !== configurable) return 'name ' + kind;
++            if (length.value !== 1 || length.writable || length.enumerable || length.configurable !== configurable) return 'length ' + kind;
++            const own = Object.getOwnPropertyDescriptor(C, 'prototype');
++            if (own.value !== prototype || own.writable || own.enumerable || own.configurable) return 'prototype ' + kind;
++            const back = Object.getOwnPropertyDescriptor(prototype, 'constructor');
++            if (back.value !== C || back.enumerable || !back.configurable || back.writable !== (kind === 0)) return 'constructor ' + kind;
++            if (instances[kind].constructor !== C || !(instances[kind] instanceof C)) return 'instance ' + kind;
++            if (Object.getPrototypeOf(C) !== (kind === 0 ? Function.prototype : Function)) return 'parent ' + kind;
++            if (kind !== 0 && Object.getPrototypeOf(prototype) !== Function.prototype) return 'prototype parent ' + kind;
++            if (typeof C !== 'function' || !(C instanceof Function)) return 'instanceof ' + kind;
++            if (!/^function \w*\(\) \{ \[native code\] \}$/.test(Function.prototype.toString.call(C))) return 'source ' + kind;
++        }
++        return 'ok';
++    })()"#;
++
++    #[test]
++    fn dynamic_constructors_keep_the_intrinsic_graph() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
++        assert!(eval(&runtime, r#"(() => {
++            const [F, G, A, AG] = [Function, (function*(){}).constructor, (async function(){}).constructor, (async function*(){}).constructor];
++            if (F('return 42')() !== 42 || new F('a', 'return a')(7) !== 7) return false;
++            if (G('yield 42')().next().value !== 42 || Object.getPrototypeOf(G('')) !== G.prototype) return false;
++            if (!(Reflect.construct(A, ['return 1'])() instanceof Promise)) return false;
++            if (!(Reflect.construct(AG, ['yield 1'])().next() instanceof Promise)) return false;
++            for (const C of [F, G, A, AG]) {
++                class Derived extends C {}
++                const derived = new Derived('return 1');
++                const constructed = Reflect.construct(C, ['return 1'], Derived);
++                if (Object.getPrototypeOf(Derived) !== C || !(derived instanceof Derived) || !(derived instanceof C)) return false;
++                if (Object.getPrototypeOf(constructed) !== Derived.prototype) return false;
++            }
++            return true;
++        })()"#).to_boolean(), "calls, construction and subclassing go through the wrappers");
++        assert!(eval(&runtime, r#"(() => {
++            const A = (async function(){}).constructor, other = function(){};
++            if (Object.setPrototypeOf(A, other) !== A || Object.getPrototypeOf(A) !== other) return false;
++            if (!Reflect.setPrototypeOf(A, null) || Object.getPrototypeOf(A) !== null) return false;
++            Object.setPrototypeOf(A, Function);
++            return Object.getPrototypeOf(A) === Function;
++        })()"#).to_boolean(), "scripts may still relink the constructors");
++        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
++    }
++
++    #[test]
++    fn dynamic_constructors_keep_the_graph_when_frozen() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        assert!(eval(&runtime, r#"(() => {
++            const constructors = [Function, (function*(){}).constructor, (async function(){}).constructor, (async function*(){}).constructor];
++            constructors.forEach(Object.preventExtensions);
++            Object.freeze(constructors[1]);
++            if (constructors.some(Object.isExtensible) || !Object.isFrozen(constructors[1])) return false;
++            if (Object.setPrototypeOf(constructors[2], Function) !== constructors[2]) return false;
++            if (Reflect.setPrototypeOf(constructors[2], {})) return false;
++            try { Object.setPrototypeOf(constructors[3], null); return false; } catch (error) { if (!(error instanceof TypeError)) return false; }
++            return Function('return 42')() === 42 && constructors[1]('yield 1')().next().value === 1;
++        })()"#).to_boolean(), "non-extensible constructors keep their parents and still work");
++        assert_eq!(super::describe(&runtime, eval(&runtime, CONSTRUCTOR_GRAPH)), "ok");
++    }
++
+     static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+ 
+     /// An embedder's dispatch callback: may run on any thread.
+diff --git a/support/v8-smoke/csp.html b/support/v8-smoke/csp.html
+index ad03c34778f..bbba71d52df 100644
+--- a/support/v8-smoke/csp.html
++++ b/support/v8-smoke/csp.html
+@@ -64,6 +64,21 @@ for (let changed = 0; changed < pieces.length; changed++) {
+ }
+ Promise.all(results).then(values => console.log("ROVES-V8 csp trusted function matrix",
+   rejectedCombinations === 60, values.every(Boolean), preservedArguments === 4));
++// The wrapped constructors keep Chrome's intrinsic graph: only the exposed Function is a parent.
++const graphConstructors = [Function, (function*() {}).constructor,
++  (async function() {}).constructor, (async function*() {}).constructor];
++const graphParents = graphConstructors.every((Constructor, kind) =>
++  Object.getPrototypeOf(Constructor) === (kind === 0 ? Function.prototype : Function));
++const graphLinks = graphConstructors.every(Constructor =>
++  Constructor.prototype.constructor === Constructor && Constructor instanceof Function);
++let graphSubclasses = false;
++try {
++  graphSubclasses = graphConstructors.every(Constructor => {
++    class Derived extends Constructor {}
++    return new Derived(smokePolicy.createScript("return 1")) instanceof Derived;
++  });
++} catch (_) {}
++console.log("ROVES-V8 csp constructor graph", graphParents, graphLinks, graphSubclasses);
+ const ordinary = { toString() { return "40 + 2"; } };
+ console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
+ </script>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index a68f8de58d3..afb28aeb544 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -125,7 +125,7 @@ if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error
+ if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
++for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp constructor graph true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
+   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 96524f66e4e..3be5ba46b0b 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -99,6 +99,7 @@ elif page == 'csp.html':
+     if scenario != 'trusted-function': print('ROVES-V8 csp trusted function 42')
+     if scenario != 'trusted-function-guards': print('ROVES-V8 csp trusted function guards true')
+     if scenario != 'trusted-function-matrix': print('ROVES-V8 csp trusted function matrix true true true')
++    if scenario != 'constructor-graph': print('ROVES-V8 csp constructor graph true true true')
+     print('ROVES-V8 csp ordinary eval unchanged true')
+ elif page == 'wasm-csp.html':
+     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
+@@ -142,7 +143,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'csp-wasm', 'navigation', 'skip'):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+@@ -155,6 +156,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
+                 if scenario == 'cross-origin-properties':
+                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
++                if scenario == 'constructor-graph':
++                    self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
+ 
+     def test_completed_suites_do_not_wait_for_the_deadline(self):
+         started = time.monotonic()
