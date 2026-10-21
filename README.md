@@ -74,7 +74,8 @@ WindowProxy prototype reads and writes now use Servo’s same-origin checks; a s
 checks same-origin and cross-origin access; the browser cross-origin result remains unverified.
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
-remain under migration audit.
+remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional
+context storage was removed from per-object bookkeeping.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)

@@ -45,8 +45,6 @@ pub(crate) struct ClassBox {
     slots: RefCell<Slots>,
     /// The object's own cell (set right after allocation).
     pub(crate) cell: StdCell<*mut c_void>,
-    /// For a global object: its realm.
-    pub(crate) realm: RefCell<Option<v8::Global<v8::Context>>>,
     /// For a proxy's target: the proxy handler (null for ordinary class objects). The box's
     /// `cell` is then the proxy's cell, and trace/finalize go to the handler's traps.
     pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
@@ -765,7 +763,6 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 class,
                 slots: RefCell::new(smallvec::smallvec![UndefinedValue(); slots]),
                 cell: StdCell::new(std::ptr::null_mut()),
-                realm: RefCell::new(None),
                 proxy: StdCell::new(std::ptr::null()),
                 window_wrapper: StdCell::new(false),
                 private: StdCell::new(UndefinedValue()),

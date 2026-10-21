@@ -104,12 +104,6 @@ pub(crate) fn realm_of_object(cx: &JSContext, obj: *mut JSObject) -> *mut Realm 
             // avoid an extra persistent Context root on the wrapper.
             return realm_of_object(cx, class_box.proxy_owner());
         }
-        if let Some(realm) = class_box.realm.borrow().as_ref() {
-            return cx.with_scope(|scope| {
-                let context = v8::Local::new(scope, realm);
-                realm_of_context(context)
-            });
-        }
     }
     cx.with_scope(|scope| {
         // SAFETY: JSAPI callers pass live objects.

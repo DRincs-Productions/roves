@@ -1,6 +1,19 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Punto della situazione — 21 ottobre 2026, ripresa dalla CI 39491426868
+## Punto della situazione — 21 ottobre 2026, CI 39595584589 verde
+
+Aggiornamento sul commit `dfa367ed8ee`: la CI V8
+[39595584589](https://github.com/DRincs-Productions/roves/actions/runs/39595584589)
+è verde in tutti i 10 job. Sei runtime e quattro build passano; gli smoke Linux
+normal/JIT-less confermano prototipo Window e cross-origin, trusted Function 42 e guardie
+contro argomenti misti/contraffatti, nove suite, CSP Wasm e navigazione. Gli smoke browser
+Windows/macOS sono saltati. Anche la CI generale
+[39595584650](https://github.com/DRincs-Productions/roves/actions/runs/39595584650)
+è verde (13/13), incluso il replay delle patch.
+Restano aperti SOP delle proprietà WindowProxy, identità dopo navigazione, retention
+realm/script/module, WPT selezionate e verifiche su applicazioni e artefatti.
+Le sezioni seguenti conservano la diagnosi delle run precedenti: le indicazioni di verifica
+pendente per prototipo e trusted Function sono superate da questo risultato.
 
 Rilevazione sul commit `273c1d9db2e` (`main`) e sulla CI avviata dal rollback
 `a26cb6ca39b`. Il PAT condiviso in chat ha restituito `401 Bad credentials`; non è stato
@@ -295,6 +308,16 @@ Non chiudere l’audit WindowProxy: altri trap locali riportano ancora TODO orig
 transplant di navigazione non preserva ancora tutte le identità. La chiusura anticipata delle
 suite ha portato il riepilogo CI da 13 minuti di deadline a circa 39 secondi; questo è tempo
 di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del browser.
+
+### Stato realm per oggetto inutilizzato — 21 ottobre 2026
+
+Patch `0257-remove-unused-classbox-context.patch`: rimosso da ClassBox il campo
+RefCell<Option<Global<Context>>> sempre None e senza assegnazioni. Rimosso il ramo di lookup
+mai eseguito: gli oggetti usano già `Object::get_creation_context` di V8, mentre i wrapper
+Window seguono il proprietario tracciato. Meno bookkeeping per ogni oggetto, nessuna dipendenza
+aggiunta. Le suite esistenti coprono risoluzione lazy tra realm e metadati dei wrapper;
+nessuna misura di memoria browser. Questa pulizia non risolve la retention in `cx.realms`,
+né quella di script/module privates; i relativi criteri restano aperti.
 
 ### Audit callback e incumbent — 21 ottobre 2026
 

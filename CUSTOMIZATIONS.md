@@ -14742,3 +14742,20 @@ paths. Browser performance is not measured, and existing realm-retention audit r
 
 Validation: replayed 38 preceding patches for the seven custom files from their absent
 upstream baseline, WSL patch dry-run/apply and source comparison pass.
+
+## 2026-10-21 - Remove unused per-object persistent realm storage
+
+**Files:** `components/roves-js/src/{object.rs,realm_impl.rs}`
+(`0257-remove-unused-classbox-context.patch`), README, migration plan and wiki shell docs.
+
+ClassBox carried RefCell<Option<Global<Context>>> initialized to None with no writer anywhere
+in roves-js. Remove the dead storage and its never-taken lookup branch. Realm queries already
+use V8's native object creation context; borrowed Window wrappers resolve through their traced
+owner. This removes per-object optional-handle bookkeeping without a dependency, new roots or
+behavior change. The separate runtime-owned realm/context retention audit remains open.
+Existing normal and JIT-less runtime suites cover cross-realm lazy resolution and wrapper realm
+identity; no mirror-only layout test is added. No browser memory/performance measurement claimed.
+
+Validation: normal runtime 46 passed / 2 ignored; JIT-less 45 / 3. Replayed 20 preceding
+patches, WSL patch dry-run/apply and source comparison passed. The preceding commit
+dfa367ed8ee passed all 10 V8 CI jobs and all 13 general CI jobs; this cleanup awaits CI.
