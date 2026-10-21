@@ -26,6 +26,7 @@ mod jsimpls;
 mod jsapi_impl;
 mod native;
 mod object;
+mod dynamic_code;
 mod proxy;
 mod runtime_impl;
 mod script_impl;

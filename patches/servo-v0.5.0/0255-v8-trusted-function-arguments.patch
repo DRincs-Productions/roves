@@ -1,0 +1,439 @@
+diff --git a/components/roves-js/src/dynamic_code.rs b/components/roves-js/src/dynamic_code.rs
+new file mode 100644
+index 00000000000..b422608318d
+--- /dev/null
++++ b/components/roves-js/src/dynamic_code.rs
+@@ -0,0 +1,159 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Preserve dynamic Function arguments until Servo has checked their TrustedScript brands.
++//! V8's compilation callback alone only receives the already-composed source.
++
++use crate::jsapi::{JSContext, JSString};
++use crate::jsval::{JSVal, from_v8};
++
++pub(crate) struct FunctionArguments<'a> {
++    pub(crate) parameters: &'a [*mut JSString],
++    pub(crate) arguments: &'a [JSVal],
++    pub(crate) body: *mut JSString,
++    pub(crate) body_argument: JSVal,
++}
++
++const INSTALL: &str = r#"(function(invoke) {
++  const define = Object.defineProperty;
++  const descriptor = Object.getOwnPropertyDescriptor;
++  const getPrototype = Object.getPrototypeOf;
++  const constructors = [Function, getPrototype(function*(){}).constructor,
++    getPrototype(async function(){}).constructor, getPrototype(async function*(){}).constructor];
++  for (let kind = 0; kind < constructors.length; ++kind) {
++    const target = constructors[kind];
++    const wrapper = new Proxy(target, {
++      apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
++      construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
++    });
++    const property = descriptor(target.prototype, 'constructor');
++    property.value = wrapper;
++    define(target.prototype, 'constructor', property);
++    if (kind === 0) globalThis.Function = wrapper;
++  }
++  return true;
++})"#;
++
++pub(crate) fn install(scope: &mut v8::PinScope) -> Option<()> {
++    crate::realm_impl::realm_cached(scope, "DynamicFunctionCsp", |scope| {
++        let global = scope.get_current_context().global(scope);
++        let reflect_key = v8::String::new(scope, "Reflect")?;
++        let reflect = global.get(scope, reflect_key.into())?.to_object(scope)?;
++        let construct_key = v8::String::new(scope, "construct")?;
++        let construct = reflect.get(scope, construct_key.into())?;
++        let error_key = v8::String::new(scope, "EvalError")?;
++        let error = global.get(scope, error_key.into())?;
++        let data = v8::Array::new_with_elements(scope, &[construct, error]);
++        let invoke = v8::Function::builder(invoke).data(data.into()).build(scope)?;
++        let source = v8::String::new(scope, INSTALL)?;
++        let installer = v8::Script::compile(scope, source, None)?.run(scope)?;
++        let installer = v8::Local::<v8::Function>::try_from(installer).ok()?;
++        let undefined = v8::undefined(scope).into();
++        installer.call(scope, undefined, &[invoke.into()])
++    })?;
++    Some(())
++}
++
++fn invoke<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
++    if let Some(value) = compile(scope, &args) {
++        result.set(value);
++    }
++}
++
++fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>) -> Option<v8::Local<'s, v8::Value>> {
++    let raw = JSContext::current();
++    let cx = raw as *const JSContext as *mut JSContext;
++    let target = v8::Local::<v8::Function>::try_from(args.get(0)).ok()?;
++    let inputs = v8::Local::<v8::Array>::try_from(args.get(3)).ok()?;
++    crate::rooted!(in(cx) let mut originals = Vec::<JSVal>::new());
++    crate::rooted!(in(cx) let mut strings = Vec::<*mut JSString>::new());
++    let mut converted = Vec::<v8::Local<v8::Value>>::new();
++    // HostGetCodeForEval reads a TrustedScript's real data before ToString. This
++    // ignores forged coercion methods on branded objects, matching direct eval.
++    for index in 0..inputs.length() {
++        let input = inputs.get_index(scope, index)?;
++        let original = from_v8(scope, input);
++        originals.push(original);
++        crate::rooted!(in(cx) let mut extracted = std::ptr::null_mut::<JSString>());
++        if input.is_object() {
++            crate::rooted!(in(cx) let object = original.to_object());
++            if !crate::runtime_impl::function_argument_source(cx, object.handle().into(), extracted.handle_mut().into()) {
++                crate::native::rethrow_pending(scope, raw);
++                return None;
++            }
++        }
++        let string = if extracted.get().is_null() {
++            input.to_string(scope)?
++        } else {
++            let value = unsafe { crate::jsval::to_v8(scope, crate::jsval::StringValue(&*extracted.get())) };
++            v8::Local::<v8::String>::try_from(value).ok()?
++        };
++        let string_value = from_v8(scope, string.into());
++        strings.push(string_value.to_string());
++        // Servo's TrustedScriptOrString arguments retain objects, while untrusted
++        // primitive arguments are represented by their already-converted strings.
++        if !input.is_object() && !input.is_string() {
++            originals[index as usize] = string_value;
++        }
++        converted.push(string.into());
++    }
++    let prefix = match args.get(4).int32_value(scope)? {
++        0 => "(function anonymous(",
++        1 => "(function* anonymous(",
++        2 => "(async function anonymous(",
++        3 => "(async function* anonymous(",
++        _ => return None,
++    };
++    let count = converted.len();
++    let parameters = count.saturating_sub(1);
++    let mut source = v8::String::new(scope, prefix)?;
++    let comma = v8::String::new(scope, ",")?;
++    for (index, parameter) in converted.iter().take(parameters).enumerate() {
++        if index != 0 { source = v8::String::concat(scope, source, comma)?; }
++        let parameter = v8::Local::<v8::String>::try_from(*parameter).ok()?;
++        source = v8::String::concat(scope, source, parameter)?;
++    }
++    let separator = v8::String::new(scope, "\n) {\n")?;
++    source = v8::String::concat(scope, source, separator)?;
++    let body = match converted.last() {
++        Some(body) => v8::Local::<v8::String>::try_from(*body).ok()?,
++        None => v8::String::empty(scope),
++    };
++    source = v8::String::concat(scope, source, body)?;
++    let end = v8::String::new(scope, "\n})")?;
++    source = v8::String::concat(scope, source, end)?;
++    crate::rooted!(in(cx) let body_value = from_v8(scope, body.into()));
++    let function = FunctionArguments {
++        parameters: &strings[..parameters],
++        arguments: &originals[..parameters],
++        body: body_value.get().to_string(),
++        body_argument: originals.last().copied().unwrap_or(body_value.get()),
++    };
++    if !crate::runtime_impl::function_csp_allows(scope, source, &function) {
++        if raw.pending_exception.borrow().is_some() {
++            crate::native::rethrow_pending(scope, raw);
++        } else {
++            let message = v8::String::new(scope, "Code generation from strings disallowed for this context")?;
++            let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
++            let constructor = data.get_index(scope, 1)?;
++            let constructor = v8::Local::<v8::Function>::try_from(constructor).ok()?;
++            let error = constructor.new_instance(scope, &[message.into()])?;
++            scope.throw_exception(error.into());
++        }
++        return None;
++    }
++    // Only the exact source just checked is authorized, once, during this native
++    // constructor call. All ToString callbacks have finished before authorization.
++    let _authorization = crate::runtime_impl::authorize_function(raw, scope, source);
++    if args.get(2).is_undefined() {
++        target.call(scope, args.get(1), &converted)
++    } else {
++        let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
++        let construct = data.get_index(scope, 0)?;
++        let construct = v8::Local::<v8::Function>::try_from(construct).ok()?;
++        let arguments = v8::Array::new_with_elements(scope, &converted);
++        let undefined = v8::undefined(scope).into();
++        construct.call(scope, undefined, &[target.into(), arguments.into(), args.get(2)])
++    }
++}
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index ec88a15c598..fd4c792c09a 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -26,6 +26,7 @@ mod jsimpls;
+ mod jsapi_impl;
+ mod native;
+ mod object;
++mod dynamic_code;
+ mod proxy;
+ mod runtime_impl;
+ mod script_impl;
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 46d51fa1bd9..699ceb3c94d 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -55,6 +55,8 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+     // (see `runtime_impl::JS_SetSecurityCallbacks`).
+     context.set_allow_generation_from_strings(false);
+     cx.realms.borrow_mut().push(data);
++    let scope = &mut v8::ContextScope::new(scope, context);
++    assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
+     pointer as *mut Realm
+ }
+ 
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index dfa70e732e5..b6b51d7aa3c 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -49,6 +49,7 @@ pub(crate) struct RuntimeHooks {
+     gc_parameters: RefCell<HashMap<i32, u32>>,
+     context_options: Box<ContextOptions>,
+     security_callbacks: Cell<*const JSSecurityCallbacks>,
++    function_authorization: RefCell<Option<v8::Global<v8::String>>>,
+     dom_callbacks: Cell<*const DOMCallbacks>,
+     preserve_wrapper: Cell<(PreserveWrapperCallback, HasReleasedWrapperCallback)>,
+     read_principals: Cell<JSReadPrincipalsOp>,
+@@ -70,6 +71,7 @@ impl Default for RuntimeHooks {
+             // SAFETY: SpiderMonkey's context options are plain flags (all off when zeroed).
+             context_options: Box::new(unsafe { std::mem::zeroed() }),
+             security_callbacks: Cell::new(std::ptr::null()),
++            function_authorization: RefCell::new(None),
+             dom_callbacks: Cell::new(std::ptr::null()),
+             preserve_wrapper: Cell::new((None, None)),
+             read_principals: Cell::new(None),
+@@ -492,14 +494,33 @@ pub unsafe fn JS_SetSecurityCallbacks(cx: *mut JSContext, callbacks: *const JSSe
+     hooks(cx).security_callbacks.set(callbacks);
+ }
+ 
+-/// The source V8 builds for the `Function` constructor: `(function anonymous(<params>\n) {\n<body>\n})`
+-/// (or the async/generator forms). Returns the parameters and the body.
+-fn function_constructor_parts(source: &str) -> Option<(&str, &str)> {
+-    let rest = ["(function anonymous(", "(async function anonymous(", "(function* anonymous(", "(async function* anonymous("]
+-        .iter()
+-        .find_map(|prefix| source.strip_prefix(prefix))?;
+-    let (parameters, body) = rest.split_once("\n) {\n")?;
+-    Some((parameters, body.strip_suffix("\n})")?))
++pub(crate) struct FunctionAuthorization<'a> {
++    slot: &'a RefCell<Option<v8::Global<v8::String>>>,
++    previous: Option<v8::Global<v8::String>>,
++}
++
++impl Drop for FunctionAuthorization<'_> {
++    fn drop(&mut self) {
++        *self.slot.borrow_mut() = self.previous.take();
++    }
++}
++
++pub(crate) fn authorize_function<'a>(cx: &'a JSContext, scope: &mut v8::PinScope, source: v8::Local<v8::String>) -> FunctionAuthorization<'a> {
++    let slot = &cx.hooks.function_authorization;
++    let previous = slot.replace(Some(v8::Global::new(scope, source)));
++    FunctionAuthorization { slot, previous }
++}
++
++pub(crate) fn function_csp_allows(scope: &mut v8::PinScope, source: v8::Local<v8::String>, arguments: &crate::dynamic_code::FunctionArguments) -> bool {
++    csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(source), arguments.body_argument, Some(arguments))
++}
++
++pub(crate) fn function_argument_source(cx: *mut JSContext, object: crate::jsapi::HandleObject, source: crate::jsapi::MutableHandleString) -> bool {
++    let extract = unsafe { hooks(cx).security_callbacks.get().as_ref() }.and_then(|callbacks| callbacks.codeForEvalGets);
++    match extract {
++        Some(extract) => unsafe { extract(cx, object, source) },
++        None => true,
++    }
+ }
+ 
+ /// Asks the embedder's CSP check whether `kind` code may be compiled in the realm of `context`
+@@ -509,6 +530,7 @@ fn csp_allows(
+     kind: crate::jsapi::RuntimeCode,
+     source: Option<v8::Local<v8::String>>,
+     body_arg: crate::jsval::JSVal,
++    function: Option<&crate::dynamic_code::FunctionArguments>,
+ ) -> bool {
+     use crate::jsapi::{CompilationType, JSString, StackGCVector};
+     let Some(cx) = crate::rust::Runtime::get() else { return true };
+@@ -517,32 +539,17 @@ fn csp_allows(
+     let Some(check) = (unsafe { hooks(cx).security_callbacks.get().as_ref() }).and_then(|callbacks| callbacks.contentSecurityPolicyAllows) else {
+         return true;
+     };
+-    let text = source.map(|source| source.to_rust_string_lossy(scope));
+-    let function = text.as_deref().and_then(function_constructor_parts);
+     let compilation_type = if function.is_some() { CompilationType::Function } else { CompilationType::DirectEval };
+-    let to_string = |scope: &mut v8::PinScope, text: Option<&str>| -> *mut JSString {
+-        match text.and_then(|text| v8::String::new(scope, text)) {
+-            Some(string) => crate::jsval::from_v8(scope, string.into()).to_string(),
+-            None => std::ptr::null_mut(),
+-        }
+-    };
+-    let code = to_string(scope, text.as_deref());
+-    // Servo's CSP hook compares `bodyString` with TrustedScript's data for direct eval.
+-    // V8 only exposes the parsed Function body separately; direct eval uses the full source.
+-    let body = to_string(scope, function.map(|(_, body)| body).or(text.as_deref()));
+-    let parameter = to_string(scope, function.map(|(parameters, _)| parameters));
++    let code = source.map(|source| crate::jsval::from_v8(scope, source.into()).to_string()).unwrap_or(std::ptr::null_mut());
+     crate::rooted!(in(cx) let code = code);
+-    crate::rooted!(in(cx) let body = body);
+-    // V8 joins the parameters into one list: they are reported as one string.
+-    let mut parameters: Vec<*mut JSString> = Vec::new();
+-    if !parameter.is_null() {
+-        parameters.push(parameter);
+-    }
+-    crate::rooted!(in(cx) let parameter = parameter);
+-    let arguments: Vec<crate::jsval::JSVal> = Vec::new();
++    crate::rooted!(in(cx) let body = function.map_or(code.get(), |arguments| arguments.body));
++    crate::rooted!(in(cx) let parameters = function.map(|arguments| arguments.parameters.to_vec()).unwrap_or_default());
++    crate::rooted!(in(cx) let arguments = function.map(|arguments| arguments.arguments.to_vec()).unwrap_or_default());
+     crate::rooted!(in(cx) let body_argument = body_arg);
+-    let parameter_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &parameters as *const Vec<*mut JSString> as *const StackGCVector<*mut JSString> };
+-    let argument_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: &arguments as *const Vec<crate::jsval::JSVal> as *const StackGCVector<crate::jsval::JSVal> };
++    let parameter_handle = parameters.handle();
++    let parameter_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: parameter_handle.as_ptr() as *const StackGCVector<*mut JSString> };
++    let argument_handle = arguments.handle();
++    let argument_handle = crate::jsapi::Handle { _phantom_0: std::marker::PhantomData, ptr: argument_handle.as_ptr() as *const StackGCVector<crate::jsval::JSVal> };
+     // The check runs in the realm compiling the code.
+     // SAFETY: the runtime's live context.
+     let raw = unsafe { &*cx };
+@@ -554,7 +561,6 @@ fn csp_allows(
+         check(cx, kind, code.handle().into(), compilation_type, parameter_handle, body.handle().into(), argument_handle, body_argument.handle().into(), &mut allowed)
+     };
+     raw.set_current_realm(old);
+-    let _ = parameter;
+     ok && allowed
+ }
+ 
+@@ -565,7 +571,9 @@ fn code_generation_from_strings<'s>(
+ ) -> v8::ModifyCodeGenerationFromStringsResult<'s> {
+     let source_value = crate::jsval::from_v8(scope, source);
+     if let Ok(string) = v8::Local::<v8::String>::try_from(source) {
+-        let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value);
++        let authorized = crate::rust::Runtime::get().and_then(|cx| hooks(cx.as_ptr()).function_authorization.borrow_mut().take())
++            .is_some_and(|expected| source.strict_equals(v8::Local::new(scope, &expected).into()));
++        let allowed = authorized || csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value, None);
+         return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) };
+     }
+ 
+@@ -592,14 +600,14 @@ fn code_generation_from_strings<'s>(
+     let Ok(string) = v8::Local::<v8::String>::try_from(extracted_value) else {
+         return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: false, modified_source: None };
+     };
+-    let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value);
++    let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value, None);
+     v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) }
+ }
+ 
+ unsafe extern "C" fn wasm_code_generation(context: v8::Local<v8::Context>, _source: v8::Local<v8::String>) -> bool {
+     // SAFETY: V8 calls this with the context entered.
+     v8::callback_scope!(unsafe scope, context);
+-    csp_allows(scope, crate::jsapi::RuntimeCode::WASM, None, crate::jsval::UndefinedValue())
++    csp_allows(scope, crate::jsapi::RuntimeCode::WASM, None, crate::jsval::UndefinedValue(), None)
+ }
+ 
+ pub unsafe fn SetDOMCallbacks(cx: *mut JSContext, callbacks: *const DOMCallbacks) {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index a2c29d7a0c4..8b0e9ca9b04 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1454,6 +1454,97 @@ mod runtime_hooks {
+     static SECURITY_CALLBACKS: JSSecurityCallbacks =
+         JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: Some(code_for_eval_gets), subsumes: None };
+ 
++    static TRUSTED_CLASS: JSClass = JSClass {
++        name: c"TrustedScriptTest".as_ptr(),
++        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT,
++        cOps: std::ptr::null(), spec: std::ptr::null(), ext: std::ptr::null(), oOps: std::ptr::null(),
++    };
++
++    unsafe extern "C" fn trusted_to_string(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        let receiver = unsafe { *vp.add(1) };
++        assert!(receiver.is_object());
++        assert_eq!(unsafe { crate::rust::get_object_class(receiver.to_object()) }, &TRUSTED_CLASS as *const _);
++        unsafe { JS_GetReservedSlot(receiver.to_object(), 0, vp) };
++        true
++    }
++
++    unsafe extern "C" fn make_trusted(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        let source = unsafe { *vp.add(2) };
++        assert!(source.is_string());
++        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &TRUSTED_CLASS) });
++        unsafe { JS_SetReservedSlot(object.get(), 0, &source) };
++        let stringify = unsafe { JS_NewFunction(cx, Some(trusted_to_string), 0, 0, c"toString".as_ptr()) };
++        rooted!(in(cx) let stringify = ObjectValue(stringify as *mut JSObject));
++        assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"toString".as_ptr(), stringify.handle().into()) });
++        unsafe { *vp = ObjectValue(object.get()) };
++        true
++    }
++
++    unsafe extern "C" fn trusted_function_csp(
++        cx: *mut JSContext, _kind: RuntimeCode, _code: HandleString, compilation: CompilationType,
++        parameters: Handle<StackGCVector<*mut JSString>>, body: HandleString,
++        arguments: Handle<StackGCVector<JSVal>>, body_argument: HandleValue, allowed: *mut bool,
++    ) -> bool {
++        let parameters = unsafe { &*(parameters.ptr as *const Vec<*mut JSString>) };
++        let arguments = unsafe { &*(arguments.ptr as *const Vec<JSVal>) };
++        let matches = |argument: JSVal, string: *mut JSString| {
++            if !argument.is_object() || unsafe { crate::rust::get_object_class(argument.to_object()) } != &TRUSTED_CLASS as *const _ { return false; }
++            rooted!(in(cx) let mut data = UndefinedValue());
++            unsafe { JS_GetReservedSlot(argument.to_object(), 0, &mut *data) };
++            let raw = unsafe { &*cx };
++            raw.with_scope(|scope| {
++                let expected = unsafe { to_v8(scope, data.get()) };
++                let actual = unsafe { to_v8(scope, StringValue(&*string)) };
++                expected.strict_equals(actual)
++            })
++        };
++        unsafe { *allowed = compilation == CompilationType::Function && parameters.len() == arguments.len() &&
++            parameters.iter().zip(arguments).all(|(string, argument)| matches(*argument, *string)) && matches(body_argument.get(), body.get()) };
++        true
++    }
++
++    unsafe extern "C" fn trusted_argument_source(_cx: *mut JSContext, object: HandleObject, source: MutableHandleString) -> bool {
++        if unsafe { crate::rust::get_object_class(object.get()) } == &TRUSTED_CLASS as *const _ {
++            let mut data = UndefinedValue();
++            unsafe { JS_GetReservedSlot(object.get(), 0, &mut data) };
++            source.set(data.to_string());
++        }
++        true
++    }
++
++    #[test]
++    fn function_csp_preserves_brands_conversions_and_constructor_semantics() {
++        static SECURITY: JSSecurityCallbacks = JSSecurityCallbacks {
++            contentSecurityPolicyAllows: Some(trusted_function_csp), codeForEvalGets: Some(trusted_argument_source), subsumes: None,
++        };
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        let trust = unsafe { JS_NewFunction(cx, Some(make_trusted), 1, 0, c"trust".as_ptr()) };
++        rooted!(in(cx) let trust = ObjectValue(trust as *mut JSObject));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"trust".as_ptr(), trust.handle().into()) });
++        unsafe { JS_SetSecurityCallbacks(cx, &SECURITY) };
++        assert_eq!(eval(&runtime, "new Function(trust('value'), trust('return value + 1'))(41)").to_int32(), 42);
++        assert!(eval(&runtime, "(() => { const p = trust('value'), b = trust('return value + 1'); let calls = 0; p.toString = () => { calls++; return 'wrongInput'; }; b.toString = () => { calls++; return 'return 0'; }; return Function(p, b)(41) === 42 && calls === 0; })()").to_boolean(), "trusted data bypasses forged ToString methods");
++        for source in [
++            "Function('value', trust('return value + 1'))",
++            "Function(trust('value'), 'return value + 1')",
++            "Function({toString() { return 'value'; }}, trust('return value + 1'))",
++            "eval('(function anonymous(\\n) {\\nreturn 42\\n})')",
++        ] {
++            let source = format!("(() => {{ try {{ {source}; return false; }} catch (e) {{ return e instanceof EvalError; }} }})()");
++            assert!(eval(&runtime, &source).to_boolean(), "untrusted source rejected: {source}");
++        }
++        assert!(eval(&runtime, "(() => { let order = '', blocked = false, denied = false; const p = {toString() { order += 'p'; try { eval('42'); } catch(e) { blocked = e instanceof EvalError; } return 'value'; }}, b = {toString() { order += 'b'; return 'return value + 1'; }}; try { Function(p,b); } catch(e) { denied = e instanceof EvalError; } return order === 'pb' && blocked && denied; })()").to_boolean(), "ordinary conversions run once, in order, without a CSP bypass");
++        assert!(eval(&runtime, "(() => { class Derived extends Function {} const f = new Derived(trust('return 42')); return f() === 42 && f instanceof Derived && Function.prototype.constructor === Function; })()").to_boolean());
++        assert!(eval(&runtime, r#"Function(trust('return "\uD800"'))().charCodeAt(0) === 0xD800"#).to_boolean(), "source stays UTF-16 without a lossy Rust conversion");
++        assert!(eval(&runtime, "(() => { let blocked = false; const nt = new Proxy(function(){}, {get(target, key) { if (key === 'prototype') { try { eval('(function anonymous(\\n) {\\nreturn 42\\n})'); } catch(e) { blocked = e instanceof EvalError; } } return Reflect.get(target, key); }}); const f = Reflect.construct(Function, [trust('return 42')], nt); return f() === 42 && blocked; })()").to_boolean(), "authorization cannot escape into a newTarget prototype getter");
++        assert!(eval(&runtime, "(() => { const G = Object.getPrototypeOf(function*(){}).constructor; return G(trust('yield 42'))().next().value === 42; })()").to_boolean());
++        assert!(eval(&runtime, "(() => { const A = Object.getPrototypeOf(async function(){}).constructor; const AG = Object.getPrototypeOf(async function*(){}).constructor; return A(trust('return 42'))() instanceof Promise && AG(trust('yield 42'))().next() instanceof Promise; })()").to_boolean());
++        assert!(eval(&runtime, "(() => { try { Function(Symbol()); return false; } catch(e) { return e instanceof TypeError; } })()").to_boolean());
++        assert!(eval(&runtime, "(() => { globalThis.escapedFunctionBody = false; try { Function(trust('a) { globalThis.escapedFunctionBody = true; } ('), trust('return 42')); return false; } catch(e) { return e instanceof SyntaxError && !escapedFunctionBody; } })()").to_boolean(), "V8 still validates parameters separately from the body");
++    }
++
+     static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+ 
+     /// An embedder's dispatch callback: may run on any thread.

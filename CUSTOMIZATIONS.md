@@ -14678,3 +14678,36 @@ checks are required; no measured performance result is claimed. Local runtime te
 normal 44 / 2 ignores, JIT-less 43 / 3 ignores. Replayed 35 prior patches against pristine
 Servo v0.5.0 windowproxy.rs and absent custom files, dry-run/apply and source comparison pass.
 The browser fixture and generated binding build remain subject to the next CI run.
+
+## 2026-10-21 - Preserve TrustedScript inputs for all dynamic Function constructors
+
+**Files:** `components/roves-js/src/{dynamic_code.rs,lib.rs,realm_impl.rs,runtime_impl.rs,tests.rs}`
+(`0255-v8-trusted-function-arguments.patch`), repository-only CSP smoke/runner, README, migration
+plan and wiki shell docs.
+
+The V8 string-compilation callback only sees composed Function source. Install per-realm V8
+Proxy adapters for Function, GeneratorFunction, AsyncFunction and AsyncGeneratorFunction before
+untrusted script executes. Preserve original arguments, use Servo's existing codeForEvalGets to
+extract TrustedScript data without invoking forged ToString methods, and convert ordinary values
+once in order. Supply original arguments and individual UTF-16 parameter/body strings to Servo's
+existing CSP/Trusted Types checker. After approval, invoke V8's original constructor with the
+converted strings, preserving its parameter parser, newTarget and subclass behavior.
+
+Authorize only the exact checked source, once during that synchronous native call, and restore
+the prior authorization through a lifetime-bound guard. No argument conversion runs under that
+authorization. Tests reject mixed/plain/forged arguments, keep nested eval blocked during
+ordinary ToString and a newTarget prototype getter, ignore forged TrustedScript ToString,
+preserve lone surrogates, and retain native syntax rejection for parameter/body escapes.
+Remove source-text guessing of Function versus eval and lossy UTF-8 round trips in the CSP bridge.
+
+Reuse V8 Proxy, native constructors and Servo's maintained Trusted Types implementation. No new
+dependency or C++ shim. This adds four proxy adapters and shared callback data per realm, plus
+an extra source composition for explicit dynamic constructors; it does not intercept ordinary
+function declarations or direct eval. Browser performance is not measured. Global constructor
+values are proxies (native intrinsic identity/string formatting needs the selected WPT audit).
+The V8 callback's code-like flag alone cannot provide the original branded arguments; rusty_v8
+also does not expose SetCodeLike. Browser acceptance remains pending CI.
+
+Validation: isolated roves-js runtime normal 45 passed / 2 ignored, JIT-less 44 / 3.
+Replayed 40 preceding patches from the absent custom-file baseline, WSL patch dry-run and
+source comparison pass. All seven POSIX runner tests pass (33.957 seconds).

@@ -233,6 +233,42 @@ per windowproxy.rs e file custom assenti, dry-run/applicazione e confronto passa
 **Verifica browser CI pendente**: non chiudere la voce sui soli test del dispatcher.
 Restano aperti anche identità durante navigazioni/transplant e trap origin-aware locali.
 
+### Argomenti trusted dei costruttori dinamici — 21 ottobre 2026
+
+Patch `0255-v8-trusted-function-arguments.patch`, implementazione locale in attesa di CI.
+Quattro adattatori V8 Proxy per realm conservano gli argomenti di Function/GeneratorFunction/
+AsyncFunction/AsyncGeneratorFunction. Prima di convertire un oggetto, richiamano il callback
+Servo `codeForEvalGets`: per TrustedScript si usano i dati interni e non si invoca toString,
+anche se contraffatto. Gli altri valori sono convertiti una volta, nell’ordine originale.
+Il controllo CSP Servo riceve i valori originali e ogni stringa UTF-16 di parametro/corpo.
+Poi viene richiamato il costruttore originale V8 con quelle stringhe; restano quindi il parser
+nativo dei parametri e la semantica newTarget/sottoclassi.
+
+Una guardia Rust autorizza una sola compilazione della sorgente esatta già verificata durante
+la chiamata sincrona, e ripristina lo stato precedente. Nessuna conversione argomento avviene
+con questa autorizzazione attiva. Rimossi il riconoscimento Function per forma del testo e i
+passaggi UTF-8 lossy. Test: input misti/contraffatti negati, TrustedScript con toString alterato
+usa i dati interni senza chiamarlo, ordine/numero conversioni ordinarie, eval rientrante negato,
+getter newTarget senza bypass, UTF-16, sottoclassi e tutti i costruttori. Un tentativo di uscire
+dai parametri/corpo resta SyntaxError nel parser V8. Confrontare ancora identità/stringificazione
+degli intrinseci proxy e import dinamico nei WPT selezionati; nessuna misura prestazionale.
+
+Valutazione librerie: V8 Proxy e costruttori nativi, più callback CSP/Trusted Types Servo già
+presenti. Nessuna nuova dipendenza né shim C++. Costo: quattro proxy per realm e composizione
+sorgente aggiuntiva per costruttori dinamici espliciti; le dichiarazioni JS ordinarie non passano
+dagli adattatori. La
+[WPT corrente](https://raw.githubusercontent.com/web-platform-tests/wpt/master/trusted-types/eval-function-constructor.html)
+richiede sia il successo all-trusted sia zero chiamate a toString contraffatto. Chrome 155
+continua a rifiutare anche quel caso trusted: la sua
+[nota ufficiale](https://github.com/w3c/trusted-types/wiki/Trusted-Types-for-function-constructor)
+lo identifica come bug. La nuova smoke impone successo, rifiuto dei mix/oggetti finti e uso dei
+dati interni se toString è alterato. La verifica del browser Roves resta obbligatoria.
+
+CI 39590810430, sul commit 239b542fb05 senza questa patch, conferma in Linux normal il marker
+Window `true true true true`. Cross-origin restituisce `false true`: sostituzione bloccata,
+ma getter non nullo. Il percorso delle finestre reali di un altro realm deve ancora essere
+avvolto; la sola correzione DissimilarOriginWindow non copre quel caso. Tutti i runtime passano.
+
 ### Audit callback e incumbent — 21 ottobre 2026
 
 Patch `0252-v8-empty-scripted-caller.patch`: `GetScriptedCallerGlobal` richiede ora un frame

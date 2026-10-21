@@ -18,6 +18,17 @@ const trustedParameter = smokePolicy.createScript("input");
 const trustedBody = smokePolicy.createScript("return input + 1");
 try { trustedFunction = new Function(trustedParameter, trustedBody)(41); } catch (error) { trustedFunction = error.constructor.name; }
 console.log("ROVES-V8 csp trusted function", trustedFunction);
+const counterfeitParameter = { toString() { return "input"; } };
+const alteredBody = smokePolicy.createScript("return input + 1");
+let alteredBodyCalls = 0;
+alteredBody.toString = () => { alteredBodyCalls++; return "return 0"; };
+let usesTrustedBodyData = false;
+try { usesTrustedBodyData = new Function(trustedParameter, alteredBody)(41) === 42 && alteredBodyCalls === 0; } catch (_) {}
+const functionGuards =
+  attempt(() => new Function("input", trustedBody)) === "EvalError" &&
+  attempt(() => new Function(trustedParameter, "return input + 1")) === "EvalError" &&
+  attempt(() => new Function(counterfeitParameter, trustedBody)) === "EvalError" && usesTrustedBodyData;
+console.log("ROVES-V8 csp trusted function guards", functionGuards);
 const ordinary = { toString() { return "40 + 2"; } };
 console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
 </script>

@@ -1454,6 +1454,97 @@ mod runtime_hooks {
     static SECURITY_CALLBACKS: JSSecurityCallbacks =
         JSSecurityCallbacks { contentSecurityPolicyAllows: Some(csp_check), codeForEvalGets: Some(code_for_eval_gets), subsumes: None };
 
+    static TRUSTED_CLASS: JSClass = JSClass {
+        name: c"TrustedScriptTest".as_ptr(),
+        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT,
+        cOps: std::ptr::null(), spec: std::ptr::null(), ext: std::ptr::null(), oOps: std::ptr::null(),
+    };
+
+    unsafe extern "C" fn trusted_to_string(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        let receiver = unsafe { *vp.add(1) };
+        assert!(receiver.is_object());
+        assert_eq!(unsafe { crate::rust::get_object_class(receiver.to_object()) }, &TRUSTED_CLASS as *const _);
+        unsafe { JS_GetReservedSlot(receiver.to_object(), 0, vp) };
+        true
+    }
+
+    unsafe extern "C" fn make_trusted(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        let source = unsafe { *vp.add(2) };
+        assert!(source.is_string());
+        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &TRUSTED_CLASS) });
+        unsafe { JS_SetReservedSlot(object.get(), 0, &source) };
+        let stringify = unsafe { JS_NewFunction(cx, Some(trusted_to_string), 0, 0, c"toString".as_ptr()) };
+        rooted!(in(cx) let stringify = ObjectValue(stringify as *mut JSObject));
+        assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"toString".as_ptr(), stringify.handle().into()) });
+        unsafe { *vp = ObjectValue(object.get()) };
+        true
+    }
+
+    unsafe extern "C" fn trusted_function_csp(
+        cx: *mut JSContext, _kind: RuntimeCode, _code: HandleString, compilation: CompilationType,
+        parameters: Handle<StackGCVector<*mut JSString>>, body: HandleString,
+        arguments: Handle<StackGCVector<JSVal>>, body_argument: HandleValue, allowed: *mut bool,
+    ) -> bool {
+        let parameters = unsafe { &*(parameters.ptr as *const Vec<*mut JSString>) };
+        let arguments = unsafe { &*(arguments.ptr as *const Vec<JSVal>) };
+        let matches = |argument: JSVal, string: *mut JSString| {
+            if !argument.is_object() || unsafe { crate::rust::get_object_class(argument.to_object()) } != &TRUSTED_CLASS as *const _ { return false; }
+            rooted!(in(cx) let mut data = UndefinedValue());
+            unsafe { JS_GetReservedSlot(argument.to_object(), 0, &mut *data) };
+            let raw = unsafe { &*cx };
+            raw.with_scope(|scope| {
+                let expected = unsafe { to_v8(scope, data.get()) };
+                let actual = unsafe { to_v8(scope, StringValue(&*string)) };
+                expected.strict_equals(actual)
+            })
+        };
+        unsafe { *allowed = compilation == CompilationType::Function && parameters.len() == arguments.len() &&
+            parameters.iter().zip(arguments).all(|(string, argument)| matches(*argument, *string)) && matches(body_argument.get(), body.get()) };
+        true
+    }
+
+    unsafe extern "C" fn trusted_argument_source(_cx: *mut JSContext, object: HandleObject, source: MutableHandleString) -> bool {
+        if unsafe { crate::rust::get_object_class(object.get()) } == &TRUSTED_CLASS as *const _ {
+            let mut data = UndefinedValue();
+            unsafe { JS_GetReservedSlot(object.get(), 0, &mut data) };
+            source.set(data.to_string());
+        }
+        true
+    }
+
+    #[test]
+    fn function_csp_preserves_brands_conversions_and_constructor_semantics() {
+        static SECURITY: JSSecurityCallbacks = JSSecurityCallbacks {
+            contentSecurityPolicyAllows: Some(trusted_function_csp), codeForEvalGets: Some(trusted_argument_source), subsumes: None,
+        };
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        let trust = unsafe { JS_NewFunction(cx, Some(make_trusted), 1, 0, c"trust".as_ptr()) };
+        rooted!(in(cx) let trust = ObjectValue(trust as *mut JSObject));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"trust".as_ptr(), trust.handle().into()) });
+        unsafe { JS_SetSecurityCallbacks(cx, &SECURITY) };
+        assert_eq!(eval(&runtime, "new Function(trust('value'), trust('return value + 1'))(41)").to_int32(), 42);
+        assert!(eval(&runtime, "(() => { const p = trust('value'), b = trust('return value + 1'); let calls = 0; p.toString = () => { calls++; return 'wrongInput'; }; b.toString = () => { calls++; return 'return 0'; }; return Function(p, b)(41) === 42 && calls === 0; })()").to_boolean(), "trusted data bypasses forged ToString methods");
+        for source in [
+            "Function('value', trust('return value + 1'))",
+            "Function(trust('value'), 'return value + 1')",
+            "Function({toString() { return 'value'; }}, trust('return value + 1'))",
+            "eval('(function anonymous(\\n) {\\nreturn 42\\n})')",
+        ] {
+            let source = format!("(() => {{ try {{ {source}; return false; }} catch (e) {{ return e instanceof EvalError; }} }})()");
+            assert!(eval(&runtime, &source).to_boolean(), "untrusted source rejected: {source}");
+        }
+        assert!(eval(&runtime, "(() => { let order = '', blocked = false, denied = false; const p = {toString() { order += 'p'; try { eval('42'); } catch(e) { blocked = e instanceof EvalError; } return 'value'; }}, b = {toString() { order += 'b'; return 'return value + 1'; }}; try { Function(p,b); } catch(e) { denied = e instanceof EvalError; } return order === 'pb' && blocked && denied; })()").to_boolean(), "ordinary conversions run once, in order, without a CSP bypass");
+        assert!(eval(&runtime, "(() => { class Derived extends Function {} const f = new Derived(trust('return 42')); return f() === 42 && f instanceof Derived && Function.prototype.constructor === Function; })()").to_boolean());
+        assert!(eval(&runtime, r#"Function(trust('return "\uD800"'))().charCodeAt(0) === 0xD800"#).to_boolean(), "source stays UTF-16 without a lossy Rust conversion");
+        assert!(eval(&runtime, "(() => { let blocked = false; const nt = new Proxy(function(){}, {get(target, key) { if (key === 'prototype') { try { eval('(function anonymous(\\n) {\\nreturn 42\\n})'); } catch(e) { blocked = e instanceof EvalError; } } return Reflect.get(target, key); }}); const f = Reflect.construct(Function, [trust('return 42')], nt); return f() === 42 && blocked; })()").to_boolean(), "authorization cannot escape into a newTarget prototype getter");
+        assert!(eval(&runtime, "(() => { const G = Object.getPrototypeOf(function*(){}).constructor; return G(trust('yield 42'))().next().value === 42; })()").to_boolean());
+        assert!(eval(&runtime, "(() => { const A = Object.getPrototypeOf(async function(){}).constructor; const AG = Object.getPrototypeOf(async function*(){}).constructor; return A(trust('return 42'))() instanceof Promise && AG(trust('yield 42'))().next() instanceof Promise; })()").to_boolean());
+        assert!(eval(&runtime, "(() => { try { Function(Symbol()); return false; } catch(e) { return e instanceof TypeError; } })()").to_boolean());
+        assert!(eval(&runtime, "(() => { globalThis.escapedFunctionBody = false; try { Function(trust('a) { globalThis.escapedFunctionBody = true; } ('), trust('return 42')); return false; } catch(e) { return e instanceof SyntaxError && !escapedFunctionBody; } })()").to_boolean(), "V8 still validates parameters separately from the body");
+    }
+
     static DISPATCHED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
 
     /// An embedder's dispatch callback: may run on any thread.

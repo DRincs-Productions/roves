@@ -60,11 +60,12 @@ iframe has a distinct origin. Failed smoke runs retain bounded browser logs and 
 append, load and contentWindow access separately.
 Trusted Types enforcement for `eval(TrustedScript)` is connected to Servo's CSP checks, including
 the source-body value used by the check; the normal-string and ordinary-object paths retain their
-separate JavaScript behavior. The smoke also checks the WPT-required case where every
-`new Function` argument is a `TrustedScript`; this currently fails in the browser integration and
-is tracked in [`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md). Chrome 155 also rejects this case,
-while the current WPT expects it to succeed; resolving it requires preserving the original trusted
-arguments through V8's Function compilation hook.
+separate JavaScript behavior. The smoke also checks the WPT-required case where every dynamic Function argument is a
+`TrustedScript`. Per-realm V8 Proxy adapters now preserve those arguments for Servo's CSP
+checker, extracting trusted data without invoking altered `toString` methods and retaining
+V8's native constructor/parser. Mixed strings and counterfeit objects remain blocked. This
+path still awaits browser CI confirmation; migration status and limitations are tracked in
+[`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md). Chrome 155 still rejects the all-trusted case.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke

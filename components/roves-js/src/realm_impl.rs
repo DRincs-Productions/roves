@@ -55,6 +55,8 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     // (see `runtime_impl::JS_SetSecurityCallbacks`).
     context.set_allow_generation_from_strings(false);
     cx.realms.borrow_mut().push(data);
+    let scope = &mut v8::ContextScope::new(scope, context);
+    assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
     pointer as *mut Realm
 }
 
