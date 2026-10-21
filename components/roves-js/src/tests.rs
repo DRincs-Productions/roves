@@ -1656,6 +1656,33 @@ mod scripts {
         static SEEN: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
     }
 
+    /// A native reached from a running script must still expose its scripted caller.
+    unsafe extern "C" fn check_scripted_caller(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        let global = unsafe { GetScriptedCallerGlobal(cx) };
+        assert!(!global.is_null());
+        unsafe { *vp = BooleanValue(true) };
+        true
+    }
+
+    #[test]
+    fn incumbent_caller_requires_a_scripted_frame() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
+        rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
+        assert!(private.get().is_undefined());
+        let mut buffer = [0; 32];
+        let (mut line, mut column) = (0, 0);
+        assert!(!unsafe { DescribeScriptedCaller(cx, buffer.as_mut_ptr(), buffer.len(), &mut line, &mut column) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        let native = unsafe { JS_NewFunction(cx, Some(check_scripted_caller), 0, 0, c"checkScriptedCaller".as_ptr()) };
+        rooted!(in(cx) let callback = ObjectValue(native as *mut JSObject));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"checkScriptedCaller".as_ptr(), callback.handle().into_handle()) });
+        assert!(eval(&runtime, "checkScriptedCaller()").to_boolean());
+        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
+    }
+
     /// A native that records its scripted caller (private and location) and the stack.
     unsafe extern "C" fn whoami(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
         crate::rooted!(in(cx) let mut private = UndefinedValue());

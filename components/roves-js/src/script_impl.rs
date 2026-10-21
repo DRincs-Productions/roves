@@ -304,6 +304,9 @@ pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: Script
 /// The innermost scripted frame: script id, name, line and column.
 fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
     let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
+    if trace.get_frame_count() == 0 {
+        return None;
+    }
     let frame = trace.get_frame(scope, 0)?;
     let name = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
     Some((frame.get_script_id() as i32, name, frame.get_line_number() as u32, frame.get_column() as u32))
@@ -319,6 +322,11 @@ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableH
 /// The global of the realm whose script is running (the entered realm).
 pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
     raw(cx).with_scope(|scope| {
+        // An entered context alone does not imply a script is on the stack. Servo's
+        // incumbent-settings algorithm must fall back to its explicit callback stack.
+        if v8::StackTrace::current_stack_trace(scope, 1).is_none_or(|trace| trace.get_frame_count() == 0) {
+            return std::ptr::null_mut();
+        }
         let context = scope.get_entered_or_microtask_context();
         let realm = crate::realm_impl::realm_of_context(context);
         // SAFETY: realms come from `register_realm`.

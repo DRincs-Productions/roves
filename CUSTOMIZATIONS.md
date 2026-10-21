@@ -14585,3 +14585,24 @@ are skipped, not passed. Record iframe append, load and contentWindow access sep
 the watchdog no longer reads contentWindow before logging. Add a script error listener and
 retain bounded raw browser logs on failure, using the existing Bash/Python standard-library
 runner without new dependencies. This improves diagnosis without relaxing acceptance checks.
+
+## 2026-10-21 - Handle an empty V8 scripted-caller stack safely
+
+**Files:** `components/roves-js/src/{script_impl.rs,tests.rs}`
+(`0252-v8-empty-scripted-caller.patch`), `README.md`, `docs/V8_MIGRATION.md`, and wiki shell docs.
+This is a new logical patch; the incompatible immutable-template experiment numbered 0252 was removed.
+
+`GetScriptedCallerGlobal` returned an entered context even when no JavaScript frame was active,
+preventing Servo's incumbent-settings algorithm from falling back to its callback stack. Check
+for a scripted frame before returning a global. The shared caller helper also requested frame 0
+from an empty V8 StackTrace, causing a native access violation; check the frame count first.
+Use rusty_v8's existing stack API; no added dependency, persistent roots, GPU work or global
+object retention. A one-frame stack query is added to incumbent-global lookups.
+
+The regression checks absent caller global/private/location before and after JS execution and
+an available global inside a script-to-native call. Local isolated runtime tests: normal 42
+passed / 2 ignored, JIT-less 41 passed / 3 ignored. Reconstructed the two custom source files
+from their absent Servo v0.5.0 baseline through 33 preceding patches (LF-normalized), checked
+0252 applies, applied it and compared with the working sources. Browser CI remains required.
+The activation-scoped HideScriptedCaller contract is a separate audit item: the existing global
+counter is not sufficient for nested JS reentry and is deliberately not used as an implementation.

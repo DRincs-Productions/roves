@@ -178,6 +178,26 @@ come risolti i problemi sotto sulla sola base di CI verde o dei nomi delle API.
 | Window cross-origin | `window/windowproxy.rs` collega i trap prototipo agli helper Servo; gli altri trap conservano TODO origin-aware. | Le fixture `data:` e HTTP delle run `39462392615` e `39467094586` non confermano il marker. Il watchdog ora viene annullato su load/error. Verificare accessi, navigazione e identità. |
 | Callable class boxes | `object::new_callable_class_object` usa un holder tracciato da V8/cppgc; test di raggiungibilità presente. | I sei job runtime di `39320063351` sono verdi. La retention incondizionata è rimossa dalla patch 0236; l’audit lifecycle complessivo resta aperto. |
 
+### Audit callback e incumbent — 21 ottobre 2026
+
+Patch `0252-v8-empty-scripted-caller.patch`: `GetScriptedCallerGlobal` richiede ora un frame
+JS prima di restituire il globale; con stack vuoto Servo può usare il proprio stack incumbent.
+Il helper condiviso controlla il numero di frame prima di leggere il frame 0: il caso vuoto
+aveva prodotto un access violation nel test locale. La regressione copre globale, private e
+posizione assenti fuori da JS, chiamante presente dentro un native e stato dopo l’esecuzione.
+Runtime locale isolato: normal 42 passati / 2 ignorati, JIT-less 41 passati / 3 ignorati.
+Replay di 33 patch precedenti sui due file custom assenti in Servo pristine (normalizzazione LF),
+dry-run/applicazione della 0252 e confronto con i sorgenti passati. Verifica CI ancora pendente.
+
+Due problemi ulteriori sono confermati dal codice e restano aperti:
+- `HideScriptedCaller` modifica un contatore globale che nessun lookup usa. Il contratto upstream
+  è per attivazione: nascondere tutto il thread romperebbe il rientro JS durante callback.
+  Progettare il collegamento al confine di ingresso JS e verificare callback annidati/cross-realm.
+- `NewWindowProxy` usa direttamente il global proxy nativo di V8 per i globali e il suo commento
+  documenta che i trap Servo non vengono invocati dagli accessi JS. I test JSAPI dei trap non
+  coprono questo percorso. La soluzione browser deve preservare identità e navigazione e
+  applicare davvero i controlli d’origine; non basta collegare un trap che V8 non chiama.
+
 ### Preferenza js_disable_jit — 19 ottobre 2026
 
 L’audit ha trovato `script::init` che dichiarava di disabilitare JIT chiamando il no-op

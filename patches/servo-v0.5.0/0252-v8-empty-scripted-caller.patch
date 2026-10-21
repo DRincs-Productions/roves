@@ -1,0 +1,64 @@
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 4cab09f0c4b..a8dae53f95b 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -304,6 +304,9 @@ pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: Script
+ /// The innermost scripted frame: script id, name, line and column.
+ fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
+     let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
++    if trace.get_frame_count() == 0 {
++        return None;
++    }
+     let frame = trace.get_frame(scope, 0)?;
+     let name = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
+     Some((frame.get_script_id() as i32, name, frame.get_line_number() as u32, frame.get_column() as u32))
+@@ -319,6 +322,11 @@ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableH
+ /// The global of the realm whose script is running (the entered realm).
+ pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
+     raw(cx).with_scope(|scope| {
++        // An entered context alone does not imply a script is on the stack. Servo's
++        // incumbent-settings algorithm must fall back to its explicit callback stack.
++        if v8::StackTrace::current_stack_trace(scope, 1).is_none_or(|trace| trace.get_frame_count() == 0) {
++            return std::ptr::null_mut();
++        }
+         let context = scope.get_entered_or_microtask_context();
+         let realm = crate::realm_impl::realm_of_context(context);
+         // SAFETY: realms come from `register_realm`.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 6daa8a9eb76..4fbc6678144 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1656,6 +1656,33 @@ mod scripts {
+         static SEEN: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
+     }
+ 
++    /// A native reached from a running script must still expose its scripted caller.
++    unsafe extern "C" fn check_scripted_caller(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        let global = unsafe { GetScriptedCallerGlobal(cx) };
++        assert!(!global.is_null());
++        unsafe { *vp = BooleanValue(true) };
++        true
++    }
++
++    #[test]
++    fn incumbent_caller_requires_a_scripted_frame() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
++        rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++        assert!(private.get().is_undefined());
++        let mut buffer = [0; 32];
++        let (mut line, mut column) = (0, 0);
++        assert!(!unsafe { DescribeScriptedCaller(cx, buffer.as_mut_ptr(), buffer.len(), &mut line, &mut column) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        let native = unsafe { JS_NewFunction(cx, Some(check_scripted_caller), 0, 0, c"checkScriptedCaller".as_ptr()) };
++        rooted!(in(cx) let callback = ObjectValue(native as *mut JSObject));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"checkScriptedCaller".as_ptr(), callback.handle().into_handle()) });
++        assert!(eval(&runtime, "checkScriptedCaller()").to_boolean());
++        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
++    }
++
+     /// A native that records its scripted caller (private and location) and the stack.
+     unsafe extern "C" fn whoami(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+         crate::rooted!(in(cx) let mut private = UndefinedValue());

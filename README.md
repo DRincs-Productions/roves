@@ -65,6 +65,9 @@ The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool
 compiled into the production bindings crate.
 WindowProxy prototype reads and writes now use Servo’s same-origin checks; a strict browser smoke
 checks same-origin and cross-origin access; the browser cross-origin result remains unverified.
+The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
+callback settings stack when no JavaScript caller is active. Callback activation overrides
+remain under migration audit.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
