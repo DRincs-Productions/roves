@@ -1273,8 +1273,8 @@ pub unsafe fn JS_SetTrustedPrincipals(_cx: *mut JSContext, principals: *mut crat
 
 // --- Compartments, wrappers and scripted callers -------------------------------------------
 //
-// V8 has no compartments or cross-compartment wrappers: objects of every realm are used
-// directly, so wrapping is the identity and each realm stands for its own compartment.
+// V8 shares ordinary objects across realms. Native Window globals need cached
+// realm wrappers so Servo security traps run; each realm also stands for a compartment.
 
 pub unsafe fn IsSharableCompartment(_comp: *mut crate::jsapi::Compartment) -> bool {
     false
@@ -1326,11 +1326,20 @@ pub unsafe fn UnwrapObjectDynamic(obj: *mut JSObject, _cx: *mut JSContext, stop_
     unwrap_window_proxy(obj, stop_at_window_proxy)
 }
 
-pub unsafe fn JS_WrapObject(_cx: *mut JSContext, _objp: MutableHandleObject) -> bool {
+pub unsafe fn JS_WrapObject(cx: *mut JSContext, objp: MutableHandleObject) -> bool {
+    if objp.get().is_null() { return true; }
+    let object = unsafe { crate::proxy::wrap_window_for_realm(cx, objp.get()) };
+    if object.is_null() { return false; }
+    objp.set(object);
     true
 }
 
-pub unsafe fn JS_WrapValue(_cx: *mut JSContext, _vp: MutableHandleValue) -> bool {
+pub unsafe fn JS_WrapValue(cx: *mut JSContext, vp: MutableHandleValue) -> bool {
+    if vp.get().is_object() {
+        let object = unsafe { crate::proxy::wrap_window_for_realm(cx, vp.get().to_object()) };
+        if object.is_null() { return false; }
+        vp.set(ObjectValue(object));
+    }
     true
 }
 

@@ -56,6 +56,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     context.set_allow_generation_from_strings(false);
     cx.realms.borrow_mut().push(data);
     let scope = &mut v8::ContextScope::new(scope, context);
+    assert!(crate::proxy::initialize_window_wrappers(scope).is_some(), "initialize Window wrapper cache");
     assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
     pointer as *mut Realm
 }
@@ -97,6 +98,12 @@ pub(crate) fn realm_of_object(cx: &JSContext, obj: *mut JSObject) -> *mut Realm 
         return std::ptr::null_mut();
     }
     if let Some(class_box) = crate::object::class_box(obj) {
+        if !class_box.proxy_owner().is_null() {
+            // A foreign Window wrapper belongs to its represented Window for
+            // origin checks. The traced owner supplies its lifetime and realm;
+            // avoid an extra persistent Context root on the wrapper.
+            return realm_of_object(cx, class_box.proxy_owner());
+        }
         if let Some(realm) = class_box.realm.borrow().as_ref() {
             return cx.with_scope(|scope| {
                 let context = v8::Local::new(scope, realm);

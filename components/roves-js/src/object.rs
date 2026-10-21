@@ -50,6 +50,8 @@ pub(crate) struct ClassBox {
     /// For a proxy's target: the proxy handler (null for ordinary class objects). The box's
     /// `cell` is then the proxy's cell, and trace/finalize go to the handler's traps.
     pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
+    /// A borrowed Window wrapper keeps its owner in `private`, without owning DOM state.
+    pub(crate) window_wrapper: StdCell<bool>,
     /// A proxy's private value (`GetProxyPrivate`).
     pub(crate) private: StdCell<JSVal>,
     /// Whether a proxy's prototype comes from its handler (`getPrototype` trap).
@@ -83,6 +85,9 @@ unsafe impl GarbageCollected for ClassBox {
         let private = self.private.get();
         if private.is_gcthing() {
             trace_cell(private.to_gcthing(), visitor);
+        }
+        if self.window_wrapper.get() {
+            return;
         }
         // SAFETY: handlers live for the whole process (`CreateProxyHandler`).
         if let Some(handler) = unsafe { self.proxy.get().as_ref() } {
@@ -137,6 +142,9 @@ pub unsafe fn RuntimeHeapState() -> crate::jsapi::HeapState {
 
 impl Drop for ClassBox {
     fn drop(&mut self) {
+        if self.window_wrapper.get() {
+            return;
+        }
         let _gc = GcScope::enter();
         // SAFETY: classes are static; handlers live for the whole process.
         let class = unsafe { &*self.class };
@@ -214,6 +222,17 @@ pub(crate) fn immutable_prototype_for_cell(object: *mut JSObject) -> Option<v8::
 }
 
 impl ClassBox {
+    pub(crate) fn proxy_owner(&self) -> *mut JSObject {
+        if self.window_wrapper.get() { self.private.get().to_object() } else { std::ptr::null_mut() }
+    }
+
+    pub(crate) fn proxy_private(&self) -> JSVal {
+        match class_box(self.proxy_owner()) {
+            Some(owner) => owner.proxy_private(),
+            None => self.private.get(),
+        }
+    }
+
     /// Replaces the reserved slots with `other`'s (`JS_TransplantObject`).
     pub(crate) fn copy_slots_from(&self, other: &ClassBox) {
         let slots = other.slots.borrow().clone();
@@ -221,10 +240,17 @@ impl ClassBox {
     }
 
     pub(crate) fn reserved_slot(&self, index: u32) -> JSVal {
+        if let Some(owner) = class_box(self.proxy_owner()) {
+            return owner.reserved_slot(index);
+        }
         self.slots.borrow().get(index as usize).copied().unwrap_or_else(UndefinedValue)
     }
 
     pub(crate) fn set_reserved_slot(&self, index: u32, value: JSVal) {
+        if let Some(owner) = class_box(self.proxy_owner()) {
+            owner.set_reserved_slot(index, value);
+            return;
+        }
         let mut slots = self.slots.borrow_mut();
         let index = index as usize;
         if index >= slots.len() {
@@ -741,6 +767,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 cell: StdCell::new(std::ptr::null_mut()),
                 realm: RefCell::new(None),
                 proxy: StdCell::new(std::ptr::null()),
+                window_wrapper: StdCell::new(false),
                 private: StdCell::new(UndefinedValue()),
                 lazy_proto: StdCell::new(false),
                 global_trace: StdCell::new(None),

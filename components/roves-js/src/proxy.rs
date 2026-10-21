@@ -82,6 +82,11 @@ fn proxy_box<'b>(obj: *mut JSObject) -> Option<&'b ClassBox> {
 }
 
 fn handler_of<'h>(obj: *mut JSObject) -> Option<&'h ProxyHandler> {
+    if let Some(class_box) = proxy_box(obj) {
+        if !class_box.proxy_owner().is_null() {
+            return handler_of(class_box.proxy_owner());
+        }
+    }
     // SAFETY: handlers live for the whole process.
     proxy_box(obj).map(|class_box| unsafe { &*class_box.proxy.get() })
 }
@@ -99,13 +104,17 @@ pub unsafe fn GetProxyHandlerExtra(obj: *mut JSObject) -> *const c_void {
 }
 
 pub unsafe fn GetProxyPrivate(obj: *mut JSObject, dest: *mut JSVal) {
-    let private = proxy_box(obj).map_or(UndefinedValue(), |class_box| class_box.private.get());
+    let private = proxy_box(obj).map_or(UndefinedValue(), ClassBox::proxy_private);
     // SAFETY: callers pass a valid out pointer.
     unsafe { *dest = private };
 }
 
 pub unsafe fn SetProxyPrivate(obj: *mut JSObject, value: *const JSVal) {
     if let Some(class_box) = proxy_box(obj) {
+        if !class_box.proxy_owner().is_null() {
+            unsafe { SetProxyPrivate(class_box.proxy_owner(), value) };
+            return;
+        }
         // SAFETY: callers pass a valid value.
         class_box.private.set(unsafe { *value });
     }
@@ -140,6 +149,13 @@ pub unsafe fn NewProxyObject(
     class: *const JSClass,
     lazy_proto: bool,
 ) -> *mut JSObject {
+    unsafe { new_proxy_object(cx, handler, private, proto, class, lazy_proto, std::ptr::null_mut()) }
+}
+
+unsafe fn new_proxy_object(
+    cx: *mut JSContext, handler: *const c_void, private: HandleValue, proto: *mut JSObject,
+    class: *const JSClass, lazy_proto: bool, owner: *mut JSObject,
+) -> *mut JSObject {
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
     let class = if class.is_null() { &PROXY_CLASS as *const JSClass } else { class };
@@ -158,7 +174,10 @@ pub unsafe fn NewProxyObject(
         // SAFETY: just created, kept alive by the target.
         let box_ref = unsafe { class_box.as_ref() };
         box_ref.proxy.set(handler as *const ProxyHandler);
-        box_ref.private.set(private);
+        // Borrowed wrappers are marked before handler/proxy allocation can GC.
+        // Their private traces the owner, and they never run its native finalizer.
+        box_ref.private.set(if owner.is_null() { private } else { crate::jsval::ObjectValue(owner) });
+        box_ref.window_wrapper.set(!owner.is_null());
         box_ref.lazy_proto.set(lazy_proto);
         let handler_object = handler_object(scope, handler as *const ProxyHandler)?;
         let proxy = v8::Proxy::new(scope, target, handler_object)?;
@@ -251,7 +270,7 @@ fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<Trap
     let class_box = crate::object::class_box_of_v8(target)?;
     // The proxy's current handler (a transplant may have replaced the one the V8 handler
     // object was made for). SAFETY: handlers live for the whole process.
-    let handler = unsafe { class_box.proxy.get().as_ref() }?;
+    let handler = handler_of(class_box.cell.get() as *mut JSObject)?;
     let cx = JSContext::current() as *const JSContext as *mut JSContext;
     Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
 }
@@ -272,7 +291,7 @@ fn forward<'s>(
         return false;
     }
     let Some(class_box) = crate::object::class_box_of_v8(context.target) else { return false };
-    let wrapped = class_box.private.get();
+    let wrapped = class_box.proxy_private();
     if !wrapped.is_object() {
         return false;
     }
@@ -466,7 +485,7 @@ fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>
     }
     if lazy && context.handler.family == &WRAPPER_FAMILY as *const u8 as *const c_void {
         if let Some(class_box) = crate::object::class_box_of_v8(context.target) {
-            let wrapped = class_box.private.get();
+            let wrapped = class_box.proxy_private();
             if wrapped.is_object() {
                 // SAFETY: the private is traced by the box.
                 let wrapped = unsafe { to_v8(scope, wrapped) };
@@ -843,6 +862,55 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
 
 // --- Window proxies --------------------------------------------------------------------------
 
+/// Cache native WeakMap methods before user code can replace global intrinsics.
+pub(crate) fn initialize_window_wrappers<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>> {
+    crate::realm_impl::realm_cached(scope, "WindowWrappers", |scope| {
+        let source = v8::String::new(scope, "(function () { const map = new WeakMap(); return [map, WeakMap.prototype.get, WeakMap.prototype.set]; })()")?;
+        v8::Script::compile(scope, source, None)?.run(scope)
+    })
+}
+
+/// Wrap a native Window global when it crosses a realm boundary. The owner keeps
+/// the DOM object's trace/finalizer; wrappers only keep that owner's cell alive.
+pub(crate) unsafe fn wrap_window_for_realm(cx: *mut JSContext, object: *mut JSObject) -> *mut JSObject {
+    let mut owner = unsafe { ToWindowProxyIfWindowSlow(object) };
+    let Some(mut owner_box) = proxy_box(owner) else { return owner };
+    if !owner_box.proxy_owner().is_null() {
+        owner = owner_box.proxy_owner();
+        let Some(original) = proxy_box(owner) else { return std::ptr::null_mut() };
+        owner_box = original;
+    }
+    let raw = unsafe { &*cx };
+    if crate::realm_impl::realm_of_object(raw, owner) == raw.current_realm.get() {
+        return owner;
+    }
+    if !is_global_window_proxy(owner_box) {
+        return owner;
+    }
+    crate::rooted!(in(cx) let owner = owner);
+    crate::rooted!(in(cx) let private = owner_box.proxy_private());
+    raw.catching(|scope| {
+        let cache = initialize_window_wrappers(scope)?;
+        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
+        let map = cache.get_index(scope, 0)?;
+        let get = cache.get_index(scope, 1)?;
+        let get = v8::Local::<v8::Function>::try_from(get).ok()?;
+        let key = unsafe { crate::cell::cell_value(scope, owner.get() as *mut c_void) };
+        let cached = get.call(scope, map, &[key])?;
+        if !cached.is_undefined() {
+            return Some(from_v8(scope, cached).to_object());
+        }
+        crate::rooted!(in(cx) let wrapper = unsafe {
+            new_proxy_object(cx, owner_box.proxy.get() as *const c_void, private.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true, owner.get())
+        });
+        let value = unsafe { crate::cell::cell_value(scope, wrapper.get() as *mut c_void) };
+        let set = cache.get_index(scope, 2)?;
+        let set = v8::Local::<v8::Function>::try_from(set).ok()?;
+        set.call(scope, map, &[key, value])?;
+        Some(wrapper.get())
+    }).unwrap_or(std::ptr::null_mut())
+}
+
 thread_local! {
     static WINDOW_PROXY_CLASS: std::cell::Cell<*const JSClass> = const { std::cell::Cell::new(std::ptr::null()) };
 }
@@ -937,7 +1005,7 @@ pub unsafe fn ToWindowIfWindowProxy(obj: *mut JSObject) -> *mut JSObject {
     // SAFETY: forwarded.
     if unsafe { IsWindowProxy(obj) } {
         if let Some(class_box) = proxy_box(obj) {
-            let window = class_box.private.get();
+            let window = class_box.proxy_private();
             if window.is_object() {
                 return window.to_object();
             }

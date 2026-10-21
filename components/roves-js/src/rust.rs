@@ -588,12 +588,13 @@ pub unsafe fn is_dom_object(obj: *mut crate::jsapi::JSObject) -> bool {
     is_dom_class(unsafe { &*get_object_class(obj) })
 }
 
-/// Wraps `obj` for the current realm. V8 shares objects across realms, so this is the
-/// identity (WindowProxy outerization is not emulated yet).
+/// Wraps `obj` for the current realm, preserving Window proxy security traps.
 ///
 /// # Safety
 /// `cx` must be the live context of this thread.
-pub unsafe fn maybe_wrap_object(_cx: *mut RawJSContext, _obj: MutableHandleObject) {}
+pub unsafe fn maybe_wrap_object(cx: *mut RawJSContext, obj: MutableHandleObject) {
+    assert!(unsafe { crate::jsapi_impl::JS_WrapObject(cx, obj.into_handle()) });
+}
 
 /// The global class mozjs offers for simple embeddings and tests.
 pub static SIMPLE_GLOBAL_CLASS: crate::jsapi::JSClass = crate::jsapi::JSClass {

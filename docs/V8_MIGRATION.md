@@ -13,6 +13,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39590810430](https://github.com/DRincs-Productions/roves/actions/runs/39590810430) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i runtime e le build compilano. Window immutabile confermato normal/JIT-less; iframe carica ma prototipo false/true. Trusted Function ancora EvalError (0255 non inclusa). Le nove suite, CSP eval/Wasm e navigazione passano. |
 | [V8 migration checks — 39587009751](https://github.com/DRincs-Productions/roves/actions/runs/39587009751) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i 6 runtime e tutte le 4 build servoshell verdi. Le 9 suite passano nelle due modalità. Iframe append/load/contentWindow presenti; prototipo cross-origin false/false. Trusted Function fallisce; eval 42, CSP Wasm e navigazione passano. |
 | [V8 migration checks — 39491426868](https://github.com/DRincs-Productions/roves/actions/runs/39491426868) | Fallita: 6 job verdi, 2 falliti e 2 cancellati | Quattro runtime Linux/Windows normal/JIT-less e tutte le quattro build servoshell verdi. Smoke Linux normal/JIT-less falliti su iframe cross-origin e Function(TrustedScript); smoke Windows/macOS saltati, runtime macOS cancellati. |
 | [V8 migration checks — 39480383126](https://github.com/DRincs-Productions/roves/actions/runs/39480383126) | Fallita: 6 job verdi, 2 smoke falliti, 2 runtime macOS cancellati | Runtime Linux e Windows normal/JIT-less verdi; build servoshell Windows/macOS normal e Linux normal/JIT-less verdi. Entrambi gli smoke Linux falliscono su Window, iframe cross-origin e Function con TrustedScript. Runtime macOS cancellati dopo i fallimenti Linux. |
@@ -268,6 +269,32 @@ CI 39590810430, sul commit 239b542fb05 senza questa patch, conferma in Linux nor
 Window `true true true true`. Cross-origin restituisce `false true`: sostituzione bloccata,
 ma getter non nullo. Il percorso delle finestre reali di un altro realm deve ancora essere
 avvolto; la sola correzione DissimilarOriginWindow non copre quel caso. Tutti i runtime passano.
+
+### Wrapper Window tra realm — 21 ottobre 2026
+
+Patch `0256-v8-foreign-window-realm-wrappers.patch`: la CI 395908 conferma l’immutabilità
+Window nelle due modalità Linux, ma il getter cross-origin resta non nullo (`false true`).
+L’iframe usa un Window reale su altro realm dello stesso script thread: gli helper identità
+di wrapping saltavano il dispatcher anche dopo la correzione dei rappresentanti remoti.
+Ora JS_WrapObject/JS_WrapValue e gli helper maybe_wrap creano un adattatore V8 Proxy quando un
+Window nativo attraversa un realm. Una WeakMap per realm mantiene l’identità e i metodi nativi
+sono catturati prima del codice utente. Tornando al realm proprietario si riottiene il proxy
+nativo; le query realm dell’adattatore seguono il proprietario per i controlli d’origine.
+
+Ownership: il wrapper traccia il cell del proprietario e delega private/slot, evitando copie
+obsolete di puntatori DOM. Non esegue una seconda finalizzazione DOM. Il flag e il private-owner
+sono impostati prima che l’allocazione del proxy possa raccogliere. Riutilizzati il private già
+presente e un flag, senza aggiungere un owner-pointer a ogni ClassBox né Global<Context>
+aggiuntivi. La WeakMap V8 mantiene il cache ephemeron; la retention globale dei realm esistente
+resta da correggere. Nessuna nuova dipendenza, benchmark browser non eseguito.
+
+Regressione locale: identità cache, realm corretto, WeakMap globale alterata, slot aggiornati
+sul proprietario, GC, getter null e rifiuto sostituzione, unwrap al ritorno e un solo finalize.
+Normal 46 passati / 2 ignorati, JIT-less 45 / 3. **Verifica browser pendente**.
+Non chiudere l’audit WindowProxy: altri trap locali riportano ancora TODO origin-aware e il
+transplant di navigazione non preserva ancora tutte le identità. La chiusura anticipata delle
+suite ha portato il riepilogo CI da 13 minuti di deadline a circa 39 secondi; questo è tempo
+di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del browser.
 
 ### Audit callback e incumbent — 21 ottobre 2026
 

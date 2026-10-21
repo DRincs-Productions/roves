@@ -394,8 +394,7 @@ where
     }
 }
 
-/// Cross-compartment wrapping does not exist on V8: objects are usable in any realm of the
-/// isolate. These keep mozjs's call sites compiling.
+/// Preserve Window security traps when a value crosses a realm boundary.
 pub fn maybe_wrap_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
     if rval.get().is_object() {
         // SAFETY: an object value.
@@ -407,18 +406,12 @@ pub fn maybe_wrap_object_or_null_value(cx: &mut SafeJSContext, rval: MutableHand
     maybe_wrap_value(cx, rval);
 }
 
-/// No compartments on V8; a Window global becomes its window proxy ("outerizing"), as
-/// SpiderMonkey's wrapping does.
+/// Outerize Window globals and wrap foreign native Window proxies for this realm.
 ///
 /// # Safety
 /// As in mozjs (a live object value).
-pub unsafe fn maybe_wrap_object_value(_cx: &mut SafeJSContext, mut rval: MutableHandleValue) {
-    let object = rval.get().to_object();
-    // SAFETY: a live object.
-    let outer = unsafe { crate::proxy::ToWindowProxyIfWindowSlow(object) };
-    if outer != object {
-        rval.set(crate::jsval::ObjectValue(outer));
-    }
+pub unsafe fn maybe_wrap_object_value(cx: &mut SafeJSContext, rval: MutableHandleValue) {
+    assert!(unsafe { crate::jsapi_impl::JS_WrapValue(cx.raw_cx(), rval.into_handle()) });
 }
 
 /// No compartments on V8 (see `maybe_wrap_value`).

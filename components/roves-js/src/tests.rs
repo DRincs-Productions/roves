@@ -2304,6 +2304,73 @@ mod window_proxies {
         oOps: ptr::null(),
     };
 
+    thread_local! {
+        static WINDOW_OWNERS_FINALIZED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+    }
+
+    #[test]
+    fn foreign_window_wrappers_keep_identity_realm_and_single_native_owner() {
+        unsafe extern "C" fn get_prototype(cx: *mut JSContext, proxy: HandleObject, prototype: MutableHandleObject) -> bool {
+            if unsafe { GetObjectRealmOrNull(proxy.get()) } == unsafe { GetCurrentRealmOrNull(cx) } {
+                let mut window = UndefinedValue();
+                unsafe { GetProxyPrivate(proxy.get(), &mut window) };
+                prototype.set(unsafe { GetStaticPrototype(window.to_object()) });
+            } else {
+                prototype.set(ptr::null_mut());
+            }
+            true
+        }
+        unsafe extern "C" fn set_prototype(cx: *mut JSContext, proxy: HandleObject, prototype: HandleObject, result: *mut ObjectOpResult) -> bool {
+            rooted!(in(cx) let mut current = ptr::null_mut::<JSObject>());
+            if !unsafe { GetObjectProto(cx, proxy, current.handle_mut().into()) } { return false; }
+            if current.get() == prototype.get() { unsafe { (*result).succeed() }; }
+            else { unsafe { (*result).fail_cant_set_proto() }; }
+            true
+        }
+        unsafe extern "C" fn finalize(_gc: *mut GCContext, _proxy: *mut JSObject) {
+            WINDOW_OWNERS_FINALIZED.with(|count| count.set(count.get() + 1));
+        }
+        let before = WINDOW_OWNERS_FINALIZED.with(std::cell::Cell::get);
+        {
+            let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+            let cx = runtime.raw_cx();
+            rooted!(in(cx) let window = unsafe {
+                JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+            });
+            let parent = unsafe { EnterRealm(cx, window.get()) };
+            let owner_realm = unsafe { GetCurrentRealmOrNull(cx) };
+            let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
+            traps.getPrototype = Some(get_prototype);
+            traps.setPrototype = Some(set_prototype);
+            traps.finalize = Some(finalize);
+            let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+            rooted!(in(cx) let owner = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
+            unsafe { SetWindowProxy(cx, window.handle().into(), owner.handle().into()) };
+            unsafe { LeaveRealm(cx, parent) };
+            eval(&runtime, "globalThis.WeakMap = function () { throw 13; }");
+            rooted!(in(cx) let mut first = ObjectValue(owner.get()));
+            rooted!(in(cx) let mut second = ObjectValue(owner.get()));
+            assert!(unsafe { JS_WrapValue(cx, first.handle_mut().into()) });
+            assert!(unsafe { JS_WrapValue(cx, second.handle_mut().into()) });
+            assert_ne!(first.get().to_object(), owner.get());
+            assert_eq!(first.get().to_object(), second.get().to_object());
+            assert_eq!(unsafe { GetObjectRealmOrNull(first.get().to_object()) }, owner_realm);
+            unsafe { SetProxyReservedSlot(owner.get(), 0, &Int32Value(17)) };
+            let mut slot = UndefinedValue();
+            unsafe { GetProxyReservedSlot(first.get().to_object(), 0, &mut slot) };
+            assert_eq!(slot.to_int32(), 17, "reserved slots follow the owner instead of stale copies");
+            rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"foreignWindow".as_ptr(), first.handle().into()) });
+            runtime.gc_for_testing();
+            assert!(eval(&runtime, "Object.getPrototypeOf(foreignWindow) === null && !Reflect.setPrototypeOf(foreignWindow, {}) && Reflect.setPrototypeOf(foreignWindow, null)").to_boolean());
+            let parent = unsafe { EnterRealm(cx, window.get()) };
+            assert!(unsafe { JS_WrapValue(cx, first.handle_mut().into()) });
+            assert_eq!(first.get().to_object(), owner.get(), "returning to the owner realm unwraps the adapter");
+            unsafe { LeaveRealm(cx, parent) };
+        }
+        assert_eq!(WINDOW_OWNERS_FINALIZED.with(std::cell::Cell::get), before + 1, "only the native owner finalizes DOM state");
+    }
+
     #[test]
     fn window_global_initializes_its_canonical_prototype_without_replacing_it() {
         static PROTOTYPE: JSClass = JSClass { name: c"WindowPrototype".as_ptr(), flags: 0, ..WINDOW_CLASS };

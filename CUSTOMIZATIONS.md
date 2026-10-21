@@ -14711,3 +14711,34 @@ also does not expose SetCodeLike. Browser acceptance remains pending CI.
 Validation: isolated roves-js runtime normal 45 passed / 2 ignored, JIT-less 44 / 3.
 Replayed 40 preceding patches from the absent custom-file baseline, WSL patch dry-run and
 source comparison pass. All seven POSIX runner tests pass (33.957 seconds).
+
+## 2026-10-21 - Wrap foreign native Window globals at JSAPI conversion boundaries
+
+**Files:** `components/roves-js/src/{api.rs,jsapi_impl.rs,object.rs,proxy.rs,realm_impl.rs,rust.rs,tests.rs}`
+(`0256-v8-foreign-window-realm-wrappers.patch`), README, migration plan and wiki shell docs.
+
+CI 39590810430 confirms immutable Window behavior in Linux normal/JIT-less. The remaining
+cross-origin marker is false/true: this iframe uses a real Window on the same script thread,
+not only a remote DissimilarOriginWindow. The previous identity-only wrapping helpers exposed
+V8's native global proxy to a foreign realm and bypassed the prototype handler. Restore actual
+Window wrapping at JS_WrapObject/JS_WrapValue and maybe_wrap conversion boundaries.
+
+Reuse the V8 Proxy dispatcher and a per-realm native WeakMap, with methods captured before
+untrusted code can replace global intrinsics. Repeated conversion reuses a wrapper, conversion
+back to the owner realm unwraps it, and realm queries follow the owner for origin checks.
+Borrowed wrappers trace the owner's cell; private values and reserved slots delegate to that
+owner instead of copying mutable native pointers. They skip the owner's DOM trace/finalizer.
+Set the borrowed marker and traced owner before proxy allocation can GC. Store the owner in
+the existing private value plus a flag, without adding a per-object owner pointer or an extra
+persistent Context root. The WeakMap provides ephemeron ownership instead of a Rust identity map.
+
+Local regression checks identity, realm, a replaced global WeakMap, live reserved-slot updates,
+prototype rejection/null access after GC, returning to the owner realm, and exactly one native
+finalization. Normal runtime 46 passed / 2 ignored; JIT-less 45 / 3. Browser confirmation is
+pending; local WindowProxy property traps still have upstream origin-aware TODOs and navigation
+transplant identity remains a separate open migration criterion. No new dependency or build flag.
+Foreign access adds a proxy/cache lookup; ordinary values and local Window identity retain their
+paths. Browser performance is not measured, and existing realm-retention audit remains open.
+
+Validation: replayed 38 preceding patches for the seven custom files from their absent
+upstream baseline, WSL patch dry-run/apply and source comparison pass.

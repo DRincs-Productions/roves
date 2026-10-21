@@ -49,10 +49,12 @@ Desktop bundle smoke checks wait for their required page results (including synt
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
 The browser smoke checks ordinary JavaScript prototype mutation and the actual Window separately.
 Window now reuses V8's template-created canonical prototype during Servo binding initialization,
-so V8 can reject prototype replacement while leaving ordinary properties writable. This path
-awaits full browser CI confirmation. Remote WindowProxy representatives now use V8 Proxy
+so V8 can reject prototype replacement while leaving ordinary properties writable. Linux normal/JIT-less CI now confirms
+that immutable Window path. Remote WindowProxy representatives now use V8 Proxy
 so Servo's cross-origin traps actually run; their prototype getter returns null and replacement
-is rejected. The remote path also awaits browser CI confirmation. The smoke reports trusted
+is rejected. Foreign native Window values now get cached wrappers at realm conversion boundaries so
+their prototype handlers run. Browser confirmation of that wrapping path remains pending;
+other origin-aware WindowProxy traps and navigation identities remain under audit. The smoke reports trusted
 eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
