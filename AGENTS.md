@@ -39,6 +39,41 @@ continue autonomously with the next migration task. Keep progress accurate; neve
 prototype coverage as production migration.
 This file is the shared instruction entry point for all coding agents.
 
+## Coordinamento con Claude e pubblicazione durante la CI
+
+Codex dirige il lavoro: studia il problema, valuta il riuso di librerie mantenute e definisce
+passo per passo un incarico concreto per Claude Code, disponibile tramite terminale.
+Il prompt deve indicare obiettivo, file interessati, vincoli, documentazione da aggiornare e
+criteri di completamento. Claude implementa l'incarico e poi si ferma, senza commit, push o
+avvio autonomo di nuovi incarichi. Codex revisiona il risultato, completa le verifiche previste,
+gestisce commit e push e analizza la CI. Eventuali correzioni vengono delegate a Claude con
+un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incarico lasciato
+a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
+prima di passare al controllo della CI e alla decisione di pubblicare.
+
+Dopo ogni push, identificare le run CI associate al commit pubblicato. **Non restare inattivi
+ad aspettarle se esiste altro lavoro utile:** studiare e implementare il prossimo incarico.
+Si possono creare liberamente commit locali durante l'attesa, ma non pubblicarli ancora.
+Al completamento di ciascuna implementazione, controllare tutte le run del push precedente:
+
+- **Anche una sola CI rossa:** analizzare subito log e causa, delegare e completare la
+  correzione affinché il prossimo push la includa. Prima di pubblicare, attendere anche la
+  conclusione delle altre run del push precedente, raccogliendo e correggendo gli ulteriori
+  errori. Non attendere che una run rossa diventi verde senza una correzione o un retry motivato.
+- **Nessuna rossa, ma run ancora in corso o in coda:** non fare push. Continuare con altre
+  implementazioni complete e conservare i commit in locale; ricontrollare al loro completamento.
+- **Tutte le CI verdi:** si può pubblicare il lavoro completo e revisionato accumulato,
+  quindi continuare con il prossimo incarico mentre gira la nuova CI.
+- **Run cancellate, saltate o stato non accessibile:** non considerarle verdi. Analizzare
+  il motivo e stabilire quali verifiche mancano; completarle o ripeterle prima di trattare
+  il checkpoint come verificato. Non usare un nuovo push per interrompere run ancora attive.
+
+Se non rimane altro lavoro utile, attendere e controllare la CI. Un'indicazione esplicita
+dell'utente di fermarsi prevale sulla prosecuzione autonoma. Queste regole governano il
+momento del push anche quando le autorizzazioni permanenti sotto consentono di pubblicare
+senza chiedere conferma. Le build pesanti vanno eseguite online in CI, come richiesto
+dall'utente; mantenere locali soltanto le verifiche leggere appropriate.
+
 
 This directory is a **vendored copy** of [Servo](https://github.com/servo/servo), currently
 tracking upstream tag `v0.5.0` (migrated from the original `v0.4.0` import — see
@@ -72,17 +107,17 @@ this repo, `roves-action`, `roves-packmaster`/Packmaster, `roves-vscode`, `roves
 and any game repo used to test them (e.g. `pixi-vn-react-template`) — without stopping to ask
 for confirmation at each step:
 
-- **Push freely.** Commit and push directly to the active branch (usually `main`) once a
-  change is verified — don't wait for a "go ahead" before pushing. Applies to every sibling
-  repo in this ecosystem, not just this one.
+- **Push without asking for confirmation, subject to the CI publication rules above.**
+  Commit directly to the active branch (usually `main`); publish complete, reviewed changes
+  only when the preceding CI batch permits it. Applies to every sibling repo in this ecosystem.
 - **Run whatever CI/CD is needed to verify a fix.** Push branches/tags, trigger runs, and
   watch them to completion as part of normal iteration — CI remains the cross-platform
   authority (Linux/macOS builds still aren't possible on this Windows machine), but as of
   2026-09-29 a local Windows `cargo build`/`./mach build` toolchain is set up and confirmed
   working (LLVM/clang/`lld-link.exe`/`libclang.dll`, MSVC Build Tools, real GStreamer,
   `depot_tools` — see "Diagnosing a failure without `gh`/a token on hand" below for the
-  remaining CI-only gap). Alternate between a local build for fast iteration on Windows-only
-  changes and CI for anything cross-platform or for final verification.
+  remaining CI-only gap). Keep heavy builds online in CI as requested by the user; use local
+  lightweight checks where appropriate.
 - **Iterate the fix → push → watch CI → fix loop independently** rather than stopping to
   report every intermediate failure — the user prefers being handed the end result (a green
   CI run, a cut release, a working artifact/APK link) over a play-by-play. Report honestly
