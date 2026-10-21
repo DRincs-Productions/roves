@@ -311,6 +311,18 @@ di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del br
 
 ### Stato realm per oggetto inutilizzato — 21 ottobre 2026
 
+Patch 0259 implementa i trap locali delle proprietà WindowProxy riusando gli algoritmi Servo
+e le annotazioni WebIDL, inclusi getter/setter consentiti, fallback e rifiuti SecurityError.
+Cache WeakMap V8 per i property holder: niente rigenerazione degli accessori a ogni lettura,
+intrinseci catturati prima del codice utente e raccolta di chiavi/holder non raggiungibili.
+Runtime local normal 48 passati / 2 ignorati, JIT-less 47 / 3; generator 75 verdi,
+generazione WebIDL completa riuscita e runner POSIX 7 verdi. La fixture estesa passa in
+Chrome DevTools MCP (Chrome 155 Windows x64, scheda background visibile, HTTP due porte;
+headless non determinato), ma **la verifica Roves online resta pendente**. Non chiudere SOP
+completa: finestre remote, navigazione, alias e WPT più ampie richiedono ancora verifica.
+Il replay ha rilevato drift preesistente nei tre file smoke: la patch include anche le
+modifiche HTTP/CSP/diagnostica/uscita anticipata già presenti nei sorgenti ma non nel replay.
+
 Patch 0258: ClassBox conserva slot/private durante la costruzione ma differisce i callback
 trace nativi finché esiste la cella JSAPI. La creazione di handler/proxy può allocare prima
 di quel momento. Regressione con GC prima/dopo l'inizializzazione e valori conservati verde;

@@ -3717,6 +3717,13 @@ class CGCrossOriginProperties(CGThing):
             """
             static CROSS_ORIGIN_PROPERTIES: ThreadUnsafeOnceLock<CrossOriginProperties> = ThreadUnsafeOnceLock::new();
 
+            /// Generated from WebIDL cross-origin annotations, including global Window.
+            pub fn cross_origin_properties() -> &'static CrossOriginProperties {
+                // Initialized once with immutable property/function spec slices.
+                unsafe { CROSS_ORIGIN_PROPERTIES.get() }
+            }
+
+
             pub(crate) fn init_cross_origin_properties<D: DomTypes>() {
                 CROSS_ORIGIN_PROPERTIES.set(CrossOriginProperties {
                     attributes: unsafe { sCrossOriginAttributes.get() },
@@ -7326,7 +7333,7 @@ class CGInitStatics(CGThing):
             "init_sCrossOriginMethods::<D>();",
             "init_sCrossOriginAttributes::<D>();",
             "init_cross_origin_properties::<D>();"
-        ] if descriptor.isMaybeCrossOriginObject() else []
+        ] if descriptor.isMaybeCrossOriginObject() or descriptor.interface.identifier.name == "Window" else []
         crossorigin_joined = '\n'.join(crossorigin)
         interface = (
             "init_interface_object::<D>();"
@@ -7445,7 +7452,7 @@ class CGDescriptor(CGThing):
         if descriptor.proxy:
             cgThings.append(CGDefineProxyHandler(descriptor))
 
-        if descriptor.isMaybeCrossOriginObject():
+        if descriptor.isMaybeCrossOriginObject() or descriptor.interface.identifier.name == "Window":
             cgThings.append(CGCrossOriginProperties(descriptor))
 
         properties = PropertyArrays(descriptor)

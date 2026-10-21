@@ -9,6 +9,34 @@ from run_v8 import ROOT, generate
 
 
 class V8GeneratorTests(unittest.TestCase):
+    def test_window_cross_origin_tables_use_webidl_annotations(self):
+        import WebIDL
+        from configuration import Configuration
+        from codegen import CGDescriptor
+
+        with tempfile.TemporaryDirectory() as directory:
+            parser = WebIDL.Parser(directory)
+            parser.parse('''[Global=Window, Exposed=Window] interface Window {
+                [LegacyUnforgeable, CrossOriginReadable] readonly attribute Window window;
+                [CrossOriginReadable] readonly attribute boolean closed;
+                readonly attribute DOMString secret;
+                [CrossOriginCallable] undefined postMessage(any value);
+                undefined hiddenMethod();
+            };''', "Window.webidl")
+            config = Configuration(str(ROOT / "codegen/Bindings.conf"), parser.finish())
+            source = CGDescriptor(config.getDescriptor("Window"), config, True).define()
+            start = source.index("static sCrossOriginMethods:")
+            end = source.index("static CROSS_ORIGIN_PROPERTIES:", start)
+            tables = source[start:end]
+            for name in ("window", "closed", "postMessage"):
+                self.assertIn(f'c"{name}"', tables)
+            for name in ("secret", "hiddenMethod"):
+                self.assertNotIn(f'c"{name}"', tables)
+            self.assertIn("pub fn cross_origin_properties()", source)
+            for call in ("init_sCrossOriginMethods::<D>();", "init_sCrossOriginAttributes::<D>();",
+                         "init_cross_origin_properties::<D>();"):
+                self.assertIn(call, source)
+
     def test_worker_globals_leave_intrinsic_lookup_to_v8(self):
         from codegen import CGDOMJSClass
 

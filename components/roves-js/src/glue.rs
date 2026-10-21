@@ -38,6 +38,7 @@ pub use crate::structured_clone_impl::{
     DeleteJSAutoStructuredCloneBuffer, NewJSAutoStructuredCloneBuffer,
 };
 pub use crate::proxy::{
+    GetCrossOriginPropertyHolder, SetCrossOriginPropertyHolder,
     CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,
 };
 pub use crate::proxy::{

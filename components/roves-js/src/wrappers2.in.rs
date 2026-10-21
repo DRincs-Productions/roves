@@ -205,6 +205,8 @@ wrap!(glue: pub fn CallJitMethodOp(info: *const JSJitInfo, cx: &mut JSContext, t
 wrap!(glue: pub fn NewCompileOptions(aCx: &JSContext, aFile: *const ::std::os::raw::c_char, aLine: ::std::os::raw::c_uint) -> *mut ReadOnlyCompileOptions);
 wrap!(glue: pub fn NewProxyObject(aCx: &mut JSContext, aHandler: *const ::std::os::raw::c_void, aPriv: HandleValue, proto: *mut JSObject, aClass: *const JSClass, aLazyProto: bool) -> *mut JSObject);
 wrap!(glue: pub fn NewWindowProxy(aCx: &mut JSContext, aObj: HandleObject, aHandler: *const ::std::os::raw::c_void) -> *mut JSObject);
+wrap!(glue: pub fn GetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: MutableHandleObject) -> bool);
+wrap!(glue: pub fn SetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: HandleObject) -> bool);
 wrap!(glue: pub fn int_to_jsid(i: i32, id: MutableHandleId));
 wrap!(glue: pub fn RUST_SYMBOL_TO_JSID(sym: *mut Symbol, id: MutableHandleId));
 wrap!(glue: pub fn RUST_JSID_IS_VOID(id: HandleId) -> bool);

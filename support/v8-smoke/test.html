@@ -39,6 +39,31 @@ crossOriginFrame.addEventListener("load", () => {
   try { prototypeIsNull = Object.getPrototypeOf(otherWindow) === null; } catch (_) {}
   try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
   console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
+  const denied = action => {
+    try { action(); return false; } catch (error) { return error.name === "SecurityError"; }
+  };
+  const forbidden = [
+    () => otherWindow.document,
+    () => "document" in otherWindow,
+    () => Object.getOwnPropertyDescriptor(otherWindow, "document"),
+    () => Reflect.defineProperty(otherWindow, "probe", { value: 1 }),
+    () => Reflect.deleteProperty(otherWindow, "document"),
+    () => Reflect.set(otherWindow, "probe", 1),
+    () => Reflect.set(otherWindow, "opener", null),
+    () => Reflect.preventExtensions(otherWindow),
+  ];
+  const deniedCount = forbidden.filter(denied).length;
+  let allowed = false;
+  try {
+    const keys = Reflect.ownKeys(otherWindow);
+    allowed = otherWindow.self === otherWindow && otherWindow.window === otherWindow &&
+      typeof otherWindow.closed === "boolean" && typeof otherWindow.postMessage === "function" &&
+      otherWindow.postMessage === otherWindow.postMessage &&
+      otherWindow.then === undefined && "closed" in otherWindow &&
+      keys.includes("location") && keys.includes("postMessage") && !keys.includes("document") &&
+      Object.getOwnPropertyDescriptor(otherWindow, "closed").get instanceof Function;
+  } catch (error) { console.log("ROVES-V8 cross-origin allowed error", error.name, error.message); }
+  console.log("ROVES-V8 cross-origin WindowProxy properties", deniedCount === forbidden.length, allowed);
 });
 crossOriginFrame.addEventListener("error", () => {
   clearTimeout(crossOriginTimeout);

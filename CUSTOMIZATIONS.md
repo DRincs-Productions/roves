@@ -14775,3 +14775,36 @@ and hook dispatch. Normal runtime 47 passed / 2 ignored; JIT-less 46 / 3.
 Replayed preceding source patches, normalized checkout line endings, verified WSL patch
 dry-run/apply and exact source comparison. Full browser GC stress remains open; no browser
 memory or performance measurement is claimed.
+
+## 2026-10-21 - Reuse Servo cross-origin property algorithms for local WindowProxy
+
+**Files:** `components/script/dom/window/windowproxy.rs`,
+`components/script_bindings/{proxyhandler.rs,codegen/codegen.py,codegen/test_v8.py}`,
+`components/roves-js/src/{proxy.rs,glue.rs,wrappers2.in.rs,tests.rs}`,
+`support/v8-smoke/{test.html,run.sh,test_runner.py}`
+(`0259-window-cross-origin-property-checks.patch`), README, migration plan and wiki.
+
+Reuse maintained Servo origin checks, CrossOriginGet/Set/property fallback algorithms and
+existing WebIDL annotations instead of a second permission list. Generate cross-origin
+tables for the global Window without reclassifying its global as a DOM proxy. Connect local
+WindowProxy descriptor/get/has/set/define/delete/keys/preventExtensions traps to these checks.
+Allowed child indices precede cross-origin member keys; same-origin property paths retain
+ordinary forwarding. DissimilarOriginWindow completeness and navigation identity remain open.
+
+Replace upstream's per-access property-holder recreation with V8 native WeakMap caching per
+receiving realm. Capture map methods before user code; keys/holders are ephemeron-owned,
+without native persistent-root maps. Propagate allocation failure before using the holder.
+The runtime regression checks captured intrinsics and collection of both dead key and holder.
+One additional WeakMap per realm trades bounded setup for fewer repeated accessor allocations;
+no dependency or build flag added, no browser CPU/RAM/GPU performance result claimed.
+
+Local validation: normal runtime 48 passed / 2 ignored, JIT-less 47 / 3, generator 75 passed,
+POSIX smoke-runner 7 passed. Full real WebIDL generation succeeds. Chrome DevTools MCP on
+Windows x64 Chrome 155, background tab reporting visible, HTTP loopback ports 18765/18766,
+confirms the fixture's property denials and allowed-member checks (functional reference,
+headless status unknown). Browser Roves confirmation awaits CI.
+
+Patch replay also detected pre-existing drift for test.html/run.sh/test_runner.py. Include
+their previously committed HTTP fixtures, CSP guards, raw diagnostics and early suite exit
+changes in this patch so reconstruction matches the tracked files exactly. Verified fresh
+v0.5.0 upstream files plus preceding custom patches, WSL patch dry-run and source comparison.

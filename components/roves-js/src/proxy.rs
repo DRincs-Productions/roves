@@ -865,9 +865,43 @@ pub unsafe fn SetPropertyIgnoringNamedGetter(
 /// Cache native WeakMap methods before user code can replace global intrinsics.
 pub(crate) fn initialize_window_wrappers<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>> {
     crate::realm_impl::realm_cached(scope, "WindowWrappers", |scope| {
-        let source = v8::String::new(scope, "(function () { const map = new WeakMap(); return [map, WeakMap.prototype.get, WeakMap.prototype.set]; })()")?;
+        let source = v8::String::new(scope, "(function () { return [new WeakMap(), WeakMap.prototype.get, WeakMap.prototype.set, new WeakMap()]; })()")?;
         v8::Script::compile(scope, source, None)?.run(scope)
     })
+}
+
+/// A receiving realm's ephemeron cache of cross-origin WebIDL property holders.
+/// The key and holder are rooted by the JSAPI caller; no native map roots either.
+pub unsafe fn GetCrossOriginPropertyHolder(
+    cx: *mut JSContext, proxy: HandleObject, mut holder: crate::jsapi::MutableHandleObject,
+) -> bool {
+    let raw = unsafe { &*cx };
+    raw.catching(|scope| {
+        let cache = initialize_window_wrappers(scope)?;
+        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
+        let map = cache.get_index(scope, 3)?;
+        let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
+        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
+        let value = get.call(scope, map, &[key])?;
+        holder.set(if value.is_undefined() { std::ptr::null_mut() } else { from_v8(scope, value).to_object() });
+        Some(())
+    }).is_some()
+}
+
+pub unsafe fn SetCrossOriginPropertyHolder(
+    cx: *mut JSContext, proxy: HandleObject, holder: HandleObject,
+) -> bool {
+    let raw = unsafe { &*cx };
+    raw.catching(|scope| {
+        let cache = initialize_window_wrappers(scope)?;
+        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
+        let map = cache.get_index(scope, 3)?;
+        let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
+        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
+        let value = unsafe { crate::cell::cell_value(scope, holder.get().cast()) };
+        set.call(scope, map, &[key, value])?;
+        Some(())
+    }).is_some()
 }
 
 /// Wrap a native Window global when it crosses a realm boundary. The owner keeps

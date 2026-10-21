@@ -1,0 +1,914 @@
+diff --git a/components/roves-js/src/glue.rs b/components/roves-js/src/glue.rs
+--- a/components/roves-js/src/glue.rs
++++ b/components/roves-js/src/glue.rs
+@@ -38,6 +38,7 @@
+     DeleteJSAutoStructuredCloneBuffer, NewJSAutoStructuredCloneBuffer,
+ };
+ pub use crate::proxy::{
++    GetCrossOriginPropertyHolder, SetCrossOriginPropertyHolder,
+     CreateWrapperProxyHandler, DeleteWrapperProxyHandler, GetWindowProxyClass, NewWindowProxy,
+ };
+ pub use crate::proxy::{
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -865,9 +865,43 @@
+ /// Cache native WeakMap methods before user code can replace global intrinsics.
+ pub(crate) fn initialize_window_wrappers<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>> {
+     crate::realm_impl::realm_cached(scope, "WindowWrappers", |scope| {
+-        let source = v8::String::new(scope, "(function () { const map = new WeakMap(); return [map, WeakMap.prototype.get, WeakMap.prototype.set]; })()")?;
++        let source = v8::String::new(scope, "(function () { return [new WeakMap(), WeakMap.prototype.get, WeakMap.prototype.set, new WeakMap()]; })()")?;
+         v8::Script::compile(scope, source, None)?.run(scope)
+     })
++}
++
++/// A receiving realm's ephemeron cache of cross-origin WebIDL property holders.
++/// The key and holder are rooted by the JSAPI caller; no native map roots either.
++pub unsafe fn GetCrossOriginPropertyHolder(
++    cx: *mut JSContext, proxy: HandleObject, mut holder: crate::jsapi::MutableHandleObject,
++) -> bool {
++    let raw = unsafe { &*cx };
++    raw.catching(|scope| {
++        let cache = initialize_window_wrappers(scope)?;
++        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
++        let map = cache.get_index(scope, 3)?;
++        let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
++        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
++        let value = get.call(scope, map, &[key])?;
++        holder.set(if value.is_undefined() { std::ptr::null_mut() } else { from_v8(scope, value).to_object() });
++        Some(())
++    }).is_some()
++}
++
++pub unsafe fn SetCrossOriginPropertyHolder(
++    cx: *mut JSContext, proxy: HandleObject, holder: HandleObject,
++) -> bool {
++    let raw = unsafe { &*cx };
++    raw.catching(|scope| {
++        let cache = initialize_window_wrappers(scope)?;
++        let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
++        let map = cache.get_index(scope, 3)?;
++        let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
++        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
++        let value = unsafe { crate::cell::cell_value(scope, holder.get().cast()) };
++        set.call(scope, map, &[key, value])?;
++        Some(())
++    }).is_some()
+ }
+ 
+ /// Wrap a native Window global when it crosses a realm boundary. The owner keeps
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -278,6 +278,39 @@
+ 
+     fn global(runtime: &Runtime) -> JSVal {
+         eval(runtime, "globalThis")
++    }
++
++    #[test]
++    fn cross_origin_holders_use_ephemeron_ownership_and_captured_intrinsics() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let before = HOOK_FINALIZED.with(Cell::get);
++        {
++            rooted!(in(cx) let key = unsafe { JS_NewObject(cx, &CLASS) });
++            unsafe { JS_SetReservedSlot(key.get(), 0, &Int32Value(42)) };
++            {
++                rooted!(in(cx) let holder = unsafe { JS_NewObject(cx, &CLASS) });
++                unsafe { JS_SetReservedSlot(holder.get(), 0, &Int32Value(42)) };
++                assert!(unsafe { crate::proxy::SetCrossOriginPropertyHolder(cx,
++                    key.handle().into(), holder.handle().into()) });
++            }
++            eval(&runtime, "WeakMap.prototype.get = () => { throw 1 }; WeakMap.prototype.set = () => { throw 2 }; globalThis.WeakMap = () => { throw 3 }");
++            runtime.gc_for_testing();
++            rooted!(in(cx) let mut cached = ptr::null_mut::<JSObject>());
++            assert!(unsafe { crate::proxy::GetCrossOriginPropertyHolder(cx,
++                key.handle().into(), cached.handle_mut().into()) });
++            assert!(!cached.get().is_null());
++            let mut marker = UndefinedValue();
++            unsafe { JS_GetReservedSlot(cached.get(), 0, &mut marker) };
++            assert_eq!(marker.to_int32(), 42);
++            assert_eq!(HOOK_FINALIZED.with(Cell::get), before);
++        }
++        for _ in 0..3 {
++            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++            runtime.gc_for_testing();
++        }
++        assert_eq!(HOOK_FINALIZED.with(Cell::get), before + 2,
++            "the realm cache must not keep a dead key or its holder alive");
+     }
+ 
+     #[test]
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -205,6 +205,8 @@
+ wrap!(glue: pub fn NewCompileOptions(aCx: &JSContext, aFile: *const ::std::os::raw::c_char, aLine: ::std::os::raw::c_uint) -> *mut ReadOnlyCompileOptions);
+ wrap!(glue: pub fn NewProxyObject(aCx: &mut JSContext, aHandler: *const ::std::os::raw::c_void, aPriv: HandleValue, proto: *mut JSObject, aClass: *const JSClass, aLazyProto: bool) -> *mut JSObject);
+ wrap!(glue: pub fn NewWindowProxy(aCx: &mut JSContext, aObj: HandleObject, aHandler: *const ::std::os::raw::c_void) -> *mut JSObject);
++wrap!(glue: pub fn GetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: MutableHandleObject) -> bool);
++wrap!(glue: pub fn SetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: HandleObject) -> bool);
+ wrap!(glue: pub fn int_to_jsid(i: i32, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_SYMBOL_TO_JSID(sym: *mut Symbol, id: MutableHandleId));
+ wrap!(glue: pub fn RUST_JSID_IS_VOID(id: HandleId) -> bool);
+diff --git a/components/script/dom/window/windowproxy.rs b/components/script/dom/window/windowproxy.rs
+--- a/components/script/dom/window/windowproxy.rs
++++ b/components/script/dom/window/windowproxy.rs
+@@ -19,22 +19,29 @@
+ use js::jsapi::{
+     GCContext, Handle as RawHandle, HandleId as RawHandleId, HandleObject as RawHandleObject,
+     HandleValue as RawHandleValue, JS_DefinePropertyById, JS_ForwardSetPropertyTo,
+-    JSContext as RawJSContext, JSErrNum, JSObject, JSPROP_ENUMERATE, JSPROP_READONLY, JSTracer,
+-    MutableHandle as RawMutableHandle, MutableHandleObject as RawMutableHandleObject,
+-    MutableHandleValue as RawMutableHandleValue, ObjectOpResult, PropertyDescriptor,
++    JSContext as RawJSContext, JSErrNum, JSITER_HIDDEN, JSITER_OWNONLY, JSITER_SYMBOLS, JSObject,
++    JSPROP_ENUMERATE, JSPROP_READONLY, JSTracer, MutableHandle as RawMutableHandle,
++    MutableHandleIdVector as RawMutableHandleIdVector,
++    MutableHandleObject as RawMutableHandleObject, MutableHandleValue as RawMutableHandleValue,
++    ObjectOpResult, PropertyDescriptor,
+ };
+ use js::jsval::{NullValue, PrivateValue, UndefinedValue};
+ use js::realm::{AutoRealm, CurrentRealm};
+ use js::rust::wrappers2::{
+-    GetObjectProto, JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
++    AppendToIdVector, GetObjectProto, GetPropertyKeys, JS_DeletePropertyById,
++    JS_ForwardGetPropertyTo, JS_GetOwnPropertyDescriptorById, JS_HasOwnPropertyById,
+     JS_HasPropertyById, JS_IsExceptionPending, JS_TransplantObject, NewWindowProxy, SetWindowProxy,
++    int_to_jsid,
+ };
+ use js::rust::{Handle, MutableHandle, MutableHandleValue, get_object_class};
+ use malloc_size_of::{MallocSizeOf, MallocSizeOfOps};
+ use net_traits::ReferrerPolicy;
+ use net_traits::request::Referrer;
+ use script_bindings::cell::DomRefCell;
++use script_bindings::codegen::GenericBindings::WindowBinding::WindowMethods;
+ use script_bindings::proxyhandler::{
++    cross_origin_get, cross_origin_get_own_property_helper, cross_origin_own_property_keys,
++    cross_origin_property_fallback, cross_origin_set, is_platform_object_same_origin,
+     maybe_cross_origin_get_prototype, maybe_cross_origin_get_prototype_if_ordinary_rawcx,
+     maybe_cross_origin_set_prototype_rawcx, set_property_descriptor,
+ };
+@@ -52,6 +59,7 @@
+ use storage_traits::webstorage_thread::WebStorageThreadMsg;
+ use style::attr::parse_integer;
+ 
++use crate::dom::bindings::codegen::Bindings::WindowBinding::Window_Binding;
+ use crate::dom::bindings::conversions::{ToJSValConvertible, root_from_handleobject};
+ use crate::dom::bindings::error::{Error, Fallible, throw_dom_exception};
+ use crate::dom::bindings::inheritance::Castable;
+@@ -426,8 +434,8 @@
+     /// <https://html.spec.whatwg.org/multipage/#delaying-load-events-mode>
+     pub(crate) fn stop_delaying_load_events_mode(&self) {
+         self.delaying_load_events_mode.set(false);
+-        if let Some(document) = self.document() &&
+-            !document.loader().events_inhibited()
++        if let Some(document) = self.document()
++            && !document.loader().events_inhibited()
+         {
+             ScriptThread::mark_document_with_no_blocked_loads(&document);
+         }
+@@ -784,8 +792,8 @@
+     }
+ 
+     pub(crate) fn set_currently_active(&self, cx: &mut JSContext, window: &Window) {
+-        if let Some(pipeline_id) = self.currently_active() &&
+-            pipeline_id == window.pipeline_id()
++        if let Some(pipeline_id) = self.currently_active()
++            && pipeline_id == window.pipeline_id()
+         {
+             return debug!(
+                 "Attempt to set the currently active window to the currently active window."
+@@ -1034,6 +1042,32 @@
+         return true;
+     }
+ 
++    let mut realm = CurrentRealm::assert(cx);
++    let proxy_handle = unsafe { Handle::from_raw(proxy) };
++    if !is_platform_object_same_origin(&realm, proxy_handle) {
++        let id = unsafe { Handle::from_raw(id) };
++        let mut desc = desc;
++        if !cross_origin_get_own_property_helper(
++            &mut realm,
++            proxy_handle,
++            Window_Binding::cross_origin_properties(),
++            id,
++            desc.reborrow(),
++            unsafe { &mut *is_none },
++        ) {
++            return false;
++        }
++        return !unsafe { *is_none }
++            || cross_origin_property_fallback::<crate::DomTypeHolder>(
++                &mut realm,
++                proxy_handle,
++                id,
++                desc,
++                unsafe { &mut *is_none },
++            );
++    }
++    drop(realm);
++
+     let mut slot = UndefinedValue();
+     unsafe { GetProxyPrivate(proxy.get(), &mut slot) };
+     rooted!(&in(cx) let target = slot.to_object());
+@@ -1050,6 +1084,12 @@
+     desc: RawHandle<PropertyDescriptor>,
+     res: *mut ObjectOpResult,
+ ) -> bool {
++    let mut context = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
++    let realm = CurrentRealm::assert(&mut context);
++    if !is_platform_object_same_origin(&realm, unsafe { Handle::from_raw(proxy) }) {
++        return unsafe { defineProperty_xorigin(cx, proxy, id, desc, res) };
++    }
++    drop(realm);
+     if get_array_index_from_id(unsafe { Handle::from_raw(id) }).is_some() {
+         // Spec says to Reject whether this is a supported index or not,
+         // since we have no indexed setter or indexed creator.  That means
+@@ -1084,6 +1124,25 @@
+         unsafe { *bp = true };
+         return true;
+     }
++
++    let realm = CurrentRealm::assert(cx);
++    if !is_platform_object_same_origin(&realm, unsafe { Handle::from_raw(proxy) }) {
++        drop(realm);
++        rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
++        let mut is_none = true;
++        let ok = unsafe {
++            get_own_property_descriptor(
++                cx.raw_cx(),
++                proxy,
++                id,
++                desc.handle_mut().into(),
++                &mut is_none,
++            )
++        };
++        unsafe { *bp = ok && !is_none };
++        return ok;
++    }
++    drop(realm);
+ 
+     let mut slot = UndefinedValue();
+     unsafe { GetProxyPrivate(*proxy.ptr, &mut slot) };
+@@ -1116,6 +1175,19 @@
+         window.safe_to_jsval(cx, vp);
+         return true;
+     }
++
++    let mut realm = CurrentRealm::assert(cx);
++    let proxy_handle = unsafe { Handle::from_raw(proxy) };
++    if !is_platform_object_same_origin(&realm, proxy_handle) {
++        return cross_origin_get::<crate::DomTypeHolder>(
++            &mut realm,
++            proxy_handle,
++            unsafe { Handle::from_raw(receiver) },
++            unsafe { Handle::from_raw(id) },
++            vp,
++        );
++    }
++    drop(realm);
+ 
+     let mut slot = UndefinedValue();
+     unsafe { GetProxyPrivate(*proxy.ptr, &mut slot) };
+@@ -1140,6 +1212,22 @@
+     receiver: RawHandleValue,
+     res: *mut ObjectOpResult,
+ ) -> bool {
++    let mut context = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
++    let mut realm = CurrentRealm::assert(&mut context);
++    let proxy_handle = unsafe { Handle::from_raw(proxy) };
++    if !is_platform_object_same_origin(&realm, proxy_handle) {
++        return unsafe {
++            cross_origin_set::<crate::DomTypeHolder>(
++                &mut realm,
++                proxy_handle,
++                Handle::from_raw(id),
++                v,
++                Handle::from_raw(receiver),
++                res,
++            )
++        };
++    }
++    drop(realm);
+     if get_array_index_from_id(unsafe { Handle::from_raw(id) }).is_some() {
+         // Reject (which means throw if and only if strict) the set.
+         unsafe { (*res).code_ = JSErrNum::JSMSG_READ_ONLY as ::libc::uintptr_t };
+@@ -1150,6 +1238,83 @@
+     unsafe { GetProxyPrivate(*proxy.ptr, &mut slot) };
+     rooted!(in(cx) let target = slot.to_object());
+     unsafe { JS_ForwardSetPropertyTo(cx, target.handle().into(), id, v, receiver, res) }
++}
++
++#[expect(unsafe_code)]
++unsafe extern "C" fn own_property_keys(
++    cx: *mut RawJSContext,
++    proxy: RawHandleObject,
++    props: RawMutableHandleIdVector,
++) -> bool {
++    let mut cx = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
++    let mut realm = CurrentRealm::assert(&mut cx);
++    let proxy = unsafe { Handle::from_raw(proxy) };
++    let mut slot = UndefinedValue();
++    unsafe { GetProxyPrivate(proxy.get(), &mut slot) };
++    rooted!(&in(&mut realm) let target = slot.to_object());
++    if !is_platform_object_same_origin(&realm, proxy) {
++        // Window indices are visible across origins before the annotated members.
++        if let Ok(window) = root_from_handleobject::<Window>(&mut realm, target.handle()) {
++            rooted!(&in(&mut realm) let mut id = js::jsapi::jsid::default());
++            for index in 0..window.Length() {
++                unsafe {
++                    int_to_jsid(index as i32, id.handle_mut());
++                    if !AppendToIdVector(props, id.handle()) {
++                        return false;
++                    }
++                }
++            }
++        }
++        return cross_origin_own_property_keys(
++            &mut realm,
++            proxy,
++            Window_Binding::cross_origin_properties(),
++            props,
++        );
++    }
++    unsafe {
++        GetPropertyKeys(
++            &mut realm,
++            target.handle(),
++            JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS,
++            props,
++        )
++    }
++}
++
++#[expect(unsafe_code)]
++unsafe extern "C" fn delete_property(
++    cx: *mut RawJSContext,
++    proxy: RawHandleObject,
++    id: RawHandleId,
++    result: *mut ObjectOpResult,
++) -> bool {
++    let mut context = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
++    let realm = CurrentRealm::assert(&mut context);
++    if !is_platform_object_same_origin(&realm, unsafe { Handle::from_raw(proxy) }) {
++        return unsafe { delete_xorigin(cx, proxy, id, result) };
++    }
++    drop(realm);
++    let mut slot = UndefinedValue();
++    unsafe { GetProxyPrivate(proxy.get(), &mut slot) };
++    rooted!(&in(&mut context) let target = slot.to_object());
++    unsafe { JS_DeletePropertyById(&mut context, target.handle(), Handle::from_raw(id), result) }
++}
++
++#[expect(unsafe_code)]
++unsafe extern "C" fn prevent_extensions(
++    cx: *mut RawJSContext,
++    proxy: RawHandleObject,
++    result: *mut ObjectOpResult,
++) -> bool {
++    let mut context = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
++    let realm = CurrentRealm::assert(&mut context);
++    if !is_platform_object_same_origin(&realm, unsafe { Handle::from_raw(proxy) }) {
++        return unsafe { preventExtensions_xorigin(cx, proxy, result) };
++    }
++    // WindowProxy [[PreventExtensions]] always returns false.
++    unsafe { (*result).code_ = JSErrNum::JSMSG_CANT_PREVENT_EXTENSIONS as usize };
++    true
+ }
+ 
+ #[expect(unsafe_code)]
+@@ -1197,19 +1362,18 @@
+ }
+ 
+ static PROXY_TRAPS: ProxyTraps = ProxyTraps {
+-    // The prototype traps use Servo's maybe-cross-origin helpers below. The
+-    // remaining traps still need to vary with `IsPlatformObjectSameOrigin`.
++    // Reuse Servo's origin checks and WebIDL-generated cross-origin descriptors.
+     enter: None,
+     getOwnPropertyDescriptor: Some(get_own_property_descriptor),
+     defineProperty: Some(define_property),
+-    ownPropertyKeys: None,
+-    delete_: None,
++    ownPropertyKeys: Some(own_property_keys),
++    delete_: Some(delete_property),
+     enumerate: None,
+     getPrototypeIfOrdinary: Some(get_prototype_if_ordinary),
+     getPrototype: Some(get_prototype),
+     setPrototype: Some(maybe_cross_origin_set_prototype_rawcx),
+     setImmutablePrototype: None,
+-    preventExtensions: None,
++    preventExtensions: Some(prevent_extensions),
+     isExtensible: None,
+     has: Some(has),
+     get: Some(get),
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -3717,6 +3717,13 @@
+             """
+             static CROSS_ORIGIN_PROPERTIES: ThreadUnsafeOnceLock<CrossOriginProperties> = ThreadUnsafeOnceLock::new();
+ 
++            /// Generated from WebIDL cross-origin annotations, including global Window.
++            pub fn cross_origin_properties() -> &'static CrossOriginProperties {
++                // Initialized once with immutable property/function spec slices.
++                unsafe { CROSS_ORIGIN_PROPERTIES.get() }
++            }
++
++
+             pub(crate) fn init_cross_origin_properties<D: DomTypes>() {
+                 CROSS_ORIGIN_PROPERTIES.set(CrossOriginProperties {
+                     attributes: unsafe { sCrossOriginAttributes.get() },
+@@ -7326,7 +7333,7 @@
+             "init_sCrossOriginMethods::<D>();",
+             "init_sCrossOriginAttributes::<D>();",
+             "init_cross_origin_properties::<D>();"
+-        ] if descriptor.isMaybeCrossOriginObject() else []
++        ] if descriptor.isMaybeCrossOriginObject() or descriptor.interface.identifier.name == "Window" else []
+         crossorigin_joined = '\n'.join(crossorigin)
+         interface = (
+             "init_interface_object::<D>();"
+@@ -7445,7 +7452,7 @@
+         if descriptor.proxy:
+             cgThings.append(CGDefineProxyHandler(descriptor))
+ 
+-        if descriptor.isMaybeCrossOriginObject():
++        if descriptor.isMaybeCrossOriginObject() or descriptor.interface.identifier.name == "Window":
+             cgThings.append(CGCrossOriginProperties(descriptor))
+ 
+         properties = PropertyArrays(descriptor)
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -27,6 +27,7 @@
+ use js::realm::{AutoRealm, CurrentRealm};
+ use js::rust::wrappers2::{
+     AppendToIdVector, Call, GetObjectProto, GetPropertyKeys, GetWellKnownSymbol,
++    GetCrossOriginPropertyHolder, SetCrossOriginPropertyHolder,
+     InvokeGetOwnPropertyDescriptor, JS_AlreadyHasOwnPropertyById, JS_AtomizeAndPinString,
+     JS_DefineFunctions, JS_DefineProperties, JS_DefinePropertyById, JS_DeletePropertyById,
+     JS_GetOwnPropertyDescriptorById, JS_IdToValue, JS_IsExceptionPending,
+@@ -266,7 +267,7 @@
+ /// [`CrossOriginProperties(O)`].
+ ///
+ /// [`CrossOriginProperties(O)`]: https://html.spec.whatwg.org/multipage/#crossoriginproperties-(-o-)
+-pub(crate) struct CrossOriginProperties {
++pub struct CrossOriginProperties {
+     pub(crate) attributes: &'static [JSPropertySpec],
+     pub(crate) methods: &'static [JSFunctionSpec],
+ }
+@@ -286,7 +287,7 @@
+ /// Implementation of [`CrossOriginOwnPropertyKeys`].
+ ///
+ /// [`CrossOriginOwnPropertyKeys`]: https://html.spec.whatwg.org/multipage/#crossoriginownpropertykeys-(-o-)
+-fn cross_origin_own_property_keys(
++pub fn cross_origin_own_property_keys(
+     cx: &mut JSContext,
+     _proxy: HandleObject,
+     cross_origin_properties: &'static CrossOriginProperties,
+@@ -418,7 +419,7 @@
+ /// for a maybe-cross-origin object.
+ ///
+ /// [`CrossOriginGetOwnPropertyHelper`]: https://html.spec.whatwg.org/multipage/#crossorigingetownpropertyhelper-(-o,-p-)
+-pub(crate) fn cross_origin_get_own_property_helper(
++pub fn cross_origin_get_own_property_helper(
+     cx: &mut CurrentRealm,
+     proxy: HandleObject,
+     cross_origin_properties: &'static CrossOriginProperties,
+@@ -427,7 +428,9 @@
+     is_none: &mut bool,
+ ) -> bool {
+     rooted!(&in(cx) let mut holder = ptr::null_mut::<JSObject>());
+-    ensure_cross_origin_property_holder(cx, proxy, cross_origin_properties, holder.handle_mut());
++    if !ensure_cross_origin_property_holder(cx, proxy, cross_origin_properties, holder.handle_mut()) {
++        return false;
++    }
+ 
+     unsafe { JS_GetOwnPropertyDescriptorById(cx, holder.handle(), id, desc, is_none) }
+ }
+@@ -488,14 +491,16 @@
+ /// [`CrossOriginGetOwnPropertyHelper`]: https://html.spec.whatwg.org/multipage/#crossorigingetownpropertyhelper-(-o,-p-)
+ fn ensure_cross_origin_property_holder(
+     cx: &mut CurrentRealm,
+-    _proxy: HandleObject,
++    proxy: HandleObject,
+     cross_origin_properties: &'static CrossOriginProperties,
+     mut out_holder: MutableHandleObject,
+ ) -> bool {
+-    // TODO: We don't have the slot to store the holder yet. For now,
+-    //       the holder is constructed every time this function is called,
+-    //       which is not only inefficient but also deviates from the
+-    //       specification in a subtle yet observable way.
++    if !unsafe { GetCrossOriginPropertyHolder(cx, proxy, out_holder.reborrow()) } {
++        return false;
++    }
++    if !out_holder.get().is_null() {
++        return true;
++    }
+ 
+     // Create a holder for the current Realm
+     unsafe {
+@@ -521,9 +526,7 @@
+         }
+     }
+ 
+-    // TODO: Store the holder in the slot that we don't have yet.
+-
+-    true
++    unsafe { SetCrossOriginPropertyHolder(cx, proxy, out_holder.handle()) }
+ }
+ 
+ /// Check if `obj` is a `Location` or `Window` object.
+@@ -660,7 +663,7 @@
+ /// for a maybe-cross-origin object.
+ ///
+ /// [`CrossOriginGet`]: https://html.spec.whatwg.org/multipage/#crossoriginget-(-o,-p,-receiver-)
+-pub(crate) fn cross_origin_get<D: DomTypes>(
++pub fn cross_origin_get<D: DomTypes>(
+     cx: &mut CurrentRealm,
+     proxy: HandleObject,
+     receiver: HandleValue,
+@@ -730,7 +733,7 @@
+ /// for a maybe-cross-origin object.
+ ///
+ /// [`CrossOriginSet`]: https://html.spec.whatwg.org/multipage/#crossoriginset-(-o,-p,-v,-receiver-)
+-unsafe fn cross_origin_set<D: DomTypes>(
++pub unsafe fn cross_origin_set<D: DomTypes>(
+     cx: &mut CurrentRealm,
+     proxy: HandleObject,
+     id: HandleId,
+@@ -800,7 +803,7 @@
+ /// for a maybe-cross-origin object.
+ ///
+ /// [`CrossOriginPropertyFallback`]: https://html.spec.whatwg.org/multipage/#crossoriginpropertyfallback-(-p-)
+-pub(crate) fn cross_origin_property_fallback<D: DomTypes>(
++pub fn cross_origin_property_fallback<D: DomTypes>(
+     cx: &mut CurrentRealm,
+     _proxy: HandleObject,
+     id: HandleId,
+@@ -1007,7 +1010,7 @@
+ }
+ 
+ /// <https://html.spec.whatwg.org/multipage/#isplatformobjectsameorigin-(-o-)>
+-pub(crate) fn is_platform_object_same_origin(realm: &CurrentRealm, obj: HandleObject) -> bool {
++pub fn is_platform_object_same_origin(realm: &CurrentRealm, obj: HandleObject) -> bool {
+     let subject_realm = realm.realm().as_ptr();
+     let obj_realm = unsafe { GetObjectRealmOrNull(*obj) };
+     assert!(!obj_realm.is_null());
+diff --git a/components/script_bindings/codegen/test_v8.py b/components/script_bindings/codegen/test_v8.py
+--- a/components/script_bindings/codegen/test_v8.py
++++ b/components/script_bindings/codegen/test_v8.py
+@@ -9,6 +9,34 @@
+ 
+ 
+ class V8GeneratorTests(unittest.TestCase):
++    def test_window_cross_origin_tables_use_webidl_annotations(self):
++        import WebIDL
++        from configuration import Configuration
++        from codegen import CGDescriptor
++
++        with tempfile.TemporaryDirectory() as directory:
++            parser = WebIDL.Parser(directory)
++            parser.parse('''[Global=Window, Exposed=Window] interface Window {
++                [LegacyUnforgeable, CrossOriginReadable] readonly attribute Window window;
++                [CrossOriginReadable] readonly attribute boolean closed;
++                readonly attribute DOMString secret;
++                [CrossOriginCallable] undefined postMessage(any value);
++                undefined hiddenMethod();
++            };''', "Window.webidl")
++            config = Configuration(str(ROOT / "codegen/Bindings.conf"), parser.finish())
++            source = CGDescriptor(config.getDescriptor("Window"), config, True).define()
++            start = source.index("static sCrossOriginMethods:")
++            end = source.index("static CROSS_ORIGIN_PROPERTIES:", start)
++            tables = source[start:end]
++            for name in ("window", "closed", "postMessage"):
++                self.assertIn(f'c"{name}"', tables)
++            for name in ("secret", "hiddenMethod"):
++                self.assertNotIn(f'c"{name}"', tables)
++            self.assertIn("pub fn cross_origin_properties()", source)
++            for call in ("init_sCrossOriginMethods::<D>();", "init_sCrossOriginAttributes::<D>();",
++                         "init_cross_origin_properties::<D>();"):
++                self.assertIn(call, source)
++
+     def test_worker_globals_leave_intrinsic_lookup_to_v8(self):
+         from codegen import CGDOMJSClass
+ 
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -17,16 +17,61 @@
+ STATUS=0
+ # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
+ TOTALS=""
++HTTP_PORT=18765
++HTTP_CROSS_ORIGIN_PORT=18766
++HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
++"$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
++HTTP_PID=$!
++HTTP_CROSS_ORIGIN_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-cross-origin-$$.log"
++"$PYTHON" -m http.server "$HTTP_CROSS_ORIGIN_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_CROSS_ORIGIN_LOG" 2>&1 &
++HTTP_CROSS_ORIGIN_PID=$!
++cleanup_http_server() {
++  kill "$HTTP_PID" 2>/dev/null || true
++  kill "$HTTP_CROSS_ORIGIN_PID" 2>/dev/null || true
++  wait "$HTTP_PID" 2>/dev/null || true
++  wait "$HTTP_CROSS_ORIGIN_PID" 2>/dev/null || true
++  rm -f "$HTTP_LOG"
++  rm -f "$HTTP_CROSS_ORIGIN_LOG"
++}
++trap cleanup_http_server EXIT
++http_ready=0
++for _ in $(seq 1 50); do
++  if "$PYTHON" -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:$HTTP_PORT/cross-origin.html', timeout=0.2).close(); urllib.request.urlopen('http://127.0.0.1:$HTTP_CROSS_ORIGIN_PORT/cross-origin.html', timeout=0.2).close()" 2>/dev/null; then
++    http_ready=1
++    break
++  fi
++  sleep 0.1
++done
++if [ "$http_ready" -ne 1 ]; then
++  echo "::error::V8 smoke local HTTP fixture servers did not start on 127.0.0.1:$HTTP_PORT and 127.0.0.1:$HTTP_CROSS_ORIGIN_PORT"
++  exit 1
++fi
+ 
+ run_page() {
+-  local page="$1" seconds="$2" log="$3"
++  local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}"
++  local completed=0 pid code
+   # Bash 3.2 treats an empty array as unset under nounset. Do not expand it.
+   if [ "$RUNNER_COUNT" -gt 0 ]; then
+-    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++    timeout "$seconds" "${RUNNER[@]}" "$BIN" -z "$url" > "$log" 2>&1 &
+   else
+-    timeout "$seconds" "$BIN" -z "file://$DIR/$page" > "$log" 2>&1
++    timeout "$seconds" "$BIN" -z "$url" > "$log" 2>&1 &
+   fi
+-  local code=$?
++  pid=$!
++  if [ "${5:-}" = suite ]; then
++    # A suite emits its total only after settling all its checks. GNU timeout forwards
++    # TERM to the browser; the existing validator still rejects failed/incomplete totals.
++    while kill -0 "$pid" 2>/dev/null; do
++      if grep -aq '^SUITE TOTAL ' "$log"; then
++        completed=1
++        kill -TERM "$pid" 2>/dev/null || true
++        break
++      fi
++      sleep 0.1
++    done
++  fi
++  wait "$pid"
++  code=$?
++  if [ "$completed" -eq 1 ] && [ "$code" -eq 143 ]; then code=0; fi
+   # 124: the timeout ended the run (pages keep the browser open); anything else but 0 crashed.
+   if [ "$code" -ne 0 ] && [ "$code" -ne 124 ]; then
+     echo "::error::$page: servoshell exited with $code"
+@@ -37,7 +82,7 @@
+ 
+ run_suite() {
+   local page="$1" log="$2" seconds="${3:-60}"
+-  run_page "$page" "$seconds" "$log"
++  run_page "$page" "$seconds" "$log" "" suite
+   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
+   local total
+   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
+@@ -67,22 +112,58 @@
+ run_suite saves.html saves.log 120
+ echo "::notice title=V8 smoke suites::${TOTALS#%0A}"
+ 
+-run_page test.html 30 test.log
++run_page test.html 30 test.log "http://127.0.0.1:$HTTP_PORT/test.html"
+ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" "ROVES-V8 promise 5" "ROVES-V8 timeout fired"; do
+   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
+ done
+ if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
+-if grep -aFxq 'ROVES-V8 immutable window prototype true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 ordinary prototype mutation true' test.log; then echo "::notice::test.html: ordinary prototype mutation"; else echo "::error::test.html: ordinary prototype mutation failed"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 immutable Window prototype true true true true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed ($(grep -aF 'ROVES-V8 cross-origin iframe ' test.log | tr '\n' ' '))"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 cross-origin WindowProxy properties true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy properties"; else echo "::error::test.html: cross-origin WindowProxy properties not confirmed ($(grep -aF 'ROVES-V8 cross-origin ' test.log | tr '\n' ' '))"; STATUS=1; fi
++if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error::test.html: cross-origin iframe did not load"; STATUS=1; fi
++if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp ordinary eval unchanged true"; do
++for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp ordinary eval unchanged true"; do
+   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
++
++run_page wasm-csp.html 30 wasm-csp.log
++if [ "$MODE" = normal ]; then
++  if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
++    echo "::notice::wasm-csp.html: blocked without wasm-unsafe-eval"
++  else
++    echo "::error::wasm-csp.html: WebAssembly compilation was not blocked by CSP"
++    STATUS=1
++  fi
++else
++  if grep -aFxq 'ROVES-V8 csp wasm unavailable' wasm-csp.log || grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
++    echo "::notice::wasm-csp.html: Wasm unavailable or rejected in JIT-less mode"
++  else
++    echo "::error::wasm-csp.html: unexpected JIT-less WebAssembly CSP result"
++    STATUS=1
++  fi
++fi
+ 
+ run_page nav1.html 30 nav.log
+ for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=true"; do
+   if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
+ done
+ 
++if [ "$STATUS" -ne 0 ]; then
++  # Marker summaries alone hide exceptions thrown between setup and a callback's result.
++  # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
++  for page_log in test.log csp.log wasm-csp.log nav.log; do
++    echo "V8 smoke diagnostics: $page_log"
++    tail -80 "$page_log"
++  done
++  for server_log in "$HTTP_LOG" "$HTTP_CROSS_ORIGIN_LOG"; do
++    if [ -s "$server_log" ]; then
++      sed 's/^/::notice::V8 smoke HTTP: /' "$server_log"
++    fi
++  done
++fi
++
+ exit $STATUS
+diff --git a/support/v8-smoke/test.html b/support/v8-smoke/test.html
+--- a/support/v8-smoke/test.html
++++ b/support/v8-smoke/test.html
+@@ -2,6 +2,7 @@
+ <html><head><title>v8 test</title></head>
+ <body><div id="out">initial</div>
+ <script>
++window.addEventListener("error", event => console.log("ROVES-V8 script error", event.message, event.filename, event.lineno));
+ console.log("ROVES-V8 URL", typeof URL, typeof URLSearchParams, typeof HTMLDivElement);
+ console.log("ROVES-V8 script start, engine typeof window:", typeof window);
+ const div = document.getElementById("out");
+@@ -15,9 +16,60 @@
+ setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
+ class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
+ console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
++const immutableProbe = {};
++Object.setPrototypeOf(immutableProbe, {});
++console.log("ROVES-V8 ordinary prototype mutation", Object.getPrototypeOf(immutableProbe) !== null);
+ const windowPrototype = Object.getPrototypeOf(window);
+-const windowPrototypeChange = Reflect.setPrototypeOf(window, {});
+-Object.defineProperty(window, "__rovesV8SmokeOrdinary", { value: 1, configurable: true });
+-console.log("ROVES-V8 immutable window prototype", windowPrototypeChange === false && Object.getPrototypeOf(window) === windowPrototype && window.__rovesV8SmokeOrdinary === 1);
+-delete window.__rovesV8SmokeOrdinary;
++const acceptsCurrentWindowPrototype = Reflect.setPrototypeOf(window, windowPrototype);
++const rejectsNewWindowPrototype = !Reflect.setPrototypeOf(window, {});
++let throwsForNewWindowPrototype = false;
++try { Object.setPrototypeOf(window, {}); } catch (error) { throwsForNewWindowPrototype = error instanceof TypeError; }
++window.mutableWindowProperty = 42;
++console.log("ROVES-V8 immutable Window prototype", acceptsCurrentWindowPrototype, rejectsNewWindowPrototype, throwsForNewWindowPrototype, window.mutableWindowProperty === 42);
++const crossOriginFrame = document.createElement("iframe");
++crossOriginFrame.src = "http://127.0.0.1:18766/cross-origin.html";
++const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout"), 5000);
++crossOriginFrame.addEventListener("load", () => {
++  console.log("ROVES-V8 cross-origin iframe load");
++  clearTimeout(crossOriginTimeout);
++  const otherWindow = crossOriginFrame.contentWindow;
++  console.log("ROVES-V8 cross-origin iframe contentWindow", otherWindow !== null);
++  let prototypeIsNull = false;
++  let prototypeReplacementRejected = false;
++  try { prototypeIsNull = Object.getPrototypeOf(otherWindow) === null; } catch (_) {}
++  try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
++  console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
++  const denied = action => {
++    try { action(); return false; } catch (error) { return error.name === "SecurityError"; }
++  };
++  const forbidden = [
++    () => otherWindow.document,
++    () => "document" in otherWindow,
++    () => Object.getOwnPropertyDescriptor(otherWindow, "document"),
++    () => Reflect.defineProperty(otherWindow, "probe", { value: 1 }),
++    () => Reflect.deleteProperty(otherWindow, "document"),
++    () => Reflect.set(otherWindow, "probe", 1),
++    () => Reflect.set(otherWindow, "opener", null),
++    () => Reflect.preventExtensions(otherWindow),
++  ];
++  const deniedCount = forbidden.filter(denied).length;
++  let allowed = false;
++  try {
++    const keys = Reflect.ownKeys(otherWindow);
++    allowed = otherWindow.self === otherWindow && otherWindow.window === otherWindow &&
++      typeof otherWindow.closed === "boolean" && typeof otherWindow.postMessage === "function" &&
++      otherWindow.postMessage === otherWindow.postMessage &&
++      otherWindow.then === undefined && "closed" in otherWindow &&
++      keys.includes("location") && keys.includes("postMessage") && !keys.includes("document") &&
++      Object.getOwnPropertyDescriptor(otherWindow, "closed").get instanceof Function;
++  } catch (error) { console.log("ROVES-V8 cross-origin allowed error", error.name, error.message); }
++  console.log("ROVES-V8 cross-origin WindowProxy properties", deniedCount === forbidden.length, allowed);
++});
++crossOriginFrame.addEventListener("error", () => {
++  clearTimeout(crossOriginTimeout);
++  console.log("ROVES-V8 cross-origin iframe error");
++});
++console.log("ROVES-V8 cross-origin iframe append");
++document.body.appendChild(crossOriginFrame);
++console.log("ROVES-V8 cross-origin iframe appended");
+ </script></body></html>
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -4,7 +4,9 @@
+ from pathlib import Path
+ import shutil
+ import subprocess
++import sys
+ import tempfile
++import time
+ import unittest
+ 
+ from check_results import validate
+@@ -54,7 +56,20 @@
+     def run_fixture(self, scenario, wrapped=False):
+         with tempfile.TemporaryDirectory() as directory:
+             directory = Path(directory)
+-            # Substitute only the process launcher; execute the real runner and validator.
++            python = shutil.which('python3') or sys.executable
++            python_stub = directory / 'python3'
++            python_stub.write_text(f'''#!{sys.executable}
++import os, sys, time
++args = sys.argv[1:]
++if args[:2] == ['-m', 'http.server']:
++    time.sleep(120)
++elif args[:1] == ['-c']:
++    raise SystemExit(0)
++else:
++    os.execv(os.environ['SMOKE_TEST_REAL_PYTHON'], [os.environ['SMOKE_TEST_REAL_PYTHON'], *args])
++''')
++            python_stub.chmod(0o755)
++            # Stub browser launches and HTTP setup; execute the real runner and validator.
+             launcher = directory / 'timeout'
+             launcher.write_text('''#!/usr/bin/env python3
+ import os, sys
+@@ -72,12 +87,20 @@
+     print('ROVES-V8 promise 5')
+     print('ROVES-V8 timeout fired')
+     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
+-    if scenario != 'immutable-prototype': print('ROVES-V8 immutable window prototype true')
++    if scenario != 'immutable-prototype': print('ROVES-V8 ordinary prototype mutation true')
++    if scenario != 'window-prototype': print('ROVES-V8 immutable Window prototype true true true true')
++    if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
++    if scenario != 'cross-origin-properties': print('ROVES-V8 cross-origin WindowProxy properties true true')
++    if scenario == 'cross-origin-timeout': print('ROVES-V8 cross-origin iframe timeout true')
+ elif page == 'csp.html':
+     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
+     print('ROVES-V8 csp function EvalError')
+     if scenario != 'trusted-script': print('ROVES-V8 csp trusted eval 42')
++    if scenario != 'trusted-function': print('ROVES-V8 csp trusted function 42')
++    if scenario != 'trusted-function-guards': print('ROVES-V8 csp trusted function guards true')
+     print('ROVES-V8 csp ordinary eval unchanged true')
++elif page == 'wasm-csp.html':
++    if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
+ elif page == 'nav1.html':
+     print('ROVES-V8 nav2 loaded nav2.html true second page')
+     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=true')
+@@ -94,12 +117,17 @@
+         print('SUITE PASS example')
+         print('SUITE TOTAL 1/1')
+ # Browsers may stay open after reporting all results; that timeout is acceptable.
++if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'wasm-csp.html', 'nav1.html'):
++    sys.stdout.flush()
++    import time
++    time.sleep(120)
+ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0)
+ ''')
+             launcher.chmod(0o755)
+             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
+                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
+-                       V8_SMOKE_ALLOW_MISSING_DEVICES='0')
++                       V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
++                       SMOKE_TEST_REAL_PYTHON=python)
+             env.pop('GITHUB_STEP_SUMMARY', None)
+             return subprocess.run(['bash', str(HERE / 'run.sh'), 'unused-browser',
+                                    *(['wrapper with spaces', '--option'] if wrapped else [])],
+@@ -113,11 +141,25 @@
+                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'csp', 'trusted-script', 'navigation', 'skip'):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'csp-wasm', 'navigation', 'skip'):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                 self.assertIn('::error', result.stdout)
++                if scenario == 'immutable-prototype':
++                    self.assertIn('ordinary prototype mutation failed', result.stdout)
++                if scenario == 'window-prototype':
++                    self.assertIn('immutable Window prototype not confirmed', result.stdout)
++                if scenario == 'cross-origin-prototype':
++                    self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
++                if scenario == 'cross-origin-properties':
++                    self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
++
++    def test_completed_suites_do_not_wait_for_the_deadline(self):
++        started = time.monotonic()
++        result = self.run_fixture('linger')
++        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++        self.assertLess(time.monotonic() - started, 15)
+ 
+ 
+ if __name__ == '__main__':

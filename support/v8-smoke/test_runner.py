@@ -90,6 +90,7 @@ if page == 'test.html':
     if scenario != 'immutable-prototype': print('ROVES-V8 ordinary prototype mutation true')
     if scenario != 'window-prototype': print('ROVES-V8 immutable Window prototype true true true true')
     if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
+    if scenario != 'cross-origin-properties': print('ROVES-V8 cross-origin WindowProxy properties true true')
     if scenario == 'cross-origin-timeout': print('ROVES-V8 cross-origin iframe timeout true')
 elif page == 'csp.html':
     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
@@ -140,7 +141,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'csp-wasm', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'csp-wasm', 'navigation', 'skip'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -151,6 +152,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('immutable Window prototype not confirmed', result.stdout)
                 if scenario == 'cross-origin-prototype':
                     self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
+                if scenario == 'cross-origin-properties':
+                    self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
 
     def test_completed_suites_do_not_wait_for_the_deadline(self):
         started = time.monotonic()

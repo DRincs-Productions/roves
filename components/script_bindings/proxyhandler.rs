@@ -27,6 +27,7 @@ use js::jsval::{ObjectValue, UndefinedValue};
 use js::realm::{AutoRealm, CurrentRealm};
 use js::rust::wrappers2::{
     AppendToIdVector, Call, GetObjectProto, GetPropertyKeys, GetWellKnownSymbol,
+    GetCrossOriginPropertyHolder, SetCrossOriginPropertyHolder,
     InvokeGetOwnPropertyDescriptor, JS_AlreadyHasOwnPropertyById, JS_AtomizeAndPinString,
     JS_DefineFunctions, JS_DefineProperties, JS_DefinePropertyById, JS_DeletePropertyById,
     JS_GetOwnPropertyDescriptorById, JS_IdToValue, JS_IsExceptionPending,
@@ -266,7 +267,7 @@ fn id_to_source(cx: &mut JSContext, id: HandleId) -> Option<DOMString> {
 /// [`CrossOriginProperties(O)`].
 ///
 /// [`CrossOriginProperties(O)`]: https://html.spec.whatwg.org/multipage/#crossoriginproperties-(-o-)
-pub(crate) struct CrossOriginProperties {
+pub struct CrossOriginProperties {
     pub(crate) attributes: &'static [JSPropertySpec],
     pub(crate) methods: &'static [JSFunctionSpec],
 }
@@ -286,7 +287,7 @@ impl CrossOriginProperties {
 /// Implementation of [`CrossOriginOwnPropertyKeys`].
 ///
 /// [`CrossOriginOwnPropertyKeys`]: https://html.spec.whatwg.org/multipage/#crossoriginownpropertykeys-(-o-)
-fn cross_origin_own_property_keys(
+pub fn cross_origin_own_property_keys(
     cx: &mut JSContext,
     _proxy: HandleObject,
     cross_origin_properties: &'static CrossOriginProperties,
@@ -418,7 +419,7 @@ pub(crate) unsafe fn cross_origin_has_own(
 /// for a maybe-cross-origin object.
 ///
 /// [`CrossOriginGetOwnPropertyHelper`]: https://html.spec.whatwg.org/multipage/#crossorigingetownpropertyhelper-(-o,-p-)
-pub(crate) fn cross_origin_get_own_property_helper(
+pub fn cross_origin_get_own_property_helper(
     cx: &mut CurrentRealm,
     proxy: HandleObject,
     cross_origin_properties: &'static CrossOriginProperties,
@@ -427,7 +428,9 @@ pub(crate) fn cross_origin_get_own_property_helper(
     is_none: &mut bool,
 ) -> bool {
     rooted!(&in(cx) let mut holder = ptr::null_mut::<JSObject>());
-    ensure_cross_origin_property_holder(cx, proxy, cross_origin_properties, holder.handle_mut());
+    if !ensure_cross_origin_property_holder(cx, proxy, cross_origin_properties, holder.handle_mut()) {
+        return false;
+    }
 
     unsafe { JS_GetOwnPropertyDescriptorById(cx, holder.handle(), id, desc, is_none) }
 }
@@ -488,14 +491,16 @@ fn append_cross_origin_allowlisted_prop_keys(cx: &mut JSContext, props: RawMutab
 /// [`CrossOriginGetOwnPropertyHelper`]: https://html.spec.whatwg.org/multipage/#crossorigingetownpropertyhelper-(-o,-p-)
 fn ensure_cross_origin_property_holder(
     cx: &mut CurrentRealm,
-    _proxy: HandleObject,
+    proxy: HandleObject,
     cross_origin_properties: &'static CrossOriginProperties,
     mut out_holder: MutableHandleObject,
 ) -> bool {
-    // TODO: We don't have the slot to store the holder yet. For now,
-    //       the holder is constructed every time this function is called,
-    //       which is not only inefficient but also deviates from the
-    //       specification in a subtle yet observable way.
+    if !unsafe { GetCrossOriginPropertyHolder(cx, proxy, out_holder.reborrow()) } {
+        return false;
+    }
+    if !out_holder.get().is_null() {
+        return true;
+    }
 
     // Create a holder for the current Realm
     unsafe {
@@ -521,9 +526,7 @@ fn ensure_cross_origin_property_holder(
         }
     }
 
-    // TODO: Store the holder in the slot that we don't have yet.
-
-    true
+    unsafe { SetCrossOriginPropertyHolder(cx, proxy, out_holder.handle()) }
 }
 
 /// Check if `obj` is a `Location` or `Window` object.
@@ -660,7 +663,7 @@ pub fn maybe_cross_origin_get_prototype<D: DomTypes>(
 /// for a maybe-cross-origin object.
 ///
 /// [`CrossOriginGet`]: https://html.spec.whatwg.org/multipage/#crossoriginget-(-o,-p,-receiver-)
-pub(crate) fn cross_origin_get<D: DomTypes>(
+pub fn cross_origin_get<D: DomTypes>(
     cx: &mut CurrentRealm,
     proxy: HandleObject,
     receiver: HandleValue,
@@ -730,7 +733,7 @@ pub(crate) fn cross_origin_get<D: DomTypes>(
 /// for a maybe-cross-origin object.
 ///
 /// [`CrossOriginSet`]: https://html.spec.whatwg.org/multipage/#crossoriginset-(-o,-p,-v,-receiver-)
-unsafe fn cross_origin_set<D: DomTypes>(
+pub unsafe fn cross_origin_set<D: DomTypes>(
     cx: &mut CurrentRealm,
     proxy: HandleObject,
     id: HandleId,
@@ -800,7 +803,7 @@ unsafe fn cross_origin_set<D: DomTypes>(
 /// for a maybe-cross-origin object.
 ///
 /// [`CrossOriginPropertyFallback`]: https://html.spec.whatwg.org/multipage/#crossoriginpropertyfallback-(-p-)
-pub(crate) fn cross_origin_property_fallback<D: DomTypes>(
+pub fn cross_origin_property_fallback<D: DomTypes>(
     cx: &mut CurrentRealm,
     _proxy: HandleObject,
     id: HandleId,
@@ -1007,7 +1010,7 @@ where
 }
 
 /// <https://html.spec.whatwg.org/multipage/#isplatformobjectsameorigin-(-o-)>
-pub(crate) fn is_platform_object_same_origin(realm: &CurrentRealm, obj: HandleObject) -> bool {
+pub fn is_platform_object_same_origin(realm: &CurrentRealm, obj: HandleObject) -> bool {
     let subject_realm = realm.realm().as_ptr();
     let obj_realm = unsafe { GetObjectRealmOrNull(*obj) };
     assert!(!obj_realm.is_null());

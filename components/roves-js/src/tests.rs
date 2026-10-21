@@ -281,6 +281,39 @@ mod object_model {
     }
 
     #[test]
+    fn cross_origin_holders_use_ephemeron_ownership_and_captured_intrinsics() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let before = HOOK_FINALIZED.with(Cell::get);
+        {
+            rooted!(in(cx) let key = unsafe { JS_NewObject(cx, &CLASS) });
+            unsafe { JS_SetReservedSlot(key.get(), 0, &Int32Value(42)) };
+            {
+                rooted!(in(cx) let holder = unsafe { JS_NewObject(cx, &CLASS) });
+                unsafe { JS_SetReservedSlot(holder.get(), 0, &Int32Value(42)) };
+                assert!(unsafe { crate::proxy::SetCrossOriginPropertyHolder(cx,
+                    key.handle().into(), holder.handle().into()) });
+            }
+            eval(&runtime, "WeakMap.prototype.get = () => { throw 1 }; WeakMap.prototype.set = () => { throw 2 }; globalThis.WeakMap = () => { throw 3 }");
+            runtime.gc_for_testing();
+            rooted!(in(cx) let mut cached = ptr::null_mut::<JSObject>());
+            assert!(unsafe { crate::proxy::GetCrossOriginPropertyHolder(cx,
+                key.handle().into(), cached.handle_mut().into()) });
+            assert!(!cached.get().is_null());
+            let mut marker = UndefinedValue();
+            unsafe { JS_GetReservedSlot(cached.get(), 0, &mut marker) };
+            assert_eq!(marker.to_int32(), 42);
+            assert_eq!(HOOK_FINALIZED.with(Cell::get), before);
+        }
+        for _ in 0..3 {
+            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+            runtime.gc_for_testing();
+        }
+        assert_eq!(HOOK_FINALIZED.with(Cell::get), before + 2,
+            "the realm cache must not keep a dead key or its holder alive");
+    }
+
+    #[test]
     fn partially_constructed_class_boxes_trace_values_before_native_hooks() {
         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
         let raw = unsafe { &*runtime.raw_cx() };
