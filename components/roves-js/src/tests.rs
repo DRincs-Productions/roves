@@ -1889,6 +1889,63 @@ mod scripts {
     }
 
     #[test]
+    fn script_and_module_private_references_balance_replacement_and_shutdown() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        thread_local! {
+            static RETAINS: Cell<usize> = const { Cell::new(0) };
+            static RELEASES: Cell<usize> = const { Cell::new(0) };
+            static RELEASE_WITHOUT_RUNTIME: Cell<bool> = const { Cell::new(false) };
+        }
+        unsafe extern "C" fn retain(value: *const JSVal) {
+            unsafe { Rc::increment_strong_count((*value).to_private() as *const ()) };
+            RETAINS.with(|count| count.set(count.get() + 1));
+        }
+        unsafe extern "C" fn release(value: *const JSVal) {
+            if Runtime::get().is_none() { RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(true)); }
+            unsafe { Rc::decrement_strong_count((*value).to_private() as *const ()) };
+            RELEASES.with(|count| count.set(count.get() + 1));
+        }
+        let owner = Rc::new(());
+        let weak = Rc::downgrade(&owner);
+        {
+            let runtime = Runtime::new(JSEngineHandle::for_tests());
+            let cx = runtime.raw_cx();
+            unsafe { SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release)) };
+            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("private-owner.js").unwrap(), 1);
+            let mut classic_source = transform_str_to_source_text("42");
+            let mut module_source = transform_str_to_source_text("export const value = 42");
+            let mut json_source = transform_str_to_source_text("42");
+            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut classic_source) });
+            rooted!(in(cx) let module = unsafe { CompileModule1(cx, options.ptr, &mut module_source) });
+            rooted!(in(cx) let json = unsafe { CompileJsonModule1(cx, options.ptr, &mut json_source) });
+            assert!(!script.get().is_null() && !module.get().is_null() && !json.get().is_null());
+            let private = PrivateValue(Rc::as_ptr(&owner).cast());
+            unsafe {
+                SetScriptPrivate(script.get(), &private);
+                SetScriptPrivate(script.get(), &private);
+                SetScriptPrivate(script.get(), &UndefinedValue());
+                SetScriptPrivate(script.get(), &private);
+                SetModulePrivate(module.get(), &private);
+                SetModulePrivate(json.get(), &private);
+                SetModulePrivate(module.get(), &private);
+                SetModulePrivate(module.get(), &UndefinedValue());
+                SetModulePrivate(module.get(), &private);
+            }
+            assert_eq!(Rc::strong_count(&owner), 4, "caller plus three engine-owned references");
+            // Ensure retain happens before release even when the engine is the only owner.
+            drop(owner);
+            let pointer = weak.as_ptr();
+            assert_eq!(weak.strong_count(), 3);
+            unsafe { SetModulePrivate(module.get(), &PrivateValue(pointer.cast())) };
+            assert_eq!(weak.strong_count(), 3);
+        }
+        assert!(weak.upgrade().is_none(), "shutdown releases the remaining classic/source/JSON owners");
+        assert_eq!(RETAINS.with(Cell::get), RELEASES.with(Cell::get));
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
     fn scripts_compile_run_carry_privates_and_report_errors() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

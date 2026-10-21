@@ -38,6 +38,31 @@ pub(crate) struct Scripts {
     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
 }
 
+pub(crate) fn retain_private(cx: &JSContext, value: JSVal) {
+    if !value.is_undefined() {
+        if let Some(add_ref) = cx.scripts.reference_hooks.get().0 {
+            unsafe { add_ref(&value) };
+        }
+    }
+}
+
+pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
+    if !value.is_undefined() {
+        if let Some(release) = cx.scripts.reference_hooks.get().1 {
+            unsafe { release(&value) };
+        }
+    }
+}
+
+/// Balance embedder-owned private references before the live runtime is dismantled.
+pub(crate) fn release_runtime_privates(cx: &JSContext) {
+    let privates = std::mem::take(&mut *cx.scripts.privates.borrow_mut());
+    for value in privates.into_values() {
+        release_private(cx, value);
+    }
+    crate::modules_impl::release_privates(cx);
+}
+
 /// Keeps the script privates alive.
 pub(crate) fn trace_scripts(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     use crate::gc::RootKind;
@@ -275,17 +300,10 @@ pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {
     let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
     // SAFETY: callers pass a valid value.
     let value = unsafe { *value };
-    let (add_ref, release) = cx.scripts.reference_hooks.get();
-    if let (Some(add_ref), false) = (add_ref, value.is_undefined()) {
-        // SAFETY: SpiderMonkey's reference-hook contract.
-        unsafe { add_ref(&value) };
-    }
+    retain_private(cx, value);
     let old = cx.scripts.privates.borrow_mut().insert(id, value);
-    if let (Some(release), Some(old)) = (release, old) {
-        if !old.is_undefined() {
-            // SAFETY: as above.
-            unsafe { release(&old) };
-        }
+    if let Some(old) = old {
+        release_private(cx, old);
     }
 }
 

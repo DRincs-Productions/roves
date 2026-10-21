@@ -26,6 +26,7 @@ sulla macchina locale.
 
 | Workflow | Esito conclusivo | Evidenza |
 | --- | --- | --- |
+| [V8 migration checks — 39625090343](https://github.com/DRincs-Productions/roves/actions/runs/39625090343) | 7 verdi, 3 macOS cancellati | Commit 438d3a30b54: runtime Linux/Windows, entrambe le build e smoke Linux, build Windows verdi. Nessuna compilazione/verifica macOS di questa run. GitHub segnala incidente Actions/webhook; non attribuire le cancellazioni al codice senza evidenze. |
 | [V8 migration checks — 39595584589](https://github.com/DRincs-Productions/roves/actions/runs/39595584589) | Verde, 10/10 | Sei runtime e quattro build verdi. Smoke Linux normal/JIT-less: prototipi, trusted Function 42/guardie, nove suite, CSP Wasm e navigazione passano. Smoke browser Windows/macOS saltati. |
 | [Build Servo Test Binaries — 39595584650](https://github.com/DRincs-Productions/roves/actions/runs/39595584650) | Verde, 13/13 | Replay patch, SDL3, bundle portable/installer e smoke Steam verdi. |
 | [V8 migration checks — 39590810430](https://github.com/DRincs-Productions/roves/actions/runs/39590810430) | Fallita: 8 verdi, 2 smoke Linux falliti | Tutti i runtime e le build compilano. Window immutabile confermato normal/JIT-less; iframe carica ma prototipo false/true. Trusted Function ancora EvalError (0255 non inclusa). Le nove suite, CSP eval/Wasm e navigazione passano. |
@@ -315,6 +316,14 @@ suite ha portato il riepilogo CI da 13 minuti di deadline a circa 39 secondi; qu
 di orchestrazione del runner Linux/Xvfb, non una misura delle prestazioni del browser.
 
 ### Aggiornamenti successivi alla CI verde — 21 ottobre 2026
+
+Patch 0264 bilancia gli hook privati di script/moduli e li rilascia prima del teardown del
+runtime. Riusa il contratto SpiderMonkey 140.14 installato e Rc; i chiamanti Servo passano
+Rc::as_ptr mantenendo il proprietario Rust fino all'assegnazione. Regressione con conteggi
+Rc reali per script classico, modulo sorgente e JSON, sostituzioni/undefined, unico owner
+engine e release con Runtime ancora vivo. Normal 49 passati / 2 ignorati, JIT-less 48 / 3;
+replay 44 patch, dry-run e confronto sei sorgenti passati. Non chiude la retention durante
+la vita del runtime: raccolta per script/navigazione e bfcache restano aperte.
 
 Patch 0263 rafforza la regressione newTarget: il precedente testo con escape doppi non
 coincideva con l'autorizzazione. Ora eval tenta il testo esatto ricavato dalla funzione nativa,
@@ -652,7 +661,8 @@ La migrazione è conclusa quando le verifiche obbligatorie sono bloccanti e verd
 d’integrazione individuate sono risolte, i test di ciclo di vita passano e il codice obsoleto
 sostituito è rimosso. Le attività indipendenti del runtime web restano nel backlog performance.
 Al 21 ottobre la CI V8 `39595584589` è verde (10/10) e quella generale `39595584650`
-è verde (13/13). La run `39625090343` verifica le pulizie successive; i nuovi controlli
+è verde (13/13). La run `39625090343` conclude con sette job verdi e tre macOS cancellati.
+I nuovi controlli
 delle proprietà WindowProxy, slot iniziale GC e matrice Trusted Types attendono ancora
 la pubblicazione e la verifica online. I criteri aperti sopra restano vincolanti.
 

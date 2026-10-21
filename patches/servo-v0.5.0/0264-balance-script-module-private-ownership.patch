@@ -1,0 +1,193 @@
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -36,6 +36,31 @@
+     privates: std::cell::RefCell<HashMap<i32, JSVal>>,
+     reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
+     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
++}
++
++pub(crate) fn retain_private(cx: &JSContext, value: JSVal) {
++    if !value.is_undefined() {
++        if let Some(add_ref) = cx.scripts.reference_hooks.get().0 {
++            unsafe { add_ref(&value) };
++        }
++    }
++}
++
++pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
++    if !value.is_undefined() {
++        if let Some(release) = cx.scripts.reference_hooks.get().1 {
++            unsafe { release(&value) };
++        }
++    }
++}
++
++/// Balance embedder-owned private references before the live runtime is dismantled.
++pub(crate) fn release_runtime_privates(cx: &JSContext) {
++    let privates = std::mem::take(&mut *cx.scripts.privates.borrow_mut());
++    for value in privates.into_values() {
++        release_private(cx, value);
++    }
++    crate::modules_impl::release_privates(cx);
+ }
+ 
+ /// Keeps the script privates alive.
+@@ -275,17 +300,10 @@
+     let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
+     // SAFETY: callers pass a valid value.
+     let value = unsafe { *value };
+-    let (add_ref, release) = cx.scripts.reference_hooks.get();
+-    if let (Some(add_ref), false) = (add_ref, value.is_undefined()) {
+-        // SAFETY: SpiderMonkey's reference-hook contract.
+-        unsafe { add_ref(&value) };
+-    }
++    retain_private(cx, value);
+     let old = cx.scripts.privates.borrow_mut().insert(id, value);
+-    if let (Some(release), Some(old)) = (release, old) {
+-        if !old.is_undefined() {
+-            // SAFETY: as above.
+-            unsafe { release(&old) };
+-        }
++    if let Some(old) = old {
++        release_private(cx, old);
+     }
+ }
+ 
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -161,11 +161,25 @@
+ pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
+     // SAFETY: callers pass a valid value.
+     let value = unsafe { *value };
+-    JSContext::current().with_scope(|scope| {
+-        if let Some(module) = module_of(scope, module) {
+-            with_entry(scope, module, |entry| entry.private = value);
+-        }
++    let cx = JSContext::current();
++    let old = cx.with_scope(|scope| {
++        let module = module_of(scope, module)?;
++        with_entry(scope, module, |entry| std::mem::replace(&mut entry.private, value))
+     });
++    if let Some(old) = old {
++        // Share the script-source private ownership contract, as SpiderMonkey does.
++        crate::script_impl::retain_private(cx, value);
++        crate::script_impl::release_private(cx, old);
++    }
++}
++
++pub(crate) fn release_privates(cx: &JSContext) {
++    // Hooks can drop embedder objects: invoke them without borrowing the module table.
++    let values: Vec<_> = cx.modules.entries.borrow_mut().values_mut().flatten()
++        .map(|entry| std::mem::replace(&mut entry.private, UndefinedValue())).collect();
++    for value in values {
++        crate::script_impl::release_private(cx, value);
++    }
+ }
+ 
+ pub unsafe fn JS_GetModulePrivate(module: *mut JSObject, mut dest: MutableHandleValue) {
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -491,6 +491,9 @@
+         self.thread_safe_handle.write().unwrap().take();
+         crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
+         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
++        // Release embedder references while Runtime::get(), realms and the isolate
++        // are still live. Module/script private maps must not leak their Rc owners.
++        crate::script_impl::release_runtime_privates(&self.raw);
+         CURRENT.with(|current| {
+             if current.get() == Some(NonNull::from(&*self.raw)) {
+                 current.set(None);
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1886,6 +1886,63 @@
+         let report = unsafe { JS_ErrorFromException(cx, error.handle().into_handle()) };
+         assert!(!report.is_null());
+         assert_eq!(unsafe { (*report)._base.column._base }, 0);
++    }
++
++    #[test]
++    fn script_and_module_private_references_balance_replacement_and_shutdown() {
++        use std::cell::Cell;
++        use std::rc::Rc;
++        thread_local! {
++            static RETAINS: Cell<usize> = const { Cell::new(0) };
++            static RELEASES: Cell<usize> = const { Cell::new(0) };
++            static RELEASE_WITHOUT_RUNTIME: Cell<bool> = const { Cell::new(false) };
++        }
++        unsafe extern "C" fn retain(value: *const JSVal) {
++            unsafe { Rc::increment_strong_count((*value).to_private() as *const ()) };
++            RETAINS.with(|count| count.set(count.get() + 1));
++        }
++        unsafe extern "C" fn release(value: *const JSVal) {
++            if Runtime::get().is_none() { RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(true)); }
++            unsafe { Rc::decrement_strong_count((*value).to_private() as *const ()) };
++            RELEASES.with(|count| count.set(count.get() + 1));
++        }
++        let owner = Rc::new(());
++        let weak = Rc::downgrade(&owner);
++        {
++            let runtime = Runtime::new(JSEngineHandle::for_tests());
++            let cx = runtime.raw_cx();
++            unsafe { SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release)) };
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("private-owner.js").unwrap(), 1);
++            let mut classic_source = transform_str_to_source_text("42");
++            let mut module_source = transform_str_to_source_text("export const value = 42");
++            let mut json_source = transform_str_to_source_text("42");
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut classic_source) });
++            rooted!(in(cx) let module = unsafe { CompileModule1(cx, options.ptr, &mut module_source) });
++            rooted!(in(cx) let json = unsafe { CompileJsonModule1(cx, options.ptr, &mut json_source) });
++            assert!(!script.get().is_null() && !module.get().is_null() && !json.get().is_null());
++            let private = PrivateValue(Rc::as_ptr(&owner).cast());
++            unsafe {
++                SetScriptPrivate(script.get(), &private);
++                SetScriptPrivate(script.get(), &private);
++                SetScriptPrivate(script.get(), &UndefinedValue());
++                SetScriptPrivate(script.get(), &private);
++                SetModulePrivate(module.get(), &private);
++                SetModulePrivate(json.get(), &private);
++                SetModulePrivate(module.get(), &private);
++                SetModulePrivate(module.get(), &UndefinedValue());
++                SetModulePrivate(module.get(), &private);
++            }
++            assert_eq!(Rc::strong_count(&owner), 4, "caller plus three engine-owned references");
++            // Ensure retain happens before release even when the engine is the only owner.
++            drop(owner);
++            let pointer = weak.as_ptr();
++            assert_eq!(weak.strong_count(), 3);
++            unsafe { SetModulePrivate(module.get(), &PrivateValue(pointer.cast())) };
++            assert_eq!(weak.strong_count(), 3);
++        }
++        assert!(weak.upgrade().is_none(), "shutdown releases the remaining classic/source/JSON owners");
++        assert_eq!(RETAINS.with(Cell::get), RELEASES.with(Cell::get));
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+     }
+ 
+     #[test]
+diff --git a/components/script/dom/globalscope/script_execution.rs b/components/script/dom/globalscope/script_execution.rs
+--- a/components/script/dom/globalscope/script_execution.rs
++++ b/components/script/dom/globalscope/script_execution.rs
+@@ -389,7 +389,7 @@
+         unsafe {
+             SetScriptPrivate(
+                 *record,
+-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
++                &PrivateValue(Rc::as_ptr(&module_script_data) as *const _),
+             );
+         }
+     }
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -351,7 +351,7 @@
+ 
+             SetModulePrivate(
+                 module_script.get(),
+-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
++                &PrivateValue(Rc::as_ptr(&module_script_data) as *const _),
+             );
+ 
+             // Step 9. Set script's record to result.

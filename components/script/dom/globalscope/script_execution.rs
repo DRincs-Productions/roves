@@ -389,7 +389,7 @@ pub(crate) fn evaluate_script(
         unsafe {
             SetScriptPrivate(
                 *record,
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
+                &PrivateValue(Rc::as_ptr(&module_script_data) as *const _),
             );
         }
     }

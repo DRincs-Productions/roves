@@ -351,7 +351,7 @@ impl ModuleTree {
 
             SetModulePrivate(
                 module_script.get(),
-                &PrivateValue(Rc::into_raw(module_script_data) as *const _),
+                &PrivateValue(Rc::as_ptr(&module_script_data) as *const _),
             );
 
             // Step 9. Set script's record to result.

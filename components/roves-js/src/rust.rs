@@ -491,6 +491,9 @@ impl Drop for Runtime {
         self.thread_safe_handle.write().unwrap().take();
         crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
+        // Release embedder references while Runtime::get(), realms and the isolate
+        // are still live. Module/script private maps must not leak their Rc owners.
+        crate::script_impl::release_runtime_privates(&self.raw);
         CURRENT.with(|current| {
             if current.get() == Some(NonNull::from(&*self.raw)) {
                 current.set(None);

@@ -161,11 +161,25 @@ pub unsafe fn IsCyclicModule(module: *mut JSObject) -> bool {
 pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
     // SAFETY: callers pass a valid value.
     let value = unsafe { *value };
-    JSContext::current().with_scope(|scope| {
-        if let Some(module) = module_of(scope, module) {
-            with_entry(scope, module, |entry| entry.private = value);
-        }
+    let cx = JSContext::current();
+    let old = cx.with_scope(|scope| {
+        let module = module_of(scope, module)?;
+        with_entry(scope, module, |entry| std::mem::replace(&mut entry.private, value))
     });
+    if let Some(old) = old {
+        // Share the script-source private ownership contract, as SpiderMonkey does.
+        crate::script_impl::retain_private(cx, value);
+        crate::script_impl::release_private(cx, old);
+    }
+}
+
+pub(crate) fn release_privates(cx: &JSContext) {
+    // Hooks can drop embedder objects: invoke them without borrowing the module table.
+    let values: Vec<_> = cx.modules.entries.borrow_mut().values_mut().flatten()
+        .map(|entry| std::mem::replace(&mut entry.private, UndefinedValue())).collect();
+    for value in values {
+        crate::script_impl::release_private(cx, value);
+    }
 }
 
 pub unsafe fn JS_GetModulePrivate(module: *mut JSObject, mut dest: MutableHandleValue) {

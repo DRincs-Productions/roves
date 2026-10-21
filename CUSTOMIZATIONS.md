@@ -14873,3 +14873,30 @@ while the intended construction succeeds. Reuse native V8 construction and the e
 strict CSP callback: no implementation change or dependency is needed.
 Full runtime normal 48 passed / 2 ignored, JIT-less 47 / 3. Patch dry-run/apply and source
 comparison against the complete custom reconstruction pass. Browser-wide CSP/WPT work remains open.
+
+## 2026-10-21 - Balance classic/module private ownership and runtime shutdown
+
+**Files:** `components/roves-js/src/{script_impl.rs,modules_impl.rs,rust.rs,tests.rs}`,
+`components/script/dom/globalscope/script_execution.rs`, `components/script/script_module.rs`
+(`0264-balance-script-module-private-ownership.patch`), README, migration plan and wiki.
+
+Library evaluation: reuse the installed SpiderMonkey 140.14 reference-hook contract
+(ScriptSourceObject::setPrivate/clearPrivate in vm/JSScript.cpp, SetModulePrivate in
+vm/Modules.cpp), Rust Rc and V8 runtime teardown. Both classic and module private setters
+retain their new data and release replaced data; no new dependency or parallel ownership
+framework. The V8 module setter previously skipped these hooks; classic references were
+never released at shutdown. Drain private references while Runtime::get(), realms and isolate
+are still valid, outside metadata-table borrows. Retain before release makes assigning an
+identical engine-owned pointer safe. Undefined values do not invoke reference hooks.
+
+Servo passes Rc::as_ptr while its local Rc remains alive, allowing the engine hook to own the
+extra reference; Rc::into_raw previously left an additional caller reference unbalanced.
+The runtime regression uses real Rc counts across classic/source/JSON records, repeated and
+undefined assignments, engine-only replacement, shutdown, and a live Runtime during release.
+Normal 49 passed / 2 ignored, JIT-less 48 / 3. Replayed 44 preceding patches from pristine
+Servo plus custom additions; WSL dry-run/apply and all six source comparisons pass.
+
+Runtime-lived metadata tables remain: this fixes assignment and shutdown ownership, not
+collection after individual scripts, navigation or bfcache eviction. No browser RAM/CPU
+measurement claimed; assignments gain the standard constant-time module retain/release,
+and shutdown walks retained metadata once. No GPU impact or build/bundle surface change.

@@ -83,6 +83,8 @@ remain under migration audit. Object realm lookup uses V8 creation contexts; unu
 context storage was removed from per-object bookkeeping. During proxy construction, GC
 traces owned values before invoking native hooks only once the object cell is initialized.
 WindowProxy GC hooks also tolerate an uninitialized native-owner slot during construction.
+Script/module private references now share the existing ownership hooks and are released
+before runtime teardown; collection of unused metadata during navigation remains under audit.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md).
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
