@@ -1,5 +1,28 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Chiusura serale del 22 ottobre 2026 — STOP richiesto dall’utente
+
+Sviluppo fermato per oggi. Nessuna attesa automatica, nessun nuovo incarico e nessun push
+alla chiusura: la ripresa domani sarà manuale. Questo stop prevale sulle istruzioni storiche
+di prosecuzione autonoma. Codice completo salvato fino a `1a3aff798fd` (0286), wiki `0928dba`;
+questo aggiornamento documentale è un ulteriore commit locale. Pubblicato resta
+`8b536187562`, wiki `dcfd9bd`;0282–0286 sono ancora soltanto locali.
+
+Ultimo controllo CI alla chiusura: generale `39844592094` **success**, Android/iOS **success**;
+V8 `39844591657` **in_progress**, tentativo2 del solo job Ubuntu normal fallito per timeout
+bootstrap/download apt30min, prima della compilazione. Gli altri9 job del tentativo1 sono
+verdi. Domani verificare il retry prima di pubblicare; se fallisce analizzare prima di
+ripetere. Non cancellare run né usare push per interromperle. Wiki prima del puntatore root
+quando il batch consente il push. I risultati CI correnti verificano0281, non0282–0286:
+dopo la loro pubblicazione servirà il nuovo batch sulle modifiche accumulate.
+
+Restano implementazione cache/origine Function0273, identità WindowProxy in navigazione,
+semantica incumbent, completamento lifecycle worker/task/moduli e verifiche browser/WPT
+previste dal piano. Non dichiarare completata la migrazione o risolta la retention globale.
+Test locali correnti: runtime100 normali/99 JITless (2/3 ignorati); motore66+2doctest in
+entrambe le modalità; negativi e replay documentati. Non ripeterli su sorgenti identici.
+
+
 ## Da leggere alla prossima ripresa
 
 **0286 completa localmente:** rimozione/sostituzione handler invalida sotto mutex ma

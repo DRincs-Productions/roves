@@ -1,3 +1,11 @@
+## 2026-10-22 - Evening migration handoff
+
+Updated `docs/CLAUDE_RESUME.md` and `docs/V8_MIGRATION.md` for the user's explicit stop.
+Local source is complete through0286 (`1a3aff798fd`, wiki `0928dba`);0282–0286 remain
+unpublished. General/Android/iOS CI passed on published0281; the single Ubuntu V8 bootstrap
+retry is running. Resume manually, check that retry before pushing, then validate the new
+source batch in CI. No source or patch changes in this documentation checkpoint.
+
 ## 2026-10-22 - Release retired foreground handlers outside the registry lock
 
 **Files:** `components/roves-v8/src/foreground.rs`, patch

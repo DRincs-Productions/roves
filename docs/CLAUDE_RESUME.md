@@ -1,5 +1,28 @@
 # Ripresa per Claude — checkpoint del22ottobre2026
 
+## Chiusura serale del 22 ottobre 2026 — STOP richiesto dall’utente
+
+Sviluppo fermato per oggi. Nessuna attesa automatica, nessun nuovo incarico e nessun push
+alla chiusura: la ripresa domani sarà manuale. Questo stop prevale sulle istruzioni storiche
+di prosecuzione autonoma. Codice completo salvato fino a `1a3aff798fd` (0286), wiki `0928dba`;
+questo aggiornamento documentale è un ulteriore commit locale. Pubblicato resta
+`8b536187562`, wiki `dcfd9bd`;0282–0286 sono ancora soltanto locali.
+
+Ultimo controllo CI alla chiusura: generale `39844592094` **success**, Android/iOS **success**;
+V8 `39844591657` **in_progress**, tentativo2 del solo job Ubuntu normal fallito per timeout
+bootstrap/download apt30min, prima della compilazione. Gli altri9 job del tentativo1 sono
+verdi. Domani verificare il retry prima di pubblicare; se fallisce analizzare prima di
+ripetere. Non cancellare run né usare push per interromperle. Wiki prima del puntatore root
+quando il batch consente il push. I risultati CI correnti verificano0281, non0282–0286:
+dopo la loro pubblicazione servirà il nuovo batch sulle modifiche accumulate.
+
+Restano implementazione cache/origine Function0273, identità WindowProxy in navigazione,
+semantica incumbent, completamento lifecycle worker/task/moduli e verifiche browser/WPT
+previste dal piano. Non dichiarare completata la migrazione o risolta la retention globale.
+Test locali correnti: runtime100 normali/99 JITless (2/3 ignorati); motore66+2doctest in
+entrambe le modalità; negativi e replay documentati. Non ripeterli su sorgenti identici.
+
+
 ## Istruzioni operative attuali
 
 Leggere AGENTS.md, questo file e soltanto l'intestazione corrente di docs/V8_MIGRATION.md.
@@ -14,8 +37,8 @@ senza duplicazioni, build Servo pesanti online. Aggiornare questo file a ogni ch
 
 - Pubblicato Roves8b536187562 (contiene0281), wiki dcfd9bd.
 - Commit locali completi successivi: e0478fb5acd (regola sviluppo duranteCI),7813d44dbc0
-  (0282),d53e6b51031 (0283),7bfad886f07 (0284), e7f96b0cf99 (0285), più il checkpoint0286 corrente.
-- Wiki locale successiva:2cc0a62/91f35c8/0c5b380, 05365d3 (0285), più0286 corrente.
+  (0282),d53e6b51031 (0283),7bfad886f07 (0284), e7f96b0cf99 (0285), 1a3aff798fd (0286).
+- Wiki locale successiva:2cc0a62/91f35c8/0c5b380, 05365d3 (0285), 0928dba (0286).
 - Nessun WIP di questi interventi: sono completi e verificati localmente. Leggere git log e
   git status per gli SHA finali del checkpoint e del submodule. Non resettare lavoro altrui.
 - docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico:0281 è stata
@@ -42,7 +65,7 @@ Per0285 i test consegna/rifiuto usano Task V8 reali da FinalizationRegistry, non
 
 Batch pubblicato8b536187562:
 - V8 run39844591657:9/10 verdi; Ubuntu normal scaduto nel download apt al bootstrap30min, prima della compilazione. Retry del solo fallito richiesto una volta; controllarne esito.
-- Generale run39844592094: attiva all'ultimo controllo.
+- Generale run39844592094: success alla chiusura serale.
 - Android39844592038 e iOS39844591645: verdi.
 
 Non cancellare né soppiantare queste run senza un'altra istruzione esplicita. Se non ci sono
