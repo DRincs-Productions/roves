@@ -1,3 +1,10 @@
+## 2026-10-22 - User-authorized evening publication
+
+The user explicitly requested publication of all completed work while the previous V8
+retry remains active. This is a one-off publication override; v8.yml cancel-in-progress
+may automatically supersede that retry. Updated both resume documents; no workflow or
+source changes. The new CI batch must validate the accumulated0282–0286 changes.
+
 ## 2026-10-22 - Evening migration handoff
 
 Updated `docs/CLAUDE_RESUME.md` and `docs/V8_MIGRATION.md` for the user's explicit stop.

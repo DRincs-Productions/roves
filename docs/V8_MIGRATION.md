@@ -1,5 +1,17 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Pubblicazione serale autorizzata dopo lo stop
+
+L'utente ha chiesto esplicitamente di pubblicare tutto anche con il retry V8 precedente
+ancora attivo: eccezione al vincolo ordinario CI per questo push. Wiki `0928dba`, codice
+fino a `1a3aff798fd`, handoff `099f992763b`, più questo checkpoint documentale.
+Attenzione: v8.yml usa cancel-in-progress:true sullo stesso branch; il nuovo push può
+annullare automaticamente il retry39844591657. Non presumere due batch V8 paralleli né
+considerare il retry cancellato come verde. Il nuovo batch dovrà verificare tutte le
+modifiche0282–0286 accumulate; annotare le run associate allo SHA effettivamente pubblicato.
+Lo stop serale resta valido: nessuna nuova implementazione o attesa automatica dopo il push.
+
+
 ## Chiusura serale del 22 ottobre 2026 — STOP richiesto dall’utente
 
 Sviluppo fermato per oggi. Nessuna attesa automatica, nessun nuovo incarico e nessun push
