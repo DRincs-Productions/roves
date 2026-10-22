@@ -2,6 +2,24 @@
 
 ## Da leggere alla prossima ripresa
 
+**0285 completa localmente — recupero task consegnati prima di dismettere isolate:** il
+runtime conserva Arc degli slot dei task consegnati; l'event loop riceve solo un payload
+opaco Arc dello stesso slot. Esecuzione consuma Option<Task> una sola volta; close svuota
+pendenti e slot consegnati mentre l'isolate è ancora valido, senza distruttori sotto lock.
+Payload tardivi restano validi ma vuoti, e consegne rifiutate sono recuperate allo shutdown.
+Pulizia ammortizzata degli slot completati. Arc/Mutex/Option standard, nessuna dipendenza
+né API pubblica nuova. Test reali FinalizationRegistry coprono consegna tardiva e rifiuto;
+un test metadati copre512 slot completati. Normale100/2ignorati e JITless99/3ignorati,
+negativo senza take allo shutdown fallisce in sicurezza con sola lettura dei metadati.
+Log target/task-0285/{task-lifetime,full,jitless,negative-no-reclaim,replay}.log; replay19
+patch precedenti +0285 identico, scratch %TEMP%/roves-0285-replay-2558qb3w. Copia testata
+ripristinata identica. Task mai accettati dopo chiusura/senza handler o ancora nel timer
+mantengono le politiche conservative precedenti: non è una prova di assenza leak globale.
+0284 è nel commit locale7bfad886f07/wiki0c5b380;0283 d53e6b51031;0282 7813d44dbc0.
+Pubblicato8b536187562/wiki dcfd9bd; CI V839844591657/generale39844592094 attive senza
+failure all'ultimo controllo, Android/iOS verdi. Nessun nuovo push mentre il batch è attivo.
+CLAUDE_RESUME.md va aggiornato ad ogni checkpoint oggi per la ripresa manuale domani.
+
 **0284 completa localmente — task già consegnati all'event loop:** il payload opaco
 Dispatchable contiene ora il Task e Weak<Foreground> del runtime originale. DispatchableRun
 esegue solo task del runtime destinatario corretto e ancora aperto; task fuori-lifetime o

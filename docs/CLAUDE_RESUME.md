@@ -1,77 +1,93 @@
-# Stato corrente: Codex diretto, Claude non attivo
+# Ripresa per Claude — checkpoint del22ottobre2026
 
-L'utente ha corretto l'informazione sulla quota Codex e autorizzato Codex a continuare senza
-Claude. 0281 è stata completata localmente: leggere il checkpoint corrente in
-docs/V8_MIGRATION.md. Il WIP e il design sotto sono archivio; non riapplicare la patch
-incompleta sui nuovi sorgenti. Le istruzioni seguenti descrivono lo stato precedente.
+## Istruzioni operative attuali
 
-# Ripresa autonoma per Claude — 22 ottobre 2026
+Leggere AGENTS.md, questo file e soltanto l'intestazione corrente di docs/V8_MIGRATION.md.
+La chat non serve. Oggi Codex sviluppa direttamente: l'utente aveva letto male la quota
+(Codex97% residuo), mentre Claude ha esaurito la finestra sessione; nessuna invocazione Claude
+è stata fatta dopo lo stop. Domani l'utente vuole riprendere manualmente con Claude.
+Non creare automazioni o tentare cambi modello/aggiramenti di quota. Nessun tetto25/50 o
+contabilità per incarico. Un solo implementatore, lavoro circoscritto e completo, verifiche
+senza duplicazioni, build Servo pesanti online. Aggiornare questo file a ogni checkpoint.
 
-Questo file consente di riprendere senza la chat Codex. Leggere AGENTS.md, questo file e
-solo l'intestazione corrente di docs/V8_MIGRATION.md; consultare lo storico solo per problemi
-concreti. L'utente ha chiesto che Claude possa continuare direttamente domani, perché la quota
-settimanale Codex è quasi esaurita. Non è necessario attendere Codex per riprendere lo sviluppo
-su richiesta dell'utente. Evitare doppia implementazione o altri agenti paralleli.
+## Git: verificare lo stato reale prima di toccare i sorgenti
 
-## Stato affidabile
+- Pubblicato Roves8b536187562 (contiene0281), wiki dcfd9bd.
+- Commit locali completi successivi: e0478fb5acd (regola sviluppo duranteCI),7813d44dbc0
+  (0282),d53e6b51031 (0283),7bfad886f07 (0284), più il checkpoint che aggiunge patch0285.
+- Wiki locale successiva:2cc0a62/91f35c8/0c5b380, più l'aggiornamento0285 corrente.
+- Nessun WIP di questi interventi: sono completi e verificati localmente. Leggere git log e
+  git status per gli SHA finali del checkpoint e del submodule. Non resettare lavoro altrui.
+- docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico:0281 è stata
+  completata e pubblicata. NON riapplicarla. Anche il relativo design è storico.
 
-- Ultimo push prima di questo handoff:47a5cd351e1, wiki c9bcc84, con0275–0278.
-- Commit completi aggiunti:45d88a513e7 (0279),196ee7a5faa (0280); wiki9fbd176.
-- 0279: registro JSON debole prima del link e dopo gli steps; radici temporanee durante il
-  link, private cppgc sul record. JSON linkati mai valutati restano forti. Normal82/JITless81.
-- 0280: prototipo immutabile ClassBox passa da Global a TracedReference; normal84/JITless83.
-  Revisioni, negativi e replay completati; nessuna misura RAM/CPU o raccolta pagina dimostrata.
-- 0281 è INCOMPLETA, NON verificata e NON applicata ai sorgenti. Il WIP è versionato in
-  docs/handoff/0281-incomplete-realm-registry.patch, fuori da patches/ applicate dalla CI.
-- La quota sessione Claude si è esaurita; reset indicato dalla CLI00:10 Europe/Rome.
-  Nessun tentativo automatico o cambio modello è stato effettuato.
+## Cosa è stato implementato
 
-## CI prima di questo push
+| Passo | Stato e risultato locale |
+| --- | --- |
+| 0281 | RealmData cppgc, Context tracciato, holder nel context, registro debole, current/saved roots, RealmSwitch RAII, principal una volta. Corretto holder/cache nel context di destinazione.94/93 test. |
+| 0282 | drain_pending per RuntimeHooks invece diTLS: un drain abbandonato non sopprime i job del successivo runtime sullo stesso thread.95/94 test. |
+| 0283 | Timer cattura Weak<Registration> originale invece di cercare il handler per indirizzo isolate alla scadenza. Rimozione/sostituzione invalida la registrazione. Motore65+2doctest normal/JITless, runtime95/94. |
+| 0284 | Payload Dispatchable con owner debole; non esegue task in runtime sbagliato o già chiuso. Close impedisce inserzioni dopo shutdown.97/96 test. |
+| 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
-Su47a5cd351e1: V839822504067 verde dopo un retry del solo bootstrapJITless (apt30min),
-Android39822504026 verde, iOS39822504229 verde. Generale39822504002:12/13verdi,
-Steam119978506378 scaduto dopo90min durante mach bootstrap/dipendenze, prima della
-compilazione. Build e packaging, inclusoDEB che falliva prima di0278, sono verdi.
-Il checkpoint generale NON è pienamente verificato. Il push di salvataggio è richiesto
-esplicitamente dall'utente; verificare le nuove run del commit reale, non riusare gli esiti
-di47a5 per dichiarare validati0279/0280. Non creare release o bump consumer per questo WIP.
+Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.
+Non attribuire questi risultati alla CI browser. Patch source reali0281–0285 sotto
+patches/servo-v0.5.0, replay su pristinev0.5.0+patch precedenti e confronto byte per byte
+con sorgenti/copia testata verificati. Test negativi mirati rilevano gli edge mancanti.
+Per0285 i test consegna/rifiuto usano Task V8 reali da FinalizationRegistry, non puntatori finti.
 
-## Come riprendere0281
+## CI da controllare prima di ogni altro push
 
-1. Controllare HEAD, git status, submodule wiki e CI reali. Dare priorità a eventuali errori
-   reali delle nuove run; leggere soltanto i log pertinenti. Niente polling continuo.
-2. Leggere docs/handoff/0281-realm-design.md e0281-implementation-instructions.txt.
-   Sono uno snapshot del design precedente0280: il prerequisito immutable prototype è GIA'
-   implementato e non va rifatto. Usare i sorgenti correnti come autorità sui nomi.
-3. Esaminare la patch WIP, verificare git apply --check e riapplicarla solo se coerente;
-   non considerarla completa. Nove file runtime erano stati modificati, senza completare
-   suite di test, patch finale o replay. Non iniziare da una copia target testata precedente.
-4. Completare realm cppgc: Context TracedReference, holder nel context, registro debole,
-   radici realm corrente e precedenti annidati, RealmSwitch RAII nei callback, iterazione
-   con radici temporanee, principals rilasciati esattamente una volta a GC o shutdown.
-   Preservare il realm iniziale forte per gli intrinseci catturati. Nessuna nuova libreria:
-   rusty_v8/cppgc esistenti coprono il meccanismo.
-5. Verificare pubblicazione/rooting durante allocazioni, context→holder→RealmData→context,
-   assenza di dangling Realm pointer, ordine finalizer/Runtime, principals e reentrancy.
-   Testare oggetto/funzione che trattiene realm, current+saved nested GC, callback CSP/jobs,
-   wrapper Window, iterazione e negativi sicuri senza letture di puntatori liberati.
-6. Test normali e JITless nel workspace isolato target/v8-incumbent-audit; ricrearlo se manca,
-   seguendo manifest e sorgenti roves-js/roves-v8/derive. CARGO_TARGET_DIR assoluto
-   C:/Users/simon/3D Objects/roves/target/roves-js. Copia testata identica alla produzione.
-   Build completa browser solo in CI. Non duplicare test già verificati su sorgenti identici.
-7. Produrre patch0281 reale solo quando completa, replay pristinev0.5.0+patch precedenti,
-   aggiornare CUSTOMIZATIONS, README, wiki e handoff; revisionare e committare/pubblicare
-   secondo AGENTS e istruzioni correnti dell'utente. Nessun tetto chiamate o contabilità
-   consumi richiesto; fermarsi soltanto a quota effettiva, stop o blocco non risolvibile.
+Batch pubblicato8b536187562:
+- V8 run39844591657: attiva all'ultimo controllo.
+- Generale run39844592094: attiva all'ultimo controllo.
+- Android39844592038 e iOS39844591645: verdi.
 
-## Resto del lavoro (non dichiarare completata la migrazione)
+Non cancellare né soppiantare queste run senza un'altra istruzione esplicita. Se non ci sono
+rosse e il batch è attivo, continuare modifiche/revisioni/commit LOCALI, senza push.
+Al completamento di ogni implementazione controllare il batch aggregato. Una rossa va
+analizzata subito e corretta; attendere anche le altre run prima del push. Tutte verdi:
+pubblicare il lavoro completo accumulato, wiki prima del puntatore submodule root, quindi
+proseguire mentre gira la nuovaCI. Run cancellate/saltate non sono verdi.
 
-- Cache Function0273: identico corpo può riusare origine del primo chiamante. WIP locale
-  target/0273-incomplete-native-traps.patch NON applicare alla cieca; diagnosi nel piano V8.
-- WindowProxy navigazione/identità, incumbent e lifecycle worker/termination/shutdown.
-- Servo mantiene ancora global e mappe moduli: realm raccoglibile nel backend non prova
-  raccolta pagina dopo navigazione. JSON linkato mai valutato resta trattenuto.
-- WPT selezionati e validazione browser normal/JITless, scene Pixi/Three, performance e
-  release/pin soltanto quando appropriati. Niente promesse di risparmio RAM non misurato.
+Il batch1094b88f051 era stato annullato su esplicita richiesta utente per pubblicare0281;
+non è un precedente che autorizza cancellazioni automatiche. Su47a5cd351e1 erano verdi
+V8/Android/iOS e12/13 generale; Steam era scaduto nel bootstrap90min prima di compilare.
 
-Il materiale in docs/handoff è archivio WIP/design, NON una patch CI né sorgente pronto.
+## Prossimi punti della migrazione
+
+1. Dare priorità a errori delle run effettive del checkpoint0281; non presumere corretto il
+   frontend solo perché il runtime isolato passa. Non avviare Claude oggi.
+2. Proseguire lo sviluppo del piano V8, studiando prima riuso di API/librerie mantenute.
+   Cache Function0273, navigazione/identità WindowProxy e incumbent sono ancora aperti.
+   Worker/termination/shutdown e WPT/integration richiedono ulteriore copertura.
+3. Task accettati consegnati sono ora recuperati, ma task senza handler, timer pendenti e
+   post tardivi dopo chiusura mantengono politiche conservative: non dichiarare assenza leak.
+   Dati callback in-flight devono rispettare il lifetime dell'embedder.
+4. Servo mantiene global e mappe moduli; JSON linkati mai valutati restano forti; realm
+   iniziale intenzionalmente forte. Non dichiarare raccolta pagina o risparmioCPU/RAM.
+5. Non pubblicare release/pin consumer finché la migrazione e i criteri del piano non lo
+   giustificano. Nessun flag build/bundle/workflow è cambiato in0281–0285.
+
+Cache Function: il WIP0273 locale target/0273-incomplete-native-traps.patch NON va applicato
+alla cieca. Native Proxy traps eliminano il frameJS helper, ma V8 GetFunctionFromEval cerca
+la cache con outer_info empty_function prima di correggere eval_from_shared dal chiamante;
+corpi identici nello stesso realm possono riusare l'origine precedente. Non mascherare con
+commenti/whitespace nel codice visibile o disabilitare globalmente la cache senza valutazione.
+WindowProxy: JS_TransplantObject sui global attualmente ritorna il replacement: vecchi riferimenti
+vedono il vecchio Window. Serve progettare riuso/detach del global proxy alla creazioneContext,
+coordinato con attivazione documento, evitando retarget anticipato o perdita del vecchio global.
+
+## Verifiche e artefatti locali riutilizzabili
+
+Workspace isolato target/v8-incumbent-audit (roves-js,roves-v8,derive); se manca ricrearlo da
+manifest/sorgenti correnti, non da vecchioWIP. CARGO_TARGET_DIR assoluto:
+C:/Users/simon/3D Objects/roves/target/roves-js. Cargo offline normal e --features jitless.
+Non ripetere test su copie identiche senza un dubbio concreto. Copie sorgenti vanno confrontate
+prima di riusare prove. Log target/task-0281 ... task-0285 (ignored, non disponibili da clone).
+I dettagli verificabili restano nelle voci CUSTOMIZATIONS e nel piano V8. Replay più recente:
+target/task-0285/replay.log; patch source macchina-applicabile è versionata. Su Windows
+GNU patch è C:/Program Files/Git/usr/bin/patch.exe; roves-js/roves-v8 non esistono pristine.
+Usare sezioni delle patch precedenti sui file interessati; confrontare prima con HEAD, poi
+applicare nuova patch dry-run/apply e confrontare con working tree. Non usare tagv0.4.0.

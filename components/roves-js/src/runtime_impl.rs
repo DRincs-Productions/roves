@@ -102,6 +102,10 @@ pub(crate) struct Foreground {
     /// Tasks waiting for a dispatch callback or for [`RunJobs`].
     pending: std::sync::Mutex<Vec<v8::Task>>,
     closed: std::sync::atomic::AtomicBool,
+    /// Runtime ownership lasts until execution or shutdown; opaque event-loop payloads
+    /// must not be the last owners of native tasks after isolate disposal.
+    dispatched: std::sync::Mutex<Vec<std::sync::Arc<DispatchedTask>>>,
+    dispatch_sweep: std::sync::atomic::AtomicUsize,
 }
 
 /// Does not keep a runtime alive just because its event loop still owns a dispatched task.
@@ -120,8 +124,14 @@ impl DispatchOwner {
 }
 
 struct DispatchedTask {
-    task: v8::Task,
+    task: std::sync::Mutex<Option<v8::Task>>,
     owner: DispatchOwner,
+}
+
+impl DispatchedTask {
+    fn take(&self) -> Option<v8::Task> {
+        self.task.lock().unwrap().take()
+    }
 }
 
 impl Foreground {
@@ -139,27 +149,45 @@ impl Foreground {
             pending.push(task);
             return;
         };
+        let task = std::sync::Arc::new(DispatchedTask {
+            task: std::sync::Mutex::new(Some(task)),
+            owner: DispatchOwner(std::sync::Arc::downgrade(self)),
+        });
+        self.retain_dispatched(task.clone());
         drop(pending);
-        let pointer = Box::into_raw(Box::new(DispatchedTask { task, owner: DispatchOwner(std::sync::Arc::downgrade(self)) }))
+        let pointer = Box::into_raw(Box::new(task))
             as *mut DispatchablePointer;
         // SAFETY: the embedder's dispatch contract (the task comes back in `DispatchableRun`).
         if !unsafe { callback(closure, pointer) } {
-            // The event loop is gone: so may be the isolate (see `roves_v8::foreground`).
-            // SAFETY: the pointer was not taken.
-            let rejected = unsafe { Box::from_raw(pointer as *mut DispatchedTask) };
-            std::mem::forget(rejected.task);
+            // The runtime still owns the native task and will destroy it during close on
+            // its own thread. Release only the rejected opaque payload here.
+            // SAFETY: the callback did not take the pointer.
+            drop(unsafe { Box::from_raw(pointer as *mut std::sync::Arc<DispatchedTask>) });
         }
     }
 
+    fn retain_dispatched(&self, task: std::sync::Arc<DispatchedTask>) {
+        let mut dispatched = self.dispatched.lock().unwrap();
+        if dispatched.len() >= self.dispatch_sweep.load(std::sync::atomic::Ordering::Relaxed) {
+            dispatched.retain(|task| task.task.lock().unwrap().is_some());
+            self.dispatch_sweep.store((dispatched.len() * 2).max(64), std::sync::atomic::Ordering::Relaxed);
+        }
+        dispatched.push(task);
+    }
+
     fn close(&self) {
-        let waiting = {
+        let (waiting, dispatched) = {
             let mut pending = self.pending.lock().unwrap();
             self.closed.store(true, std::sync::atomic::Ordering::Release);
-            std::mem::take(&mut *pending)
+            (std::mem::take(&mut *pending), std::mem::take(&mut *self.dispatched.lock().unwrap()))
         };
         // The runtime calls this before disposing its isolate, so destruction is still safe.
         // Do not hold the queue lock during a native task's destructor.
         drop(waiting);
+        for task in dispatched {
+            // Event-loop payloads may outlive us, but now contain no native Task.
+            drop(task.take());
+        }
     }
 }
 
@@ -706,20 +734,17 @@ pub unsafe fn SetUpEventLoopDispatch(cx: *mut JSContext, callback: RustDispatchT
 /// Runs a foreground task the embedder's event loop received (or drops it at shutdown).
 pub unsafe fn DispatchableRun(cx: *mut JSContext, ptr: *mut DispatchablePointer, maybe_shutting_down: Dispatchable_MaybeShuttingDown) {
     // SAFETY: dispatched pointers come from `Foreground::post`.
-    let DispatchedTask { task, owner } = unsafe { *Box::from_raw(ptr as *mut DispatchedTask) };
+    let task = unsafe { *Box::from_raw(ptr as *mut std::sync::Arc<DispatchedTask>) };
     if maybe_shutting_down == Dispatchable_MaybeShuttingDown::NotShuttingDown {
-        if !cx.is_null() && owner.belongs_to(&hooks(cx).foreground) {
-            task.run();
-        } else {
-            // The task belongs to another or already-disposed isolate; neither running nor
-            // destroying it through this runtime is safe.
-            std::mem::forget(task);
+        if !cx.is_null() && task.owner.belongs_to(&hooks(cx).foreground) {
+            if let Some(native) = task.take() {
+                native.run();
+            }
         }
-    } else if owner.active() {
+        // A foreign runtime cannot take the task: the original owner will reclaim it.
+    } else if task.owner.active() {
         // Normal shutdown delivery on the owner's foreground thread, before isolate drop.
-        drop(task);
-    } else {
-        std::mem::forget(task);
+        drop(task.take());
     }
 }
 
@@ -882,6 +907,86 @@ mod dispatch_lifetime_tests {
     use super::*;
     use std::sync::Arc;
     use crate::rust::{JSEngineHandle, Runtime};
+
+    #[test]
+    fn completed_dispatch_metadata_is_pruned_amortized() {
+        let foreground = Arc::new(Foreground::default());
+        for _ in 0..512 {
+            // A completed slot has no native Task; this constructs metadata only.
+            foreground.retain_dispatched(Arc::new(DispatchedTask {
+                task: std::sync::Mutex::new(None),
+                owner: DispatchOwner(Arc::downgrade(&foreground)),
+            }));
+        }
+        assert!(foreground.dispatched.lock().unwrap().len() <= 64);
+        foreground.close();
+        assert!(foreground.dispatched.lock().unwrap().is_empty());
+    }
+
+    static DELIVERED: std::sync::Mutex<Vec<usize>> = std::sync::Mutex::new(Vec::new());
+
+    unsafe extern "C" fn record_delivery(_: *mut c_void, task: *mut DispatchablePointer) -> bool {
+        DELIVERED.lock().unwrap().push(task as usize);
+        true
+    }
+
+    static REJECTED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn reject_delivery(_: *mut c_void, _: *mut DispatchablePointer) -> bool {
+        REJECTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        false
+    }
+
+    fn post_real_task(runtime: &mut Runtime, ready: impl Fn() -> bool) {
+        crate::tests::eval(runtime,
+            "globalThis.registry = new FinalizationRegistry(() => {}); (() => { registry.register({}, 42); })(); 0");
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !ready() && std::time::Instant::now() < deadline {
+            runtime.gc_for_testing();
+            isolate(runtime.raw_cx()).low_memory_notification();
+            std::thread::yield_now();
+        }
+        assert!(ready(), "V8 must post a real foreground task");
+    }
+
+    #[test]
+    fn shutdown_reclaims_native_tasks_before_late_event_loop_payloads() {
+        assert!(DELIVERED.lock().unwrap().is_empty());
+        {
+            let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+            let cx = runtime.raw_cx();
+            unsafe { SetUpEventLoopDispatch(cx, Some(record_delivery), std::ptr::null_mut()) };
+            post_real_task(&mut runtime, || !DELIVERED.lock().unwrap().is_empty());
+            let tasks = hooks(cx).foreground.dispatched.lock().unwrap();
+            assert!(tasks.iter().any(|task| task.task.lock().unwrap().is_some()), "native work is owned by the live runtime");
+        }
+        let payloads = std::mem::take(&mut *DELIVERED.lock().unwrap());
+        for payload in payloads {
+            // SAFETY: the event loop still owns each opaque payload. Inspect metadata only,
+            // never a task or isolate that has already been disposed.
+            let task = unsafe { &*(payload as *const Arc<DispatchedTask>) };
+            assert!(task.task.lock().unwrap().is_none(), "shutdown already destroyed native work");
+            assert!(!task.owner.active());
+            unsafe { DispatchableRun(std::ptr::null_mut(), payload as *mut _, Dispatchable_MaybeShuttingDown::ShuttingDown) };
+        }
+    }
+
+    #[test]
+    fn rejected_deliveries_are_reclaimed_by_the_runtime_at_shutdown() {
+        REJECTED.store(0, std::sync::atomic::Ordering::Relaxed);
+        let retained = {
+            let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+            let cx = runtime.raw_cx();
+            unsafe { SetUpEventLoopDispatch(cx, Some(reject_delivery), std::ptr::null_mut()) };
+            post_real_task(&mut runtime, || REJECTED.load(std::sync::atomic::Ordering::Relaxed) > 0);
+            let slots = hooks(cx).foreground.dispatched.lock().unwrap();
+            slots.iter().filter(|slot| slot.task.lock().unwrap().is_some()).cloned().collect::<Vec<_>>()
+        };
+        assert!(!retained.is_empty(), "rejection leaves native ownership with the runtime");
+        for slot in retained {
+            assert!(slot.task.lock().unwrap().is_none(), "shutdown reclaims rejected native tasks too");
+        }
+    }
 
     #[test]
     fn dispatched_owner_accepts_only_its_live_registration() {

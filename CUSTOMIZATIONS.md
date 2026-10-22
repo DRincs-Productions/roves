@@ -15798,3 +15798,23 @@ patches +0284 dry-run/apply identical. Patch0284-dispatched-task-runtime-ownersh
 README/wiki/currenthandoff updated. Native task abandonment remains conservative, not leak-free;
 in-flight callback data lifetime is still the embedder's contract. No CPU/RAM or complete
 worker/page shutdown guarantee is inferred from these focused tests.
+
+
+## 2026-10-22 - Task0285: reclaim accepted dispatched work before isolate disposal
+
+Changed roves-js/src/runtime_impl.rs. The runtime retains Arc<DispatchedTask> slots, each with
+Mutex<Option<Task>>; opaque event-loop payloads share the slot rather than own native work
+alone. Execution takes the Task once; close drains both pending and dispatched native work
+while the isolate is valid. Native destructors and embedder callbacks run outside queue locks.
+Rejected deliveries release only their opaque ticket; native work stays owned until shutdown.
+Completed slots are swept amortized. Standard Arc/Mutex/Option only, no new dependency/API.
+
+Two regressions use real V8 foreground tasks posted by FinalizationRegistry: late payloads
+are empty after runtime drop and rejected native work is reclaimed at shutdown too. A third
+metadata-only test bounds512 completed slots. Normal100/2ignored, JITless99/3ignored. Negative
+without shutdown take fails via a metadata-only assertion, never dereferencing dead V8 data.
+Replay19 prior patches +0285 dry-run/apply identical; restored tested source identical.
+Logs target/task-0285/*.log, patch0285-reclaim-dispatched-tasks-before-isolate-drop.patch.
+README/wiki/migration/CLAUDE_RESUME updated. AGENTS now requires today's resume file updates
+per user request. No global leak-free or performance claim: platform/timer/no-handler/late-post
+policies remain outside accepted-dispatch reclamation, as does callback closure lifetime.

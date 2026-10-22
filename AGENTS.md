@@ -43,6 +43,11 @@ sections only for a concrete issue. Consumption evidence and the first bounded c
 are in `docs/AGENT_WORKFLOW.md`; browser performance history is separate in
 `docs/ROVES_PERFORMANCE.md`. Prototype coverage is not a completed production migration.
 This file is the shared entry point for coding agents.
+Per richiesta dell'utente del22ottobre, durante lo sviluppo di oggi aggiornare anche
+`docs/CLAUDE_RESUME.md` a ogni checkpoint completo: stato pubblicato/locale, verifiche, CI
+pendenti e prossimo intervento. Domani l'utente riprenderà manualmente con Claude; il file
+deve bastare senza lo storico della chat. Nessuna automazione o invocazione Claude oggi.
+
 
 ## Coordinamento con Claude e pubblicazione durante la CI
 
