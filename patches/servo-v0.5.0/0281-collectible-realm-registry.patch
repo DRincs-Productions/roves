@@ -1,0 +1,1124 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 9f51e07c129..54167e88d1d 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -179,7 +179,10 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+             let cell = class_box.cell.get();
+             if !cell.is_null() {
+                 // Scripts see a Window global as its window proxy.
+-                return crate::realm_impl::window_proxy_of_global(cell).unwrap_or(cell);
++                if crate::object::is_global_class(class_box.class) {
++                    return crate::realm_impl::window_proxy_of_global(scope, object, cell).unwrap_or(cell);
++                }
++                return cell;
+             }
+         }
+         if let Ok(proxy) = v8::Local::<v8::Proxy>::try_from(value) {
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 1cdd91aece8..ed621c43fd8 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -119,12 +119,19 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
+ pub struct JSContext {
+     pub(crate) isolate: *mut v8::Isolate,
+     /// The runtime's initial V8 context, used before the first realm is registered (afterwards
+-    /// the current realm's context comes from its realm data).
++    /// the current realm's context comes from its realm data). This strong root keeps the
++    /// initial realm alive for the runtime's whole life.
+     pub(crate) context: RefCell<v8::Global<v8::Context>>,
+-    /// The current realm (see `realm_impl`).
++    /// The current realm (see `realm_impl`), a GC root.
+     pub(crate) current_realm: std::cell::Cell<*mut Realm>,
+-    /// Every realm of this runtime.
+-    pub(crate) realms: RefCell<Vec<Box<crate::realm_impl::RealmData>>>,
++    /// The realms that were current when `EnterRealm` or a [`RealmSwitch`] began, innermost
++    /// last: GC roots until the matching leave restores them. Borrowed only for a push, a pop
++    /// or a trace, never across a V8 call.
++    pub(crate) saved_realms: RefCell<Vec<*mut Realm>>,
++    /// Weak registry of this runtime's realms (see `realm_impl::RealmEntry`).
++    pub(crate) realms: RefCell<Vec<crate::realm_impl::RealmEntry>>,
++    /// The registry size at which the entries of collected realms are dropped.
++    pub(crate) realm_sweep: std::cell::Cell<usize>,
+     /// SpiderMonkey's pending exception: set when an API call catches a JS exception (or a
+     /// native throws one), read and cleared through `JS_GetPendingException` and friends, and
+     /// rethrown into V8 when control returns to script.
+@@ -156,10 +163,11 @@ impl JSContext {
+         // out, and the isolate is only used from its own thread.
+         let isolate = unsafe { &mut *self.isolate };
+         v8::scope!(let scope, isolate);
+-        // The current realm's context (its realm data owns it); the runtime's initial context
+-        // before any realm is registered.
++        // The current realm's context (traced by its realm data); the runtime's initial context
++        // before any realm is registered. The local keeps that realm alive for the whole
++        // closure, even if the closure switches realms.
+         let context = match crate::realm_impl::realm_data(self.current_realm.get()) {
+-            Some(data) => v8::Local::new(scope, &data.context),
++            Some(data) => data.context(scope),
+             None => v8::Local::new(scope, &*self.context.borrow()),
+         };
+         let scope = &mut v8::ContextScope::new(scope, context);
+@@ -182,12 +190,11 @@ impl JSContext {
+         })
+     }
+ 
+-    /// Makes `realm` the current realm (only a pointer: `with_scope` reads its context from
+-    /// the realm data, so entering a realm creates no V8 handle).
+-    pub(crate) fn set_current_realm(&self, realm: *mut Realm) {
+-        if crate::realm_impl::realm_data(realm).is_some() {
+-            self.current_realm.set(realm);
+-        }
++    /// Makes `realm` (live: the caller holds its context or an object of it) the current realm
++    /// until the returned guard drops, which restores the previous one, also on early returns
++    /// and unwinding. Both stay GC roots meanwhile. A null `realm` keeps the current one.
++    pub(crate) fn switch_realm(&self, realm: *mut Realm) -> RealmSwitch<'_> {
++        RealmSwitch { cx: self, old: crate::realm_impl::enter(self, realm) }
+     }
+ 
+     /// Makes `exception` the pending exception.
+@@ -202,3 +209,15 @@ impl JSContext {
+         unsafe { &*raw.as_ptr() }
+     }
+ }
++
++/// A realm switch made by [`JSContext::switch_realm`] (roves-js's own `JSAutoRealm`).
++pub(crate) struct RealmSwitch<'a> {
++    cx: &'a JSContext,
++    old: *mut Realm,
++}
++
++impl Drop for RealmSwitch<'_> {
++    fn drop(&mut self) {
++        crate::realm_impl::leave(self.cx, self.old);
++    }
++}
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 2f188e66ab1..b54a26792d9 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -1276,8 +1276,11 @@ pub unsafe fn IsSystemCompartment(_comp: *mut crate::jsapi::Compartment) -> bool
+ 
+ pub unsafe fn JS_IterateCompartments(cx: *mut JSContext, data: *mut c_void, callback: crate::jsapi::JSIterateCompartmentCallback) {
+     let Some(callback) = callback else { return };
+-    let realms: Vec<*mut c_void> = raw(cx).realms.borrow().iter().map(|realm| &**realm as *const _ as *mut c_void).collect();
+-    for realm in realms {
++    // Strong handles for the whole iteration: a callback that allocates (or creates a realm)
++    // cannot collect a realm reported later. Collected realms are not reported.
++    let realms = crate::realm_impl::live_realms(raw(cx));
++    for realm in &realms {
++        let realm = crate::realm_impl::persistent_realm(realm);
+         // SAFETY: SpiderMonkey's iteration callback contract.
+         if unsafe { callback(cx, data, realm as *mut crate::jsapi::Compartment) } == crate::jsapi::CompartmentIterResult::Stop {
+             break;
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 811293a52e4..098c2f4d97e 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -136,3 +136,5 @@ macro_rules! new_jsjitinfo_bitfield_1 {
+ 
+ #[cfg(test)]
+ mod tests;
++#[cfg(test)]
++mod realm_tests;
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index c9878f04960..89e87a0773c 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -323,6 +323,11 @@ impl ClassTemplates {
+     }
+ }
+ 
++pub(crate) fn is_global_class(class: *const JSClass) -> bool {
++    // SAFETY: all class pointers passed to the object adapter refer to static classes.
++    unsafe { &*class }.flags & JSCLASS_IS_GLOBAL != 0
++}
++
+ pub(crate) fn is_window_global_class(class: *const JSClass) -> bool {
+     // SAFETY: all class pointers passed to the object adapter refer to static classes.
+     let class = unsafe { &*class };
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 3792ccca0bd..a423f766c29 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -2,51 +2,179 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-//! Realms: one V8 context each. A `*mut Realm` points at the realm's [`RealmData`], which the
+-//! context records in its embedder data so an object's realm is found from its creation
+-//! context.
++//! Realms: one V8 context each. A `*mut Realm` points at the realm's [`RealmData`], a cppgc
++//! object that the context records in its embedder data so an object's realm is found from
++//! its creation context.
++//!
++//! Lifetime: the context keeps a holder object (embedder data, strong) that owns the realm data
++//! (`Object::wrap`); the realm data traces the context and its global. The cycle lives in the
++//! unified heap and is collected when nothing reaches it: every JS object, function or promise
++//! keeps its creation context, and the current realm and the realms saved by `EnterRealm` or
++//! [`crate::jsapi::RealmSwitch`] are GC roots. The runtime's initial realm stays alive through
++//! `JSContext::context`. The runtime's registry of realms is weak.
++//!
++//! A `*mut Realm` (and the global, principals or `CurrentGlobal` location derived from it) is
++//! valid while at least one holds: the realm is current or saved; the caller holds a rooted
++//! object or function of the realm (or a Window wrapper whose owner is in it); the caller is
++//! inside a V8 scope with a local of the realm's context (including entered and microtask
++//! contexts). Once the realm was unreachable at a GC, only a `WeakPersistent` may observe it.
+ 
+ use std::cell::Cell;
+ use std::ffi::c_void;
++use std::rc::Rc;
++
++use v8::TracedReference;
++use v8::cppgc::{GarbageCollected, Member, Persistent, UnsafePtr, Visitor, WeakPersistent};
+ 
+ use crate::jsapi::{JSContext, JSObject, JSPrincipals, Realm};
+ 
+-/// Embedder-data slot of a context holding its `RealmData` pointer.
++/// Embedder-data slot of a context holding its `RealmData` pointer (untraced: the holder in
++/// [`HOLDER_SLOT`] keeps the data alive as long as the context).
+ const REALM_SLOT: i32 = 2;
+ /// Embedder-data slot of a context holding its cache object (see [`realm_cached`]).
+ const CACHE_SLOT: i32 = 3;
++/// Embedder-data slot of a context holding the object that owns its `RealmData`.
++const HOLDER_SLOT: i32 = 4;
++/// `Object::wrap` tag of realm data (class boxes use 1, script privates 2).
++const REALM_WRAP_TAG: u16 = 3;
++/// Registry size before the first sweep of the entries of collected realms.
++const REALM_SWEEP_MIN: usize = 16;
++
++/// A realm's principals, shared by its data and its registry entry: whichever of the realm's
++/// finalization and the runtime's shutdown comes first releases them, once.
++type PrincipalsSlot = Rc<Cell<*mut JSPrincipals>>;
+ 
+ pub(crate) struct RealmData {
+-    pub(crate) context: v8::Global<v8::Context>,
++    context: TracedReference<v8::Context>,
+     /// The realm's global object (its cell): the class object of `JS_NewGlobalObject`, or the
+     /// plain global of the runtime's initial realm.
+     pub(crate) global: Cell<*mut JSObject>,
+-    pub(crate) principals: Cell<*mut JSPrincipals>,
+     /// The realm's window proxy (`SetWindowProxy`), for a Window global.
+     pub(crate) window_proxy: Cell<*mut JSObject>,
+     /// The realm's promise-job drain function (see `runtime_impl`).
+     pub(crate) drain_function: Cell<*mut JSObject>,
++    principals: PrincipalsSlot,
++}
++
++#[cfg(test)]
++thread_local! {
++    /// Realm data finalized on this thread (tests observe collection through it).
++    pub(crate) static REALMS_FINALIZED: Cell<usize> = const { Cell::new(0) };
++    pub(crate) static STRONG_REALMS_FOR_TESTING: Cell<bool> = const { Cell::new(false) };
++    pub(crate) static UNROOTED_SAVED_REALMS_FOR_TESTING: Cell<bool> = const { Cell::new(false) };
++}
++
++impl RealmData {
++    /// The realm's context (alive while the realm data is).
++    pub(crate) fn context<'s>(&self, scope: &v8::PinScope<'s, '_, ()>) -> v8::Local<'s, v8::Context> {
++        self.context.get(scope).expect("realm data keeps its context")
++    }
++
++    /// Holds `principals` for the realm (once, after every fallible step of its creation).
++    fn hold_principals(&self, principals: *mut JSPrincipals) {
++        debug_assert!(self.principals.get().is_null(), "a realm holds its principals once");
++        // SAFETY: principals come from `CreateRustJSPrincipals`.
++        unsafe { crate::jsapi_impl::JS_HoldPrincipals(principals) };
++        self.principals.set(principals);
++    }
++}
++
++// SAFETY: `trace` reports the context and every cell the realm keeps.
++unsafe impl GarbageCollected for RealmData {
++    fn trace(&self, visitor: &mut Visitor) {
++        visitor.trace(&self.context);
++        crate::cell::trace_cell(self.global.get() as *mut c_void, visitor);
++        crate::cell::trace_cell(self.window_proxy.get() as *mut c_void, visitor);
++        crate::cell::trace_cell(self.drain_function.get() as *mut c_void, visitor);
++    }
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"RovesJsRealm"
++    }
++}
++
++impl Drop for RealmData {
++    fn drop(&mut self) {
++        #[cfg(test)]
++        REALMS_FINALIZED.with(|count| count.set(count.get() + 1));
++        // Finalizers may run lazily, even after the runtime is gone: only the shared slot is
++        // touched (null once the runtime's shutdown released it).
++        let _gc = crate::object::GcScope::enter();
++        release_principals(&self.principals);
++    }
++}
++
++/// Drops the principals in `slot`, if still held (the destroy hook ignores the context).
++fn release_principals(slot: &Cell<*mut JSPrincipals>) {
++    let principals = slot.replace(std::ptr::null_mut());
++    if !principals.is_null() {
++        // SAFETY: the slot held one reference (`hold_principals`).
++        unsafe { crate::jsapi_impl::JS_DropPrincipals(std::ptr::null_mut(), principals) };
++    }
++}
++
++/// A realm in the runtime's weak registry. A collected realm whose finalizer has not run yet
++/// keeps its entry while its principals are held, so shutdown can release them.
++pub(crate) struct RealmEntry {
++    data: WeakPersistent<RealmData>,
++    principals: PrincipalsSlot,
++}
++
++// `UnsafePtr<RealmData>` is a single non-null pointer (see `cell`): realm pointers travel
++// through mozjs-shaped APIs as `*mut Realm`.
++const _: () = assert!(std::mem::size_of::<Option<UnsafePtr<RealmData>>>() == std::mem::size_of::<*mut Realm>());
++
++fn to_raw(data: UnsafePtr<RealmData>) -> *mut Realm {
++    // SAFETY: same size (asserted above); `UnsafePtr` only wraps the address.
++    unsafe { std::mem::transmute::<UnsafePtr<RealmData>, *mut Realm>(data) }
++}
++
++fn from_raw(realm: *mut Realm) -> Option<UnsafePtr<RealmData>> {
++    // SAFETY: inverse of `to_raw`; null maps to `None`.
++    unsafe { std::mem::transmute::<*mut Realm, Option<UnsafePtr<RealmData>>>(realm) }
+ }
+ 
+ /// Registers a new realm for `context` with its `global` cell (null: the context's plain
+-/// global); the runtime owns it until it is dropped.
++/// global). The realm lives as long as its context (see the module documentation); the
++/// caller's `context` local keeps it alive meanwhile.
+ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: v8::Local<v8::Context>, global: *mut JSObject) -> *mut Realm {
+-    let global = if global.is_null() { crate::jsval::from_v8(scope, context.global(scope).into()).to_object() } else { global };
+-    let data = Box::new(RealmData {
+-        context: v8::Global::new(scope, context),
+-        global: Cell::new(global),
+-        principals: Cell::new(std::ptr::null_mut()),
++    // Every holder/cache object must belong to this context. Creating one in the caller's
++    // context would make the new realm retain that unrelated realm via its creation context.
++    let scope = &mut v8::ContextScope::new(scope, context);
++    let holder = crate::script_impl::empty_holder(cx, scope).expect("a realm holder");
++    let context_reference = TracedReference::new(scope, context);
++    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
++    let data = RealmData {
++        context: context_reference,
++        global: Cell::new(std::ptr::null_mut()),
+         window_proxy: Cell::new(std::ptr::null_mut()),
+         drain_function: Cell::new(std::ptr::null_mut()),
+-    });
+-    let pointer = &*data as *const RealmData as *mut c_void;
++        principals: Rc::new(Cell::new(std::ptr::null_mut())),
++    };
++    // SAFETY: wrapped right away: no allocation runs before the holder owns it.
++    let data = unsafe { v8::cppgc::make_garbage_collected(heap, data) };
++    // SAFETY: the holder is an API object with one internal field; the tag is unique.
++    unsafe { v8::Object::wrap::<REALM_WRAP_TAG, RealmData>(scope, holder, &data) };
++    context.set_embedder_data(HOLDER_SLOT, holder.into());
++    let weak = WeakPersistent::new(&data);
++    // SAFETY: the context local keeps the data alive for this function.
++    let data_ref = unsafe { &*(data.as_ref() as *const RealmData) };
++    let realm = to_raw(data);
++    // SAFETY: the context owns the holder, which owns the data: the pointer is valid while the
++    // context can be reached.
++    unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, realm as *mut c_void) };
++    let global = if global.is_null() {
++        let object = context.global(scope);
++        crate::jsval::from_v8(scope, object.into()).to_object()
++    } else {
++        global
++    };
++    data_ref.global.set(global);
+     // SpiderMonkey has no access checks between realms (Servo checks cross-origin access
+     // itself), so all of a runtime's contexts share one security token.
+     // Tokens compare by identity: an internalized string is one object per isolate.
+     let token = v8::String::new_from_utf8(scope, b"roves-js runtime", v8::NewStringType::Internalized).expect("a short string");
+     context.set_security_token(token.into());
+-    // SAFETY: the realm data lives as long as the runtime (it owns the context).
+-    unsafe { context.set_aligned_pointer_in_embedder_data(REALM_SLOT, pointer) };
+     let cache = v8::Object::new(scope);
+     let null = v8::null(scope).into();
+     cache.set_prototype(scope, null);
+@@ -54,17 +182,26 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+     // `eval`, `Function` and WebAssembly compilation then go through the embedder's CSP check
+     // (see `runtime_impl::JS_SetSecurityCallbacks`).
+     context.set_allow_generation_from_strings(false);
+-    cx.realms.borrow_mut().push(data);
+-    let scope = &mut v8::ContextScope::new(scope, context);
++    {
++        let mut realms = cx.realms.borrow_mut();
++        // Drop the entries of collected realms now and then, at sizes doubling with what
++        // survived the last sweep (a constant cost per registration).
++        if realms.len() >= cx.realm_sweep.get() {
++            realms.retain(|entry| entry.data.get().is_some() || !entry.principals.get().is_null());
++            cx.realm_sweep.set(REALM_SWEEP_MIN.max(2 * realms.len()));
++        }
++        realms.push(RealmEntry { data: weak, principals: data_ref.principals.clone() });
++    }
+     assert!(crate::proxy::initialize_window_wrappers(scope).is_some(), "initialize Window wrapper cache");
+     assert!(crate::script_impl::initialize_metadata(cx, scope).is_some(), "initialize script metadata cache");
+     assert!(crate::dynamic_code::install(scope).is_some(), "install dynamic Function CSP adapters");
+-    pointer as *mut Realm
++    realm
+ }
+ 
++/// The data of a valid realm (see the module documentation for validity).
+ pub(crate) fn realm_data<'r>(realm: *mut Realm) -> Option<&'r RealmData> {
+-    // SAFETY: realm pointers come from `register_realm` and live as long as the runtime.
+-    (!realm.is_null()).then(|| unsafe { &*(realm as *const RealmData) })
++    // SAFETY: callers pass valid realms; the data does not move while alive.
++    from_raw(realm).map(|data| unsafe { &*(data.as_ref() as *const RealmData) })
+ }
+ 
+ /// The value cached under `key` in the current realm, made by `make` on first use. The cache
+@@ -117,35 +254,98 @@ pub(crate) fn realm_of_object(cx: &JSContext, obj: *mut JSObject) -> *mut Realm
+     })
+ }
+ 
++/// Saves the current realm (a root until [`leave`]) and makes the valid `realm` current (a
++/// null one keeps the current realm). Returns the saved realm. No allocation runs in between,
++/// so both stay rooted throughout.
++pub(crate) fn enter(cx: &JSContext, realm: *mut Realm) -> *mut Realm {
++    let old = cx.current_realm.get();
++    cx.saved_realms.borrow_mut().push(old);
++    if !realm.is_null() {
++        cx.current_realm.set(realm);
++    }
++    old
++}
++
++/// Restores `old` (the result of the matching [`enter`]) as the current realm and drops its
++/// saved entry. Enter and leave must nest (the JSAPI contract): out of order, debug builds
++/// assert; release builds drop the innermost entry for `old`, keeping the others rooted, and
++/// restore `old` only if it is still a known live realm, never a pointer nothing roots.
++pub(crate) fn leave(cx: &JSContext, old: *mut Realm) {
++    let mut saved = cx.saved_realms.borrow_mut();
++    let index = saved.iter().rposition(|realm| *realm == old);
++    debug_assert!(
++        index.is_some() && index == saved.len().checked_sub(1),
++        "LeaveRealm must restore the realm of the innermost EnterRealm"
++    );
++    let Some(index) = index else {
++        drop(saved);
++        if is_live_realm(cx, old) {
++            cx.current_realm.set(old);
++        }
++        return;
++    };
++    // `old` is rooted by its entry until it is current again.
++    if !old.is_null() {
++        cx.current_realm.set(old);
++    }
++    saved.remove(index);
++}
++
++/// Whether `realm` is a registered realm that was not collected (a scan, for misuse only).
++fn is_live_realm(cx: &JSContext, realm: *mut Realm) -> bool {
++    !realm.is_null() && find_live_realm(cx, |live| live == realm).is_some()
++}
++
++/// The first registered realm that was not collected and satisfies `accept` (which must not
++/// allocate). The result is valid until the next allocation.
++pub(crate) fn find_live_realm(cx: &JSContext, mut accept: impl FnMut(*mut Realm) -> bool) -> Option<*mut Realm> {
++    let realms = cx.realms.borrow();
++    realms.iter().find_map(|entry| {
++        entry.data.get()?;
++        // SAFETY: the entry is alive (checked above) and nothing collects before `accept`.
++        let realm = to_raw(unsafe { UnsafePtr::new(&entry.data) }?);
++        accept(realm).then_some(realm)
++    })
++}
++
++/// Strong handles on every registered realm that was not collected (for an iteration whose
++/// callbacks may allocate).
++pub(crate) fn live_realms(cx: &JSContext) -> Vec<Persistent<RealmData>> {
++    let realms = cx.realms.borrow();
++    realms.iter().filter(|entry| entry.data.get().is_some()).map(|entry| Persistent::new(&entry.data)).collect()
++}
++
++/// The realm pointer of a strong handle from [`live_realms`].
++pub(crate) fn persistent_realm(data: &Persistent<RealmData>) -> *mut Realm {
++    // SAFETY: the persistent keeps the data alive.
++    unsafe { UnsafePtr::new(data) }.map_or(std::ptr::null_mut(), to_raw)
++}
++
+ /// Enters the realm of `target`'s global; returns the realm that was current.
+ pub unsafe fn EnterRealm(cx: *mut JSContext, target: *mut JSObject) -> *mut Realm {
+     // SAFETY: callers pass a live context (JSAPI contract).
+     let cx = unsafe { &*cx };
+-    let old = cx.current_realm.get();
++    // The caller roots `target`, which keeps its realm alive until it becomes current.
+     let realm = realm_of_object(cx, target);
+-    if !realm.is_null() {
+-        cx.set_current_realm(realm);
+-    }
+-    old
++    enter(cx, realm)
+ }
+ 
+-/// Restores `old_realm` as the current realm (after `EnterRealm`).
++/// Restores `old_realm` as the current realm (after `EnterRealm`, in nesting order).
+ pub unsafe fn LeaveRealm(cx: *mut JSContext, old_realm: *mut Realm) {
+     // SAFETY: callers pass a live context (JSAPI contract).
+-    let cx = unsafe { &*cx };
+-    if !old_realm.is_null() {
+-        cx.set_current_realm(old_realm);
+-    }
++    leave(unsafe { &*cx }, old_realm);
+ }
+ 
+ pub unsafe fn GetObjectRealmOrNull(obj: *mut JSObject) -> *mut Realm {
+     realm_of_object(JSContext::current(), obj)
+ }
+ 
++/// The global of a valid realm (see the module documentation).
+ pub unsafe fn GetRealmGlobalOrNull(realm: *mut Realm) -> *mut JSObject {
+     realm_data(realm).map_or(std::ptr::null_mut(), |data| data.global.get())
+ }
+ 
++/// The principals of a valid realm, borrowed: valid as long as the realm (no reference taken).
+ pub unsafe fn GetRealmPrincipals(realm: *mut Realm) -> *mut JSPrincipals {
+     realm_data(realm).map_or(std::ptr::null_mut(), |data| data.principals.get())
+ }
+@@ -161,13 +361,39 @@ pub fn get_object_realm(obj: *mut JSObject) -> *mut Realm {
+     realm_of_object(JSContext::current(), obj)
+ }
+ 
+-/// Keeps every realm's global alive (SpiderMonkey's realms root their globals).
+-pub(crate) fn trace_realms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+-    let Ok(realms) = cx.realms.try_borrow() else { return };
+-    for realm in realms.iter() {
+-        crate::cell::trace_cell(realm.global.get() as *mut c_void, visitor);
+-        crate::cell::trace_cell(realm.window_proxy.get() as *mut c_void, visitor);
+-        crate::cell::trace_cell(realm.drain_function.get() as *mut c_void, visitor);
++/// Keeps the current realm and the saved ones alive (SpiderMonkey keeps the realms of the
++/// active stack). Other realms live only while something reaches their context.
++pub(crate) fn trace_realm_roots(cx: &JSContext, visitor: &mut Visitor) {
++    trace_realm(cx.current_realm.get(), visitor);
++    #[cfg(test)]
++    {
++        if STRONG_REALMS_FOR_TESTING.with(Cell::get) {
++            for entry in cx.realms.borrow().iter() {
++                visitor.trace(&Member::new(&entry.data));
++            }
++        }
++        if UNROOTED_SAVED_REALMS_FOR_TESTING.with(Cell::get) {
++            return;
++        }
++    }
++    // A borrow failure would mean a GC inside a push or pop: abort rather than skip roots.
++    for realm in cx.saved_realms.borrow().iter() {
++        trace_realm(*realm, visitor);
++    }
++}
++
++fn trace_realm(realm: *mut Realm, visitor: &mut Visitor) {
++    if let Some(data) = from_raw(realm) {
++        visitor.trace(&Member::new(&data));
++    }
++}
++
++/// Releases the principals of every realm, collected or not, at runtime shutdown (before the
++/// isolate goes): realm data finalized later finds them released.
++pub(crate) fn release_realm_principals(cx: &JSContext) {
++    let slots: Vec<PrincipalsSlot> = cx.realms.borrow().iter().map(|entry| entry.principals.clone()).collect();
++    for slot in slots {
++        release_principals(&slot);
+     }
+ }
+ 
+@@ -180,7 +406,8 @@ pub unsafe fn CurrentGlobalOrNull(cx: *mut JSContext) -> *mut JSObject {
+     unsafe { GetRealmGlobalOrNull(get_context_realm(cx)) }
+ }
+ 
+-/// The current realm's global, as a location rooted by the realm.
++/// The current realm's global, as a location in the realm's data: valid while that realm is
++/// current or saved.
+ pub unsafe fn CurrentGlobal(cx: *mut JSContext) -> *const *mut JSObject {
+     realm_data(get_context_realm(cx)).map_or(std::ptr::null(), |data| data.global.as_ptr() as *const *mut JSObject)
+ }
+@@ -210,17 +437,16 @@ pub unsafe fn JS_NewGlobalObject(
+                 class_box.global_trace.set(options.creationOptions_.traceGlobal_);
+             }
+         }
++        // The `context` local keeps the realm alive until the caller roots the global.
+         let realm = register_realm(raw, scope, context, cell);
+         // V8 gives every context a built-in `console` (silent without an inspector), which
+         // would shadow the embedder's (Servo defines `console` lazily, like its interfaces).
+         // After registration: the realm's shared security token allows the access.
+         let console = v8::String::new(scope, "console")?;
+         global.delete(scope, console.into())?;
+-        let data = realm_data(realm)?;
++        // Last: a failed creation holds no principals (its realm is simply collected).
+         if !principals.is_null() {
+-            // SAFETY: principals come from `CreateRustJSPrincipals`.
+-            unsafe { crate::jsapi_impl::JS_HoldPrincipals(principals) };
+-            data.principals.set(principals);
++            realm_data(realm)?.hold_principals(principals);
+         }
+         Some(cell)
+     });
+@@ -257,14 +483,46 @@ pub unsafe extern "C" fn JS_NewEnumerateStandardClasses(_cx: *mut JSContext, _ob
+     true
+ }
+ 
+-/// The window proxy registered for the realm whose global is `global` (a cell), if any.
+-pub(crate) fn window_proxy_of_global(global: *mut c_void) -> Option<*mut c_void> {
+-    let cx = crate::rust::Runtime::get()?;
+-    // SAFETY: the runtime outlives its scopes.
+-    let realms = unsafe { cx.as_ref() }.realms.try_borrow().ok()?;
+-    realms
+-        .iter()
+-        .find(|realm| realm.global.get() as *mut c_void == global)
+-        .map(|realm| realm.window_proxy.get() as *mut c_void)
+-        .filter(|proxy| !proxy.is_null())
++/// The window proxy registered for the realm whose global is `global`, the cell of the class
++/// object `object` (from the object's own realm, no registry scan).
++pub(crate) fn window_proxy_of_global(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, global: *mut c_void) -> Option<*mut c_void> {
++    let context = object.get_creation_context(scope)?;
++    let data = realm_data(realm_of_context(context))?;
++    if data.global.get() as *mut c_void != global {
++        return None;
++    }
++    let proxy = data.window_proxy.get() as *mut c_void;
++    (!proxy.is_null()).then_some(proxy)
++}
++
++#[cfg(test)]
++pub(crate) mod testing {
++    use super::*;
++
++    /// How many registered realms were not collected.
++    pub(crate) fn live_realm_count(cx: &JSContext) -> usize {
++        cx.realms.borrow().iter().filter(|entry| entry.data.get().is_some()).count()
++    }
++
++    /// The registry size (live and collected entries not yet swept).
++    pub(crate) fn registry_len(cx: &JSContext) -> usize {
++        cx.realms.borrow().len()
++    }
++
++    /// A weak handle on a valid realm's data.
++    pub(crate) fn realm_weak(realm: *mut Realm) -> WeakPersistent<RealmData> {
++        WeakPersistent::new(&from_raw(realm).expect("a realm"))
++    }
++
++    /// Makes the initial realm current and forgets the saved realms, so a test that found a
++    /// realm collected never restores a dangling pointer.
++    pub(crate) fn reset_realms_for_test(cx: &JSContext, initial: *mut Realm) {
++        cx.saved_realms.borrow_mut().clear();
++        cx.current_realm.set(initial);
++    }
++
++    /// The saved-realm stack depth.
++    pub(crate) fn saved_depth(cx: &JSContext) -> usize {
++        cx.saved_realms.borrow().len()
++    }
+ }
+diff --git a/components/roves-js/src/realm_tests.rs b/components/roves-js/src/realm_tests.rs
+new file mode 100644
+index 00000000000..9e70e653eac
+--- /dev/null
++++ b/components/roves-js/src/realm_tests.rs
+@@ -0,0 +1,302 @@
++//! Lifetime regressions for the weak realm registry, independent of Servo page roots.
++
++use std::ptr;
++
++use crate::jsapi::*;
++use crate::jsval::*;
++use crate::realm_impl::testing::*;
++use crate::rust::{JSEngineHandle, Runtime};
++use crate::tests::eval;
++
++static GLOBAL: JSClass = JSClass {
++    name: c"CollectibleRealm".as_ptr(),
++    flags: crate::object::JSCLASS_IS_GLOBAL |
++        ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT + 1) << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++    cOps: ptr::null(), spec: ptr::null(), ext: ptr::null(), oOps: ptr::null(),
++};
++
++fn new_global(cx: *mut JSContext, principals: *mut JSPrincipals) -> *mut JSObject {
++    // SAFETY: tests pass a live context and either null or freshly created principals.
++    unsafe { JS_NewGlobalObject(cx, &GLOBAL, principals, OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) }
++}
++
++fn collect(runtime: &mut Runtime) {
++    for _ in 0..3 {
++        runtime.gc_for_testing();
++        // Flush lazy V8/cppgc finalization without depending on one collection's schedule.
++        unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
++    }
++}
++
++#[test]
++fn unreachable_context_holder_cycle_is_collected() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let weak = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        assert!(!global.get().is_null());
++        let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++        realm_weak(realm)
++    };
++    collect(&mut runtime);
++    assert!(weak.get().is_none(), "the context/holder/RealmData cycle must not root itself");
++    assert_eq!(live_realm_count(unsafe { &*cx }), 1, "only the initial realm survives");
++}
++
++#[test]
++fn rooted_objects_and_functions_keep_their_creation_realm() {
++    for code in ["({ answer: 42 })", "(() => 42)"] {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let weak;
++        {
++            crate::rooted!(in(cx) let mut kept = UndefinedValue());
++            {
++                crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++                weak = realm_weak(unsafe { GetObjectRealmOrNull(global.get()) });
++                let old = unsafe { EnterRealm(cx, global.get()) };
++                kept.set(eval(&runtime, code));
++                unsafe { LeaveRealm(cx, old) };
++            }
++            collect(&mut runtime);
++            assert!(weak.get().is_some(), "a rooted value retains its creation realm");
++            if code.contains("=>") {
++                crate::rooted!(in(cx) let this = UndefinedValue());
++                crate::rooted!(in(cx) let mut result = UndefinedValue());
++                let args = HandleValueArray { length_: 0, elements_: ptr::null() };
++                assert!(unsafe { Call(cx, this.handle().into(), kept.handle().into(), &args, result.handle_mut().into()) });
++                assert_eq!(result.get().to_int32(), 42);
++            }
++        }
++        collect(&mut runtime);
++        assert!(weak.get().is_none(), "dropping the last value releases its realm");
++    }
++}
++
++#[test]
++fn current_and_saved_realms_survive_nested_entries_without_object_roots() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let initial = unsafe { GetCurrentRealmOrNull(cx) };
++    let (first, first_weak, restore_initial) = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++        (realm, realm_weak(realm), unsafe { EnterRealm(cx, global.get()) })
++    };
++    let (second_weak, restore_first) = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++        (realm_weak(realm), unsafe { EnterRealm(cx, global.get()) })
++    };
++    collect(&mut runtime);
++    // Check weak handles before restoring raw pointers: even a broken trace fails safely.
++    if first_weak.get().is_none() || second_weak.get().is_none() {
++        reset_realms_for_test(unsafe { &*cx }, initial);
++        panic!("current and saved realms must remain alive");
++    }
++    assert_eq!(saved_depth(unsafe { &*cx }), 2);
++    assert_eq!(restore_first, first);
++    unsafe { LeaveRealm(cx, restore_first) };
++    collect(&mut runtime);
++    assert!(first_weak.get().is_some());
++    assert!(second_weak.get().is_none(), "the departed realm has no remaining owner");
++    unsafe { LeaveRealm(cx, restore_initial) };
++    collect(&mut runtime);
++    assert!(first_weak.get().is_none());
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++}
++
++#[test]
++fn realm_switch_restores_the_previous_realm_on_unwinding() {
++    let runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let initial = unsafe { GetCurrentRealmOrNull(cx) };
++    crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++    let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
++        let _switch = unsafe { &*cx }.switch_realm(realm);
++        assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, realm);
++        panic!("exercise RAII restoration");
++    }));
++    assert!(result.is_err());
++    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++}
++
++#[test]
++fn queued_microtasks_keep_their_realm_until_the_queue_drains() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let weak = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++        let old = unsafe { EnterRealm(cx, global.get()) };
++        eval(&runtime, "Promise.resolve().then(() => { globalThis.completed = true }); 0");
++        unsafe { LeaveRealm(cx, old) };
++        realm_weak(realm)
++    };
++    collect(&mut runtime);
++    assert!(weak.get().is_some(), "the queued reaction owns its context");
++    unsafe { &mut *(*cx).isolate }.perform_microtask_checkpoint();
++    collect(&mut runtime);
++    assert!(weak.get().is_none(), "a drained reaction no longer roots its realm");
++}
++
++unsafe extern "C" fn native_answer(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++    unsafe { *vp = Int32Value(42) };
++    true
++}
++
++#[test]
++fn escaped_native_function_keeps_its_realm_without_a_registry_root() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let weak;
++    {
++        crate::rooted!(in(cx) let mut function = UndefinedValue());
++        {
++            crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++            weak = realm_weak(unsafe { GetObjectRealmOrNull(global.get()) });
++            let old = unsafe { EnterRealm(cx, global.get()) };
++            function.set(ObjectValue(unsafe { JS_NewFunction(cx, Some(native_answer), 0, 0, c"answer".as_ptr()) }.cast()));
++            unsafe { LeaveRealm(cx, old) };
++        }
++        collect(&mut runtime);
++        assert!(weak.get().is_some());
++        crate::rooted!(in(cx) let this = UndefinedValue());
++        crate::rooted!(in(cx) let mut result = UndefinedValue());
++        let args = HandleValueArray { length_: 0, elements_: ptr::null() };
++        assert!(unsafe { Call(cx, this.handle().into(), function.handle().into(), &args, result.handle_mut().into()) });
++        assert_eq!(result.get().to_int32(), 42);
++    }
++    collect(&mut runtime);
++    assert!(weak.get().is_none());
++}
++
++thread_local! {
++    static PRINCIPALS_DESTROYED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
++}
++
++unsafe extern "C" fn destroy_principals(principals: *mut JSPrincipals) {
++    PRINCIPALS_DESTROYED.with(|count| count.set(count.get() + 1));
++    unsafe { DestroyRustJSPrincipals(principals) };
++}
++
++#[test]
++fn realm_principals_are_released_once_at_gc_and_once_at_shutdown() {
++    PRINCIPALS_DESTROYED.with(|count| count.set(0));
++    {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        unsafe { JS_InitDestroyPrincipalsCallback(cx, Some(destroy_principals)) };
++        {
++            let principals = unsafe { CreateRustJSPrincipals(ptr::null(), ptr::null_mut()) };
++            crate::rooted!(in(cx) let global = new_global(cx, principals));
++            let realm = unsafe { GetObjectRealmOrNull(global.get()) };
++            assert_eq!(unsafe { GetRealmPrincipals(realm) }, principals);
++            collect(&mut runtime);
++            assert_eq!(PRINCIPALS_DESTROYED.with(std::cell::Cell::get), 0);
++        }
++        collect(&mut runtime);
++        assert_eq!(PRINCIPALS_DESTROYED.with(std::cell::Cell::get), 1);
++        // Keep another realm current until runtime teardown. Its principal is released by
++        // shutdown; any later lazy RealmData finalizer must see an empty shared slot.
++        let principals = unsafe { CreateRustJSPrincipals(ptr::null(), ptr::null_mut()) };
++        crate::rooted!(in(cx) let global = new_global(cx, principals));
++        unsafe { EnterRealm(cx, global.get()) };
++    }
++    assert_eq!(PRINCIPALS_DESTROYED.with(std::cell::Cell::get), 2);
++    unsafe { JS_InitDestroyPrincipalsCallback(ptr::null_mut(), None) };
++}
++
++#[test]
++fn weak_realm_registry_sweeps_dead_entries() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    for _ in 0..48 {
++        {
++            crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++            assert!(!global.get().is_null());
++        }
++        collect(&mut runtime);
++    }
++    assert_eq!(live_realm_count(unsafe { &*cx }), 1);
++    assert!(registry_len(unsafe { &*cx }) < 20, "dead entries are pruned on registration");
++}
++
++struct IterationState {
++    realms: Vec<v8::cppgc::WeakPersistent<crate::realm_impl::RealmData>>,
++    visited: usize,
++    all_alive: bool,
++}
++
++unsafe extern "C" fn iterate_with_gc(cx: *mut JSContext, data: *mut std::ffi::c_void, compartment: *mut Compartment) -> CompartmentIterResult {
++    let state = unsafe { &mut *data.cast::<IterationState>() };
++    unsafe { JS_GC(cx, GCReason::API) };
++    state.all_alive &= state.realms.iter().all(|realm| realm.get().is_some());
++    if !state.all_alive {
++        // A broken snapshot must fail without accessing a collected compartment pointer.
++        return CompartmentIterResult::Stop;
++    }
++    assert!(!unsafe { GetRealmGlobalOrNull(compartment.cast()) }.is_null());
++    state.visited += 1;
++    CompartmentIterResult::KeepGoing
++}
++
++#[test]
++fn compartment_iteration_roots_its_snapshot_across_callback_gc() {
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let mut state = IterationState { realms: Vec::new(), visited: 0, all_alive: true };
++    // The first realm must remain rooted while allocating the second. Drop both only
++    // immediately before iteration (whose snapshot performs no V8 allocation).
++    {
++        crate::rooted!(in(cx) let first = new_global(cx, ptr::null_mut()));
++        crate::rooted!(in(cx) let second = new_global(cx, ptr::null_mut()));
++        for global in [first.get(), second.get()] {
++            state.realms.push(realm_weak(unsafe { GetObjectRealmOrNull(global) }));
++        }
++    }
++    unsafe { JS_IterateCompartments(cx, (&mut state as *mut IterationState).cast(), Some(iterate_with_gc)) };
++    assert!(state.all_alive);
++    assert_eq!(state.visited, 3);
++    collect(&mut runtime);
++    assert!(state.realms.iter().all(|realm| realm.get().is_none()));
++}
++
++#[test]
++fn negative_fixtures_detect_old_registry_roots_and_missing_saved_roots() {
++    use crate::realm_impl::{STRONG_REALMS_FOR_TESTING, UNROOTED_SAVED_REALMS_FOR_TESTING};
++    let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let initial = unsafe { GetCurrentRealmOrNull(cx) };
++    let weak = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        realm_weak(unsafe { GetObjectRealmOrNull(global.get()) })
++    };
++    STRONG_REALMS_FOR_TESTING.with(|flag| flag.set(true));
++    collect(&mut runtime);
++    let retained = weak.get().is_some();
++    STRONG_REALMS_FOR_TESTING.with(|flag| flag.set(false));
++    collect(&mut runtime);
++    assert!(retained, "the old unconditional registry roots defeat collection");
++    assert!(weak.get().is_none());
++
++    let saved_weak = {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        let weak = realm_weak(unsafe { GetObjectRealmOrNull(global.get()) });
++        unsafe { EnterRealm(cx, global.get()) };
++        weak
++    };
++    {
++        crate::rooted!(in(cx) let global = new_global(cx, ptr::null_mut()));
++        unsafe { EnterRealm(cx, global.get()) };
++    }
++    UNROOTED_SAVED_REALMS_FOR_TESTING.with(|flag| flag.set(true));
++    collect(&mut runtime);
++    let lost_saved_realm = saved_weak.get().is_none();
++    UNROOTED_SAVED_REALMS_FOR_TESTING.with(|flag| flag.set(false));
++    // Never restore or trace the now-dangling saved pointer.
++    reset_realms_for_test(unsafe { &*cx }, initial);
++    assert!(lost_saved_realm, "the fixture detects a missing saved-realm edge");
++}
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index a1a2f659463..b1629a539bf 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -388,12 +388,11 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+     // SAFETY: embedder job queues come from `CreateJobQueue`.
+     let queue = unsafe { &*(queue as *const RustJobQueue) };
+     let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
++    // SAFETY: the runtime's live context.
++    let raw = unsafe { &*cx };
+     let current = crate::realm_impl::get_context_realm(cx);
+-    let embedder_realm = || {
+-        // SAFETY: the runtime's live context.
+-        let realms = unsafe { &*cx }.realms.borrow();
+-        realms.iter().map(|data| &**data as *const crate::realm_impl::RealmData as *mut crate::jsapi::Realm).find(|realm| has_embedder_global(*realm))
+-    };
++    // A live realm from the weak registry; entered below before anything allocates.
++    let embedder_realm = || crate::realm_impl::find_live_realm(raw, has_embedder_global);
+     let realm = [promise_realm, current]
+         .into_iter()
+         .find(|realm| !realm.is_null() && has_embedder_global(*realm))
+@@ -402,9 +401,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+     if realm.is_null() {
+         return;
+     }
+-    // SAFETY: the runtime's live context.
+-    let raw = unsafe { &*cx };
+-    raw.set_current_realm(realm);
++    let switch = raw.switch_realm(realm);
+     let enqueued = (|| {
+         let drain = drain_function(cx)?;
+         DRAIN_PENDING.with(|pending| pending.set(true));
+@@ -416,7 +413,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+         };
+         Some(ok)
+     })();
+-    raw.set_current_realm(current);
++    drop(switch);
+     if enqueued != Some(true) {
+         DRAIN_PENDING.with(|pending| pending.set(false));
+     }
+@@ -560,14 +557,13 @@ fn csp_allows(
+     // The check runs in the realm compiling the code.
+     // SAFETY: the runtime's live context.
+     let raw = unsafe { &*cx };
+-    let old = raw.current_realm.get();
+-    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
++    let switch = raw.switch_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
+     let mut allowed = false;
+     // SAFETY: SpiderMonkey's CSP-check contract (rooted strings, valid vectors).
+     let ok = unsafe {
+         check(cx, kind, code.handle().into(), compilation_type, parameter_handle, body.handle().into(), argument_handle, body_argument.handle().into(), &mut allowed)
+     };
+-    raw.set_current_realm(old);
++    drop(switch);
+     ok && allowed
+ }
+ 
+@@ -773,11 +769,10 @@ fn wasm_source_fulfilled(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
+     // The embedder checks the response in the realm compiling it.
+     // SAFETY: the runtime's live context.
+     let raw = unsafe { &*cx };
+-    let old = raw.current_realm.get();
+-    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
++    let switch = raw.switch_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
+     // SAFETY: SpiderMonkey's consume-stream contract (rooted response, live consumer).
+     let accepted = unsafe { consume(cx, response.handle().into(), crate::jsapi::MimeType::Wasm, sc) };
+-    raw.set_current_realm(old);
++    drop(switch);
+     if !accepted {
+         let exception = raw.pending_exception.borrow_mut().take().map(|exception| v8::Local::new(scope, exception));
+         match exception {
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 66caa6a3d57..15902c17d07 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -201,7 +201,7 @@ unsafe impl GarbageCollected for RootSet {
+         crate::gc::trace_roots(visitor);
+         if let Some(cx) = Runtime::get() {
+             // SAFETY: the runtime outlives its collections.
+-            crate::realm_impl::trace_realms(unsafe { cx.as_ref() }, visitor);
++            crate::realm_impl::trace_realm_roots(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
+@@ -413,7 +413,9 @@ impl Runtime {
+             scripts: Default::default(),
+             modules: Default::default(),
+             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
++            saved_realms: RefCell::new(Vec::new()),
+             realms: RefCell::new(Vec::new()),
++            realm_sweep: std::cell::Cell::new(0),
+         });
+         raw.isolate = &mut **isolate as *mut v8::Isolate;
+         CURRENT.with(|current| {
+@@ -489,6 +491,8 @@ impl Drop for Runtime {
+         // Release embedder references while Runtime::get(), realms and the isolate
+         // are still live. Module/script private maps must not leak their Rc owners.
+         crate::script_impl::release_runtime_privates(&self.raw);
++        // Realm data finalized later (lazily or with the isolate) finds its principals gone.
++        crate::realm_impl::release_realm_principals(&self.raw);
+         CURRENT.with(|current| {
+             if current.get() == Some(NonNull::from(&*self.raw)) {
+                 current.set(None);
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 3cbcf1802ec..a08d954b821 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -101,6 +101,11 @@ pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> O
+     cx.scripts.metadata.initialize(scope)
+ }
+ 
++/// A new, empty `Object::wrap` holder (see `ScriptMetadata::empty_holder`).
++pub(crate) fn empty_holder<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Object>> {
++    cx.scripts.metadata.empty_holder(scope)
++}
++
+ /// The private of the classic script or source module with V8 id `script_id`.
+ pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
+     cx.scripts.metadata.private(script_id)
+diff --git a/components/roves-js/src/script_metadata.rs b/components/roves-js/src/script_metadata.rs
+index dad5c5c63c4..25cc1e503a6 100644
+--- a/components/roves-js/src/script_metadata.rs
++++ b/components/roves-js/src/script_metadata.rs
+@@ -99,13 +99,29 @@ impl ScriptMetadata {
+         let cache = v8::Script::compile(scope, source, None)?.run(scope)?;
+         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
+         *self.cache.borrow_mut() = Some(v8::Global::new(scope, cache));
+-        let template = v8::ObjectTemplate::new(scope);
+-        // A field makes ObjectTemplate instances API wrappers for cppgc.
+-        template.set_internal_field_count(1);
+-        *self.template.borrow_mut() = Some(v8::Global::new(scope, template));
+         Some(())
+     }
+ 
++    /// A new, empty holder object for `Object::wrap` (script privates and realm data). The
++    /// template is isolate wide, made on first use.
++    pub(crate) fn empty_holder<'s>(&self, scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Object>> {
++        let existing = self.template.borrow().as_ref().map(|template| v8::Local::new(scope, template));
++        let template = match existing {
++            Some(template) => template,
++            None => {
++                let template = v8::ObjectTemplate::new(scope);
++                // A field makes ObjectTemplate instances API wrappers for cppgc.
++                template.set_internal_field_count(1);
++                *self.template.borrow_mut() = Some(v8::Global::new(scope, template));
++                template
++            },
++        };
++        let holder = template.new_instance(scope)?;
++        // This is not a ClassBox; generic JSAPI class inspection must see null.
++        holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
++        Some(holder)
++    }
++
+     pub(crate) fn register(&self, scope: &mut v8::PinScope, id: i32, token: v8::Local<v8::Symbol>) {
+         let token = v8::Weak::new(scope, token);
+         let mut entries = self.entries.borrow_mut();
+@@ -154,10 +170,7 @@ impl ScriptMetadata {
+         scope: &mut v8::PinScope<'s, '_>,
+         module: *mut c_void,
+     ) -> Option<(v8::Local<'s, v8::Object>, WeakPersistent<PrivateData>)> {
+-        let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
+-        let holder = template.new_instance(scope)?;
+-        // This is not a ClassBox; generic JSAPI class inspection must see null.
+-        holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
++        let holder = self.empty_holder(scope)?;
+         let heap = scope.get_cpp_heap()?;
+         let data = unsafe {
+             v8::cppgc::make_garbage_collected(
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8ffadffd565..f18723bd344 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -8,7 +8,7 @@ use crate::jsval::*;
+ use crate::rust::Runtime;
+ 
+ /// Evaluates `source` in the runtime's realm and returns the (unrooted) result.
+-fn eval(runtime: &Runtime, source: &str) -> JSVal {
++pub(crate) fn eval(runtime: &Runtime, source: &str) -> JSVal {
+     // SAFETY: the runtime owns its raw context.
+     let raw = unsafe { &*runtime.raw_cx() };
+     raw.with_scope(|scope| {
+@@ -4679,6 +4679,19 @@ mod window_proxies {
+             assert!(unsafe { JS_WrapValue(cx, first.handle_mut().into()) });
+             assert_eq!(first.get().to_object(), owner.get(), "returning to the owner realm unwraps the adapter");
+             unsafe { LeaveRealm(cx, parent) };
++            let weak_realm = crate::realm_impl::testing::realm_weak(owner_realm);
++            drop(owner);
++            drop(window);
++            drop(first);
++            drop(second);
++            runtime.gc_for_testing();
++            assert!(weak_realm.get().is_some(), "the foreign wrapper keeps its owner's realm");
++            eval(&runtime, "delete globalThis.foreignWindow; 0");
++            for _ in 0..3 {
++                runtime.gc_for_testing();
++                unsafe { &mut *(*cx).isolate }.low_memory_notification();
++            }
++            assert!(weak_realm.get().is_none(), "the dead wrapper/owner/context cycle collects");
+         }
+         assert_eq!(WINDOW_OWNERS_FINALIZED.with(std::cell::Cell::get), before + 1, "only the native owner finalizes DOM state");
+     }

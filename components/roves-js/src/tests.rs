@@ -8,7 +8,7 @@ use crate::jsval::*;
 use crate::rust::Runtime;
 
 /// Evaluates `source` in the runtime's realm and returns the (unrooted) result.
-fn eval(runtime: &Runtime, source: &str) -> JSVal {
+pub(crate) fn eval(runtime: &Runtime, source: &str) -> JSVal {
     // SAFETY: the runtime owns its raw context.
     let raw = unsafe { &*runtime.raw_cx() };
     raw.with_scope(|scope| {
@@ -4679,6 +4679,19 @@ mod window_proxies {
             assert!(unsafe { JS_WrapValue(cx, first.handle_mut().into()) });
             assert_eq!(first.get().to_object(), owner.get(), "returning to the owner realm unwraps the adapter");
             unsafe { LeaveRealm(cx, parent) };
+            let weak_realm = crate::realm_impl::testing::realm_weak(owner_realm);
+            drop(owner);
+            drop(window);
+            drop(first);
+            drop(second);
+            runtime.gc_for_testing();
+            assert!(weak_realm.get().is_some(), "the foreign wrapper keeps its owner's realm");
+            eval(&runtime, "delete globalThis.foreignWindow; 0");
+            for _ in 0..3 {
+                runtime.gc_for_testing();
+                unsafe { &mut *(*cx).isolate }.low_memory_notification();
+            }
+            assert!(weak_realm.get().is_none(), "the dead wrapper/owner/context cycle collects");
         }
         assert_eq!(WINDOW_OWNERS_FINALIZED.with(std::cell::Cell::get), before + 1, "only the native owner finalizes DOM state");
     }

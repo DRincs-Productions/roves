@@ -15699,3 +15699,31 @@ Added docs/CLAUDE_RESUME.md and versioned docs/handoff design/instructions/incom
 patch so the next Claude session does not require chat history or ignored target artifacts.
 The WIP is not applied to production and is outside CI patches. Documented actualSteam
 bootstrap timeout and explicit user-requested checkpoint push without claiming fullCIgreen.
+
+
+## 2026-10-22 - Task0281: collectible realm registry and active realm roots
+
+Changed roves-js cell/jsapi/jsapi_impl/lib/object/realm_impl/runtime_impl/rust/script_impl/
+script_metadata/tests and new realm_tests.rs. RealmData now uses cppgc and a traced Context;
+a context-owned API holder anchors it, the registry stores WeakPersistent entries and sweeps
+amortized. Current and saved realms are explicit roots; runtime callbacks use RealmSwitch
+RAII. Compartments iteration keeps a strong snapshot across callbacks. Global WindowProxy
+lookup uses the object's creation context rather than scanning all realms. Initial context
+remains strong. Principals use a shared cleared slot for exactly-once GC/shutdown release.
+
+Completed the archived Claude WIP directly per explicit user instruction (Claude quota
+exhausted; no new invocation). Fixed holder/cache creation in the caller's context: both now
+belong to the new context, preventing cross-realm retention. A test with missing saved roots
+would otherwise be masked by that accidental edge. Reused rusty_v8/cppgc; no dependencies,
+new ABI shim or public API signature changes. Raw Realm pointers require a live context,
+rooted object, or current/saved realm, documented in the adapter.
+
+Normal94 passed/2ignored; JITless93/3ignored, logs target/task-0281/{full,jitless}.log.
+Ten new tests cover unreachable cycles, object/function/native function liveness, nested
+entries, RAII unwind, queued microtasks, principals GC/shutdown, weak registry pruning,
+iteration with callback GC, and safe negative roots. Existing foreign Window wrapper test
+now drops all direct owner roots, checks wrapper ownership, then collects the whole cycle.
+Replay59 prior patches against pristinev0.5.0, dry-run/apply0281 matches12 files; test copies
+identical. Patch patches/servo-v0.5.0/0281-collectible-realm-registry.patch. Browser/Servo build
+remains CI-only. Servo page/global module roots and linked-unrun JSON retention remain;
+no page collection or CPU/RAM improvement claimed. README/wiki/handoffs/workflow reflect this.

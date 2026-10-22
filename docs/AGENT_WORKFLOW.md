@@ -1,3 +1,9 @@
+## Eccezione operativa corrente
+
+L'utente ha corretto la lettura della quota Codex (97% residuo) e richiesto sviluppo diretto
+Codex senza usare Claude, che è limitato. Nessuna nuova invocazione Claude finché l'utente
+non ripristina la delega. Restano i vincoli CI e nessuna contabilità di consumo per incarico.
+
 # Regola corrente — aggiornamento 22 ottobre 2026
 
 L'utente ha eliminato i tetti di25/50 chiamate e l'obbligo di registrare consumo e lavoro

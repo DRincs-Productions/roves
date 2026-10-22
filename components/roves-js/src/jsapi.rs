@@ -119,12 +119,19 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
 pub struct JSContext {
     pub(crate) isolate: *mut v8::Isolate,
     /// The runtime's initial V8 context, used before the first realm is registered (afterwards
-    /// the current realm's context comes from its realm data).
+    /// the current realm's context comes from its realm data). This strong root keeps the
+    /// initial realm alive for the runtime's whole life.
     pub(crate) context: RefCell<v8::Global<v8::Context>>,
-    /// The current realm (see `realm_impl`).
+    /// The current realm (see `realm_impl`), a GC root.
     pub(crate) current_realm: std::cell::Cell<*mut Realm>,
-    /// Every realm of this runtime.
-    pub(crate) realms: RefCell<Vec<Box<crate::realm_impl::RealmData>>>,
+    /// The realms that were current when `EnterRealm` or a [`RealmSwitch`] began, innermost
+    /// last: GC roots until the matching leave restores them. Borrowed only for a push, a pop
+    /// or a trace, never across a V8 call.
+    pub(crate) saved_realms: RefCell<Vec<*mut Realm>>,
+    /// Weak registry of this runtime's realms (see `realm_impl::RealmEntry`).
+    pub(crate) realms: RefCell<Vec<crate::realm_impl::RealmEntry>>,
+    /// The registry size at which the entries of collected realms are dropped.
+    pub(crate) realm_sweep: std::cell::Cell<usize>,
     /// SpiderMonkey's pending exception: set when an API call catches a JS exception (or a
     /// native throws one), read and cleared through `JS_GetPendingException` and friends, and
     /// rethrown into V8 when control returns to script.
@@ -156,10 +163,11 @@ impl JSContext {
         // out, and the isolate is only used from its own thread.
         let isolate = unsafe { &mut *self.isolate };
         v8::scope!(let scope, isolate);
-        // The current realm's context (its realm data owns it); the runtime's initial context
-        // before any realm is registered.
+        // The current realm's context (traced by its realm data); the runtime's initial context
+        // before any realm is registered. The local keeps that realm alive for the whole
+        // closure, even if the closure switches realms.
         let context = match crate::realm_impl::realm_data(self.current_realm.get()) {
-            Some(data) => v8::Local::new(scope, &data.context),
+            Some(data) => data.context(scope),
             None => v8::Local::new(scope, &*self.context.borrow()),
         };
         let scope = &mut v8::ContextScope::new(scope, context);
@@ -182,12 +190,11 @@ impl JSContext {
         })
     }
 
-    /// Makes `realm` the current realm (only a pointer: `with_scope` reads its context from
-    /// the realm data, so entering a realm creates no V8 handle).
-    pub(crate) fn set_current_realm(&self, realm: *mut Realm) {
-        if crate::realm_impl::realm_data(realm).is_some() {
-            self.current_realm.set(realm);
-        }
+    /// Makes `realm` (live: the caller holds its context or an object of it) the current realm
+    /// until the returned guard drops, which restores the previous one, also on early returns
+    /// and unwinding. Both stay GC roots meanwhile. A null `realm` keeps the current one.
+    pub(crate) fn switch_realm(&self, realm: *mut Realm) -> RealmSwitch<'_> {
+        RealmSwitch { cx: self, old: crate::realm_impl::enter(self, realm) }
     }
 
     /// Makes `exception` the pending exception.
@@ -200,5 +207,17 @@ impl JSContext {
         let raw = crate::rust::Runtime::get().expect("a roves-js runtime on this thread");
         // SAFETY: the runtime outlives the API calls made on its thread.
         unsafe { &*raw.as_ptr() }
+    }
+}
+
+/// A realm switch made by [`JSContext::switch_realm`] (roves-js's own `JSAutoRealm`).
+pub(crate) struct RealmSwitch<'a> {
+    cx: &'a JSContext,
+    old: *mut Realm,
+}
+
+impl Drop for RealmSwitch<'_> {
+    fn drop(&mut self) {
+        crate::realm_impl::leave(self.cx, self.old);
     }
 }

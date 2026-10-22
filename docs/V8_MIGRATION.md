@@ -2,6 +2,27 @@
 
 ## Da leggere alla prossima ripresa
 
+**0281 completata da Codex — stato corrente22ottobre:** l'utente ha corretto la quota Codex
+(97% residuo) e chiesto implementazione diretta senza Claude. Nessuna nuova invocazione Claude.
+HEAD pubblicato1094b88f051/wiki9fbd176,0279/0280 già pubblicate;0281 completa localmente.
+Il vecchio WIP versionato sotto docs/handoff resta archivio storico, NON va riapplicato.
+RealmData è cppgc: context→holder→RealmData→context è un ciclo tracciato; registro debole,
+radici esplicite current/saved, RealmSwitch RAII per callback, snapshot forte in iterazione.
+Principal condiviso azzerato e rilasciato esattamente una volta a finalizzazione o shutdown.
+Il realm iniziale resta forte per gli intrinseci. Corretto un difetto del WIP: holder e cache
+creati ora nel context di destinazione, evitando che il nuovo realm trattenga il chiamante.
+Nessuna nuova dipendenza: rusty_v8/cppgc esistenti. API pubbliche invariate; puntatori Realm
+validi solo se contesto/oggetto/realm attivo è raggiungibile, documentato nel codice.
+Test normali94/2ignorati e JITless93/3ignorati; dieci nuovi test, negativi sicuri per registro
+forte e mancanti radici saved, regressione wrapperWindow rinforzata. Log target/task-0281/
+full.log e jitless.log; copia testata identica. Replay59 patch precedenti +0281 dry-run/apply
+identici (12file), target/task-0281/replay.log, scratch %TEMP%/roves-0281-replay-zmy2m0rr.
+Compilazione Servo/browser reale ancora daCI; nessuna raccolta pagina o misuraRAM dichiarata:
+Servo mantiene global/mappe moduli; JSON linkati mai valutati restano forti. Restano aperti
+cacheFunction0273, navigazione WindowProxy, incumbent, workers/termination/shutdown e WPT.
+CI su1094b88f051: Android39842644914 e iOS39842644717 verdi; generale39842644716 e
+V839842644668 ancora in corso. Nessun altro push prima della conclusione del batch.
+
 **Handoff autosufficiente per Claude:** leggere [CLAUDE_RESUME.md](CLAUDE_RESUME.md).
 Design, istruzioni e WIP0281 sono ora versionati sotto docs/handoff/, non soltanto target/.
 0279/0280 complete nei commit45d88a513e7/196ee7a5faa;0281 resta fuori dai sorgenti.

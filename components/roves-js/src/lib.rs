@@ -136,3 +136,5 @@ macro_rules! new_jsjitinfo_bitfield_1 {
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod realm_tests;

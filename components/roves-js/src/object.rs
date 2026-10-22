@@ -323,6 +323,11 @@ impl ClassTemplates {
     }
 }
 
+pub(crate) fn is_global_class(class: *const JSClass) -> bool {
+    // SAFETY: all class pointers passed to the object adapter refer to static classes.
+    unsafe { &*class }.flags & JSCLASS_IS_GLOBAL != 0
+}
+
 pub(crate) fn is_window_global_class(class: *const JSClass) -> bool {
     // SAFETY: all class pointers passed to the object adapter refer to static classes.
     let class = unsafe { &*class };

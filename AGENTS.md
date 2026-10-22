@@ -46,6 +46,13 @@ This file is the shared entry point for coding agents.
 
 ## Coordinamento con Claude e pubblicazione durante la CI
 
+**Eccezione corrente richiesta dall'utente (22 ottobre 2026):** Claude ha esaurito la quota
+e non va avviato. Codex implementa e verifica direttamente finché l'utente non richiede di
+ripristinare la delega. La quota Codex quasi esaurita era un errore di lettura dell'utente
+(ha comunicato97% residuo); non trattarla come un blocco. Restano revisioni, vincoli CI,
+build pesanti online, nessuna automazione periodica e nessuna contabilità per incarico.
+Le regole di delega sotto tornano applicabili quando la delega viene ripristinata.
+
 Codex dirige il lavoro: studia il problema, valuta il riuso di librerie mantenute e definisce
 passo per passo un incarico concreto per Claude Code, disponibile tramite terminale.
 Il prompt deve indicare obiettivo, file interessati, vincoli, documentazione da aggiornare e

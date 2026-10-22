@@ -201,7 +201,7 @@ unsafe impl GarbageCollected for RootSet {
         crate::gc::trace_roots(visitor);
         if let Some(cx) = Runtime::get() {
             // SAFETY: the runtime outlives its collections.
-            crate::realm_impl::trace_realms(unsafe { cx.as_ref() }, visitor);
+            crate::realm_impl::trace_realm_roots(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.
             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
@@ -413,7 +413,9 @@ impl Runtime {
             scripts: Default::default(),
             modules: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
+            saved_realms: RefCell::new(Vec::new()),
             realms: RefCell::new(Vec::new()),
+            realm_sweep: std::cell::Cell::new(0),
         });
         raw.isolate = &mut **isolate as *mut v8::Isolate;
         CURRENT.with(|current| {
@@ -489,6 +491,8 @@ impl Drop for Runtime {
         // Release embedder references while Runtime::get(), realms and the isolate
         // are still live. Module/script private maps must not leak their Rc owners.
         crate::script_impl::release_runtime_privates(&self.raw);
+        // Realm data finalized later (lazily or with the isolate) finds its principals gone.
+        crate::realm_impl::release_realm_principals(&self.raw);
         CURRENT.with(|current| {
             if current.get() == Some(NonNull::from(&*self.raw)) {
                 current.set(None);

@@ -112,11 +112,16 @@ Classic-script metadata now follows V8 source/function reachability; pending imp
 it until resolution. Linux normal/JIT-less browser smoke passes on commit 8442f4998b9; realm/module retention
 and browser GC stress remain open.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
-[agent workflow audit](./docs/AGENT_WORKFLOW.md) records consumption findings and the bounded
-delegation policy. Escaped `import.meta.resolve` functions now own their module metadata and
-owning page, preserving module-relative resolution across garbage collections. Local engine
-and runner tests pass; full compilation and the browser smoke await CI. Realm and module
-registries still retain pages, and no memory or performance improvement has been measured. Source modules that nothing references any more can now be freed with their module data inside the engine; page-level module maps still keep loaded modules, so no memory saving is claimed. Built-in methods and accessors are now freed with the objects that own them instead of living as long as the engine; pages still keep their prototypes, so no memory saving is claimed. A JSON module's parsed value is kept by its module record rather than by a separate permanent engine handle, and the engine no longer keeps JSON modules for the whole session: one nothing references any more is freed with its data once it has run or was never linked (one linked but never run is still kept until the engine shuts down). Page-level module maps still keep loaded modules, so no memory saving is claimed. The prototype an object's immutable-prototype flag fixes is now traced with the object instead of being kept permanently, so an object and a prototype pointing back at it can be freed together; pages still keep their prototypes, so no memory saving is claimed.
+[agent workflow audit](./docs/AGENT_WORKFLOW.md) records the development process.
+Escaped `import.meta.resolve` retains its module metadata across garbage collections.
+Inside the V8 backend, unreachable source modules, evaluated or unlinked JSON modules,
+native functions and immutable prototypes can be collected with their owners. Realm contexts
+now use a weak registry and traced ownership too; current realms, saved nested entries,
+rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
+released once at collection or shutdown. The initial context stays alive, and JSON modules
+linked but never evaluated remain retained. Local lifetime tests pass; full browser validation
+runs in CI. Servo still roots page globals and loaded module maps: page collection and memory
+or performance improvements have not been demonstrated.
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
 maps the Roves-specific code areas, their approximate size, existing library dependencies and

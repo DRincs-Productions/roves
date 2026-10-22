@@ -388,12 +388,11 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
     // SAFETY: embedder job queues come from `CreateJobQueue`.
     let queue = unsafe { &*(queue as *const RustJobQueue) };
     let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
+    // SAFETY: the runtime's live context.
+    let raw = unsafe { &*cx };
     let current = crate::realm_impl::get_context_realm(cx);
-    let embedder_realm = || {
-        // SAFETY: the runtime's live context.
-        let realms = unsafe { &*cx }.realms.borrow();
-        realms.iter().map(|data| &**data as *const crate::realm_impl::RealmData as *mut crate::jsapi::Realm).find(|realm| has_embedder_global(*realm))
-    };
+    // A live realm from the weak registry; entered below before anything allocates.
+    let embedder_realm = || crate::realm_impl::find_live_realm(raw, has_embedder_global);
     let realm = [promise_realm, current]
         .into_iter()
         .find(|realm| !realm.is_null() && has_embedder_global(*realm))
@@ -402,9 +401,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
     if realm.is_null() {
         return;
     }
-    // SAFETY: the runtime's live context.
-    let raw = unsafe { &*cx };
-    raw.set_current_realm(realm);
+    let switch = raw.switch_realm(realm);
     let enqueued = (|| {
         let drain = drain_function(cx)?;
         DRAIN_PENDING.with(|pending| pending.set(true));
@@ -416,7 +413,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
         };
         Some(ok)
     })();
-    raw.set_current_realm(current);
+    drop(switch);
     if enqueued != Some(true) {
         DRAIN_PENDING.with(|pending| pending.set(false));
     }
@@ -560,14 +557,13 @@ fn csp_allows(
     // The check runs in the realm compiling the code.
     // SAFETY: the runtime's live context.
     let raw = unsafe { &*cx };
-    let old = raw.current_realm.get();
-    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
+    let switch = raw.switch_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
     let mut allowed = false;
     // SAFETY: SpiderMonkey's CSP-check contract (rooted strings, valid vectors).
     let ok = unsafe {
         check(cx, kind, code.handle().into(), compilation_type, parameter_handle, body.handle().into(), argument_handle, body_argument.handle().into(), &mut allowed)
     };
-    raw.set_current_realm(old);
+    drop(switch);
     ok && allowed
 }
 
@@ -773,11 +769,10 @@ fn wasm_source_fulfilled(scope: &mut v8::PinScope, args: v8::FunctionCallbackArg
     // The embedder checks the response in the realm compiling it.
     // SAFETY: the runtime's live context.
     let raw = unsafe { &*cx };
-    let old = raw.current_realm.get();
-    raw.set_current_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
+    let switch = raw.switch_realm(crate::realm_impl::realm_of_context(scope.get_current_context()));
     // SAFETY: SpiderMonkey's consume-stream contract (rooted response, live consumer).
     let accepted = unsafe { consume(cx, response.handle().into(), crate::jsapi::MimeType::Wasm, sc) };
-    raw.set_current_realm(old);
+    drop(switch);
     if !accepted {
         let exception = raw.pending_exception.borrow_mut().take().map(|exception| v8::Local::new(scope, exception));
         match exception {

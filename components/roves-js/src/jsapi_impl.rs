@@ -1276,8 +1276,11 @@ pub unsafe fn IsSystemCompartment(_comp: *mut crate::jsapi::Compartment) -> bool
 
 pub unsafe fn JS_IterateCompartments(cx: *mut JSContext, data: *mut c_void, callback: crate::jsapi::JSIterateCompartmentCallback) {
     let Some(callback) = callback else { return };
-    let realms: Vec<*mut c_void> = raw(cx).realms.borrow().iter().map(|realm| &**realm as *const _ as *mut c_void).collect();
-    for realm in realms {
+    // Strong handles for the whole iteration: a callback that allocates (or creates a realm)
+    // cannot collect a realm reported later. Collected realms are not reported.
+    let realms = crate::realm_impl::live_realms(raw(cx));
+    for realm in &realms {
+        let realm = crate::realm_impl::persistent_realm(realm);
         // SAFETY: SpiderMonkey's iteration callback contract.
         if unsafe { callback(cx, data, realm as *mut crate::jsapi::Compartment) } == crate::jsapi::CompartmentIterResult::Stop {
             break;

@@ -99,11 +99,27 @@ impl ScriptMetadata {
         let cache = v8::Script::compile(scope, source, None)?.run(scope)?;
         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
         *self.cache.borrow_mut() = Some(v8::Global::new(scope, cache));
-        let template = v8::ObjectTemplate::new(scope);
-        // A field makes ObjectTemplate instances API wrappers for cppgc.
-        template.set_internal_field_count(1);
-        *self.template.borrow_mut() = Some(v8::Global::new(scope, template));
         Some(())
+    }
+
+    /// A new, empty holder object for `Object::wrap` (script privates and realm data). The
+    /// template is isolate wide, made on first use.
+    pub(crate) fn empty_holder<'s>(&self, scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Object>> {
+        let existing = self.template.borrow().as_ref().map(|template| v8::Local::new(scope, template));
+        let template = match existing {
+            Some(template) => template,
+            None => {
+                let template = v8::ObjectTemplate::new(scope);
+                // A field makes ObjectTemplate instances API wrappers for cppgc.
+                template.set_internal_field_count(1);
+                *self.template.borrow_mut() = Some(v8::Global::new(scope, template));
+                template
+            },
+        };
+        let holder = template.new_instance(scope)?;
+        // This is not a ClassBox; generic JSAPI class inspection must see null.
+        holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
+        Some(holder)
     }
 
     pub(crate) fn register(&self, scope: &mut v8::PinScope, id: i32, token: v8::Local<v8::Symbol>) {
@@ -154,10 +170,7 @@ impl ScriptMetadata {
         scope: &mut v8::PinScope<'s, '_>,
         module: *mut c_void,
     ) -> Option<(v8::Local<'s, v8::Object>, WeakPersistent<PrivateData>)> {
-        let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
-        let holder = template.new_instance(scope)?;
-        // This is not a ClassBox; generic JSAPI class inspection must see null.
-        holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
+        let holder = self.empty_holder(scope)?;
         let heap = scope.get_cpp_heap()?;
         let data = unsafe {
             v8::cppgc::make_garbage_collected(

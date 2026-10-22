@@ -1,3 +1,10 @@
+# Stato corrente: Codex diretto, Claude non attivo
+
+L'utente ha corretto l'informazione sulla quota Codex e autorizzato Codex a continuare senza
+Claude. 0281 è stata completata localmente: leggere il checkpoint corrente in
+docs/V8_MIGRATION.md. Il WIP e il design sotto sono archivio; non riapplicare la patch
+incompleta sui nuovi sorgenti. Le istruzioni seguenti descrivono lo stato precedente.
+
 # Ripresa autonoma per Claude — 22 ottobre 2026
 
 Questo file consente di riprendere senza la chat Codex. Leggere AGENTS.md, questo file e

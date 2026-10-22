@@ -101,6 +101,11 @@ pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> O
     cx.scripts.metadata.initialize(scope)
 }
 
+/// A new, empty `Object::wrap` holder (see `ScriptMetadata::empty_holder`).
+pub(crate) fn empty_holder<'s>(cx: &JSContext, scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Object>> {
+    cx.scripts.metadata.empty_holder(scope)
+}
+
 /// The private of the classic script or source module with V8 id `script_id`.
 pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
     cx.scripts.metadata.private(script_id)
