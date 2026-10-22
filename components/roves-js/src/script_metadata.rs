@@ -6,10 +6,13 @@
 //! with the compiled source; a native WeakMap owns the cppgc metadata only while that token
 //! is reachable. The metadata is found by script id or, from the host options V8 hands to
 //! callbacks, by token. While reachable it traces its private's native edges through the
-//! embedder's trace hook (see `ScriptPrivateTraceHook`).
+//! embedder's trace hook (see `ScriptPrivateTraceHook`). A source module's metadata also
+//! keeps the module's record (see `modules_impl`), so the record lives exactly as long as
+//! something reaches the source's token or the record itself.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
+use std::ffi::c_void;
 
 use v8::cppgc::{GarbageCollected, Visitor, WeakPersistent};
 
@@ -22,6 +25,8 @@ const SWEEP_MIN: usize = 256;
 
 struct PrivateData {
     private: Cell<HostPrivate>,
+    /// A source module's record (cell), fixed at creation; null for classic scripts.
+    module: *mut c_void,
 }
 
 impl PrivateData {
@@ -39,6 +44,7 @@ impl PrivateData {
 unsafe impl GarbageCollected for PrivateData {
     fn trace(&self, visitor: &mut Visitor) {
         self.private.get().trace(visitor);
+        crate::cell::trace_cell(self.module, visitor);
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -118,28 +124,16 @@ impl ScriptMetadata {
         Some(unsafe { data.as_ref() }.private.get().value())
     }
 
-    pub(crate) fn set(
-        &self,
-        cx: &JSContext,
-        scope: &mut v8::PinScope,
-        id: i32,
-        value: JSVal,
-    ) -> Option<()> {
+    fn existing(&self, id: i32) -> Option<*const PrivateData> {
+        let entries = self.entries.borrow();
+        entries.get(&id)?.data.as_ref()?.get().map(|data| data as *const PrivateData)
+    }
+
+    /// Creates source `id`'s metadata (keeping `module`, if any), owned by a holder that the
+    /// captured WeakMap keeps under the source's token.
+    fn create(&self, scope: &mut v8::PinScope, id: i32, module: *mut c_void) -> Option<*const PrivateData> {
         let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
-        let existing = self
-            .entries
-            .borrow()
-            .get(&id)?
-            .data
-            .as_ref()
-            .and_then(|data| data.get())
-            .map(|data| data as *const PrivateData);
-        if existing.is_none() && value.is_undefined() {
-            return Some(());
-        }
-        let data = if let Some(data) = existing {
-            data
-        } else {
+        {
             let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
             let holder = template.new_instance(scope)?;
             // This is not a ClassBox; generic JSAPI class inspection must see null.
@@ -148,7 +142,7 @@ impl ScriptMetadata {
             let data = unsafe {
                 v8::cppgc::make_garbage_collected(
                     heap,
-                    PrivateData { private: Cell::new(HostPrivate::NONE) },
+                    PrivateData { private: Cell::new(HostPrivate::NONE), module },
                 )
             };
             // Unique tag; the local holder owns the cppgc object before another allocation.
@@ -158,12 +152,33 @@ impl ScriptMetadata {
             let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
             set.call(scope, map, &[token.into(), holder.into()])?;
             self.entries.borrow_mut().get_mut(&id)?.data = Some(WeakPersistent::new(&data));
-            (unsafe { data.as_ref() }) as *const PrivateData
+            Some((unsafe { data.as_ref() }) as *const PrivateData)
+        }
+    }
+
+    pub(crate) fn set(
+        &self,
+        cx: &JSContext,
+        scope: &mut v8::PinScope,
+        id: i32,
+        value: JSVal,
+    ) -> Option<()> {
+        let data = match self.existing(id) {
+            Some(data) => data,
+            None if value.is_undefined() => return Some(()),
+            None => self.create(scope, id, std::ptr::null_mut())?,
         };
         // The script/token and WeakMap keep this data alive. Reference hooks cannot GC;
         // call them outside the index borrow and retain before releasing identical data.
         unsafe { &*data }.replace(HostPrivate::retain(cx, value));
         Some(())
+    }
+
+    /// Hands a new source module's record to its source's metadata, created now (a new
+    /// source has none yet) even without a private.
+    pub(crate) fn anchor_module(&self, scope: &mut v8::PinScope, id: i32, record: *mut c_void) -> Option<()> {
+        debug_assert!(self.existing(id).is_none(), "a new source has no metadata yet");
+        self.create(scope, id, record).map(drop)
     }
 
     pub(crate) fn release_all(&self) {

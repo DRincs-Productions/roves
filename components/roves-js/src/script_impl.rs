@@ -116,6 +116,11 @@ pub(crate) fn register_source(scope: &mut v8::PinScope, script_id: i32, token: v
     JSContext::current().scripts.metadata.register(scope, script_id, token);
 }
 
+/// Anchors a new source module's record under its source's token (see `script_metadata`).
+pub(crate) fn anchor_source_module(scope: &mut v8::PinScope, script_id: i32, record: *mut std::ffi::c_void) -> Option<()> {
+    JSContext::current().scripts.metadata.anchor_module(scope, script_id, record)
+}
+
 /// The host token in a source's host options (none for sources compiled without one).
 pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
     if !options.is_fixed_array() {

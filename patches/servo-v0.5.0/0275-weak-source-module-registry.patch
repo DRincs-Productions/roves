@@ -1,0 +1,570 @@
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 068ea6d476a..8c00a5b785f 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -7,8 +7,13 @@
+ //! - A module record (`*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
+ //!   the V8 `Module`. The runtime keeps an entry per module (its cell and, for JSON modules,
+ //!   the parsed value and private), found from a V8 module by identity hash. Identity hashes
+-//!   can collide: they only select a bucket, whose member is matched by module. Entries live
+-//!   as long as the runtime.
++//!   can collide: they only select a bucket, whose member is matched by module.
++//! - A source module's entry is weak: its source metadata keeps the record while the source's
++//!   host token is reachable (from the record, the V8 module graph, the module's functions or
++//!   namespace, or a pending import), so token -> metadata -> record -> token collects as a
++//!   cycle once nothing else reaches it. A JSON module has no V8 source to anchor it: its
++//!   entry keeps the record for the runtime's lifetime. Dead entries are swept as insertions
++//!   amortize.
+ //! - A source module's private is source metadata, as a classic script's (see
+ //!   `script_metadata`): kept by the script id recorded at compilation and by the source's
+ //!   host token. The placeholder pins the token too: the V8 API no longer reports an errored
+@@ -34,10 +39,35 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
+ }
+ 
+ struct ModuleEntry {
+-    cell: *mut c_void,
++    cell: EntryCell,
+     kind: ModuleKind,
+ }
+ 
++enum EntryCell {
++    /// JSON modules, and source modules until their metadata keeps them.
++    Strong(*mut c_void),
++    Weak(crate::cell::WeakCell),
++}
++
++impl ModuleEntry {
++    /// The record, unless it was collected.
++    fn cell(&self) -> Option<*mut c_void> {
++        match &self.cell {
++            EntryCell::Strong(cell) => Some(*cell),
++            EntryCell::Weak(cell) => cell.get(),
++        }
++    }
++}
++
++const SWEEP_MIN: usize = 256;
++
++#[cfg(test)]
++thread_local! {
++    /// Negative fixtures: keep source records strong, or skip their metadata's record edge.
++    pub(crate) static STRONG_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    pub(crate) static UNANCHORED_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++
+ enum ModuleKind {
+     /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
+     Source { script_id: i32 },
+@@ -52,16 +82,20 @@ pub(crate) struct Modules {
+     resolve_hook: std::cell::Cell<ModuleResolveHook>,
+     dynamic_import_hook: std::cell::Cell<ModuleDynamicImportHook>,
+     metadata_hook: std::cell::Cell<ModuleMetadataHook>,
++    inserted: std::cell::Cell<usize>,
++    next_sweep: std::cell::Cell<usize>,
+ }
+ 
+-/// Keeps the modules alive, with JSON privates; a source module's placeholder pins its
+-/// host token, which keeps its metadata.
++/// Keeps JSON modules alive, with their privates, and source modules not yet anchored to
++/// their metadata (see `CompileModule1`).
+ pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     let mut privates = Vec::new();
+     {
+         let Ok(entries) = cx.modules.entries.try_borrow() else { return };
+         for entry in entries.values().flatten() {
+-            crate::cell::trace_cell(entry.cell, visitor);
++            if let EntryCell::Strong(cell) = &entry.cell {
++                crate::cell::trace_cell(*cell, visitor);
++            }
+             match &entry.kind {
+                 ModuleKind::Json { private, .. } if !private.value().is_undefined() => privates.push(*private),
+                 _ => {},
+@@ -80,14 +114,70 @@ fn module_of<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut JSObject) -> Opt
+     unsafe { crate::cell::cell_module(scope, record as *mut c_void) }
+ }
+ 
+-/// The record (cell) of a newly compiled V8 module, registered with its kind.
++/// The record (cell) of a newly compiled V8 module, registered (strongly) with its kind.
+ fn new_record(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, kind: ModuleKind) -> *mut JSObject {
+     let cell = crate::cell::new_module_cell(scope, module);
+     let hash = module.get_identity_hash().get();
+-    JSContext::current().modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, kind });
++    let modules = &JSContext::current().modules;
++    let mut entries = modules.entries.borrow_mut();
++    entries.entry(hash).or_default().push(ModuleEntry { cell: EntryCell::Strong(cell), kind });
++    // Drop the entries of collected records now and then, after a number of insertions
++    // proportional to what survived the last sweep (as interned cells do).
++    let inserted = modules.inserted.get() + 1;
++    modules.inserted.set(inserted);
++    if inserted >= modules.next_sweep.get().max(SWEEP_MIN) {
++        entries.retain(|_, bucket| {
++            bucket.retain(|entry| entry.cell().is_some());
++            !bucket.is_empty()
++        });
++        modules.inserted.set(0);
++        modules.next_sweep.set(entries.len());
++    }
+     cell as *mut JSObject
+ }
+ 
++/// Ties a new source module's record to its source: the placeholder pins the host token
++/// whatever V8 keeps once the module errors, and the source metadata (owned through the
++/// token) keeps the record.
++fn anchor_record(scope: &mut v8::PinScope, record: *mut JSObject, script_id: i32, token: v8::Local<v8::Symbol>) -> Option<()> {
++    // SAFETY: the record is a new module cell, kept by its strong entry.
++    let placeholder = unsafe { crate::cell::cell_value(scope, record as *mut c_void) };
++    let placeholder = v8::Local::<v8::Object>::try_from(placeholder).ok()?;
++    let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
++    placeholder.set_private(scope, key, token.into())?;
++    #[cfg(test)]
++    if UNANCHORED_SOURCES_FOR_TESTING.with(std::cell::Cell::get) {
++        return Some(());
++    }
++    crate::script_impl::anchor_source_module(scope, script_id, record as *mut c_void)
++}
++
++/// Stops the entry of an anchored source record from keeping it.
++fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
++    #[cfg(test)]
++    if STRONG_SOURCES_FOR_TESTING.with(std::cell::Cell::get) {
++        return;
++    }
++    let hash = module.get_identity_hash().get();
++    let mut entries = JSContext::current().modules.entries.borrow_mut();
++    let entry = entries
++        .get_mut(&hash)
++        .and_then(|bucket| bucket.iter_mut().find(|entry| matches!(entry.cell, EntryCell::Strong(cell) if cell == record)));
++    if let Some(entry) = entry {
++        let weak = crate::cell::WeakCell::default();
++        weak.set(record);
++        entry.cell = EntryCell::Weak(weak);
++    }
++}
++
++/// Test-only: (live source records, registered entries).
++#[cfg(test)]
++pub(crate) fn source_records_for_testing() -> (usize, usize) {
++    let entries = JSContext::current().modules.entries.borrow();
++    let live = entries.values().flatten().filter(|entry| matches!(entry.kind, ModuleKind::Source { .. }) && entry.cell().is_some()).count();
++    (live, entries.values().map(Vec::len).sum())
++}
++
+ /// Test-only: files `moved`'s entry first in `target`'s identity-hash bucket, as a native
+ /// hash collision would. Hash-based lookups of `moved` (`with_entry`) no longer find it.
+ /// Returns the size of the shared bucket.
+@@ -98,7 +188,7 @@ pub(crate) fn collide_for_testing(scope: &mut v8::PinScope, target: *mut JSObjec
+     let moved_hash = module_of(scope, moved).expect("a module record").get_identity_hash().get();
+     let mut entries = cx.modules.entries.borrow_mut();
+     let bucket = entries.get_mut(&moved_hash).expect("a registered module");
+-    let index = bucket.iter().position(|entry| entry.cell == moved as *mut c_void).expect("a registered module");
++    let index = bucket.iter().position(|entry| entry.cell() == Some(moved as *mut c_void)).expect("a registered module");
+     let entry = bucket.remove(index);
+     let bucket = entries.entry(target_hash).or_default();
+     bucket.insert(0, entry);
+@@ -110,8 +200,8 @@ fn with_entry<R>(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, f: imp
+     let hash = module.get_identity_hash().get();
+     let mut entries = cx.modules.entries.borrow_mut();
+     let entry = entries.get_mut(&hash)?.iter_mut().find(|entry| {
+-        // SAFETY: as above.
+-        unsafe { crate::cell::cell_module(scope, entry.cell) }.is_some_and(|known| known == module)
++        // SAFETY: a strong entry's record is alive; a weak one's is checked.
++        entry.cell().is_some_and(|cell| unsafe { crate::cell::cell_module(scope, cell) }.is_some_and(|known| known == module))
+     })?;
+     Some(f(entry))
+ }
+@@ -138,14 +228,11 @@ pub unsafe fn CompileModule1(cx: *mut JSContext, options: *const ReadOnlyCompile
+             let module = v8::script_compiler::compile_module(scope, &mut source)?;
+             let script_id = module.script_id()?;
+             crate::script_impl::register_source(scope, script_id, token);
++            // The strong entry keeps the record across the allocations of its anchoring.
+             let record = new_record(scope, module, ModuleKind::Source { script_id });
+-            // The record keeps the token (and so the metadata) whatever V8 keeps once the
+-            // module errors.
+-            // SAFETY: the record is a new module cell.
+-            let placeholder = unsafe { crate::cell::cell_value(scope, record as *mut c_void) };
+-            let placeholder = v8::Local::<v8::Object>::try_from(placeholder).ok()?;
+-            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+-            placeholder.set_private(scope, key, token.into())?;
++            let anchored = anchor_record(scope, record, script_id, token);
++            weaken(module, record as *mut c_void);
++            anchored?;
+             Some(record)
+         })
+         .unwrap_or(std::ptr::null_mut())
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 3d6d4a4831e..29c2ee09b7b 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -116,6 +116,11 @@ pub(crate) fn register_source(scope: &mut v8::PinScope, script_id: i32, token: v
+     JSContext::current().scripts.metadata.register(scope, script_id, token);
+ }
+ 
++/// Anchors a new source module's record under its source's token (see `script_metadata`).
++pub(crate) fn anchor_source_module(scope: &mut v8::PinScope, script_id: i32, record: *mut std::ffi::c_void) -> Option<()> {
++    JSContext::current().scripts.metadata.anchor_module(scope, script_id, record)
++}
++
+ /// The host token in a source's host options (none for sources compiled without one).
+ pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
+     if !options.is_fixed_array() {
+diff --git a/components/roves-js/src/script_metadata.rs b/components/roves-js/src/script_metadata.rs
+index 68817c38979..a5ff82d9b16 100644
+--- a/components/roves-js/src/script_metadata.rs
++++ b/components/roves-js/src/script_metadata.rs
+@@ -6,10 +6,13 @@
+ //! with the compiled source; a native WeakMap owns the cppgc metadata only while that token
+ //! is reachable. The metadata is found by script id or, from the host options V8 hands to
+ //! callbacks, by token. While reachable it traces its private's native edges through the
+-//! embedder's trace hook (see `ScriptPrivateTraceHook`).
++//! embedder's trace hook (see `ScriptPrivateTraceHook`). A source module's metadata also
++//! keeps the module's record (see `modules_impl`), so the record lives exactly as long as
++//! something reaches the source's token or the record itself.
+ 
+ use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
++use std::ffi::c_void;
+ 
+ use v8::cppgc::{GarbageCollected, Visitor, WeakPersistent};
+ 
+@@ -22,6 +25,8 @@ const SWEEP_MIN: usize = 256;
+ 
+ struct PrivateData {
+     private: Cell<HostPrivate>,
++    /// A source module's record (cell), fixed at creation; null for classic scripts.
++    module: *mut c_void,
+ }
+ 
+ impl PrivateData {
+@@ -39,6 +44,7 @@ impl PrivateData {
+ unsafe impl GarbageCollected for PrivateData {
+     fn trace(&self, visitor: &mut Visitor) {
+         self.private.get().trace(visitor);
++        crate::cell::trace_cell(self.module, visitor);
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+@@ -118,28 +124,16 @@ impl ScriptMetadata {
+         Some(unsafe { data.as_ref() }.private.get().value())
+     }
+ 
+-    pub(crate) fn set(
+-        &self,
+-        cx: &JSContext,
+-        scope: &mut v8::PinScope,
+-        id: i32,
+-        value: JSVal,
+-    ) -> Option<()> {
++    fn existing(&self, id: i32) -> Option<*const PrivateData> {
++        let entries = self.entries.borrow();
++        entries.get(&id)?.data.as_ref()?.get().map(|data| data as *const PrivateData)
++    }
++
++    /// Creates source `id`'s metadata (keeping `module`, if any), owned by a holder that the
++    /// captured WeakMap keeps under the source's token.
++    fn create(&self, scope: &mut v8::PinScope, id: i32, module: *mut c_void) -> Option<*const PrivateData> {
+         let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
+-        let existing = self
+-            .entries
+-            .borrow()
+-            .get(&id)?
+-            .data
+-            .as_ref()
+-            .and_then(|data| data.get())
+-            .map(|data| data as *const PrivateData);
+-        if existing.is_none() && value.is_undefined() {
+-            return Some(());
+-        }
+-        let data = if let Some(data) = existing {
+-            data
+-        } else {
++        {
+             let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
+             let holder = template.new_instance(scope)?;
+             // This is not a ClassBox; generic JSAPI class inspection must see null.
+@@ -148,7 +142,7 @@ impl ScriptMetadata {
+             let data = unsafe {
+                 v8::cppgc::make_garbage_collected(
+                     heap,
+-                    PrivateData { private: Cell::new(HostPrivate::NONE) },
++                    PrivateData { private: Cell::new(HostPrivate::NONE), module },
+                 )
+             };
+             // Unique tag; the local holder owns the cppgc object before another allocation.
+@@ -158,7 +152,21 @@ impl ScriptMetadata {
+             let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
+             set.call(scope, map, &[token.into(), holder.into()])?;
+             self.entries.borrow_mut().get_mut(&id)?.data = Some(WeakPersistent::new(&data));
+-            (unsafe { data.as_ref() }) as *const PrivateData
++            Some((unsafe { data.as_ref() }) as *const PrivateData)
++        }
++    }
++
++    pub(crate) fn set(
++        &self,
++        cx: &JSContext,
++        scope: &mut v8::PinScope,
++        id: i32,
++        value: JSVal,
++    ) -> Option<()> {
++        let data = match self.existing(id) {
++            Some(data) => data,
++            None if value.is_undefined() => return Some(()),
++            None => self.create(scope, id, std::ptr::null_mut())?,
+         };
+         // The script/token and WeakMap keep this data alive. Reference hooks cannot GC;
+         // call them outside the index borrow and retain before releasing identical data.
+@@ -166,6 +174,13 @@ impl ScriptMetadata {
+         Some(())
+     }
+ 
++    /// Hands a new source module's record to its source's metadata, created now (a new
++    /// source has none yet) even without a private.
++    pub(crate) fn anchor_module(&self, scope: &mut v8::PinScope, id: i32, record: *mut c_void) -> Option<()> {
++        debug_assert!(self.existing(id).is_none(), "a new source has no metadata yet");
++        self.create(scope, id, record).map(drop)
++    }
++
+     pub(crate) fn release_all(&self) {
+         let entries = std::mem::take(&mut *self.entries.borrow_mut());
+         for entry in entries.into_values() {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index a3ca870b1a1..ed6ac89ff08 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2586,6 +2586,236 @@ mod traced_privates {
+         assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+     }
+ 
++    thread_local! {
++        /// Source module records by specifier, and the importer private of the last import.
++        static RECORDS: RefCell<HashMap<std::string::String, usize>> = RefCell::new(HashMap::new());
++        static IMPORTER: Cell<Option<JSVal>> = const { Cell::new(None) };
++    }
++
++    unsafe extern "C" fn resolve_source(cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>) -> *mut JSObject {
++        let string = unsafe { GetModuleRequestSpecifier(cx, request) };
++        let safe = unsafe { crate::context::JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
++        let name = unsafe { crate::conversions::jsstr_to_string(&safe, ptr::NonNull::new(string).unwrap()) };
++        RECORDS.with(|records| records.borrow().get(&name).copied()).map_or(ptr::null_mut(), |record| record as *mut JSObject)
++    }
++
++    unsafe extern "C" fn note_importer(_cx: *mut JSContext, private: Handle<JSVal>, _request: Handle<*mut JSObject>, _promise: Handle<*mut JSObject>) -> bool {
++        IMPORTER.with(|importer| importer.set(Some(private.get())));
++        true
++    }
++
++    /// A runtime with module hooks and, when `hooks`, the native private hooks above.
++    fn source_runtime(hooks: bool) -> Runtime {
++        reset();
++        RECORDS.with(|records| records.borrow_mut().clear());
++        IMPORTER.with(|importer| importer.set(None));
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        unsafe {
++            if hooks {
++                SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
++                SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
++            }
++            SetModuleResolveHook(runtime.rt(), Some(resolve_source));
++            SetModuleDynamicImportHook(runtime.rt(), Some(note_importer));
++        }
++        runtime
++    }
++
++    /// Compiles a source module; its record is not rooted.
++    fn compile_source(runtime: &Runtime, name: &str, source: &str) -> *mut JSObject {
++        let cx = runtime.raw_cx();
++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
++        let mut text = transform_str_to_source_text(source);
++        let record = unsafe { CompileModule1(cx, options.ptr, &mut text) };
++        assert!(!record.is_null(), "{name} compiles");
++        RECORDS.with(|records| records.borrow_mut().insert(name.to_owned(), record as usize));
++        record
++    }
++
++    /// Links and evaluates `record` (rooted by the caller); publishes its namespace as `ns`.
++    fn evaluate_into_ns(runtime: &Runtime, record: *mut JSObject) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let record = record);
++        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
++        rooted!(in(cx) let mut evaluation = UndefinedValue());
++        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
++        unsafe { RunJobs(cx) };
++        rooted!(in(cx) let namespace = ObjectValue(unsafe { GetModuleNamespace(cx, record.handle().into()) }));
++        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"ns".as_ptr(), namespace.handle().into_handle()) });
++    }
++
++    fn live_sources() -> usize {
++        crate::modules_impl::source_records_for_testing().0
++    }
++
++    fn read_private(runtime: &Runtime, record: *mut JSObject) -> JSVal {
++        rooted!(in(runtime.raw_cx()) let mut read = UndefinedValue());
++        unsafe { crate::glue::JS_GetModulePrivate(record, read.handle_mut().into()) };
++        read.get()
++    }
++
++    /// The importer private the dynamic import hook sees for `call`.
++    fn importer_of(runtime: &Runtime, call: &str) -> JSVal {
++        IMPORTER.with(|importer| importer.set(None));
++        eval(runtime, call);
++        IMPORTER.with(Cell::get).expect("the dynamic import hook ran")
++    }
++
++    #[test]
++    fn source_module_records_live_with_their_graph_and_collect_with_their_private() {
++        let mut runtime = source_runtime(true);
++        let cx = runtime.raw_cx();
++        let weak = {
++            rooted!(in(cx) let dep = compile_source(&runtime, "dep.js", "export const answer = 40;"));
++            rooted!(in(cx) let main = compile_source(&runtime, "main.js",
++                "import { answer } from 'dep.js';\nexport function owned() { return answer + 2; }\nexport function later() { return import('dep.js'); }"));
++            evaluate_into_ns(&runtime, main.get());
++            // The private owns an object holding `owned`: owner -> function -> source -> private.
++            let owner = new_owner(&runtime, 1, Some("ns.owned"));
++            unsafe { SetModulePrivate(main.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            assert!(!dep.get().is_null());
++            Rc::downgrade(&owner)
++        };
++        RECORDS.with(|records| records.borrow_mut().clear());
++        collect(&mut runtime);
++        assert_eq!(live_sources(), 2, "the namespace keeps its record, its static graph the dependency's");
++        assert!(owners_finalized().is_empty());
++        assert_eq!(marker(&runtime, &weak), "owner 1");
++        assert_eq!(importer_of(&runtime, "ns.later()"), private_of(Some(&weak)), "dynamic import after GC sees the private");
++        eval(&runtime, "globalThis.later = ns.later; delete globalThis.ns;");
++        collect(&mut runtime);
++        assert_eq!(live_sources(), 2, "exported functions keep their module");
++        assert_eq!(importer_of(&runtime, "globalThis.pending = later()"), private_of(Some(&weak)));
++        eval(&runtime, "delete globalThis.later;");
++        collect(&mut runtime);
++        assert_eq!(live_sources(), 2, "a pending import keeps its importer");
++        assert!(weak.upgrade().is_some());
++        eval(&runtime, "delete globalThis.pending;");
++        IMPORTER.with(|importer| importer.set(None));
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none(), "the unreachable source module releases its private");
++        assert_eq!(count(&RELEASES), 1);
++        assert_eq!(owners_finalized(), vec![1], "the record/source/private/owner cycle collects");
++        assert_eq!(live_sources(), 0, "both records collect");
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![1], "the owner is finalized once");
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "no release at shutdown after the GC one");
++        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
++    }
++
++    #[test]
++    fn rooted_errored_source_record_survives_collection_without_a_private() {
++        let mut runtime = source_runtime(true);
++        let cx = runtime.raw_cx();
++        let weak = {
++            rooted!(in(cx) let record = compile_source(&runtime, "errored.js", "export {}; throw new Error('boom');"));
++            assert!(unsafe { ModuleLink(cx, record.handle().into()) });
++            {
++                rooted!(in(cx) let mut evaluation = UndefinedValue());
++                assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
++                unsafe { RunJobs(cx) };
++                rooted!(in(cx) let promise = evaluation.get().to_object());
++                assert!(!unsafe { ThrowOnModuleEvaluationFailure(cx, promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) });
++                unsafe { JS_ClearPendingException(cx) };
++            }
++            RECORDS.with(|records| records.borrow_mut().clear());
++            collect(&mut runtime);
++            assert_eq!(live_sources(), 1, "a rooted errored record outlives collections without a private");
++            assert!(read_private(&runtime, record.get()).is_undefined());
++            let owner = new_owner(&runtime, 3, None);
++            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            let weak = Rc::downgrade(&owner);
++            drop(owner);
++            collect(&mut runtime);
++            assert_eq!(read_private(&runtime, record.get()), private_of(Some(&weak)), "the errored record keeps its script id and metadata");
++            assert!(unsafe { IsCyclicModule(record.get()) });
++            weak
++        };
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none(), "the unrooted record releases its private");
++        assert_eq!(live_sources(), 0);
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
++    }
++
++    #[test]
++    fn weak_source_index_sweeps_collected_records_as_insertions_amortize() {
++        let mut runtime = source_runtime(false);
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let kept = compile_source(&runtime, "kept.js", "export default 1;"));
++        unsafe { SetModulePrivate(kept.get(), &Int32Value(5)) };
++        for round in 0..2 {
++            for index in 0..300 {
++                compile_source(&runtime, &format!("dead-{round}-{index}.js"), "export default 0;");
++            }
++            RECORDS.with(|records| records.borrow_mut().clear());
++            collect(&mut runtime);
++        }
++        let (live, entries) = crate::modules_impl::source_records_for_testing();
++        assert_eq!(live, 1, "only the rooted record survives");
++        // 601 registrations; a sweep at the 256th insertion of the second round dropped the
++        // first round's dead entries.
++        assert!(entries <= 301, "collected records are swept ({entries} entries left)");
++        assert_eq!(read_private(&runtime, kept.get()).to_int32(), 5, "the survivor is still found");
++    }
++
++    /// One module whose private owns (through `ns.owned`) an object holding its function.
++    /// Returns the private and the live source records once only the namespace keeps the
++    /// module, then once nothing does.
++    fn namespace_lifetime(runtime: &mut Runtime) -> (Weak<NativeOwner>, usize, usize) {
++        let cx = runtime.raw_cx();
++        let weak = {
++            rooted!(in(cx) let record = compile_source(runtime, "lone.js", "export function owned() { return 1; }"));
++            evaluate_into_ns(runtime, record.get());
++            let owner = new_owner(runtime, 9, Some("ns.owned"));
++            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            Rc::downgrade(&owner)
++        };
++        RECORDS.with(|records| records.borrow_mut().clear());
++        collect(runtime);
++        let with_namespace = live_sources();
++        eval(runtime, "delete globalThis.ns;");
++        collect(runtime);
++        (weak, with_namespace, live_sources())
++    }
++
++    #[test]
++    fn negative_fixtures_detect_strong_source_roots_and_missing_record_edges() {
++        use crate::modules_impl::{STRONG_SOURCES_FOR_TESTING as STRONG, UNANCHORED_SOURCES_FOR_TESTING as UNANCHORED};
++        {
++            let mut runtime = source_runtime(true);
++            let (weak, with_namespace, after) = namespace_lifetime(&mut runtime);
++            assert_eq!((with_namespace, after), (1, 0), "control: the namespace keeps the record, then it collects");
++            assert!(weak.upgrade().is_none());
++        }
++        // The pre-0275 strong source root: the record and its private never collect.
++        STRONG.with(|flag| flag.set(true));
++        {
++            let mut runtime = source_runtime(true);
++            let (weak, with_namespace, after) = namespace_lifetime(&mut runtime);
++            STRONG.with(|flag| flag.set(false));
++            assert_eq!((with_namespace, after), (1, 1), "a strong root keeps the unreachable record");
++            assert!(weak.upgrade().is_some(), "and its private, until shutdown");
++            drop(runtime);
++            assert!(weak.upgrade().is_none());
++        }
++        // Without the metadata's record edge the record dies while its module still lives.
++        UNANCHORED.with(|flag| flag.set(true));
++        {
++            let mut runtime = source_runtime(true);
++            let (weak, with_namespace, _) = namespace_lifetime(&mut runtime);
++            UNANCHORED.with(|flag| flag.set(false));
++            assert_eq!(with_namespace, 0, "a missing record edge loses a record whose namespace is live");
++            assert!(weak.upgrade().is_none());
++            drop(runtime);
++        }
++        assert_eq!(count(&RETAINS), count(&RELEASES));
++    }
++
+     thread_local! {
+         /// Scratch switches for the negative holder fixtures.
+         static HOLDER_RETAINS: Cell<bool> = const { Cell::new(true) };

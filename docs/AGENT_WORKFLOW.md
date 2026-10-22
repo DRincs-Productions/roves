@@ -118,3 +118,13 @@ rieseguire i test già dimostrati. Il replay di 57 patch e il dry-run/apply 0274
 frontend e browser reale restano responsabilità della CI. Il limite cumulativo è rispettato.
 L'utente ha autorizzato il ciclo con nuovi incarichi circoscritti; questo non autorizza
 rilanci illimitati di un incarico incompleto o tentativi dopo un limite di quota.
+
+### Incarico 0275: registro debole dei moduli sorgente
+
+21 tool_use univoci, 22 turni; modello invariato claude-opus-5-5. Contesto iniziale 46.535 token;
+44 input nuovi, 130.679 cache creati, 2.262.903 cache letti, 56.063 output (31.020 thinking).
+Costo indicativo 2,6194486 USD. Fonte: record finale target/claude-0275-weak-source-registry.log.
+Il compito è completo localmente entro 25 chiamate: 71 test normali/70 JIT-less passati,
+negativi mirati e replay di 48 patch precedenti più 0275. Codex ha confrontato i quattro file
+ricostruiti e la copia runtime con i sorgenti, senza ripetere i test. JSON e realm restano forti:
+non è un risultato sulla memoria delle pagine. Nessuna percentuale di risparmio attribuita.

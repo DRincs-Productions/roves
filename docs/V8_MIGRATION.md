@@ -8,7 +8,32 @@
 automazione periodica; il ciclo autorizza nuovi incarichi circoscritti; solo un
 incarico incompleto oltre soglia richiede una nuova decisione esplicita sul budget. Regole in AGENTS.md; [calibrazione](AGENT_WORKFLOW.md).
 
-**0274 completo in locale, non ancora pubblicato:** WIP riapplicato senza modifiche in tests.rs e
+**Baseline attuale (22 ottobre):** HEAD pubblicato d434323c76c con 0274 completa; batch
+precedente a538387b86e tutto verde. CI in corso su d434323c76c: V8 39790271552, generale
+39790271422, Android 39790271798, iOS 39790271386; nessun push finché non sono concluse
+(Codex gestisce la CI). L'intestazione 0274 sotto descrive lo stato prima del push.
+
+**0275 (completa in locale, non pubblicata):** record dei moduli sorgente raccoglibili. Il
+`PrivateData` cppgc dei metadati sorgente (holder nella WeakMap catturata, sotto il token host)
+traccia anche la cella del record; `CompileModule1` crea sempre i metadati del modulo sorgente
+(anche con private undefined) e solo dopo rende debole (`WeakCell`) la voce della tabella
+`Modules`, che fino ad allora tiene il record durante le allocazioni. Il placeholder fissa
+ancora il token: token→holder→metadati→record→modulo V8→token è un ciclo raccolto quando nessun
+record radicato, namespace, funzione esportata, grafo statico o import dinamico pendente lo
+raggiunge; il private nativo è rilasciato una volta dal finalizzatore, prima della distruzione
+del runtime. `trace_modules` traccia solo le voci forti (JSON e moduli non ancora ancorati) e i
+private JSON come prima; pulizia delle voci morte ammortizzata sulle inserzioni (schema delle
+celle internate). JSON resta forte (nessun token V8); registri realm/globali e module map di
+Servo trattengono ancora i record: nessuna raccolta a livello pagina né risparmio RAM, nulla
+misurato. Costo: un holder cppgc per modulo sorgente anche senza private. Test roves-js normal
+71/2 ignorati, JIT-less 70/3, warning 772 invariati
+(`target/v8-incumbent-audit/task-0275-{full,jitless}.log`); negativi scratch
+(`task-0275-negative.log`): radice forte → 3 test falliti, edge del record mancante → 1. Copia
+testata identica ai sorgenti; replay di 48 patch precedenti identico a HEAD e 0275 applicata
+identica all'albero (`target/task-0275/replay.log`, scratch `%TEMP%/roves-0275-replay-cHil`).
+Nessuna modifica a fixture browser, CLI, workflow o pin. Incarico Claude: 21 chiamate su 25.
+
+**0274 (pubblicata in d434323c76c, CI browser pendente):** WIP riapplicato senza modifiche in tests.rs e
 script_module.rs; patch `patches/servo-v0.5.0/0274-owned-import-meta-resolve.patch` (sei file:
 i due sorgenti e la fixture browser in support/v8-smoke). L'holder JSClass nascosto possiede un
 `Rc<ModuleScript>`, ne traccia l'owner DOM, azzera lo slot prima del rilascio e non nasce con

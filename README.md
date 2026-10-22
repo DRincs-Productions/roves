@@ -113,7 +113,7 @@ Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
 delegation policy. Escaped `import.meta.resolve` functions now own their module metadata and
 owning page, preserving module-relative resolution across garbage collections. Local engine
 and runner tests pass; full compilation and the browser smoke await CI. Realm and module
-registries still retain pages, and no memory or performance improvement has been measured.
+registries still retain pages, and no memory or performance improvement has been measured. Source modules that nothing references any more can now be freed with their module data inside the engine (JSON modules excepted); page-level module maps still keep loaded modules, so no memory saving is claimed.
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
 maps the Roves-specific code areas, their approximate size, existing library dependencies and

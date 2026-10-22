@@ -2587,6 +2587,236 @@ mod traced_privates {
     }
 
     thread_local! {
+        /// Source module records by specifier, and the importer private of the last import.
+        static RECORDS: RefCell<HashMap<std::string::String, usize>> = RefCell::new(HashMap::new());
+        static IMPORTER: Cell<Option<JSVal>> = const { Cell::new(None) };
+    }
+
+    unsafe extern "C" fn resolve_source(cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>) -> *mut JSObject {
+        let string = unsafe { GetModuleRequestSpecifier(cx, request) };
+        let safe = unsafe { crate::context::JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
+        let name = unsafe { crate::conversions::jsstr_to_string(&safe, ptr::NonNull::new(string).unwrap()) };
+        RECORDS.with(|records| records.borrow().get(&name).copied()).map_or(ptr::null_mut(), |record| record as *mut JSObject)
+    }
+
+    unsafe extern "C" fn note_importer(_cx: *mut JSContext, private: Handle<JSVal>, _request: Handle<*mut JSObject>, _promise: Handle<*mut JSObject>) -> bool {
+        IMPORTER.with(|importer| importer.set(Some(private.get())));
+        true
+    }
+
+    /// A runtime with module hooks and, when `hooks`, the native private hooks above.
+    fn source_runtime(hooks: bool) -> Runtime {
+        reset();
+        RECORDS.with(|records| records.borrow_mut().clear());
+        IMPORTER.with(|importer| importer.set(None));
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        unsafe {
+            if hooks {
+                SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
+                SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
+            }
+            SetModuleResolveHook(runtime.rt(), Some(resolve_source));
+            SetModuleDynamicImportHook(runtime.rt(), Some(note_importer));
+        }
+        runtime
+    }
+
+    /// Compiles a source module; its record is not rooted.
+    fn compile_source(runtime: &Runtime, name: &str, source: &str) -> *mut JSObject {
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
+        let mut text = transform_str_to_source_text(source);
+        let record = unsafe { CompileModule1(cx, options.ptr, &mut text) };
+        assert!(!record.is_null(), "{name} compiles");
+        RECORDS.with(|records| records.borrow_mut().insert(name.to_owned(), record as usize));
+        record
+    }
+
+    /// Links and evaluates `record` (rooted by the caller); publishes its namespace as `ns`.
+    fn evaluate_into_ns(runtime: &Runtime, record: *mut JSObject) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let record = record);
+        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+        rooted!(in(cx) let mut evaluation = UndefinedValue());
+        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+        unsafe { RunJobs(cx) };
+        rooted!(in(cx) let namespace = ObjectValue(unsafe { GetModuleNamespace(cx, record.handle().into()) }));
+        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"ns".as_ptr(), namespace.handle().into_handle()) });
+    }
+
+    fn live_sources() -> usize {
+        crate::modules_impl::source_records_for_testing().0
+    }
+
+    fn read_private(runtime: &Runtime, record: *mut JSObject) -> JSVal {
+        rooted!(in(runtime.raw_cx()) let mut read = UndefinedValue());
+        unsafe { crate::glue::JS_GetModulePrivate(record, read.handle_mut().into()) };
+        read.get()
+    }
+
+    /// The importer private the dynamic import hook sees for `call`.
+    fn importer_of(runtime: &Runtime, call: &str) -> JSVal {
+        IMPORTER.with(|importer| importer.set(None));
+        eval(runtime, call);
+        IMPORTER.with(Cell::get).expect("the dynamic import hook ran")
+    }
+
+    #[test]
+    fn source_module_records_live_with_their_graph_and_collect_with_their_private() {
+        let mut runtime = source_runtime(true);
+        let cx = runtime.raw_cx();
+        let weak = {
+            rooted!(in(cx) let dep = compile_source(&runtime, "dep.js", "export const answer = 40;"));
+            rooted!(in(cx) let main = compile_source(&runtime, "main.js",
+                "import { answer } from 'dep.js';\nexport function owned() { return answer + 2; }\nexport function later() { return import('dep.js'); }"));
+            evaluate_into_ns(&runtime, main.get());
+            // The private owns an object holding `owned`: owner -> function -> source -> private.
+            let owner = new_owner(&runtime, 1, Some("ns.owned"));
+            unsafe { SetModulePrivate(main.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            assert!(!dep.get().is_null());
+            Rc::downgrade(&owner)
+        };
+        RECORDS.with(|records| records.borrow_mut().clear());
+        collect(&mut runtime);
+        assert_eq!(live_sources(), 2, "the namespace keeps its record, its static graph the dependency's");
+        assert!(owners_finalized().is_empty());
+        assert_eq!(marker(&runtime, &weak), "owner 1");
+        assert_eq!(importer_of(&runtime, "ns.later()"), private_of(Some(&weak)), "dynamic import after GC sees the private");
+        eval(&runtime, "globalThis.later = ns.later; delete globalThis.ns;");
+        collect(&mut runtime);
+        assert_eq!(live_sources(), 2, "exported functions keep their module");
+        assert_eq!(importer_of(&runtime, "globalThis.pending = later()"), private_of(Some(&weak)));
+        eval(&runtime, "delete globalThis.later;");
+        collect(&mut runtime);
+        assert_eq!(live_sources(), 2, "a pending import keeps its importer");
+        assert!(weak.upgrade().is_some());
+        eval(&runtime, "delete globalThis.pending;");
+        IMPORTER.with(|importer| importer.set(None));
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none(), "the unreachable source module releases its private");
+        assert_eq!(count(&RELEASES), 1);
+        assert_eq!(owners_finalized(), vec![1], "the record/source/private/owner cycle collects");
+        assert_eq!(live_sources(), 0, "both records collect");
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![1], "the owner is finalized once");
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "no release at shutdown after the GC one");
+        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
+    fn rooted_errored_source_record_survives_collection_without_a_private() {
+        let mut runtime = source_runtime(true);
+        let cx = runtime.raw_cx();
+        let weak = {
+            rooted!(in(cx) let record = compile_source(&runtime, "errored.js", "export {}; throw new Error('boom');"));
+            assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+            {
+                rooted!(in(cx) let mut evaluation = UndefinedValue());
+                assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+                unsafe { RunJobs(cx) };
+                rooted!(in(cx) let promise = evaluation.get().to_object());
+                assert!(!unsafe { ThrowOnModuleEvaluationFailure(cx, promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) });
+                unsafe { JS_ClearPendingException(cx) };
+            }
+            RECORDS.with(|records| records.borrow_mut().clear());
+            collect(&mut runtime);
+            assert_eq!(live_sources(), 1, "a rooted errored record outlives collections without a private");
+            assert!(read_private(&runtime, record.get()).is_undefined());
+            let owner = new_owner(&runtime, 3, None);
+            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            let weak = Rc::downgrade(&owner);
+            drop(owner);
+            collect(&mut runtime);
+            assert_eq!(read_private(&runtime, record.get()), private_of(Some(&weak)), "the errored record keeps its script id and metadata");
+            assert!(unsafe { IsCyclicModule(record.get()) });
+            weak
+        };
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none(), "the unrooted record releases its private");
+        assert_eq!(live_sources(), 0);
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
+    fn weak_source_index_sweeps_collected_records_as_insertions_amortize() {
+        let mut runtime = source_runtime(false);
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let kept = compile_source(&runtime, "kept.js", "export default 1;"));
+        unsafe { SetModulePrivate(kept.get(), &Int32Value(5)) };
+        for round in 0..2 {
+            for index in 0..300 {
+                compile_source(&runtime, &format!("dead-{round}-{index}.js"), "export default 0;");
+            }
+            RECORDS.with(|records| records.borrow_mut().clear());
+            collect(&mut runtime);
+        }
+        let (live, entries) = crate::modules_impl::source_records_for_testing();
+        assert_eq!(live, 1, "only the rooted record survives");
+        // 601 registrations; a sweep at the 256th insertion of the second round dropped the
+        // first round's dead entries.
+        assert!(entries <= 301, "collected records are swept ({entries} entries left)");
+        assert_eq!(read_private(&runtime, kept.get()).to_int32(), 5, "the survivor is still found");
+    }
+
+    /// One module whose private owns (through `ns.owned`) an object holding its function.
+    /// Returns the private and the live source records once only the namespace keeps the
+    /// module, then once nothing does.
+    fn namespace_lifetime(runtime: &mut Runtime) -> (Weak<NativeOwner>, usize, usize) {
+        let cx = runtime.raw_cx();
+        let weak = {
+            rooted!(in(cx) let record = compile_source(runtime, "lone.js", "export function owned() { return 1; }"));
+            evaluate_into_ns(runtime, record.get());
+            let owner = new_owner(runtime, 9, Some("ns.owned"));
+            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            Rc::downgrade(&owner)
+        };
+        RECORDS.with(|records| records.borrow_mut().clear());
+        collect(runtime);
+        let with_namespace = live_sources();
+        eval(runtime, "delete globalThis.ns;");
+        collect(runtime);
+        (weak, with_namespace, live_sources())
+    }
+
+    #[test]
+    fn negative_fixtures_detect_strong_source_roots_and_missing_record_edges() {
+        use crate::modules_impl::{STRONG_SOURCES_FOR_TESTING as STRONG, UNANCHORED_SOURCES_FOR_TESTING as UNANCHORED};
+        {
+            let mut runtime = source_runtime(true);
+            let (weak, with_namespace, after) = namespace_lifetime(&mut runtime);
+            assert_eq!((with_namespace, after), (1, 0), "control: the namespace keeps the record, then it collects");
+            assert!(weak.upgrade().is_none());
+        }
+        // The pre-0275 strong source root: the record and its private never collect.
+        STRONG.with(|flag| flag.set(true));
+        {
+            let mut runtime = source_runtime(true);
+            let (weak, with_namespace, after) = namespace_lifetime(&mut runtime);
+            STRONG.with(|flag| flag.set(false));
+            assert_eq!((with_namespace, after), (1, 1), "a strong root keeps the unreachable record");
+            assert!(weak.upgrade().is_some(), "and its private, until shutdown");
+            drop(runtime);
+            assert!(weak.upgrade().is_none());
+        }
+        // Without the metadata's record edge the record dies while its module still lives.
+        UNANCHORED.with(|flag| flag.set(true));
+        {
+            let mut runtime = source_runtime(true);
+            let (weak, with_namespace, _) = namespace_lifetime(&mut runtime);
+            UNANCHORED.with(|flag| flag.set(false));
+            assert_eq!(with_namespace, 0, "a missing record edge loses a record whose namespace is live");
+            assert!(weak.upgrade().is_none());
+            drop(runtime);
+        }
+        assert_eq!(count(&RETAINS), count(&RELEASES));
+    }
+
+    thread_local! {
         /// Scratch switches for the negative holder fixtures.
         static HOLDER_RETAINS: Cell<bool> = const { Cell::new(true) };
         static HOLDER_TRACES: Cell<bool> = const { Cell::new(true) };

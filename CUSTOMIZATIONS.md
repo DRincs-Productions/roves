@@ -15425,3 +15425,37 @@ reused, not rerun. Agent audit records both parts separately without a percentag
 The preceding general CI is now green 13/13 after a justified hosted-runner retry. The user
 resumed the loop of bounded assignments; budget extensions for incomplete work remain explicit.
 No claim that source/realm retention or the separate Function cache defect is fixed.
+
+## 2026-10-22 - Task 0275: collectable source module records
+
+`components/roves-js/src/{modules_impl,script_metadata,script_impl}.rs`: source module records
+are no longer roots of the runtime module table. A source module's cppgc source metadata
+(`PrivateData`, owned by the holder the captured WeakMap keeps under the source's host token)
+now also traces the module's record cell. `CompileModule1` creates that metadata for every
+source module (even with an undefined private) and only then turns the record's table entry
+from strong into a `WeakCell`; until then the strong entry keeps the record across the
+anchoring allocations. The placeholder still pins the token, so token -> WeakMap holder ->
+metadata -> record -> V8 module/placeholder -> token is a cycle the GC collects once nothing
+else (a rooted record, the namespace, an exported function, the V8 module graph or a pending
+dynamic import) reaches the token or the record; the native private is then released once by
+the metadata finalizer, before runtime teardown. `trace_modules` traces only strong entries
+(JSON modules and not-yet-anchored source modules) plus JSON privates, as before. Dead
+entries are swept after a number of insertions proportional to the last sweep's survivors
+(the interned-cell pattern); lookups skip dead weak cells and still match bucket members by
+module identity. JSON modules have no V8 source to anchor them and stay strong; realm/global
+registries and Servo's own module maps still hold records, so no page-level collection or
+RAM saving is claimed (nothing measured). Cost: one cppgc holder per source module, even
+without a private.
+
+`components/roves-js/src/tests.rs`: four `traced_privates` tests (namespace, exported
+function, static graph and pending-import retention plus a single release of the
+owner -> function -> source -> private cycle; a rooted errored record without a private;
+the amortized index sweep; negative fixtures). Test-only switches that restore the strong
+source root or drop the record edge make the positive assertions fail (3 and 1 failures).
+roves-js normal 71 passed/2 ignored, JIT-less 70/3, warnings unchanged (772). Replay of the 48
+preceding patches touching these files identical to HEAD; 0275 applies to the working tree.
+Patch: `0275-weak-source-module-registry.patch`.
+
+Codex review: all four replayed0275 files and the isolated runtime source match the working
+tree. Existing test logs confirm71 normal/70 JIT-less; no duplicate test run. Agent audit
+records21 unique calls within25 and indicative client metrics, not subscription-credit savings.
