@@ -6,7 +6,9 @@ La CI sul precedente codice b50c6d99ce1 è verde dopo retry: V8 39677755124 10/1
 generale 39677754946 13/13. Confermati il grafo costruttori e il probe js_disable_jit
 su Linux normal/JIT-less. Nuove patch 0269 GC browser e 0270 identità moduli:
 runtime locale 58 passati normal / 57 JIT-less, contratti runner 9/9 e generatore75/75;
-compilazione/browser delle nuove modifiche attendono la nuova CI.
+run V8 39737640415 verde 10/10: GC e module owners confermati negli smoke Linux normal/JIT-less.
+0271 (import da eval) e0272 (owner nativo tracciato) verificati localmente:64 normal/63 JIT-less;
+compilazione e browser di queste due patch ancora pendenti in CI.
 Nessun benchmark aggiunto. I token host per modulo possono ridurre il riuso della
 cache di compilazione: effetto su startup/CPU/RAM da misurare, nessun guadagno dichiarato.
 Il confronto Chrome MCP della sola fase module owners restituisce left/right,

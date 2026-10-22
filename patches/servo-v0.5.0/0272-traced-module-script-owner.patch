@@ -1,0 +1,756 @@
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index cca1b654bbe..068ea6d476a 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -42,7 +42,7 @@ enum ModuleKind {
+     /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
+     Source { script_id: i32 },
+     /// A synthetic module has no V8 source: its private lives here.
+-    Json { value: v8::Global<v8::Value>, private: JSVal },
++    Json { value: v8::Global<v8::Value>, private: crate::script_impl::HostPrivate },
+ }
+ 
+ /// The runtime's modules and module hooks.
+@@ -57,14 +57,21 @@ pub(crate) struct Modules {
+ /// Keeps the modules alive, with JSON privates; a source module's placeholder pins its
+ /// host token, which keeps its metadata.
+ pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+-    use crate::gc::RootKind;
+-    let Ok(entries) = cx.modules.entries.try_borrow() else { return };
+-    for entry in entries.values().flatten() {
+-        crate::cell::trace_cell(entry.cell, visitor);
+-        if let ModuleKind::Json { private, .. } = &entry.kind {
+-            private.trace_root(visitor);
++    let mut privates = Vec::new();
++    {
++        let Ok(entries) = cx.modules.entries.try_borrow() else { return };
++        for entry in entries.values().flatten() {
++            crate::cell::trace_cell(entry.cell, visitor);
++            match &entry.kind {
++                ModuleKind::Json { private, .. } if !private.value().is_undefined() => privates.push(*private),
++                _ => {},
++            }
+         }
+     }
++    // The embedder's trace hooks run without the module table borrowed.
++    for private in privates {
++        private.trace(visitor);
++    }
+ }
+ 
+ /// The V8 module of a module record.
+@@ -179,7 +186,7 @@ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCom
+             let export = v8::String::new(scope, "default")?;
+             let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
+             let value = v8::Global::new(scope, parsed);
+-            Some(new_record(scope, module, ModuleKind::Json { value, private: UndefinedValue() }))
++            Some(new_record(scope, module, ModuleKind::Json { value, private: crate::script_impl::HostPrivate::NONE }))
+         })
+         .unwrap_or(std::ptr::null_mut())
+ }
+@@ -194,7 +201,7 @@ pub unsafe fn IsCyclicModule(module: *mut JSObject) -> bool {
+ fn private_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> JSVal {
+     let private = with_entry(scope, module, |entry| match &entry.kind {
+         ModuleKind::Source { script_id } => Err(*script_id),
+-        ModuleKind::Json { private, .. } => Ok(*private),
++        ModuleKind::Json { private, .. } => Ok(private.value()),
+     });
+     match private {
+         Some(Ok(private)) => private,
+@@ -207,20 +214,29 @@ pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
+     // SAFETY: callers pass a valid value.
+     let value = unsafe { *value };
+     let cx = JSContext::current();
+-    let target = cx.with_scope(|scope| {
++    let kind = cx.with_scope(|scope| {
+         let module = module_of(scope, module)?;
+-        with_entry(scope, module, |entry| match &mut entry.kind {
++        with_entry(scope, module, |entry| match &entry.kind {
+             ModuleKind::Source { script_id } => Err(*script_id),
+-            ModuleKind::Json { private, .. } => Ok(std::mem::replace(private, value)),
++            ModuleKind::Json { .. } => Ok(()),
+         })
+     });
+     // Hooks run outside the module table borrow, under the script-source ownership
+-    // contract shared with classic scripts, as SpiderMonkey does.
+-    match target {
++    // contract shared with classic scripts, as SpiderMonkey does: the new private is
++    // retained before the old one is unlinked and released.
++    match kind {
+         Some(Err(script_id)) => crate::script_impl::set_script_private(cx, script_id, value),
+-        Some(Ok(old)) => {
+-            crate::script_impl::retain_private(cx, value);
+-            crate::script_impl::release_private(cx, old);
++        Some(Ok(())) => {
++            let private = crate::script_impl::HostPrivate::retain(cx, value);
++            let old = cx.with_scope(|scope| {
++                let module = module_of(scope, module)?;
++                with_entry(scope, module, |entry| match &mut entry.kind {
++                    ModuleKind::Json { private: slot, .. } => Some(std::mem::replace(slot, private)),
++                    ModuleKind::Source { .. } => None,
++                })?
++            });
++            // Neither hook can GC or touch modules, so the entry is still there.
++            old.unwrap_or(private).release();
+         },
+         None => {},
+     }
+@@ -231,12 +247,12 @@ pub(crate) fn release_json_privates(cx: &JSContext) {
+     // Hooks can drop embedder objects: invoke them without borrowing the module table.
+     let values: Vec<_> = cx.modules.entries.borrow_mut().values_mut().flatten()
+         .filter_map(|entry| match &mut entry.kind {
+-            ModuleKind::Json { private, .. } => Some(std::mem::replace(private, UndefinedValue())),
++            ModuleKind::Json { private, .. } => Some(std::mem::replace(private, crate::script_impl::HostPrivate::NONE)),
+             ModuleKind::Source { .. } => None,
+         })
+         .collect();
+-    for value in values {
+-        crate::script_impl::release_private(cx, value);
++    for private in values {
++        private.release();
+     }
+ }
+ 
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 1730e550798..3d6d4a4831e 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -18,7 +18,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
+ use crate::glue::StringCallback;
+ use crate::jsapi::{
+     EnvironmentChain, Handle, HandleObject, JSContext, JSErrorReport, JSErrorFormatString, JSFunction, JSObject,
+-    JSPrincipals, JSRuntime, JSScript, JSString, MutableHandle, MutableHandleObject, MutableHandleValue,
++    JSPrincipals, JSRuntime, JSScript, JSString, JSTracer, MutableHandle, MutableHandleObject, MutableHandleValue,
+     ReadOnlyCompileOptions, SavedFrameResult, SavedFrameSelfHosted, ScriptPrivateReferenceHook, SourceText,
+     StackCapture, StackFormat, SupportUnscopables, TaggedColumnNumberOneOrigin, Utf8Unit,
+ };
+@@ -29,27 +29,63 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
+     unsafe { &*cx }
+ }
+ 
+-/// The runtime's script state: privates by script id, the reference hooks, and the last
+-/// error report handed out (with the strings it points at).
++/// Roves extension (no SpiderMonkey counterpart): traces the GC edges an embedder-owned
++/// script private holds (`value` is the private, never undefined). It runs during GC: it
++/// must only report edges through the tracer: no allocation, JS, GC or engine table access.
++pub type ScriptPrivateTraceHook = Option<unsafe extern "C" fn(trc: *mut JSTracer, value: *const JSVal)>;
++
++/// The runtime's script state: privates by script id, the reference and trace hooks, and
++/// the last error report handed out (with the strings it points at).
+ #[derive(Default)]
+ pub(crate) struct Scripts {
+     metadata: crate::script_metadata::ScriptMetadata,
+     reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
++    trace_hook: std::cell::Cell<ScriptPrivateTraceHook>,
+     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
+ }
+ 
+-pub(crate) fn retain_private(cx: &JSContext, value: JSVal) {
+-    if !value.is_undefined() {
+-        if let Some(add_ref) = cx.scripts.reference_hooks.get().0 {
++/// A script or module private, with the release and trace hooks current when it was set:
++/// tracing and releasing it never query the context (GC may run them).
++#[derive(Clone, Copy)]
++pub(crate) struct HostPrivate {
++    value: JSVal,
++    release: ScriptPrivateReferenceHook,
++    trace: ScriptPrivateTraceHook,
++}
++
++impl HostPrivate {
++    pub(crate) const NONE: HostPrivate = HostPrivate { value: UndefinedValue(), release: None, trace: None };
++
++    /// Takes the embedder's reference to `value` (none for undefined).
++    pub(crate) fn retain(cx: &JSContext, value: JSVal) -> HostPrivate {
++        if value.is_undefined() {
++            return HostPrivate::NONE;
++        }
++        let (add_ref, release) = cx.scripts.reference_hooks.get();
++        if let Some(add_ref) = add_ref {
+             unsafe { add_ref(&value) };
+         }
++        HostPrivate { value, release, trace: cx.scripts.trace_hook.get() }
++    }
++
++    pub(crate) fn value(&self) -> JSVal {
++        self.value
+     }
+-}
+ 
+-pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
+-    if !value.is_undefined() {
+-        if let Some(release) = cx.scripts.reference_hooks.get().1 {
+-            unsafe { release(&value) };
++    /// The private value itself and, through the embedder's hook, the edges it holds.
++    pub(crate) fn trace(&self, visitor: &mut v8::cppgc::Visitor) {
++        use crate::gc::RootKind;
++        self.value.trace_root(visitor);
++        if let (false, Some(trace)) = (self.value.is_undefined(), self.trace) {
++            unsafe { trace(crate::glue::tracer(visitor), &self.value) };
++        }
++    }
++
++    /// Drops the embedder's reference. Callers first unlink the private from what traces it.
++    pub(crate) fn release(self) {
++        if let (false, Some(release)) = (self.value.is_undefined(), self.release) {
++            // Reference hooks follow SpiderMonkey's non-GC retain/release contract.
++            unsafe { release(&self.value) };
+         }
+     }
+ }
+@@ -61,10 +97,6 @@ pub(crate) fn release_runtime_privates(cx: &JSContext) {
+     crate::modules_impl::release_json_privates(cx);
+ }
+ 
+-pub(crate) fn private_release_hook(cx: &JSContext) -> ScriptPrivateReferenceHook {
+-    cx.scripts.reference_hooks.get().1
+-}
+-
+ pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> Option<()> {
+     cx.scripts.metadata.initialize(scope)
+ }
+@@ -361,6 +393,13 @@ pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: Script
+     raw(rt as *mut JSContext).scripts.reference_hooks.set((add_ref, release));
+ }
+ 
++/// Sets the hook tracing script and module privates set from now on (see
++/// `ScriptPrivateTraceHook`); privates already set keep the hook they were set with.
++pub unsafe fn SetScriptPrivateTraceHook(rt: *mut JSRuntime, trace: ScriptPrivateTraceHook) {
++    // A runtime pointer is its raw context (see `rust::Runtime::rt`).
++    raw(rt as *mut JSContext).scripts.trace_hook.set(trace);
++}
++
+ /// The innermost scripted frame (none when no script is running).
+ fn innermost_frame<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::StackFrame>> {
+     let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
+diff --git a/components/roves-js/src/script_metadata.rs b/components/roves-js/src/script_metadata.rs
+index 4619cf27366..68817c38979 100644
+--- a/components/roves-js/src/script_metadata.rs
++++ b/components/roves-js/src/script_metadata.rs
+@@ -5,45 +5,40 @@
+ //! Source-owned metadata of classic scripts and source modules: V8 retains a host token
+ //! with the compiled source; a native WeakMap owns the cppgc metadata only while that token
+ //! is reachable. The metadata is found by script id or, from the host options V8 hands to
+-//! callbacks, by token.
++//! callbacks, by token. While reachable it traces its private's native edges through the
++//! embedder's trace hook (see `ScriptPrivateTraceHook`).
+ 
+ use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
+ 
+ use v8::cppgc::{GarbageCollected, Visitor, WeakPersistent};
+ 
+-use crate::gc::RootKind;
+-use crate::jsapi::{JSContext, ScriptPrivateReferenceHook};
+-use crate::jsval::{JSVal, UndefinedValue};
++use crate::jsapi::JSContext;
++use crate::jsval::JSVal;
++use crate::script_impl::HostPrivate;
+ 
+ const PRIVATE_WRAP_TAG: u16 = 2;
+ const SWEEP_MIN: usize = 256;
+ 
+ struct PrivateData {
+-    value: Cell<JSVal>,
+-    release: Cell<ScriptPrivateReferenceHook>,
++    private: Cell<HostPrivate>,
+ }
+ 
+ impl PrivateData {
+-    fn replace(&self, value: JSVal, release: ScriptPrivateReferenceHook) {
+-        let old = self.value.replace(value);
+-        let old_release = self.release.replace(release);
+-        if !old.is_undefined() {
+-            if let Some(release) = old_release {
+-                // Reference hooks follow SpiderMonkey's non-GC retain/release contract.
+-                unsafe { release(&old) };
+-            }
+-        }
++    /// Installs `private` (already retained), then releases the previous one: from then on
++    /// only the new private and its own hooks are traced.
++    fn replace(&self, private: HostPrivate) {
++        self.private.replace(private).release();
+     }
+ 
+     fn clear(&self) {
+-        self.replace(UndefinedValue(), None);
++        self.replace(HostPrivate::NONE);
+     }
+ }
+ 
+ unsafe impl GarbageCollected for PrivateData {
+     fn trace(&self, visitor: &mut Visitor) {
+-        self.value.get().trace_root(visitor);
++        self.private.get().trace(visitor);
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+@@ -108,7 +103,7 @@ impl ScriptMetadata {
+ 
+     pub(crate) fn private(&self, id: i32) -> Option<JSVal> {
+         let entries = self.entries.borrow();
+-        Some(entries.get(&id)?.data.as_ref()?.get()?.value.get())
++        Some(entries.get(&id)?.data.as_ref()?.get()?.private.get().value())
+     }
+ 
+     /// The private of the source whose host token is `token` (`None`: the token has no
+@@ -120,7 +115,7 @@ impl ScriptMetadata {
+         let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
+         // SAFETY: the pointer stays on the stack while the holder (a local) keeps it alive.
+         let data = unsafe { v8::Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder) }?;
+-        Some(unsafe { data.as_ref() }.value.get())
++        Some(unsafe { data.as_ref() }.private.get().value())
+     }
+ 
+     pub(crate) fn set(
+@@ -153,10 +148,7 @@ impl ScriptMetadata {
+             let data = unsafe {
+                 v8::cppgc::make_garbage_collected(
+                     heap,
+-                    PrivateData {
+-                        value: Cell::new(UndefinedValue()),
+-                        release: Cell::new(None),
+-                    },
++                    PrivateData { private: Cell::new(HostPrivate::NONE) },
+                 )
+             };
+             // Unique tag; the local holder owns the cppgc object before another allocation.
+@@ -170,8 +162,7 @@ impl ScriptMetadata {
+         };
+         // The script/token and WeakMap keep this data alive. Reference hooks cannot GC;
+         // call them outside the index borrow and retain before releasing identical data.
+-        crate::script_impl::retain_private(cx, value);
+-        unsafe { &*data }.replace(value, crate::script_impl::private_release_hook(cx));
++        unsafe { &*data }.replace(HostPrivate::retain(cx, value));
+         Some(())
+     }
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index e386daab0f1..780dd25e5aa 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2303,6 +2303,290 @@ mod scripts {
+     }
+ }
+ 
++/// Native privates whose JS edges only the embedder's trace hook reports, as Servo's
++/// `ModuleScript` holds its owner global.
++mod traced_privates {
++    use std::cell::{Cell, RefCell};
++    use std::collections::HashMap;
++    use std::ffi::CString;
++    use std::ptr;
++    use std::rc::{Rc, Weak};
++
++    use super::{describe, eval};
++    use crate::gc::Heap;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
++
++    struct NativeOwner {
++        owner: Heap<*mut JSObject>,
++    }
++
++    thread_local! {
++        /// Engine-owned references per private, as the reference hooks report them.
++        static ENGINE_REFS: RefCell<HashMap<usize, isize>> = RefCell::new(HashMap::new());
++        static RETAINS: Cell<usize> = const { Cell::new(0) };
++        static RELEASES: Cell<usize> = const { Cell::new(0) };
++        static TRACES: Cell<usize> = const { Cell::new(0) };
++        static STALE_TRACE: Cell<bool> = const { Cell::new(false) };
++        static RELEASE_WITHOUT_RUNTIME: Cell<bool> = const { Cell::new(false) };
++        static OWNERS_FINALIZED: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
++    }
++
++    fn reset() {
++        ENGINE_REFS.with(|refs| refs.borrow_mut().clear());
++        for counter in [&RETAINS, &RELEASES, &TRACES] {
++            counter.with(|count| count.set(0));
++        }
++        STALE_TRACE.with(|flag| flag.set(false));
++        RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(false));
++        OWNERS_FINALIZED.with(|finalized| finalized.borrow_mut().clear());
++    }
++
++    fn count(counter: &'static std::thread::LocalKey<Cell<usize>>) -> usize {
++        counter.with(Cell::get)
++    }
++
++    fn owners_finalized() -> Vec<i32> {
++        OWNERS_FINALIZED.with(|finalized| finalized.borrow().clone())
++    }
++
++    fn native_owner(value: *const JSVal) -> *const NativeOwner {
++        unsafe { (*value).to_private() as *const NativeOwner }
++    }
++
++    fn engine_refs(pointer: *const NativeOwner) -> isize {
++        ENGINE_REFS.with(|refs| refs.borrow().get(&(pointer as usize)).copied().unwrap_or(0))
++    }
++
++    unsafe extern "C" fn retain(value: *const JSVal) {
++        let pointer = native_owner(value);
++        unsafe { Rc::increment_strong_count(pointer) };
++        ENGINE_REFS.with(|refs| *refs.borrow_mut().entry(pointer as usize).or_default() += 1);
++        RETAINS.with(|count| count.set(count.get() + 1));
++    }
++
++    unsafe extern "C" fn release(value: *const JSVal) {
++        let pointer = native_owner(value);
++        if Runtime::get().is_none() {
++            RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(true));
++        }
++        ENGINE_REFS.with(|refs| *refs.borrow_mut().entry(pointer as usize).or_default() -= 1);
++        RELEASES.with(|count| count.set(count.get() + 1));
++        unsafe { Rc::decrement_strong_count(pointer) };
++    }
++
++    /// Reports the owner edge, as Servo's hook traces `ModuleScript` (no assertions: an
++    /// unwinding extern callback aborts).
++    unsafe extern "C" fn trace(trc: *mut JSTracer, value: *const JSVal) {
++        let pointer = native_owner(value);
++        TRACES.with(|count| count.set(count.get() + 1));
++        if engine_refs(pointer) <= 0 {
++            STALE_TRACE.with(|flag| flag.set(true));
++            return;
++        }
++        unsafe { crate::glue::CallObjectTracer(trc, &(*pointer).owner as *const _ as *mut _, c"owner".as_ptr()) };
++    }
++
++    unsafe extern "C" fn finalize(_gcx: *mut GCContext, obj: *mut JSObject) {
++        let mut slot = UndefinedValue();
++        // SAFETY: the finalize hook may read the reserved slots.
++        unsafe { JS_GetReservedSlot(obj, 0, &mut slot) };
++        if slot.is_int32() {
++            OWNERS_FINALIZED.with(|finalized| finalized.borrow_mut().push(slot.to_int32()));
++        }
++    }
++
++    static OPS: JSClassOps = JSClassOps {
++        addProperty: None,
++        delProperty: None,
++        enumerate: None,
++        newEnumerate: None,
++        resolve: None,
++        mayResolve: None,
++        finalize: Some(finalize),
++        call: None,
++        construct: None,
++        trace: None,
++    };
++
++    static CLASS: JSClass = JSClass {
++        name: c"PrivateOwner".as_ptr(),
++        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT | crate::object::JSCLASS_FOREGROUND_FINALIZE,
++        cOps: &OPS,
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    /// A native private whose owner object (id `id`) has a `marker` expando and, when given,
++    /// a `callback` property set to the value of `callback`.
++    fn new_owner(runtime: &Runtime, id: i32, callback: Option<&str>) -> Rc<NativeOwner> {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
++        unsafe { JS_SetReservedSlot(object.get(), 0, &Int32Value(id)) };
++        rooted!(in(cx) let marker = eval(runtime, &format!("'owner {id}'")));
++        assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"marker".as_ptr(), marker.handle().into()) });
++        if let Some(callback) = callback {
++            rooted!(in(cx) let callback = eval(runtime, callback));
++            assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"callback".as_ptr(), callback.handle().into()) });
++        }
++        let owner = Rc::new(NativeOwner { owner: Heap::default() });
++        owner.owner.set(object.get());
++        owner
++    }
++
++    fn marker(runtime: &Runtime, owner: &Weak<NativeOwner>) -> std::string::String {
++        let cx = runtime.raw_cx();
++        let owner = owner.upgrade().expect("a live native owner");
++        rooted!(in(cx) let object = owner.owner.get());
++        rooted!(in(cx) let mut marker = UndefinedValue());
++        assert!(unsafe { JS_GetProperty(cx, object.handle().into(), c"marker".as_ptr(), marker.handle_mut().into()) });
++        describe(runtime, marker.get())
++    }
++
++    fn private_of(owner: Option<&Weak<NativeOwner>>) -> JSVal {
++        owner.map_or(UndefinedValue(), |owner| PrivateValue(owner.as_ptr().cast()))
++    }
++
++    /// Full collections of both heaps.
++    fn collect(runtime: &mut Runtime) {
++        for _ in 0..3 {
++            let isolate = unsafe { &mut *(*runtime.raw_cx()).isolate };
++            isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++            isolate.low_memory_notification();
++            runtime.gc_for_testing();
++        }
++    }
++
++    /// A classic source whose native private owns an object holding a function of that
++    /// source: a cycle through native code. Returns the private and whether its owner was
++    /// finalized while the source was still reachable.
++    fn classic_owner_cycle(runtime: &mut Runtime) -> (Weak<NativeOwner>, bool) {
++        let cx = runtime.raw_cx();
++        let weak = {
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("traced-owner.js").unwrap(), 1);
++            let mut source = transform_str_to_source_text("globalThis.ownedFunction = function(){ return 7 }");
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++            rooted!(in(cx) let mut result = UndefinedValue());
++            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++            let owner = new_owner(runtime, 1, Some("ownedFunction"));
++            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            Rc::downgrade(&owner)
++        };
++        assert_eq!(weak.strong_count(), 1, "the engine owns the only reference");
++        collect(runtime);
++        assert_eq!(eval(runtime, "ownedFunction()").to_int32(), 7);
++        (weak, owners_finalized().contains(&1))
++    }
++
++    #[test]
++    fn traced_native_private_keeps_its_owner_and_collects_with_its_source() {
++        reset();
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        unsafe {
++            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
++            SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
++        }
++        let (weak, finalized_while_reachable) = classic_owner_cycle(&mut runtime);
++        assert!(!finalized_while_reachable, "the trace hook keeps the owner of a reachable source");
++        assert!(count(&TRACES) > 0);
++        assert_eq!(marker(&runtime, &weak), "owner 1", "the owner keeps its expando");
++        eval(&runtime, "delete globalThis.ownedFunction");
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none(), "the dead source releases its private");
++        assert_eq!(count(&RELEASES), 1);
++        assert_eq!(owners_finalized(), vec![1], "the source/private/owner cycle collects");
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![1], "the owner is finalized once");
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "no release at shutdown after the GC one");
++        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
++    }
++
++    #[test]
++    fn untraced_native_private_edges_do_not_keep_their_owner() {
++        reset();
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        unsafe { SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release)) };
++        let (weak, finalized_while_reachable) = classic_owner_cycle(&mut runtime);
++        assert!(finalized_while_reachable, "without a trace hook nothing reports the owner edge");
++        assert!(weak.upgrade().is_some(), "the private itself is still owned by the source");
++        assert_eq!(count(&TRACES), 0);
++        eval(&runtime, "delete globalThis.ownedFunction");
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none());
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
++    }
++
++    #[test]
++    fn module_and_json_privates_trace_only_their_current_owner() {
++        reset();
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        unsafe {
++            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
++            SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
++        }
++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("traced-module.js").unwrap(), 1);
++        let mut module_source = transform_str_to_source_text("export const value = 42");
++        let mut json_source = transform_str_to_source_text("42");
++        rooted!(in(cx) let module = unsafe { CompileModule1(cx, options.ptr, &mut module_source) });
++        rooted!(in(cx) let json = unsafe { CompileJsonModule1(cx, options.ptr, &mut json_source) });
++        assert!(!module.get().is_null() && !json.get().is_null());
++        let set = |record: *mut JSObject, owner: Option<&Weak<NativeOwner>>| unsafe { SetModulePrivate(record, &private_of(owner)) };
++        let read = |record: *mut JSObject| {
++            rooted!(in(cx) let mut read = UndefinedValue());
++            unsafe { crate::glue::JS_GetModulePrivate(record, read.handle_mut().into()) };
++            read.get()
++        };
++        // Sets a new owner `id` as `record`'s private, the engine being its only owner.
++        fn give(runtime: &Runtime, record: *mut JSObject, id: i32) -> Weak<NativeOwner> {
++            let owner = new_owner(runtime, id, None);
++            unsafe { SetModulePrivate(record, &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            Rc::downgrade(&owner)
++        }
++        let first = give(&runtime, module.get(), 1);
++        let first_json = give(&runtime, json.get(), 4);
++        collect(&mut runtime);
++        assert!(owners_finalized().is_empty(), "the source module and JSON privates trace their owners");
++        assert_eq!((marker(&runtime, &first), marker(&runtime, &first_json)), ("owner 1".to_owned(), "owner 4".to_owned()));
++        assert_eq!(read(module.get()), private_of(Some(&first)));
++        assert_eq!(read(json.get()), private_of(Some(&first_json)));
++
++        // Replacement releases the old owner at once; only the new one is traced from then on.
++        let second = give(&runtime, module.get(), 2);
++        assert!(first.upgrade().is_none());
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![1]);
++        assert_eq!(marker(&runtime, &second), "owner 2");
++        // Undefined clears the private.
++        set(module.get(), None);
++        assert!(second.upgrade().is_none() && read(module.get()).is_undefined());
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![1, 2]);
++        // Re-setting the same private retains before it releases.
++        let third = give(&runtime, module.get(), 3);
++        set(module.get(), Some(&third));
++        assert_eq!(third.strong_count(), 1);
++        let second_json = give(&runtime, json.get(), 5);
++        assert!(first_json.upgrade().is_none(), "the replaced JSON private is released");
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![1, 2, 4]);
++        assert_eq!((marker(&runtime, &third), marker(&runtime, &second_json)), ("owner 3".to_owned(), "owner 5".to_owned()));
++        assert_eq!(read(json.get()), private_of(Some(&second_json)));
++        let owners = [first, second, third, first_json, second_json];
++        drop(runtime);
++        assert!(owners.iter().all(|owner| owner.upgrade().is_none()), "shutdown releases the remaining owners");
++        assert_eq!(count(&RETAINS), count(&RELEASES));
++        assert_eq!(count(&RETAINS), 6);
++        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
++    }
++}
++
+ mod values {
+     use std::ptr;
+ 
+diff --git a/components/script/module_loading.rs b/components/script/module_loading.rs
+index 4e7960d8634..44ede6ff96b 100644
+--- a/components/script/module_loading.rs
++++ b/components/script/module_loading.rs
+@@ -432,11 +432,11 @@ pub(crate) fn host_load_imported_module(
+     };
+ 
+     // TODO: investigate providing a `ModuleOwner` to classic scripts.
+-    let script_owner = referencing_script.and_then(|script| script.owner.clone());
++    let script_owner = referencing_script.and_then(|script| script.owner.as_ref());
+ 
+     // Step 6.2. Set settingsObject to referencingScript's settings object.
+-    if let Some(ref owner) = script_owner {
+-        global_scope = owner.root();
++    if let Some(owner) = script_owner {
++        global_scope = owner.as_rooted();
+     }
+ 
+     let global = &global_scope.clone();
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index 2911c019286..c764841a2df 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -24,9 +24,10 @@ use js::gc::{HandleObject, MutableHandleValue};
+ use js::jsapi::{
+     CallArgs, ExceptionStackBehavior, GetFunctionNativeReserved, GetModuleResolveHook,
+     Handle as RawHandle, HandleValue as RawHandleValue, Heap, JS_GetFunctionObject,
+-    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, ModuleErrorBehaviour,
+-    ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook, SetModuleMetadataHook,
+-    SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks, Value,
++    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, JSTracer,
++    ModuleErrorBehaviour, ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook,
++    SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook,
++    SetScriptPrivateReferenceHooks, SetScriptPrivateTraceHook, Value,
+ };
+ use js::jsval::{JSVal, PrivateValue, UndefinedValue};
+ use js::realm::CurrentRealm;
+@@ -61,9 +62,9 @@ use crate::dom::bindings::error::{
+ };
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::bindings::refcounted::Trusted;
+-use crate::dom::bindings::root::DomRoot;
++use crate::dom::bindings::root::{Dom, DomRoot};
+ use crate::dom::bindings::str::DOMString;
+-use crate::dom::bindings::trace::RootedTraceableBox;
++use crate::dom::bindings::trace::{JSTraceable, RootedTraceableBox};
+ use crate::dom::csp::{GlobalCspReporting, Violation};
+ use crate::dom::globalscope::GlobalScope;
+ use crate::dom::globalscope::script_execution::{ErrorReporting, fill_compile_options};
+@@ -141,17 +142,28 @@ impl Clone for RethrowError {
+     }
+ }
+ 
++/// A script's host-defined data, owned by the JS engine through the script or module
++/// private (see `host_add_ref_top_level_script`).
++///
++/// # Safety
++/// This can be shared inside an Rc because the engine traces it, through
++/// `host_trace_top_level_script`, for as long as its script or module keeps the private:
++/// the owner global is a traced edge, not a root.
++#[derive(JSTraceable)]
++#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
++#[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_in_rc)]
+ pub(crate) struct ModuleScript {
++    #[no_trace]
+     pub(crate) base_url: ServoUrl,
+     pub(crate) options: ScriptFetchOptions,
+-    pub(crate) owner: Option<Trusted<GlobalScope>>,
++    pub(crate) owner: Option<Dom<GlobalScope>>,
+ }
+ 
+ impl ModuleScript {
+     pub(crate) fn new(
+         base_url: ServoUrl,
+         options: ScriptFetchOptions,
+-        owner: Option<Trusted<GlobalScope>>,
++        owner: Option<Dom<GlobalScope>>,
+     ) -> Self {
+         ModuleScript {
+             base_url,
+@@ -291,7 +303,8 @@ impl ModuleTree {
+         let mut realm = enter_auto_realm(cx, global);
+         let cx = &mut *realm;
+ 
+-        let owner = Trusted::new(global);
++        // Roots the owner until the module private traces it.
++        let owner = DomRoot::from_ref(global);
+ 
+         // Step 2. Let script be a new module script that this algorithm will subsequently initialize.
+         // Step 6. Set script's parse error and error to rethrow to null.
+@@ -346,7 +359,11 @@ impl ModuleTree {
+             // Step 3. Set script's settings object to settings.
+             // Step 4. Set script's base URL to baseURL.
+             // Step 5. Set script's fetch options to options.
+-            let module_script_data = Rc::new(ModuleScript::new(url.clone(), options, Some(owner)));
++            let module_script_data = Rc::new(ModuleScript::new(
++                url.clone(),
++                options,
++                Some(Dom::from_ref(&*owner)),
++            ));
+ 
+             SetModulePrivate(
+                 module_script.get(),
+@@ -484,7 +501,7 @@ impl ModuleTree {
+         specifier: DOMString,
+     ) -> Fallible<ServoUrl> {
+         // Step 1~3 to get settingsObject and baseURL
+-        let script_global = script.and_then(|s| s.owner.as_ref().map(|o| o.root()));
++        let script_global = script.and_then(|s| s.owner.as_ref().map(Dom::as_rooted));
+         // Step 1. Let settingsObject and baseURL be null.
+         let (global, base_url): (&GlobalScope, &ServoUrl) = match script {
+             // Step 2. If referringScript is not null, then:
+@@ -874,6 +891,7 @@ pub(crate) unsafe fn EnsureModuleHooksInitialized(rt: *mut JSRuntime) {
+             Some(host_add_ref_top_level_script),
+             Some(host_release_top_level_script),
+         );
++        SetScriptPrivateTraceHook(rt, Some(host_trace_top_level_script));
+         SetModuleDynamicImportHook(rt, Some(host_import_module_dynamically));
+     }
+ }
+@@ -888,6 +906,13 @@ unsafe extern "C" fn host_release_top_level_script(value: *const Value) {
+     unsafe { Rc::decrement_strong_count((*value).to_private() as *const ModuleScript) };
+ }
+ 
++/// Traces a script private's edges (its owner global) during GC; the engine calls it only
++/// while it holds a reference to the private.
++#[expect(unsafe_code)]
++unsafe extern "C" fn host_trace_top_level_script(trc: *mut JSTracer, value: *const Value) {
++    unsafe { (*((*value).to_private() as *const ModuleScript)).trace(trc) };
++}
++
+ #[expect(unsafe_code)]
+ /// <https://tc39.es/ecma262/#sec-hostimportmoduledynamically>
+ /// <https://html.spec.whatwg.org/multipage/#hostimportmoduledynamically(referencingscriptormodule,-specifier,-promisecapability)>

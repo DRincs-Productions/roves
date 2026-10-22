@@ -5,45 +5,40 @@
 //! Source-owned metadata of classic scripts and source modules: V8 retains a host token
 //! with the compiled source; a native WeakMap owns the cppgc metadata only while that token
 //! is reachable. The metadata is found by script id or, from the host options V8 hands to
-//! callbacks, by token.
+//! callbacks, by token. While reachable it traces its private's native edges through the
+//! embedder's trace hook (see `ScriptPrivateTraceHook`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
 use v8::cppgc::{GarbageCollected, Visitor, WeakPersistent};
 
-use crate::gc::RootKind;
-use crate::jsapi::{JSContext, ScriptPrivateReferenceHook};
-use crate::jsval::{JSVal, UndefinedValue};
+use crate::jsapi::JSContext;
+use crate::jsval::JSVal;
+use crate::script_impl::HostPrivate;
 
 const PRIVATE_WRAP_TAG: u16 = 2;
 const SWEEP_MIN: usize = 256;
 
 struct PrivateData {
-    value: Cell<JSVal>,
-    release: Cell<ScriptPrivateReferenceHook>,
+    private: Cell<HostPrivate>,
 }
 
 impl PrivateData {
-    fn replace(&self, value: JSVal, release: ScriptPrivateReferenceHook) {
-        let old = self.value.replace(value);
-        let old_release = self.release.replace(release);
-        if !old.is_undefined() {
-            if let Some(release) = old_release {
-                // Reference hooks follow SpiderMonkey's non-GC retain/release contract.
-                unsafe { release(&old) };
-            }
-        }
+    /// Installs `private` (already retained), then releases the previous one: from then on
+    /// only the new private and its own hooks are traced.
+    fn replace(&self, private: HostPrivate) {
+        self.private.replace(private).release();
     }
 
     fn clear(&self) {
-        self.replace(UndefinedValue(), None);
+        self.replace(HostPrivate::NONE);
     }
 }
 
 unsafe impl GarbageCollected for PrivateData {
     fn trace(&self, visitor: &mut Visitor) {
-        self.value.get().trace_root(visitor);
+        self.private.get().trace(visitor);
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -108,7 +103,7 @@ impl ScriptMetadata {
 
     pub(crate) fn private(&self, id: i32) -> Option<JSVal> {
         let entries = self.entries.borrow();
-        Some(entries.get(&id)?.data.as_ref()?.get()?.value.get())
+        Some(entries.get(&id)?.data.as_ref()?.get()?.private.get().value())
     }
 
     /// The private of the source whose host token is `token` (`None`: the token has no
@@ -120,7 +115,7 @@ impl ScriptMetadata {
         let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
         // SAFETY: the pointer stays on the stack while the holder (a local) keeps it alive.
         let data = unsafe { v8::Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder) }?;
-        Some(unsafe { data.as_ref() }.value.get())
+        Some(unsafe { data.as_ref() }.private.get().value())
     }
 
     pub(crate) fn set(
@@ -153,10 +148,7 @@ impl ScriptMetadata {
             let data = unsafe {
                 v8::cppgc::make_garbage_collected(
                     heap,
-                    PrivateData {
-                        value: Cell::new(UndefinedValue()),
-                        release: Cell::new(None),
-                    },
+                    PrivateData { private: Cell::new(HostPrivate::NONE) },
                 )
             };
             // Unique tag; the local holder owns the cppgc object before another allocation.
@@ -170,8 +162,7 @@ impl ScriptMetadata {
         };
         // The script/token and WeakMap keep this data alive. Reference hooks cannot GC;
         // call them outside the index borrow and retain before releasing identical data.
-        crate::script_impl::retain_private(cx, value);
-        unsafe { &*data }.replace(value, crate::script_impl::private_release_hook(cx));
+        unsafe { &*data }.replace(HostPrivate::retain(cx, value));
         Some(())
     }
 

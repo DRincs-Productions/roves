@@ -2303,6 +2303,290 @@ mod scripts {
     }
 }
 
+/// Native privates whose JS edges only the embedder's trace hook reports, as Servo's
+/// `ModuleScript` holds its owner global.
+mod traced_privates {
+    use std::cell::{Cell, RefCell};
+    use std::collections::HashMap;
+    use std::ffi::CString;
+    use std::ptr;
+    use std::rc::{Rc, Weak};
+
+    use super::{describe, eval};
+    use crate::gc::Heap;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
+
+    struct NativeOwner {
+        owner: Heap<*mut JSObject>,
+    }
+
+    thread_local! {
+        /// Engine-owned references per private, as the reference hooks report them.
+        static ENGINE_REFS: RefCell<HashMap<usize, isize>> = RefCell::new(HashMap::new());
+        static RETAINS: Cell<usize> = const { Cell::new(0) };
+        static RELEASES: Cell<usize> = const { Cell::new(0) };
+        static TRACES: Cell<usize> = const { Cell::new(0) };
+        static STALE_TRACE: Cell<bool> = const { Cell::new(false) };
+        static RELEASE_WITHOUT_RUNTIME: Cell<bool> = const { Cell::new(false) };
+        static OWNERS_FINALIZED: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    fn reset() {
+        ENGINE_REFS.with(|refs| refs.borrow_mut().clear());
+        for counter in [&RETAINS, &RELEASES, &TRACES] {
+            counter.with(|count| count.set(0));
+        }
+        STALE_TRACE.with(|flag| flag.set(false));
+        RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(false));
+        OWNERS_FINALIZED.with(|finalized| finalized.borrow_mut().clear());
+    }
+
+    fn count(counter: &'static std::thread::LocalKey<Cell<usize>>) -> usize {
+        counter.with(Cell::get)
+    }
+
+    fn owners_finalized() -> Vec<i32> {
+        OWNERS_FINALIZED.with(|finalized| finalized.borrow().clone())
+    }
+
+    fn native_owner(value: *const JSVal) -> *const NativeOwner {
+        unsafe { (*value).to_private() as *const NativeOwner }
+    }
+
+    fn engine_refs(pointer: *const NativeOwner) -> isize {
+        ENGINE_REFS.with(|refs| refs.borrow().get(&(pointer as usize)).copied().unwrap_or(0))
+    }
+
+    unsafe extern "C" fn retain(value: *const JSVal) {
+        let pointer = native_owner(value);
+        unsafe { Rc::increment_strong_count(pointer) };
+        ENGINE_REFS.with(|refs| *refs.borrow_mut().entry(pointer as usize).or_default() += 1);
+        RETAINS.with(|count| count.set(count.get() + 1));
+    }
+
+    unsafe extern "C" fn release(value: *const JSVal) {
+        let pointer = native_owner(value);
+        if Runtime::get().is_none() {
+            RELEASE_WITHOUT_RUNTIME.with(|flag| flag.set(true));
+        }
+        ENGINE_REFS.with(|refs| *refs.borrow_mut().entry(pointer as usize).or_default() -= 1);
+        RELEASES.with(|count| count.set(count.get() + 1));
+        unsafe { Rc::decrement_strong_count(pointer) };
+    }
+
+    /// Reports the owner edge, as Servo's hook traces `ModuleScript` (no assertions: an
+    /// unwinding extern callback aborts).
+    unsafe extern "C" fn trace(trc: *mut JSTracer, value: *const JSVal) {
+        let pointer = native_owner(value);
+        TRACES.with(|count| count.set(count.get() + 1));
+        if engine_refs(pointer) <= 0 {
+            STALE_TRACE.with(|flag| flag.set(true));
+            return;
+        }
+        unsafe { crate::glue::CallObjectTracer(trc, &(*pointer).owner as *const _ as *mut _, c"owner".as_ptr()) };
+    }
+
+    unsafe extern "C" fn finalize(_gcx: *mut GCContext, obj: *mut JSObject) {
+        let mut slot = UndefinedValue();
+        // SAFETY: the finalize hook may read the reserved slots.
+        unsafe { JS_GetReservedSlot(obj, 0, &mut slot) };
+        if slot.is_int32() {
+            OWNERS_FINALIZED.with(|finalized| finalized.borrow_mut().push(slot.to_int32()));
+        }
+    }
+
+    static OPS: JSClassOps = JSClassOps {
+        addProperty: None,
+        delProperty: None,
+        enumerate: None,
+        newEnumerate: None,
+        resolve: None,
+        mayResolve: None,
+        finalize: Some(finalize),
+        call: None,
+        construct: None,
+        trace: None,
+    };
+
+    static CLASS: JSClass = JSClass {
+        name: c"PrivateOwner".as_ptr(),
+        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT | crate::object::JSCLASS_FOREGROUND_FINALIZE,
+        cOps: &OPS,
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    /// A native private whose owner object (id `id`) has a `marker` expando and, when given,
+    /// a `callback` property set to the value of `callback`.
+    fn new_owner(runtime: &Runtime, id: i32, callback: Option<&str>) -> Rc<NativeOwner> {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
+        unsafe { JS_SetReservedSlot(object.get(), 0, &Int32Value(id)) };
+        rooted!(in(cx) let marker = eval(runtime, &format!("'owner {id}'")));
+        assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"marker".as_ptr(), marker.handle().into()) });
+        if let Some(callback) = callback {
+            rooted!(in(cx) let callback = eval(runtime, callback));
+            assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"callback".as_ptr(), callback.handle().into()) });
+        }
+        let owner = Rc::new(NativeOwner { owner: Heap::default() });
+        owner.owner.set(object.get());
+        owner
+    }
+
+    fn marker(runtime: &Runtime, owner: &Weak<NativeOwner>) -> std::string::String {
+        let cx = runtime.raw_cx();
+        let owner = owner.upgrade().expect("a live native owner");
+        rooted!(in(cx) let object = owner.owner.get());
+        rooted!(in(cx) let mut marker = UndefinedValue());
+        assert!(unsafe { JS_GetProperty(cx, object.handle().into(), c"marker".as_ptr(), marker.handle_mut().into()) });
+        describe(runtime, marker.get())
+    }
+
+    fn private_of(owner: Option<&Weak<NativeOwner>>) -> JSVal {
+        owner.map_or(UndefinedValue(), |owner| PrivateValue(owner.as_ptr().cast()))
+    }
+
+    /// Full collections of both heaps.
+    fn collect(runtime: &mut Runtime) {
+        for _ in 0..3 {
+            let isolate = unsafe { &mut *(*runtime.raw_cx()).isolate };
+            isolate.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+            isolate.low_memory_notification();
+            runtime.gc_for_testing();
+        }
+    }
+
+    /// A classic source whose native private owns an object holding a function of that
+    /// source: a cycle through native code. Returns the private and whether its owner was
+    /// finalized while the source was still reachable.
+    fn classic_owner_cycle(runtime: &mut Runtime) -> (Weak<NativeOwner>, bool) {
+        let cx = runtime.raw_cx();
+        let weak = {
+            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("traced-owner.js").unwrap(), 1);
+            let mut source = transform_str_to_source_text("globalThis.ownedFunction = function(){ return 7 }");
+            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
+            rooted!(in(cx) let mut result = UndefinedValue());
+            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
+            let owner = new_owner(runtime, 1, Some("ownedFunction"));
+            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            Rc::downgrade(&owner)
+        };
+        assert_eq!(weak.strong_count(), 1, "the engine owns the only reference");
+        collect(runtime);
+        assert_eq!(eval(runtime, "ownedFunction()").to_int32(), 7);
+        (weak, owners_finalized().contains(&1))
+    }
+
+    #[test]
+    fn traced_native_private_keeps_its_owner_and_collects_with_its_source() {
+        reset();
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        unsafe {
+            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
+            SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
+        }
+        let (weak, finalized_while_reachable) = classic_owner_cycle(&mut runtime);
+        assert!(!finalized_while_reachable, "the trace hook keeps the owner of a reachable source");
+        assert!(count(&TRACES) > 0);
+        assert_eq!(marker(&runtime, &weak), "owner 1", "the owner keeps its expando");
+        eval(&runtime, "delete globalThis.ownedFunction");
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none(), "the dead source releases its private");
+        assert_eq!(count(&RELEASES), 1);
+        assert_eq!(owners_finalized(), vec![1], "the source/private/owner cycle collects");
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![1], "the owner is finalized once");
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "no release at shutdown after the GC one");
+        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
+    fn untraced_native_private_edges_do_not_keep_their_owner() {
+        reset();
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        unsafe { SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release)) };
+        let (weak, finalized_while_reachable) = classic_owner_cycle(&mut runtime);
+        assert!(finalized_while_reachable, "without a trace hook nothing reports the owner edge");
+        assert!(weak.upgrade().is_some(), "the private itself is still owned by the source");
+        assert_eq!(count(&TRACES), 0);
+        eval(&runtime, "delete globalThis.ownedFunction");
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none());
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
+    }
+
+    #[test]
+    fn module_and_json_privates_trace_only_their_current_owner() {
+        reset();
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        unsafe {
+            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
+            SetScriptPrivateTraceHook(runtime.rt(), Some(trace));
+        }
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("traced-module.js").unwrap(), 1);
+        let mut module_source = transform_str_to_source_text("export const value = 42");
+        let mut json_source = transform_str_to_source_text("42");
+        rooted!(in(cx) let module = unsafe { CompileModule1(cx, options.ptr, &mut module_source) });
+        rooted!(in(cx) let json = unsafe { CompileJsonModule1(cx, options.ptr, &mut json_source) });
+        assert!(!module.get().is_null() && !json.get().is_null());
+        let set = |record: *mut JSObject, owner: Option<&Weak<NativeOwner>>| unsafe { SetModulePrivate(record, &private_of(owner)) };
+        let read = |record: *mut JSObject| {
+            rooted!(in(cx) let mut read = UndefinedValue());
+            unsafe { crate::glue::JS_GetModulePrivate(record, read.handle_mut().into()) };
+            read.get()
+        };
+        // Sets a new owner `id` as `record`'s private, the engine being its only owner.
+        fn give(runtime: &Runtime, record: *mut JSObject, id: i32) -> Weak<NativeOwner> {
+            let owner = new_owner(runtime, id, None);
+            unsafe { SetModulePrivate(record, &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            Rc::downgrade(&owner)
+        }
+        let first = give(&runtime, module.get(), 1);
+        let first_json = give(&runtime, json.get(), 4);
+        collect(&mut runtime);
+        assert!(owners_finalized().is_empty(), "the source module and JSON privates trace their owners");
+        assert_eq!((marker(&runtime, &first), marker(&runtime, &first_json)), ("owner 1".to_owned(), "owner 4".to_owned()));
+        assert_eq!(read(module.get()), private_of(Some(&first)));
+        assert_eq!(read(json.get()), private_of(Some(&first_json)));
+
+        // Replacement releases the old owner at once; only the new one is traced from then on.
+        let second = give(&runtime, module.get(), 2);
+        assert!(first.upgrade().is_none());
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![1]);
+        assert_eq!(marker(&runtime, &second), "owner 2");
+        // Undefined clears the private.
+        set(module.get(), None);
+        assert!(second.upgrade().is_none() && read(module.get()).is_undefined());
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![1, 2]);
+        // Re-setting the same private retains before it releases.
+        let third = give(&runtime, module.get(), 3);
+        set(module.get(), Some(&third));
+        assert_eq!(third.strong_count(), 1);
+        let second_json = give(&runtime, json.get(), 5);
+        assert!(first_json.upgrade().is_none(), "the replaced JSON private is released");
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![1, 2, 4]);
+        assert_eq!((marker(&runtime, &third), marker(&runtime, &second_json)), ("owner 3".to_owned(), "owner 5".to_owned()));
+        assert_eq!(read(json.get()), private_of(Some(&second_json)));
+        let owners = [first, second, third, first_json, second_json];
+        drop(runtime);
+        assert!(owners.iter().all(|owner| owner.upgrade().is_none()), "shutdown releases the remaining owners");
+        assert_eq!(count(&RETAINS), count(&RELEASES));
+        assert_eq!(count(&RETAINS), 6);
+        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+}
+
 mod values {
     use std::ptr;
 

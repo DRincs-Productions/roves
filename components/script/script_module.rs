@@ -24,9 +24,10 @@ use js::gc::{HandleObject, MutableHandleValue};
 use js::jsapi::{
     CallArgs, ExceptionStackBehavior, GetFunctionNativeReserved, GetModuleResolveHook,
     Handle as RawHandle, HandleValue as RawHandleValue, Heap, JS_GetFunctionObject,
-    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, ModuleErrorBehaviour,
-    ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook, SetModuleMetadataHook,
-    SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks, Value,
+    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, JSTracer,
+    ModuleErrorBehaviour, ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook,
+    SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook,
+    SetScriptPrivateReferenceHooks, SetScriptPrivateTraceHook, Value,
 };
 use js::jsval::{JSVal, PrivateValue, UndefinedValue};
 use js::realm::CurrentRealm;
@@ -61,9 +62,9 @@ use crate::dom::bindings::error::{
 };
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::refcounted::Trusted;
-use crate::dom::bindings::root::DomRoot;
+use crate::dom::bindings::root::{Dom, DomRoot};
 use crate::dom::bindings::str::DOMString;
-use crate::dom::bindings::trace::RootedTraceableBox;
+use crate::dom::bindings::trace::{JSTraceable, RootedTraceableBox};
 use crate::dom::csp::{GlobalCspReporting, Violation};
 use crate::dom::globalscope::GlobalScope;
 use crate::dom::globalscope::script_execution::{ErrorReporting, fill_compile_options};
@@ -141,17 +142,28 @@ impl Clone for RethrowError {
     }
 }
 
+/// A script's host-defined data, owned by the JS engine through the script or module
+/// private (see `host_add_ref_top_level_script`).
+///
+/// # Safety
+/// This can be shared inside an Rc because the engine traces it, through
+/// `host_trace_top_level_script`, for as long as its script or module keeps the private:
+/// the owner global is a traced edge, not a root.
+#[derive(JSTraceable)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::allow_unrooted_in_rc)]
 pub(crate) struct ModuleScript {
+    #[no_trace]
     pub(crate) base_url: ServoUrl,
     pub(crate) options: ScriptFetchOptions,
-    pub(crate) owner: Option<Trusted<GlobalScope>>,
+    pub(crate) owner: Option<Dom<GlobalScope>>,
 }
 
 impl ModuleScript {
     pub(crate) fn new(
         base_url: ServoUrl,
         options: ScriptFetchOptions,
-        owner: Option<Trusted<GlobalScope>>,
+        owner: Option<Dom<GlobalScope>>,
     ) -> Self {
         ModuleScript {
             base_url,
@@ -291,7 +303,8 @@ impl ModuleTree {
         let mut realm = enter_auto_realm(cx, global);
         let cx = &mut *realm;
 
-        let owner = Trusted::new(global);
+        // Roots the owner until the module private traces it.
+        let owner = DomRoot::from_ref(global);
 
         // Step 2. Let script be a new module script that this algorithm will subsequently initialize.
         // Step 6. Set script's parse error and error to rethrow to null.
@@ -346,7 +359,11 @@ impl ModuleTree {
             // Step 3. Set script's settings object to settings.
             // Step 4. Set script's base URL to baseURL.
             // Step 5. Set script's fetch options to options.
-            let module_script_data = Rc::new(ModuleScript::new(url.clone(), options, Some(owner)));
+            let module_script_data = Rc::new(ModuleScript::new(
+                url.clone(),
+                options,
+                Some(Dom::from_ref(&*owner)),
+            ));
 
             SetModulePrivate(
                 module_script.get(),
@@ -484,7 +501,7 @@ impl ModuleTree {
         specifier: DOMString,
     ) -> Fallible<ServoUrl> {
         // Step 1~3 to get settingsObject and baseURL
-        let script_global = script.and_then(|s| s.owner.as_ref().map(|o| o.root()));
+        let script_global = script.and_then(|s| s.owner.as_ref().map(Dom::as_rooted));
         // Step 1. Let settingsObject and baseURL be null.
         let (global, base_url): (&GlobalScope, &ServoUrl) = match script {
             // Step 2. If referringScript is not null, then:
@@ -874,6 +891,7 @@ pub(crate) unsafe fn EnsureModuleHooksInitialized(rt: *mut JSRuntime) {
             Some(host_add_ref_top_level_script),
             Some(host_release_top_level_script),
         );
+        SetScriptPrivateTraceHook(rt, Some(host_trace_top_level_script));
         SetModuleDynamicImportHook(rt, Some(host_import_module_dynamically));
     }
 }
@@ -886,6 +904,13 @@ unsafe extern "C" fn host_add_ref_top_level_script(value: *const Value) {
 #[expect(unsafe_code)]
 unsafe extern "C" fn host_release_top_level_script(value: *const Value) {
     unsafe { Rc::decrement_strong_count((*value).to_private() as *const ModuleScript) };
+}
+
+/// Traces a script private's edges (its owner global) during GC; the engine calls it only
+/// while it holds a reference to the private.
+#[expect(unsafe_code)]
+unsafe extern "C" fn host_trace_top_level_script(trc: *mut JSTracer, value: *const Value) {
+    unsafe { (*((*value).to_private() as *const ModuleScript)).trace(trc) };
 }
 
 #[expect(unsafe_code)]

@@ -71,6 +71,8 @@ code see that module's private. This can reduce V8's compilation-cache reuse for
 module sources; it has not been measured. `import()` inside direct `eval` code is also checked:
 it resolves against the module or script that contains the `eval`, as in browsers (code created
 with `new Function` does not yet inherit its caller's owner).
+A module's owner page is now a reference the collector traces, not a permanent root; realm and
+module tables still keep pages and modules alive, so this saves no memory yet (not measured).
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe

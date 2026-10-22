@@ -3,11 +3,13 @@
 ## Da leggere alla prossima ripresa
 
 **Stato pubblicato:** codice fino a f4e6edcd3ac (0269/0270), HEAD documentale e709fb3f10b; wiki 1c12873.
-0271 revisionata e verificata in locale; pubblicazione vincolata alla conclusione della CI precedente.
+0271 committata in locale (683686b2feb); 0272 revisionata da Codex e pronta al commit. Pubblicazione di entrambe vincolata alla conclusione della CI precedente.
 Batch corrente: V8 39737640415, generale 39737640441, Android 39737640406 e iOS 39737640414.
-Ultima lettura 22 ottobre, mattina: sei runtime V8 e build macOS verdi; Windows e Linux in corso.
-Generale: replay patch, SDL e bundle deb verdi; altri bundle in corso. Android e iOS verdi.
-Nessuna di queste verifiche copre ancora 0271.
+Ultima lettura 22 ottobre, ore 09:41: V8 verde 10/10; generale verde 12/13, ultimo bundle Linux
+portable in corso nelle unit test. Android e iOS verdi; wiki 39737611854 verde.
+I log Linux normal 119686997929 e JIT-less 119686998238 confermano tutti i marker GC e
+module owners left/right prima/dopo raccolta, incluso gc result pass. Gli smoke Windows/macOS
+restano saltati. Queste run verificano 0269/0270, non 0271/0272.
 Le successive modifiche di sola documentazione non cambiano quel codice e non avviano
 la workflow V8, che filtra i percorsi. Non cercare necessariamente una run V8 sullo SHA
 dell'ultimo commit documentale: partire dalle run sotto e controllare il loro head_sha.
@@ -29,7 +31,7 @@ Le verifiche del push precedente consentono quindi il prossimo push secondo AGEN
 verde dopo retry (run 39677942329). Le cancellazioni iniziali erano mancate assegnazioni
 di runner; il loro superamento è verificato dai retry, non presunto.
 
-**0269 (pubblicata, browser CI pendente):** smoke GC browser opt-in che riusa
+**0269 (pubblicata, browser Linux normal/JIT-less verificato):** smoke GC browser opt-in che riusa
 `TestUtils.gc()` di Servo. `TestUtils.webidl` perde `skip-unless CARGO_FEATURE_TESTBINDING`;
 `dom/mod.rs` dichiara `testutils` fuori dal gate `testbinding` (rimosso da `testing/mod.rs`);
 esposizione ancora dietro `dom_testutils_enabled`, default false. `run.sh` avvia un processo
@@ -39,11 +41,11 @@ separato con `--pref dom_testutils_enabled=true` su `gc-lifecycle.html` via HTTP
 closure, raccolta effettiva via WeakRef di nodi DOM non collegati e cicli JS, `import()` da una
 funzione compilata da uno script classico rimosso (42) e raccolta della funzione abbandonata.
 Contratti runner WSL 9/9, test generatore V8 75/75, binding TestUtils emesso senza testbinding,
-replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e browser
-attendono la CI. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
+replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e smoke
+browser Linux normal/JIT-less confermati dalla run 39737640415. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
 navigazione; nessuna misura prestazionale.
 
-**0270 (pubblicata, browser CI pendente):** identità per sorgente dei moduli V8.
+**0270 (pubblicata, browser Linux normal/JIT-less verificato):** identità per sorgente dei moduli V8.
 Corretti tre difetti: (1) il lookup del private del chiamante prendeva `entries.first()` del
 bucket per hash d'identità, che può collidere; (2) la cache di compilazione V8 condivideva lo
 stesso script (id `Some(7), Some(7)`) fra moduli con sorgente e nome identici, sovrascrivendo
@@ -63,7 +65,7 @@ Claude non aveva accesso MCP; Codex ha verificato separatamente la sola fase mod
 con Chrome DevTools MCP: Chrome155 Windows x64, pagina loopback gc-lifecycle.html,
 scheda aperta in background ma visibilityState visible, headless non determinato.
 Risultato owners left/right; TestUtils undefined. Nessuna GC Chrome né misura prestazionale.
-La prova completa GC/browser Roves e la compilazione servoshell attendono la CI.
+GC/browser Linux normal/JIT-less e build servoshell confermati dalla run 39737640415.
 Possibile minore riuso della cache di compilazione per moduli identici, non misurato. Restano
 aperte retention strutturale realm/moduli e identità di navigazione.
 
@@ -89,6 +91,27 @@ Codex ha verificato la sola fase evalImportOwner via Chrome DevTools MCP: Chrome
 pagina loopback, scheda in background ma visibilityState visible, headless non determinato;
 owners left/right, TestUtils undefined. Nessuna raccolta Chrome o verifica browser Roves.
 
+**0272 (revisionata localmente, compilazione servoshell pendente in CI):** owner di
+`ModuleScript` tracciato dalla VM. Prima `ModuleScript.owner` era `Option<Trusted<GlobalScope>>`,
+radice esterna mantenuta finché esisteva il private `Rc`. Nuova estensione roves-js
+`SetScriptPrivateTraceHook` (firma di `SetScriptPrivateReferenceHooks` invariata): `HostPrivate`
+cattura valore, release e trace quando il private viene impostato, condiviso da `PrivateData` e dai
+private JSON; il valore è tracciato come prima e l'hook solo se non undefined. Sostituzione: retain
+del nuovo, installazione, poi release del vecchio; clear/shutdown installano `NONE` prima del
+release. `trace_modules` copia i private JSON fuori dal borrow prima degli hook. Servo:
+`ModuleScript` deriva `JSTraceable` con `owner: Option<Dom<GlobalScope>>`, hook
+`host_trace_top_level_script` registrato in `EnsureModuleHooksInitialized`; `DomRoot` del global fino
+all'aggancio del private e `Dom::as_rooted` nelle letture. Classic ancora `owner: None`;
+`ModuleFetchListener.owner` resta `Trusted`. Test roves-js normal 64/2 ignorati, JIT-less 63/3,
+warning 771 invariati; nuovi `tests::traced_privates` (ciclo owner→funzione→sorgente→private,
+controllo senza hook, modulo sorgente e JSON con replace/undefined/re-set/shutdown, nessun trace
+dopo release). Negativi: senza chiamata all'hook falliscono 2 test; JSON senza hook fallisce 1.
+Replay di 48 patch su v0.5.0 pristine identico a HEAD; dry-run/apply 0272 identici. **Ambito
+parziale:** la tabella `Modules` e i registri realm restano radici forti, quindi realm e moduli non
+diventano raccoglibili; nessun risparmio RAM dimostrato (non misurato). Rischio futuro annotato:
+`import.meta.resolve` conserva il private grezzo in uno slot nativo senza riferimento. Nessuna
+prova browser, nessun MCP Chrome per Claude, nessuna misura CPU/RAM/GPU.
+
 ### Ordine operativo alla prossima ripresa
 
 1. Leggere AGENTS.md e questo riepilogo; verificare stato Git e SHA delle run.
@@ -97,8 +120,9 @@ owners left/right, TestUtils undefined. Nessuna raccolta Chrome o verifica brows
 3. Confermare nei log Linux normal/JIT-less i marker GC e proprietari dei moduli di 0269/0270.
    Gli smoke Windows/macOS sono saltati dalla workflow: le build non equivalgono a prove browser.
 4. Pubblicare 0271 completa e revisionata solo quando il batch precedente lo consente.
-   Prossimi incarichi: private nativi che trattengono GlobalScope e owner di new Function;
-   definire prima il riuso V8/cppgc e i test di raggiungibilità, senza workaround di stack.
+   Revisionare e committare 0272 (owner tracciato), poi pubblicarla con 0271 quando la CI lo consente.
+   Prossimi incarichi: owner di new Function; raggiungibilità della tabella `Modules` (con la
+   correzione del private grezzo di `import.meta.resolve`), senza workaround di stack.
 5. Continuare con le priorità strutturali: raggiungibilità realm/moduli, identità WindowProxy
    dopo navigazione, callback/incumbent, worker e shutdown. Ogni incarico deve produrre
    una modifica coerente, completa e verificabile prima di passare al controllo CI.
@@ -106,7 +130,7 @@ owners left/right, TestUtils undefined. Nessuna raccolta Chrome o verifica brows
    artefatti; solo dopo valutare release e aggiornamento pin dei consumer.
 
 **Non completato:** migrazione complessiva, binding nativi incumbent, conferma CI dello
-smoke GC browser (0269) e dei proprietari dei moduli (0270/0271), owner di `new Function`, retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
+import da eval (0271), compilazione del nuovo owner tracciato (0272), owner di `new Function`, retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
 Le stringhe toString dei costruttori Proxy restano diverse da Chrome; non introdurre
 una sostituzione globale di Function.prototype.toString per nascondere la differenza.
 
@@ -915,3 +939,18 @@ eventuali cambiamenti del comportamento web devono seguire gli standard e avere 
 Procedere per modifiche buildabili: verifica locale pertinente, commit, push, attesa della CI e
 correzione dei fallimenti prima del passo successivo. Non dichiarare conclusa la migrazione
 sulla base di sole compilazioni o dell’avvio della CI.
+
+### Preparazione del prossimo incarico — 0273
+
+Codex ha verificato compiler.cc V8 152: GetFunctionFromValidatedString parte da empty_function,
+ma GetFunctionFromEval sostituisce eval_from_shared con il primo frame JS quando la posizione
+manca. La descrizione 0271 che attribuisce il problema sempre a empty_function è incompleta:
+i trap JS apply/construct di dynamic_code::INSTALL possono diventare quel frame.
+Prossimo incarico: trap Proxy native V8, mantenendo conversione Trusted Types/CSP, autorizzazione
+esatta e compilatore nativo originale; niente parser nostro, stack euristico o nuova dipendenza.
+Verificare tutti e quattro i costruttori, subclass/newTarget, rientri, GC e sorgenti identiche
+anche nello stesso realm. Riferimento Chrome DevTools MCP 155 Windows x64, loopback, tab
+aperta in background ma visible, headless non determinato: due moduli /a/creator.js e
+/b/creator.js con make() identici e new Function che importa ./owner.js danno a/b, anche su
+otto ripetizioni (16 risultati alternati). Nessuna GC o misura prestazionale.
+Prompt dettagliato locale in target/task-0273-native-traps-plan.txt; ricostruibile dai vincoli qui.

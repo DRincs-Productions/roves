@@ -432,11 +432,11 @@ pub(crate) fn host_load_imported_module(
     };
 
     // TODO: investigate providing a `ModuleOwner` to classic scripts.
-    let script_owner = referencing_script.and_then(|script| script.owner.clone());
+    let script_owner = referencing_script.and_then(|script| script.owner.as_ref());
 
     // Step 6.2. Set settingsObject to referencingScript's settings object.
-    if let Some(ref owner) = script_owner {
-        global_scope = owner.root();
+    if let Some(owner) = script_owner {
+        global_scope = owner.as_rooted();
     }
 
     let global = &global_scope.clone();

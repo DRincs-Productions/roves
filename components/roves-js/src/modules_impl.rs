@@ -42,7 +42,7 @@ enum ModuleKind {
     /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
     Source { script_id: i32 },
     /// A synthetic module has no V8 source: its private lives here.
-    Json { value: v8::Global<v8::Value>, private: JSVal },
+    Json { value: v8::Global<v8::Value>, private: crate::script_impl::HostPrivate },
 }
 
 /// The runtime's modules and module hooks.
@@ -57,13 +57,20 @@ pub(crate) struct Modules {
 /// Keeps the modules alive, with JSON privates; a source module's placeholder pins its
 /// host token, which keeps its metadata.
 pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
-    use crate::gc::RootKind;
-    let Ok(entries) = cx.modules.entries.try_borrow() else { return };
-    for entry in entries.values().flatten() {
-        crate::cell::trace_cell(entry.cell, visitor);
-        if let ModuleKind::Json { private, .. } = &entry.kind {
-            private.trace_root(visitor);
+    let mut privates = Vec::new();
+    {
+        let Ok(entries) = cx.modules.entries.try_borrow() else { return };
+        for entry in entries.values().flatten() {
+            crate::cell::trace_cell(entry.cell, visitor);
+            match &entry.kind {
+                ModuleKind::Json { private, .. } if !private.value().is_undefined() => privates.push(*private),
+                _ => {},
+            }
         }
+    }
+    // The embedder's trace hooks run without the module table borrowed.
+    for private in privates {
+        private.trace(visitor);
     }
 }
 
@@ -179,7 +186,7 @@ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCom
             let export = v8::String::new(scope, "default")?;
             let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
             let value = v8::Global::new(scope, parsed);
-            Some(new_record(scope, module, ModuleKind::Json { value, private: UndefinedValue() }))
+            Some(new_record(scope, module, ModuleKind::Json { value, private: crate::script_impl::HostPrivate::NONE }))
         })
         .unwrap_or(std::ptr::null_mut())
 }
@@ -194,7 +201,7 @@ pub unsafe fn IsCyclicModule(module: *mut JSObject) -> bool {
 fn private_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> JSVal {
     let private = with_entry(scope, module, |entry| match &entry.kind {
         ModuleKind::Source { script_id } => Err(*script_id),
-        ModuleKind::Json { private, .. } => Ok(*private),
+        ModuleKind::Json { private, .. } => Ok(private.value()),
     });
     match private {
         Some(Ok(private)) => private,
@@ -207,20 +214,29 @@ pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
     // SAFETY: callers pass a valid value.
     let value = unsafe { *value };
     let cx = JSContext::current();
-    let target = cx.with_scope(|scope| {
+    let kind = cx.with_scope(|scope| {
         let module = module_of(scope, module)?;
-        with_entry(scope, module, |entry| match &mut entry.kind {
+        with_entry(scope, module, |entry| match &entry.kind {
             ModuleKind::Source { script_id } => Err(*script_id),
-            ModuleKind::Json { private, .. } => Ok(std::mem::replace(private, value)),
+            ModuleKind::Json { .. } => Ok(()),
         })
     });
     // Hooks run outside the module table borrow, under the script-source ownership
-    // contract shared with classic scripts, as SpiderMonkey does.
-    match target {
+    // contract shared with classic scripts, as SpiderMonkey does: the new private is
+    // retained before the old one is unlinked and released.
+    match kind {
         Some(Err(script_id)) => crate::script_impl::set_script_private(cx, script_id, value),
-        Some(Ok(old)) => {
-            crate::script_impl::retain_private(cx, value);
-            crate::script_impl::release_private(cx, old);
+        Some(Ok(())) => {
+            let private = crate::script_impl::HostPrivate::retain(cx, value);
+            let old = cx.with_scope(|scope| {
+                let module = module_of(scope, module)?;
+                with_entry(scope, module, |entry| match &mut entry.kind {
+                    ModuleKind::Json { private: slot, .. } => Some(std::mem::replace(slot, private)),
+                    ModuleKind::Source { .. } => None,
+                })?
+            });
+            // Neither hook can GC or touch modules, so the entry is still there.
+            old.unwrap_or(private).release();
         },
         None => {},
     }
@@ -231,12 +247,12 @@ pub(crate) fn release_json_privates(cx: &JSContext) {
     // Hooks can drop embedder objects: invoke them without borrowing the module table.
     let values: Vec<_> = cx.modules.entries.borrow_mut().values_mut().flatten()
         .filter_map(|entry| match &mut entry.kind {
-            ModuleKind::Json { private, .. } => Some(std::mem::replace(private, UndefinedValue())),
+            ModuleKind::Json { private, .. } => Some(std::mem::replace(private, crate::script_impl::HostPrivate::NONE)),
             ModuleKind::Source { .. } => None,
         })
         .collect();
-    for value in values {
-        crate::script_impl::release_private(cx, value);
+    for private in values {
+        private.release();
     }
 }
 

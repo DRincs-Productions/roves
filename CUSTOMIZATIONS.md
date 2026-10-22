@@ -15275,3 +15275,83 @@ holder per source with a private (unchanged for classic scripts, new holder obje
 inline value for source modules), one hidden property per source-module record, one builtin call
 per token lookup; unique host options per source already came with 0270. No CPU, RAM or GPU
 measurement.
+
+## 2026-10-22 - Trace the module-script owner global through the script private
+
+**Files:** `components/roves-js/src/{script_impl.rs,script_metadata.rs,modules_impl.rs,tests.rs}`,
+`components/script/{script_module.rs,module_loading.rs}`
+(`0272-traced-module-script-owner.patch`), README, migration plan and wiki.
+
+**Defect.** `ModuleScript.owner` was `Option<Trusted<GlobalScope>>`. A `Trusted` is a
+refcounted root, so a source module's owner global stayed externally rooted for as long as the
+engine held the module's `Rc<ModuleScript>` private: a native edge the collector could not see,
+which would keep a global (and its whole realm) alive even once everything else about the
+module became unreachable, defeating cycle collection.
+
+**Change.** New Roves extension `SetScriptPrivateTraceHook(runtime, ScriptPrivateTraceHook)`
+(`unsafe extern "C" fn(*mut JSTracer, *const Value)`, no SpiderMonkey counterpart; the existing
+`SetScriptPrivateReferenceHooks` signature is unchanged). The tracer is the running cppgc
+visitor (`glue::tracer`), as for class trace hooks, so embedder `JSTraceable` code works
+unchanged. The hook must only report edges: no allocation, JS, GC or engine table access.
+A small `script_impl::HostPrivate` (value, release hook, trace hook) is captured when a private
+is set and is shared by source metadata (`PrivateData`, classic scripts and source modules) and
+JSON module privates; tracing and releasing never query the context during GC. The private value
+itself is still traced as before; the hook runs only for a non-undefined value. Replacement
+retains the new private, installs it with its own hooks, then releases the old one, so after a
+release nothing traces it; clear and shutdown install `HostPrivate::NONE` before releasing.
+`trace_modules` copies the JSON privates out of the module table before calling embedder hooks,
+so no table borrow is held across them. Poisoning protection, the VM WeakMap ephemeron
+ownership and the 0271 token lifecycle are unchanged.
+
+Servo: `ModuleScript` derives `JSTraceable` (`base_url` is `#[no_trace]`) with the crown
+`must_root` + `allow_unrooted_in_rc` annotations, and `owner` is `Option<Dom<GlobalScope>>`.
+`EnsureModuleHooksInitialized` registers `host_trace_top_level_script` (which calls
+`ModuleScript::trace`) right after the reference hooks, before any private is set.
+`create_a_javascript_module_script` holds a `DomRoot` of the global until the private is
+attached; `resolve_module_specifier` and `host_load_imported_module` root the owner with
+`Dom::as_rooted` before using it. Classic script privates keep `owner: None` (no new classic
+owner semantic). `ModuleFetchListener.owner` stays `Trusted`: async network tasks own it.
+
+**Scope (partial, structural).** This removes one unconditional root; it does not make realms
+or modules collectable. Module records stay in the runtime's `Modules` table for the runtime's
+lifetime, and the placeholder pins each source token, so source-module privates (and now their
+owner edges) are still live until shutdown; realm registries also still root globals. Remaining
+strong roots: `Modules` entries, realm registries, `ModuleFetchListener.owner` while a fetch is
+pending, Servo's module map. Known follow-up hazard once module records become collectable:
+`import.meta.resolve` stores the raw module private in a native function slot without a
+reference, so an escaped resolve function could outlive its `ModuleScript` (pre-existing, not
+changed here).
+
+Tests (`cargo test --offline -p roves-js` in `target/v8-incumbent-audit`, absolute
+`CARGO_TARGET_DIR=target/roves-js`): normal 64 passed / 2 ignored, `--features jitless` 63 / 3;
+771 existing warnings unchanged. New `tests::traced_privates`: an `Rc` native private holding an
+ordinary class object (reserved-slot id, `marker` expando, finalizer counter) which itself holds
+a function of the same classic source — a cycle through native code. With the trace hook the
+owner survives full collections and keeps its expando; once the function is dropped the
+source, private and owner collect, the release runs exactly once and shutdown releases nothing
+more. Without the trace hook (control test) the owner is finalized while the private is still
+alive. Source-module and JSON privates: read back, replacement (old owner released at once and
+finalized, new one kept), undefined, same-private re-set (retain before release), shutdown
+release of the remaining owners, retains equal releases, no trace callback after a release and
+no release without a runtime. Hooks only set flags (no unwinding asserts). All 0266, 0270 and
+0271 tests pass unchanged. Negative scratch variants: skipping the hook call in
+`HostPrivate::trace` fails both reachability tests; tracing JSON privates without the hook fails
+the module/JSON test. Final sources are identical to the tested copies. No generator or fixture
+change, so no runner/codegen run. The Servo side was checked against local types and existing
+patterns only (`Dom::from_ref`/`as_rooted`, `#[no_trace]`, trait import beside the derive);
+**servoshell compilation is pending CI**; no browser run.
+
+Replay: 48 preceding patches filtered to the six files, applied with GNU patch 2.7.6 to the
+pristine v0.5.0 `script_module.rs`/`module_loading.rs` (roves-js paths absent), reproduce
+`HEAD` byte for byte; 0272 dry-run/apply then matches the working tree byte for byte.
+
+Library evaluation: reuses cppgc tracing, `glue::tracer`, Servo's `JSTraceable` derive and
+`Dom`; no dependency, license or platform change. Costs: one indirect call per traced private
+with a value per marking pause (one per live source module plus JSON modules with a private), a
+small Vec copy of JSON privates per pause, one extra word per stored private. No CPU, RAM or GPU
+measurement.
+
+Codex review: final runtime copies and all six replayed files match the working tree.
+Published0269/0270 are now verified by V8 run39737640415 (10/10); Linux normal job119686997929
+and JIT-less119686998238 show every GC and per-module-owner marker passing. This does not
+verify0271/0272. Migration/performance handoffs distinguish these results; no new measurements.

@@ -18,7 +18,7 @@ use std::ffi::{CStr, CString, c_char, c_void};
 use crate::glue::StringCallback;
 use crate::jsapi::{
     EnvironmentChain, Handle, HandleObject, JSContext, JSErrorReport, JSErrorFormatString, JSFunction, JSObject,
-    JSPrincipals, JSRuntime, JSScript, JSString, MutableHandle, MutableHandleObject, MutableHandleValue,
+    JSPrincipals, JSRuntime, JSScript, JSString, JSTracer, MutableHandle, MutableHandleObject, MutableHandleValue,
     ReadOnlyCompileOptions, SavedFrameResult, SavedFrameSelfHosted, ScriptPrivateReferenceHook, SourceText,
     StackCapture, StackFormat, SupportUnscopables, TaggedColumnNumberOneOrigin, Utf8Unit,
 };
@@ -29,27 +29,63 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
     unsafe { &*cx }
 }
 
-/// The runtime's script state: privates by script id, the reference hooks, and the last
-/// error report handed out (with the strings it points at).
+/// Roves extension (no SpiderMonkey counterpart): traces the GC edges an embedder-owned
+/// script private holds (`value` is the private, never undefined). It runs during GC: it
+/// must only report edges through the tracer: no allocation, JS, GC or engine table access.
+pub type ScriptPrivateTraceHook = Option<unsafe extern "C" fn(trc: *mut JSTracer, value: *const JSVal)>;
+
+/// The runtime's script state: privates by script id, the reference and trace hooks, and
+/// the last error report handed out (with the strings it points at).
 #[derive(Default)]
 pub(crate) struct Scripts {
     metadata: crate::script_metadata::ScriptMetadata,
     reference_hooks: std::cell::Cell<(ScriptPrivateReferenceHook, ScriptPrivateReferenceHook)>,
+    trace_hook: std::cell::Cell<ScriptPrivateTraceHook>,
     last_report: std::cell::RefCell<Option<(Box<JSErrorReport>, CString, CString)>>,
 }
 
-pub(crate) fn retain_private(cx: &JSContext, value: JSVal) {
-    if !value.is_undefined() {
-        if let Some(add_ref) = cx.scripts.reference_hooks.get().0 {
-            unsafe { add_ref(&value) };
-        }
-    }
+/// A script or module private, with the release and trace hooks current when it was set:
+/// tracing and releasing it never query the context (GC may run them).
+#[derive(Clone, Copy)]
+pub(crate) struct HostPrivate {
+    value: JSVal,
+    release: ScriptPrivateReferenceHook,
+    trace: ScriptPrivateTraceHook,
 }
 
-pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
-    if !value.is_undefined() {
-        if let Some(release) = cx.scripts.reference_hooks.get().1 {
-            unsafe { release(&value) };
+impl HostPrivate {
+    pub(crate) const NONE: HostPrivate = HostPrivate { value: UndefinedValue(), release: None, trace: None };
+
+    /// Takes the embedder's reference to `value` (none for undefined).
+    pub(crate) fn retain(cx: &JSContext, value: JSVal) -> HostPrivate {
+        if value.is_undefined() {
+            return HostPrivate::NONE;
+        }
+        let (add_ref, release) = cx.scripts.reference_hooks.get();
+        if let Some(add_ref) = add_ref {
+            unsafe { add_ref(&value) };
+        }
+        HostPrivate { value, release, trace: cx.scripts.trace_hook.get() }
+    }
+
+    pub(crate) fn value(&self) -> JSVal {
+        self.value
+    }
+
+    /// The private value itself and, through the embedder's hook, the edges it holds.
+    pub(crate) fn trace(&self, visitor: &mut v8::cppgc::Visitor) {
+        use crate::gc::RootKind;
+        self.value.trace_root(visitor);
+        if let (false, Some(trace)) = (self.value.is_undefined(), self.trace) {
+            unsafe { trace(crate::glue::tracer(visitor), &self.value) };
+        }
+    }
+
+    /// Drops the embedder's reference. Callers first unlink the private from what traces it.
+    pub(crate) fn release(self) {
+        if let (false, Some(release)) = (self.value.is_undefined(), self.release) {
+            // Reference hooks follow SpiderMonkey's non-GC retain/release contract.
+            unsafe { release(&self.value) };
         }
     }
 }
@@ -59,10 +95,6 @@ pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
 pub(crate) fn release_runtime_privates(cx: &JSContext) {
     cx.scripts.metadata.release_all();
     crate::modules_impl::release_json_privates(cx);
-}
-
-pub(crate) fn private_release_hook(cx: &JSContext) -> ScriptPrivateReferenceHook {
-    cx.scripts.reference_hooks.get().1
 }
 
 pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> Option<()> {
@@ -359,6 +391,13 @@ pub unsafe fn JS_GetScriptPrivate(script: *mut JSScript, mut dest: MutableHandle
 pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: ScriptPrivateReferenceHook, release: ScriptPrivateReferenceHook) {
     // A runtime pointer is its raw context (see `rust::Runtime::rt`).
     raw(rt as *mut JSContext).scripts.reference_hooks.set((add_ref, release));
+}
+
+/// Sets the hook tracing script and module privates set from now on (see
+/// `ScriptPrivateTraceHook`); privates already set keep the hook they were set with.
+pub unsafe fn SetScriptPrivateTraceHook(rt: *mut JSRuntime, trace: ScriptPrivateTraceHook) {
+    // A runtime pointer is its raw context (see `rust::Runtime::rt`).
+    raw(rt as *mut JSContext).scripts.trace_hook.set(trace);
 }
 
 /// The innermost scripted frame (none when no script is running).
