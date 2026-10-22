@@ -108,7 +108,11 @@ Non promettere un risparmio percentuale senza misure confrontabili.
 Dopo ogni push, identificare le run CI associate al commit pubblicato con un'unica lettura
 aggregata. Se esiste altro lavoro utile e autorizzato, avviare il prossimo incarico circoscritto
 secondo i limiti sopra; non usare l'attesa per aprire ricerche senza limite.
-Si possono creare liberamente commit locali durante l'attesa, ma non pubblicarli ancora.
+**La CI in corso non è un motivo per interrompere lo sviluppo.** Se nessuna run è fallita,
+proseguire autonomamente con il prossimo lavoro utile e autorizzato, completare e revisionare
+le modifiche e creare i relativi commit locali. Non fermarsi al solo resoconto del push o
+per attendere la CI; il vincolo durante l'attesa riguarda il push. Non pubblicare i commit
+accumulati finché il batch precedente non lo consente secondo le regole sotto.
 Al completamento di ciascuna implementazione, controllare tutte le run del push precedente:
 
 - **Anche una sola CI rossa:** analizzare subito log e causa, delegare e completare la

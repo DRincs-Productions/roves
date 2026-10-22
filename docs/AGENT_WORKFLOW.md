@@ -1,3 +1,9 @@
+## Prosecuzione durante la CI
+
+Con run attive e nessuna fallita, continuare il lavoro utile autorizzato, revisionare e
+committare in locale senza push. Non terminare il ciclo soltanto perché la CI è in corso.
+Controllare il batch al completamento delle implementazioni; pubblicare secondo AGENTS.md.
+
 ## Eccezione operativa corrente
 
 L'utente ha corretto la lettura della quota Codex (97% residuo) e richiesto sviluppo diretto

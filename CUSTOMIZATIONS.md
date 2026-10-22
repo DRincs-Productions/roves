@@ -15735,3 +15735,10 @@ Updated docs/V8_MIGRATION.md: user explicitly requested cancelling the active pr
 and publishing completed0281. GitHub accepted cancellation of runs39842644716/39842644668.
 Cancellation is not validation; the next batch must verify the new checkpoint. No source
 change or new source patch; permanent CI publication policy remains unchanged.
+
+
+## 2026-10-22 - Clarify development while CI is active
+
+Reinforced existing AGENTS.md rule: active CI without failures does not stop authorized
+development, review or local commits; only publication waits for the preceding batch.
+Updated docs/AGENT_WORKFLOW.md. Process documentation only, no runtime source patch.
