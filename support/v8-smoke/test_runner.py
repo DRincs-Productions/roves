@@ -53,18 +53,22 @@ class ResultsTests(unittest.TestCase):
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
-    def run_fixture(self, scenario, wrapped=False, pref_flag=None):
+    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             runner = HERE / 'run.sh'
-            if pref_flag is not None:
-                # Simulate a runner regression that drops or changes the preference flag.
+            if pref_flag is not None or gc_flag is not None:
+                # Simulate a runner regression that drops or changes a preference flag.
                 copy = directory / 'smoke'
                 copy.mkdir()
                 shutil.copy(HERE / 'check_results.py', copy)
                 source = runner.read_text()
-                self.assertEqual(1, source.count(" --pref js_disable_jit=true\n"))
-                (copy / 'run.sh').write_text(source.replace(" --pref js_disable_jit=true\n", pref_flag + "\n"))
+                for original, replacement in ((" --pref js_disable_jit=true\n", pref_flag),
+                                              (" --pref dom_testutils_enabled=true\n", gc_flag)):
+                    self.assertEqual(1, source.count(original))
+                    if replacement is not None:
+                        source = source.replace(original, replacement + "\n")
+                (copy / 'run.sh').write_text(source)
                 runner = copy / 'run.sh'
             python = shutil.which('python3') or sys.executable
             python_stub = directory / 'python3'
@@ -95,24 +99,48 @@ page = sys.argv[-1].rsplit('/', 1)[-1]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
-if page != 'pref-jitless.html':
-    # Only the dedicated fresh process may change the engine preference.
+if page not in ('pref-jitless.html', 'gc-lifecycle.html'):
+    # Only the dedicated fresh processes may change a preference.
     assert options == [], sys.argv
-if page == 'pref-jitless.html':
-    with open('pref-args.txt', 'w') as received:
+prefs = {}
+if page in ('pref-jitless.html', 'gc-lifecycle.html'):
+    with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
         received.write('\\n'.join(sys.argv[2:browser + 1] + options))
-    if scenario == 'pref-cli' and '--pref' in options:
-        print('error: --pref is not expected in this context', file=sys.stderr)
-        raise SystemExit(1)
     # Like servoshell: each `--pref name[=value]` must name a real preference.
-    jitless = False
     for flag, value in zip(options[::2], options[1::2]):
         assert flag == '--pref', sys.argv
         name, _, setting = value.partition('=')
-        if name != 'js_disable_jit':
+        if name not in ('js_disable_jit', 'dom_testutils_enabled'):
             print(f'panicked: Unknown preference: "{name}"', file=sys.stderr)
             raise SystemExit(101)
-        jitless = setting in ('', 'true')
+        prefs[name] = setting in ('', 'true')
+if page == 'gc-lifecycle.html':
+    if scenario == 'gc-crash':
+        raise SystemExit(139)
+    # Without the preference the TestUtils namespace is not exposed.
+    api = prefs.get('dom_testutils_enabled', False) and scenario != 'gc-api'
+    print('ROVES-V8 gc api ' + str(api).lower())
+    if not api:
+        print('ROVES-V8 gc failure TestUtils.gc unavailable')
+        print('ROVES-V8 gc result fail TestUtils.gc unavailable')
+    elif scenario == 'gc-retention':
+        print('ROVES-V8 gc unreachable dom collected false 12/240 alive after 8 collections')
+        print('ROVES-V8 gc result fail unreachable dom collected')
+    elif scenario != 'gc-result':
+        for line in ('unreachable dom collected true', 'unreachable cycles collected true',
+                     'retained nodes true true true', 'importer compiled true',
+                     'dynamic import after collection 42', 'dropped importer collected true',
+                     'retained nodes final true true true', 'result pass'):
+            if scenario == 'gc-import' and line.startswith('dynamic import'):
+                line = 'dynamic import after collection undefined'
+            if scenario == 'gc-import' and line == 'result pass':
+                line = 'result fail dynamic import'
+            print('ROVES-V8 gc ' + line)
+elif page == 'pref-jitless.html':
+    if scenario == 'pref-cli' and '--pref' in options:
+        print('error: --pref is not expected in this context', file=sys.stderr)
+        raise SystemExit(1)
+    jitless = prefs.get('js_disable_jit', False)
     if scenario == 'pref-crash':
         raise SystemExit(139)
     if scenario == 'pref-wasm':
@@ -125,6 +153,7 @@ elif page == 'test.html':
     print('ROVES-V8 promise 5')
     print('ROVES-V8 timeout fired')
     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
+    print('ROVES-V8 testutils default ' + ('object' if scenario == 'testutils-default' else 'undefined'))
     if scenario != 'immutable-prototype': print('ROVES-V8 ordinary prototype mutation true')
     if scenario != 'window-prototype': print('ROVES-V8 immutable Window prototype true true true true')
     if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
@@ -174,6 +203,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                                     cwd=directory, env=env, capture_output=True, text=True, timeout=20)
             received = directory / 'pref-args.txt'
             result.pref_args = received.read_text().split('\n') if received.exists() else None
+            received = directory / 'gc-args.txt'
+            result.gc_args = received.read_text().split('\n') if received.exists() else None
             return result
 
     def test_complete_and_post_completion_timeout(self):
@@ -185,6 +216,30 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     wrapper = ['wrapper with spaces', '--option'] if wrapped else []
                     self.assertEqual(wrapper + ['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
                     self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
+                    self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
+                    self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                    self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
+
+    def test_gc_lifecycle_failures(self):
+        cases = (
+            ('pass', '', "missing 'ROVES-V8 gc api true' (ROVES-V8 gc api false"),
+            ('pass', ' --pref dom_testutils_enabled=false', "missing 'ROVES-V8 gc api true' (ROVES-V8 gc api false"),
+            ('pass', ' --pref dom_testutils=true', 'gc-lifecycle.html: servoshell exited with 101'),
+            ('gc-api', None, "missing 'ROVES-V8 gc api true'"),
+            ('gc-retention', None, "missing 'ROVES-V8 gc unreachable dom collected true' (ROVES-V8 gc api true ROVES-V8 gc unreachable dom collected false 12/240"),
+            ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
+            ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
+            ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
+        )
+        for scenario, gc_flag, message in cases:
+            with self.subTest(scenario=scenario, gc_flag=gc_flag):
+                result = self.run_fixture(scenario, gc_flag=gc_flag)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
+                self.assertIn(message, result.stdout)
+                self.assertIn('V8 smoke diagnostics: gc-lifecycle.log', result.stdout)
+                # The other preference process keeps its exact flag.
+                self.assertEqual(['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
 
     def test_preference_probe_failures(self):
         cases = (
@@ -204,7 +259,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -219,6 +274,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
                 if scenario == 'constructor-graph':
                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
+                if scenario == 'testutils-default':
+                    self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
 
     def test_completed_suites_do_not_wait_for_the_deadline(self):
         started = time.monotonic()

@@ -119,6 +119,7 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true" 
   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
 done
 if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
+if grep -aFxq 'ROVES-V8 testutils default undefined' test.log; then echo "::notice::test.html: TestUtils hidden by default"; else echo "::error::test.html: TestUtils exposed without dom_testutils_enabled ($(grep -aF 'ROVES-V8 testutils ' test.log | tr '\n' ' '))"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 ordinary prototype mutation true' test.log; then echo "::notice::test.html: ordinary prototype mutation"; else echo "::error::test.html: ordinary prototype mutation failed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 immutable Window prototype true true true true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed ($(grep -aF 'ROVES-V8 cross-origin iframe ' test.log | tr '\n' ' '))"; STATUS=1; fi
@@ -165,10 +166,17 @@ else
   STATUS=1
 fi
 
+# Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
+# hidden in test.html), so it gets its own process. HTTP lets the page import a module.
+run_page gc-lifecycle.html 20 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
+  if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+done
+
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log; do
+  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done

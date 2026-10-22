@@ -327,6 +327,10 @@ pub(crate) use self::svg::*;
 mod testing;
 #[cfg(feature = "testbinding")]
 pub(crate) use self::testing::*;
+// Unlike the other test bindings, TestUtils is always compiled: its namespace stays hidden
+// unless the `dom_testutils_enabled` preference (default false) is set, e.g. by the V8 GC smoke.
+#[path = "testing/testutils.rs"]
+pub(crate) mod testutils;
 pub(crate) mod timeranges;
 pub(crate) mod touch;
 pub(crate) use self::touch::*;

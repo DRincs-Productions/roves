@@ -1,0 +1,167 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js GC lifecycle smoke page</title></head>
+<body><div id="kept"></div>
+<script>
+// Loaded over loopback HTTP in a fresh servoshell process started with
+// `--pref dom_testutils_enabled=true`, which exposes Servo's TestUtils.gc(): a full V8
+// collection queued as its own task. Retained DOM nodes, expandos and closures must survive
+// repeated collections; known unreachable targets, observed only through WeakRefs, must really
+// be collected. This checks reachability from script only: it does not count native
+// finalizers and does not cover realm, module-map or navigation retention.
+"use strict";
+const MAX_COLLECTIONS = 8;
+const KEPT_ATTACHED = 50;
+const KEPT_DETACHED = 20;
+const failures = [];
+const report = (...parts) => console.log("ROVES-V8 gc " + parts.join(" "));
+const fail = reason => { failures.push(reason); report("failure", reason); };
+const check = (name, ok, detail) => { report(name, ok ? "true" : "false " + detail); if (!ok) fail(name); };
+addEventListener("error", event => fail("error " + event.message));
+addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+const consoleError = console.error.bind(console);
+console.error = (...args) => { fail("console.error " + args.join(" ")); consoleError(...args); };
+
+// TestUtils.gc() resolves after its collection task. The timer adds another task boundary, so
+// the next collection starts after the job that created or dereferenced a WeakRef: V8 keeps
+// such targets alive only until the end of that job.
+async function collectOnce() {
+  await TestUtils.gc();
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// deref() keeps a live target for the current job only; no target is stored.
+function aliveCount(refs) {
+  let alive = 0;
+  for (const ref of refs) if (ref.deref() !== undefined) alive++;
+  return alive;
+}
+
+// Collects until every target is gone, at most MAX_COLLECTIONS times. Survivors fail the page.
+async function expectCollected(name, refs) {
+  let alive = refs.length, rounds = 0;
+  while (alive > 0 && rounds < MAX_COLLECTIONS) {
+    await collectOnce();
+    rounds++;
+    alive = aliveCount(refs);
+  }
+  check(name + " collected", alive === 0, `${alive}/${refs.length} alive after ${rounds} collections`);
+}
+
+// The helpers below return only WeakRefs: their targets are unreachable once they return.
+const keptDetached = [];
+function keepNodes() {
+  const container = document.getElementById("kept");
+  for (let i = 0; i < KEPT_ATTACHED; i++) {
+    const node = document.createElement("div");
+    node.className = "kept";
+    node.rovesExpando = { index: i, double: () => i * 2 };
+    node.rovesFired = 0;
+    node.addEventListener("roves-gc", () => { node.rovesFired++; });
+    container.appendChild(node);
+  }
+  for (let i = 0; i < KEPT_DETACHED; i++) {
+    const node = document.createElement("span");
+    node.rovesExpando = { index: i, double: () => i * 2 };
+    node.appendChild(document.createTextNode("kept " + i));
+    keptDetached.push(node);
+  }
+}
+
+function expandoIntact(node, i) {
+  return node.rovesExpando !== undefined && node.rovesExpando.index === i && node.rovesExpando.double() === i * 2;
+}
+
+// Attached nodes are looked up again through the DOM, so their expandos prove the wrappers
+// were preserved rather than recreated; listener closures must still run.
+function checkKept(name) {
+  const attached = Array.from(document.querySelectorAll("#kept > div.kept"));
+  const expandos = attached.length === KEPT_ATTACHED && attached.every(expandoIntact);
+  let closures = attached.length === KEPT_ATTACHED;
+  for (const node of attached) {
+    const before = node.rovesFired;
+    node.dispatchEvent(new Event("roves-gc"));
+    if (node.rovesFired !== before + 1) closures = false;
+  }
+  const detached = keptDetached.length === KEPT_DETACHED &&
+    keptDetached.every((node, i) => expandoIntact(node, i) && node.textContent === "kept " + i);
+  report(name, expandos, closures, detached);
+  if (!(expandos && closures && detached)) fail(name);
+}
+
+function dropNodeBatch(size) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const node = document.createElement("div");
+    node.appendChild(document.createElement("span")).textContent = "dropped " + i;
+    node.rovesSelf = { node, index: i };
+    refs.push(new WeakRef(node));
+  }
+  return refs;
+}
+
+function dropCycleBatch(size) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const a = { index: i };
+    const b = { a };
+    a.b = b;
+    a.next = () => b;
+    refs.push(new WeakRef(a), new WeakRef(b));
+  }
+  return refs;
+}
+
+// A real classic script element compiles the retained importer; the element is then removed.
+function compileImporter() {
+  const script = document.createElement("script");
+  script.textContent = 'globalThis.rovesGcImport = () => import("./gc-module.js");';
+  document.head.appendChild(script);
+  script.remove();
+  return typeof globalThis.rovesGcImport === "function";
+}
+
+async function importThroughRetainedFunction() {
+  const namespace = await globalThis.rovesGcImport();
+  return namespace.default;
+}
+
+function dropImporter() {
+  const ref = new WeakRef(globalThis.rovesGcImport);
+  delete globalThis.rovesGcImport;
+  return [ref];
+}
+
+async function main() {
+  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+  report("api", api);
+  if (!api) {
+    fail("TestUtils.gc unavailable");
+    return;
+  }
+  keepNodes();
+  const nodeRefs = [];
+  const cycleRefs = [];
+  for (let batch = 0; batch < 4; batch++) {
+    nodeRefs.push(...dropNodeBatch(60));
+    cycleRefs.push(...dropCycleBatch(100));
+    await collectOnce();
+  }
+  await expectCollected("unreachable dom", nodeRefs);
+  await expectCollected("unreachable cycles", cycleRefs);
+  checkKept("retained nodes");
+
+  check("importer compiled", compileImporter(), "classic script did not define the importer");
+  await collectOnce();
+  await collectOnce();
+  const value = await importThroughRetainedFunction();
+  report("dynamic import after collection", value);
+  if (value !== 42) fail("dynamic import");
+  await expectCollected("dropped importer", dropImporter());
+  checkKept("retained nodes final");
+}
+
+main()
+  .catch(error => fail("exception " + error.name + " " + error.message))
+  .finally(() => report("result", failures.length === 0 ? "pass" : "fail " + failures.join("; ")));
+</script>
+</body></html>

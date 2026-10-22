@@ -1,0 +1,421 @@
+diff --git a/components/script/dom/mod.rs b/components/script/dom/mod.rs
+index 0f644fd61f1..41ac03abfc5 100644
+--- a/components/script/dom/mod.rs
++++ b/components/script/dom/mod.rs
+@@ -327,6 +327,10 @@ pub(crate) use self::svg::*;
+ mod testing;
+ #[cfg(feature = "testbinding")]
+ pub(crate) use self::testing::*;
++// Unlike the other test bindings, TestUtils is always compiled: its namespace stays hidden
++// unless the `dom_testutils_enabled` preference (default false) is set, e.g. by the V8 GC smoke.
++#[path = "testing/testutils.rs"]
++pub(crate) mod testutils;
+ pub(crate) mod timeranges;
+ pub(crate) mod touch;
+ pub(crate) use self::touch::*;
+diff --git a/components/script/dom/testing/mod.rs b/components/script/dom/testing/mod.rs
+index 59c2dc1b399..3df91d5b43d 100644
+--- a/components/script/dom/testing/mod.rs
++++ b/components/script/dom/testing/mod.rs
+@@ -14,6 +14,5 @@ pub(crate) mod testbindingproxy;
+ pub(crate) mod testbindingsetlikewithinterface;
+ pub(crate) mod testbindingsetlikewithprimitive;
+ pub(crate) mod testns;
+-pub(crate) mod testutils;
+ pub(crate) mod testworklet;
+ pub(crate) mod testworkletglobalscope;
+diff --git a/components/script_bindings/webidls/TestUtils.webidl b/components/script_bindings/webidls/TestUtils.webidl
+index 0a0658683aa..290b2a22138 100644
+--- a/components/script_bindings/webidls/TestUtils.webidl
++++ b/components/script_bindings/webidls/TestUtils.webidl
+@@ -2,8 +2,6 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-// skip-unless CARGO_FEATURE_TESTBINDING
+-
+ // https://testutils.spec.whatwg.org/
+ 
+ [Exposed=(Window,Worker), Pref="dom_testutils_enabled"]
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 6f200c37792..414ee403a82 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -119,6 +119,7 @@ for expected in "ROVES-V8 dom: changed by js" "ROVES-V8 click event click true"
+   if grep -aFq "$expected" test.log; then echo "::notice::test.html: $expected"; else echo "::error::test.html: missing '$expected'"; STATUS=1; fi
+ done
+ if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::notice::test.html: window === globalThis"; else echo "::error::test.html: window === globalThis not confirmed"; STATUS=1; fi
++if grep -aFxq 'ROVES-V8 testutils default undefined' test.log; then echo "::notice::test.html: TestUtils hidden by default"; else echo "::error::test.html: TestUtils exposed without dom_testutils_enabled ($(grep -aF 'ROVES-V8 testutils ' test.log | tr '\n' ' '))"; STATUS=1; fi
+ if grep -aFxq 'ROVES-V8 ordinary prototype mutation true' test.log; then echo "::notice::test.html: ordinary prototype mutation"; else echo "::error::test.html: ordinary prototype mutation failed"; STATUS=1; fi
+ if grep -aFxq 'ROVES-V8 immutable Window prototype true true true true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
+ if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed ($(grep -aF 'ROVES-V8 cross-origin iframe ' test.log | tr '\n' ' '))"; STATUS=1; fi
+@@ -165,10 +166,17 @@ else
+   STATUS=1
+ fi
+ 
++# Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
++# hidden in test.html), so it gets its own process. HTTP lets the page import a module.
++run_page gc-lifecycle.html 20 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
++  if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
++done
++
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+-  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log; do
++  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log; do
+     echo "V8 smoke diagnostics: $page_log"
+     tail -80 "$page_log"
+   done
+diff --git a/support/v8-smoke/test.html b/support/v8-smoke/test.html
+index fc5abf396a0..942cb69a766 100644
+--- a/support/v8-smoke/test.html
++++ b/support/v8-smoke/test.html
+@@ -16,6 +16,8 @@ Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
+ setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
+ class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
+ console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
++// TestUtils is exposed only with the dom_testutils_enabled preference (gc-lifecycle.html).
++console.log("ROVES-V8 testutils default", typeof TestUtils);
+ const immutableProbe = {};
+ Object.setPrototypeOf(immutableProbe, {});
+ console.log("ROVES-V8 ordinary prototype mutation", Object.getPrototypeOf(immutableProbe) !== null);
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 4f406467c63..7fb69e35d30 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -53,18 +53,22 @@ class ResultsTests(unittest.TestCase):
+ 
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+-    def run_fixture(self, scenario, wrapped=False, pref_flag=None):
++    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):
+         with tempfile.TemporaryDirectory() as directory:
+             directory = Path(directory)
+             runner = HERE / 'run.sh'
+-            if pref_flag is not None:
+-                # Simulate a runner regression that drops or changes the preference flag.
++            if pref_flag is not None or gc_flag is not None:
++                # Simulate a runner regression that drops or changes a preference flag.
+                 copy = directory / 'smoke'
+                 copy.mkdir()
+                 shutil.copy(HERE / 'check_results.py', copy)
+                 source = runner.read_text()
+-                self.assertEqual(1, source.count(" --pref js_disable_jit=true\n"))
+-                (copy / 'run.sh').write_text(source.replace(" --pref js_disable_jit=true\n", pref_flag + "\n"))
++                for original, replacement in ((" --pref js_disable_jit=true\n", pref_flag),
++                                              (" --pref dom_testutils_enabled=true\n", gc_flag)):
++                    self.assertEqual(1, source.count(original))
++                    if replacement is not None:
++                        source = source.replace(original, replacement + "\n")
++                (copy / 'run.sh').write_text(source)
+                 runner = copy / 'run.sh'
+             python = shutil.which('python3') or sys.executable
+             python_stub = directory / 'python3'
+@@ -95,24 +99,48 @@ page = sys.argv[-1].rsplit('/', 1)[-1]
+ scenario = os.environ['SMOKE_TEST_SCENARIO']
+ if scenario == 'crash' and page == 'suite.html':
+     raise SystemExit(139)
+-if page != 'pref-jitless.html':
+-    # Only the dedicated fresh process may change the engine preference.
++if page not in ('pref-jitless.html', 'gc-lifecycle.html'):
++    # Only the dedicated fresh processes may change a preference.
+     assert options == [], sys.argv
+-if page == 'pref-jitless.html':
+-    with open('pref-args.txt', 'w') as received:
++prefs = {}
++if page in ('pref-jitless.html', 'gc-lifecycle.html'):
++    with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
+         received.write('\\n'.join(sys.argv[2:browser + 1] + options))
+-    if scenario == 'pref-cli' and '--pref' in options:
+-        print('error: --pref is not expected in this context', file=sys.stderr)
+-        raise SystemExit(1)
+     # Like servoshell: each `--pref name[=value]` must name a real preference.
+-    jitless = False
+     for flag, value in zip(options[::2], options[1::2]):
+         assert flag == '--pref', sys.argv
+         name, _, setting = value.partition('=')
+-        if name != 'js_disable_jit':
++        if name not in ('js_disable_jit', 'dom_testutils_enabled'):
+             print(f'panicked: Unknown preference: "{name}"', file=sys.stderr)
+             raise SystemExit(101)
+-        jitless = setting in ('', 'true')
++        prefs[name] = setting in ('', 'true')
++if page == 'gc-lifecycle.html':
++    if scenario == 'gc-crash':
++        raise SystemExit(139)
++    # Without the preference the TestUtils namespace is not exposed.
++    api = prefs.get('dom_testutils_enabled', False) and scenario != 'gc-api'
++    print('ROVES-V8 gc api ' + str(api).lower())
++    if not api:
++        print('ROVES-V8 gc failure TestUtils.gc unavailable')
++        print('ROVES-V8 gc result fail TestUtils.gc unavailable')
++    elif scenario == 'gc-retention':
++        print('ROVES-V8 gc unreachable dom collected false 12/240 alive after 8 collections')
++        print('ROVES-V8 gc result fail unreachable dom collected')
++    elif scenario != 'gc-result':
++        for line in ('unreachable dom collected true', 'unreachable cycles collected true',
++                     'retained nodes true true true', 'importer compiled true',
++                     'dynamic import after collection 42', 'dropped importer collected true',
++                     'retained nodes final true true true', 'result pass'):
++            if scenario == 'gc-import' and line.startswith('dynamic import'):
++                line = 'dynamic import after collection undefined'
++            if scenario == 'gc-import' and line == 'result pass':
++                line = 'result fail dynamic import'
++            print('ROVES-V8 gc ' + line)
++elif page == 'pref-jitless.html':
++    if scenario == 'pref-cli' and '--pref' in options:
++        print('error: --pref is not expected in this context', file=sys.stderr)
++        raise SystemExit(1)
++    jitless = prefs.get('js_disable_jit', False)
+     if scenario == 'pref-crash':
+         raise SystemExit(139)
+     if scenario == 'pref-wasm':
+@@ -125,6 +153,7 @@ elif page == 'test.html':
+     print('ROVES-V8 promise 5')
+     print('ROVES-V8 timeout fired')
+     if scenario != 'window': print('ROVES-V8 class 2 {"a":[1,2]} true true')
++    print('ROVES-V8 testutils default ' + ('object' if scenario == 'testutils-default' else 'undefined'))
+     if scenario != 'immutable-prototype': print('ROVES-V8 ordinary prototype mutation true')
+     if scenario != 'window-prototype': print('ROVES-V8 immutable Window prototype true true true true')
+     if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
+@@ -174,6 +203,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                                     cwd=directory, env=env, capture_output=True, text=True, timeout=20)
+             received = directory / 'pref-args.txt'
+             result.pref_args = received.read_text().split('\n') if received.exists() else None
++            received = directory / 'gc-args.txt'
++            result.gc_args = received.read_text().split('\n') if received.exists() else None
+             return result
+ 
+     def test_complete_and_post_completion_timeout(self):
+@@ -185,6 +216,30 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     wrapper = ['wrapper with spaces', '--option'] if wrapped else []
+                     self.assertEqual(wrapper + ['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
+                     self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
++                    self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
++                    self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
++                    self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
++
++    def test_gc_lifecycle_failures(self):
++        cases = (
++            ('pass', '', "missing 'ROVES-V8 gc api true' (ROVES-V8 gc api false"),
++            ('pass', ' --pref dom_testutils_enabled=false', "missing 'ROVES-V8 gc api true' (ROVES-V8 gc api false"),
++            ('pass', ' --pref dom_testutils=true', 'gc-lifecycle.html: servoshell exited with 101'),
++            ('gc-api', None, "missing 'ROVES-V8 gc api true'"),
++            ('gc-retention', None, "missing 'ROVES-V8 gc unreachable dom collected true' (ROVES-V8 gc api true ROVES-V8 gc unreachable dom collected false 12/240"),
++            ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
++            ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
++            ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
++        )
++        for scenario, gc_flag, message in cases:
++            with self.subTest(scenario=scenario, gc_flag=gc_flag):
++                result = self.run_fixture(scenario, gc_flag=gc_flag)
++                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
++                self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
++                self.assertIn(message, result.stdout)
++                self.assertIn('V8 smoke diagnostics: gc-lifecycle.log', result.stdout)
++                # The other preference process keeps its exact flag.
++                self.assertEqual(['unused-browser', '--pref', 'js_disable_jit=true'], result.pref_args)
+ 
+     def test_preference_probe_failures(self):
+         cases = (
+@@ -204,7 +259,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip'):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default'):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+@@ -219,6 +274,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
+                 if scenario == 'constructor-graph':
+                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
++                if scenario == 'testutils-default':
++                    self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
+ 
+     def test_completed_suites_do_not_wait_for_the_deadline(self):
+         started = time.monotonic()
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+new file mode 100644
+index 00000000000..90ab1a6880e
+--- /dev/null
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -0,0 +1,167 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js GC lifecycle smoke page</title></head>
++<body><div id="kept"></div>
++<script>
++// Loaded over loopback HTTP in a fresh servoshell process started with
++// `--pref dom_testutils_enabled=true`, which exposes Servo's TestUtils.gc(): a full V8
++// collection queued as its own task. Retained DOM nodes, expandos and closures must survive
++// repeated collections; known unreachable targets, observed only through WeakRefs, must really
++// be collected. This checks reachability from script only: it does not count native
++// finalizers and does not cover realm, module-map or navigation retention.
++"use strict";
++const MAX_COLLECTIONS = 8;
++const KEPT_ATTACHED = 50;
++const KEPT_DETACHED = 20;
++const failures = [];
++const report = (...parts) => console.log("ROVES-V8 gc " + parts.join(" "));
++const fail = reason => { failures.push(reason); report("failure", reason); };
++const check = (name, ok, detail) => { report(name, ok ? "true" : "false " + detail); if (!ok) fail(name); };
++addEventListener("error", event => fail("error " + event.message));
++addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
++const consoleError = console.error.bind(console);
++console.error = (...args) => { fail("console.error " + args.join(" ")); consoleError(...args); };
++
++// TestUtils.gc() resolves after its collection task. The timer adds another task boundary, so
++// the next collection starts after the job that created or dereferenced a WeakRef: V8 keeps
++// such targets alive only until the end of that job.
++async function collectOnce() {
++  await TestUtils.gc();
++  await new Promise(resolve => setTimeout(resolve, 0));
++}
++
++// deref() keeps a live target for the current job only; no target is stored.
++function aliveCount(refs) {
++  let alive = 0;
++  for (const ref of refs) if (ref.deref() !== undefined) alive++;
++  return alive;
++}
++
++// Collects until every target is gone, at most MAX_COLLECTIONS times. Survivors fail the page.
++async function expectCollected(name, refs) {
++  let alive = refs.length, rounds = 0;
++  while (alive > 0 && rounds < MAX_COLLECTIONS) {
++    await collectOnce();
++    rounds++;
++    alive = aliveCount(refs);
++  }
++  check(name + " collected", alive === 0, `${alive}/${refs.length} alive after ${rounds} collections`);
++}
++
++// The helpers below return only WeakRefs: their targets are unreachable once they return.
++const keptDetached = [];
++function keepNodes() {
++  const container = document.getElementById("kept");
++  for (let i = 0; i < KEPT_ATTACHED; i++) {
++    const node = document.createElement("div");
++    node.className = "kept";
++    node.rovesExpando = { index: i, double: () => i * 2 };
++    node.rovesFired = 0;
++    node.addEventListener("roves-gc", () => { node.rovesFired++; });
++    container.appendChild(node);
++  }
++  for (let i = 0; i < KEPT_DETACHED; i++) {
++    const node = document.createElement("span");
++    node.rovesExpando = { index: i, double: () => i * 2 };
++    node.appendChild(document.createTextNode("kept " + i));
++    keptDetached.push(node);
++  }
++}
++
++function expandoIntact(node, i) {
++  return node.rovesExpando !== undefined && node.rovesExpando.index === i && node.rovesExpando.double() === i * 2;
++}
++
++// Attached nodes are looked up again through the DOM, so their expandos prove the wrappers
++// were preserved rather than recreated; listener closures must still run.
++function checkKept(name) {
++  const attached = Array.from(document.querySelectorAll("#kept > div.kept"));
++  const expandos = attached.length === KEPT_ATTACHED && attached.every(expandoIntact);
++  let closures = attached.length === KEPT_ATTACHED;
++  for (const node of attached) {
++    const before = node.rovesFired;
++    node.dispatchEvent(new Event("roves-gc"));
++    if (node.rovesFired !== before + 1) closures = false;
++  }
++  const detached = keptDetached.length === KEPT_DETACHED &&
++    keptDetached.every((node, i) => expandoIntact(node, i) && node.textContent === "kept " + i);
++  report(name, expandos, closures, detached);
++  if (!(expandos && closures && detached)) fail(name);
++}
++
++function dropNodeBatch(size) {
++  const refs = [];
++  for (let i = 0; i < size; i++) {
++    const node = document.createElement("div");
++    node.appendChild(document.createElement("span")).textContent = "dropped " + i;
++    node.rovesSelf = { node, index: i };
++    refs.push(new WeakRef(node));
++  }
++  return refs;
++}
++
++function dropCycleBatch(size) {
++  const refs = [];
++  for (let i = 0; i < size; i++) {
++    const a = { index: i };
++    const b = { a };
++    a.b = b;
++    a.next = () => b;
++    refs.push(new WeakRef(a), new WeakRef(b));
++  }
++  return refs;
++}
++
++// A real classic script element compiles the retained importer; the element is then removed.
++function compileImporter() {
++  const script = document.createElement("script");
++  script.textContent = 'globalThis.rovesGcImport = () => import("./gc-module.js");';
++  document.head.appendChild(script);
++  script.remove();
++  return typeof globalThis.rovesGcImport === "function";
++}
++
++async function importThroughRetainedFunction() {
++  const namespace = await globalThis.rovesGcImport();
++  return namespace.default;
++}
++
++function dropImporter() {
++  const ref = new WeakRef(globalThis.rovesGcImport);
++  delete globalThis.rovesGcImport;
++  return [ref];
++}
++
++async function main() {
++  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
++  report("api", api);
++  if (!api) {
++    fail("TestUtils.gc unavailable");
++    return;
++  }
++  keepNodes();
++  const nodeRefs = [];
++  const cycleRefs = [];
++  for (let batch = 0; batch < 4; batch++) {
++    nodeRefs.push(...dropNodeBatch(60));
++    cycleRefs.push(...dropCycleBatch(100));
++    await collectOnce();
++  }
++  await expectCollected("unreachable dom", nodeRefs);
++  await expectCollected("unreachable cycles", cycleRefs);
++  checkKept("retained nodes");
++
++  check("importer compiled", compileImporter(), "classic script did not define the importer");
++  await collectOnce();
++  await collectOnce();
++  const value = await importThroughRetainedFunction();
++  report("dynamic import after collection", value);
++  if (value !== 42) fail("dynamic import");
++  await expectCollected("dropped importer", dropImporter());
++  checkKept("retained nodes final");
++}
++
++main()
++  .catch(error => fail("exception " + error.name + " " + error.message))
++  .finally(() => report("result", failures.length === 0 ? "pass" : "fail " + failures.join("; ")));
++</script>
++</body></html>
+diff --git a/support/v8-smoke/gc-module.js b/support/v8-smoke/gc-module.js
+new file mode 100644
+index 00000000000..602bb2102bc
+--- /dev/null
++++ b/support/v8-smoke/gc-module.js
+@@ -0,0 +1,2 @@
++// Imported dynamically by gc-lifecycle.html from a classic script whose element was removed.
++export default 42;

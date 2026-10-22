@@ -15036,3 +15036,62 @@ docs/V8_MIGRATION.md, which records published code b50c6d99ce1, CI run IDs, comp
 checks and the unimplemented GC-browser candidate. docs/ROVES_PERFORMANCE.md explicitly
 separates functional checks from the older release measurements. No source or patch changes;
 no claim that the migration or pending CI is complete.
+
+## 2026-10-22 - Opt-in browser GC lifecycle smoke through Servo's TestUtils.gc()
+
+**Files:** `components/script/dom/{mod.rs,testing/mod.rs}`,
+`components/script_bindings/webidls/TestUtils.webidl`,
+`support/v8-smoke/{run.sh,test.html,test_runner.py,gc-lifecycle.html,gc-module.js}`
+(`0269-browser-gc-lifecycle-smoke.patch`), README, migration plan and wiki.
+
+No browser check could request a collection, so GC lifecycle behavior was only covered by
+roves-js runtime tests. Servo already implements the WHATWG
+[TestUtils](https://testutils.spec.whatwg.org/) namespace (`dom/testing/testutils.rs`, MPL):
+`TestUtils.gc()` queues a task that calls `JS_GC` (a full V8 collection through
+`Isolate::LowMemoryNotification` in roves-js) and then resolves its Promise. It was only compiled
+with the `testbinding` Cargo feature. `TestUtils.webidl` loses its `skip-unless
+CARGO_FEATURE_TESTBINDING` line and `dom/mod.rs` declares `testutils` from
+`testing/testutils.rs` outside the `testbinding` gate (removed from `testing/mod.rs`, so there is
+no duplicate module under `testbinding`). The generated `InterfaceTypes.rs` imports
+`crate::dom::testutils::TestUtils` as before. Exposure stays behind the unchanged
+`Pref="dom_testutils_enabled"` (default `false`): the emitted `ConstructorEnabled` is the
+Window/Worker exposure check plus `pref!(dom_testutils_enabled)`. The other test bindings stay
+gated. No custom GC API, Cargo feature, workflow, CLI flag or default preference change.
+
+`run.sh` starts one more fresh servoshell process with `--pref dom_testutils_enabled=true` on
+`gc-lifecycle.html` over loopback HTTP (needed for `import()`), with a 20-second deadline that
+ends early on `ROVES-V8 gc result`. Each collection awaits `TestUtils.gc()` and a timer task, so
+it starts after the job that created or dereferenced a WeakRef. The page keeps 50 attached
+nodes and 20 detached nodes (held by a global array) with expandos and listener closures, drops
+four batches of 60 unattached nodes with self-referencing expandos and 100 plain object/closure
+cycles from short helper functions that return only WeakRefs, and requires every known target
+to be collected within at most eight collections. A real classic `<script>` element defines a
+retained global importer `() => import("./gc-module.js")`; the element is removed, two
+collections run, the importer must still yield `default === 42`, and once dropped its WeakRef
+must clear. Kept nodes are re-checked after the drops and at the end; attached nodes are looked
+up through the DOM, so intact expandos show preserved wrappers. Error events, unhandled
+rejections and `console.error` fail the page; `ROVES-V8 gc result pass` is printed only when
+every check passed, and the runner also requires each individual marker. `test.html` must print
+`ROVES-V8 testutils default undefined`, keeping ordinary pages unaffected.
+
+This observes reachability from script only. It does not count native private/Rc finalizers and
+does not show realm, module-map or navigation retention fixed. Workload is a few hundred small
+objects; no performance claim.
+
+Runner contracts: the fake browser accepts `--pref` only on the two preference pages, checks the
+exact GC process arguments (wrapper, binary, `--pref dom_testutils_enabled=true`) alongside the
+unchanged js_disable_jit ones, and adds failures for flag removed, flag `false`, unknown
+preference name, missing API, retained unreachable nodes, wrong import value, missing result,
+crash, and `TestUtils` exposed by default. WSL `python3 -m unittest discover support/v8-smoke -p
+test_runner.py`: 9/9; Windows: 4 pass, 5 POSIX integrations skipped. WebIDL V8 generator tests
+75/75. `run.py` without `CARGO_FEATURE_TESTBINDING` emits `TestUtilsBinding.rs` and no
+TestBinding interfaces. The fixture logic also passes under Node's V8 with `--expose-gc` and a
+throwaway fake DOM, and fails explicitly when collections are disabled. Replayed the 17
+preceding patches for these files on pristine v0.5.0 originals (custom paths absent), matching
+HEAD; WSL `patch -p1` dry-run/apply of 0269 matches the working tree for all eight files.
+**Compilation and browser verification are pending CI**; no local servoshell build.
+
+Library evaluation: reuses Servo's maintained TestUtils implementation and V8's collector; no
+dependency, license or platform change. Cost: one small always-compiled namespace binding
+(about 160 generated lines) and an inert preference check at global setup; a collection costs
+CPU only when the preference is enabled and the API is called. One extra short CI process.

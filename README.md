@@ -31,8 +31,8 @@ implements the JavaScript API Servo's DOM code expects on top of V8.
 V8 also has a **JIT-less** mode, the configuration for platforms that forbid generating
 executable code at runtime, such as consoles. The Servo `js_disable_jit` preference selects
 this mode at engine startup (for example `--pref js_disable_jit=true`); V8 flags cannot change
-after initialization. The V8 smoke checks this preference in a separate fresh process; that
-browser check is still awaiting its first CI result. In that mode there is no WebAssembly, so
+after initialization. The V8 smoke checks this preference in a separate fresh process; Linux
+normal/JIT-less browser CI confirms it (the browser smoke runs on Linux only). In that mode there is no WebAssembly, so
 WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. Developer-tools
 JavaScript debugging is not available on V8 yet. SpiderMonkey-only Baseline/Ion, asm.js and
 per-tier Wasm tuning preferences were removed because V8 ignored them; use `js_disable_jit`
@@ -58,6 +58,13 @@ is rejected. Foreign native Window values now get cached wrappers at realm conve
 their prototype handlers run. Browser confirmation of that wrapping path remains pending;
 other origin-aware WindowProxy traps and navigation identities remain under audit. The smoke reports trusted
 eval and Function results, checks the separate Wasm CSP directive and isolates Window diagnostics.
+A separate opt-in GC smoke process starts with `--pref dom_testutils_enabled=true` (default
+false) to expose Servo's existing [`TestUtils.gc()`](https://testutils.spec.whatwg.org/); it checks
+that retained DOM nodes, expandos and closures survive repeated collections, that unreachable
+DOM nodes, cycles and a dropped script-compiled importer are actually collected, and that
+`import()` still works after collection. Ordinary pages must see `TestUtils` undefined. It does
+not measure native finalizers, realm/module/navigation retention or performance; browser
+results are pending CI.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe

@@ -7,15 +7,33 @@ Le successive modifiche di sola documentazione non cambiano quel codice e non av
 la workflow V8, che filtra i percorsi. Non cercare necessariamente una run V8 sullo SHA
 dell'ultimo commit documentale: partire dalle run sotto e controllare il loro head_sha.
 
-| Verifica sul codice pubblicato | Run | Stato alla consegna |
-| --- | --- | --- |
-| V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | In coda |
-| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | In coda |
-| Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | In esecuzione |
+### Aggiornamento 22 ottobre 2026 — fatti confermati
 
-Nessun risultato della tabella è ancora un esito finale. La run iOS del nuovo push non
-era ancora visibile alla lettura: cercarla per commit b50c6d99ce1 prima di concludere.
-Non ci sono implementazioni parziali o incarichi Claude attivi lasciati per la notte.
+| Verifica sul codice pubblicato | Run | Esito |
+| --- | --- | --- |
+| V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | 7 job Linux/Windows verdi; 3 job macOS cancellati per mancata assegnazione del runner |
+| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | Replay e SDL Linux/Windows verdi; SDL macOS cancellato, bundle saltati |
+| Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | Vedi run (non riletta in questo aggiornamento) |
+
+I log Linux dei job 119491949605 e 119491949671 (normal e JIT-less) contengono entrambi
+`ROVES-V8 csp constructor graph true true true` e il successo di pref-jitless: i criteri
+browser Linux di 0267 e 0268 sono confermati. Le verifiche macOS mancanti (runtime/build V8,
+SDL macOS, bundle) non sono verificate e vengono ritentate da Codex; le cancellazioni
+non sono failure di compilazione ma non vanno trattate come verdi.
+
+**0269 (locale, non pubblicata, CI pendente):** smoke GC browser opt-in che riusa
+`TestUtils.gc()` di Servo. `TestUtils.webidl` perde `skip-unless CARGO_FEATURE_TESTBINDING`;
+`dom/mod.rs` dichiara `testutils` fuori dal gate `testbinding` (rimosso da `testing/mod.rs`);
+esposizione ancora dietro `dom_testutils_enabled`, default false. `run.sh` avvia un processo
+separato con `--pref dom_testutils_enabled=true` su `gc-lifecycle.html` via HTTP loopback
+(scadenza 20 s, marker `ROVES-V8 gc result`); `test.html` deve stampare
+`ROVES-V8 testutils default undefined`. La pagina verifica nodi trattenuti con expando e
+closure, raccolta effettiva via WeakRef di nodi DOM non collegati e cicli JS, `import()` da una
+funzione compilata da uno script classico rimosso (42) e raccolta della funzione abbandonata.
+Contratti runner WSL 9/9, test generatore V8 75/75, binding TestUtils emesso senza testbinding,
+replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e browser
+attendono la CI. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
+navigazione; nessuna misura prestazionale.
 
 ### Ordine operativo per domani
 
@@ -23,18 +41,18 @@ Non ci sono implementazioni parziali o incarichi Claude attivi lasciati per la n
 2. Analizzare tutte le CI del push b50c6d99ce1. Se ci sono errori, dare a Claude un incarico
    preciso per correggerli; revisionare il risultato, aggiornare patch/MD e committare.
    Attendere la conclusione delle altre run prima del prossimo push.
-3. Confermare nei log Linux normal/JIT-less il nuovo marker constructor graph e il probe
-   js_disable_jit. Solo il probe su build normal distingue la preferenza dalla feature Cargo.
-4. Riprendere il candidato GC browser descritto sotto: è analisi da completare, non patch
-   già pronta. Codex definisce il compito; Claude implementa e si ferma; Codex revisiona.
+3. Fatto il 22 ottobre: marker constructor graph e probe js_disable_jit confermati nei log
+   Linux normal/JIT-less (job 119491949605, 119491949671). Restano le verifiche macOS.
+4. Patch 0269 (smoke GC browser opt-in) implementata localmente: revisione Codex, commit e
+   conferma CI di compilazione e marker `ROVES-V8 gc` in normal/JIT-less.
 5. Continuare con le priorità strutturali: raggiungibilità realm/moduli, identità WindowProxy
    dopo navigazione, callback/incumbent, worker e shutdown. Ogni incarico deve produrre
    una modifica coerente, completa e verificabile prima di passare al controllo CI.
 6. Chiudere le verifiche WPT selezionate, applicazioni reali Pixi/Three, prestazioni e
    artefatti; solo dopo valutare release e aggiornamento pin dei consumer.
 
-**Non completato:** migrazione complessiva, binding nativi incumbent, GC browser,
-retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
+**Non completato:** migrazione complessiva, binding nativi incumbent, conferma CI dello
+smoke GC browser (0269), retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
 Le stringhe toString dei costruttori Proxy restano diverse da Chrome; non introdurre
 una sostituzione globale di Function.prototype.toString per nascondere la differenza.
 
