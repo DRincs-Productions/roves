@@ -3331,6 +3331,80 @@ mod modules {
         assert_eq!(eval(&runtime, "dynamic").to_int32(), 40);
         assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
     }
+
+    /// Links, evaluates and exposes `record`'s namespace as `globalThis[name]`.
+    fn run_module(runtime: &Runtime, record: *mut JSObject, name: &std::ffi::CStr) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let record = record);
+        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+        rooted!(in(cx) let mut evaluation = UndefinedValue());
+        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+        unsafe { RunJobs(cx) };
+        rooted!(in(cx) let evaluation_promise = evaluation.get().to_object());
+        assert!(
+            unsafe { ThrowOnModuleEvaluationFailure(cx, evaluation_promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) },
+            "the module graph evaluates"
+        );
+        rooted!(in(cx) let namespace = unsafe { GetModuleNamespace(cx, record.handle().into()) });
+        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
+        rooted!(in(cx) let namespace_value = ObjectValue(namespace.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), namespace_value.handle().into_handle()) });
+    }
+
+    #[test]
+    fn json_module_values_live_on_their_records() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let rt = runtime.rt();
+        unsafe {
+            SetModuleResolveHook(rt, Some(resolve));
+            SetModuleMetadataHook(rt, Some(metadata));
+            SetModuleDynamicImportHook(rt, Some(dynamic_import));
+        }
+        // SAFETY: the runtime's live context.
+        let gc = || unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+        let check = |source: &str| assert_eq!(describe(&runtime, eval(&runtime, source)), "true", "{source}");
+        rooted!(in(cx) let object = compile(&runtime, "object.json", r#"{"n": 1, "list": [1, 2]}"#, true));
+        rooted!(in(cx) let null = compile(&runtime, "null.json", "null", true));
+        rooted!(in(cx) let no = compile(&runtime, "false.json", "false", true));
+        rooted!(in(cx) let zero = compile(&runtime, "zero.json", "0", true));
+        rooted!(in(cx) let string = compile(&runtime, "string.json", r#""text""#, true));
+        rooted!(in(cx) let array = compile(&runtime, "array.json", r#"[1, "a"]"#, true));
+        assert!([object.get(), null.get(), no.get(), zero.get(), string.get(), array.get()].iter().all(|record| !record.is_null()));
+        // Nothing but the records keeps the parsed values before instantiation.
+        gc();
+        rooted!(in(cx) let main = compile(
+            &runtime,
+            "json-main.js",
+            "import object from 'object.json' with { type: 'json' };\n\
+             import nul from 'null.json' with { type: 'json' };\n\
+             import no from 'false.json' with { type: 'json' };\n\
+             import zero from 'zero.json' with { type: 'json' };\n\
+             import string from 'string.json' with { type: 'json' };\n\
+             import array from 'array.json' with { type: 'json' };\n\
+             export { object, nul, no, zero, string, array };\n\
+             export function again() { return object; }",
+            false,
+        ));
+        gc();
+        run_module(&runtime, main.get(), c"jsonNs");
+        check("jsonNs.nul === null && jsonNs.no === false && Object.is(jsonNs.zero, 0) && jsonNs.string === 'text'");
+        check("Array.isArray(jsonNs.array) && jsonNs.array.length === 2 && jsonNs.array[1] === 'a'");
+        check("jsonNs.object.n === 1 && jsonNs.object.list[1] === 2");
+        eval(&runtime, "jsonNs.object.mark = 7; globalThis.keptJson = jsonNs.object;");
+        gc();
+        check("jsonNs.object === keptJson && jsonNs.object.mark === 7 && jsonNs.again() === keptJson");
+        // A later importer of the evaluated JSON module sees the same, mutated value.
+        rooted!(in(cx) let second = compile(
+            &runtime,
+            "json-second.js",
+            "import object from 'object.json' with { type: 'json' };\nexport const same = object;",
+            false,
+        ));
+        gc();
+        run_module(&runtime, second.get(), c"jsonNs2");
+        check("jsonNs2.same === keptJson && jsonNs2.same.mark === 7");
+    }
 }
 
 /// The private of the running classic script or source module (SpiderMonkey's source-object

@@ -1,3 +1,11 @@
+# Regola corrente — aggiornamento 22 ottobre 2026
+
+L'utente ha eliminato i tetti di25/50 chiamate e l'obbligo di registrare consumo e lavoro
+residuo per incarico. Codex continua autonomamente con un solo Claude attivo, incarichi
+circoscritti, revisione e vincoli CI; si ferma soltanto per quota effettiva, stop esplicito
+o blocco non risolvibile. Nessuna nuova contabilità di chiamate/turni/token. Le misure e
+le soglie nelle sezioni seguenti sono storiche, non regole correnti.
+
 # Consumi e coordinamento degli agenti
 
 ## Stato e obiettivo

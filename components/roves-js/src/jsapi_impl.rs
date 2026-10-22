@@ -904,13 +904,21 @@ pub(crate) enum PrivateKey {
     CallableClassBox,
     /// A source's host token, on a pending dynamic-import promise or a module record.
     SourceToken,
+    /// A JSON module's parsed value, on its record's placeholder.
+    JsonModuleValue,
 }
 
-const PRIVATE_KEY_NAMES: [&str; 5] =
-    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box", "roves-js source token"];
+const PRIVATE_KEY_NAMES: [&str; 6] = [
+    "roves-js native function",
+    "roves-js native reserved 0",
+    "roves-js native reserved 1",
+    "roves-js callable class box",
+    "roves-js source token",
+    "roves-js JSON module value",
+];
 
 #[derive(Default)]
-pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 5]);
+pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 6]);
 
 /// The private key `key` of this thread's runtime.
 pub(crate) fn private_key<'s>(scope: &mut v8::PinScope<'s, '_>, key: PrivateKey) -> v8::Local<'s, v8::Private> {

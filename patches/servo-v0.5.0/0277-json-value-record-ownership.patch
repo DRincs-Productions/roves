@@ -1,0 +1,222 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 30ca25698c6..2cbc74a344c 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -904,13 +904,21 @@ pub(crate) enum PrivateKey {
+     CallableClassBox,
+     /// A source's host token, on a pending dynamic-import promise or a module record.
+     SourceToken,
++    /// A JSON module's parsed value, on its record's placeholder.
++    JsonModuleValue,
+ }
+ 
+-const PRIVATE_KEY_NAMES: [&str; 5] =
+-    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box", "roves-js source token"];
++const PRIVATE_KEY_NAMES: [&str; 6] = [
++    "roves-js native function",
++    "roves-js native reserved 0",
++    "roves-js native reserved 1",
++    "roves-js callable class box",
++    "roves-js source token",
++    "roves-js JSON module value",
++];
+ 
+ #[derive(Default)]
+-pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 5]);
++pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 6]);
+ 
+ /// The private key `key` of this thread's runtime.
+ pub(crate) fn private_key<'s>(scope: &mut v8::PinScope<'s, '_>, key: PrivateKey) -> v8::Local<'s, v8::Private> {
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 8c00a5b785f..16c37d06536 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -71,8 +71,9 @@ thread_local! {
+ enum ModuleKind {
+     /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
+     Source { script_id: i32 },
+-    /// A synthetic module has no V8 source: its private lives here.
+-    Json { value: v8::Global<v8::Value>, private: crate::script_impl::HostPrivate },
++    /// A synthetic module has no V8 source: its private lives here (its parsed value lives on
++    /// the record's placeholder, see `CompileJsonModule1`).
++    Json { private: crate::script_impl::HostPrivate },
+ }
+ 
+ /// The runtime's modules and module hooks.
+@@ -86,7 +87,8 @@ pub(crate) struct Modules {
+     next_sweep: std::cell::Cell<usize>,
+ }
+ 
+-/// Keeps JSON modules alive, with their privates, and source modules not yet anchored to
++/// Keeps JSON modules alive, with their privates (and parsed values, through their records'
++/// placeholders), and source modules not yet anchored to
+ /// their metadata (see `CompileModule1`).
+ pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     let mut privates = Vec::new();
+@@ -170,6 +172,18 @@ fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
+     }
+ }
+ 
++/// Drops the strong entry of a new record that could not be completed: nothing else keeps it.
++fn forget(module: v8::Local<v8::Module>, record: *mut c_void) {
++    let hash = module.get_identity_hash().get();
++    let mut entries = JSContext::current().modules.entries.borrow_mut();
++    if let Some(bucket) = entries.get_mut(&hash) {
++        bucket.retain(|entry| !matches!(entry.cell, EntryCell::Strong(cell) if cell == record));
++        if bucket.is_empty() {
++            entries.remove(&hash);
++        }
++    }
++}
++
+ /// Test-only: (live source records, registered entries).
+ #[cfg(test)]
+ pub(crate) fn source_records_for_testing() -> (usize, usize) {
+@@ -248,11 +262,18 @@ fn source_string<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<U
+ fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<'s, v8::Module>) -> Option<v8::Local<'s, v8::Value>> {
+     // SAFETY: V8 runs the steps with this context entered.
+     v8::callback_scope!(unsafe scope, context);
+-    let json = with_entry(scope, module, |entry| match &entry.kind {
+-        ModuleKind::Json { value, .. } => Some(value.clone()),
++    // The record is copied out: no table borrow spans the V8 calls below.
++    let record = with_entry(scope, module, |entry| match entry.kind {
++        ModuleKind::Json { .. } => entry.cell(),
+         ModuleKind::Source { .. } => None,
+-    })??;
+-    let json = v8::Local::new(scope, &json);
++    })
++    .flatten();
++    let Some(json) = record.and_then(|record| json_value(scope, record)) else {
++        let message = v8::String::new(scope, "JSON module without its parsed value")?;
++        let error = v8::Exception::type_error(scope, message);
++        scope.throw_exception(error);
++        return None;
++    };
+     let name = v8::String::new(scope, "default")?;
+     module.set_synthetic_module_export(scope, name, json)?;
+     let resolver = v8::PromiseResolver::new(scope)?;
+@@ -261,6 +282,19 @@ fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<
+     Some(resolver.get_promise(scope).into())
+ }
+ 
++/// The parsed value of a JSON module record: a private property of its placeholder, so the
++/// record (kept by its strong entry) keeps it with no root of its own.
++fn json_value<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut c_void) -> Option<v8::Local<'s, v8::Value>> {
++    // SAFETY: JSON entries stay strong: the record is alive.
++    let placeholder = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, record) }).ok()?;
++    let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::JsonModuleValue);
++    // `JSON.parse` never yields undefined: an absent property is a missing value.
++    if !placeholder.has_private(scope, key)? {
++        return None;
++    }
++    placeholder.get_private(scope, key)
++}
++
+ /// A JSON module: a synthetic module whose `default` export is the parsed source.
+ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCompileOptions, source: *mut SourceText<Utf8Unit>) -> *mut JSObject {
+     // SAFETY: callers pass valid options.
+@@ -272,8 +306,17 @@ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCom
+             let name = v8::String::new(scope, &crate::script_impl::options_filename(options))?;
+             let export = v8::String::new(scope, "default")?;
+             let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
+-            let value = v8::Global::new(scope, parsed);
+-            Some(new_record(scope, module, ModuleKind::Json { value, private: crate::script_impl::HostPrivate::NONE }))
++            // The strong entry keeps the record while its placeholder takes the parsed value
++            // (still held by this local); a record without it is never returned.
++            let record = new_record(scope, module, ModuleKind::Json { private: crate::script_impl::HostPrivate::NONE });
++            // SAFETY: the record is a new module cell, kept by its strong entry.
++            let placeholder = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, record as *mut c_void) }).ok();
++            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::JsonModuleValue);
++            if placeholder.and_then(|placeholder| placeholder.set_private(scope, key, parsed)) != Some(true) {
++                forget(module, record as *mut c_void);
++                return None;
++            }
++            Some(record)
+         })
+         .unwrap_or(std::ptr::null_mut())
+ }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index db3c3d8864d..0944d7eef60 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -3331,6 +3331,80 @@ mod modules {
+         assert_eq!(eval(&runtime, "dynamic").to_int32(), 40);
+         assert_eq!(describe(&runtime, eval(&runtime, "typeof pending.then")), "function");
+     }
++
++    /// Links, evaluates and exposes `record`'s namespace as `globalThis[name]`.
++    fn run_module(runtime: &Runtime, record: *mut JSObject, name: &std::ffi::CStr) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let record = record);
++        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
++        rooted!(in(cx) let mut evaluation = UndefinedValue());
++        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
++        unsafe { RunJobs(cx) };
++        rooted!(in(cx) let evaluation_promise = evaluation.get().to_object());
++        assert!(
++            unsafe { ThrowOnModuleEvaluationFailure(cx, evaluation_promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) },
++            "the module graph evaluates"
++        );
++        rooted!(in(cx) let namespace = unsafe { GetModuleNamespace(cx, record.handle().into()) });
++        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
++        rooted!(in(cx) let namespace_value = ObjectValue(namespace.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), namespace_value.handle().into_handle()) });
++    }
++
++    #[test]
++    fn json_module_values_live_on_their_records() {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let rt = runtime.rt();
++        unsafe {
++            SetModuleResolveHook(rt, Some(resolve));
++            SetModuleMetadataHook(rt, Some(metadata));
++            SetModuleDynamicImportHook(rt, Some(dynamic_import));
++        }
++        // SAFETY: the runtime's live context.
++        let gc = || unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++        let check = |source: &str| assert_eq!(describe(&runtime, eval(&runtime, source)), "true", "{source}");
++        rooted!(in(cx) let object = compile(&runtime, "object.json", r#"{"n": 1, "list": [1, 2]}"#, true));
++        rooted!(in(cx) let null = compile(&runtime, "null.json", "null", true));
++        rooted!(in(cx) let no = compile(&runtime, "false.json", "false", true));
++        rooted!(in(cx) let zero = compile(&runtime, "zero.json", "0", true));
++        rooted!(in(cx) let string = compile(&runtime, "string.json", r#""text""#, true));
++        rooted!(in(cx) let array = compile(&runtime, "array.json", r#"[1, "a"]"#, true));
++        assert!([object.get(), null.get(), no.get(), zero.get(), string.get(), array.get()].iter().all(|record| !record.is_null()));
++        // Nothing but the records keeps the parsed values before instantiation.
++        gc();
++        rooted!(in(cx) let main = compile(
++            &runtime,
++            "json-main.js",
++            "import object from 'object.json' with { type: 'json' };\n\
++             import nul from 'null.json' with { type: 'json' };\n\
++             import no from 'false.json' with { type: 'json' };\n\
++             import zero from 'zero.json' with { type: 'json' };\n\
++             import string from 'string.json' with { type: 'json' };\n\
++             import array from 'array.json' with { type: 'json' };\n\
++             export { object, nul, no, zero, string, array };\n\
++             export function again() { return object; }",
++            false,
++        ));
++        gc();
++        run_module(&runtime, main.get(), c"jsonNs");
++        check("jsonNs.nul === null && jsonNs.no === false && Object.is(jsonNs.zero, 0) && jsonNs.string === 'text'");
++        check("Array.isArray(jsonNs.array) && jsonNs.array.length === 2 && jsonNs.array[1] === 'a'");
++        check("jsonNs.object.n === 1 && jsonNs.object.list[1] === 2");
++        eval(&runtime, "jsonNs.object.mark = 7; globalThis.keptJson = jsonNs.object;");
++        gc();
++        check("jsonNs.object === keptJson && jsonNs.object.mark === 7 && jsonNs.again() === keptJson");
++        // A later importer of the evaluated JSON module sees the same, mutated value.
++        rooted!(in(cx) let second = compile(
++            &runtime,
++            "json-second.js",
++            "import object from 'object.json' with { type: 'json' };\nexport const same = object;",
++            false,
++        ));
++        gc();
++        run_module(&runtime, second.get(), c"jsonNs2");
++        check("jsonNs2.same === keptJson && jsonNs2.same.mark === 7");
++    }
+ }
+ 
+ /// The private of the running classic script or source module (SpiderMonkey's source-object

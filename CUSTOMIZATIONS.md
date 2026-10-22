@@ -15502,3 +15502,36 @@ leaks a strong `v8::Global` per function fails it. roves-js normal 72 passed/2 i
 JIT-less 71/3 (warning lines 772/772). Replay of the 51 preceding patches touching these
 files identical to HEAD; 0276 applies identically to the working tree.
 Patch: `0276-weak-defined-native-functions.patch`.
+
+## 2026-10-22 - Task 0277: JSON module values owned by their records
+
+`components/roves-js/src/{modules_impl,jsapi_impl}.rs`: a JSON module's parsed value is no
+longer held by an independent strong `v8::Global<Value>` in `ModuleKind::Json` (cloned into a
+new `Global` by every evaluation). It is a V8 private property (new
+`PrivateKey::JsonModuleValue`, "roves-js JSON module value") of the module record's
+placeholder object, so the record keeps it and nothing else roots it. `CompileJsonModule1`
+registers the new record strongly (as before), then stores the still-local parsed value on
+the placeholder; if `set_private` fails or throws, the new entry is removed (`forget`) and
+null is returned, so no record without its value is ever published. `json_module_steps`
+copies the record pointer out of the module table borrow, then reads the private through the
+live placeholder (`has_private` tells an absent value from any JSON value; `JSON.parse` never
+yields undefined) and throws a TypeError if it is missing. The JSON registry entry stays
+strong and `HostPrivate` tracing/release is unchanged: JSON modules, realms and pages are not
+made collectible by this change, which only removes a root that would block that later.
+Cost: one private property per JSON record and a private read per evaluation; not measured.
+
+`components/roves-js/src/tests.rs`: `json_module_values_live_on_their_records` (object, null,
+false, 0, string and array JSON modules compiled, rooted and kept across forced GCs before
+link and evaluation; exports correct; the default object keeps identity and a mutation across
+GC and a later importer sees the same value). A scratch negative that skips storing the
+property fails it at evaluation, without crashing. roves-js normal 73 passed/2 ignored,
+JIT-less 72/3 (warning lines 772/772). Replay of the 52 preceding patches touching these files
+identical to HEAD; 0277 applies identically to the working tree.
+Patch: `0277-json-value-record-ownership.patch`.
+
+
+### 2026-10-22 — remove per-assignment accounting ceilings
+- Updated AGENTS.md and workflow/migration documentation per user instruction: no25/50
+  call ceiling, extension prompts or routine consumption/residual-work accounting. Continue
+  autonomously with one implementer, focused assignments, reviews and CI publication gates;
+  actual subscription quotas still stop execution. Historical evidence remains historical.

@@ -71,8 +71,9 @@ thread_local! {
 enum ModuleKind {
     /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
     Source { script_id: i32 },
-    /// A synthetic module has no V8 source: its private lives here.
-    Json { value: v8::Global<v8::Value>, private: crate::script_impl::HostPrivate },
+    /// A synthetic module has no V8 source: its private lives here (its parsed value lives on
+    /// the record's placeholder, see `CompileJsonModule1`).
+    Json { private: crate::script_impl::HostPrivate },
 }
 
 /// The runtime's modules and module hooks.
@@ -86,7 +87,8 @@ pub(crate) struct Modules {
     next_sweep: std::cell::Cell<usize>,
 }
 
-/// Keeps JSON modules alive, with their privates, and source modules not yet anchored to
+/// Keeps JSON modules alive, with their privates (and parsed values, through their records'
+/// placeholders), and source modules not yet anchored to
 /// their metadata (see `CompileModule1`).
 pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     let mut privates = Vec::new();
@@ -170,6 +172,18 @@ fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
     }
 }
 
+/// Drops the strong entry of a new record that could not be completed: nothing else keeps it.
+fn forget(module: v8::Local<v8::Module>, record: *mut c_void) {
+    let hash = module.get_identity_hash().get();
+    let mut entries = JSContext::current().modules.entries.borrow_mut();
+    if let Some(bucket) = entries.get_mut(&hash) {
+        bucket.retain(|entry| !matches!(entry.cell, EntryCell::Strong(cell) if cell == record));
+        if bucket.is_empty() {
+            entries.remove(&hash);
+        }
+    }
+}
+
 /// Test-only: (live source records, registered entries).
 #[cfg(test)]
 pub(crate) fn source_records_for_testing() -> (usize, usize) {
@@ -248,17 +262,37 @@ fn source_string<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<U
 fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<'s, v8::Module>) -> Option<v8::Local<'s, v8::Value>> {
     // SAFETY: V8 runs the steps with this context entered.
     v8::callback_scope!(unsafe scope, context);
-    let json = with_entry(scope, module, |entry| match &entry.kind {
-        ModuleKind::Json { value, .. } => Some(value.clone()),
+    // The record is copied out: no table borrow spans the V8 calls below.
+    let record = with_entry(scope, module, |entry| match entry.kind {
+        ModuleKind::Json { .. } => entry.cell(),
         ModuleKind::Source { .. } => None,
-    })??;
-    let json = v8::Local::new(scope, &json);
+    })
+    .flatten();
+    let Some(json) = record.and_then(|record| json_value(scope, record)) else {
+        let message = v8::String::new(scope, "JSON module without its parsed value")?;
+        let error = v8::Exception::type_error(scope, message);
+        scope.throw_exception(error);
+        return None;
+    };
     let name = v8::String::new(scope, "default")?;
     module.set_synthetic_module_export(scope, name, json)?;
     let resolver = v8::PromiseResolver::new(scope)?;
     let undefined = v8::undefined(scope).into();
     resolver.resolve(scope, undefined)?;
     Some(resolver.get_promise(scope).into())
+}
+
+/// The parsed value of a JSON module record: a private property of its placeholder, so the
+/// record (kept by its strong entry) keeps it with no root of its own.
+fn json_value<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut c_void) -> Option<v8::Local<'s, v8::Value>> {
+    // SAFETY: JSON entries stay strong: the record is alive.
+    let placeholder = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, record) }).ok()?;
+    let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::JsonModuleValue);
+    // `JSON.parse` never yields undefined: an absent property is a missing value.
+    if !placeholder.has_private(scope, key)? {
+        return None;
+    }
+    placeholder.get_private(scope, key)
 }
 
 /// A JSON module: a synthetic module whose `default` export is the parsed source.
@@ -272,8 +306,17 @@ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCom
             let name = v8::String::new(scope, &crate::script_impl::options_filename(options))?;
             let export = v8::String::new(scope, "default")?;
             let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
-            let value = v8::Global::new(scope, parsed);
-            Some(new_record(scope, module, ModuleKind::Json { value, private: crate::script_impl::HostPrivate::NONE }))
+            // The strong entry keeps the record while its placeholder takes the parsed value
+            // (still held by this local); a record without it is never returned.
+            let record = new_record(scope, module, ModuleKind::Json { private: crate::script_impl::HostPrivate::NONE });
+            // SAFETY: the record is a new module cell, kept by its strong entry.
+            let placeholder = v8::Local::<v8::Object>::try_from(unsafe { crate::cell::cell_value(scope, record as *mut c_void) }).ok();
+            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::JsonModuleValue);
+            if placeholder.and_then(|placeholder| placeholder.set_private(scope, key, parsed)) != Some(true) {
+                forget(module, record as *mut c_void);
+                return None;
+            }
+            Some(record)
         })
         .unwrap_or(std::ptr::null_mut())
 }

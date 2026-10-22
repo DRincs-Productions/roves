@@ -2,6 +2,29 @@
 
 ## Da leggere alla prossima ripresa
 
+**Regola corrente — 22 ottobre:** l'utente ha eliminato i tetti di25/50 chiamate e
+l'obbligo di registrare consumo e lavoro residuo per incarico. Prosecuzione autonoma,
+un solo Claude attivo e incarichi circoscritti; restano revisione, vincoli CI e stop alle
+quote effettive. I conteggi e i limiti descritti sotto sono storici. Nessuna nuova contabilità.
+Batch d434323c76c: V8/Android/iOS verdi, generale39790271422 ancora in corso all'ultimo
+controllo dopo0277. Nessun push prima della conclusione del batch.
+
+**0277 (completa in locale, non committata, sopra ea7a37e45a6 / wiki 2629eed):** il valore
+JSON di un modulo è una proprietà privata V8 (`PrivateKey::JsonModuleValue`) del placeholder
+del record; rimossi `ModuleKind::Json.value` (`v8::Global` forte indipendente) e il suo clone in
+`json_module_steps`. `CompileJsonModule1` registra il record forte, poi `set_private`; se fallisce
+o lancia rimuove l'entry (`forget`) e restituisce null. Gli steps copiano il record fuori dal
+borrow, leggono il private (`has_private` distingue l'assenza) e lanciano TypeError se manca.
+Registro JSON ancora forte, `HostPrivate` invariato: nessuna raccolta JSON/realm/pagina, nessuna
+misura CPU/RAM (costo: un private per record JSON, una lettura per valutazione). Test roves-js
+normal 73/2 ignorati, JIT-less 72/3, warning 772/772 (`target/task-0277/{full,jitless}.log`);
+nuovo `json_module_values_live_on_their_records`; negativo scratch senza la proprietà → fallisce
+in valutazione senza crash (`negative-no-value.log`); copia testata identica ai sorgenti. Replay
+di 52 patch precedenti (inclusa 0276) identico a HEAD e 0277 applicata identica all'albero
+(`target/task-0277/replay.log`, l'etichetta "0274" è ereditata dallo script; scratch
+`%TEMP%/roves-0277-replay-coUt`). CI del batch d434323c76c non ricontrollate da Claude.
+Codex ha revisionato il diff e confrontato tre file produzione/copia testata/replay: identici.
+
 **Checkpoint revisionato 0276 (22 ottobre):** completata dopo risoluzione dei permessi
 con allowedTools espliciti della sessione (nessun bypassPermissions, zero nuovi dinieghi).
 35 chiamate cumulative (17+18), nei50 autorizzati. Test normal72/2 ignorati, JITless71/3,

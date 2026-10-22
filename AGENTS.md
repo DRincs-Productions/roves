@@ -33,8 +33,9 @@ The user explicitly resumed the migration loop on 2026-10-22. Task 0274 is compl
 within its authorized cumulative 50-call boundary (25 initial plus 22 extension, 47 actual).
 Codex may start subsequent bounded assignments and manage the CI loop without asking for
 approval at each completed task, and resolve recoverable technical blocks autonomously.
-Codex may authorize one justified extension per assignment, up to 50 cumulative tool calls.
-Resumed sessions retain the previous count; stop at 50 or an actual subscription quota.
+The user removed per-assignment tool-call ceilings and routine consumption/residual-work
+accounting. Continue useful authorized work autonomously; actual subscription quotas remain
+a stop condition. Historical bounded-task counts are retained only as historical evidence.
 No periodic automation or automatic quota retries are authorized.
 
 Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
@@ -68,20 +69,16 @@ Non promettere un risparmio percentuale senza misure confrontabili.
 - Claude implementa e svolge le verifiche concordate, consegnando diff, esiti sintetici e
   percorsi dei log. Codex controlla queste evidenze e il diff; ripete un test soltanto se
   cambia il codice, manca una verifica necessaria o esiste un dubbio concreto da risolvere.
-- Soglia iniziale: 25 chiamate agli strumenti per incarico Claude. Indicarla nel prompt e
-  contarla dai blocchi tool_use univoci, non dai messaggi stream duplicati. Prima di superarla,
-  Claude si ferma con stato, lavoro residuo e blocco concreto. È una regola del processo,
-  non un limite CLI verificato. Nessun rilancio automatico dello stesso incarico per aggirarla.
-  Codex può autorizzare una sola estensione motivata fino a 50 chiamate cumulative,
-  registrando consumo e lavoro residuo. Una ripresa conserva tutte le chiamate precedenti.
-  A 50 chiamate fermarsi e salvare il punto di ripresa; non creare incarichi equivalenti
-  per azzerare il conteggio. Dopo un diniego dei permessi analizzare la configurazione
+- Nessun tetto numerico di chiamate per incarico e nessuna fermata per raggiungimento
+  di 25 o 50 chiamate. Proseguire autonomamente con incarichi circoscritti fino al risultato
+  completo; non richiedere estensioni di budget e non registrare consumo o lavoro residuo
+  come contabilità ordinaria. Dopo un diniego dei permessi analizzare la configurazione
   prima di riprovare: niente tentativi equivalenti ripetuti né aggiramento dei rifiuti
   della revisione automatica. Risolvere autonomamente i blocchi tecnici recuperabili.
 - Spezzare prima della delega gli incarichi che richiedono più risultati indipendenti;
   mantenere insieme implementazione e verifiche indispensabili alla sua correttezza.
-  Un arresto di budget non rende completa una modifica: conservare il WIP separatamente e
-  non pubblicarlo. Non ridurre le verifiche necessarie per rientrare nella soglia.
+  Una modifica incompleta resta WIP separato e non va pubblicata. Non ridurre le verifiche
+  necessarie per accelerare la consegna.
 - Leggere istruzioni e handoff correnti una sola volta per incarico; usare ricerche e
   intervalli mirati per gli altri file. Evitare letture integrali di cronologia, changelog,
   patch, output API e log. Usare rg con percorsi limitati, escludendo target, .git e node_modules
@@ -96,14 +93,10 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
-- Al raggiungimento di una quota effettiva o del limite cumulativo di 50 chiamate,
-  salvare il punto di ripresa e fermarsi. Non provare altri modelli, rilanciare incarichi o creare attese automatiche
-  per continuare a consumare. Una ripresa successiva deve essere richiesta dall'utente.
-- Sul primo incarico dopo la ripresa mantenere invariati i modelli. Registrare una volta
-  modello, tool call, turni, token nuovi/cache/output, dimensione iniziale del contesto e
-  verifiche eseguite, distinguendo dati mancanti e stime. Confrontare solo lavori simili;
-  per Codex usare misure disponibili senza inventare costi o attribuire tutta la quota account
-  a questa conversazione. Vedere docs/AGENT_WORKFLOW.md.
+- Al raggiungimento di una quota effettiva dell'abbonamento, salvare il punto di ripresa
+  e fermarsi. Non provare altri modelli o creare attese automatiche per aggirare la quota.
+  Non raccogliere nuovi conteggi di tool call, turni o token per incarico; conservare le
+  evidenze storiche senza presentarle come obblighi correnti.
 
 Dopo ogni push, identificare le run CI associate al commit pubblicato con un'unica lettura
 aggregata. Se esiste altro lavoro utile e autorizzato, avviare il prossimo incarico circoscritto
@@ -125,7 +118,7 @@ Al completamento di ciascuna implementazione, controllare tutte le run del push 
 
 Se non rimane altro lavoro utile, registrare le run pendenti e fermarsi senza polling;
 non considerare verificato il checkpoint e non pubblicare altri commit finché il batch non
-consente il push. La prosecuzione autonoma non supera i limiti di budget, quota o stop.
+consente il push. La prosecuzione autonoma non supera quote effettive o stop espliciti.
 Un'indicazione esplicita
 dell'utente di fermarsi prevale sulla prosecuzione autonoma. Queste regole governano il
 momento del push anche quando le autorizzazioni permanenti sotto consentono di pubblicare
