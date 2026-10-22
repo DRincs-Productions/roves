@@ -2,6 +2,15 @@
 
 ## Da leggere alla prossima ripresa
 
+**Handoff autosufficiente per Claude:** leggere [CLAUDE_RESUME.md](CLAUDE_RESUME.md).
+Design, istruzioni e WIP0281 sono ora versionati sotto docs/handoff/, non soltanto target/.
+0279/0280 complete nei commit45d88a513e7/196ee7a5faa;0281 resta fuori dai sorgenti.
+L'utente ha chiesto commit/push di salvataggio per continuare direttamente con Claude
+senza questa chat, dato il quasi esaurimento della quota settimanale Codex.
+Batch47a5 terminato: V8/Android/iOS verdi; generale12/13verde, Steam119978506378
+scaduto nel bootstrap90min prima della compilazione. Checkpoint generale non verificato;
+nuovo push esplicitamente richiesto, non una dichiarazione di tutte le CI verdi.
+
 **Stop per quota effettiva Claude durante0281 — 22 ottobre:** HEAD locale completo
 `196ee7a5faa` (0279 e0280 revisionate), wiki locale `9fbd176`; pubblicato resta
 `47a5cd351e1` / wiki `c9bcc84`. 0281 incompleta e non verificata: nove sorgenti ripristinati

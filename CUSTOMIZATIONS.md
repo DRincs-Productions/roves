@@ -15691,3 +15691,11 @@ Updated docs/V8_MIGRATION.md with actual quota stop, published/local commits and
 The incomplete realm registry work is saved at target/0281-incomplete-realm-registry.patch
 and all nine edited source files were restored to complete HEAD196ee7a5faa. No production
 0281 patch, test claim or realm/page collection claim. No model/quota retry or automation.
+
+
+## 2026-10-22 - Portable Claude resume handoff
+
+Added docs/CLAUDE_RESUME.md and versioned docs/handoff design/instructions/incomplete0281
+patch so the next Claude session does not require chat history or ignored target artifacts.
+The WIP is not applied to production and is outside CI patches. Documented actualSteam
+bootstrap timeout and explicit user-requested checkpoint push without claiming fullCIgreen.
