@@ -1,6 +1,18 @@
 # Roves — Prestazioni
 
-## Consegna serale e prossima ripresa
+## Aggiornamento 22 ottobre 2026
+
+La CI sul precedente codice b50c6d99ce1 è verde dopo retry: V8 39677755124 10/10,
+generale 39677754946 13/13. Confermati il grafo costruttori e il probe js_disable_jit
+su Linux normal/JIT-less. Nuove patch 0269 GC browser e 0270 identità moduli:
+runtime locale 58 passati normal / 57 JIT-less, contratti runner 9/9 e generatore75/75;
+compilazione/browser delle nuove modifiche attendono la nuova CI.
+Nessun benchmark aggiunto. I token host per modulo possono ridurre il riuso della
+cache di compilazione: effetto su startup/CPU/RAM da misurare, nessun guadagno dichiarato.
+Il confronto Chrome MCP della sola fase module owners restituisce left/right,
+senza GC né misure. Retention strutturale e navigazione rimangono aperte.
+
+## Consegna serale e prossima ripresa (storico del 21 ottobre)
 
 Pubblicate anche le patch 0267 (grafo costruttori) e 0268 (probe preferenza JIT-less),
 incluse nel codice b50c6d99ce1. Runtime locali: 55 passati normal / 54 JIT-less;

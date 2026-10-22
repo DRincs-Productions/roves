@@ -12,19 +12,19 @@ dell'ultimo commit documentale: partire dalle run sotto e controllare il loro he
 | Verifica sul codice pubblicato | Run | Esito |
 | --- | --- | --- |
 | V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | Verde 10/10 dopo il retry macOS (attempt 2) |
-| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | Retry: tutti i job conclusi verdi; Linux portable ancora in corso all'ultima lettura |
+| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | Verde 13/13 dopo retry macOS (attempt 2) |
 | Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | Verde |
 
 I log Linux dei job 119491949605 e 119491949671 (normal e JIT-less) contengono entrambi
 `ROVES-V8 csp constructor graph true true true` e il successo di pref-jitless: i criteri
 browser Linux di 0267 e 0268 sono confermati. Il retry V8 è ora verde 10/10,
 compresi tutti i runtime e la build macOS; gli smoke browser Windows/macOS restano saltati.
-Il retry SDL macOS e i due bundle macOS sono verdi; resta da concludere Linux portable
-nella CI generale prima del prossimo push. iOS sul commit documentale 18b57a227fa è
+Il retry generale è concluso verde 13/13, inclusi SDL, tutti i bundle e smoke Steam.
+Le verifiche del push precedente consentono quindi il prossimo push secondo AGENTS.md. iOS sul commit documentale 18b57a227fa è
 verde dopo retry (run 39677942329). Le cancellazioni iniziali erano mancate assegnazioni
 di runner; il loro superamento è verificato dai retry, non presunto.
 
-**0269 (locale, non pubblicata, CI pendente):** smoke GC browser opt-in che riusa
+**0269 (completa localmente, inclusa nel prossimo push, browser CI pendente):** smoke GC browser opt-in che riusa
 `TestUtils.gc()` di Servo. `TestUtils.webidl` perde `skip-unless CARGO_FEATURE_TESTBINDING`;
 `dom/mod.rs` dichiara `testutils` fuori dal gate `testbinding` (rimosso da `testing/mod.rs`);
 esposizione ancora dietro `dom_testutils_enabled`, default false. `run.sh` avvia un processo
@@ -38,7 +38,7 @@ replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e br
 attendono la CI. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
 navigazione; nessuna misura prestazionale.
 
-**0270 (locale, non pubblicata, CI pendente):** identità per sorgente dei moduli V8.
+**0270 (completa localmente, inclusa nel prossimo push, browser CI pendente):** identità per sorgente dei moduli V8.
 Corretti tre difetti: (1) il lookup del private del chiamante prendeva `entries.first()` del
 bucket per hash d'identità, che può collidere; (2) la cache di compilazione V8 condivideva lo
 stesso script (id `Some(7), Some(7)`) fra moduli con sorgente e nome identici, sovrascrivendo

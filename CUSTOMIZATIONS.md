@@ -15172,3 +15172,7 @@ Library evaluation: reuses V8's ScriptOrigin host options, compilation cache and
 and the existing Rust tables; no dependency, license (BSD/MPL) or platform change. Unique host
 options per module can reduce V8 compilation-cache reuse for identical module sources; no CPU,
 RAM or GPU effect was measured. Structural realm/module retention remains open.
+
+Verification follow-up (2026-10-22): previous-code V8 run39677755124 is green10/10 and
+general run39677754946 green13/13 after macOS retries. Migration/performance MDs record
+these results separately from pending browser verification of0269/0270; no new measurements.
