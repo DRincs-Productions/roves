@@ -49,6 +49,9 @@ without waiting for the full deadline, then undergo the same strict result valid
 hangs still fails the smoke check.
 Desktop bundle smoke checks wait for their required page results (including synthetic input and
 save-file checks) with a bounded timeout, so slow cold starts do not truncate later assertions.
+On Linux the Xvfb probe waits up to 60 seconds for the shell's own visible window, never picks
+another client's window on a shared display, and must report its window/input/resize cycle
+before the smoke stops the shell.
 The browser smoke checks ordinary JavaScript prototype mutation and the actual Window separately.
 Window now reuses V8's template-created canonical prototype during Servo binding initialization,
 so V8 can reject prototype replacement while leaving ordinary properties writable. Linux normal/JIT-less CI now confirms

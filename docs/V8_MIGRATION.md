@@ -6,8 +6,21 @@
 l'obbligo di registrare consumo e lavoro residuo per incarico. Prosecuzione autonoma,
 un solo Claude attivo e incarichi circoscritti; restano revisione, vincoli CI e stop alle
 quote effettive. I conteggi e i limiti descritti sotto sono storici. Nessuna nuova contabilità.
-Batch d434323c76c: V8/Android/iOS verdi, generale39790271422 ancora in corso all'ultimo
-controllo dopo0277. Nessun push prima della conclusione del batch.
+Batch d434323c76c terminato: V8 39790271552, Android 39790271798, iOS 39790271386 verdi;
+generale 39790271422 rossa solo per Linux deb 119865402266 (build/bundle ok).
+
+**0278 (completa in locale, non committata):** lo smoke Xvfb ha fallito la ricerca
+finestra dopo circa10s pur avendo un processo ancora vivo e risultati pagina/gamepad/save.
+Il ritardo della finestra è un'ipotesi coerente con il difetto riprodotto dal test, non una
+causa definitivamente provata; una regressione applicativa non è esclusa dalla sola natura
+del commit. Correzione: scadenza unica 60 s
+(`ROVES_XVFB_READY_TIMEOUT`) per finestra e `[roves-input] ready`; fallback per nome solo
+sul display privato creato dallo script; cleanup TERM→5 s→KILL; in `test.yml` il loop Linux
+richiede anche il marker `ok` prima di fermare il wrapper. Nessun controllo indebolito.
+Test con comandi finti `support/xvfb_window_cycle_smoke_test.sh`: 7/7 in WSL e Git Bash,
+script precedente 1/7 (`target/task-0278/*.log`). Nessuna patch: file solo-repository.
+Codex ha letto il log grezzo tramite connector GitHub: stdout aggregato al termine,
+quindi non fornisce il tempo effettivo di comparsa finestra. Conferma reale solo dalla prossima CI Linux deb/portable.
 
 **0277 (completa in locale, non committata, sopra ea7a37e45a6 / wiki 2629eed):** il valore
 JSON di un modulo è una proprietà privata V8 (`PrivateKey::JsonModuleValue`) del placeholder

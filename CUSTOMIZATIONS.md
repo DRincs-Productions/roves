@@ -15535,3 +15535,48 @@ Patch: `0277-json-value-record-ownership.patch`.
   call ceiling, extension prompts or routine consumption/residual-work accounting. Continue
   autonomously with one implementer, focused assignments, reviews and CI publication gates;
   actual subscription quotas still stop execution. Historical evidence remains historical.
+
+## 2026-10-22 - Task 0278: Xvfb window-cycle readiness
+
+**Roves-only files:** `support/xvfb_window_cycle_smoke.sh`, new
+`support/xvfb_window_cycle_smoke_test.sh`, `.github/workflows/test.yml`, `README.md`, sibling
+wiki `content/docs/shell.mdx`. No Servo source changes and no patch: both the script and the
+workflow are run from the repository checkout, never from the pristine+patches `servo-src`
+tree, like every earlier change to them (see the 2026-09-20 and 2026-09-28 entries).
+
+**CI evidence:** run `39790271422` (commit `d434323c76c`) failed only in Linux deb job
+`119865402266`. Build and bundle succeeded; the wrapper printed `no visible SDL3 window for
+pid39482`; the process remained alive and page/gamepad/save results were present. The
+probe allowed about10seconds versus75 in the workflow. A late window is plausible and
+reproduced by the fake-command test, not proven for this run. Codex read raw job logs through
+the GitHub connector; stdout was emitted in a batch, so timestamps do not establish the
+window's actual appearance. An application regression cannot be excluded merely because
+that commit changed module ownership. The concrete probe deadline/early-parent-exit defects
+are fixed below; actual SDL3 behavior awaits CI.
+
+**Change:**
+- One deadline (`ROVES_XVFB_READY_TIMEOUT`, default 60 s, below the step's 75 s) for both the
+  window and the page's `[roves-input] ready`, replacing the 10 s / 20 s iteration counts.
+- The `_NET_WM_PID`-less name fallback runs only on the private display the script created
+  itself (sentinel argument on its `xvfb-run` re-entry), on every poll instead of only after the
+  PID search gave up. With a pre-existing `DISPLAY` only the application's PID matches, so an
+  unrelated window can no longer be chosen.
+- Failure messages distinguish an exited process from a missing window and report the elapsed
+  time.
+- Cleanup sends SIGTERM, waits up to 5 s, then SIGKILL: SDL3 turns SIGTERM into a quit event, and
+  the old `wait` could keep the wrapper (and the app) running after a probe failure. INT/TERM
+  now exit through the same cleanup.
+- The workflow's Linux wait loop also requires `[roves-xvfb-window-cycle] ok` before stopping
+  the wrapper: the gamepad and save checks do not depend on the window, so they could be
+  satisfied while the cycle was still running and the wrapper be killed before the marker.
+  No check was relaxed; all page-level `keydown`/`mousedown`/`wheel`/`gamepadbuttondown` and
+  Ctrl+C/X/V assertions are unchanged.
+
+**Tests:** `support/xvfb_window_cycle_smoke_test.sh` uses fake `xvfb-run`/`xdotool` and a fake
+application (no X server or browser build): slow window after 20 s, process exit, no window,
+shared display with an unrelated window, shared display with the app's own window, private
+display without `_NET_WM_PID`, and an app ignoring SIGTERM. All seven pass under WSL Ubuntu
+bash 5.1 and Git Bash; the previous script fails six of them (the slow window fails after 12 s
+with the CI message, the shared display picks the unrelated window). The workflow's
+wait-for-marker ordering is checked by inspection only, not by a test. Real Xvfb/SDL3 behavior is
+confirmed only by the next CI run.

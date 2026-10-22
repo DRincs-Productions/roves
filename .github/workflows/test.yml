@@ -697,6 +697,10 @@ jobs:
             INPUT_CHECK=true
             if [ "${{ matrix.os_name }}" = "linux" ]; then
               grep -hq '\[roves-input\] kind=gamepadbuttondown ' smoke-stdout.log "$LOG" 2>/dev/null || INPUT_CHECK=false
+              # The virtual gamepad and save checks do not need the window: do not stop the
+              # Xvfb wrapper before its window/input/resize cycle has reported (it gives up
+              # by itself after 60 s, below this 75 s deadline).
+              grep -q '\[roves-xvfb-window-cycle\] ok' smoke-stdout.log || INPUT_CHECK=false
             fi
             if [ "$SAVE_CHECK" = true ] && [ "$INPUT_CHECK" = true ]; then break; fi
             kill -0 "$PID" 2>/dev/null || break
