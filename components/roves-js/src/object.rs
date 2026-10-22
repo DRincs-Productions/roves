@@ -57,9 +57,10 @@ pub(crate) struct ClassBox {
     /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
     /// embedder's global state alongside the class hook.
     pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
-    /// Whether SpiderMonkey's `JS_SetImmutablePrototype` has fixed this object's prototype.
-    pub(crate) immutable_prototype: StdCell<bool>,
-    pub(crate) immutable_prototype_value: RefCell<Option<v8::Global<v8::Value>>>,
+    /// The prototype SpiderMonkey's `JS_SetImmutablePrototype` fixed, if it was called. Traced
+    /// by the box rather than rooted, so a class object and its prototype can still be
+    /// collected together when a prototype property points back at the object.
+    pub(crate) immutable_prototype: RefCell<Option<v8::TracedReference<v8::Value>>>,
 }
 
 thread_local! {
@@ -83,6 +84,9 @@ unsafe impl GarbageCollected for ClassBox {
         let private = self.private.get();
         if private.is_gcthing() {
             trace_cell(private.to_gcthing(), visitor);
+        }
+        if let Some(prototype) = self.immutable_prototype.borrow().as_ref() {
+            visitor.trace(prototype);
         }
         // Proxy handler creation may allocate after this box has been wrapped but before
         // its JSAPI cell exists. Trace owned values above, but never expose a null object
@@ -204,22 +208,22 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
 
 /// Whether a class object was marked with SpiderMonkey's immutable-prototype flag.
 pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
-    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
+    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.borrow().is_some())
 }
 
 /// Whether the JSAPI object cell was marked with an immutable prototype.
 pub(crate) fn cell_has_immutable_prototype(object: *mut JSObject) -> bool {
-    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.get())
+    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.borrow().is_some())
 }
 
 /// The original prototype stored when the immutable flag was set.
-pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
-    class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
+pub(crate) fn immutable_prototype<'s>(scope: &v8::PinScope<'s, '_>, object: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Value>> {
+    class_box_of_v8(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
 }
 
 /// The immutable prototype stored on a JSAPI object cell.
-pub(crate) fn immutable_prototype_for_cell(object: *mut JSObject) -> Option<v8::Global<v8::Value>> {
-    class_box(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
+pub(crate) fn immutable_prototype_for_cell<'s>(scope: &v8::PinScope<'s, '_>, object: *mut JSObject) -> Option<v8::Local<'s, v8::Value>> {
+    class_box(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
 }
 
 impl ClassBox {
@@ -771,8 +775,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 private: StdCell::new(UndefinedValue()),
                 lazy_proto: StdCell::new(false),
                 global_trace: StdCell::new(None),
-                immutable_prototype: StdCell::new(false),
-                immutable_prototype_value: RefCell::new(None),
+                immutable_prototype: RefCell::new(None),
             },
         )
     }

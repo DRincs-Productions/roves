@@ -956,6 +956,75 @@ mod object_model {
         assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"immutableTarget".as_ptr(), object_value.handle().into_handle()) });
         assert_eq!(eval(&runtime, "(Object.defineProperty(immutableTarget, 'ordinary', { value: 7 }), immutableTarget.ordinary)").to_int32(), 7);
     }
+
+    fn collect_fully(runtime: &mut Runtime) {
+        let cx = runtime.raw_cx();
+        for _ in 0..3 {
+            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+            runtime.gc_for_testing();
+        }
+    }
+
+    #[test]
+    fn immutable_prototypes_live_with_their_object_and_die_with_it() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let before = HOOK_FINALIZED.with(Cell::get);
+        {
+            rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
+            unsafe { JS_SetReservedSlot(object.get(), 0, &Int32Value(42)) };
+            {
+                // The prototype points back at the object: with a strong root on the stored
+                // prototype, neither could ever be collected.
+                rooted!(in(cx) let prototype = unsafe { JS_NewObject(cx, &CLASS) });
+                unsafe { JS_SetReservedSlot(prototype.get(), 0, &Int32Value(42)) };
+                rooted!(in(cx) let back = ObjectValue(object.get()));
+                assert!(unsafe { JS_SetProperty(cx, prototype.handle().into_handle(), c"owner".as_ptr(), back.handle().into_handle()) });
+                assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
+                let mut succeeded = false;
+                assert!(unsafe { JS_SetImmutablePrototype(cx, object.handle().into_handle(), &mut succeeded) });
+                assert!(succeeded);
+            }
+            collect_fully(&mut runtime);
+            assert_eq!(HOOK_FINALIZED.with(Cell::get), before, "a rooted object keeps its immutable prototype");
+            rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
+            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), prototype.handle_mut().into()) });
+            let mut marker = UndefinedValue();
+            unsafe { JS_GetReservedSlot(prototype.get(), 0, &mut marker) };
+            assert_eq!(marker.to_int32(), 42);
+            // The stored prototype survived the collection: assigning it again succeeds, any
+            // other prototype is still refused.
+            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
+            rooted!(in(cx) let replacement = unsafe { JS_NewPlainObject(cx) });
+            assert!(!unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
+            rooted!(in(cx) let mut current = ptr::null_mut::<JSObject>());
+            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), current.handle_mut().into()) });
+            assert_eq!(current.get(), prototype.get());
+        }
+        collect_fully(&mut runtime);
+        assert_eq!(HOOK_FINALIZED.with(Cell::get), before + 2,
+            "an unrooted object and its immutable prototype must be collected together");
+    }
+
+    #[test]
+    fn mutable_prototypes_stay_replaceable() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let plain = unsafe { JS_NewPlainObject(cx) });
+        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
+        rooted!(in(cx) let replacement = unsafe { JS_NewPlainObject(cx) });
+        for object in [plain.get(), thing.get()] {
+            rooted!(in(cx) let object = object);
+            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
+            collect_fully(&mut runtime);
+            rooted!(in(cx) let mut current = ptr::null_mut::<JSObject>());
+            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), current.handle_mut().into()) });
+            assert_eq!(current.get(), replacement.get());
+            rooted!(in(cx) let null = ptr::null_mut::<JSObject>());
+            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), null.handle().into_handle()) });
+        }
+        assert!(eval(&runtime, "const o = {}; Object.setPrototypeOf(o, Array.prototype); Array.isArray(o) === false && o instanceof Array").to_boolean());
+    }
 }
 
 #[test]

@@ -288,8 +288,8 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
                 None => v8::null(scope).into(),
             };
             if crate::object::cell_has_immutable_prototype(obj.get()) {
-                let original = crate::object::immutable_prototype_for_cell(obj.get())?;
-                if v8::Local::new(scope, &original) == prototype {
+                let original = crate::object::immutable_prototype_for_cell(scope, obj.get())?;
+                if original == prototype {
                     return Some(true);
                 }
                 crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
@@ -307,8 +307,8 @@ pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, su
         let target = object(scope, obj.get())?;
         let Some(class_box) = crate::object::class_box(obj.get()) else { return None };
         let prototype = prototype_of(scope, target)?;
-        *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
-        class_box.immutable_prototype.set(true);
+        let prototype = v8::TracedReference::new(scope, prototype);
+        *class_box.immutable_prototype.borrow_mut() = Some(prototype);
         Some(true)
     });
     let Some(result) = result else { return false };

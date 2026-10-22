@@ -1,0 +1,199 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 66b5533abe6..2f188e66ab1 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -288,8 +288,8 @@ pub unsafe fn JS_SetPrototype(cx: *mut JSContext, obj: HandleObject, proto: Hand
+                 None => v8::null(scope).into(),
+             };
+             if crate::object::cell_has_immutable_prototype(obj.get()) {
+-                let original = crate::object::immutable_prototype_for_cell(obj.get())?;
+-                if v8::Local::new(scope, &original) == prototype {
++                let original = crate::object::immutable_prototype_for_cell(scope, obj.get())?;
++                if original == prototype {
+                     return Some(true);
+                 }
+                 crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
+@@ -307,8 +307,8 @@ pub unsafe fn JS_SetImmutablePrototype(cx: *mut JSContext, obj: HandleObject, su
+         let target = object(scope, obj.get())?;
+         let Some(class_box) = crate::object::class_box(obj.get()) else { return None };
+         let prototype = prototype_of(scope, target)?;
+-        *class_box.immutable_prototype_value.borrow_mut() = Some(v8::Global::new(scope, prototype));
+-        class_box.immutable_prototype.set(true);
++        let prototype = v8::TracedReference::new(scope, prototype);
++        *class_box.immutable_prototype.borrow_mut() = Some(prototype);
+         Some(true)
+     });
+     let Some(result) = result else { return false };
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 4772af366ee..c9878f04960 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -57,9 +57,10 @@ pub(crate) struct ClassBox {
+     /// For a global: its realm's `traceGlobal` hook (`RealmCreationOptions`), which traces the
+     /// embedder's global state alongside the class hook.
+     pub(crate) global_trace: StdCell<crate::jsapi::JSTraceOp>,
+-    /// Whether SpiderMonkey's `JS_SetImmutablePrototype` has fixed this object's prototype.
+-    pub(crate) immutable_prototype: StdCell<bool>,
+-    pub(crate) immutable_prototype_value: RefCell<Option<v8::Global<v8::Value>>>,
++    /// The prototype SpiderMonkey's `JS_SetImmutablePrototype` fixed, if it was called. Traced
++    /// by the box rather than rooted, so a class object and its prototype can still be
++    /// collected together when a prototype property points back at the object.
++    pub(crate) immutable_prototype: RefCell<Option<v8::TracedReference<v8::Value>>>,
+ }
+ 
+ thread_local! {
+@@ -84,6 +85,9 @@ unsafe impl GarbageCollected for ClassBox {
+         if private.is_gcthing() {
+             trace_cell(private.to_gcthing(), visitor);
+         }
++        if let Some(prototype) = self.immutable_prototype.borrow().as_ref() {
++            visitor.trace(prototype);
++        }
+         // Proxy handler creation may allocate after this box has been wrapped but before
+         // its JSAPI cell exists. Trace owned values above, but never expose a null object
+         // to native hooks that read reserved slots through that cell.
+@@ -204,22 +208,22 @@ pub(crate) fn class_box_of_v8<'b>(object: v8::Local<v8::Object>) -> Option<&'b C
+ 
+ /// Whether a class object was marked with SpiderMonkey's immutable-prototype flag.
+ pub(crate) fn has_immutable_prototype(object: v8::Local<v8::Object>) -> bool {
+-    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.get())
++    class_box_of_v8(object).is_some_and(|class_box| class_box.immutable_prototype.borrow().is_some())
+ }
+ 
+ /// Whether the JSAPI object cell was marked with an immutable prototype.
+ pub(crate) fn cell_has_immutable_prototype(object: *mut JSObject) -> bool {
+-    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.get())
++    class_box(object).is_some_and(|class_box| class_box.immutable_prototype.borrow().is_some())
+ }
+ 
+ /// The original prototype stored when the immutable flag was set.
+-pub(crate) fn immutable_prototype(object: v8::Local<v8::Object>) -> Option<v8::Global<v8::Value>> {
+-    class_box_of_v8(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
++pub(crate) fn immutable_prototype<'s>(scope: &v8::PinScope<'s, '_>, object: v8::Local<v8::Object>) -> Option<v8::Local<'s, v8::Value>> {
++    class_box_of_v8(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
+ }
+ 
+ /// The immutable prototype stored on a JSAPI object cell.
+-pub(crate) fn immutable_prototype_for_cell(object: *mut JSObject) -> Option<v8::Global<v8::Value>> {
+-    class_box(object).and_then(|class_box| class_box.immutable_prototype_value.borrow().clone())
++pub(crate) fn immutable_prototype_for_cell<'s>(scope: &v8::PinScope<'s, '_>, object: *mut JSObject) -> Option<v8::Local<'s, v8::Value>> {
++    class_box(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
+ }
+ 
+ impl ClassBox {
+@@ -771,8 +775,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) ->
+                 private: StdCell::new(UndefinedValue()),
+                 lazy_proto: StdCell::new(false),
+                 global_trace: StdCell::new(None),
+-                immutable_prototype: StdCell::new(false),
+-                immutable_prototype_value: RefCell::new(None),
++                immutable_prototype: RefCell::new(None),
+             },
+         )
+     }
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index bdf5b41db94..29b6882ad82 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -518,8 +518,8 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+     // named-properties objects are represented by a proxy target, so enforce the
+     // immutable-prototype invariant even when their handler has a custom trap.
+     if crate::object::has_immutable_prototype(context.target) {
+-        let same_prototype = crate::object::immutable_prototype(context.target)
+-            .is_some_and(|original| v8::Local::new(scope, &original) == args.get(1));
++        let same_prototype = crate::object::immutable_prototype(scope, context.target)
++            .is_some_and(|original| original == args.get(1));
+         let cx = context.cx;
+         crate::rooted!(in(cx) let proxy = context.proxy);
+         let proto = args.get(1);
+@@ -549,8 +549,8 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+         },
+         None => {
+             let set = if crate::object::has_immutable_prototype(context.target) {
+-                match crate::object::immutable_prototype(context.target) {
+-                    Some(original) if v8::Local::new(scope, &original) == args.get(1) => true,
++                match crate::object::immutable_prototype(scope, context.target) {
++                    Some(original) if original == args.get(1) => true,
+                     Some(_) => {
+                         crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
+                         return;
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 86e5ad6b8e9..8ffadffd565 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -956,6 +956,75 @@ mod object_model {
+         assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"immutableTarget".as_ptr(), object_value.handle().into_handle()) });
+         assert_eq!(eval(&runtime, "(Object.defineProperty(immutableTarget, 'ordinary', { value: 7 }), immutableTarget.ordinary)").to_int32(), 7);
+     }
++
++    fn collect_fully(runtime: &mut Runtime) {
++        let cx = runtime.raw_cx();
++        for _ in 0..3 {
++            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++            runtime.gc_for_testing();
++        }
++    }
++
++    #[test]
++    fn immutable_prototypes_live_with_their_object_and_die_with_it() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let before = HOOK_FINALIZED.with(Cell::get);
++        {
++            rooted!(in(cx) let object = unsafe { JS_NewObject(cx, &CLASS) });
++            unsafe { JS_SetReservedSlot(object.get(), 0, &Int32Value(42)) };
++            {
++                // The prototype points back at the object: with a strong root on the stored
++                // prototype, neither could ever be collected.
++                rooted!(in(cx) let prototype = unsafe { JS_NewObject(cx, &CLASS) });
++                unsafe { JS_SetReservedSlot(prototype.get(), 0, &Int32Value(42)) };
++                rooted!(in(cx) let back = ObjectValue(object.get()));
++                assert!(unsafe { JS_SetProperty(cx, prototype.handle().into_handle(), c"owner".as_ptr(), back.handle().into_handle()) });
++                assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
++                let mut succeeded = false;
++                assert!(unsafe { JS_SetImmutablePrototype(cx, object.handle().into_handle(), &mut succeeded) });
++                assert!(succeeded);
++            }
++            collect_fully(&mut runtime);
++            assert_eq!(HOOK_FINALIZED.with(Cell::get), before, "a rooted object keeps its immutable prototype");
++            rooted!(in(cx) let mut prototype = ptr::null_mut::<JSObject>());
++            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), prototype.handle_mut().into()) });
++            let mut marker = UndefinedValue();
++            unsafe { JS_GetReservedSlot(prototype.get(), 0, &mut marker) };
++            assert_eq!(marker.to_int32(), 42);
++            // The stored prototype survived the collection: assigning it again succeeds, any
++            // other prototype is still refused.
++            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), prototype.handle().into_handle()) });
++            rooted!(in(cx) let replacement = unsafe { JS_NewPlainObject(cx) });
++            assert!(!unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
++            rooted!(in(cx) let mut current = ptr::null_mut::<JSObject>());
++            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), current.handle_mut().into()) });
++            assert_eq!(current.get(), prototype.get());
++        }
++        collect_fully(&mut runtime);
++        assert_eq!(HOOK_FINALIZED.with(Cell::get), before + 2,
++            "an unrooted object and its immutable prototype must be collected together");
++    }
++
++    #[test]
++    fn mutable_prototypes_stay_replaceable() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let plain = unsafe { JS_NewPlainObject(cx) });
++        rooted!(in(cx) let thing = unsafe { JS_NewObject(cx, &CLASS) });
++        rooted!(in(cx) let replacement = unsafe { JS_NewPlainObject(cx) });
++        for object in [plain.get(), thing.get()] {
++            rooted!(in(cx) let object = object);
++            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), replacement.handle().into_handle()) });
++            collect_fully(&mut runtime);
++            rooted!(in(cx) let mut current = ptr::null_mut::<JSObject>());
++            assert!(unsafe { JS_GetPrototype(cx, object.handle().into_handle(), current.handle_mut().into()) });
++            assert_eq!(current.get(), replacement.get());
++            rooted!(in(cx) let null = ptr::null_mut::<JSObject>());
++            assert!(unsafe { JS_SetPrototype(cx, object.handle().into_handle(), null.handle().into_handle()) });
++        }
++        assert!(eval(&runtime, "const o = {}; Object.setPrototypeOf(o, Array.prototype); Array.isArray(o) === false && o instanceof Array").to_boolean());
++    }
+ }
+ 
+ #[test]

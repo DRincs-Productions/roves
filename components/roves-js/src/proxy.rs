@@ -518,8 +518,8 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
     // named-properties objects are represented by a proxy target, so enforce the
     // immutable-prototype invariant even when their handler has a custom trap.
     if crate::object::has_immutable_prototype(context.target) {
-        let same_prototype = crate::object::immutable_prototype(context.target)
-            .is_some_and(|original| v8::Local::new(scope, &original) == args.get(1));
+        let same_prototype = crate::object::immutable_prototype(scope, context.target)
+            .is_some_and(|original| original == args.get(1));
         let cx = context.cx;
         crate::rooted!(in(cx) let proxy = context.proxy);
         let proto = args.get(1);
@@ -549,8 +549,8 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
         },
         None => {
             let set = if crate::object::has_immutable_prototype(context.target) {
-                match crate::object::immutable_prototype(context.target) {
-                    Some(original) if v8::Local::new(scope, &original) == args.get(1) => true,
+                match crate::object::immutable_prototype(scope, context.target) {
+                    Some(original) if original == args.get(1) => true,
                     Some(_) => {
                         crate::native::throw_type_error(scope, "cannot change an object's immutable prototype");
                         return;

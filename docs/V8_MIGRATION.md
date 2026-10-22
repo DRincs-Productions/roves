@@ -11,6 +11,22 @@ apt stava scaricando pacchetti dal mirror Azure e lo step è scaduto a30min, pri
 compilazione. Codex ha richiesto un solo retry dei job falliti, motivato da questo log.
 Nessun nuovo push finché questo batch non termina e i controlli mancanti non passano.
 
+**0280 (completa in locale, non committata, sopra 45d88a513e7 / wiki f0cc01c) — solo
+prerequisito, non il design realm:** il prototipo fissato da `JS_SetImmutablePrototype` non è più
+un `v8::Global` (radice incondizionata) ma un `TracedReference<Value>` nel `ClassBox`, tracciato
+in `ClassBox::trace` (stesso meccanismo cppgc di `cell.rs`, nessuna dipendenza). Il flag booleano
+è sostituito dalla presenza del riferimento; i getter restituiscono un `Local` dallo scope, il
+`RefCell` non resta preso durante allocazioni V8. Semantica invariata (trap Proxy
+get/setPrototypeOf, `JS_SetPrototype`); RealmData/registro realm non toccati. Test
+`immutable_prototypes_live_with_their_object_and_die_with_it` e `mutable_prototypes_stay_replaceable`:
+roves-js normal 84/2 ignorati, JIT-less 83/3, warning 772/772 (`target/task-0280-prototype/`).
+Negativo scratch con `Global` incondizionato: fallisce in modo sicuro (0 finalizzati su 2);
+negativo senza trace: segfault (trace necessario). Copia testata identica ai sorgenti; replay di
+52 patch precedenti identico a HEAD e 0280 applicata identica (scratch
+`%TEMP%/roves-0280-replay-PUbJ`). Nessuna raccolta a livello pagina né risparmio RAM dichiarati;
+il design realm completo (`target/task-0280-realm-design.md`) resta pendente per 0281. WIP 0273
+conservato.
+
 **Regola corrente — 22 ottobre:** l'utente ha eliminato i tetti di25/50 chiamate e
 l'obbligo di registrare consumo e lavoro residuo per incarico. Prosecuzione autonoma,
 un solo Claude attivo e incarichi circoscritti; restano revisione, vincoli CI e stop alle

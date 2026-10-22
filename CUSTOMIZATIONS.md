@@ -15655,3 +15655,31 @@ now roots its `data.json`, which 0279 stopped keeping alive. roves-js normal 82 
 ignored, JIT-less 81/3 (warning lines 772/772). Replay of the 54 preceding patches touching
 these files identical to HEAD; 0279 applies identically to the working tree.
 Patch: `0279-collectible-json-module-records.patch`.
+
+## 2026-10-22 - Task 0280: traced immutable prototypes
+
+`components/roves-js/src/{object,jsapi_impl,proxy}.rs`: the prototype `JS_SetImmutablePrototype`
+fixes is no longer a `v8::Global` (a persistent root) on the class box. `ClassBox` now keeps it
+as `RefCell<Option<v8::TracedReference<v8::Value>>>` (replacing both the old `bool` flag and the
+`Global`; the flag is now "a reference is stored") and reports it from `ClassBox::trace` with the
+cppgc `Visitor`, the same maintained rusty_v8 mechanism `cell.rs` already uses; no new
+dependency. The prototype therefore lives as long as its class object, and a class object whose
+prototype points back at it (a shared prototype/class cycle) can be collected together with it,
+including in the initial realm. `immutable_prototype`/`immutable_prototype_for_cell` take a scope
+and return a scoped `Local` read from the traced reference (no temporary `Global` clone); the
+`RefCell` is only borrowed for the read or the store, never across a V8 allocation (the traced
+reference is created before `borrow_mut`). Semantics are unchanged: the proxy
+`setPrototypeOf` paths and `JS_SetPrototype` accept only the stored prototype; `Object.freeze`,
+`seal`, names and principals are not touched. Realm data and the realm registry are not changed
+(full realm design remains pending for task 0281).
+
+Tests (`tests::object_model`): `immutable_prototypes_live_with_their_object_and_die_with_it` (a
+rooted class object keeps its immutable class-object prototype across full GCs, reassigning the
+same prototype still succeeds and a replacement fails; once unrooted, object and prototype with a
+back edge are both finalized) and `mutable_prototypes_stay_replaceable` (plain and class objects
+without the flag). roves-js normal 84 passed/2 ignored, JIT-less 83/3 (warning lines 772/772),
+WindowProxy prototype suites included. Scratch negative with the old unconditional `Global` root
+fails the collection assertion safely (0 finalized instead of 2); a scratch negative without the
+trace crashes, showing the trace is required. No page-level collection or memory saving is
+claimed. Replay of the 52 preceding patches touching these files identical to HEAD; 0280 applies
+identically to the working tree. Patch: `0280-traced-immutable-prototype.patch`.
