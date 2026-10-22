@@ -2,6 +2,28 @@
 
 ## Da leggere alla prossima ripresa
 
+**Stop per quota effettiva Claude durante0281 — 22 ottobre:** HEAD locale completo
+`196ee7a5faa` (0279 e0280 revisionate), wiki locale `9fbd176`; pubblicato resta
+`47a5cd351e1` / wiki `c9bcc84`. 0281 incompleta e non verificata: nove sorgenti ripristinati
+esattamente a HEAD, WIP salvato fuori dai sorgenti pubblicabili in
+`target/0281-incomplete-realm-registry.patch`. Nessun commit o patch di produzione0281.
+Log `target/claude-0281-realms.log`; piano `target/task-0281-plan.txt`, design
+`target/task-0280-realm-design.md`. La CLI ha segnalato session limit con reset00:10
+Europe/Rome: nessun retry, cambio modello o attesa automatica, ripresa solo su richiesta
+utente. Non applicare e pubblicare il WIP come completo: mancano test e replay finale.
+Il design usa cppgc RealmData/context holder, registro debole, radici current/saved,
+RealmSwitch RAII e rilascio principal esattamente una volta. 0280 ha già sostituito il Global
+immutabile di ClassBox con TracedReference: non rifare quel prerequisito.
+Prima di riprendere0281 rileggere patch e contratto di rooting; verificare current/saved,
+constructor publication, finalizer/shutdown order, principal hooks, callback reentrancy e
+normal/JITless con negativi sicuri. Nessuna raccolta realm/pagina è ancora dimostrata.
+
+**CI finale del push47a5cd351e1:** Android39822504026 e iOS39822504229 verdi; generale
+39822504002 ancora attiva (all'ultimo dettaglio12/13verdi, inclusiDEB e portableLinux,
+solo steam119978506378attivo). V839822504067 ancora attiva al retry del solo bootstrap
+LinuxJITless, dopo timeout apt30min prima della compilazione. Non pubblicare altri commit
+finché il batch non permette il push. Nessuna automazione periodica o polling creati.
+
 **Checkpoint Codex dopo revisione0279:** pubblicato47a5cd351e1/wikic9bcc84 (0275–0278).
 0279 completa e revisionata in locale: rooting test corretto, normal82/JITless81 passati,
 cinque file produzione/test/replay identici; wiki locale f0cc01c. Patch0279 aggiornata.

@@ -15683,3 +15683,11 @@ fails the collection assertion safely (0 finalized instead of 2); a scratch nega
 trace crashes, showing the trace is required. No page-level collection or memory saving is
 claimed. Replay of the 52 preceding patches touching these files identical to HEAD; 0280 applies
 identically to the working tree. Patch: `0280-traced-immutable-prototype.patch`.
+
+
+## 2026-10-22 - Claude quota checkpoint during incomplete0281
+
+Updated docs/V8_MIGRATION.md with actual quota stop, published/local commits and pendingCI.
+The incomplete realm registry work is saved at target/0281-incomplete-realm-registry.patch
+and all nine edited source files were restored to complete HEAD196ee7a5faa. No production
+0281 patch, test claim or realm/page collection claim. No model/quota retry or automation.
