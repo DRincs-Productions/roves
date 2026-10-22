@@ -1,0 +1,640 @@
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 9cbd5f70acb..f2fef1d162f 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -7,7 +7,8 @@
+ //! - A module record (`*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
+ //!   the V8 `Module`. The runtime keeps an entry per module (its cell, its private value and,
+ //!   for JSON modules, the parsed value), found from a V8 module by identity hash and from a
+-//!   running script by script id. Entries live as long as the runtime.
++//!   running script by script id. Identity hashes can collide: they only select a bucket,
++//!   whose member is matched by module or script id. Entries live as long as the runtime.
+ //! - A module request (`ModuleRequestObject`) is an object holding the specifier and the
+ //!   module type as V8 privates.
+ //! - Linking calls the embedder's resolve hook from V8's resolve callback; dynamic `import()`
+@@ -30,6 +31,8 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
+ 
+ struct ModuleEntry {
+     cell: *mut c_void,
++    // Recorded at compilation: V8 no longer reports the id once a module errors.
++    script_id: Option<i32>,
+     private: JSVal,
+     json: Option<v8::Global<v8::Value>>,
+ }
+@@ -74,13 +77,41 @@ fn record_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, json: Opti
+     }
+     let cell = crate::cell::new_module_cell(scope, module);
+     let json = json.map(|json| v8::Global::new(scope, json));
+-    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, private: UndefinedValue(), json });
+-    if let Some(script_id) = module.script_id() {
++    let script_id = module.script_id();
++    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, script_id, private: UndefinedValue(), json });
++    if let Some(script_id) = script_id {
+         cx.modules.by_script_id.borrow_mut().insert(script_id, hash);
+     }
+     cell as *mut JSObject
+ }
+ 
++/// The private of the source module with V8 script id `script_id`.
++pub(crate) fn module_private(script_id: i32) -> Option<JSVal> {
++    let cx = JSContext::current();
++    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied()?;
++    let entries = cx.modules.entries.borrow();
++    entries.get(&hash)?.iter().find(|entry| entry.script_id == Some(script_id)).map(|entry| entry.private)
++}
++
++/// Test-only: files `moved`'s entry first in `target`'s identity-hash bucket, as a native
++/// hash collision would. Hash-based lookups of `moved` (`with_entry`) no longer find it.
++/// Returns the size of the shared bucket.
++#[cfg(test)]
++pub(crate) fn collide_for_testing(scope: &mut v8::PinScope, target: *mut JSObject, moved: *mut JSObject) -> usize {
++    let cx = JSContext::current();
++    let target_hash = module_of(scope, target).expect("a module record").get_identity_hash().get();
++    let moved_hash = module_of(scope, moved).expect("a module record").get_identity_hash().get();
++    let mut entries = cx.modules.entries.borrow_mut();
++    let bucket = entries.get_mut(&moved_hash).expect("a registered module");
++    let index = bucket.iter().position(|entry| entry.cell == moved as *mut c_void).expect("a registered module");
++    let entry = bucket.remove(index);
++    let script_id = entry.script_id.expect("a source module");
++    let bucket = entries.entry(target_hash).or_default();
++    bucket.insert(0, entry);
++    cx.modules.by_script_id.borrow_mut().insert(script_id, target_hash);
++    bucket.len()
++}
++
+ fn with_entry<R>(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, f: impl FnOnce(&mut ModuleEntry) -> R) -> Option<R> {
+     let cx = JSContext::current();
+     let hash = module.get_identity_hash().get();
+@@ -108,7 +139,8 @@ pub unsafe fn CompileModule1(cx: *mut JSContext, options: *const ReadOnlyCompile
+     raw(cx)
+         .catching(|scope| {
+             let code = source_string(scope, source)?;
+-            let origin = crate::script_impl::script_origin(scope, options, true);
++            // The host token keeps identical module sources from sharing one cached script.
++            let (origin, _token) = crate::script_impl::source_origin(scope, options, true);
+             let mut source = v8::script_compiler::Source::new(code, Some(&origin));
+             let module = v8::script_compiler::compile_module(scope, &mut source)?;
+             Some(record_of(scope, module, None))
+@@ -392,19 +424,6 @@ pub unsafe fn GetModuleNamespace(cx: *mut JSContext, record: Handle<*mut JSObjec
+ 
+ // --- Dynamic import and import.meta ----------------------------------------------------------
+ 
+-/// The private of the script or module whose code is running.
+-fn caller_private(scope: &mut v8::PinScope) -> JSVal {
+-    let cx = JSContext::current();
+-    let Some(trace) = v8::StackTrace::current_stack_trace(scope, 1) else { return UndefinedValue() };
+-    let Some(frame) = trace.get_frame(scope, 0) else { return UndefinedValue() };
+-    let script_id = frame.get_script_id() as i32;
+-    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied();
+-    if let Some(entry) = hash.and_then(|hash| cx.modules.entries.borrow().get(&hash).and_then(|entries| entries.first().map(|entry| entry.private))) {
+-        return entry;
+-    }
+-    crate::script_impl::script_private(cx, script_id).unwrap_or(UndefinedValue())
+-}
+-
+ /// V8's dynamic `import()`: hands the request and a new promise to the embedder's hook,
+ /// which settles the promise later through `FinishDynamicModuleImport`.
+ fn dynamic_import<'s>(
+@@ -420,6 +439,8 @@ fn dynamic_import<'s>(
+     let promise = resolver.get_promise(scope);
+     // Keep classic source metadata available to the asynchronous host until the
+     // promise is resolved/rejected or abandoned. The token is not exposed to JS.
++    // A module's token is kept the same way; module entries already live as long as
++    // the runtime, so it only costs a promise private until settlement.
+     if host_defined_options.is_fixed_array() {
+         // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
+         let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(host_defined_options) };
+@@ -437,7 +458,7 @@ fn dynamic_import<'s>(
+         resolver.reject(scope, error)?;
+         return Some(promise);
+     };
+-    let private = caller_private(scope);
++    let private = crate::script_impl::caller_private(scope);
+     // Dynamic-import attributes are (key, value) pairs.
+     let module_type = attributes_type(scope, attributes, 2);
+     let request = new_request(scope, specifier, module_type)?;
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 84d05d76e9e..e57b5386356 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -6,9 +6,10 @@
+ //! saved stacks (SpiderMonkey's `SavedFrame` objects) on V8.
+ //!
+ //! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
+-//! - Script privates are kept by script id, so the private of the script a running function
+-//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. A host token
+-//!   and native WeakMap tie their metadata to the source and its live functions.
++//! - Script privates are kept by script id, so the private of the script or module a running
++//!   function came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. Every
++//!   script and module source gets its own host token; for classic scripts it and a native
++//!   WeakMap tie the metadata to the source and its live functions.
+ //! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
+ //!   current stack trace when captured.
+ 
+@@ -122,13 +123,16 @@ fn script_origin_with_data<'s>(
+     )
+ }
+ 
+-fn classic_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions)
++/// The origin of a script or module source with its own host token. V8's compilation cache
++/// only shares a script between sources with strictly equal host options, so each source
++/// keeps its own script id (and private) even when code and name are identical.
++pub(crate) fn source_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool)
+     -> (v8::ScriptOrigin<'s>, v8::Local<'s, v8::Symbol>)
+ {
+     let token = v8::Symbol::new(scope, None);
+     let data = v8::PrimitiveArray::new(scope, 1);
+     data.set(scope, 0, token.into());
+-    (script_origin_with_data(scope, options, false, Some(data.into())), token)
++    (script_origin_with_data(scope, options, is_module, Some(data.into())), token)
+ }
+ 
+ fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
+@@ -155,7 +159,7 @@ pub(crate) fn compile_script<'s>(
+     options: &ReadOnlyCompileOptions,
+     code: v8::Local<'s, v8::String>,
+ ) -> Option<v8::Local<'s, v8::UnboundScript>> {
+-    let (origin, token) = classic_origin(scope, options);
++    let (origin, token) = source_origin(scope, options, false);
+     let mut source = v8::script_compiler::Source::new(code, Some(&origin));
+     let script = v8::script_compiler::compile_unbound_script(
+         scope,
+@@ -328,22 +332,33 @@ pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: Script
+     raw(rt as *mut JSContext).scripts.reference_hooks.set((add_ref, release));
+ }
+ 
+-/// The innermost scripted frame: script id, name, line and column.
+-fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
++/// The innermost scripted frame (none when no script is running).
++fn innermost_frame<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::StackFrame>> {
+     let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
+     if trace.get_frame_count() == 0 {
+         return None;
+     }
+-    let frame = trace.get_frame(scope, 0)?;
++    trace.get_frame(scope, 0)
++}
++
++/// The innermost scripted frame: name, line and column.
++fn caller_frame(scope: &mut v8::PinScope) -> Option<(String, u32, u32)> {
++    let frame = innermost_frame(scope)?;
+     let name = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
+-    Some((frame.get_script_id() as i32, name, frame.get_line_number() as u32, frame.get_column() as u32))
++    Some((name, frame.get_line_number() as u32, frame.get_column() as u32))
++}
++
++/// The private of the classic script or source module whose code is running, as
++/// SpiderMonkey's source-object private. `HideScriptedCaller` does not hide it.
++pub(crate) fn caller_private(scope: &mut v8::PinScope) -> JSVal {
++    let Some(id) = innermost_frame(scope).map(|frame| frame.get_script_id() as i32) else { return UndefinedValue() };
++    script_private(JSContext::current(), id)
++        .or_else(|| crate::modules_impl::module_private(id))
++        .unwrap_or(UndefinedValue())
+ }
+ 
+ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {
+-    let raw = raw(cx);
+-    let id = raw.with_scope(|scope| caller_frame(scope).map(|frame| frame.0));
+-    let private = id.and_then(|id| script_private(raw, id)).unwrap_or(UndefinedValue());
+-    dest.set(private);
++    dest.set(raw(cx).with_scope(caller_private));
+ }
+ 
+ /// The global of the realm whose script is running (the entered realm).
+@@ -362,7 +377,7 @@ pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
+ }
+ 
+ pub unsafe fn DescribeScriptedCaller(cx: *mut JSContext, buffer: *mut c_char, buflen: usize, line: *mut u32, col: *mut u32) -> bool {
+-    let Some((_, name, frame_line, frame_column)) = raw(cx).with_scope(caller_frame) else { return false };
++    let Some((name, frame_line, frame_column)) = raw(cx).with_scope(caller_frame) else { return false };
+     let bytes = name.as_bytes();
+     let length = bytes.len().min(buflen.saturating_sub(1));
+     // SAFETY: callers pass a buffer of `buflen` bytes and valid out pointers.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index d02413b4bda..9d10bde253d 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2531,6 +2531,252 @@ mod modules {
+     }
+ }
+ 
++/// The private of the running classic script or source module (SpiderMonkey's source-object
++/// private), as seen by natives and by dynamic `import()`.
++mod caller_privates {
++    use std::cell::RefCell;
++    use std::ffi::{CStr, CString};
++    use std::ptr;
++    use std::rc::Rc;
++
++    use super::eval;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
++
++    static GLOBAL_CLASS: JSClass = JSClass {
++        name: c"CallerPrivateGlobal".as_ptr(),
++        flags: crate::object::JSCLASS_IS_GLOBAL |
++            ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT + 1) << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++        cOps: ptr::null(),
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    /// Identical code and name for every module of a test.
++    const SHARED_SOURCE: &str = "export function owner() { return readPrivate(); }\nexport function load() { return import('owner.js'); }";
++
++    thread_local! {
++        /// Owners the dynamic-import hook saw; asserted outside the callback.
++        static IMPORTERS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
++    }
++
++    unsafe extern "C" fn retain(value: *const JSVal) {
++        unsafe { Rc::increment_strong_count((*value).to_private() as *const i32) };
++    }
++
++    unsafe extern "C" fn release(value: *const JSVal) {
++        unsafe { Rc::decrement_strong_count((*value).to_private() as *const i32) };
++    }
++
++    fn owner(private: JSVal) -> i32 {
++        if private.is_undefined() { -1 } else { unsafe { *(private.to_private() as *const i32) } }
++    }
++
++    unsafe extern "C" fn read_private(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++        unsafe { *vp = Int32Value(owner(private.get())) };
++        true
++    }
++
++    /// SpiderMonkey's caller private ignores `HideScriptedCaller`.
++    unsafe extern "C" fn read_hidden(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        rooted!(in(cx) let mut private = UndefinedValue());
++        unsafe {
++            HideScriptedCaller(cx);
++            JS_GetScriptedCallerPrivate(cx, private.handle_mut().into());
++            UnhideScriptedCaller(cx);
++            *vp = Int32Value(owner(private.get()));
++        }
++        true
++    }
++
++    /// Re-enters script from a native: returns the global `classicOwner()`.
++    unsafe extern "C" fn reenter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
++        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
++        rooted!(in(cx) let mut result = UndefinedValue());
++        let ok = unsafe { JS_CallFunctionName(cx, global.handle().into(), c"classicOwner".as_ptr(), &no_arguments, result.handle_mut().into()) };
++        unsafe { *vp = result.get() };
++        ok
++    }
++
++    unsafe extern "C" fn record_import(_cx: *mut JSContext, private: Handle<JSVal>, _request: Handle<*mut JSObject>, _promise: Handle<*mut JSObject>) -> bool {
++        IMPORTERS.with(|importers| importers.borrow_mut().push(owner(private.get())));
++        true
++    }
++
++    fn runtime() -> Runtime {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        unsafe {
++            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
++            SetModuleDynamicImportHook(runtime.rt(), Some(record_import));
++        }
++        runtime
++    }
++
++    /// Sets `name` on the current realm's global.
++    fn set_global(runtime: &Runtime, name: &CStr, value: JSVal) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
++        rooted!(in(cx) let value = value);
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), name.as_ptr(), value.handle().into()) });
++    }
++
++    fn install(runtime: &Runtime, name: &CStr, native: JSNative) {
++        let function = unsafe { JS_NewFunction(runtime.raw_cx(), native, 0, 0, name.as_ptr()) };
++        set_global(runtime, name, ObjectValue(function.cast()));
++    }
++
++    /// Compiles, links and evaluates a module owned by `private` in the current realm and
++    /// exposes its namespace as the global `name`. Module records live as long as the runtime.
++    fn load_module(runtime: &Runtime, source: &str, private: &Rc<i32>, name: &CStr) -> *mut JSObject {
++        let cx = runtime.raw_cx();
++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("same-module.js").unwrap(), 1);
++        let mut text = transform_str_to_source_text(source);
++        rooted!(in(cx) let record = unsafe { CompileModule1(cx, options.ptr, &mut text) });
++        assert!(!record.get().is_null());
++        unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(private).cast())) };
++        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
++        rooted!(in(cx) let mut evaluation = UndefinedValue());
++        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
++        unsafe { RunJobs(cx) };
++        let namespace = unsafe { GetModuleNamespace(cx, record.handle().into()) };
++        set_global(runtime, name, ObjectValue(namespace));
++        record.get()
++    }
++
++    fn script_id(runtime: &Runtime, record: *mut JSObject) -> Option<i32> {
++        unsafe { &*runtime.raw_cx() }.with_scope(|scope| unsafe { crate::cell::cell_module(scope, record.cast()) }?.script_id())
++    }
++
++    fn collect(runtime: &mut Runtime) {
++        runtime.gc_for_testing();
++        for _ in 0..3 {
++            unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
++            runtime.gc_for_testing();
++        }
++    }
++
++    fn take_importers() -> Vec<i32> {
++        IMPORTERS.with(|importers| std::mem::take(&mut *importers.borrow_mut()))
++    }
++
++    /// Each realm's `ns.owner()` and the importer of `ns.load()`.
++    fn observe(runtime: &Runtime, globals: [*mut JSObject; 2]) -> (Vec<i32>, Vec<i32>) {
++        let cx = runtime.raw_cx();
++        let mut owners = Vec::new();
++        for global in globals {
++            let old = unsafe { EnterRealm(cx, global) };
++            owners.push(eval(runtime, "ns.owner()").to_int32());
++            eval(runtime, "ns.load(); 0");
++            unsafe { LeaveRealm(cx, old) };
++        }
++        (owners, take_importers())
++    }
++
++    #[test]
++    fn identical_module_sources_keep_their_own_private_across_realms() {
++        let owners = [Rc::new(11), Rc::new(22)];
++        {
++            let mut runtime = runtime();
++            let cx = runtime.raw_cx();
++            let new_global = || unsafe {
++                JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++            };
++            rooted!(in(cx) let left = new_global());
++            rooted!(in(cx) let right = new_global());
++            let globals = [left.get(), right.get()];
++            let mut ids = Vec::new();
++            for (global, owner) in globals.into_iter().zip(&owners) {
++                let old = unsafe { EnterRealm(cx, global) };
++                install(&runtime, c"readPrivate", Some(read_private));
++                let record = load_module(&runtime, SHARED_SOURCE, owner, c"ns");
++                ids.push(script_id(&runtime, record));
++                unsafe { LeaveRealm(cx, old) };
++            }
++            assert!(ids[0].is_some() && ids[0] != ids[1], "identical sources must not share a cached script: {ids:?}");
++            assert_eq!(observe(&runtime, globals), (vec![11, 22], vec![11, 22]));
++            collect(&mut runtime);
++            assert_eq!(observe(&runtime, globals), (vec![11, 22], vec![11, 22]), "after GC");
++            assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (2, 2));
++        }
++        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1), "shutdown releases both");
++    }
++
++    #[test]
++    fn colliding_identity_hashes_select_the_module_by_script_id() {
++        let owners = [Rc::new(11), Rc::new(22)];
++        {
++            let mut runtime = runtime();
++            install(&runtime, c"readPrivate", Some(read_private));
++            let first = load_module(&runtime, SHARED_SOURCE, &owners[0], c"first");
++            let second = load_module(&runtime, SHARED_SOURCE, &owners[1], c"second");
++            // The second module now precedes the first in the first's bucket; hash-based
++            // `with_entry` lookups (privates, import.meta) are not used for it afterwards.
++            let bucket = unsafe { &*runtime.raw_cx() }.with_scope(|scope| crate::modules_impl::collide_for_testing(scope, first, second));
++            assert_eq!(bucket, 2);
++            let check = |runtime: &Runtime| {
++                let owners = [eval(runtime, "first.owner()").to_int32(), eval(runtime, "second.owner()").to_int32()];
++                eval(runtime, "first.load(); second.load(); 0");
++                (owners, take_importers())
++            };
++            assert_eq!(check(&runtime), ([11, 22], vec![11, 22]));
++            collect(&mut runtime);
++            assert_eq!(check(&runtime), ([11, 22], vec![11, 22]), "after GC");
++        }
++        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1));
++    }
++
++    #[test]
++    fn caller_private_is_the_innermost_classic_or_module_source() {
++        let (classic, module) = (Rc::new(33), Rc::new(44));
++        {
++            let runtime = runtime();
++            let cx = runtime.raw_cx();
++            rooted!(in(cx) let mut private = UndefinedValue());
++            unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
++            assert!(private.get().is_undefined(), "no script is running");
++            install(&runtime, c"readPrivate", Some(read_private));
++            install(&runtime, c"readHidden", Some(read_hidden));
++            install(&runtime, c"reenter", Some(reenter));
++            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("classic-caller.js").unwrap(), 1);
++            let mut source = transform_str_to_source_text(
++                "globalThis.classicOwner = function() { return readPrivate() };\
++                 globalThis.classicLoad = function() { return import('owner.js') };\
++                 globalThis.classicToModule = function() { return mod.owner() };",
++            );
++            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
++            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(&classic).cast())) };
++            rooted!(in(cx) let mut result = UndefinedValue());
++            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
++            load_module(
++                &runtime,
++                "export function owner() { return readPrivate(); }\n\
++                 export function hidden() { return readHidden(); }\n\
++                 export function viaClassic() { return classicOwner(); }\n\
++                 export function viaNative() { return reenter() * 100 + readPrivate(); }\n\
++                 export function load() { return import('owner.js'); }",
++                &module,
++                c"mod",
++            );
++            let read = |source: &str| eval(&runtime, source).to_int32();
++            assert_eq!(read("readPrivate()"), -1, "a script without a private");
++            assert_eq!(read("classicOwner()"), 33);
++            assert_eq!(read("mod.owner()"), 44);
++            assert_eq!(read("mod.hidden()"), 44, "HideScriptedCaller does not hide the private");
++            assert_eq!(read("mod.viaClassic()"), 33);
++            assert_eq!(read("classicToModule()"), 44);
++            assert_eq!(read("mod.viaNative()"), 3344, "native re-entry sees the innermost source");
++            eval(&runtime, "mod.load(); classicLoad(); 0");
++            assert_eq!(take_importers(), vec![44, 33]);
++        }
++        assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
++    }
++}
++
+ mod structured_clone {
+     use std::cell::Cell;
+     use std::ffi::c_void;
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 90ab1a6880e..90131a6ebb4 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -7,9 +7,12 @@
+ // collection queued as its own task. Retained DOM nodes, expandos and closures must survive
+ // repeated collections; known unreachable targets, observed only through WeakRefs, must really
+ // be collected. This checks reachability from script only: it does not count native
+-// finalizers and does not cover realm, module-map or navigation retention.
++// finalizers and does not cover realm, module-map or navigation retention. Two same-origin
++// frames import the same module URL (identical code and name); a dynamic import from each
++// copy must stay owned by its own frame, before and after a collection.
+ "use strict";
+ const MAX_COLLECTIONS = 8;
++const FRAME_TIMEOUT_MS = 5000;
+ const KEPT_ATTACHED = 50;
+ const KEPT_DETACHED = 20;
+ const failures = [];
+@@ -131,6 +134,62 @@ function dropImporter() {
+   return [ref];
+ }
+ 
++function withTimeout(promise, what) {
++  let timer;
++  const timeout = new Promise((_, reject) => {
++    timer = setTimeout(() => reject(new Error(what + " timed out")), FRAME_TIMEOUT_MS);
++  });
++  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
++}
++
++// A same-origin frame whose classic script sets its token and imports gc-module.js.
++function loadOwnerFrame(token) {
++  const frame = document.createElement("iframe");
++  const url = new URL("gc-module.js", location.href).href;
++  frame.srcdoc = `<script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
++    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`;
++  const loaded = new Promise((resolve, reject) => {
++    frame.addEventListener("load", () => resolve(frame), { once: true });
++    frame.addEventListener("error", () => reject(new Error(token + " frame failed to load")), { once: true });
++  });
++  document.body.appendChild(frame);
++  return withTimeout(loaded, token + " frame load");
++}
++
++// Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
++async function moduleOwners(namespaces) {
++  const owners = [];
++  for (const namespace of namespaces) {
++    const owner = await withTimeout(namespace.importOwner(), "owner import");
++    owners.push(owner.ownerToken);
++  }
++  return owners;
++}
++
++async function checkModuleOwners() {
++  const tokens = ["left", "right"];
++  const frames = [];
++  try {
++    for (const token of tokens) frames.push(await loadOwnerFrame(token));
++    const pending = frames.map(frame => frame.contentWindow.rovesModule);
++    // Each frame's promise belongs to that frame's realm: no instanceof check.
++    if (!pending.every(module => typeof module?.then === "function")) {
++      fail("frame module import did not start");
++      return;
++    }
++    const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
++    const before = await moduleOwners(namespaces);
++    report("module owners", ...before.map(String));
++    if (before.join() !== tokens.join()) fail("module owners");
++    await collectOnce();
++    const after = await moduleOwners(namespaces);
++    report("module owners after collection", ...after.map(String));
++    if (after.join() !== tokens.join()) fail("module owners after collection");
++  } finally {
++    for (const frame of frames) frame.remove();
++  }
++}
++
+ async function main() {
+   const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+   report("api", api);
+@@ -157,6 +216,7 @@ async function main() {
+   report("dynamic import after collection", value);
+   if (value !== 42) fail("dynamic import");
+   await expectCollected("dropped importer", dropImporter());
++  await checkModuleOwners();
+   checkKept("retained nodes final");
+ }
+ 
+diff --git a/support/v8-smoke/gc-module.js b/support/v8-smoke/gc-module.js
+index 602bb2102bc..8fa5788b435 100644
+--- a/support/v8-smoke/gc-module.js
++++ b/support/v8-smoke/gc-module.js
+@@ -1,2 +1,4 @@
+-// Imported dynamically by gc-lifecycle.html from a classic script whose element was removed.
++// Imported dynamically by gc-lifecycle.html from a classic script whose element was removed,
++// and by two same-origin frames: importOwner() must load gc-owner.js in its own frame's realm.
+ export default 42;
++export function importOwner() { return import("./gc-owner.js"); }
+diff --git a/support/v8-smoke/gc-owner.js b/support/v8-smoke/gc-owner.js
+new file mode 100644
+index 00000000000..2da89b5487f
+--- /dev/null
++++ b/support/v8-smoke/gc-owner.js
+@@ -0,0 +1,2 @@
++// Imported by gc-module.js's importOwner(): evaluated in the realm that owns the importer.
++export const ownerToken = globalThis.rovesOwnerToken;
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 414ee403a82..e44defdfbae 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -167,9 +167,10 @@ else
+ fi
+ 
+ # Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
+-# hidden in test.html), so it gets its own process. HTTP lets the page import a module.
++# hidden in test.html), so it gets its own process. HTTP lets the page import a module and
++# its same-origin frames import the same module URL, each owning its own dynamic imports.
+ run_page gc-lifecycle.html 20 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ 
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 7fb69e35d30..4f390cf56bb 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -130,11 +130,20 @@ if page == 'gc-lifecycle.html':
+         for line in ('unreachable dom collected true', 'unreachable cycles collected true',
+                      'retained nodes true true true', 'importer compiled true',
+                      'dynamic import after collection 42', 'dropped importer collected true',
++                     'module owners left right', 'module owners after collection left right',
+                      'retained nodes final true true true', 'result pass'):
+             if scenario == 'gc-import' and line.startswith('dynamic import'):
+                 line = 'dynamic import after collection undefined'
+             if scenario == 'gc-import' and line == 'result pass':
+                 line = 'result fail dynamic import'
++            # A module import resolved through the other frame's module owner.
++            if scenario == 'gc-owner' and line.startswith('module owners'):
++                line = line.replace('left right', 'right right')
++            if scenario == 'gc-owner' and line == 'result pass':
++                line = 'result fail module owners; module owners after collection'
++            # A page that claims success without reporting the owner check.
++            if scenario == 'gc-owner-missing' and line.startswith('module owners'):
++                continue
+             print('ROVES-V8 gc ' + line)
+ elif page == 'pref-jitless.html':
+     if scenario == 'pref-cli' and '--pref' in options:
+@@ -228,6 +237,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-api', None, "missing 'ROVES-V8 gc api true'"),
+             ('gc-retention', None, "missing 'ROVES-V8 gc unreachable dom collected true' (ROVES-V8 gc api true ROVES-V8 gc unreachable dom collected false 12/240"),
+             ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
++            ('gc-owner', None, "missing 'ROVES-V8 gc module owners left right' (ROVES-V8 gc api true"),
++            ('gc-owner-missing', None, "missing 'ROVES-V8 gc module owners after collection left right'"),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
+             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
+         )
+@@ -235,7 +246,11 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             with self.subTest(scenario=scenario, gc_flag=gc_flag):
+                 result = self.run_fixture(scenario, gc_flag=gc_flag)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+-                self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
++                if scenario == 'gc-owner-missing':
++                    # A reported pass cannot replace a missing required marker.
++                    self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
++                else:
++                    self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
+                 self.assertIn(message, result.stdout)
+                 self.assertIn('V8 smoke diagnostics: gc-lifecycle.log', result.stdout)
+                 # The other preference process keeps its exact flag.

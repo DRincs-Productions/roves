@@ -130,11 +130,20 @@ if page == 'gc-lifecycle.html':
         for line in ('unreachable dom collected true', 'unreachable cycles collected true',
                      'retained nodes true true true', 'importer compiled true',
                      'dynamic import after collection 42', 'dropped importer collected true',
+                     'module owners left right', 'module owners after collection left right',
                      'retained nodes final true true true', 'result pass'):
             if scenario == 'gc-import' and line.startswith('dynamic import'):
                 line = 'dynamic import after collection undefined'
             if scenario == 'gc-import' and line == 'result pass':
                 line = 'result fail dynamic import'
+            # A module import resolved through the other frame's module owner.
+            if scenario == 'gc-owner' and line.startswith('module owners'):
+                line = line.replace('left right', 'right right')
+            if scenario == 'gc-owner' and line == 'result pass':
+                line = 'result fail module owners; module owners after collection'
+            # A page that claims success without reporting the owner check.
+            if scenario == 'gc-owner-missing' and line.startswith('module owners'):
+                continue
             print('ROVES-V8 gc ' + line)
 elif page == 'pref-jitless.html':
     if scenario == 'pref-cli' and '--pref' in options:
@@ -228,6 +237,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('gc-api', None, "missing 'ROVES-V8 gc api true'"),
             ('gc-retention', None, "missing 'ROVES-V8 gc unreachable dom collected true' (ROVES-V8 gc api true ROVES-V8 gc unreachable dom collected false 12/240"),
             ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
+            ('gc-owner', None, "missing 'ROVES-V8 gc module owners left right' (ROVES-V8 gc api true"),
+            ('gc-owner-missing', None, "missing 'ROVES-V8 gc module owners after collection left right'"),
             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
         )
@@ -235,7 +246,11 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             with self.subTest(scenario=scenario, gc_flag=gc_flag):
                 result = self.run_fixture(scenario, gc_flag=gc_flag)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
-                self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
+                if scenario == 'gc-owner-missing':
+                    # A reported pass cannot replace a missing required marker.
+                    self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                else:
+                    self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)
                 self.assertIn(message, result.stdout)
                 self.assertIn('V8 smoke diagnostics: gc-lifecycle.log', result.stdout)
                 # The other preference process keeps its exact flag.

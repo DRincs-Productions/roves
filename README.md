@@ -64,7 +64,11 @@ that retained DOM nodes, expandos and closures survive repeated collections, tha
 DOM nodes, cycles and a dropped script-compiled importer are actually collected, and that
 `import()` still works after collection. Ordinary pages must see `TestUtils` undefined. It does
 not measure native finalizers, realm/module/navigation retention or performance; browser
-results are pending CI.
+results are pending CI. The same page also loads one module URL in two same-origin frames and
+checks that each copy's dynamic `import()` stays owned by its own frame: every module source now
+keeps its own engine identity, even with identical code and URL, and natives called from module
+code see that module's private. This can reduce V8's compilation-cache reuse for identical
+module sources; it has not been measured.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe

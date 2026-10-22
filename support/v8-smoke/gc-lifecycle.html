@@ -7,9 +7,12 @@
 // collection queued as its own task. Retained DOM nodes, expandos and closures must survive
 // repeated collections; known unreachable targets, observed only through WeakRefs, must really
 // be collected. This checks reachability from script only: it does not count native
-// finalizers and does not cover realm, module-map or navigation retention.
+// finalizers and does not cover realm, module-map or navigation retention. Two same-origin
+// frames import the same module URL (identical code and name); a dynamic import from each
+// copy must stay owned by its own frame, before and after a collection.
 "use strict";
 const MAX_COLLECTIONS = 8;
+const FRAME_TIMEOUT_MS = 5000;
 const KEPT_ATTACHED = 50;
 const KEPT_DETACHED = 20;
 const failures = [];
@@ -131,6 +134,62 @@ function dropImporter() {
   return [ref];
 }
 
+function withTimeout(promise, what) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(what + " timed out")), FRAME_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// A same-origin frame whose classic script sets its token and imports gc-module.js.
+function loadOwnerFrame(token) {
+  const frame = document.createElement("iframe");
+  const url = new URL("gc-module.js", location.href).href;
+  frame.srcdoc = `<script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
+    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`;
+  const loaded = new Promise((resolve, reject) => {
+    frame.addEventListener("load", () => resolve(frame), { once: true });
+    frame.addEventListener("error", () => reject(new Error(token + " frame failed to load")), { once: true });
+  });
+  document.body.appendChild(frame);
+  return withTimeout(loaded, token + " frame load");
+}
+
+// Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
+async function moduleOwners(namespaces) {
+  const owners = [];
+  for (const namespace of namespaces) {
+    const owner = await withTimeout(namespace.importOwner(), "owner import");
+    owners.push(owner.ownerToken);
+  }
+  return owners;
+}
+
+async function checkModuleOwners() {
+  const tokens = ["left", "right"];
+  const frames = [];
+  try {
+    for (const token of tokens) frames.push(await loadOwnerFrame(token));
+    const pending = frames.map(frame => frame.contentWindow.rovesModule);
+    // Each frame's promise belongs to that frame's realm: no instanceof check.
+    if (!pending.every(module => typeof module?.then === "function")) {
+      fail("frame module import did not start");
+      return;
+    }
+    const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
+    const before = await moduleOwners(namespaces);
+    report("module owners", ...before.map(String));
+    if (before.join() !== tokens.join()) fail("module owners");
+    await collectOnce();
+    const after = await moduleOwners(namespaces);
+    report("module owners after collection", ...after.map(String));
+    if (after.join() !== tokens.join()) fail("module owners after collection");
+  } finally {
+    for (const frame of frames) frame.remove();
+  }
+}
+
 async function main() {
   const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
   report("api", api);
@@ -157,6 +216,7 @@ async function main() {
   report("dynamic import after collection", value);
   if (value !== 42) fail("dynamic import");
   await expectCollected("dropped importer", dropImporter());
+  await checkModuleOwners();
   checkKept("retained nodes final");
 }
 

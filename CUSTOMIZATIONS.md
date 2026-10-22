@@ -15095,3 +15095,80 @@ Library evaluation: reuses Servo's maintained TestUtils implementation and V8's 
 dependency, license or platform change. Cost: one small always-compiled namespace binding
 (about 160 generated lines) and an inert preference check at global setup; a collection costs
 CPU only when the preference is enabled and the API is called. One extra short CI process.
+
+## 2026-10-22 - Per-source module identity for caller privates and dynamic import
+
+**Files:** `components/roves-js/src/{modules_impl.rs,script_impl.rs,tests.rs}`,
+`support/v8-smoke/{gc-lifecycle.html,gc-module.js,gc-owner.js,run.sh,test_runner.py}`
+(`0270-module-source-caller-private-identity.patch`), README, migration plan and wiki.
+
+SpiderMonkey stores script and module privates on the source object
+(`SetModulePrivate` sets `scriptSourceObject()->setPrivate`) and
+`JS::GetScriptedCallerPrivate` returns the innermost non-builtin frame's source private
+(mozjs 140.14 `jsapi.cpp`, `vm/Modules.cpp`), without consulting `HideScriptedCaller`. Servo's
+dynamic import takes the referencing module's owner global from that private
+(`module_loading.rs`). Three roves-js defects broke that on V8:
+
+1. **Hash collisions.** The dynamic-import lookup mapped a running script id to a module
+   identity hash and took `entries.first()` of that bucket. V8 identity hashes are not unique,
+   so a collision could return another module's private.
+2. **Compilation-cache sharing.** `CompileModule1` built its origin without host options. V8's
+   isolate-wide compilation cache then returned the same `Script` for two modules with identical
+   source and filename (scratch probe: script ids `Some(7), Some(7)`), and `by_script_id`
+   overwrote the first module's entry. Two same-origin frames importing the same URL hit exactly
+   this case.
+3. **Classic-only caller private.** `JS_GetScriptedCallerPrivate` consulted only classic
+   `ScriptMetadata`, so natives called from module functions (Servo's
+   `get_active_script_or_module`, timers) saw `undefined`.
+
+Fix: the 0266 `classic_origin` helper becomes `source_origin(scope, options, is_module)`, so
+every source-text module also gets a fresh unregistered `Symbol` in its `PrimitiveArray` host
+options. V8's script cache matches host options with `StrictEquals`, so identical module sources
+now keep distinct scripts and script ids; modules are not registered as classic metadata and no
+new strong map is added. `ModuleEntry` records the module's script id at compilation (rusty_v8's
+`Module::script_id()` returns `None` once a module has errored); the identity hash only selects
+the bucket, and `module_private(script_id)` returns the member with that script id. One shared
+`script_impl::caller_private` (innermost V8 frame, empty traces handled before `get_frame(0)`,
+no filename string allocated) returns classic source metadata or the source module's private;
+`JS_GetScriptedCallerPrivate` and the dynamic-import callback both use it.
+`DescribeScriptedCaller` keeps reporting name/line/column. JSON synthetic modules,
+`with_entry`, the resolve/import.meta hooks, private retain/release accounting, CSP, callback
+hiding and navigation identity are unchanged.
+
+Dynamic import keeps the existing single-Symbol host-option handling: a module's token is now
+also stored as the promise's `DynamicImportSourceToken` private until settlement (deleted by the
+promise hook). Module entries already live as long as the runtime, so this only costs one
+promise private; classic import lifetime and authorization are unchanged.
+
+Tests (`tests::caller_privates`): two modules with identical code and name in separate realms
+keep distinct script ids and their own `Rc` privates for both a native using
+`JS_GetScriptedCallerPrivate` and dynamic import, before and after GC; a test-only helper
+(`collide_for_testing`, `#[cfg(test)]`) moves one module entry to the front of the other's
+bucket and the actual caller-private/dynamic-import path still selects the correct member;
+classic vs module callers, no script, `HideScriptedCaller`, classic→module, module→classic and
+native re-entry return the innermost source's private. Natives only record values; assertions
+run outside callbacks. Reintroducing each defect in a scratch copy fails the matching tests
+(`[Some(7), Some(7)]`, owners `[22, 22]`, owners `-1`). `cargo test --offline -p roves-js`:
+normal 58 passed / 2 ignored, `--features jitless` 57 / 3 (771 existing warnings unchanged).
+
+Browser: `gc-module.js` gains `importOwner()` (dynamic import of the new `gc-owner.js`, which
+exports `globalThis.rovesOwnerToken`). `gc-lifecycle.html` creates two same-origin `srcdoc`
+frames that set tokens `left`/`right` and import the same HTTP `gc-module.js` URL, awaits both,
+and requires each copy's `importOwner()` to see its own token before and after a collection
+(`ROVES-V8 gc module owners left right` and `... after collection left right`); tokens are
+compared, not WindowProxy identity. Frame loads and imports have 5-second timeouts; frames are
+removed afterwards without asserting realm collection. `run.sh` requires both markers; the fake
+runner adds wrong-owner and missing-marker (with a reported pass) failures. WSL runner contracts
+9/9; Node syntax check of the page script and modules passed. Claude's MCP access was
+unavailable; Codex independently ran only the module-owner phase using Chrome DevTools MCP,
+Chrome155 Windows x64, loopback gc-lifecycle.html, background tab reporting visible,
+headless unknown: owners left/right, TestUtils undefined. No Chrome GC or performance
+measurement. **Full Roves browser verification is pending CI**; no local servoshell build.
+
+Replayed the 53 preceding patches touching these files from absent custom paths; GNU patch
+2.7.6 dry-run/apply of 0270 matches the working tree (SHA-256) for all eight files.
+
+Library evaluation: reuses V8's ScriptOrigin host options, compilation cache and stack traces
+and the existing Rust tables; no dependency, license (BSD/MPL) or platform change. Unique host
+options per module can reduce V8 compilation-cache reuse for identical module sources; no CPU,
+RAM or GPU effect was measured. Structural realm/module retention remains open.

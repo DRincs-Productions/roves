@@ -6,9 +6,10 @@
 //! saved stacks (SpiderMonkey's `SavedFrame` objects) on V8.
 //!
 //! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
-//! - Script privates are kept by script id, so the private of the script a running function
-//!   came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. A host token
-//!   and native WeakMap tie their metadata to the source and its live functions.
+//! - Script privates are kept by script id, so the private of the script or module a running
+//!   function came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. Every
+//!   script and module source gets its own host token; for classic scripts it and a native
+//!   WeakMap tie the metadata to the source and its live functions.
 //! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
 //!   current stack trace when captured.
 
@@ -122,13 +123,16 @@ fn script_origin_with_data<'s>(
     )
 }
 
-fn classic_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions)
+/// The origin of a script or module source with its own host token. V8's compilation cache
+/// only shares a script between sources with strictly equal host options, so each source
+/// keeps its own script id (and private) even when code and name are identical.
+pub(crate) fn source_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool)
     -> (v8::ScriptOrigin<'s>, v8::Local<'s, v8::Symbol>)
 {
     let token = v8::Symbol::new(scope, None);
     let data = v8::PrimitiveArray::new(scope, 1);
     data.set(scope, 0, token.into());
-    (script_origin_with_data(scope, options, false, Some(data.into())), token)
+    (script_origin_with_data(scope, options, is_module, Some(data.into())), token)
 }
 
 fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
@@ -155,7 +159,7 @@ pub(crate) fn compile_script<'s>(
     options: &ReadOnlyCompileOptions,
     code: v8::Local<'s, v8::String>,
 ) -> Option<v8::Local<'s, v8::UnboundScript>> {
-    let (origin, token) = classic_origin(scope, options);
+    let (origin, token) = source_origin(scope, options, false);
     let mut source = v8::script_compiler::Source::new(code, Some(&origin));
     let script = v8::script_compiler::compile_unbound_script(
         scope,
@@ -328,22 +332,33 @@ pub unsafe fn SetScriptPrivateReferenceHooks(rt: *mut JSRuntime, add_ref: Script
     raw(rt as *mut JSContext).scripts.reference_hooks.set((add_ref, release));
 }
 
-/// The innermost scripted frame: script id, name, line and column.
-fn caller_frame(scope: &mut v8::PinScope) -> Option<(i32, String, u32, u32)> {
+/// The innermost scripted frame (none when no script is running).
+fn innermost_frame<'s>(scope: &mut v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::StackFrame>> {
     let trace = v8::StackTrace::current_stack_trace(scope, 1)?;
     if trace.get_frame_count() == 0 {
         return None;
     }
-    let frame = trace.get_frame(scope, 0)?;
+    trace.get_frame(scope, 0)
+}
+
+/// The innermost scripted frame: name, line and column.
+fn caller_frame(scope: &mut v8::PinScope) -> Option<(String, u32, u32)> {
+    let frame = innermost_frame(scope)?;
     let name = frame.get_script_name_or_source_url(scope).map(|name| name.to_rust_string_lossy(scope)).unwrap_or_default();
-    Some((frame.get_script_id() as i32, name, frame.get_line_number() as u32, frame.get_column() as u32))
+    Some((name, frame.get_line_number() as u32, frame.get_column() as u32))
+}
+
+/// The private of the classic script or source module whose code is running, as
+/// SpiderMonkey's source-object private. `HideScriptedCaller` does not hide it.
+pub(crate) fn caller_private(scope: &mut v8::PinScope) -> JSVal {
+    let Some(id) = innermost_frame(scope).map(|frame| frame.get_script_id() as i32) else { return UndefinedValue() };
+    script_private(JSContext::current(), id)
+        .or_else(|| crate::modules_impl::module_private(id))
+        .unwrap_or(UndefinedValue())
 }
 
 pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {
-    let raw = raw(cx);
-    let id = raw.with_scope(|scope| caller_frame(scope).map(|frame| frame.0));
-    let private = id.and_then(|id| script_private(raw, id)).unwrap_or(UndefinedValue());
-    dest.set(private);
+    dest.set(raw(cx).with_scope(caller_private));
 }
 
 /// The global of the realm whose script is running (the entered realm).
@@ -362,7 +377,7 @@ pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
 }
 
 pub unsafe fn DescribeScriptedCaller(cx: *mut JSContext, buffer: *mut c_char, buflen: usize, line: *mut u32, col: *mut u32) -> bool {
-    let Some((_, name, frame_line, frame_column)) = raw(cx).with_scope(caller_frame) else { return false };
+    let Some((name, frame_line, frame_column)) = raw(cx).with_scope(caller_frame) else { return false };
     let bytes = name.as_bytes();
     let length = bytes.len().min(buflen.saturating_sub(1));
     // SAFETY: callers pass a buffer of `buflen` bytes and valid out pointers.

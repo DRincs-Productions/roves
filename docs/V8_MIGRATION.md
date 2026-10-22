@@ -11,15 +11,18 @@ dell'ultimo commit documentale: partire dalle run sotto e controllare il loro he
 
 | Verifica sul codice pubblicato | Run | Esito |
 | --- | --- | --- |
-| V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | 7 job Linux/Windows verdi; 3 job macOS cancellati per mancata assegnazione del runner |
-| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | Replay e SDL Linux/Windows verdi; SDL macOS cancellato, bundle saltati |
-| Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | Vedi run (non riletta in questo aggiornamento) |
+| V8, incluse 0267 e 0268 | [39677755124](https://github.com/DRincs-Productions/roves/actions/runs/39677755124) | Verde 10/10 dopo il retry macOS (attempt 2) |
+| Replay patch, build e bundle | [39677754946](https://github.com/DRincs-Productions/roves/actions/runs/39677754946) | Retry: tutti i job conclusi verdi; Linux portable ancora in corso all'ultima lettura |
+| Android | [39677755107](https://github.com/DRincs-Productions/roves/actions/runs/39677755107) | Verde |
 
 I log Linux dei job 119491949605 e 119491949671 (normal e JIT-less) contengono entrambi
 `ROVES-V8 csp constructor graph true true true` e il successo di pref-jitless: i criteri
-browser Linux di 0267 e 0268 sono confermati. Le verifiche macOS mancanti (runtime/build V8,
-SDL macOS, bundle) non sono verificate e vengono ritentate da Codex; le cancellazioni
-non sono failure di compilazione ma non vanno trattate come verdi.
+browser Linux di 0267 e 0268 sono confermati. Il retry V8 è ora verde 10/10,
+compresi tutti i runtime e la build macOS; gli smoke browser Windows/macOS restano saltati.
+Il retry SDL macOS e i due bundle macOS sono verdi; resta da concludere Linux portable
+nella CI generale prima del prossimo push. iOS sul commit documentale 18b57a227fa è
+verde dopo retry (run 39677942329). Le cancellazioni iniziali erano mancate assegnazioni
+di runner; il loro superamento è verificato dai retry, non presunto.
 
 **0269 (locale, non pubblicata, CI pendente):** smoke GC browser opt-in che riusa
 `TestUtils.gc()` di Servo. `TestUtils.webidl` perde `skip-unless CARGO_FEATURE_TESTBINDING`;
@@ -34,6 +37,30 @@ Contratti runner WSL 9/9, test generatore V8 75/75, binding TestUtils emesso sen
 replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e browser
 attendono la CI. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
 navigazione; nessuna misura prestazionale.
+
+**0270 (locale, non pubblicata, CI pendente):** identità per sorgente dei moduli V8.
+Corretti tre difetti: (1) il lookup del private del chiamante prendeva `entries.first()` del
+bucket per hash d'identità, che può collidere; (2) la cache di compilazione V8 condivideva lo
+stesso script (id `Some(7), Some(7)`) fra moduli con sorgente e nome identici, sovrascrivendo
+`by_script_id`; (3) `JS_GetScriptedCallerPrivate` leggeva solo i metadati classic. Ora
+`source_origin` (ex `classic_origin` di 0266) dà a ogni modulo un Symbol host non registrato,
+`ModuleEntry` salva lo script id alla compilazione e il membro del bucket si sceglie per script
+id; `script_impl::caller_private` è condiviso da `JS_GetScriptedCallerPrivate` e import
+dinamico, non nascosto da `HideScriptedCaller`. Il token del modulo segue la gestione
+esistente `DynamicImportSourceToken` fino al settlement. Test `tests::caller_privates` (3):
+moduli identici in realm separati prima/dopo GC, collisione deterministica con helper
+`#[cfg(test)]`, classic/modulo/rientro nativo; ciascun difetto reintrodotto li fa fallire.
+roves-js normal 58/2 ignorati, JIT-less 57/3, warning 771 invariati. Fixture browser: due iframe
+`srcdoc` same-origin importano lo stesso `gc-module.js` e `importOwner()` deve leggere il
+proprio token in `gc-owner.js` prima e dopo una raccolta (marker `ROVES-V8 gc module owners`).
+Contratti runner WSL 9/9; replay di 53 patch precedenti e dry-run/apply 0270 con SHA identici.
+Claude non aveva accesso MCP; Codex ha verificato separatamente la sola fase module owners
+con Chrome DevTools MCP: Chrome155 Windows x64, pagina loopback gc-lifecycle.html,
+scheda aperta in background ma visibilityState visible, headless non determinato.
+Risultato owners left/right; TestUtils undefined. Nessuna GC Chrome né misura prestazionale.
+La prova completa GC/browser Roves e la compilazione servoshell attendono la CI.
+Possibile minore riuso della cache di compilazione per moduli identici, non misurato. Restano
+aperte retention strutturale realm/moduli e identità di navigazione.
 
 ### Ordine operativo per domani
 
@@ -52,7 +79,7 @@ navigazione; nessuna misura prestazionale.
    artefatti; solo dopo valutare release e aggiornamento pin dei consumer.
 
 **Non completato:** migrazione complessiva, binding nativi incumbent, conferma CI dello
-smoke GC browser (0269), retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
+smoke GC browser (0269) e dei proprietari dei moduli (0270), retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
 Le stringhe toString dei costruttori Proxy restano diverse da Chrome; non introdurre
 una sostituzione globale di Function.prototype.toString per nascondere la differenza.
 

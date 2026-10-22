@@ -2531,6 +2531,252 @@ mod modules {
     }
 }
 
+/// The private of the running classic script or source module (SpiderMonkey's source-object
+/// private), as seen by natives and by dynamic `import()`.
+mod caller_privates {
+    use std::cell::RefCell;
+    use std::ffi::{CStr, CString};
+    use std::ptr;
+    use std::rc::Rc;
+
+    use super::eval;
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::rust::{CompileOptionsWrapper, JSEngineHandle, Runtime, transform_str_to_source_text};
+
+    static GLOBAL_CLASS: JSClass = JSClass {
+        name: c"CallerPrivateGlobal".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL |
+            ((crate::object::JSCLASS_GLOBAL_SLOT_COUNT + 1) << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    /// Identical code and name for every module of a test.
+    const SHARED_SOURCE: &str = "export function owner() { return readPrivate(); }\nexport function load() { return import('owner.js'); }";
+
+    thread_local! {
+        /// Owners the dynamic-import hook saw; asserted outside the callback.
+        static IMPORTERS: RefCell<Vec<i32>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn retain(value: *const JSVal) {
+        unsafe { Rc::increment_strong_count((*value).to_private() as *const i32) };
+    }
+
+    unsafe extern "C" fn release(value: *const JSVal) {
+        unsafe { Rc::decrement_strong_count((*value).to_private() as *const i32) };
+    }
+
+    fn owner(private: JSVal) -> i32 {
+        if private.is_undefined() { -1 } else { unsafe { *(private.to_private() as *const i32) } }
+    }
+
+    unsafe extern "C" fn read_private(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
+        unsafe { *vp = Int32Value(owner(private.get())) };
+        true
+    }
+
+    /// SpiderMonkey's caller private ignores `HideScriptedCaller`.
+    unsafe extern "C" fn read_hidden(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        rooted!(in(cx) let mut private = UndefinedValue());
+        unsafe {
+            HideScriptedCaller(cx);
+            JS_GetScriptedCallerPrivate(cx, private.handle_mut().into());
+            UnhideScriptedCaller(cx);
+            *vp = Int32Value(owner(private.get()));
+        }
+        true
+    }
+
+    /// Re-enters script from a native: returns the global `classicOwner()`.
+    unsafe extern "C" fn reenter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
+        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
+        rooted!(in(cx) let mut result = UndefinedValue());
+        let ok = unsafe { JS_CallFunctionName(cx, global.handle().into(), c"classicOwner".as_ptr(), &no_arguments, result.handle_mut().into()) };
+        unsafe { *vp = result.get() };
+        ok
+    }
+
+    unsafe extern "C" fn record_import(_cx: *mut JSContext, private: Handle<JSVal>, _request: Handle<*mut JSObject>, _promise: Handle<*mut JSObject>) -> bool {
+        IMPORTERS.with(|importers| importers.borrow_mut().push(owner(private.get())));
+        true
+    }
+
+    fn runtime() -> Runtime {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        unsafe {
+            SetScriptPrivateReferenceHooks(runtime.rt(), Some(retain), Some(release));
+            SetModuleDynamicImportHook(runtime.rt(), Some(record_import));
+        }
+        runtime
+    }
+
+    /// Sets `name` on the current realm's global.
+    fn set_global(runtime: &Runtime, name: &CStr, value: JSVal) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
+        rooted!(in(cx) let value = value);
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into(), name.as_ptr(), value.handle().into()) });
+    }
+
+    fn install(runtime: &Runtime, name: &CStr, native: JSNative) {
+        let function = unsafe { JS_NewFunction(runtime.raw_cx(), native, 0, 0, name.as_ptr()) };
+        set_global(runtime, name, ObjectValue(function.cast()));
+    }
+
+    /// Compiles, links and evaluates a module owned by `private` in the current realm and
+    /// exposes its namespace as the global `name`. Module records live as long as the runtime.
+    fn load_module(runtime: &Runtime, source: &str, private: &Rc<i32>, name: &CStr) -> *mut JSObject {
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("same-module.js").unwrap(), 1);
+        let mut text = transform_str_to_source_text(source);
+        rooted!(in(cx) let record = unsafe { CompileModule1(cx, options.ptr, &mut text) });
+        assert!(!record.get().is_null());
+        unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(private).cast())) };
+        assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+        rooted!(in(cx) let mut evaluation = UndefinedValue());
+        assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+        unsafe { RunJobs(cx) };
+        let namespace = unsafe { GetModuleNamespace(cx, record.handle().into()) };
+        set_global(runtime, name, ObjectValue(namespace));
+        record.get()
+    }
+
+    fn script_id(runtime: &Runtime, record: *mut JSObject) -> Option<i32> {
+        unsafe { &*runtime.raw_cx() }.with_scope(|scope| unsafe { crate::cell::cell_module(scope, record.cast()) }?.script_id())
+    }
+
+    fn collect(runtime: &mut Runtime) {
+        runtime.gc_for_testing();
+        for _ in 0..3 {
+            unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
+            runtime.gc_for_testing();
+        }
+    }
+
+    fn take_importers() -> Vec<i32> {
+        IMPORTERS.with(|importers| std::mem::take(&mut *importers.borrow_mut()))
+    }
+
+    /// Each realm's `ns.owner()` and the importer of `ns.load()`.
+    fn observe(runtime: &Runtime, globals: [*mut JSObject; 2]) -> (Vec<i32>, Vec<i32>) {
+        let cx = runtime.raw_cx();
+        let mut owners = Vec::new();
+        for global in globals {
+            let old = unsafe { EnterRealm(cx, global) };
+            owners.push(eval(runtime, "ns.owner()").to_int32());
+            eval(runtime, "ns.load(); 0");
+            unsafe { LeaveRealm(cx, old) };
+        }
+        (owners, take_importers())
+    }
+
+    #[test]
+    fn identical_module_sources_keep_their_own_private_across_realms() {
+        let owners = [Rc::new(11), Rc::new(22)];
+        {
+            let mut runtime = runtime();
+            let cx = runtime.raw_cx();
+            let new_global = || unsafe {
+                JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+            };
+            rooted!(in(cx) let left = new_global());
+            rooted!(in(cx) let right = new_global());
+            let globals = [left.get(), right.get()];
+            let mut ids = Vec::new();
+            for (global, owner) in globals.into_iter().zip(&owners) {
+                let old = unsafe { EnterRealm(cx, global) };
+                install(&runtime, c"readPrivate", Some(read_private));
+                let record = load_module(&runtime, SHARED_SOURCE, owner, c"ns");
+                ids.push(script_id(&runtime, record));
+                unsafe { LeaveRealm(cx, old) };
+            }
+            assert!(ids[0].is_some() && ids[0] != ids[1], "identical sources must not share a cached script: {ids:?}");
+            assert_eq!(observe(&runtime, globals), (vec![11, 22], vec![11, 22]));
+            collect(&mut runtime);
+            assert_eq!(observe(&runtime, globals), (vec![11, 22], vec![11, 22]), "after GC");
+            assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (2, 2));
+        }
+        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1), "shutdown releases both");
+    }
+
+    #[test]
+    fn colliding_identity_hashes_select_the_module_by_script_id() {
+        let owners = [Rc::new(11), Rc::new(22)];
+        {
+            let mut runtime = runtime();
+            install(&runtime, c"readPrivate", Some(read_private));
+            let first = load_module(&runtime, SHARED_SOURCE, &owners[0], c"first");
+            let second = load_module(&runtime, SHARED_SOURCE, &owners[1], c"second");
+            // The second module now precedes the first in the first's bucket; hash-based
+            // `with_entry` lookups (privates, import.meta) are not used for it afterwards.
+            let bucket = unsafe { &*runtime.raw_cx() }.with_scope(|scope| crate::modules_impl::collide_for_testing(scope, first, second));
+            assert_eq!(bucket, 2);
+            let check = |runtime: &Runtime| {
+                let owners = [eval(runtime, "first.owner()").to_int32(), eval(runtime, "second.owner()").to_int32()];
+                eval(runtime, "first.load(); second.load(); 0");
+                (owners, take_importers())
+            };
+            assert_eq!(check(&runtime), ([11, 22], vec![11, 22]));
+            collect(&mut runtime);
+            assert_eq!(check(&runtime), ([11, 22], vec![11, 22]), "after GC");
+        }
+        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1));
+    }
+
+    #[test]
+    fn caller_private_is_the_innermost_classic_or_module_source() {
+        let (classic, module) = (Rc::new(33), Rc::new(44));
+        {
+            let runtime = runtime();
+            let cx = runtime.raw_cx();
+            rooted!(in(cx) let mut private = UndefinedValue());
+            unsafe { JS_GetScriptedCallerPrivate(cx, private.handle_mut().into()) };
+            assert!(private.get().is_undefined(), "no script is running");
+            install(&runtime, c"readPrivate", Some(read_private));
+            install(&runtime, c"readHidden", Some(read_hidden));
+            install(&runtime, c"reenter", Some(reenter));
+            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("classic-caller.js").unwrap(), 1);
+            let mut source = transform_str_to_source_text(
+                "globalThis.classicOwner = function() { return readPrivate() };\
+                 globalThis.classicLoad = function() { return import('owner.js') };\
+                 globalThis.classicToModule = function() { return mod.owner() };",
+            );
+            rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut source) });
+            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(&classic).cast())) };
+            rooted!(in(cx) let mut result = UndefinedValue());
+            assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
+            load_module(
+                &runtime,
+                "export function owner() { return readPrivate(); }\n\
+                 export function hidden() { return readHidden(); }\n\
+                 export function viaClassic() { return classicOwner(); }\n\
+                 export function viaNative() { return reenter() * 100 + readPrivate(); }\n\
+                 export function load() { return import('owner.js'); }",
+                &module,
+                c"mod",
+            );
+            let read = |source: &str| eval(&runtime, source).to_int32();
+            assert_eq!(read("readPrivate()"), -1, "a script without a private");
+            assert_eq!(read("classicOwner()"), 33);
+            assert_eq!(read("mod.owner()"), 44);
+            assert_eq!(read("mod.hidden()"), 44, "HideScriptedCaller does not hide the private");
+            assert_eq!(read("mod.viaClassic()"), 33);
+            assert_eq!(read("classicToModule()"), 44);
+            assert_eq!(read("mod.viaNative()"), 3344, "native re-entry sees the innermost source");
+            eval(&runtime, "mod.load(); classicLoad(); 0");
+            assert_eq!(take_importers(), vec![44, 33]);
+        }
+        assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
+    }
+}
+
 mod structured_clone {
     use std::cell::Cell;
     use std::ffi::c_void;

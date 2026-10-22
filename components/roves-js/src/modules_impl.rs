@@ -7,7 +7,8 @@
 //! - A module record (`*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
 //!   the V8 `Module`. The runtime keeps an entry per module (its cell, its private value and,
 //!   for JSON modules, the parsed value), found from a V8 module by identity hash and from a
-//!   running script by script id. Entries live as long as the runtime.
+//!   running script by script id. Identity hashes can collide: they only select a bucket,
+//!   whose member is matched by module or script id. Entries live as long as the runtime.
 //! - A module request (`ModuleRequestObject`) is an object holding the specifier and the
 //!   module type as V8 privates.
 //! - Linking calls the embedder's resolve hook from V8's resolve callback; dynamic `import()`
@@ -30,6 +31,8 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
 
 struct ModuleEntry {
     cell: *mut c_void,
+    // Recorded at compilation: V8 no longer reports the id once a module errors.
+    script_id: Option<i32>,
     private: JSVal,
     json: Option<v8::Global<v8::Value>>,
 }
@@ -74,11 +77,39 @@ fn record_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, json: Opti
     }
     let cell = crate::cell::new_module_cell(scope, module);
     let json = json.map(|json| v8::Global::new(scope, json));
-    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, private: UndefinedValue(), json });
-    if let Some(script_id) = module.script_id() {
+    let script_id = module.script_id();
+    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, script_id, private: UndefinedValue(), json });
+    if let Some(script_id) = script_id {
         cx.modules.by_script_id.borrow_mut().insert(script_id, hash);
     }
     cell as *mut JSObject
+}
+
+/// The private of the source module with V8 script id `script_id`.
+pub(crate) fn module_private(script_id: i32) -> Option<JSVal> {
+    let cx = JSContext::current();
+    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied()?;
+    let entries = cx.modules.entries.borrow();
+    entries.get(&hash)?.iter().find(|entry| entry.script_id == Some(script_id)).map(|entry| entry.private)
+}
+
+/// Test-only: files `moved`'s entry first in `target`'s identity-hash bucket, as a native
+/// hash collision would. Hash-based lookups of `moved` (`with_entry`) no longer find it.
+/// Returns the size of the shared bucket.
+#[cfg(test)]
+pub(crate) fn collide_for_testing(scope: &mut v8::PinScope, target: *mut JSObject, moved: *mut JSObject) -> usize {
+    let cx = JSContext::current();
+    let target_hash = module_of(scope, target).expect("a module record").get_identity_hash().get();
+    let moved_hash = module_of(scope, moved).expect("a module record").get_identity_hash().get();
+    let mut entries = cx.modules.entries.borrow_mut();
+    let bucket = entries.get_mut(&moved_hash).expect("a registered module");
+    let index = bucket.iter().position(|entry| entry.cell == moved as *mut c_void).expect("a registered module");
+    let entry = bucket.remove(index);
+    let script_id = entry.script_id.expect("a source module");
+    let bucket = entries.entry(target_hash).or_default();
+    bucket.insert(0, entry);
+    cx.modules.by_script_id.borrow_mut().insert(script_id, target_hash);
+    bucket.len()
 }
 
 fn with_entry<R>(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, f: impl FnOnce(&mut ModuleEntry) -> R) -> Option<R> {
@@ -108,7 +139,8 @@ pub unsafe fn CompileModule1(cx: *mut JSContext, options: *const ReadOnlyCompile
     raw(cx)
         .catching(|scope| {
             let code = source_string(scope, source)?;
-            let origin = crate::script_impl::script_origin(scope, options, true);
+            // The host token keeps identical module sources from sharing one cached script.
+            let (origin, _token) = crate::script_impl::source_origin(scope, options, true);
             let mut source = v8::script_compiler::Source::new(code, Some(&origin));
             let module = v8::script_compiler::compile_module(scope, &mut source)?;
             Some(record_of(scope, module, None))
@@ -392,19 +424,6 @@ pub unsafe fn GetModuleNamespace(cx: *mut JSContext, record: Handle<*mut JSObjec
 
 // --- Dynamic import and import.meta ----------------------------------------------------------
 
-/// The private of the script or module whose code is running.
-fn caller_private(scope: &mut v8::PinScope) -> JSVal {
-    let cx = JSContext::current();
-    let Some(trace) = v8::StackTrace::current_stack_trace(scope, 1) else { return UndefinedValue() };
-    let Some(frame) = trace.get_frame(scope, 0) else { return UndefinedValue() };
-    let script_id = frame.get_script_id() as i32;
-    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied();
-    if let Some(entry) = hash.and_then(|hash| cx.modules.entries.borrow().get(&hash).and_then(|entries| entries.first().map(|entry| entry.private))) {
-        return entry;
-    }
-    crate::script_impl::script_private(cx, script_id).unwrap_or(UndefinedValue())
-}
-
 /// V8's dynamic `import()`: hands the request and a new promise to the embedder's hook,
 /// which settles the promise later through `FinishDynamicModuleImport`.
 fn dynamic_import<'s>(
@@ -420,6 +439,8 @@ fn dynamic_import<'s>(
     let promise = resolver.get_promise(scope);
     // Keep classic source metadata available to the asynchronous host until the
     // promise is resolved/rejected or abandoned. The token is not exposed to JS.
+    // A module's token is kept the same way; module entries already live as long as
+    // the runtime, so it only costs a promise private until settlement.
     if host_defined_options.is_fixed_array() {
         // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
         let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(host_defined_options) };
@@ -437,7 +458,7 @@ fn dynamic_import<'s>(
         resolver.reject(scope, error)?;
         return Some(promise);
     };
-    let private = caller_private(scope);
+    let private = crate::script_impl::caller_private(scope);
     // Dynamic-import attributes are (key, value) pairs.
     let module_type = attributes_type(scope, attributes, 2);
     let request = new_request(scope, specifier, module_type)?;
