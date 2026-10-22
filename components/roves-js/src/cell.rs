@@ -198,11 +198,7 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
                 }
             }
             if let Some(function) = crate::jsapi_impl::native_function_of_v8(scope, object) {
-                let cell = function.cell.get();
-                if !cell.is_null() {
-                    return cell;
-                }
-                // A dynamic function: its cell while one lives, else a new one (remembered).
+                // Its cell while one lives, else a new one (remembered).
                 if let Some(cell) = function.weak_cell.get() {
                     return cell;
                 }

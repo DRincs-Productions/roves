@@ -135,8 +135,6 @@ pub struct JSContext {
     pub(crate) native_functions: RefCell<Vec<Box<crate::jsapi_impl::NativeFunction>>>,
     /// The size of `native_functions` at which the states of dead functions are dropped.
     pub(crate) native_function_sweep: std::cell::Cell<usize>,
-    /// The states of defined native functions by their (fixed) cell.
-    pub(crate) defined_functions: RefCell<std::collections::HashMap<usize, *const crate::jsapi_impl::NativeFunction>>,
     /// Private keys used on hot paths (see `jsapi_impl::private_key`).
     pub(crate) private_keys: crate::jsapi_impl::PrivateKeys,
     /// The cells of plain objects and symbols (see `cell`).

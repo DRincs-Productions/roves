@@ -2,6 +2,35 @@
 
 ## Da leggere alla prossima ripresa
 
+**Checkpoint revisionato 0276 (22 ottobre):** completata dopo risoluzione dei permessi
+con allowedTools espliciti della sessione (nessun bypassPermissions, zero nuovi dinieghi).
+35 chiamate cumulative (17+18), nei50 autorizzati. Test normal72/2 ignorati, JITless71/3,
+negativo e replay51 patch precedenti più0276 verificati; Codex ha confrontato i sei file
+produzione/copia testata/replay, identici. Wiki locale2629eed. Nuove regole autonome in
+AGENTS.md:25 iniziali, una estensione motivata fino50, stop a quota effettiva.
+Ultimo controllo del batch pubblicato d434323c76c: V8, Android e iOS verdi; generale
+39790271422 ancora attiva con Linux portable119865401920, Windows MSI119865402032 e
+Linux deb119865402266, altre10 job verdi. Nessun push finché il batch non termina.
+Nessun polling o automazione creati. I paragrafi sullo stop0276 sotto sono storici.
+
+**Nuova autorizzazione 22 ottobre:** prosecuzione autonoma approvata, inclusa una sola
+estensione motivata per incarico fino a50 chiamate cumulative. 0276 riparte da17, massimo33
+aggiuntive; prima diagnosticare i permessi, senza aggirare rifiuti di revisione automatica.
+Lo stop sotto è storico; restano i vincoli CI e quota, nessuna automazione periodica.
+
+**Stop operativo 0276 — 22 ottobre:** 0275 revisionata e salvata nel commit locale
+`a578da17667`, wiki locale `ef9fb35`; non pubblicata. Pubblicato resta `d434323c76c`.
+0276 (funzioni native definite deboli) è incompleta: Claude ha usato 17/25 chiamate ma
+la sessione non interattiva `acceptEdits` ha negato i comandi shell di scrittura, chiedendo
+approvazione. Nessun sorgente modificato, nessun test eseguito. Bozza non verificata in
+`target/task-0276/src.diff` e `edit_src.py`; prompt `target/task-0276-plan.txt`, log
+`target/claude-0276-weak-defined-functions.log`. Il diff richiede anche due rimozioni
+`defined_functions` in jsapi.rs/rust.rs; non applicarlo né pubblicarlo come completo.
+Allo stop erano da chiarire permessi e budget; la nuova autorizzazione sopra consente
+la ripresa con conteggio conservato. Nessuna sostituzione con implementazione Codex. Ultima lettura CI:
+Android39790271798 e iOS39790271386 verdi, V839790271552 e generale39790271422 ancora
+in corso, nessun nuovo push consentito. Nessuna automazione creata.
+
 **Ripresa estesa e completamento 0274 — 22 ottobre 2026:** l'incarico 0274 si era fermato a
 25 chiamate; l'utente ha poi autorizzato esplicitamente una sola estensione dello stesso incarico
 (+25, massimo cumulativo 50, budget non azzerato;47 chiamate verificate). Nessun rilancio automatico, retry di quota o
@@ -13,7 +42,24 @@ precedente a538387b86e tutto verde. CI in corso su d434323c76c: V8 39790271552, 
 39790271422, Android 39790271798, iOS 39790271386; nessun push finché non sono concluse
 (Codex gestisce la CI). L'intestazione 0274 sotto descrive lo stato prima del push.
 
-**0275 (completa in locale, non pubblicata):** record dei moduli sorgente raccoglibili. Il
+**0276 (completa in locale, non pubblicata, sopra 0275 a578da17667 / wiki ef9fb35):**
+funzioni native definite dalla specifica deboli come quelle dinamiche: solo `v8::Weak` più
+`WeakCell` sullo stato `NativeFunction`; rimossi `NativeFunction.cell`, il parametro
+`defined`, la mappa `defined_functions` (scorciatoia per indirizzo di cella, rischio di
+riuso) e `trace_native_functions` con la chiamata in RootState. La funzione vive finché la
+raggiunge il proprietario (oggetto, prototipo, globale); slot riservati come proprietà private
+V8; stato eliminato dallo sweep ammortizzato esistente. JIT info, costruttore, slot riservati
+e dispatch invariati; la lettura della JIT info ora entra in V8 (costo non misurato). Realm,
+JSON e mappe Servo restano forti: nessuna raccolta a livello pagina né risparmio RAM. Test
+roves-js normal 72/2 ignorati, JIT-less 71/3 (`target/task-0276/{full,jitless}.log`, righe
+warning 772/772); negativo scratch con `v8::Global` forte → nuovo test fallisce
+(`target/task-0276/negative-strong-root.log`); copia testata identica ai sorgenti. Replay di
+51 patch precedenti (inclusa 0275) identico a HEAD e 0276 applicata identica all'albero
+(`target/task-0276/replay.log`, scratch `%TEMP%/roves-0276-replay-l3cj`). CI di d434323c76c
+(V8 39790271552, generale 39790271422) ancora da controllare da Codex; Android 39790271798 e
+iOS 39790271386 verdi. Incarico Claude: 35 chiamate su 50 (estensione autorizzata).
+
+**0275 (completa in locale come a578da17667, non pubblicata):** record dei moduli sorgente raccoglibili. Il
 `PrivateData` cppgc dei metadati sorgente (holder nella WeakMap catturata, sotto il token host)
 traccia anche la cella del record; `CompileModule1` crea sempre i metadati del modulo sorgente
 (anche con private undefined) e solo dopo rende debole (`WeakCell`) la voce della tabella

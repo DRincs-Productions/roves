@@ -689,6 +689,110 @@ mod object_model {
         assert_eq!(describe(&runtime, eval(&runtime, "String(reserved())")), "held by the slot");
     }
 
+    static DEFINED_INFO_SEEN: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+    unsafe extern "C" fn defined_info_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract: `vp[0]` is the callee.
+        let info = unsafe { RUST_FUNCTION_VALUE_TO_JITINFO(*vp) };
+        DEFINED_INFO_SEEN.store(info as usize, std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: the JSNative contract.
+        unsafe { *vp = Int32Value(42) };
+        true
+    }
+
+    #[test]
+    fn defined_native_functions_are_owned_by_their_holders() {
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let seen = || DEFINED_INFO_SEEN.load(std::sync::atomic::Ordering::SeqCst);
+        // SAFETY: the runtime's live context (for every closure below).
+        let states = || unsafe { (*cx).native_functions.borrow().len() };
+        let state_alive = |index: usize| unsafe { (*cx).native_functions.borrow()[index].alive() };
+        let state_has_cell = |index: usize| unsafe { (*cx).native_functions.borrow()[index].weak_cell.get().is_some() };
+        // A V8 weak handle on an object, to see it collected.
+        let weak_of = |object: *mut JSObject| {
+            unsafe { &*cx }.with_scope(|scope| {
+                let value = unsafe { to_v8(scope, ObjectValue(object)) };
+                v8::Weak::new(scope, v8::Local::<v8::Object>::try_from(value).unwrap())
+            })
+        };
+        let full_gc = |runtime: &mut Runtime| {
+            for _ in 0..3 {
+                runtime.gc_for_testing();
+                unsafe { &mut *(*cx).isolate }.low_memory_notification();
+            }
+        };
+        // A spec-defined method, made as `JS_DefineFunctions`/`JS_DefineProperties` make one
+        // (the JIT info is only compared, never read).
+        let info = 0x5a50 as *const crate::jsapi::JSJitInfo;
+        let define = || {
+            crate::jsapi_impl::new_native_function(unsafe { &*cx }, Some(defined_info_getter), 1, "method", false, info)
+                as *mut JSObject
+        };
+        rooted!(in(cx) let global = global(&runtime).to_object());
+        rooted!(in(cx) let owner = eval(&runtime, "({})").to_object());
+        rooted!(in(cx) let owner_value = ObjectValue(owner.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"owner".as_ptr(), owner_value.handle().into_handle()) });
+        let method;
+        let (weak_method, weak_held) = {
+            rooted!(in(cx) let function = define());
+            assert!(!function.get().is_null());
+            method = states() - 1;
+            rooted!(in(cx) let held = eval(&runtime, "({ toString() { return 'owned by the method'; } })"));
+            unsafe { SetFunctionNativeReserved(function.get(), 0, &held.get()) };
+            rooted!(in(cx) let function_value = ObjectValue(function.get()));
+            assert!(unsafe { JS_SetProperty(cx, owner.handle().into_handle(), c"method".as_ptr(), function_value.handle().into_handle()) });
+            (weak_of(function.get()), weak_of(held.get().to_object()))
+        };
+        // The rooted owner keeps the method and, through it, the reserved slot's object; the
+        // method's cell, rooted by nobody, is collected and made again on the next call, with
+        // the same callback, JIT info and reserved slot's object.
+        full_gc(&mut runtime);
+        assert!(state_alive(method) && !weak_method.is_empty(), "the owner keeps its method");
+        assert!(!weak_held.is_empty(), "the method keeps its reserved slot's object");
+        assert!(!state_has_cell(method), "the method's unrooted cell is collected");
+        assert_eq!(eval(&runtime, "globalThis.saved = owner.method; owner.method(1)").to_int32(), 42);
+        assert_eq!(seen(), info as usize);
+        assert!(state_has_cell(method), "the call made a new cell");
+        {
+            rooted!(in(cx) let function = eval(&runtime, "owner.method").to_object());
+            assert_eq!(unsafe { RUST_FUNCTION_VALUE_TO_JITINFO(ObjectValue(function.get())) }, info);
+            let slot = unsafe { *GetFunctionNativeReserved(function.get(), 0) };
+            assert_eq!(describe(&runtime, slot), "owned by the method");
+        }
+        full_gc(&mut runtime);
+        let same = "owner.method === saved && owner.method.name === 'method' && owner.method.length === 1 ? 1 : 0";
+        assert_eq!(eval(&runtime, same).to_int32(), 1, "the method keeps its identity, name and length");
+        let throws = "try { new owner.method(); 0 } catch (error) { error instanceof TypeError ? 1 : 0 }";
+        assert_eq!(eval(&runtime, throws).to_int32(), 1, "a method is not a constructor");
+        DEFINED_INFO_SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(eval(&runtime, "saved(1)").to_int32(), 42);
+        assert_eq!(seen(), info as usize);
+        // Deleting the property and dropping every reference releases the method and the
+        // reserved slot's object (a private property of it) before the runtime goes.
+        eval(&runtime, "delete owner.method; delete globalThis.saved; 0");
+        full_gc(&mut runtime);
+        assert!(weak_method.is_empty(), "a released method is collected");
+        assert!(weak_held.is_empty(), "a released method's reserved slot's object is collected");
+        assert!(!state_alive(method), "a released method's state is dead");
+        // Dead states are swept; later methods get their own callback data.
+        for _ in 0..1000 {
+            assert!(!define().is_null());
+        }
+        full_gc(&mut runtime);
+        for _ in 0..100 {
+            assert!(!define().is_null());
+        }
+        assert!(states() < 200, "dead states are swept: {}", states());
+        rooted!(in(cx) let later = define());
+        rooted!(in(cx) let later_value = ObjectValue(later.get()));
+        assert!(unsafe { JS_SetProperty(cx, owner.handle().into_handle(), c"later".as_ptr(), later_value.handle().into_handle()) });
+        full_gc(&mut runtime);
+        DEFINED_INFO_SEEN.store(0, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(eval(&runtime, "owner.later(1)").to_int32(), 42);
+        assert_eq!(seen(), info as usize);
+    }
+
     unsafe extern "C" fn answer_getter(_cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
         // Servo's generic getter reads its JIT info from the callee on every call.
         // SAFETY: the JSNative contract: `vp[0]` is the callee.

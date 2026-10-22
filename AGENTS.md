@@ -32,8 +32,9 @@ esplicitamente e non presentare misure ottenute con altri strumenti come risulta
 The user explicitly resumed the migration loop on 2026-10-22. Task 0274 is complete locally
 within its authorized cumulative 50-call boundary (25 initial plus 22 extension, 47 actual).
 Codex may start subsequent bounded assignments and manage the CI loop without asking for
-approval at each completed task. An incomplete task reaching its boundary still requires an
-explicit user budget extension; do not reset that budget through automatic relaunches.
+approval at each completed task, and resolve recoverable technical blocks autonomously.
+Codex may authorize one justified extension per assignment, up to 50 cumulative tool calls.
+Resumed sessions retain the previous count; stop at 50 or an actual subscription quota.
 No periodic automation or automatic quota retries are authorized.
 
 Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
@@ -71,7 +72,12 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   contarla dai blocchi tool_use univoci, non dai messaggi stream duplicati. Prima di superarla,
   Claude si ferma con stato, lavoro residuo e blocco concreto. È una regola del processo,
   non un limite CLI verificato. Nessun rilancio automatico dello stesso incarico per aggirarla.
-  Una ripresa o un ampliamento richiede una decisione esplicita dell'utente sul budget.
+  Codex può autorizzare una sola estensione motivata fino a 50 chiamate cumulative,
+  registrando consumo e lavoro residuo. Una ripresa conserva tutte le chiamate precedenti.
+  A 50 chiamate fermarsi e salvare il punto di ripresa; non creare incarichi equivalenti
+  per azzerare il conteggio. Dopo un diniego dei permessi analizzare la configurazione
+  prima di riprovare: niente tentativi equivalenti ripetuti né aggiramento dei rifiuti
+  della revisione automatica. Risolvere autonomamente i blocchi tecnici recuperabili.
 - Spezzare prima della delega gli incarichi che richiedono più risultati indipendenti;
   mantenere insieme implementazione e verifiche indispensabili alla sua correttezza.
   Un arresto di budget non rende completa una modifica: conservare il WIP separatamente e
@@ -90,8 +96,8 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
-- Al raggiungimento di una quota o della soglia dell'incarico, salvare il punto di ripresa
-  e fermarsi. Non provare altri modelli, rilanciare incarichi o creare attese automatiche
+- Al raggiungimento di una quota effettiva o del limite cumulativo di 50 chiamate,
+  salvare il punto di ripresa e fermarsi. Non provare altri modelli, rilanciare incarichi o creare attese automatiche
   per continuare a consumare. Una ripresa successiva deve essere richiesta dall'utente.
 - Sul primo incarico dopo la ripresa mantenere invariati i modelli. Registrare una volta
   modello, tool call, turni, token nuovi/cache/output, dimensione iniziale del contesto e

@@ -72,11 +72,11 @@ fn wrapper_function<'s>(
     if wrapper.op.is_none() {
         return Some(None);
     }
-    let function = crate::jsapi_impl::new_native_function(cx, wrapper.op, nargs, name, constructor, wrapper.info, true);
+    let function = crate::jsapi_impl::new_native_function(cx, wrapper.op, nargs, name, constructor, wrapper.info);
     if function.is_null() {
         return None;
     }
-    // SAFETY: just created (and kept alive by the runtime).
+    // SAFETY: just created; nothing allocates before the scope holds it (its owner keeps it).
     Some(Some(unsafe { crate::cell::cell_value(scope, function as *mut c_void) }))
 }
 

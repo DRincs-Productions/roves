@@ -15459,3 +15459,46 @@ Patch: `0275-weak-source-module-registry.patch`.
 Codex review: all four replayed0275 files and the isolated runtime source match the working
 tree. Existing test logs confirm71 normal/70 JIT-less; no duplicate test run. Agent audit
 records21 unique calls within25 and indicative client metrics, not subscription-credit savings.
+
+
+### 2026-10-22 — bounded delegation checkpoint after 0275
+- Updated docs/V8_MIGRATION.md and docs/AGENT_WORKFLOW.md with local0275 commit and
+  the permission-blocked, incomplete0276 assignment (17 calls; no source edits or tests).
+  Draft remains outside publishable sources; no new source patch is applicable.
+
+
+### 2026-10-22 — autonomous bounded workflow authorization
+- Updated AGENTS.md, docs/AGENT_WORKFLOW.md and docs/V8_MIGRATION.md: one justified
+  extension up to50 cumulative calls, recoverable permission diagnosis, preserved counters
+  and actual quota stops. No runtime change or source patch required.
+
+## 2026-10-22 - Task 0276: weak spec-defined native functions
+
+`components/roves-js/src/{jsapi_impl,jsapi,binding,cell,rust}.rs`: spec-defined native
+functions (`JS_DefineFunctions`/`JS_DefineProperties` methods and accessors, made by
+`binding.rs`) are now held like dynamic ones (`JS_NewFunction`): only a `v8::Weak<Function>` on
+the per-function `NativeFunction` state, plus the existing `WeakCell` for its cell. Removed the
+permanent roots and the address-keyed shortcut: the `NativeFunction.cell` field, the `defined`
+argument of `new_native_function`, `JSContext.defined_functions` (cell address -> state map,
+which a collected function's cell address could later alias) and `trace_native_functions`
+with its RootState trace call. A defined function now lives as long as its owner object,
+prototype, global or script reaches it; its reserved slots (V8 private properties) go with it,
+and its state is dropped by the existing amortized sweep once the weak handle is empty. The
+callback reconstructs its callee from the `WeakCell` or the weak handle, and
+`RUST_FUNCTION_VALUE_TO_JITINFO`/reserved-slot lookups go through the function's private
+`External`, so freed state is never reached (the state outlives its function; the sweep only
+reads weak handles and drops boxes, no V8 allocation between creation and publication).
+Names, length, constructor behaviour, JIT info, reserved slots and dispatch are unchanged.
+Cost: JIT info lookups for DOM getters/setters/methods now enter V8 (a private-property read)
+instead of a hash lookup; not measured. Realms, JSON modules and Servo's own maps/prototypes
+still keep what they hold, so no page-level collection or RAM saving is claimed.
+
+`components/roves-js/src/tests.rs`: `defined_native_functions_are_owned_by_their_holders`
+(owner-kept method survives GC with JIT info, identity, name/length, non-constructor and
+reserved slot; its unrooted cell is collected and recreated; deleting the property releases
+both the function and the reserved slot's object, observed via `v8::Weak`, before runtime
+drop; dead states swept and later functions dispatch correctly). A scratch negative that
+leaks a strong `v8::Global` per function fails it. roves-js normal 72 passed/2 ignored,
+JIT-less 71/3 (warning lines 772/772). Replay of the 51 preceding patches touching these
+files identical to HEAD; 0276 applies identically to the working tree.
+Patch: `0276-weak-defined-native-functions.patch`.

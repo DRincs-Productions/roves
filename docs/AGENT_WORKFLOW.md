@@ -128,3 +128,34 @@ Il compito è completo localmente entro 25 chiamate: 71 test normali/70 JIT-less
 negativi mirati e replay di 48 patch precedenti più 0275. Codex ha confrontato i quattro file
 ricostruiti e la copia runtime con i sorgenti, senza ripetere i test. JSON e realm restano forti:
 non è un risultato sulla memoria delle pagine. Nessuna percentuale di risparmio attribuita.
+
+
+### 0276: incomplete permission-blocked assignment (2026-10-22)
+Claude Opus 5.5, 17 unique tool calls, 18 turns; no production source edits or tests.
+The noninteractive acceptEdits session denied shell write commands (including git apply
+--check); six denied attempts are recorded in the final result. Stop rather than repeatedly
+trying equivalent commands or restarting to reset the budget. Scratch draft remains in
+target/task-0276; clarify worker permissions and remaining/extended budget before resuming.
+Usage: input34, cache creation83914, cache read1124421, output36756 (thinking16925).
+Indicative provider list-price USD1.6314522; this is not account credit consumption or a
+comparison with equivalent Codex work. Full log: target/claude-0276-weak-defined-functions.log.
+
+
+### Authorized autonomous continuation (2026-10-22)
+The user approved one Codex-authorized justified extension per assignment: 25 initial
+unique tool calls, maximum50 cumulative across resumed sessions. Stop at50 or actual
+subscription quota; do not reset counters, switch models or retry equivalent denied actions.
+Diagnose worker permissions before resuming; never bypass automatic review rejections.
+Task0276 resumes from17 calls with at most33 additional calls, including required checks.
+Codex directs/reviews and Claude implements. CI gates, online heavy builds, no duplicate
+checks and no periodic automation remain in force. Historical stops above remain evidence.
+
+
+### 0276 completion with explicitly allowed session tools
+Resumed Opus5.5 with explicit allowedTools (not bypassPermissions):18 unique tool calls,
+35 cumulative including17 previous calls; zero permission denials. Input38, cache creation
+76720, cache read1411455, output17619 (thinking5611). Normal72/JITless71 pass, negative
+strong-root regression fails as required; replay51 prior patches plus0276 matches sources.
+Codex reviewed the source diff and independently compared six production/audit/replay files;
+no duplicate tests. Log target/claude-0276-resume.log. JIT-info lookup now enters V8;
+performance impact unmeasured, realms/JSON/Servo maps still retain objects.
