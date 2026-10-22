@@ -15727,3 +15727,11 @@ Replay59 prior patches against pristinev0.5.0, dry-run/apply0281 matches12 files
 identical. Patch patches/servo-v0.5.0/0281-collectible-realm-registry.patch. Browser/Servo build
 remains CI-only. Servo page/global module roots and linked-unrun JSON retention remain;
 no page collection or CPU/RAM improvement claimed. README/wiki/handoffs/workflow reflect this.
+
+
+## 2026-10-22 - User-requested CI cancellation and0281 publication
+
+Updated docs/V8_MIGRATION.md: user explicitly requested cancelling the active prior batch
+and publishing completed0281. GitHub accepted cancellation of runs39842644716/39842644668.
+Cancellation is not validation; the next batch must verify the new checkpoint. No source
+change or new source patch; permanent CI publication policy remains unchanged.

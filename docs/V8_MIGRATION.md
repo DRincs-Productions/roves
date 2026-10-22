@@ -2,6 +2,13 @@
 
 ## Da leggere alla prossima ripresa
 
+**Pubblicazione0281 su richiesta esplicita dell'utente:** codice completo e revisionato nel
+commit b2df522a76d, wiki dcfd9bd. L'utente ha chiesto di annullare il batch precedente e
+pubblicare subito: richieste cancellazione202 accettate per generale39842644716 e
+V839842644668 su1094b88f051. Android/iOS di quel batch già verdi. La cancellazione non è
+un esito verde e non convalida0281; verificare le nuove run sul nuovo HEAD dopo il push.
+Questa è un'eccezione esplicita per il checkpoint, non un cambio delle regole CI permanenti.
+
 **0281 completata da Codex — stato corrente22ottobre:** l'utente ha corretto la quota Codex
 (97% residuo) e chiesto implementazione diretta senza Claude. Nessuna nuova invocazione Claude.
 HEAD pubblicato1094b88f051/wiki9fbd176,0279/0280 già pubblicate;0281 completa localmente.
