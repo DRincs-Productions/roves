@@ -15758,3 +15758,21 @@ source copies identical. Logs target/task-0282/{negative-thread-flag,full,jitles
 Replayed55 prior patches, HEAD identical,0282 dry-run/apply identical. Source patch
 patches/servo-v0.5.0/0282-runtime-local-promise-drain.patch. README/wiki/currenthandoff updated.
 Full browser/worker lifecycle and performance claims remain outside this isolated result.
+
+
+## 2026-10-22 - Task0283: delayed foreground task registration ownership
+
+Changed components/roves-v8/src/foreground.rs: handler registry entries are Arc<Registration>
+with an active flag; removal/replacement invalidates the old registration. Delayed tasks
+capture Weak<Registration> at posting, instead of looking up an isolate address when due.
+This prevents old queued tasks from being delivered to a newer isolate reusing that address.
+No new dependency or public API signature; standard Arc/Weak/AtomicBool reuse only.
+
+Three pure routing tests avoid manufacturing invalid native V8 Task objects. Keeping the
+retired registration active in the scratch negative makes two tests fail safely. Engine65
+unit tests and2doctests normal/JITless pass; runtime95/94 pass; restored source copies identical.
+Logs target/task-0283/*.log. Replay one prior patch for this file +0283 dry-run/apply matches.
+Patch patches/servo-v0.5.0/0283-delayed-task-registration-ownership.patch; README/wiki/handoff
+updated. No-handler tasks still use the existing forget policy (destruction after isolate
+disposal may be unsafe). Already-dispatched tasks remain the embedder's responsibility;
+full concurrent shutdown safety and CPU/RAM benefits are not established by routing tests.

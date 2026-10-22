@@ -11,17 +11,38 @@
 //! which brings it to the isolate's event loop. roves-js registers one per runtime.
 //! - A task for an isolate without a handler is leaked, never run nor dropped: its isolate may
 //!   be gone, and destroying a V8 task can touch it.
-//! - Delayed tasks wait on one timer thread.
+//! - Delayed tasks wait on one timer thread and weakly capture their original registration;
+//!   removing or replacing it never retargets them to a reused isolate address.
 
 use std::collections::{BinaryHeap, HashMap};
-use std::sync::{Arc, Condvar, Mutex, OnceLock};
+use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use std::time::{Duration, Instant};
 
 /// Receives the tasks of one isolate, on any thread.
 pub type Handler = Arc<dyn Fn(v8::Task) + Send + Sync>;
 
-fn handlers() -> &'static Mutex<HashMap<usize, Handler>> {
-    static HANDLERS: OnceLock<Mutex<HashMap<usize, Handler>>> = OnceLock::new();
+struct Registration {
+    handler: Handler,
+    active: AtomicBool,
+}
+
+impl Registration {
+    fn handler(&self) -> Option<Handler> {
+        self.active.load(AtomicOrdering::Acquire).then(|| self.handler.clone())
+    }
+
+    fn post(&self, task: v8::Task) {
+        match self.handler() {
+            Some(handler) => handler(task),
+            // Its isolate may have been disposed; even destruction is unsafe then.
+            None => std::mem::forget(task),
+        }
+    }
+}
+
+fn handlers() -> &'static Mutex<HashMap<usize, Arc<Registration>>> {
+    static HANDLERS: OnceLock<Mutex<HashMap<usize, Arc<Registration>>>> = OnceLock::new();
     HANDLERS.get_or_init(Default::default)
 }
 
@@ -34,19 +55,22 @@ pub fn isolate_key(isolate: &v8::Isolate) -> usize {
 }
 
 /// Sets (or, with `None`, removes) the handler of the isolate with key `isolate`. Remove it
-/// before the isolate is disposed.
+/// before the isolate is disposed. Retired registrations reject later deliveries; tasks
+/// already handed to the embedder remain subject to its foreground/shutdown ordering.
 pub fn set_handler(isolate: usize, handler: Option<Handler>) {
     let mut handlers = handlers().lock().unwrap();
-    match handler {
-        Some(handler) => handlers.insert(isolate, handler),
-        None => handlers.remove(&isolate),
-    };
+    if let Some(previous) = handlers.remove(&isolate) {
+        previous.active.store(false, AtomicOrdering::Release);
+    }
+    if let Some(handler) = handler {
+        handlers.insert(isolate, Arc::new(Registration { handler, active: AtomicBool::new(true) }));
+    }
 }
 
 fn post(isolate: usize, task: v8::Task) {
-    let handler = handlers().lock().unwrap().get(&isolate).cloned();
-    match handler {
-        Some(handler) => handler(task),
+    let registration = handlers().lock().unwrap().get(&isolate).cloned();
+    match registration {
+        Some(registration) => registration.post(task),
         None => std::mem::forget(task),
     }
 }
@@ -54,7 +78,7 @@ fn post(isolate: usize, task: v8::Task) {
 struct Delayed {
     due: Instant,
     sequence: u64,
-    isolate: usize,
+    registration: Weak<Registration>,
     task: v8::Task,
 }
 
@@ -97,6 +121,14 @@ fn timer() -> &'static Timer {
 }
 
 fn post_delayed(isolate: usize, task: v8::Task, delay_in_seconds: f64) {
+    // Capture ownership when queued, not when due. Isolate addresses may be reused by a
+    // later runtime; a delayed task must never be sent to its handler.
+    let registration = handlers().lock().unwrap().get(&isolate).map(Arc::downgrade);
+    let Some(registration) = registration else {
+        // Same no-handler policy as an immediate task.
+        std::mem::forget(task);
+        return;
+    };
     let delay = Duration::try_from_secs_f64(delay_in_seconds.max(0.0)).unwrap_or(Duration::MAX);
     let Some(due) = Instant::now().checked_add(delay) else {
         // Never due: like a task that never runs.
@@ -107,7 +139,7 @@ fn post_delayed(isolate: usize, task: v8::Task, delay_in_seconds: f64) {
     let mut queue = timer.queue.lock().unwrap();
     queue.1 += 1;
     let sequence = queue.1;
-    queue.0.push(Delayed { due, sequence, isolate, task });
+    queue.0.push(Delayed { due, sequence, registration, task });
     timer.wake.notify_one();
 }
 
@@ -118,9 +150,12 @@ fn run_timer() {
         let now = Instant::now();
         match queue.0.peek().map(|next| next.due) {
             Some(due) if due <= now => {
-                let Delayed { isolate, task, .. } = queue.0.pop().expect("a due task");
+                let Delayed { registration, task, .. } = queue.0.pop().expect("a due task");
                 drop(queue);
-                post(isolate, task);
+                match registration.upgrade() {
+                    Some(registration) => registration.post(task),
+                    None => std::mem::forget(task),
+                }
                 queue = timer.queue.lock().unwrap();
             },
             Some(due) => queue = timer.wake.wait_timeout(queue, due - now).unwrap().0,
@@ -131,6 +166,59 @@ fn run_timer() {
 
 /// The platform's foreground task runner.
 pub(crate) struct Platform;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn handler() -> Handler {
+        // These tests inspect routing without constructing or running a native V8 Task.
+        Arc::new(|_| panic!("routing test must not execute a V8 task"))
+    }
+
+    #[test]
+    fn removed_registration_cannot_deliver_a_delayed_task() {
+        const KEY: usize = 1;
+        let callback = handler();
+        set_handler(KEY, Some(callback.clone()));
+        let registration = handlers().lock().unwrap()[&KEY].clone();
+        let delayed = Arc::downgrade(&registration);
+        assert!(registration.handler().is_some());
+        set_handler(KEY, None);
+        // Even a dispatcher that still owns the old registration cannot use it once
+        // retired. Keeping an external Arc to the callback does not keep it active.
+        assert!(delayed.upgrade().unwrap().handler().is_none());
+        drop(registration);
+        assert!(delayed.upgrade().is_none());
+        assert_eq!(Arc::strong_count(&callback), 1);
+    }
+
+    #[test]
+    fn reused_isolate_address_does_not_retarget_old_delayed_tasks() {
+        const KEY: usize = 2;
+        set_handler(KEY, Some(handler()));
+        let old = handlers().lock().unwrap()[&KEY].clone();
+        let delayed = Arc::downgrade(&old);
+        // Replacing a registration also invalidates it without requiring a separate remove.
+        set_handler(KEY, Some(handler()));
+        let replacement = handlers().lock().unwrap()[&KEY].clone();
+        assert!(!Arc::ptr_eq(&delayed.upgrade().unwrap(), &replacement));
+        assert!(delayed.upgrade().unwrap().handler().is_none());
+        assert!(replacement.handler().is_some());
+        set_handler(KEY, None);
+    }
+
+    #[test]
+    fn live_registration_keeps_its_original_handler() {
+        const KEY: usize = 3;
+        let callback = handler();
+        set_handler(KEY, Some(callback.clone()));
+        let delayed = Arc::downgrade(&handlers().lock().unwrap()[&KEY]);
+        let selected = delayed.upgrade().unwrap().handler().unwrap();
+        assert!(Arc::ptr_eq(&callback, &selected));
+        set_handler(KEY, None);
+    }
+}
 
 impl v8::PlatformImpl for Platform {
     fn post_task(&self, isolate: *mut std::ffi::c_void, task: v8::Task) {

@@ -2,6 +2,20 @@
 
 ## Da leggere alla prossima ripresa
 
+**0283 completa localmente — task ritardati e riuso isolate:** il timer non cerca più il
+handler per solo indirizzo quando scade un task. Cattura Weak<Registration> all'accodamento;
+la rimozione/sostituzione disattiva la registrazione originale. Un vecchio task non viene
+reinstradato al nuovo runtime che riusa l'indirizzo. Nessuna dipendenza: Arc/Weak/AtomicBool
+standard; API set_handler invariata. Tre test di selezione handler (senza costruire falsi Task
+V8) coprono registrazione viva, rimossa e sostituita; negativo senza invalidazione fallisce2/3.
+Motore65 test +2doctest normal/JITless, runtime95/94 passati, sorgenti testati identici.
+Log target/task-0283/{engine-normal,engine-jitless,runtime-normal,runtime-jitless,
+negative-active-registration,replay}.log. Replay di una patch precedente (questo file) +0283
+identico, scratch %TEMP%/roves-0283-replay-mjgf5r5p. Nessuna misuraCPU/RAM. Task senza
+handler ancora abbandonati senza distruzione per sicurezza; task già consegnati all'embedder
+non sono cancellati da questa modifica e richiedono il corretto ordine di shutdown.
+0282 è nel commit locale7813d44dbc0/wiki2cc0a62; nessun nuovo push sul batch attivo.
+
 **0282 completa localmente — drain dei job per runtime:** corretto un difetto lifecycle:
 DRAIN_PENDING era thread-local e un runtime chiuso con un drain ancora accodato impediva
 al runtime successivo sullo stesso thread di accodare il proprio. Ora drain_pending è un
