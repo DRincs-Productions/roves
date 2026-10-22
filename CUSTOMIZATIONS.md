@@ -15776,3 +15776,25 @@ Patch patches/servo-v0.5.0/0283-delayed-task-registration-ownership.patch; READM
 updated. No-handler tasks still use the existing forget policy (destruction after isolate
 disposal may be unsafe). Already-dispatched tasks remain the embedder's responsibility;
 full concurrent shutdown safety and CPU/RAM benefits are not established by routing tests.
+
+
+## 2026-10-22 - Task0284: dispatched foreground task runtime ownership
+
+Changed roves-js/src/runtime_impl.rs. DispatchedTask wraps the native Task and a weak
+DispatchOwner; DispatchableRun validates ownership against the recipient runtime and closed
+state before running. Foreground close marks shutdown and takes pending tasks under the queue
+lock, destroying them outside it while the isolate is alive. Post serializes queue insertion
+against close and never holds that lock across embedder callbacks. Rejected task payloads
+release wrapper metadata while retaining the existing native-task forget policy. Existing
+ShuttingDown delivery destroys tasks only while the owner remains active; late/wrong-runtime
+work is never executed or destructed via a replacement isolate. No new dependencies or public
+JSAPI signatures; the DispatchablePointer payload remains opaque to the embedder.
+
+Two ownership tests include actual runtime shutdown followed by replacement, without fabricating
+native Task pointers. Negative close-removal and owner-check-removal fixtures both fail safely.
+Normal97 passed/2ignored, JITless96/3ignored, including real asyncWasm/finalization foreground
+integration. Logs target/task-0284/*.log; restored tested source identical. Replay18 prior
+patches +0284 dry-run/apply identical. Patch0284-dispatched-task-runtime-ownership.patch.
+README/wiki/currenthandoff updated. Native task abandonment remains conservative, not leak-free;
+in-flight callback data lifetime is still the embedder's contract. No CPU/RAM or complete
+worker/page shutdown guarantee is inferred from these focused tests.

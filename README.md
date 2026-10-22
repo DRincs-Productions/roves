@@ -120,7 +120,8 @@ now use a weak registry and traced ownership too; current realms, saved nested e
 rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
 released once at collection or shutdown. Promise-job drain scheduling is isolated per runtime,
 so restarting a runtime on the same thread does not inherit an abandoned pending drain. Delayed V8 tasks also keep their original
-registration, so an isolate address reused by a later runtime does not retarget old work. The initial context stays alive, and JSON modules
+registration, so an isolate address reused by a later runtime does not retarget old work. Tasks handed to the
+embedder also carry a weak runtime owner and cannot execute in a replacement runtime. The initial context stays alive, and JSON modules
 linked but never evaluated remain retained. Local lifetime tests pass; full browser validation
 runs in CI. Servo still roots page globals and loaded module maps: page collection and memory
 or performance improvements have not been demonstrated.

@@ -1,0 +1,158 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index d0dd816cf7d..5070056d813 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -101,24 +101,66 @@ pub(crate) struct Foreground {
+     dispatch: std::sync::Mutex<Option<Dispatch>>,
+     /// Tasks waiting for a dispatch callback or for [`RunJobs`].
+     pending: std::sync::Mutex<Vec<v8::Task>>,
++    closed: std::sync::atomic::AtomicBool,
++}
++
++/// Does not keep a runtime alive just because its event loop still owns a dispatched task.
++struct DispatchOwner(std::sync::Weak<Foreground>);
++
++impl DispatchOwner {
++    fn active(&self) -> bool {
++        self.0.upgrade().is_some_and(|owner| !owner.closed.load(std::sync::atomic::Ordering::Acquire))
++    }
++
++    fn belongs_to(&self, foreground: &std::sync::Arc<Foreground>) -> bool {
++        self.0.upgrade().is_some_and(|owner| {
++            std::sync::Arc::ptr_eq(&owner, foreground) && !owner.closed.load(std::sync::atomic::Ordering::Acquire)
++        })
++    }
++}
++
++struct DispatchedTask {
++    task: v8::Task,
++    owner: DispatchOwner,
+ }
+ 
+ impl Foreground {
+     /// Hands `task` to the embedder's event loop, or keeps it.
+-    fn post(&self, task: v8::Task) {
++    fn post(self: &std::sync::Arc<Self>, task: v8::Task) {
++        // Serialize a pending insertion with close: no task can enter the queue after the
++        // shutdown clear. Never hold this lock while calling the embedder.
++        let mut pending = self.pending.lock().unwrap();
++        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
++            std::mem::forget(task);
++            return;
++        }
+         let dispatch = *self.dispatch.lock().unwrap();
+         let Some(Dispatch(Some(callback), closure)) = dispatch else {
+-            self.pending.lock().unwrap().push(task);
++            pending.push(task);
+             return;
+         };
+-        let pointer = Box::into_raw(Box::new(task)) as *mut DispatchablePointer;
++        drop(pending);
++        let pointer = Box::into_raw(Box::new(DispatchedTask { task, owner: DispatchOwner(std::sync::Arc::downgrade(self)) }))
++            as *mut DispatchablePointer;
+         // SAFETY: the embedder's dispatch contract (the task comes back in `DispatchableRun`).
+         if !unsafe { callback(closure, pointer) } {
+             // The event loop is gone: so may be the isolate (see `roves_v8::foreground`).
+             // SAFETY: the pointer was not taken.
+-            std::mem::forget(unsafe { Box::from_raw(pointer as *mut v8::Task) });
++            let rejected = unsafe { Box::from_raw(pointer as *mut DispatchedTask) };
++            std::mem::forget(rejected.task);
+         }
+     }
++
++    fn close(&self) {
++        let waiting = {
++            let mut pending = self.pending.lock().unwrap();
++            self.closed.store(true, std::sync::atomic::Ordering::Release);
++            std::mem::take(&mut *pending)
++        };
++        // The runtime calls this before disposing its isolate, so destruction is still safe.
++        // Do not hold the queue lock during a native task's destructor.
++        drop(waiting);
++    }
+ }
+ 
+ /// Registers `cx`'s runtime to receive its isolate's foreground tasks.
+@@ -130,8 +172,8 @@ pub(crate) fn register_foreground(cx: &JSContext, isolate: &v8::Isolate) {
+ /// Stops the foreground tasks of `cx`'s runtime and drops the waiting ones (before the isolate
+ /// is disposed).
+ pub(crate) fn unregister_foreground(cx: &JSContext, isolate: &v8::Isolate) {
++    cx.hooks.foreground.close();
+     roves_v8::foreground::set_handler(roves_v8::foreground::isolate_key(isolate), None);
+-    cx.hooks.foreground.pending.lock().unwrap().clear();
+ }
+ 
+ /// Runs the foreground tasks waiting in `cx`'s runtime; returns whether any ran.
+@@ -662,11 +704,22 @@ pub unsafe fn SetUpEventLoopDispatch(cx: *mut JSContext, callback: RustDispatchT
+ }
+ 
+ /// Runs a foreground task the embedder's event loop received (or drops it at shutdown).
+-pub unsafe fn DispatchableRun(_cx: *mut JSContext, ptr: *mut DispatchablePointer, maybe_shutting_down: Dispatchable_MaybeShuttingDown) {
++pub unsafe fn DispatchableRun(cx: *mut JSContext, ptr: *mut DispatchablePointer, maybe_shutting_down: Dispatchable_MaybeShuttingDown) {
+     // SAFETY: dispatched pointers come from `Foreground::post`.
+-    let task = unsafe { *Box::from_raw(ptr as *mut v8::Task) };
++    let DispatchedTask { task, owner } = unsafe { *Box::from_raw(ptr as *mut DispatchedTask) };
+     if maybe_shutting_down == Dispatchable_MaybeShuttingDown::NotShuttingDown {
+-        task.run();
++        if !cx.is_null() && owner.belongs_to(&hooks(cx).foreground) {
++            task.run();
++        } else {
++            // The task belongs to another or already-disposed isolate; neither running nor
++            // destroying it through this runtime is safe.
++            std::mem::forget(task);
++        }
++    } else if owner.active() {
++        // Normal shutdown delivery on the owner's foreground thread, before isolate drop.
++        drop(task);
++    } else {
++        std::mem::forget(task);
+     }
+ }
+ 
+@@ -822,3 +875,46 @@ pub unsafe fn StreamConsumerNoteResponseURLs(sc: *mut crate::jsapi::StreamConsum
+         streaming.set_url(&url);
+     }
+ }
++
++
++#[cfg(test)]
++mod dispatch_lifetime_tests {
++    use super::*;
++    use std::sync::Arc;
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    #[test]
++    fn dispatched_owner_accepts_only_its_live_registration() {
++        let foreground = Arc::new(Foreground::default());
++        let other = Arc::new(Foreground::default());
++        let owner = DispatchOwner(Arc::downgrade(&foreground));
++        assert!(owner.active());
++        assert!(owner.belongs_to(&foreground));
++        assert!(!owner.belongs_to(&other));
++        foreground.close();
++        assert!(!owner.active());
++        assert!(!owner.belongs_to(&foreground));
++        drop(foreground);
++        assert!(owner.0.upgrade().is_none());
++    }
++
++    #[test]
++    fn runtime_shutdown_retires_the_owner_even_if_a_poster_still_holds_it() {
++        let (old_owner, old_foreground) = {
++            let runtime = Runtime::new(JSEngineHandle::for_tests());
++            let foreground = hooks(runtime.raw_cx()).foreground.clone();
++            (DispatchOwner(Arc::downgrade(&foreground)), foreground)
++        };
++        assert!(!old_owner.active(), "shutdown invalidates even an outstanding strong Arc");
++        assert!(!old_owner.belongs_to(&old_foreground));
++        {
++            let replacement = Runtime::new(JSEngineHandle::for_tests());
++            let foreground = &hooks(replacement.raw_cx()).foreground;
++            let replacement_owner = DispatchOwner(Arc::downgrade(foreground));
++            assert!(replacement_owner.belongs_to(foreground));
++            assert!(!old_owner.belongs_to(foreground), "an old task cannot run in a new runtime");
++        }
++        drop(old_foreground);
++        assert!(old_owner.0.upgrade().is_none());
++    }
++}

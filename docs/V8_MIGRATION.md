@@ -2,6 +2,26 @@
 
 ## Da leggere alla prossima ripresa
 
+**0284 completa localmente — task già consegnati all'event loop:** il payload opaco
+Dispatchable contiene ora il Task e Weak<Foreground> del runtime originale. DispatchableRun
+esegue solo task del runtime destinatario corretto e ancora aperto; task fuori-lifetime o
+presentati a un altro runtime non sono eseguiti né distrutti attraverso l'isolate sbagliato.
+Lo shutdown chiude il Foreground e svuota la coda pendente prima della dismissione isolate;
+post e close serializzano l'inserimento sotto mutex, senza chiamate embedder o distruttori
+Task sotto lock. La consegna ShuttingDown prima della chiusura conserva la distruzione
+normale. Callback già in volo restano soggette al contratto di lifetime dell'embedder.
+Nessuna API pubblica o dipendenza nuova; wrapper opaco interno, Arc/Weak/AtomicBool esistenti.
+Due test puri di ownership/lifetime, con runtime reali in sequenza, più suite completa
+normal97/2ignorati e JITless96/3ignorati; negativi senza close e senza confronto owner
+falliscono in sicurezza. Test reali esistenti foreground/Wasm/finalization passano.
+Log target/task-0284/{full,jitless,negative-unretired,negative-wrong-owner,replay}.log;
+replay18 patch precedenti +0284 identico, scratch %TEMP%/roves-0284-replay-710oojyq.
+Sorgente testato ripristinato identico. Task invalidi mantengono la politica di abbandono
+per evitare distruttori su isolate dismessi: nessuna garanzia di assenza leak o misuraRAM.
+0283 nel commit locale d53e6b51031/wiki91f35c8; 0282 in7813d44dbc0. Pubblicato resta
+8b536187562/wiki dcfd9bd. CI V839844591657/generale39844592094 attive senza failure
+all'ultimo controllo; Android/iOS verdi. Continuare sviluppo/commit locali senza push.
+
 **0283 completa localmente — task ritardati e riuso isolate:** il timer non cerca più il
 handler per solo indirizzo quando scade un task. Cattura Weak<Registration> all'accodamento;
 la rimozione/sostituzione disattiva la registrazione originale. Un vecchio task non viene
