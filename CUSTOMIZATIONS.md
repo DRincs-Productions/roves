@@ -15742,3 +15742,19 @@ change or new source patch; permanent CI publication policy remains unchanged.
 Reinforced existing AGENTS.md rule: active CI without failures does not stop authorized
 development, review or local commits; only publication waits for the preceding batch.
 Updated docs/AGENT_WORKFLOW.md. Process documentation only, no runtime source patch.
+
+
+## 2026-10-22 - Task0282: runtime-local promise drain state
+
+Moved DRAIN_PENDING from thread-local state into RuntimeHooks::drain_pending (Cell<bool>),
+initialized false per runtime. promise_hook, request_drain and drain_microtasks now read/write
+that runtime's state; queued drain coalescing and failure reset behavior remain unchanged.
+This prevents an abandoned pending drain at shutdown from suppressing the next runtime's
+initial job on the same thread. Existing std::cell::Cell suffices; no library or API changes.
+
+Changed runtime_impl.rs and tests.rs; two consecutive runtimes regression fails before the
+fix (second enqueues0 instead of1) and passes after. Isolated normal95/2ignored, JITless94/3;
+source copies identical. Logs target/task-0282/{negative-thread-flag,full,jitless,replay}.log.
+Replayed55 prior patches, HEAD identical,0282 dry-run/apply identical. Source patch
+patches/servo-v0.5.0/0282-runtime-local-promise-drain.patch. README/wiki/currenthandoff updated.
+Full browser/worker lifecycle and performance claims remain outside this isolated result.

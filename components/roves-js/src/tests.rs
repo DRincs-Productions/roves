@@ -4922,6 +4922,28 @@ mod embedder_job_queue {
         static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
     }
 
+    #[test]
+    fn an_abandoned_drain_does_not_suppress_the_next_runtime_on_the_same_thread() {
+        for _ in 0..2 {
+            JOBS.with(|jobs| jobs.borrow_mut().clear());
+            let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+            traps.enqueuePromiseJob = Some(enqueue);
+            let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+            let enqueued = {
+                let runtime = Runtime::new(JSEngineHandle::for_tests());
+                unsafe { SetJobQueue(runtime.raw_cx(), queue) };
+                eval(&runtime, "Promise.resolve().then(() => 42); 0");
+                // Deliberately abandon this runtime with its drain still pending. The
+                // embedder discards that job at shutdown; it must not affect another VM.
+                JOBS.with(|jobs| jobs.borrow().len())
+            };
+            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+            // Never inspect the old runtime's unrooted job pointers.
+            JOBS.with(|jobs| jobs.borrow_mut().clear());
+            assert_eq!(enqueued, 1, "each runtime must enqueue its own initial drain");
+        }
+    }
+
     unsafe extern "C" fn enqueue(
         _queue: *const c_void,
         _cx: *mut JSContext,

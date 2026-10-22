@@ -1,0 +1,118 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index b1629a539bf..d0dd816cf7d 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -54,6 +54,8 @@ pub(crate) struct RuntimeHooks {
+     preserve_wrapper: Cell<(PreserveWrapperCallback, HasReleasedWrapperCallback)>,
+     read_principals: Cell<JSReadPrincipalsOp>,
+     job_queue: Cell<*mut JobQueue>,
++    /// A drain is queued for this runtime, never for a later runtime on the same thread.
++    drain_pending: Cell<bool>,
+     promise_rejection_tracker: Cell<(PromiseRejectionTrackerCallback, *mut c_void)>,
+     foreground: std::sync::Arc<Foreground>,
+     consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
+@@ -76,6 +78,7 @@ impl Default for RuntimeHooks {
+             preserve_wrapper: Cell::new((None, None)),
+             read_principals: Cell::new(None),
+             job_queue: Cell::new(std::ptr::null_mut()),
++            drain_pending: Cell::new(false),
+             promise_rejection_tracker: Cell::new((None, std::ptr::null_mut())),
+             foreground: Default::default(),
+             consume_stream: Cell::new((None, None)),
+@@ -336,11 +339,6 @@ pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
+ 
+ pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
+ 
+-thread_local! {
+-    /// Whether a drain job is in the embedder's queue (one is enough per checkpoint).
+-    static DRAIN_PENDING: Cell<bool> = const { Cell::new(false) };
+-}
+-
+ /// V8's promise hook: a promise created or resolved may have queued promise jobs.
+ unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
+     if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
+@@ -351,7 +349,8 @@ unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<
+             let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+             promise.delete_private(scope, key);
+         }
+-        if DRAIN_PENDING.with(Cell::get) {
++        let Some(cx) = crate::rust::Runtime::get() else { return };
++        if hooks(cx.as_ptr()).drain_pending.get() {
+             return;
+         }
+         // SAFETY: V8 calls the hook on the isolate's thread, inside a handle scope.
+@@ -376,11 +375,11 @@ fn has_embedder_global(realm: *mut crate::jsapi::Realm) -> bool {
+ /// with an embedder global takes it (a drain runs every pending job of the isolate), and only
+ /// without any such realm the current one.
+ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+-    if DRAIN_PENDING.with(Cell::get) {
+-        return;
+-    }
+     let Some(cx) = crate::rust::Runtime::get() else { return };
+     let cx = cx.as_ptr();
++    if hooks(cx).drain_pending.get() {
++        return;
++    }
+     let queue = hooks(cx).job_queue.get();
+     if queue.is_null() {
+         return;
+@@ -404,7 +403,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+     let switch = raw.switch_realm(realm);
+     let enqueued = (|| {
+         let drain = drain_function(cx)?;
+-        DRAIN_PENDING.with(|pending| pending.set(true));
++        hooks(cx).drain_pending.set(true);
+         crate::rooted!(in(cx) let drain = drain);
+         crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
+         // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
+@@ -415,7 +414,7 @@ fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+     })();
+     drop(switch);
+     if enqueued != Some(true) {
+-        DRAIN_PENDING.with(|pending| pending.set(false));
++        hooks(cx).drain_pending.set(false);
+     }
+ }
+ 
+@@ -436,7 +435,7 @@ fn drain_function(cx: *mut JSContext) -> Option<*mut crate::jsapi::JSObject> {
+ 
+ /// The drain job: runs V8's pending promise jobs (at the embedder's checkpoint).
+ unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut crate::jsval::JSVal) -> bool {
+-    DRAIN_PENDING.with(|pending| pending.set(false));
++    hooks(cx).drain_pending.set(false);
+     isolate(cx).perform_microtask_checkpoint();
+     // SAFETY: the JSNative contract.
+     unsafe { *vp = crate::jsval::UndefinedValue() };
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index f18723bd344..653fe819198 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4922,6 +4922,28 @@ mod embedder_job_queue {
+         static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+     }
+ 
++    #[test]
++    fn an_abandoned_drain_does_not_suppress_the_next_runtime_on_the_same_thread() {
++        for _ in 0..2 {
++            JOBS.with(|jobs| jobs.borrow_mut().clear());
++            let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
++            traps.enqueuePromiseJob = Some(enqueue);
++            let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
++            let enqueued = {
++                let runtime = Runtime::new(JSEngineHandle::for_tests());
++                unsafe { SetJobQueue(runtime.raw_cx(), queue) };
++                eval(&runtime, "Promise.resolve().then(() => 42); 0");
++                // Deliberately abandon this runtime with its drain still pending. The
++                // embedder discards that job at shutdown; it must not affect another VM.
++                JOBS.with(|jobs| jobs.borrow().len())
++            };
++            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++            // Never inspect the old runtime's unrooted job pointers.
++            JOBS.with(|jobs| jobs.borrow_mut().clear());
++            assert_eq!(enqueued, 1, "each runtime must enqueue its own initial drain");
++        }
++    }
++
+     unsafe extern "C" fn enqueue(
+         _queue: *const c_void,
+         _cx: *mut JSContext,

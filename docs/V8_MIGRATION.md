@@ -2,6 +2,20 @@
 
 ## Da leggere alla prossima ripresa
 
+**0282 completa localmente — drain dei job per runtime:** corretto un difetto lifecycle:
+DRAIN_PENDING era thread-local e un runtime chiuso con un drain ancora accodato impediva
+al runtime successivo sullo stesso thread di accodare il proprio. Ora drain_pending è un
+Cell<bool> in RuntimeHooks, inizializzato per ogni runtime e letto/reset dagli stessi percorsi.
+Nessuna nuova dipendenza o API pubblica. Test con due runtime consecutivi senza eseguire il
+primo drain: prima falliva (secondo runtime zero job), dopo passa. Normale95/2ignorati,
+JITless94/3ignorati, copia testata identica. Log target/task-0282/{full,jitless,
+negative-thread-flag,replay}.log. Replay55 patch precedenti +0282 dry-run/apply identici,
+scratch %TEMP%/roves-0282-replay-xqm6lu1h. Browser/worker reale resta daCI, nessuna misura.
+Pubblicato8b536187562/wiki dcfd9bd (0281); regola CI rinforzata nel commit locale
+e0478fb5acd. Codex continua direttamente senza Claude come richiesto. Batch pubblicato:
+Android39844592038/iOS39844591645 verdi; V839844591657 attiva e generale39844592094
+in coda all'ultimo controllo. Non pubblicare0282 prima della conclusione del batch.
+
 **Pubblicazione0281 su richiesta esplicita dell'utente:** codice completo e revisionato nel
 commit b2df522a76d, wiki dcfd9bd. L'utente ha chiesto di annullare il batch precedente e
 pubblicare subito: richieste cancellazione202 accettate per generale39842644716 e

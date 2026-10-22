@@ -118,7 +118,8 @@ Inside the V8 backend, unreachable source modules, evaluated or unlinked JSON mo
 native functions and immutable prototypes can be collected with their owners. Realm contexts
 now use a weak registry and traced ownership too; current realms, saved nested entries,
 rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
-released once at collection or shutdown. The initial context stays alive, and JSON modules
+released once at collection or shutdown. Promise-job drain scheduling is isolated per runtime,
+so restarting a runtime on the same thread does not inherit an abandoned pending drain. The initial context stays alive, and JSON modules
 linked but never evaluated remain retained. Local lifetime tests pass; full browser validation
 runs in CI. Servo still roots page globals and loaded module maps: page collection and memory
 or performance improvements have not been demonstrated.
