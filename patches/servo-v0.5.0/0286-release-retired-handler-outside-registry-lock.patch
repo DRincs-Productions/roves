@@ -1,0 +1,68 @@
+diff --git a/components/roves-v8/src/foreground.rs b/components/roves-v8/src/foreground.rs
+index 0f3ce11d874..50c737bec25 100644
+--- a/components/roves-v8/src/foreground.rs
++++ b/components/roves-v8/src/foreground.rs
+@@ -58,13 +58,20 @@ pub fn isolate_key(isolate: &v8::Isolate) -> usize {
+ /// before the isolate is disposed. Retired registrations reject later deliveries; tasks
+ /// already handed to the embedder remain subject to its foreground/shutdown ordering.
+ pub fn set_handler(isolate: usize, handler: Option<Handler>) {
+-    let mut handlers = handlers().lock().unwrap();
+-    if let Some(previous) = handlers.remove(&isolate) {
+-        previous.active.store(false, AtomicOrdering::Release);
+-    }
+-    if let Some(handler) = handler {
+-        handlers.insert(isolate, Arc::new(Registration { handler, active: AtomicBool::new(true) }));
+-    }
++    let previous = {
++        let mut handlers = handlers().lock().unwrap();
++        let previous = handlers.remove(&isolate);
++        if let Some(previous) = &previous {
++            previous.active.store(false, AtomicOrdering::Release);
++        }
++        if let Some(handler) = handler {
++            handlers.insert(isolate, Arc::new(Registration { handler, active: AtomicBool::new(true) }));
++        }
++        previous
++    };
++    // A captured embedder value can reenter the registry from its destructor. Release the
++    // registry lock before dropping the retired callback, on both removal and replacement.
++    drop(previous);
+ }
+ 
+ fn post(isolate: usize, task: v8::Task) {
+@@ -208,6 +215,35 @@ mod tests {
+         set_handler(KEY, None);
+     }
+ 
++    #[test]
++    fn retired_callback_is_destroyed_outside_registry_lock() {
++        struct CheckDrop(Arc<AtomicBool>);
++        impl Drop for CheckDrop {
++            fn drop(&mut self) {
++                // A failed try_lock detects the old deadlock without hanging the suite.
++                let deadline = Instant::now() + Duration::from_secs(1);
++                loop {
++                    if let Ok(registry) = handlers().try_lock() {
++                        drop(registry);
++                        self.0.store(true, AtomicOrdering::Release);
++                        break;
++                    }
++                    if Instant::now() >= deadline { break; }
++                    std::thread::yield_now();
++                }
++            }
++        }
++        for (key, replace) in [(4, false), (5, true)] {
++            let unlocked = Arc::new(AtomicBool::new(false));
++            let guard = CheckDrop(unlocked.clone());
++            let callback: Handler = Arc::new(move |_| { let _keep_capture = &guard; });
++            set_handler(key, Some(callback));
++            set_handler(key, replace.then(handler));
++            assert!(unlocked.load(AtomicOrdering::Acquire));
++            set_handler(key, None);
++        }
++    }
++
+     #[test]
+     fn live_registration_keeps_its_original_handler() {
+         const KEY: usize = 3;

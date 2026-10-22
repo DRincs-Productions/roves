@@ -1,3 +1,19 @@
+## 2026-10-22 - Release retired foreground handlers outside the registry lock
+
+**Files:** `components/roves-v8/src/foreground.rs`, patch
+`0286-release-retired-handler-outside-registry-lock.patch`.
+
+Removing or replacing a handler previously destroyed its captured embedder values while the
+process-wide registry mutex was held. A destructor reentering the registry could deadlock.
+Invalidate and replace under the mutex, then release the retired Arc outside it. Reuses std;
+no dependency or public API change. The regression checks removal and replacement with a
+bounded try_lock probe (allowing other test threads to finish); the previous implementation
+fails without hanging. Engine normal/JITless:66 unit tests and2 doctests each. Replay of two
+preceding patches plus0286 matches production and tested source byte for byte. Logs:
+`target/task-0286/{normal,jitless,negative-lock,replay}.log`. Runtime integration also passes
+100 normal/99 JITless tests (2/3 ignored); logs runtime-normal.log/runtime-jitless.log.
+No performance measurement.
+
 ## 2026-10-19 - Enforce immutable prototypes through V8 proxy traps
 
 **Files:** `components/roves-js/src/{proxy.rs,tests.rs}`

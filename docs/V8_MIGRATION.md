@@ -2,6 +2,15 @@
 
 ## Da leggere alla prossima ripresa
 
+**0286 completa localmente:** rimozione/sostituzione handler invalida sotto mutex ma
+rilascia la callback fuori dal registro; i distruttori embedder possono rientrare senza
+lo stallo precedente. Nessuna dipendenza/API nuova. Motore66 test+2doctest normal/JITless; runtime100/99 (2/3ignorati);
+negativo vecchio codice fallisce senza stallo. Replay2 patch precedenti+0286 identico.
+Log target/task-0286/{normal,jitless,negative-lock,replay}.log.0285 commit e7f96b0cf99,
+wiki05365d3. CI V839844591657:9/10 verdi, Ubuntu normal timeout bootstrap30min durante download
+apt prima della compilazione. Retry del solo fallito richiesto una volta; generale ancora
+attiva. Nessun push prima del batch verde; nessuna modifica workflow per questo retry.
+
 **0285 completa localmente — recupero task consegnati prima di dismettere isolate:** il
 runtime conserva Arc degli slot dei task consegnati; l'event loop riceve solo un payload
 opaco Arc dello stesso slot. Esecuzione consuma Option<Task> una sola volta; close svuota

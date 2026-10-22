@@ -584,3 +584,6 @@ The SDL3 virtual gamepad CI probe and remaining hardware checks are documented i
 [`SDL3_WINDOWING_TESTING.md`](./SDL3_WINDOWING_TESTING.md). On macOS, gamepad support is off by
 default and can be tried experimentally by launching with `ROVES_MACOS_GAMEPAD=1`; the test
 page's Input section shows every key, mouse button and gamepad event the page receives.
+
+Retired V8 foreground handlers release captured embedder data outside the registry lock,
+so a destructor can reenter registration safely (covered by normal/JITless backend tests).
