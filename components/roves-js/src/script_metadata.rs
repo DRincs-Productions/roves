@@ -8,7 +8,8 @@
 //! callbacks, by token. While reachable it traces its private's native edges through the
 //! embedder's trace hook (see `ScriptPrivateTraceHook`). A source module's metadata also
 //! keeps the module's record (see `modules_impl`), so the record lives exactly as long as
-//! something reaches the source's token or the record itself.
+//! something reaches the source's token or the record itself. JSON module privates reuse the
+//! same holder and data, kept by the module record instead of a token.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -23,20 +24,27 @@ use crate::script_impl::HostPrivate;
 const PRIVATE_WRAP_TAG: u16 = 2;
 const SWEEP_MIN: usize = 256;
 
-struct PrivateData {
+/// A private owned by a holder object, traced while the holder is reachable and released
+/// once (replacement, explicit shutdown clearing, or finalization). Also used for JSON module
+/// privates, whose holder lives on the record's placeholder (see `modules_impl`).
+pub(crate) struct PrivateData {
     private: Cell<HostPrivate>,
-    /// A source module's record (cell), fixed at creation; null for classic scripts.
+    /// A source module's record (cell), fixed at creation; null otherwise.
     module: *mut c_void,
 }
 
 impl PrivateData {
+    pub(crate) fn value(&self) -> JSVal {
+        self.private.get().value()
+    }
+
     /// Installs `private` (already retained), then releases the previous one: from then on
     /// only the new private and its own hooks are traced.
-    fn replace(&self, private: HostPrivate) {
+    pub(crate) fn replace(&self, private: HostPrivate) {
         self.private.replace(private).release();
     }
 
-    fn clear(&self) {
+    pub(crate) fn clear(&self) {
         self.replace(HostPrivate::NONE);
     }
 }
@@ -57,6 +65,14 @@ impl Drop for PrivateData {
         let _gc = crate::object::GcScope::enter();
         self.clear();
     }
+}
+
+/// The private data a holder (see `ScriptMetadata::new_holder`) wraps; valid while the
+/// holder is.
+pub(crate) fn holder_data(scope: &mut v8::PinScope, holder: v8::Local<v8::Object>) -> Option<*const PrivateData> {
+    // SAFETY: only holders carry this wrap tag.
+    let data = unsafe { v8::Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder) }?;
+    Some(unsafe { data.as_ref() } as *const PrivateData)
 }
 
 struct ScriptEntry {
@@ -119,9 +135,39 @@ impl ScriptMetadata {
         let map = cache.get_index(scope, 0)?;
         let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
         let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
-        // SAFETY: the pointer stays on the stack while the holder (a local) keeps it alive.
-        let data = unsafe { v8::Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder) }?;
-        Some(unsafe { data.as_ref() }.private.get().value())
+        let data = holder_data(scope, holder)?;
+        // SAFETY: the holder (a local) keeps the data alive.
+        Some(unsafe { &*data }.value())
+    }
+
+    /// A new holder object owning new, empty private data (not a source module's), and a
+    /// weak handle on that data. The local holder is the data's only owner.
+    pub(crate) fn new_holder<'s>(
+        &self,
+        scope: &mut v8::PinScope<'s, '_>,
+    ) -> Option<(v8::Local<'s, v8::Object>, WeakPersistent<PrivateData>)> {
+        self.new_holder_of(scope, std::ptr::null_mut())
+    }
+
+    fn new_holder_of<'s>(
+        &self,
+        scope: &mut v8::PinScope<'s, '_>,
+        module: *mut c_void,
+    ) -> Option<(v8::Local<'s, v8::Object>, WeakPersistent<PrivateData>)> {
+        let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
+        let holder = template.new_instance(scope)?;
+        // This is not a ClassBox; generic JSAPI class inspection must see null.
+        holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
+        let heap = scope.get_cpp_heap()?;
+        let data = unsafe {
+            v8::cppgc::make_garbage_collected(
+                heap,
+                PrivateData { private: Cell::new(HostPrivate::NONE), module },
+            )
+        };
+        // Unique tag; the local holder owns the cppgc object before another allocation.
+        unsafe { v8::Object::wrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder, &data) };
+        Some((holder, WeakPersistent::new(&data)))
     }
 
     fn existing(&self, id: i32) -> Option<*const PrivateData> {
@@ -133,27 +179,14 @@ impl ScriptMetadata {
     /// captured WeakMap keeps under the source's token.
     fn create(&self, scope: &mut v8::PinScope, id: i32, module: *mut c_void) -> Option<*const PrivateData> {
         let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
-        {
-            let template = v8::Local::new(scope, self.template.borrow().as_ref()?);
-            let holder = template.new_instance(scope)?;
-            // This is not a ClassBox; generic JSAPI class inspection must see null.
-            holder.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), 0);
-            let heap = scope.get_cpp_heap()?;
-            let data = unsafe {
-                v8::cppgc::make_garbage_collected(
-                    heap,
-                    PrivateData { private: Cell::new(HostPrivate::NONE), module },
-                )
-            };
-            // Unique tag; the local holder owns the cppgc object before another allocation.
-            unsafe { v8::Object::wrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder, &data) };
-            let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
-            let map = cache.get_index(scope, 0)?;
-            let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
-            set.call(scope, map, &[token.into(), holder.into()])?;
-            self.entries.borrow_mut().get_mut(&id)?.data = Some(WeakPersistent::new(&data));
-            Some((unsafe { data.as_ref() }) as *const PrivateData)
-        }
+        let (holder, data) = self.new_holder_of(scope, module)?;
+        let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
+        let map = cache.get_index(scope, 0)?;
+        let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
+        set.call(scope, map, &[token.into(), holder.into()])?;
+        let pointer = data.get()? as *const PrivateData;
+        self.entries.borrow_mut().get_mut(&id)?.data = Some(data);
+        Some(pointer)
     }
 
     pub(crate) fn set(

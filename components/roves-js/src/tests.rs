@@ -2424,6 +2424,8 @@ mod traced_privates {
 
     struct NativeOwner {
         owner: Heap<*mut JSObject>,
+        /// A module record the owner also traces, when set.
+        record: Heap<*mut JSObject>,
     }
 
     thread_local! {
@@ -2490,6 +2492,9 @@ mod traced_privates {
             return;
         }
         unsafe { crate::glue::CallObjectTracer(trc, &(*pointer).owner as *const _ as *mut _, c"owner".as_ptr()) };
+        if !unsafe { (*pointer).record.get() }.is_null() {
+            unsafe { crate::glue::CallObjectTracer(trc, &(*pointer).record as *const _ as *mut _, c"record".as_ptr()) };
+        }
     }
 
     unsafe extern "C" fn finalize(_gcx: *mut GCContext, obj: *mut JSObject) {
@@ -2535,7 +2540,7 @@ mod traced_privates {
             rooted!(in(cx) let callback = eval(runtime, callback));
             assert!(unsafe { JS_SetProperty(cx, object.handle().into(), c"callback".as_ptr(), callback.handle().into()) });
         }
-        let owner = Rc::new(NativeOwner { owner: Heap::default() });
+        let owner = Rc::new(NativeOwner { owner: Heap::default(), record: Heap::default() });
         owner.owner.set(object.get());
         owner
     }
@@ -2696,11 +2701,52 @@ mod traced_privates {
         static IMPORTER: Cell<Option<JSVal>> = const { Cell::new(None) };
     }
 
+    thread_local! {
+        /// JSON record switches of `resolve_source`: names handed out once (their records are
+        /// not rooted), names whose resolution first runs a full precise collection, and the
+        /// name whose resolution first links another record (a nested `ModuleLink`).
+        static ONCE: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
+        static GC_ON: RefCell<Vec<std::string::String>> = const { RefCell::new(Vec::new()) };
+        static LINK_ON: RefCell<Option<(std::string::String, usize)>> = const { RefCell::new(None) };
+        static NESTED_LINKED: Cell<Option<bool>> = const { Cell::new(None) };
+    }
+
+    /// Full collections of both heaps from inside a hook, scanning no native stack: no frame
+    /// below holds an unrooted cell pointer it still needs.
+    fn precise_gc(cx: *mut JSContext) {
+        let isolate = unsafe { &mut *(*cx).isolate };
+        if let Some(heap) = isolate.get_cpp_heap() {
+            unsafe { heap.collect_garbage_for_testing(v8::cppgc::EmbedderStackState::NoHeapPointers) };
+        }
+    }
+
     unsafe extern "C" fn resolve_source(cx: *mut JSContext, _private: Handle<JSVal>, request: Handle<*mut JSObject>) -> *mut JSObject {
         let string = unsafe { GetModuleRequestSpecifier(cx, request) };
         let safe = unsafe { crate::context::JSContext::from_ptr(ptr::NonNull::new(cx).unwrap()) };
         let name = unsafe { crate::conversions::jsstr_to_string(&safe, ptr::NonNull::new(string).unwrap()) };
-        RECORDS.with(|records| records.borrow().get(&name).copied()).map_or(ptr::null_mut(), |record| record as *mut JSObject)
+        if let Some((_, record)) = LINK_ON.with(|on| on.borrow_mut().take_if(|(on, _)| *on == name)) {
+            rooted!(in(cx) let record = record as *mut JSObject);
+            let linked = unsafe { ModuleLink(cx, record.handle().into()) };
+            NESTED_LINKED.with(|nested| nested.set(Some(linked)));
+        }
+        if GC_ON.with(|names| names.borrow().contains(&name)) {
+            precise_gc(cx);
+        }
+        let once = ONCE.with(|once| once.borrow().contains(&name));
+        // JSON records are registered weakly: one a test left unrooted is handed out only
+        // while it lives, and fails resolution once collected instead of dangling.
+        let record = match crate::modules_impl::json_record_for_testing(&name, once) {
+            Some(live) => live.map(|record| record as usize),
+            None => RECORDS.with(|records| if once { records.borrow_mut().remove(&name) } else { records.borrow().get(&name).copied() }),
+        };
+        match record {
+            Some(record) => record as *mut JSObject,
+            None => {
+                rooted!(in(cx) let error = Int32Value(404));
+                unsafe { JS_SetPendingException(cx, error.handle(), ExceptionStackBehavior::DoNotCapture) };
+                ptr::null_mut()
+            },
+        }
     }
 
     unsafe extern "C" fn note_importer(_cx: *mut JSContext, private: Handle<JSVal>, _request: Handle<*mut JSObject>, _promise: Handle<*mut JSObject>) -> bool {
@@ -2713,6 +2759,10 @@ mod traced_privates {
         reset();
         RECORDS.with(|records| records.borrow_mut().clear());
         IMPORTER.with(|importer| importer.set(None));
+        ONCE.with(|once| once.borrow_mut().clear());
+        GC_ON.with(|names| names.borrow_mut().clear());
+        LINK_ON.with(|on| on.borrow_mut().take());
+        NESTED_LINKED.with(|nested| nested.set(None));
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         unsafe {
             if hooks {
@@ -2918,6 +2968,423 @@ mod traced_privates {
             drop(runtime);
         }
         assert_eq!(count(&RETAINS), count(&RELEASES));
+    }
+
+    // --- JSON module records -----------------------------------------------------------------
+
+    fn json_records() -> (usize, usize) {
+        crate::modules_impl::json_records_for_testing()
+    }
+
+    fn linking_len() -> usize {
+        crate::modules_impl::linking_len_for_testing()
+    }
+
+    fn strong(record: *mut JSObject) -> bool {
+        crate::modules_impl::strong_record_for_testing(record)
+    }
+
+    fn check(runtime: &Runtime, source: &str) {
+        assert_eq!(describe(runtime, eval(runtime, source)), "true", "{source}");
+    }
+
+    /// Compiles a JSON module for the resolve hook (registered weakly); callers root the
+    /// record before the next allocation.
+    fn compile_json(runtime: &Runtime, name: &str, source: &str) -> *mut JSObject {
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
+        let mut text = transform_str_to_source_text(source);
+        let record = unsafe { CompileJsonModule1(cx, options.ptr, &mut text) };
+        assert!(!record.is_null(), "{name} compiles");
+        crate::modules_impl::register_json_for_testing(name, Some(record));
+        record
+    }
+
+    /// Stops the resolve hook from handing out `name`.
+    fn unregister(name: &str) {
+        RECORDS.with(|records| records.borrow_mut().remove(name));
+        crate::modules_impl::register_json_for_testing(name, None);
+    }
+
+    /// Hands `name` out once: the hook forgets it as it resolves it.
+    fn once(name: &str) {
+        ONCE.with(|once| once.borrow_mut().push(name.to_owned()));
+    }
+
+    fn link(runtime: &Runtime, record: *mut JSObject) -> bool {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let record = record);
+        let linked = unsafe { ModuleLink(cx, record.handle().into()) };
+        if !linked {
+            unsafe { JS_ClearPendingException(cx) };
+        }
+        linked
+    }
+
+    /// Evaluates the linked `record` and publishes its namespace as `globalThis[name]`; the
+    /// evaluation error as a string on failure.
+    fn evaluate(runtime: &Runtime, record: *mut JSObject, name: &std::ffi::CStr) -> Outcome {
+        let cx = runtime.raw_cx();
+        let error = |runtime: &Runtime| {
+            rooted!(in(cx) let mut error = UndefinedValue());
+            assert!(unsafe { JS_GetPendingException(cx, error.handle_mut().into()) });
+            unsafe { JS_ClearPendingException(cx) };
+            Err(describe(runtime, error.get()))
+        };
+        rooted!(in(cx) let record = record);
+        rooted!(in(cx) let mut evaluation = UndefinedValue());
+        if !unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) } {
+            return error(runtime);
+        }
+        unsafe { RunJobs(cx) };
+        rooted!(in(cx) let promise = evaluation.get().to_object());
+        if !unsafe { ThrowOnModuleEvaluationFailure(cx, promise.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) } {
+            return error(runtime);
+        }
+        rooted!(in(cx) let namespace = ObjectValue(unsafe { GetModuleNamespace(cx, record.handle().into()) }));
+        rooted!(in(cx) let global = eval(runtime, "globalThis").to_object());
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), namespace.handle().into_handle()) });
+        Ok(())
+    }
+
+    /// A module's evaluation: Ok, or its error as a string.
+    type Outcome = std::result::Result<(), std::string::String>;
+
+    const MISSING_VALUE: &str = "TypeError: JSON module without its parsed value";
+
+    /// An unrooted JSON record with a private and `kept` (rooted by the caller), both
+    /// unlinked, then a full collection. Returns the live JSON records after it, the unrooted
+    /// record's owner and `kept`'s.
+    fn unlinked_lifetime(runtime: &mut Runtime, kept: *mut JSObject) -> (usize, Weak<NativeOwner>, Weak<NativeOwner>) {
+        let cx = runtime.raw_cx();
+        let owners = {
+            rooted!(in(cx) let dropped = compile_json(runtime, "dropped.json", "[1]"));
+            unregister("dropped.json");
+            [(dropped.get(), 1), (kept, 2)].map(|(record, id)| {
+                let owner = new_owner(runtime, id, None);
+                unsafe { SetModulePrivate(record, &PrivateValue(Rc::as_ptr(&owner).cast())) };
+                Rc::downgrade(&owner)
+            })
+        };
+        collect(runtime);
+        let [dropped, kept_owner] = owners;
+        assert_eq!(read_private(runtime, kept), private_of(Some(&kept_owner)), "a rooted record keeps its private");
+        (json_records().0, dropped, kept_owner)
+    }
+
+    #[test]
+    fn unlinked_json_records_collect_with_their_private() {
+        let mut runtime = source_runtime(true);
+        let cx = runtime.raw_cx();
+        let kept_owner = {
+            // Rooted until its evaluation published its value.
+            rooted!(in(cx) let kept = compile_json(&runtime, "kept.json", r#"{"n": 1}"#));
+            let (live, dropped, kept_owner) = unlinked_lifetime(&mut runtime, kept.get());
+            assert_eq!(live, 1, "only the rooted unlinked record survives");
+            assert!(dropped.upgrade().is_none(), "the collected record released its private");
+            assert_eq!((count(&RELEASES), owners_finalized()), (1, vec![1]));
+            assert_eq!(marker(&runtime, &kept_owner), "owner 2");
+            assert_eq!(json_records(), (1, 0), "unlinked JSON entries are weak");
+            // The surviving record still links and evaluates with its value.
+            rooted!(in(cx) let user = compile_source(&runtime, "kept-user.js", "import data from 'kept.json' with { type: 'json' };\nexport const n = data.n;"));
+            assert!(link(&runtime, user.get()));
+            assert_eq!(evaluate(&runtime, user.get(), c"keptNs"), Ok(()));
+            check(&runtime, "keptNs.n === 1");
+            kept_owner
+        };
+        // Evaluated, its value lives in V8: the now unrooted record collects with its private.
+        collect(&mut runtime);
+        check(&runtime, "keptNs.n === 1");
+        assert!(kept_owner.upgrade().is_none());
+        assert_eq!(json_records(), (0, 0));
+        assert_eq!(owners_finalized(), vec![1, 2], "each owner is finalized once");
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (2, 2), "both released by GC, none at shutdown");
+        assert!(!STALE_TRACE.with(Cell::get) && !RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    /// `json-main.js` imports `data.json`, links, then `data.json` is unrooted and a full
+    /// collection runs. Returns the (live, strong) JSON records after it and the evaluation
+    /// outcome.
+    fn linked_lifetime(runtime: &mut Runtime) -> ((usize, usize), Outcome) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let data = compile_json(runtime, "data.json", r#"{"n": 1}"#));
+        rooted!(in(cx) let main = compile_source(runtime, "json-main.js",
+            "import data from 'data.json' with { type: 'json' };\nexport default data;\nexport function again() { return data; }"));
+        assert!(link(runtime, main.get()));
+        assert_eq!(linking_len(), 0, "the link released its temporary roots");
+        // From here only what the link left keeps the record.
+        drop(data);
+        unregister("data.json");
+        collect(runtime);
+        let linked = json_records();
+        (linked, evaluate(runtime, main.get(), c"ns"))
+    }
+
+    #[test]
+    fn linked_json_value_survives_until_evaluation() {
+        let mut runtime = source_runtime(false);
+        let (linked, evaluated) = linked_lifetime(&mut runtime);
+        assert_eq!(linked, (1, 1), "a linked, unevaluated record is held for its steps");
+        assert_eq!(evaluated, Ok(()));
+        check(&runtime, "ns.default.n === 1 && ns.again() === ns.default");
+        eval(&runtime, "globalThis.kept = ns.default; kept.mark = 7;");
+        assert_eq!(json_records(), (1, 0), "evaluated: the entry is weak");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (0, 0), "the evaluated record collects");
+        check(&runtime, "ns.default === kept && ns.again() === kept && kept.mark === 7 && kept.n === 1");
+    }
+
+    #[test]
+    fn failed_links_release_temporary_roots_and_keep_linked_dependencies() {
+        let mut runtime = source_runtime(false);
+        let cx = runtime.raw_cx();
+        // V8 resets both JSON modules when a later request cannot be resolved.
+        rooted!(in(cx) let rooted_json = compile_json(&runtime, "rooted.json", "1"));
+        rooted!(in(cx) let loose = compile_json(&runtime, "loose.json", "2"));
+        rooted!(in(cx) let main = compile_source(&runtime, "missing-main.js",
+            "import a from 'rooted.json' with { type: 'json' };\nimport b from 'loose.json' with { type: 'json' };\nimport c from 'missing.js';"));
+        assert!(!link(&runtime, main.get()), "a missing module fails the link");
+        assert_eq!(linking_len(), 0);
+        assert_eq!(json_records(), (2, 0), "reset JSON modules are reachable only through their records");
+        drop(loose);
+        unregister("loose.json");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (1, 0), "the unrooted reset record collects, the rooted one survives");
+        assert!(!rooted_json.get().is_null());
+        rooted!(in(cx) let user = compile_source(&runtime, "rooted-user.js", "import a from 'rooted.json' with { type: 'json' };\nexport const value = a;"));
+        assert!(link(&runtime, user.get()));
+        assert_eq!(evaluate(&runtime, user.get(), c"rootedNs"), Ok(()));
+        check(&runtime, "rootedNs.value === 1");
+
+        // `b.js` completes its component (with `data.json`) before `bad.js` fails: V8 keeps
+        // both linked, and `b.js` still needs the value.
+        rooted!(in(cx) let data = compile_json(&runtime, "data.json", r#"{"n": 5}"#));
+        rooted!(in(cx) let b = compile_source(&runtime, "b.js", "import data from 'data.json' with { type: 'json' };\nexport const value = data;"));
+        rooted!(in(cx) let bad = compile_source(&runtime, "bad.js", "import { nope } from 'data.json' with { type: 'json' };"));
+        rooted!(in(cx) let main = compile_source(&runtime, "partial-main.js", "import 'b.js';\nimport 'bad.js';"));
+        assert!(!link(&runtime, main.get()), "a missing export fails the link");
+        assert_eq!(linking_len(), 0);
+        drop(data);
+        drop(bad);
+        unregister("data.json");
+        unregister("bad.js");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (2, 1), "the dependency left linked is held for its steps");
+        assert!(link(&runtime, b.get()));
+        assert_eq!(evaluate(&runtime, b.get(), c"bNs"), Ok(()));
+        check(&runtime, "bNs.value.n === 5");
+        assert_eq!(json_records(), (2, 0));
+    }
+
+    /// `gc-main.js` imports `data.json` (unrooted as the link starts, handed out once), then
+    /// `gc.js`, whose resolution collects. Returns the (live, strong) JSON records after the
+    /// link and the evaluation outcome.
+    fn gc_during_resolve(runtime: &mut Runtime) -> ((usize, usize), Outcome) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let data = compile_json(runtime, "data.json", r#"{"n": 3}"#));
+        once("data.json");
+        rooted!(in(cx) let gc = compile_source(runtime, "gc.js", "export {};"));
+        GC_ON.with(|names| names.borrow_mut().push("gc.js".to_owned()));
+        rooted!(in(cx) let main = compile_source(runtime, "gc-main.js",
+            "import data from 'data.json' with { type: 'json' };\nimport 'gc.js';\nexport default data;"));
+        // Only the weak registry reaches it until the link's resolution roots it.
+        drop(data);
+        assert!(link(runtime, main.get()));
+        assert_eq!(linking_len(), 0);
+        assert!(!gc.get().is_null());
+        let linked = json_records();
+        collect(runtime);
+        (linked, evaluate(runtime, main.get(), c"gcNs"))
+    }
+
+    #[test]
+    fn resolved_json_records_survive_collection_and_nested_links() {
+        let mut runtime = source_runtime(false);
+        let (linked, evaluated) = gc_during_resolve(&mut runtime);
+        assert_eq!(linked, (1, 1), "the link's temporary root kept the record across the collection");
+        assert_eq!(evaluated, Ok(()));
+        check(&runtime, "gcNs.default.n === 3");
+        drop(runtime);
+
+        // The outer link resolves `outer.json` (once) and `shared.json`, then `nested.js`,
+        // whose resolution links `inner-main.js` (resolving `shared.json`, `inner.json` once and
+        // `inner-gc.js`, which collects) and collects again once that link returned.
+        let mut runtime = source_runtime(false);
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let outer = compile_json(&runtime, "outer.json", r#"{"outer": 1}"#));
+        rooted!(in(cx) let shared = compile_json(&runtime, "shared.json", r#"{"shared": 2}"#));
+        rooted!(in(cx) let inner_json = compile_json(&runtime, "inner.json", r#"{"inner": 3}"#));
+        once("outer.json");
+        once("inner.json");
+        rooted!(in(cx) let nested = compile_source(&runtime, "nested.js", "export const nested = 4;"));
+        rooted!(in(cx) let inner_gc = compile_source(&runtime, "inner-gc.js", "export {};"));
+        rooted!(in(cx) let inner = compile_source(&runtime, "inner-main.js",
+            "import shared from 'shared.json' with { type: 'json' };\nimport inner from 'inner.json' with { type: 'json' };\nimport 'inner-gc.js';\nexport const value = shared.shared + inner.inner;"));
+        rooted!(in(cx) let main = compile_source(&runtime, "outer-main.js",
+            "import outer from 'outer.json' with { type: 'json' };\nimport shared from 'shared.json' with { type: 'json' };\nimport { nested } from 'nested.js';\nexport const value = outer.outer + shared.shared + nested;"));
+        GC_ON.with(|names| names.borrow_mut().extend(["inner-gc.js".to_owned(), "nested.js".to_owned()]));
+        LINK_ON.with(|on| *on.borrow_mut() = Some(("nested.js".to_owned(), inner.get() as usize)));
+        // Only the weak registry reaches the JSON records until the links' resolutions root them.
+        drop(outer);
+        drop(shared);
+        drop(inner_json);
+        assert!(link(&runtime, main.get()));
+        assert_eq!(NESTED_LINKED.with(Cell::get), Some(true), "the nested link succeeded");
+        assert_eq!(linking_len(), 0, "both links released their segments");
+        assert_eq!(json_records(), (3, 3), "the outer segment kept its records across the nested link's collections");
+        unregister("shared.json");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (3, 3));
+        assert_eq!(evaluate(&runtime, inner.get(), c"innerNs"), Ok(()));
+        assert_eq!(evaluate(&runtime, main.get(), c"outerNs"), Ok(()));
+        check(&runtime, "innerNs.value === 5 && outerNs.value === 7");
+        assert!(!nested.get().is_null() && !inner_gc.get().is_null());
+        collect(&mut runtime);
+        assert_eq!(json_records(), (0, 0), "evaluated, unrooted records collect");
+    }
+
+    #[test]
+    fn json_evaluation_failure_before_the_steps_keeps_the_record_linked() {
+        let mut runtime = source_runtime(false);
+        let cx = runtime.raw_cx();
+        {
+            rooted!(in(cx) let data = compile_json(&runtime, "data.json", r#"{"n": 8}"#));
+            rooted!(in(cx) let thrower = compile_source(&runtime, "throw.js", "throw new Error('boom');"));
+            rooted!(in(cx) let main = compile_source(&runtime, "throw-main.js",
+                "import 'throw.js';\nimport data from 'data.json' with { type: 'json' };"));
+            assert!(link(&runtime, main.get()));
+            assert_eq!(evaluate(&runtime, main.get(), c"throwNs"), Err("Error: boom".to_owned()));
+            assert!(!data.get().is_null() && !thrower.get().is_null());
+        }
+        // Unrooted from here: the weak registry hands `data.json` out only while it lives.
+        unregister("throw.js");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (1, 1), "the unevaluated record is still held for its steps");
+        rooted!(in(cx) let again = compile_source(&runtime, "again.js", "import data from 'data.json' with { type: 'json' };\nexport const n = data.n;"));
+        assert!(link(&runtime, again.get()));
+        assert_eq!(evaluate(&runtime, again.get(), c"againNs"), Ok(()));
+        check(&runtime, "againNs.n === 8");
+        unregister("data.json");
+        collect(&mut runtime);
+        assert_eq!(json_records(), (0, 0));
+    }
+
+    /// An unrooted JSON record whose private's owner traces the record: a cycle through
+    /// native code that nothing else reaches.
+    fn json_owner_cycle(runtime: &Runtime, id: i32) -> Weak<NativeOwner> {
+        let name = format!("cycle-{id}.json");
+        rooted!(in(runtime.raw_cx()) let record = compile_json(runtime, &name, "{}"));
+        unregister(&name);
+        let owner = new_owner(runtime, id, None);
+        owner.record.set(record.get());
+        unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+        Rc::downgrade(&owner)
+    }
+
+    #[test]
+    fn json_private_owner_cycles_collect_and_release_once() {
+        let mut runtime = source_runtime(true);
+        let cx = runtime.raw_cx();
+        let cycle = json_owner_cycle(&runtime, 1);
+        assert_eq!(cycle.strong_count(), 1, "the engine owns the only reference");
+        let kept = {
+            rooted!(in(cx) let kept = compile_json(&runtime, "kept-cycle.json", "{}"));
+            let owner = new_owner(&runtime, 2, None);
+            owner.record.set(kept.get());
+            unsafe { SetModulePrivate(kept.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            let kept_owner = Rc::downgrade(&owner);
+            drop(owner);
+            collect(&mut runtime);
+            assert!(cycle.upgrade().is_none(), "the record/private/owner cycle collects");
+            assert_eq!((count(&RELEASES), owners_finalized()), (1, vec![1]));
+            assert_eq!(json_records(), (1, 0));
+            assert_eq!(read_private(&runtime, kept.get()), private_of(Some(&kept_owner)));
+            assert_eq!(marker(&runtime, &kept_owner), "owner 2");
+            kept_owner
+        };
+        assert_eq!(owners_finalized(), vec![1], "the collected owner is finalized once");
+        drop(runtime);
+        assert!(kept.upgrade().is_none(), "shutdown releases the live record's private");
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (2, 2), "exactly one release each");
+        assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
+    fn colliding_json_identity_hashes_keep_each_records_state() {
+        let mut runtime = source_runtime(false);
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let first = compile_json(&runtime, "first.json", r#"{"first": true}"#));
+        rooted!(in(cx) let second = compile_json(&runtime, "second.json", r#"{"second": true}"#));
+        // `first`'s entry now sits first in `second`'s bucket.
+        let shared = unsafe { &*cx }.with_scope(|scope| crate::modules_impl::collide_for_testing(scope, second.get(), first.get()));
+        assert!(shared >= 2);
+        rooted!(in(cx) let importer = compile_source(&runtime, "collide.js", "import second from 'second.json' with { type: 'json' };\nexport default second;"));
+        assert!(link(&runtime, importer.get()));
+        assert!(strong(second.get()) && !strong(first.get()), "linking holds only the linked record");
+        collect(&mut runtime);
+        assert_eq!(evaluate(&runtime, importer.get(), c"collideNs"), Ok(()));
+        check(&runtime, "collideNs.default.second === true");
+        assert!(!strong(second.get()) && !strong(first.get()));
+        assert_eq!(json_records(), (2, 0));
+        rooted!(in(cx) let value = crate::modules_impl::json_value_for_testing(first.get()));
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"firstValue".as_ptr(), value.handle().into_handle()) });
+        check(&runtime, "firstValue.first === true");
+    }
+
+    #[test]
+    fn negative_fixtures_detect_missing_json_roots_and_native_privates() {
+        use crate::modules_impl::{
+            NATIVE_JSON_PRIVATES_FOR_TESTING as NATIVE, STRONG_JSON_FOR_TESTING as STRONG, UNROOTED_LINKING_FOR_TESTING as UNROOTED,
+            UNSTRENGTHENED_JSON_FOR_TESTING as UNSTRENGTHENED,
+        };
+        let with = |flag: &'static std::thread::LocalKey<Cell<bool>>, f: &mut dyn FnMut()| {
+            flag.with(|flag| flag.set(true));
+            f();
+            flag.with(|flag| flag.set(false));
+        };
+        // Without weak entries (the pre-0279 strong JSON root) unlinked records never collect.
+        with(&STRONG, &mut || {
+            let mut runtime = source_runtime(true);
+            let (live, dropped) = {
+                rooted!(in(runtime.raw_cx()) let kept = compile_json(&runtime, "kept.json", r#"{"n": 1}"#));
+                let (live, dropped, _) = unlinked_lifetime(&mut runtime, kept.get());
+                (live, dropped)
+            };
+            assert_eq!(live, 2, "a strong entry keeps the unreachable record");
+            assert!(dropped.upgrade().is_some(), "and its private, until shutdown");
+            drop(runtime);
+            assert!(dropped.upgrade().is_none());
+            assert_eq!(count(&RETAINS), count(&RELEASES));
+        });
+        // Without holding linked records their value is lost before the steps run.
+        with(&UNSTRENGTHENED, &mut || {
+            let mut runtime = source_runtime(false);
+            let (linked, evaluated) = linked_lifetime(&mut runtime);
+            assert_eq!(linked, (0, 0), "nothing held the linked record");
+            assert_eq!(evaluated, Err(MISSING_VALUE.to_owned()));
+        });
+        // Without the link's temporary roots a collection during resolution loses the record.
+        with(&UNROOTED, &mut || {
+            let mut runtime = source_runtime(false);
+            let (linked, evaluated) = gc_during_resolve(&mut runtime);
+            assert_eq!(linked, (0, 0), "the record died during the link");
+            assert_eq!(evaluated, Err(MISSING_VALUE.to_owned()));
+        });
+        // A private kept natively (traced as a root) keeps its owner/record cycle alive.
+        with(&NATIVE, &mut || {
+            let mut runtime = source_runtime(true);
+            let cycle = json_owner_cycle(&runtime, 1);
+            collect(&mut runtime);
+            assert!(cycle.upgrade().is_some(), "the native root keeps the cycle");
+            assert_eq!(json_records(), (1, 0), "through the owner's record edge");
+            assert!(owners_finalized().is_empty() && count(&RELEASES) == 0);
+            drop(runtime);
+            assert!(cycle.upgrade().is_none());
+            assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
+        });
     }
 
     thread_local! {
@@ -3284,7 +3751,9 @@ mod modules {
             SetModuleDynamicImportHook(rt, Some(dynamic_import));
         }
         compile(&runtime, "dep.js", "export const answer = 40;", false);
-        compile(&runtime, "data.json", r#"{"extra": 2}"#, true);
+        // Rooted: JSON records no longer live by their entries (0279).
+        rooted!(in(cx) let data = compile(&runtime, "data.json", r#"{"extra": 2}"#, true));
+        assert!(!data.get().is_null());
         rooted!(in(cx) let main = compile(
             &runtime,
             "main.js",
@@ -3404,6 +3873,49 @@ mod modules {
         gc();
         run_module(&runtime, second.get(), c"jsonNs2");
         check("jsonNs2.same === keptJson && jsonNs2.same.mark === 7");
+    }
+
+    #[test]
+    fn json_dynamic_import_survives_collection_while_pending() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let rt = runtime.rt();
+        unsafe {
+            SetModuleResolveHook(rt, Some(resolve));
+            SetModuleDynamicImportHook(rt, Some(dynamic_import));
+        }
+        let collect = |runtime: &mut Runtime| {
+            // SAFETY: the runtime's live context.
+            unsafe { &mut *(*runtime.raw_cx()).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
+            runtime.gc_for_testing();
+        };
+        let check = |runtime: &Runtime, source: &str| assert_eq!(describe(runtime, eval(runtime, source)), "true", "{source}");
+        eval(&runtime, "globalThis.pending = import('dynamic.json', { with: { type: 'json' } }); pending.then((m) => { globalThis.loaded = m; });");
+        let (importer, request, promise) = DYNAMIC.with(|dynamic| dynamic.borrow_mut().take()).expect("the dynamic import hook ran");
+        rooted!(in(cx) let importer = importer);
+        rooted!(in(cx) let request = request as *mut JSObject);
+        rooted!(in(cx) let promise = promise as *mut JSObject);
+        assert_eq!(unsafe { GetModuleRequestType(cx, request.handle().into()) }, ModuleType::JSON);
+        collect(&mut runtime);
+        {
+            // The embedder keeps the fetched record (Servo's module map) until the import ends.
+            rooted!(in(cx) let record = compile(&runtime, "dynamic.json", r#"{"k": [3]}"#, true));
+            assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+            rooted!(in(cx) let mut evaluation = UndefinedValue());
+            assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+            rooted!(in(cx) let evaluation = evaluation.get().to_object());
+            collect(&mut runtime);
+            assert!(unsafe {
+                FinishDynamicModuleImport(cx, evaluation.handle().into(), importer.handle().into(), request.handle().into(), promise.handle().into())
+            });
+            unsafe { RunJobs(cx) };
+        }
+        REGISTRY.with(|registry| registry.borrow_mut().remove("dynamic.json"));
+        check(&runtime, "loaded.default.k[0] === 3");
+        eval(&runtime, "globalThis.first = loaded.default;");
+        collect(&mut runtime);
+        assert_eq!(crate::modules_impl::json_records_for_testing(), (0, 0), "the evaluated record collected");
+        check(&runtime, "loaded.default === first && first.k[0] === 3");
     }
 }
 

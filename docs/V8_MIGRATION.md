@@ -2,12 +2,55 @@
 
 ## Da leggere alla prossima ripresa
 
+**Checkpoint Codex dopo revisione0279:** pubblicato47a5cd351e1/wikic9bcc84 (0275–0278).
+0279 completa e revisionata in locale: rooting test corretto, normal82/JITless81 passati,
+cinque file produzione/test/replay identici; wiki locale f0cc01c. Patch0279 aggiornata.
+CI pubblicata: Android39822504026 e iOS39822504229 verdi; generale39822504002 ancora
+attiva; V839822504067 fallita soltanto sul bootstrapLinuxJITless119977154180:
+apt stava scaricando pacchetti dal mirror Azure e lo step è scaduto a30min, prima della
+compilazione. Codex ha richiesto un solo retry dei job falliti, motivato da questo log.
+Nessun nuovo push finché questo batch non termina e i controlli mancanti non passano.
+
 **Regola corrente — 22 ottobre:** l'utente ha eliminato i tetti di25/50 chiamate e
 l'obbligo di registrare consumo e lavoro residuo per incarico. Prosecuzione autonoma,
 un solo Claude attivo e incarichi circoscritti; restano revisione, vincoli CI e stop alle
 quote effettive. I conteggi e i limiti descritti sotto sono storici. Nessuna nuova contabilità.
-Batch d434323c76c terminato: V8 39790271552, Android 39790271798, iOS 39790271386 verdi;
-generale 39790271422 rossa solo per Linux deb 119865402266 (build/bundle ok).
+**Baseline pubblicata:** HEAD 47a5cd351e1 (wiki c9bcc84) contiene 0275-0278; le note
+"non committata" di 0277/0278 sotto sono storiche. Batch nuovo, ultimo controllo Codex: V8
+39822504067 in coda, generale 39822504002 attiva, Android 39822504026 e iOS 39822504229
+verdi. La correzione 0278 del vecchio fallimento Linux deb (batch d434323c76c, run
+39790271422 job 119865402266) non è ancora confermata. Nessun push finché il batch non termina.
+
+**0279 (completa in locale, non committata, sopra 47a5cd351e1 / wiki c9bcc84):** record JSON
+raccoglibili secondo `target/task-0279-design.md`. Voce JSON debole prima del link e dopo gli
+steps (V8 li esegue una sola volta: `kEvaluated` o `kErrored`, terminazione inclusa); radici
+temporanee `Modules::linking` per i record sintetici risolti, con `LinkSegment` RAII su ogni
+uscita di `ModuleLink` (anche annidato o fallito) che rende forte chi V8 lascia `Instantiated`.
+Caso forte residuo esplicito: un JSON lasciato `Instantiated` resta forte finché una valutazione
+successiva non ne esegue gli steps; se nessuna lo fa (grafo abbandonato dopo il link, o valutazione
+fallita prima di raggiungerlo e mai ripetuta) record, valore e private restano fino allo shutdown
+anche se irraggiungibili. Contratto: `SetModulePrivate` può fare GC (alloca l'holder), quindi il
+chiamante tiene il record radicato (Servo usa `rooted!` e non imposta private JSON). Private JSON
+in `PrivateData` cppgc riusato, holder sul placeholder (`PrivateKey::JsonModulePrivate`),
+voce = solo `WeakPersistent` per lo shutdown; vale finché vive il record, non la metadata di un
+grafo sorgente. Test roves-js normal 82/2 ignorati, JIT-less 81/3, warning 772/772; 9 test
+nuovi inclusi i negativi `#[cfg(test)]` (voci forti, niente strengthen, niente radici di link,
+private nativo) e negativo scratch senza trace del holder (`target/task-0279/*.log`). Revisione
+del rooting: nei test JSON ogni record usato dopo un'allocazione V8 è radicato (drop esplicito
+dove serve non radicato); i record JSON arrivano all'hook di resolve solo da un registro debole
+di test su `Modules`, quindi uno raccolto fallisce la risoluzione invece di restare pendente;
+radicato anche `data.json` del test preesistente `module_graphs_link_evaluate_and_import_dynamically`.
+Stessi esiti 82/2 e 81/3, warning 772/772 (`target/task-0279/rooting-review-{full,jitless}.log`);
+copia testata identica ai sorgenti; il negativo scratch resta valido (test non toccati). Replay di
+54 patch precedenti identico a HEAD, 0279 applicata identica
+(`target/task-0279/rooting-review-replay.log`, scratch `%TEMP%/roves-0279-rooting-replay`). README e
+wiki `shell.mdx` aggiornati (wiki non committato). Nessuna misura CPU/RAM; le mappe moduli di
+Servo continuano a radicare i record. Analisi originale, ancora valida:
+Fonti V8 152.2.0: namespace prima del link = ApiCheck fatale; private sul namespace non
+estensibile solo per una tolleranza che V8 dichiara da rimuovere; prima del link il grafo V8 non
+referenzia il modulo JSON (solo dopo `PrepareInstantiate`). L'edge pulito esiste in V8
+(`host_defined_options` di `CreateSyntheticModule`) ma rusty_v8 152.2.0 non lo espone: lacuna
+API registrata: con il binding la voce JSON potrebbe diventare sempre debole.
 
 **0278 (completa in locale, non committata):** lo smoke Xvfb ha fallito la ricerca
 finestra dopo circa10s pur avendo un processo ancora vivo e risultati pagina/gamepad/save.

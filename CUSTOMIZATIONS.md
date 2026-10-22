@@ -15580,3 +15580,78 @@ bash 5.1 and Git Bash; the previous script fails six of them (the slow window fa
 with the CI message, the shared display picks the unrelated window). The workflow's
 wait-for-marker ordering is checked by inspection only, not by a test. Real Xvfb/SDL3 behavior is
 confirmed only by the next CI run.
+
+
+## 2026-10-22 - Task 0279: collectible JSON module records
+
+`components/roves-js/src/{modules_impl,script_metadata,script_impl,jsapi_impl}.rs`: a JSON
+module record is no longer kept for the whole runtime by its registry entry. V8 152.2.0 /
+rusty_v8 152.2.0 sources were checked first: a synthetic module's namespace cannot be taken
+before instantiation (fatal ApiCheck), a private on the non-extensible namespace relies on a
+tolerance V8 announces it will remove, and the clean edge (`host_defined_options` of
+`CreateSyntheticModule`) is not exposed by the installed rusty_v8 binding (also absent from
+upstream `src/module.rs` main, checked by the reviewer). No C++ shim or new dependency. Staged
+design on maintained APIs:
+
+- Entry states. Strong while `CompileJsonModule1` stores the parsed value; weak once compiled
+  (before linking V8 reaches the module only through the record handed out by the resolve
+  hook; a failed link's `ResetGraph` drops V8's edges to unlinked dependencies). Strong when a
+  link leaves the module `Instantiated` and until its evaluation steps run, since they read
+  the value from the record. Weak again after the steps: V8 runs them once
+  (`SyntheticModule::Evaluate` sets `kEvaluated`, or `Module::RecordError` sets `kErrored`,
+  termination included, and an errored module never reruns them), and the value then lives in
+  V8's export cell. Remaining strong case, explicit: a JSON module left `Instantiated` stays
+  strong until some later evaluation runs its steps; if none ever does (graph abandoned after
+  linking, or an evaluation that failed before reaching it and is never retried), its record,
+  parsed value and private stay until runtime shutdown, even when nothing else reaches them.
+- Temporary link roots. `resolve_callback` pushes each synthetic record it hands to V8 onto
+  `Modules::linking` (no allocation between the hook's return and the push); `trace_modules`
+  traces that list. `ModuleLink` opens a `LinkSegment` (RAII, runs on every return, including
+  failure and nested links from a resolve hook): it copies its own segment out (the list stays
+  rooted and unborrowed during V8 calls), strengthens every segment record plus the linked root
+  that V8 left `Instantiated` (after a failed link too: a dependency of a completed strongly
+  connected component stays linked), then truncates to its base. Nested links close their own
+  segment first; a record shared by both segments is handled by each.
+- Privates. `ModuleKind::Json` holds only an optional `WeakPersistent` index of a cppgc
+  `PrivateData` (reused from `script_metadata`, now `pub(crate)` with
+  `new_holder`/`holder_data`; `create` uses the same holder code). The holder object lives on
+  the record's placeholder (new `PrivateKey::JsonModulePrivate`), so record -> placeholder ->
+  holder -> data -> private -> embedder trace hook form traced edges only and an
+  owner/record cycle collects. The first non-undefined private creates and indexes the holder;
+  replacement retains the new private before releasing the old; the data's finalizer releases
+  a collected record's private; shutdown clears the indexed live ones, leaving nothing for a
+  later finalizer. Entries are swept while neither their record nor their indexed data lives.
+  Lookups stay bucket + record/module matched; no per-GC whole-map scan beyond the existing
+  strong-entry walk.
+- Unchanged: JSON value as a placeholder private (0277), namespace/export identity, Servo's
+  rooted `ModuleObject`s (page-level collection still blocked). Cost (not measured): one push
+  per synthetic resolve, a status read and bucket walk per linked JSON record at link exit, a
+  holder only for JSON records with a private (never set by Servo).
+- Caller contract. Unlike SpiderMonkey's, `SetModulePrivate` can GC (the first JSON private
+  allocates its holder, a source module's first private its metadata holder) and reads the
+  record again afterwards: callers keep the record rooted across the call, as Servo's
+  `rooted!` record in `script_module.rs` does (Servo never sets a JSON module's private). The
+  holder data stays valid across the embedder's reference hooks without relying on their
+  non-GC contract: the holder is a local (a root) and cppgc does not move its wrapped data.
+
+`components/roves-js/src/tests.rs`: new `unlinked_json_records_collect_with_their_private`,
+`linked_json_value_survives_until_evaluation`,
+`failed_links_release_temporary_roots_and_keep_linked_dependencies`,
+`resolved_json_records_survive_collection_and_nested_links` (precise full GC inside the resolve
+hook, nested `ModuleLink` with a shared record), `json_evaluation_failure_before_the_steps_keeps_the_record_linked`,
+`json_private_owner_cycles_collect_and_release_once`,
+`colliding_json_identity_hashes_keep_each_records_state`,
+`json_dynamic_import_survives_collection_while_pending` and
+`negative_fixtures_detect_missing_json_roots_and_native_privates` (`#[cfg(test)]` switches:
+strong JSON entries, no strengthening, no link roots, natively rooted privates; each fails its
+property safely). A scratch negative without the holder's private trace fails the owner
+tests. Rooting in these tests does not assume that only a full GC collects: every raw record
+used after a V8 allocation is rooted (`rooted!`, explicitly dropped where the test needs it
+unrooted); JSON records reach the resolve hook only through a test-only weak registry on the
+runtime's `Modules` (`register_json_for_testing`/`json_record_for_testing`, dropped with the
+runtime before its cppgc heap), so a record a test left unrooted fails resolution once
+collected instead of dangling. The pre-existing `module_graphs_link_evaluate_and_import_dynamically`
+now roots its `data.json`, which 0279 stopped keeping alive. roves-js normal 82 passed/2
+ignored, JIT-less 81/3 (warning lines 772/772). Replay of the 54 preceding patches touching
+these files identical to HEAD; 0279 applies identically to the working tree.
+Patch: `0279-collectible-json-module-records.patch`.

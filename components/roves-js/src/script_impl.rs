@@ -135,6 +135,13 @@ pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Lo
     v8::Local::<v8::Symbol>::try_from(token).ok()
 }
 
+/// A new private holder and a weak handle on its data (see `ScriptMetadata::new_holder`).
+pub(crate) fn new_private_holder<'s>(
+    scope: &mut v8::PinScope<'s, '_>,
+) -> Option<(v8::Local<'s, v8::Object>, v8::cppgc::WeakPersistent<crate::script_metadata::PrivateData>)> {
+    JSContext::current().scripts.metadata.new_holder(scope)
+}
+
 /// The private of the source whose host token is `token`; undefined if it has none.
 pub(crate) fn token_private(scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> JSVal {
     JSContext::current().scripts.metadata.token_private(scope, token).unwrap_or(UndefinedValue())
