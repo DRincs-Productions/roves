@@ -15355,3 +15355,9 @@ Codex review: final runtime copies and all six replayed files match the working 
 Published0269/0270 are now verified by V8 run39737640415 (10/10); Linux normal job119686997929
 and JIT-less119686998238 show every GC and per-module-owner marker passing. This does not
 verify0271/0272. Migration/performance handoffs distinguish these results; no new measurements.
+
+Handoff follow-up:0271/0272 are committed locally; incomplete0273 native-trap experiment was
+saved outside the source tree and restored out of the publishable checkout after Claude's
+session limit. Its same-realm regression exposes V8 eval-cache source reuse (owner11 leaking
+into an unowned identical Function body); migration docs record the blocker and bounded
+import.meta.resolve/source-registry follow-ups. No0273 source change or performance claim.

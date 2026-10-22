@@ -3,7 +3,7 @@
 ## Da leggere alla prossima ripresa
 
 **Stato pubblicato:** codice fino a f4e6edcd3ac (0269/0270), HEAD documentale e709fb3f10b; wiki 1c12873.
-0271 committata in locale (683686b2feb); 0272 revisionata da Codex e pronta al commit. Pubblicazione di entrambe vincolata alla conclusione della CI precedente.
+0271 committata in locale (683686b2feb); 0272 committata in locale (6920417ad65), wiki 630c487. Pubblicazione di entrambe vincolata alla conclusione della CI precedente.
 Batch corrente: V8 39737640415, generale 39737640441, Android 39737640406 e iOS 39737640414.
 Ultima lettura 22 ottobre, ore 09:41: V8 verde 10/10; generale verde 12/13, ultimo bundle Linux
 portable in corso nelle unit test. Android e iOS verdi; wiki 39737611854 verde.
@@ -91,7 +91,7 @@ Codex ha verificato la sola fase evalImportOwner via Chrome DevTools MCP: Chrome
 pagina loopback, scheda in background ma visibilityState visible, headless non determinato;
 owners left/right, TestUtils undefined. Nessuna raccolta Chrome o verifica browser Roves.
 
-**0272 (revisionata localmente, compilazione servoshell pendente in CI):** owner di
+**0272 (committata localmente, compilazione servoshell pendente in CI):** owner di
 `ModuleScript` tracciato dalla VM. Prima `ModuleScript.owner` era `Option<Trusted<GlobalScope>>`,
 radice esterna mantenuta finché esisteva il private `Rc`. Nuova estensione roves-js
 `SetScriptPrivateTraceHook` (firma di `SetScriptPrivateReferenceHooks` invariata): `HostPrivate`
@@ -120,7 +120,7 @@ prova browser, nessun MCP Chrome per Claude, nessuna misura CPU/RAM/GPU.
 3. Confermare nei log Linux normal/JIT-less i marker GC e proprietari dei moduli di 0269/0270.
    Gli smoke Windows/macOS sono saltati dalla workflow: le build non equivalgono a prove browser.
 4. Pubblicare 0271 completa e revisionata solo quando il batch precedente lo consente.
-   Revisionare e committare 0272 (owner tracciato), poi pubblicarla con 0271 quando la CI lo consente.
+   0272 è revisionata e committata; pubblicarla con 0271 quando la CI lo consente.
    Prossimi incarichi: owner di new Function; raggiungibilità della tabella `Modules` (con la
    correzione del private grezzo di `import.meta.resolve`), senza workaround di stack.
 5. Continuare con le priorità strutturali: raggiungibilità realm/moduli, identità WindowProxy
@@ -954,3 +954,51 @@ aperta in background ma visible, headless non determinato: due moduli /a/creator
 /b/creator.js con make() identici e new Function che importa ./owner.js danno a/b, anche su
 otto ripetizioni (16 risultati alternati). Nessuna GC o misura prestazionale.
 Prompt dettagliato locale in target/task-0273-native-traps-plan.txt; ricostruibile dai vincoli qui.
+
+### 0273 sospesa dopo diagnosi riproducibile — 22 ottobre, ore 09:55
+
+Claude ha raggiunto il limite di sessione (ripristino dichiarato alle 13:10 Europe/Rome).
+AGENTS.md richiede implementazione delegata: Codex ha chiesto se procedere direttamente o
+riprendere con Claude; nessuna risposta ancora. La modifica NON è completa, committata o
+pubblicata. Backup locale verificato riapplicabile:
+`target/0273-incomplete-native-traps.patch` (6 file, include sonde sperimentali), log
+`target/t0273-{repro,native,probe}.log`. I sei file sono ripristinati a 6920417ad65: nessun
+prototipo viene incluso nel prossimo push. Le copie isolate testate restano quelle di0272.
+
+La sola rimozione del frame JS non basta. La sonda con trap native dà
+`first=11 unowned=11 fresh_unowned=-1 after=11`: un Function con corpo identico riusa la
+sorgente della chiamata precedente; uno con corpo diverso torna correttamente undefined.
+Il test completo stesso-realm fallisce. `Compiler::GetFunctionFromEval` cerca la cache con
+outer_info inizialmente empty_function, context, codice e confine parametri; eval_from_shared
+è corretto dal frame solo nel percorso di compilazione. Non mascherare il problema cambiando
+il codice visibile, introducendo euristiche di stack o disabilitando globalmente la cache
+senza una valutazione concreta. Verificare una API mantenuta che eviti il riuso scorretto,
+oppure progettare una compilazione con host options preservando grammatica, realm,
+newTarget, Trusted Types/CSP e toString. Il riferimento Chrome MCP a/b resta reale, ma una
+sessione inspector non dimostra come lavori la cache in un browser senza inspector.
+
+### Incarichi successivi già studiati (da precisare prima della delega)
+
+- **Lifetime import.meta.resolve:** oggi SLOT_MODULEPRIVATE contiene il private grezzo,
+  senza trattenere Rc<ModuleScript>. Prima di indebolire la tabella Modules, la funzione
+  resolve sfuggita al modulo deve possedere quei metadati e tracciarne owner. Candidato:
+  un piccolo oggetto JS nascosto, costruito con JSAPI/JSClass già presenti, con reserved
+  slot per Rc, trace ModuleScript e finalize/release; la funzione conserva ObjectValue(holder)
+  nel proprio slot. Evita nuova mappa globale o root Trusted. Valutare se il holder cppgc
+  esistente permetta meno codice. Verificare undefined, GC durante ToString rientrante,
+  funzione sfuggita dopo rilascio del private sorgente, ciclo owner/funzione raccolto e
+  finalizzazione singola. DefineFunctionWithReserved usa già funzioni dinamiche deboli.
+- **Registro debole dei soli moduli sorgente:** riusare token host e WeakMap/PrivateData
+  aggiungendo un edge tracciato alla cella record; il holder deve esistere anche con private
+  undefined. Ciclo VM token→holder cppgc→record→V8Module→token, niente root esterna.
+  Source ModuleEntry può tenere WeakCell; trace_modules deve smettere di radicarla;
+  lookup controllato e sweep ammortizzato. Root temporaneo di record/token fino all'aggancio.
+  Test: record rooted ed errored vivo dopo GC; namespace/funzioni/import statici e dinamici
+  tengono private valido; rilasciati record/namespace/funzioni si libera Rc prima dello
+  shutdown; cicli e import pendenti preservati. Richiede prima il fix import.meta.resolve.
+  JSON resta esplicitamente forte: un synthetic module non ha host token; serve un piano
+  distinto per agganciare il suo holder alla VM prima di indebolirlo. Realm restano aperti.
+
+I dettagli locali sono anche in target/task-0274-meta-resolve-plan.txt e
+ target/task-0275-weak-source-registry-plan.txt; le condizioni sostanziali sono riportate qui
+per poter riprendere anche su un altro PC senza la cartella target.
