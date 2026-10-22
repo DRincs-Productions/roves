@@ -22,19 +22,21 @@ use js::context::JSContext;
 use js::conversions::{ToJSValConvertible, jsstr_to_string};
 use js::gc::{HandleObject, MutableHandleValue};
 use js::jsapi::{
-    CallArgs, ExceptionStackBehavior, GetFunctionNativeReserved, GetModuleResolveHook,
+    CallArgs, ExceptionStackBehavior, GCContext, GetFunctionNativeReserved, GetModuleResolveHook,
     Handle as RawHandle, HandleValue as RawHandleValue, Heap, JS_GetFunctionObject,
-    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, JSTracer,
-    ModuleErrorBehaviour, ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook,
-    SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook,
-    SetScriptPrivateReferenceHooks, SetScriptPrivateTraceHook, Value,
+    JS_GetReservedSlot, JS_SetReservedSlot, JSCLASS_FOREGROUND_FINALIZE,
+    JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps, JSContext as RawJSContext, JSObject,
+    JSPROP_ENUMERATE, JSRuntime, JSTracer, ModuleErrorBehaviour, ModuleType,
+    SetFunctionNativeReserved, SetModuleDynamicImportHook, SetModuleMetadataHook,
+    SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks,
+    SetScriptPrivateTraceHook, Value,
 };
-use js::jsval::{JSVal, PrivateValue, UndefinedValue};
+use js::jsval::{JSVal, ObjectValue, PrivateValue, UndefinedValue};
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::{
     CompileJsonModule1, CompileModule1, DefineFunctionWithReserved, GetModuleRequestSpecifier,
     GetModuleRequestType, JS_ClearPendingException, JS_DefineProperty4, JS_GetPendingException,
-    JS_NewStringCopyN, JS_SetPendingException, ModuleEvaluate, ModuleLink,
+    JS_NewObject, JS_NewStringCopyN, JS_SetPendingException, ModuleEvaluate, ModuleLink,
     ThrowOnModuleEvaluationFailure,
 };
 use js::rust::{Handle, HandleValue, ToString, transform_str_to_source_text};
@@ -1114,14 +1116,79 @@ unsafe extern "C" fn HostPopulateImportMeta(
 
         rooted!(&in(cx) let obj = JS_GetFunctionObject(resolve_function));
         assert!(!obj.is_null());
+        // An undefined private (no module script) needs no holder: resolve falls back to
+        // the global's base URL.
+        if reference_private.get().is_undefined() {
+            return true;
+        }
+        // The escaped function owns the module script through a hidden holder, so the
+        // metadata outlives the source's own private.
+        rooted!(&in(cx) let holder = JS_NewObject(&mut cx, &MODULE_SCRIPT_HOLDER_CLASS));
+        if holder.is_null() {
+            return false;
+        }
+        host_add_ref_top_level_script(&reference_private.get());
+        JS_SetReservedSlot(holder.get(), MODULE_SCRIPT_HOLDER_SLOT, &reference_private.get());
         SetFunctionNativeReserved(
             obj.get(),
             SLOT_MODULEPRIVATE,
-            &reference_private.get() as *const _,
+            &ObjectValue(holder.get()),
         );
     }
 
     true
+}
+
+const MODULE_SCRIPT_HOLDER_SLOT: u32 = 0;
+
+/// Owns one `Rc<ModuleScript>` reference for an `import.meta.resolve` function and traces
+/// its edges; finalization releases the reference exactly once.
+static MODULE_SCRIPT_HOLDER_CLASS: JSClass = JSClass {
+    name: c"ModuleScriptHolder".as_ptr(),
+    flags: 1 << JSCLASS_RESERVED_SLOTS_SHIFT | JSCLASS_FOREGROUND_FINALIZE,
+    cOps: &MODULE_SCRIPT_HOLDER_OPS,
+    spec: ptr::null(),
+    ext: ptr::null(),
+    oOps: ptr::null(),
+};
+
+static MODULE_SCRIPT_HOLDER_OPS: JSClassOps = JSClassOps {
+    addProperty: None,
+    delProperty: None,
+    enumerate: None,
+    newEnumerate: None,
+    resolve: None,
+    mayResolve: None,
+    finalize: Some(finalize_module_script_holder),
+    call: None,
+    construct: None,
+    trace: Some(trace_module_script_holder),
+};
+
+#[expect(unsafe_code)]
+unsafe fn module_script_holder_private(holder: *mut JSObject) -> JSVal {
+    let mut private = UndefinedValue();
+    unsafe { JS_GetReservedSlot(holder, MODULE_SCRIPT_HOLDER_SLOT, &mut private) };
+    private
+}
+
+#[expect(unsafe_code)]
+unsafe extern "C" fn trace_module_script_holder(trc: *mut JSTracer, holder: *mut JSObject) {
+    let private = unsafe { module_script_holder_private(holder) };
+    if !private.is_undefined() {
+        unsafe { host_trace_top_level_script(trc, &private) };
+    }
+}
+
+#[expect(unsafe_code)]
+unsafe extern "C" fn finalize_module_script_holder(_gcx: *mut GCContext, holder: *mut JSObject) {
+    let private = unsafe { module_script_holder_private(holder) };
+    if !private.is_undefined() {
+        unsafe {
+            JS_SetReservedSlot(holder, MODULE_SCRIPT_HOLDER_SLOT, &UndefinedValue());
+            host_release_top_level_script(&private);
+        }
+    }
 }
 
 #[expect(unsafe_code)]
@@ -1135,7 +1202,13 @@ unsafe extern "C" fn import_meta_resolve(cx: *mut RawJSContext, argc: u32, vp: *
 
     let args = unsafe { CallArgs::from_vp(vp, argc) };
 
-    rooted!(&in(cx) let module_private = unsafe { *GetFunctionNativeReserved(args.callee(), SLOT_MODULEPRIVATE) });
+    // The rooted holder keeps the module script alive across the reentrant ToString below.
+    rooted!(&in(cx) let holder = unsafe { *GetFunctionNativeReserved(args.callee(), SLOT_MODULEPRIVATE) });
+    rooted!(&in(cx) let module_private = if holder.is_object() {
+        unsafe { module_script_holder_private(holder.to_object()) }
+    } else {
+        UndefinedValue()
+    });
     let reference_private = module_private.handle().into();
     let module_data = unsafe { module_script_from_reference_private(&reference_private) };
 

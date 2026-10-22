@@ -1,0 +1,431 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 780dd25e5aa..a3ca870b1a1 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2585,6 +2585,185 @@ mod traced_privates {
+         assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
+         assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+     }
++
++    thread_local! {
++        /// Scratch switches for the negative holder fixtures.
++        static HOLDER_RETAINS: Cell<bool> = const { Cell::new(true) };
++        static HOLDER_TRACES: Cell<bool> = const { Cell::new(true) };
++        static STALE_RESOLVE: Cell<bool> = const { Cell::new(false) };
++    }
++
++    fn holder_private(holder: *mut JSObject) -> JSVal {
++        let mut private = UndefinedValue();
++        unsafe { JS_GetReservedSlot(holder, 0, &mut private) };
++        private
++    }
++
++    /// Mirrors Servo's `ModuleScriptHolder` (script_module.rs), the hooks above standing in
++    /// for the `ModuleScript` ones. Engine reference counts guard every use of the private,
++    /// so the negative fixtures never dereference a released pointer.
++    unsafe extern "C" fn trace_holder(trc: *mut JSTracer, holder: *mut JSObject) {
++        let private = holder_private(holder);
++        if !private.is_undefined() && HOLDER_TRACES.with(Cell::get) {
++            unsafe { trace(trc, &private) };
++        }
++    }
++
++    unsafe extern "C" fn finalize_holder(_gcx: *mut GCContext, holder: *mut JSObject) {
++        let private = holder_private(holder);
++        if !private.is_undefined() {
++            unsafe { JS_SetReservedSlot(holder, 0, &UndefinedValue()) };
++            if engine_refs(native_owner(&private)) > 0 {
++                unsafe { release(&private) };
++            }
++        }
++    }
++
++    static HOLDER_OPS: JSClassOps = JSClassOps {
++        addProperty: None,
++        delProperty: None,
++        enumerate: None,
++        newEnumerate: None,
++        resolve: None,
++        mayResolve: None,
++        finalize: Some(finalize_holder),
++        call: None,
++        construct: None,
++        trace: Some(trace_holder),
++    };
++
++    static HOLDER_CLASS: JSClass = JSClass {
++        name: c"ModuleScriptHolder".as_ptr(),
++        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT | crate::object::JSCLASS_FOREGROUND_FINALIZE,
++        cOps: &HOLDER_OPS,
++        spec: ptr::null(),
++        ext: ptr::null(),
++        oOps: ptr::null(),
++    };
++
++    /// `import.meta.resolve`: reads the holder's private through rooted handles, converts its
++    /// argument (reentrant, may collect) and returns owner id * 100 + specifier length, minus
++    /// the length without a private, -1000 for a released private.
++    unsafe extern "C" fn resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
++        // vp[0] holds the callee until the return value replaces it.
++        rooted!(in(cx) let holder = unsafe { *GetFunctionNativeReserved(args[0].to_object(), 0) });
++        rooted!(in(cx) let private = if holder.is_object() { holder_private(holder.to_object()) } else { UndefinedValue() });
++        use crate::conversions::{ConversionResult, FromJSValConvertible};
++        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        let value = unsafe { crate::rust::HandleValue::from_marked_location(&args[2]) };
++        let Ok(ConversionResult::Success(text)) = std::string::String::safe_from_jsval(&mut safe, value, ()) else { return false };
++        let length = text.len() as i32;
++        if private.is_undefined() {
++            args[0] = Int32Value(-length);
++            return true;
++        }
++        let pointer = native_owner(&private.get());
++        if engine_refs(pointer) <= 0 {
++            STALE_RESOLVE.with(|flag| flag.set(true));
++            args[0] = Int32Value(-1000);
++            return true;
++        }
++        let mut id = UndefinedValue();
++        unsafe { JS_GetReservedSlot((*pointer).owner.get(), 0, &mut id) };
++        args[0] = Int32Value(if id.is_int32() { id.to_int32() * 100 + length } else { -2000 });
++        true
++    }
++
++    unsafe extern "C" fn gc_now(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        // SAFETY: the JSNative contract.
++        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
++        unsafe { &mut *(*cx).isolate }.low_memory_notification();
++        args[0] = UndefinedValue();
++        true
++    }
++
++    /// Defines `meta.resolve` as Servo's HostPopulateImportMeta does. With an owner id, the
++    /// owner object (holding `meta.resolve`, a cycle through native code) is reachable only
++    /// through the function's holder once the source's reference is dropped here.
++    fn escaped_resolve(runtime: &Runtime, id: Option<i32>) -> Option<Weak<NativeOwner>> {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
++        unsafe { DefineFunctionWithReserved(cx, global.get(), c"gcNow".as_ptr(), Some(gc_now), 0, 0) };
++        rooted!(in(cx) let meta = eval(runtime, "globalThis.meta = {}").to_object());
++        let function = unsafe { DefineFunctionWithReserved(cx, meta.get(), c"resolve".as_ptr(), Some(resolve), 1, JSPROP_ENUMERATE.into()) };
++        rooted!(in(cx) let function = unsafe { JS_GetFunctionObject(function) });
++        let owner = new_owner(runtime, id?, Some("meta.resolve"));
++        rooted!(in(cx) let holder = unsafe { JS_NewObject(cx, &HOLDER_CLASS) });
++        let private = PrivateValue(Rc::as_ptr(&owner).cast());
++        if HOLDER_RETAINS.with(Cell::get) {
++            unsafe { retain(&private) };
++        }
++        unsafe { JS_SetReservedSlot(holder.get(), 0, &private) };
++        unsafe { SetFunctionNativeReserved(function.get(), 0, &ObjectValue(holder.get())) };
++        Some(Rc::downgrade(&owner))
++    }
++
++    fn holder_switches(retains: bool, traces: bool) {
++        reset();
++        HOLDER_RETAINS.with(|flag| flag.set(retains));
++        HOLDER_TRACES.with(|flag| flag.set(traces));
++        STALE_RESOLVE.with(|flag| flag.set(false));
++    }
++
++    #[test]
++    fn escaped_import_meta_resolve_owns_and_traces_its_module_script() {
++        holder_switches(true, true);
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        assert!(escaped_resolve(&runtime, None).is_none());
++        assert_eq!(eval(&runtime, "meta.resolve('ab')").to_int32(), -2, "an undefined private falls back");
++        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
++        assert_eq!(weak.strong_count(), 1, "the holder owns the only reference");
++        collect(&mut runtime);
++        assert!(owners_finalized().is_empty(), "the holder traces its owner");
++        assert_eq!(marker(&runtime, &weak), "owner 9");
++        let reentrant = "meta.resolve({ toString() { gcNow(); return 'abc' } })";
++        assert_eq!(eval(&runtime, reentrant).to_int32(), 903, "GC in the conversion keeps the private");
++        assert_eq!(eval(&runtime, "globalThis.escaped = meta.resolve; delete globalThis.meta; escaped('x')").to_int32(), 901);
++        collect(&mut runtime);
++        assert_eq!(eval(&runtime, "escaped('xy')").to_int32(), 902, "the escaped function keeps its metadata");
++        assert!(owners_finalized().is_empty() && weak.upgrade().is_some());
++        eval(&runtime, "delete globalThis.escaped");
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none(), "the dead function releases its module script");
++        assert_eq!(owners_finalized(), vec![9], "the function/holder/owner cycle collects");
++        collect(&mut runtime);
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "released once, none at shutdown");
++        assert_eq!(owners_finalized(), vec![9]);
++        assert!(!STALE_TRACE.with(Cell::get) && !STALE_RESOLVE.with(Cell::get));
++        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
++    }
++
++    #[test]
++    fn untraced_import_meta_holder_loses_its_owner() {
++        holder_switches(true, false);
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
++        collect(&mut runtime);
++        assert_eq!(owners_finalized(), vec![9], "without the trace nothing reports the owner edge");
++        assert!(weak.upgrade().is_some(), "the holder still owns the private");
++        eval(&runtime, "delete globalThis.meta");
++        collect(&mut runtime);
++        assert!(weak.upgrade().is_none());
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
++    }
++
++    #[test]
++    fn unretained_import_meta_holder_fails_safely() {
++        holder_switches(false, true);
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
++        assert!(weak.upgrade().is_none(), "nothing owns the private once the source drops it");
++        assert_eq!(eval(&runtime, "meta.resolve('x')").to_int32(), -1000);
++        assert!(STALE_RESOLVE.with(Cell::get), "the guarded resolve saw the released private");
++        collect(&mut runtime);
++        assert!(STALE_TRACE.with(Cell::get), "the guarded trace saw the released private");
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (0, 0), "nothing released that was never retained");
++    }
+ }
+ 
+ mod values {
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index c764841a2df..62392f951cb 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -22,19 +22,21 @@ use js::context::JSContext;
+ use js::conversions::{ToJSValConvertible, jsstr_to_string};
+ use js::gc::{HandleObject, MutableHandleValue};
+ use js::jsapi::{
+-    CallArgs, ExceptionStackBehavior, GetFunctionNativeReserved, GetModuleResolveHook,
++    CallArgs, ExceptionStackBehavior, GCContext, GetFunctionNativeReserved, GetModuleResolveHook,
+     Handle as RawHandle, HandleValue as RawHandleValue, Heap, JS_GetFunctionObject,
+-    JSContext as RawJSContext, JSObject, JSPROP_ENUMERATE, JSRuntime, JSTracer,
+-    ModuleErrorBehaviour, ModuleType, SetFunctionNativeReserved, SetModuleDynamicImportHook,
+-    SetModuleMetadataHook, SetModulePrivate, SetModuleResolveHook,
+-    SetScriptPrivateReferenceHooks, SetScriptPrivateTraceHook, Value,
++    JS_GetReservedSlot, JS_SetReservedSlot, JSCLASS_FOREGROUND_FINALIZE,
++    JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps, JSContext as RawJSContext, JSObject,
++    JSPROP_ENUMERATE, JSRuntime, JSTracer, ModuleErrorBehaviour, ModuleType,
++    SetFunctionNativeReserved, SetModuleDynamicImportHook, SetModuleMetadataHook,
++    SetModulePrivate, SetModuleResolveHook, SetScriptPrivateReferenceHooks,
++    SetScriptPrivateTraceHook, Value,
+ };
+-use js::jsval::{JSVal, PrivateValue, UndefinedValue};
++use js::jsval::{JSVal, ObjectValue, PrivateValue, UndefinedValue};
+ use js::realm::CurrentRealm;
+ use js::rust::wrappers2::{
+     CompileJsonModule1, CompileModule1, DefineFunctionWithReserved, GetModuleRequestSpecifier,
+     GetModuleRequestType, JS_ClearPendingException, JS_DefineProperty4, JS_GetPendingException,
+-    JS_NewStringCopyN, JS_SetPendingException, ModuleEvaluate, ModuleLink,
++    JS_NewObject, JS_NewStringCopyN, JS_SetPendingException, ModuleEvaluate, ModuleLink,
+     ThrowOnModuleEvaluationFailure,
+ };
+ use js::rust::{Handle, HandleValue, ToString, transform_str_to_source_text};
+@@ -1114,16 +1116,81 @@ unsafe extern "C" fn HostPopulateImportMeta(
+ 
+         rooted!(&in(cx) let obj = JS_GetFunctionObject(resolve_function));
+         assert!(!obj.is_null());
++        // An undefined private (no module script) needs no holder: resolve falls back to
++        // the global's base URL.
++        if reference_private.get().is_undefined() {
++            return true;
++        }
++        // The escaped function owns the module script through a hidden holder, so the
++        // metadata outlives the source's own private.
++        rooted!(&in(cx) let holder = JS_NewObject(&mut cx, &MODULE_SCRIPT_HOLDER_CLASS));
++        if holder.is_null() {
++            return false;
++        }
++        host_add_ref_top_level_script(&reference_private.get());
++        JS_SetReservedSlot(holder.get(), MODULE_SCRIPT_HOLDER_SLOT, &reference_private.get());
+         SetFunctionNativeReserved(
+             obj.get(),
+             SLOT_MODULEPRIVATE,
+-            &reference_private.get() as *const _,
++            &ObjectValue(holder.get()),
+         );
+     }
+ 
+     true
+ }
+ 
++const MODULE_SCRIPT_HOLDER_SLOT: u32 = 0;
++
++/// Owns one `Rc<ModuleScript>` reference for an `import.meta.resolve` function and traces
++/// its edges; finalization releases the reference exactly once.
++static MODULE_SCRIPT_HOLDER_CLASS: JSClass = JSClass {
++    name: c"ModuleScriptHolder".as_ptr(),
++    flags: 1 << JSCLASS_RESERVED_SLOTS_SHIFT | JSCLASS_FOREGROUND_FINALIZE,
++    cOps: &MODULE_SCRIPT_HOLDER_OPS,
++    spec: ptr::null(),
++    ext: ptr::null(),
++    oOps: ptr::null(),
++};
++
++static MODULE_SCRIPT_HOLDER_OPS: JSClassOps = JSClassOps {
++    addProperty: None,
++    delProperty: None,
++    enumerate: None,
++    newEnumerate: None,
++    resolve: None,
++    mayResolve: None,
++    finalize: Some(finalize_module_script_holder),
++    call: None,
++    construct: None,
++    trace: Some(trace_module_script_holder),
++};
++
++#[expect(unsafe_code)]
++unsafe fn module_script_holder_private(holder: *mut JSObject) -> JSVal {
++    let mut private = UndefinedValue();
++    unsafe { JS_GetReservedSlot(holder, MODULE_SCRIPT_HOLDER_SLOT, &mut private) };
++    private
++}
++
++#[expect(unsafe_code)]
++unsafe extern "C" fn trace_module_script_holder(trc: *mut JSTracer, holder: *mut JSObject) {
++    let private = unsafe { module_script_holder_private(holder) };
++    if !private.is_undefined() {
++        unsafe { host_trace_top_level_script(trc, &private) };
++    }
++}
++
++#[expect(unsafe_code)]
++unsafe extern "C" fn finalize_module_script_holder(_gcx: *mut GCContext, holder: *mut JSObject) {
++    let private = unsafe { module_script_holder_private(holder) };
++    if !private.is_undefined() {
++        unsafe {
++            JS_SetReservedSlot(holder, MODULE_SCRIPT_HOLDER_SLOT, &UndefinedValue());
++            host_release_top_level_script(&private);
++        }
++    }
++}
++
+ #[expect(unsafe_code)]
+ unsafe extern "C" fn import_meta_resolve(cx: *mut RawJSContext, argc: u32, vp: *mut JSVal) -> bool {
+     // SAFETY: it is safe to construct a JSContext from engine hook.
+@@ -1135,7 +1202,13 @@ unsafe extern "C" fn import_meta_resolve(cx: *mut RawJSContext, argc: u32, vp: *
+ 
+     let args = unsafe { CallArgs::from_vp(vp, argc) };
+ 
+-    rooted!(&in(cx) let module_private = unsafe { *GetFunctionNativeReserved(args.callee(), SLOT_MODULEPRIVATE) });
++    // The rooted holder keeps the module script alive across the reentrant ToString below.
++    rooted!(&in(cx) let holder = unsafe { *GetFunctionNativeReserved(args.callee(), SLOT_MODULEPRIVATE) });
++    rooted!(&in(cx) let module_private = if holder.is_object() {
++        unsafe { module_script_holder_private(holder.to_object()) }
++    } else {
++        UndefinedValue()
++    });
+     let reference_private = module_private.handle().into();
+     let module_data = unsafe { module_script_from_reference_private(&reference_private) };
+ 
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 62e36cbcbe9..7f80bcc8369 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -10,7 +10,8 @@
+ // finalizers and does not cover realm, module-map or navigation retention. Two same-origin
+ // frames import the same module URL (identical code and name); a dynamic import from each
+ // copy, directly or from its direct eval code, must stay owned by its own frame, before and
+-// after a collection.
++// after a collection; so must each copy's escaped import.meta.resolve. Module collection itself
++// is not observed.
+ "use strict";
+ const MAX_COLLECTIONS = 8;
+ const FRAME_TIMEOUT_MS = 5000;
+@@ -175,6 +176,16 @@ async function checkOwners(name, namespaces, importer, expected) {
+   if (owners.join() !== expected.join()) fail(name);
+ }
+ 
++// Each frame's escaped import.meta.resolve belongs to that frame's realm and resolves against
++// gc-module.js's URL. The specifier object's toString() runs script during the conversion.
++function checkResolve(name, frames, namespaces) {
++  const expected = new URL("gc-owner.js", location.href).href;
++  const specifier = { toString() { return "./gc-owner.js"; } };
++  const resolved = namespaces.map(namespace => namespace.resolveOwner(specifier));
++  const realms = namespaces.every((namespace, i) => namespace.resolveOwner instanceof frames[i].contentWindow.Function);
++  check(name, realms && resolved.every(url => url === expected), `realms ${realms} ${resolved.join(" ")}`);
++}
++
+ async function checkModuleOwners() {
+   const tokens = ["left", "right"];
+   const frames = [];
+@@ -189,9 +200,11 @@ async function checkModuleOwners() {
+     const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
+     await checkOwners("module owners", namespaces, "importOwner", tokens);
+     await checkOwners("eval module owners", namespaces, "evalImportOwner", tokens);
++    checkResolve("module resolve", frames, namespaces);
+     await collectOnce();
+     await checkOwners("module owners after collection", namespaces, "importOwner", tokens);
+     await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
++    checkResolve("module resolve after collection", frames, namespaces);
+   } finally {
+     for (const frame of frames) frame.remove();
+   }
+diff --git a/support/v8-smoke/gc-module.js b/support/v8-smoke/gc-module.js
+index 760dade8f2c..e72f3816599 100644
+--- a/support/v8-smoke/gc-module.js
++++ b/support/v8-smoke/gc-module.js
+@@ -6,3 +6,6 @@ export function importOwner() { return import("./gc-owner.js"); }
+ // Direct eval code has no module record of its own: its import() must keep this module as
+ // referrer (owner realm and base URL), as the module's own import() does.
+ export function evalImportOwner() { return eval('import("./gc-owner.js")'); }
++// The escaped import.meta.resolve keeps this module as its referrer: it must resolve against
++// this module's URL, not the importing frame's base URL, before and after a collection.
++export const resolveOwner = import.meta.resolve;
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index fe265b8d8fb..fe8d7f7158d 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -171,7 +171,7 @@ fi
+ # its same-origin frames import the same module URL, each owning its own dynamic imports,
+ # including those of direct eval code in that module.
+ run_page gc-lifecycle.html 20 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ 
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 49b2354d893..a257f85be1a 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -132,6 +132,7 @@ if page == 'gc-lifecycle.html':
+                      'dynamic import after collection 42', 'dropped importer collected true',
+                      'module owners left right', 'module owners after collection left right',
+                      'eval module owners left right', 'eval module owners after collection left right',
++                     'module resolve true', 'module resolve after collection true',
+                      'retained nodes final true true true', 'result pass'):
+             if scenario == 'gc-import' and line.startswith('dynamic import'):
+                 line = 'dynamic import after collection undefined'
+@@ -150,6 +151,11 @@ if page == 'gc-lifecycle.html':
+                 line = line.replace('left right', 'left left')
+             if scenario == 'gc-eval-owner-missing' and line.startswith('eval module owners'):
+                 continue
++            # import.meta.resolve against the frame's base URL; the page claims success.
++            if scenario == 'gc-resolve' and line.startswith('module resolve'):
++                line = line.replace('true', 'false realms true http://127.0.0.1/missing-base/gc-owner.js')
++            if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
++                continue
+             print('ROVES-V8 gc ' + line)
+ elif page == 'pref-jitless.html':
+     if scenario == 'pref-cli' and '--pref' in options:
+@@ -247,6 +253,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-owner-missing', None, "missing 'ROVES-V8 gc module owners after collection left right'"),
+             ('gc-eval-owner', None, "missing 'ROVES-V8 gc eval module owners left right' (ROVES-V8 gc api true"),
+             ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc eval module owners after collection left right'"),
++            ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
++            ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
+             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
+         )
+@@ -254,7 +262,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             with self.subTest(scenario=scenario, gc_flag=gc_flag):
+                 result = self.run_fixture(scenario, gc_flag=gc_flag)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+-                if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing'):
++                if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing', 'gc-resolve',
++                                'gc-resolve-missing'):
+                     # A reported pass cannot replace a missing or wrong required marker.
+                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                 else:

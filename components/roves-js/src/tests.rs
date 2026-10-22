@@ -2585,6 +2585,185 @@ mod traced_privates {
         assert!(!STALE_TRACE.with(Cell::get), "no trace after release");
         assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
     }
+
+    thread_local! {
+        /// Scratch switches for the negative holder fixtures.
+        static HOLDER_RETAINS: Cell<bool> = const { Cell::new(true) };
+        static HOLDER_TRACES: Cell<bool> = const { Cell::new(true) };
+        static STALE_RESOLVE: Cell<bool> = const { Cell::new(false) };
+    }
+
+    fn holder_private(holder: *mut JSObject) -> JSVal {
+        let mut private = UndefinedValue();
+        unsafe { JS_GetReservedSlot(holder, 0, &mut private) };
+        private
+    }
+
+    /// Mirrors Servo's `ModuleScriptHolder` (script_module.rs), the hooks above standing in
+    /// for the `ModuleScript` ones. Engine reference counts guard every use of the private,
+    /// so the negative fixtures never dereference a released pointer.
+    unsafe extern "C" fn trace_holder(trc: *mut JSTracer, holder: *mut JSObject) {
+        let private = holder_private(holder);
+        if !private.is_undefined() && HOLDER_TRACES.with(Cell::get) {
+            unsafe { trace(trc, &private) };
+        }
+    }
+
+    unsafe extern "C" fn finalize_holder(_gcx: *mut GCContext, holder: *mut JSObject) {
+        let private = holder_private(holder);
+        if !private.is_undefined() {
+            unsafe { JS_SetReservedSlot(holder, 0, &UndefinedValue()) };
+            if engine_refs(native_owner(&private)) > 0 {
+                unsafe { release(&private) };
+            }
+        }
+    }
+
+    static HOLDER_OPS: JSClassOps = JSClassOps {
+        addProperty: None,
+        delProperty: None,
+        enumerate: None,
+        newEnumerate: None,
+        resolve: None,
+        mayResolve: None,
+        finalize: Some(finalize_holder),
+        call: None,
+        construct: None,
+        trace: Some(trace_holder),
+    };
+
+    static HOLDER_CLASS: JSClass = JSClass {
+        name: c"ModuleScriptHolder".as_ptr(),
+        flags: 1 << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT | crate::object::JSCLASS_FOREGROUND_FINALIZE,
+        cOps: &HOLDER_OPS,
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    /// `import.meta.resolve`: reads the holder's private through rooted handles, converts its
+    /// argument (reentrant, may collect) and returns owner id * 100 + specifier length, minus
+    /// the length without a private, -1000 for a released private.
+    unsafe extern "C" fn resolve(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        // vp[0] holds the callee until the return value replaces it.
+        rooted!(in(cx) let holder = unsafe { *GetFunctionNativeReserved(args[0].to_object(), 0) });
+        rooted!(in(cx) let private = if holder.is_object() { holder_private(holder.to_object()) } else { UndefinedValue() });
+        use crate::conversions::{ConversionResult, FromJSValConvertible};
+        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        let value = unsafe { crate::rust::HandleValue::from_marked_location(&args[2]) };
+        let Ok(ConversionResult::Success(text)) = std::string::String::safe_from_jsval(&mut safe, value, ()) else { return false };
+        let length = text.len() as i32;
+        if private.is_undefined() {
+            args[0] = Int32Value(-length);
+            return true;
+        }
+        let pointer = native_owner(&private.get());
+        if engine_refs(pointer) <= 0 {
+            STALE_RESOLVE.with(|flag| flag.set(true));
+            args[0] = Int32Value(-1000);
+            return true;
+        }
+        let mut id = UndefinedValue();
+        unsafe { JS_GetReservedSlot((*pointer).owner.get(), 0, &mut id) };
+        args[0] = Int32Value(if id.is_int32() { id.to_int32() * 100 + length } else { -2000 });
+        true
+    }
+
+    unsafe extern "C" fn gc_now(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        // SAFETY: the JSNative contract.
+        let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+        unsafe { &mut *(*cx).isolate }.low_memory_notification();
+        args[0] = UndefinedValue();
+        true
+    }
+
+    /// Defines `meta.resolve` as Servo's HostPopulateImportMeta does. With an owner id, the
+    /// owner object (holding `meta.resolve`, a cycle through native code) is reachable only
+    /// through the function's holder once the source's reference is dropped here.
+    fn escaped_resolve(runtime: &Runtime, id: Option<i32>) -> Option<Weak<NativeOwner>> {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
+        unsafe { DefineFunctionWithReserved(cx, global.get(), c"gcNow".as_ptr(), Some(gc_now), 0, 0) };
+        rooted!(in(cx) let meta = eval(runtime, "globalThis.meta = {}").to_object());
+        let function = unsafe { DefineFunctionWithReserved(cx, meta.get(), c"resolve".as_ptr(), Some(resolve), 1, JSPROP_ENUMERATE.into()) };
+        rooted!(in(cx) let function = unsafe { JS_GetFunctionObject(function) });
+        let owner = new_owner(runtime, id?, Some("meta.resolve"));
+        rooted!(in(cx) let holder = unsafe { JS_NewObject(cx, &HOLDER_CLASS) });
+        let private = PrivateValue(Rc::as_ptr(&owner).cast());
+        if HOLDER_RETAINS.with(Cell::get) {
+            unsafe { retain(&private) };
+        }
+        unsafe { JS_SetReservedSlot(holder.get(), 0, &private) };
+        unsafe { SetFunctionNativeReserved(function.get(), 0, &ObjectValue(holder.get())) };
+        Some(Rc::downgrade(&owner))
+    }
+
+    fn holder_switches(retains: bool, traces: bool) {
+        reset();
+        HOLDER_RETAINS.with(|flag| flag.set(retains));
+        HOLDER_TRACES.with(|flag| flag.set(traces));
+        STALE_RESOLVE.with(|flag| flag.set(false));
+    }
+
+    #[test]
+    fn escaped_import_meta_resolve_owns_and_traces_its_module_script() {
+        holder_switches(true, true);
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        assert!(escaped_resolve(&runtime, None).is_none());
+        assert_eq!(eval(&runtime, "meta.resolve('ab')").to_int32(), -2, "an undefined private falls back");
+        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
+        assert_eq!(weak.strong_count(), 1, "the holder owns the only reference");
+        collect(&mut runtime);
+        assert!(owners_finalized().is_empty(), "the holder traces its owner");
+        assert_eq!(marker(&runtime, &weak), "owner 9");
+        let reentrant = "meta.resolve({ toString() { gcNow(); return 'abc' } })";
+        assert_eq!(eval(&runtime, reentrant).to_int32(), 903, "GC in the conversion keeps the private");
+        assert_eq!(eval(&runtime, "globalThis.escaped = meta.resolve; delete globalThis.meta; escaped('x')").to_int32(), 901);
+        collect(&mut runtime);
+        assert_eq!(eval(&runtime, "escaped('xy')").to_int32(), 902, "the escaped function keeps its metadata");
+        assert!(owners_finalized().is_empty() && weak.upgrade().is_some());
+        eval(&runtime, "delete globalThis.escaped");
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none(), "the dead function releases its module script");
+        assert_eq!(owners_finalized(), vec![9], "the function/holder/owner cycle collects");
+        collect(&mut runtime);
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1), "released once, none at shutdown");
+        assert_eq!(owners_finalized(), vec![9]);
+        assert!(!STALE_TRACE.with(Cell::get) && !STALE_RESOLVE.with(Cell::get));
+        assert!(!RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+    }
+
+    #[test]
+    fn untraced_import_meta_holder_loses_its_owner() {
+        holder_switches(true, false);
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
+        collect(&mut runtime);
+        assert_eq!(owners_finalized(), vec![9], "without the trace nothing reports the owner edge");
+        assert!(weak.upgrade().is_some(), "the holder still owns the private");
+        eval(&runtime, "delete globalThis.meta");
+        collect(&mut runtime);
+        assert!(weak.upgrade().is_none());
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
+    }
+
+    #[test]
+    fn unretained_import_meta_holder_fails_safely() {
+        holder_switches(false, true);
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let weak = escaped_resolve(&runtime, Some(9)).unwrap();
+        assert!(weak.upgrade().is_none(), "nothing owns the private once the source drops it");
+        assert_eq!(eval(&runtime, "meta.resolve('x')").to_int32(), -1000);
+        assert!(STALE_RESOLVE.with(Cell::get), "the guarded resolve saw the released private");
+        collect(&mut runtime);
+        assert!(STALE_TRACE.with(Cell::get), "the guarded trace saw the released private");
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (0, 0), "nothing released that was never retained");
+    }
 }
 
 mod values {

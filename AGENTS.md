@@ -27,19 +27,20 @@ scena e condizioni di misura, distinguendo esecuzioni visibili e headless. Annun
 profili o misure costose. Se il MCP non è disponibile o l'accesso è bloccato, dichiaralo
 esplicitamente e non presentare misure ottenute con altri strumenti come risultati del MCP.
 
-## Active work: autonomous V8 migration
+## V8 migration: resumed with bounded delegation
 
-Read `docs/V8_MIGRATION.md` before continuing V8 compatibility work. Start with its
-next-resume handoff section: it records the published code SHA, exact CI runs, pending checks
-and the next bounded Claude assignment. Documentation-only HEAD commits may have no V8 run. Performance results and
-the historical measurement backlog are in `docs/ROVES_PERFORMANCE.md`.
-The user explicitly requires autonomous implementation, local tests wherever possible,
-CI execution, waiting for results, fixing failures and continuing until every migration
-completion criterion is satisfied. Do not end work at a partial checkpoint or merely after
-starting CI. A checkpoint is a verification boundary, not a stopping point: once its checks pass,
-continue autonomously with the next migration task. Keep progress accurate; never describe
-prototype coverage as production migration.
-This file is the shared instruction entry point for all coding agents.
+The user explicitly resumed the migration loop on 2026-10-22. Task 0274 is complete locally
+within its authorized cumulative 50-call boundary (25 initial plus 22 extension, 47 actual).
+Codex may start subsequent bounded assignments and manage the CI loop without asking for
+approval at each completed task. An incomplete task reaching its boundary still requires an
+explicit user budget extension; do not reset that budget through automatic relaunches.
+No periodic automation or automatic quota retries are authorized.
+
+Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
+sections only for a concrete issue. Consumption evidence and the first bounded comparison
+are in `docs/AGENT_WORKFLOW.md`; browser performance history is separate in
+`docs/ROVES_PERFORMANCE.md`. Prototype coverage is not a completed production migration.
+This file is the shared entry point for coding agents.
 
 ## Coordinamento con Claude e pubblicazione durante la CI
 
@@ -53,8 +54,54 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
 
-Dopo ogni push, identificare le run CI associate al commit pubblicato. **Non restare inattivi
-ad aspettarle se esiste altro lavoro utile:** studiare e implementare il prossimo incarico.
+### Budget e separazione dei ruoli
+
+La priorità è il minimo consumo complessivo, non una divisione rigida 50/50 dei token.
+Quote degli abbonamenti, token nuovi, cache e costi indicativi sono grandezze diverse.
+Non promettere un risparmio percentuale senza misure confrontabili.
+
+- Un solo incarico Claude attivo. Codex prepara obiettivo, pochi file pertinenti, vincoli,
+  verifiche e risultato atteso; poi revisiona il risultato. Non sviluppare o ricercare in
+  parallelo la stessa soluzione già delegata. Eventuale lavoro indipendente deve essere
+  necessario al risultato corrente, circoscritto e privo di sovrapposizioni.
+- Claude implementa e svolge le verifiche concordate, consegnando diff, esiti sintetici e
+  percorsi dei log. Codex controlla queste evidenze e il diff; ripete un test soltanto se
+  cambia il codice, manca una verifica necessaria o esiste un dubbio concreto da risolvere.
+- Soglia iniziale: 25 chiamate agli strumenti per incarico Claude. Indicarla nel prompt e
+  contarla dai blocchi tool_use univoci, non dai messaggi stream duplicati. Prima di superarla,
+  Claude si ferma con stato, lavoro residuo e blocco concreto. È una regola del processo,
+  non un limite CLI verificato. Nessun rilancio automatico dello stesso incarico per aggirarla.
+  Una ripresa o un ampliamento richiede una decisione esplicita dell'utente sul budget.
+- Spezzare prima della delega gli incarichi che richiedono più risultati indipendenti;
+  mantenere insieme implementazione e verifiche indispensabili alla sua correttezza.
+  Un arresto di budget non rende completa una modifica: conservare il WIP separatamente e
+  non pubblicarlo. Non ridurre le verifiche necessarie per rientrare nella soglia.
+- Leggere istruzioni e handoff correnti una sola volta per incarico; usare ricerche e
+  intervalli mirati per gli altri file. Evitare letture integrali di cronologia, changelog,
+  patch, output API e log. Usare rg con percorsi limitati, escludendo target, .git e node_modules
+  salvo una ricerca esplicita su un artefatto preciso.
+- Salvare output estesi nei log e riportare esito, conteggi ed estratti pertinenti degli
+  errori. Non riversare stream JSON completi nel contesto. Aggiornare documentazione e patch
+  una sola volta per implementazione completa, includendo le integrazioni della revisione.
+- Non mantenere un ciclo di risvegli del modello per osservare un processo Claude.
+  Attendere il risultato dell'incarico o un blocco; nessuna analisi duplicata durante l'attesa.
+- Per CI non terminali, fare un controllo aggregato al termine di un'implementazione o a
+  un punto di verifica motivato. Se manca altro lavoro utile, lasciare un handoff e fermarsi;
+  non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
+  ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
+  quando termina il motivo del controllo.
+- Al raggiungimento di una quota o della soglia dell'incarico, salvare il punto di ripresa
+  e fermarsi. Non provare altri modelli, rilanciare incarichi o creare attese automatiche
+  per continuare a consumare. Una ripresa successiva deve essere richiesta dall'utente.
+- Sul primo incarico dopo la ripresa mantenere invariati i modelli. Registrare una volta
+  modello, tool call, turni, token nuovi/cache/output, dimensione iniziale del contesto e
+  verifiche eseguite, distinguendo dati mancanti e stime. Confrontare solo lavori simili;
+  per Codex usare misure disponibili senza inventare costi o attribuire tutta la quota account
+  a questa conversazione. Vedere docs/AGENT_WORKFLOW.md.
+
+Dopo ogni push, identificare le run CI associate al commit pubblicato con un'unica lettura
+aggregata. Se esiste altro lavoro utile e autorizzato, avviare il prossimo incarico circoscritto
+secondo i limiti sopra; non usare l'attesa per aprire ricerche senza limite.
 Si possono creare liberamente commit locali durante l'attesa, ma non pubblicarli ancora.
 Al completamento di ciascuna implementazione, controllare tutte le run del push precedente:
 
@@ -70,7 +117,10 @@ Al completamento di ciascuna implementazione, controllare tutte le run del push 
   il motivo e stabilire quali verifiche mancano; completarle o ripeterle prima di trattare
   il checkpoint come verificato. Non usare un nuovo push per interrompere run ancora attive.
 
-Se non rimane altro lavoro utile, attendere e controllare la CI. Un'indicazione esplicita
+Se non rimane altro lavoro utile, registrare le run pendenti e fermarsi senza polling;
+non considerare verificato il checkpoint e non pubblicare altri commit finché il batch non
+consente il push. La prosecuzione autonoma non supera i limiti di budget, quota o stop.
+Un'indicazione esplicita
 dell'utente di fermarsi prevale sulla prosecuzione autonoma. Queste regole governano il
 momento del push anche quando le autorizzazioni permanenti sotto consentono di pubblicare
 senza chiedere conferma. Le build pesanti vanno eseguite online in CI, come richiesto

@@ -108,7 +108,12 @@ The native reference callbacks use Rust's standard Rc count APIs directly.
 Classic-script metadata now follows V8 source/function reachability; pending imports retain
 it until resolution. Linux normal/JIT-less browser smoke passes on commit 8442f4998b9; realm/module retention
 and browser GC stress remain open.
-Shared agent instructions live in [AGENTS.md](./AGENTS.md).
+Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
+[agent workflow audit](./docs/AGENT_WORKFLOW.md) records consumption findings and the bounded
+delegation policy. Escaped `import.meta.resolve` functions now own their module metadata and
+owning page, preserving module-relative resolution across garbage collections. Local engine
+and runner tests pass; full compilation and the browser smoke await CI. Realm and module
+registries still retain pages, and no memory or performance improvement has been measured.
 
 For maintainers, [`docs/INVENTARIO_CODICE_ROVES.md`](./docs/INVENTARIO_CODICE_ROVES.md)
 maps the Roves-specific code areas, their approximate size, existing library dependencies and

@@ -15174,7 +15174,7 @@ options per module can reduce V8 compilation-cache reuse for identical module so
 RAM or GPU effect was measured. Structural realm/module retention remains open.
 
 Verification follow-up (2026-10-22): previous-code V8 run39677755124 is green10/10 and
-general run39677754946 green13/13 after macOS retries. Migration/performance MDs record
+general run39677754946 green 13/13 after macOS retries. Migration/performance MDs record
 these results separately from pending browser verification of0269/0270; no new measurements.
 
 ## 2026-10-22 - Dynamic-import referrer from V8 host options; unified source-module metadata
@@ -15361,3 +15361,67 @@ saved outside the source tree and restored out of the publishable checkout after
 session limit. Its same-realm regression exposes V8 eval-cache source reuse (owner11 leaking
 into an unowned identical Function body); migration docs record the blocker and bounded
 import.meta.resolve/source-registry follow-ups. No0273 source change or performance claim.
+
+
+## 2026-10-22 - Pause migration and bound agent consumption
+
+**Files:** AGENTS.md, docs/AGENT_WORKFLOW.md, docs/V8_MIGRATION.md,
+docs/ROVES_PERFORMANCE.md, README.md and the wiki shell page.
+
+The user paused migration and approved minimizing combined consumption rather than a rigid
+50/50 token split. The former heartbeat was deleted. Five Claude result records report 446
+turns, 298,860 output tokens, 951,098 cache-creation tokens and 53,865,900 cache-read tokens;
+24.362044 USD is the client's indicative list-price total, not subscription credits or a bill.
+There is no reliable equivalent Codex attribution and no demonstrated infinite request loop.
+Large contexts, broad assignments, repeated output, overlapping coordinator research and
+frequent polling explain avoidable work; the audit separates evidence from unknowns.
+
+AGENTS now requires one delegated implementation, an initial 25-tool-call process boundary,
+no automatic relaunch beyond it, bounded reads, reuse of test evidence and no default periodic
+polling. Quota exhaustion saves a handoff and stops until the user requests a resume. The
+first future comparison keeps models unchanged and records usage without claiming savings.
+The explicit pause supersedes historical automatic continuation instructions.
+
+Handoff corrected to published a538387b86e and wiki 630c487. V8 run 39744601812, Android and
+iOS succeeded; general run 39744601765 failed with macOS DMG job 119710948660 cancelled.
+Cancellation cause is unconfirmed; no retry, implementation, commit or push was started.
+Incomplete 0273 remains outside the publishable sources. This update changes maintainer
+instructions and documentation only: no Servo source/API/build/dependency changes and no
+source-replay patch or consumer pin update. Existing source patches remain unchanged.
+
+## 2026-10-22 - Task 0274: owned import.meta.resolve
+
+`components/script/script_module.rs`: `HostPopulateImportMeta` no longer stores the raw
+`ModuleScript` private in the `resolve` function's reserved slot. It creates a hidden
+`ModuleScriptHolder` object (one reserved slot, class trace and foreground finalize) that
+retains one `Rc<ModuleScript>` through the existing add-ref/release/trace hooks; the
+function slot holds `ObjectValue(holder)`. Finalize clears the slot before releasing, so the
+reference is dropped exactly once; an undefined private creates no holder and resolve falls
+back to the global's base URL. `import_meta_resolve` reads holder and private through rooted
+handles before the reentrant `ToString`. Why: an escaped `resolve` must keep its metadata and
+traced owner global alive once the source private goes away (prerequisite for a weak module
+registry). `components/roves-js/src/tests.rs` adds an isolated fixture mirroring the holder,
+with negative variants (no trace, no retain) that fail safely. Patch number 0273 is
+intentionally unused.
+
+Completion: the first delegation stopped at its 25-call budget; a user-authorized continuation
+of the same task (+25 calls, 50 cumulative, budget not reset) reapplied the saved WIP unchanged.
+Every new frontend symbol was checked against the local roves-js bindings (no fixes needed;
+the full frontend compile is pending in CI). `support/v8-smoke/gc-module.js` exports its escaped
+`import.meta.resolve`; `gc-lifecycle.html` calls it in both frames, with a specifier whose
+`toString()` runs script, before and after a collection, requiring the module-relative
+absolute URL (not the frames' `missing-base/` document base) and a function of each frame's
+realm. `run.sh` requires the two new exact markers; `test_runner.py` adds wrong-value and
+missing-marker cases that fail even when the page reports pass. Local: isolated roves-js tests
+67 normal / 66 JIT-less (runtime copy identical to sources), runner tests 9/9 under WSL, replay
+of the 57 preceding patches on pristine v0.5.0 identical to HEAD and 0274 dry-run/apply
+identical to the working tree. Pending CI: frontend compile and the real browser GC smoke.
+Realms and the module map/registry still hold modules strongly; the separate Function cache
+defect remains open. No module collection is claimed and nothing was measured. Patch: `0274-owned-import-meta-resolve.patch`.
+
+Codex review: completion used 22 verified unique tool calls (delegate reported 21), 47 cumulative
+within 50 authorized. Final six replay files and runtime source copies match; test evidence is
+reused, not rerun. Agent audit records both parts separately without a percentage-savings claim.
+The preceding general CI is now green 13/13 after a justified hosted-runner retry. The user
+resumed the loop of bounded assignments; budget extensions for incomplete work remain explicit.
+No claim that source/realm retention or the separate Function cache defect is fixed.

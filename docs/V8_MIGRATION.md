@@ -2,17 +2,59 @@
 
 ## Da leggere alla prossima ripresa
 
-**Stato pubblicato:** codice fino a f4e6edcd3ac (0269/0270), HEAD documentale e709fb3f10b; wiki 1c12873.
-0271 committata in locale (683686b2feb); 0272 committata in locale (6920417ad65), wiki 630c487. Pubblicazione di entrambe vincolata alla conclusione della CI precedente.
-Batch corrente: V8 39737640415, generale 39737640441, Android 39737640406 e iOS 39737640414.
-Ultima lettura 22 ottobre, ore 09:41: V8 verde 10/10; generale verde 12/13, ultimo bundle Linux
-portable in corso nelle unit test. Android e iOS verdi; wiki 39737611854 verde.
-I log Linux normal 119686997929 e JIT-less 119686998238 confermano tutti i marker GC e
-module owners left/right prima/dopo raccolta, incluso gc result pass. Gli smoke Windows/macOS
-restano saltati. Queste run verificano 0269/0270, non 0271/0272.
-Le successive modifiche di sola documentazione non cambiano quel codice e non avviano
-la workflow V8, che filtra i percorsi. Non cercare necessariamente una run V8 sullo SHA
-dell'ultimo commit documentale: partire dalle run sotto e controllare il loro head_sha.
+**Ripresa estesa e completamento 0274 — 22 ottobre 2026:** l'incarico 0274 si era fermato a
+25 chiamate; l'utente ha poi autorizzato esplicitamente una sola estensione dello stesso incarico
+(+25, massimo cumulativo 50, budget non azzerato;47 chiamate verificate). Nessun rilancio automatico, retry di quota o
+automazione periodica; il ciclo autorizza nuovi incarichi circoscritti; solo un
+incarico incompleto oltre soglia richiede una nuova decisione esplicita sul budget. Regole in AGENTS.md; [calibrazione](AGENT_WORKFLOW.md).
+
+**0274 completo in locale, non ancora pubblicato:** WIP riapplicato senza modifiche in tests.rs e
+script_module.rs; patch `patches/servo-v0.5.0/0274-owned-import-meta-resolve.patch` (sei file:
+i due sorgenti e la fixture browser in support/v8-smoke). L'holder JSClass nascosto possiede un
+`Rc<ModuleScript>`, ne traccia l'owner DOM, azzera lo slot prima del rilascio e non nasce con
+private undefined. Simboli frontend verificati sui binding roves-js locali (GCContext,
+JS_Get/SetReservedSlot, JSClass/JSClassOps, ObjectValue, wrappers2::JS_NewObject): nessuna
+correzione; compilazione completa del frontend pendente in CI. Test isolati riusati, 67 normal
+e 66 JIT-less: `target/v8-incumbent-audit/final-0274-{full,jitless}.log`; la copia roves-js/src
+è identica ai sorgenti. Regressione browser: gc-module.js esporta `import.meta.resolve`;
+gc-lifecycle.html verifica in entrambi i frame, prima e dopo la GC, l'URL assoluto relativo al
+modulo (non alla base `missing-base/` del frame) e il realm del frame; run.sh richiede i marker
+esatti `module resolve true` e `module resolve after collection true`. Runner in WSL 9/9:
+`target/0274-continue/runner-wsl.log`; esito browser reale pendente in CI. Replay delle 57 patch
+precedenti (inclusa 0272) su pristine v0.5.0 identico a HEAD, dry-run/apply 0274 identico
+all'albero di lavoro: `target/0274-continue/replay.log`. Restano forti realm, module map/registro
+; la cache Function (0273) resta un problema distinto e il registro debole è0275; nessuna raccolta di moduli dimostrata, nessuna misura.
+
+**CI precedente:** batch a538387b86e tutto verde (dettagli nella tabella). Codex revisiona,
+esegue commit/push e controlla una volta le run del nuovo push.
+Il prossimo controllo deve essere motivato, non periodico. Nessun lavoro parallelo sullo stesso
+problema delegato, nessun nuovo incarico oltre budget senza autorizzazione.
+
+**Stato pubblicato prima di0274:** HEAD a538387b86ebe1d6f206a305da29cdb722034cbf, con codice 0271
+(683686b2feb) e 0272 (6920417ad65); wiki 630c487. Le modifiche documentali di questo stop
+sono locali e non avviano un nuovo push. Il codice 0273 non è pubblicato né completo:
+backup locale riapplicabile `target/0273-incomplete-native-traps.patch`; sorgenti ripristinati
+al codice completo di0272. La diagnosi della cache è descritta in fondo al piano.
+
+Ultima lettura aggregata della CI sullo SHA a538387b86e:
+
+| Workflow | Run | Esito |
+| --- | --- | --- |
+| V8 | [39744601812](https://github.com/DRincs-Productions/roves/actions/runs/39744601812) | Successo |
+| Generale | [39744601765](https://github.com/DRincs-Productions/roves/actions/runs/39744601765) | Successo al retry (13/13) |
+| Android | [39744601730](https://github.com/DRincs-Productions/roves/actions/runs/39744601730) | Successo |
+| iOS | [39744601702](https://github.com/DRincs-Productions/roves/actions/runs/39744601702) | Successo |
+
+Il primo tentativo DMG (job 119710948660) era una mancata assegnazione runner/capacità
+macOS ARM64; il retry dei job falliti è terminato con successo (13/13).
+Il precedente batch e709fb3f10b era tutto verde: V8 39737640415 (10/10), generale
+39737640441 (13/13), Android 39737640406 e iOS 39737640414. I log Linux normal
+119686997929 e JIT-less 119686998238 confermano GC e module owners di0269/0270.
+
+Le sezioni sotto sono uno storico dell'implementazione; le indicazioni locali/CI pendente
+riferite a0271/0272 vanno lette rispetto alla nuova run V8 sopra. Restano aperti cache Function,
+retention realm/moduli, navigazione, incumbent, copertura WPT e validazione finale.
+I commit solo documentali possono non avviare V8: verificare sempre head_sha delle run.
 
 ### Aggiornamento 22 ottobre 2026 — fatti confermati
 

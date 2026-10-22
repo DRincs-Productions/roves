@@ -1,5 +1,14 @@
 # Roves — Prestazioni
 
+## Ripresa con delega circoscritta —22 ottobre2026
+
+0274 è completa localmente dopo estensione esplicita del budget:47 chiamate su50; runtime
+67 normal/66 JIT-less riusati con sorgenti identici, runner9/9 e replay verificati. Il retry
+DMG del precedente codice è verde, batch generale39744601765 completato13/13. La compilazione
+e il browser del nuovo helper attendono la CI. Nessuna misura CPU/RAM/GPU/startup né risparmio
+RAM dichiarato; i dati dei modelli sono separati in [AGENT_WORKFLOW.md](AGENT_WORKFLOW.md).
+Il ciclo è ripreso con incarichi limitati, senza automazione o polling continuo.
+
 ## Aggiornamento 22 ottobre 2026
 
 La CI sul precedente codice b50c6d99ce1 è verde dopo retry: V8 39677755124 10/10,

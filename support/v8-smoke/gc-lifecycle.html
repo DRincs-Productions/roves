@@ -10,7 +10,8 @@
 // finalizers and does not cover realm, module-map or navigation retention. Two same-origin
 // frames import the same module URL (identical code and name); a dynamic import from each
 // copy, directly or from its direct eval code, must stay owned by its own frame, before and
-// after a collection.
+// after a collection; so must each copy's escaped import.meta.resolve. Module collection itself
+// is not observed.
 "use strict";
 const MAX_COLLECTIONS = 8;
 const FRAME_TIMEOUT_MS = 5000;
@@ -175,6 +176,16 @@ async function checkOwners(name, namespaces, importer, expected) {
   if (owners.join() !== expected.join()) fail(name);
 }
 
+// Each frame's escaped import.meta.resolve belongs to that frame's realm and resolves against
+// gc-module.js's URL. The specifier object's toString() runs script during the conversion.
+function checkResolve(name, frames, namespaces) {
+  const expected = new URL("gc-owner.js", location.href).href;
+  const specifier = { toString() { return "./gc-owner.js"; } };
+  const resolved = namespaces.map(namespace => namespace.resolveOwner(specifier));
+  const realms = namespaces.every((namespace, i) => namespace.resolveOwner instanceof frames[i].contentWindow.Function);
+  check(name, realms && resolved.every(url => url === expected), `realms ${realms} ${resolved.join(" ")}`);
+}
+
 async function checkModuleOwners() {
   const tokens = ["left", "right"];
   const frames = [];
@@ -189,9 +200,11 @@ async function checkModuleOwners() {
     const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
     await checkOwners("module owners", namespaces, "importOwner", tokens);
     await checkOwners("eval module owners", namespaces, "evalImportOwner", tokens);
+    checkResolve("module resolve", frames, namespaces);
     await collectOnce();
     await checkOwners("module owners after collection", namespaces, "importOwner", tokens);
     await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
+    checkResolve("module resolve after collection", frames, namespaces);
   } finally {
     for (const frame of frames) frame.remove();
   }
