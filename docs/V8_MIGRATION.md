@@ -2,7 +2,12 @@
 
 ## Da leggere alla prossima ripresa
 
-**Stato consegnato:** codice pubblicato fino a b50c6d99ce1; wiki a 56a0444.
+**Stato pubblicato:** codice fino a f4e6edcd3ac (0269/0270), HEAD documentale e709fb3f10b; wiki 1c12873.
+0271 revisionata e verificata in locale; pubblicazione vincolata alla conclusione della CI precedente.
+Batch corrente: V8 39737640415, generale 39737640441, Android 39737640406 e iOS 39737640414.
+Ultima lettura 22 ottobre, mattina: sei runtime V8 e build macOS verdi; Windows e Linux in corso.
+Generale: replay patch, SDL e bundle deb verdi; altri bundle in corso. Android e iOS verdi.
+Nessuna di queste verifiche copre ancora 0271.
 Le successive modifiche di sola documentazione non cambiano quel codice e non avviano
 la workflow V8, che filtra i percorsi. Non cercare necessariamente una run V8 sullo SHA
 dell'ultimo commit documentale: partire dalle run sotto e controllare il loro head_sha.
@@ -24,7 +29,7 @@ Le verifiche del push precedente consentono quindi il prossimo push secondo AGEN
 verde dopo retry (run 39677942329). Le cancellazioni iniziali erano mancate assegnazioni
 di runner; il loro superamento è verificato dai retry, non presunto.
 
-**0269 (completa localmente, inclusa nel prossimo push, browser CI pendente):** smoke GC browser opt-in che riusa
+**0269 (pubblicata, browser CI pendente):** smoke GC browser opt-in che riusa
 `TestUtils.gc()` di Servo. `TestUtils.webidl` perde `skip-unless CARGO_FEATURE_TESTBINDING`;
 `dom/mod.rs` dichiara `testutils` fuori dal gate `testbinding` (rimosso da `testing/mod.rs`);
 esposizione ancora dietro `dom_testutils_enabled`, default false. `run.sh` avvia un processo
@@ -38,7 +43,7 @@ replay di 17 patch precedenti e dry-run/apply 0269 verificati. Compilazione e br
 attendono la CI. Non osserva i finalizzatori nativi né risolve retention realm/moduli o
 navigazione; nessuna misura prestazionale.
 
-**0270 (completa localmente, inclusa nel prossimo push, browser CI pendente):** identità per sorgente dei moduli V8.
+**0270 (pubblicata, browser CI pendente):** identità per sorgente dei moduli V8.
 Corretti tre difetti: (1) il lookup del private del chiamante prendeva `entries.first()` del
 bucket per hash d'identità, che può collidere; (2) la cache di compilazione V8 condivideva lo
 stesso script (id `Some(7), Some(7)`) fra moduli con sorgente e nome identici, sovrascrivendo
@@ -62,16 +67,38 @@ La prova completa GC/browser Roves e la compilazione servoshell attendono la CI.
 Possibile minore riuso della cache di compilazione per moduli identici, non misurato. Restano
 aperte retention strutturale realm/moduli e identità di navigazione.
 
-### Ordine operativo per domani
+**0271 (completa localmente, non pubblicata, browser CI pendente):** referrer di `import()` dalle
+host options V8. Riprodotto prima della correzione: con 0270 l'eval diretto in script classici e
+moduli dava owner e importer `-1` (lo script eval ha un id non registrato). Fonti primarie: V8 152
+passa `GetEvalOrigin()` come referrer e `GetCurrentHostDefinedOptions` usa lo stesso origin;
+SpiderMonkey copia il private del chiamante nell'eval (`UpdateDebugMetadata`). Ora `dynamic_import`
+usa il token ricevuto (token senza metadati = undefined, mai un altro owner) e `caller_private`
+usa `get_current_host_defined_options()`; lookup token→private tramite `WeakMap.prototype.get`
+catturato all'avvio e unwrap del holder cppgc. I private dei moduli sorgente riusano
+`ScriptMetadata`: rimossi `by_script_id`, `module_private` e il private/retain/release per entry;
+JSON separato (`ModuleKind::Json`), chiave `SourceToken`, token fissato anche sul placeholder del
+record. In V8 152 il pin è difensivo: un modulo in errore conserva SFI/Script, quindi il negativo
+senza pin non fallisce. Divergenza nota: `new Function` non eredita owner (probe `-1` contro 44;
+SpiderMonkey eredita); l'eval usa il private corrente dell'origine, non uno snapshot. Test
+roves-js normal 61/2 ignorati, JIT-less 60/3, warning 771 invariati; negativi stack-only e `get`
+globale falliscono. Fixture: `evalImportOwner()` e `<base>` inesistente nei frame, marker
+`ROVES-V8 gc eval module owners` prima/dopo GC; contratti runner WSL 9/9. Replay di 56 patch e
+dry-run/apply 0271 identici byte per byte. Chrome MCP non accessibile a Claude; nessuna misura
+CPU/RAM/GPU. Costi: holder cppgc per sorgente con private, una proprietà nascosta per record.
+Codex ha verificato la sola fase evalImportOwner via Chrome DevTools MCP: Chrome155 Windows x64,
+pagina loopback, scheda in background ma visibilityState visible, headless non determinato;
+owners left/right, TestUtils undefined. Nessuna raccolta Chrome o verifica browser Roves.
+
+### Ordine operativo alla prossima ripresa
 
 1. Leggere AGENTS.md e questo riepilogo; verificare stato Git e SHA delle run.
-2. Analizzare tutte le CI del push b50c6d99ce1. Se ci sono errori, dare a Claude un incarico
-   preciso per correggerli; revisionare il risultato, aggiornare patch/MD e committare.
-   Attendere la conclusione delle altre run prima del prossimo push.
-3. Fatto il 22 ottobre: marker constructor graph e probe js_disable_jit confermati nei log
-   Linux normal/JIT-less (job 119491949605, 119491949671). Restano le verifiche macOS.
-4. Patch 0269 (smoke GC browser opt-in) implementata localmente: revisione Codex, commit e
-   conferma CI di compilazione e marker `ROVES-V8 gc` in normal/JIT-less.
+2. Controllare tutte le CI del batch e709fb3f10b elencate sopra. Analizzare e correggere
+   eventuali errori prima del prossimo push; attendere la conclusione di tutte le run.
+3. Confermare nei log Linux normal/JIT-less i marker GC e proprietari dei moduli di 0269/0270.
+   Gli smoke Windows/macOS sono saltati dalla workflow: le build non equivalgono a prove browser.
+4. Pubblicare 0271 completa e revisionata solo quando il batch precedente lo consente.
+   Prossimi incarichi: private nativi che trattengono GlobalScope e owner di new Function;
+   definire prima il riuso V8/cppgc e i test di raggiungibilità, senza workaround di stack.
 5. Continuare con le priorità strutturali: raggiungibilità realm/moduli, identità WindowProxy
    dopo navigazione, callback/incumbent, worker e shutdown. Ogni incarico deve produrre
    una modifica coerente, completa e verificabile prima di passare al controllo CI.
@@ -79,7 +106,7 @@ aperte retention strutturale realm/moduli e identità di navigazione.
    artefatti; solo dopo valutare release e aggiornamento pin dei consumer.
 
 **Non completato:** migrazione complessiva, binding nativi incumbent, conferma CI dello
-smoke GC browser (0269) e dei proprietari dei moduli (0270), retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
+smoke GC browser (0269) e dei proprietari dei moduli (0270/0271), owner di `new Function`, retention realm/moduli, identità di navigazione, matrice WPT e validazione finale.
 Le stringhe toString dei costruttori Proxy restano diverse da Chrome; non introdurre
 una sostituzione globale di Function.prototype.toString per nascondere la differenza.
 

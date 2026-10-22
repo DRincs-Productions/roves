@@ -9,7 +9,8 @@
 // be collected. This checks reachability from script only: it does not count native
 // finalizers and does not cover realm, module-map or navigation retention. Two same-origin
 // frames import the same module URL (identical code and name); a dynamic import from each
-// copy must stay owned by its own frame, before and after a collection.
+// copy, directly or from its direct eval code, must stay owned by its own frame, before and
+// after a collection.
 "use strict";
 const MAX_COLLECTIONS = 8;
 const FRAME_TIMEOUT_MS = 5000;
@@ -142,11 +143,13 @@ function withTimeout(promise, what) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
-// A same-origin frame whose classic script sets its token and imports gc-module.js.
+// A same-origin frame whose classic script sets its token and imports gc-module.js. Its base
+// URL has no gc-owner.js: an import that lost its module referrer would resolve against it.
 function loadOwnerFrame(token) {
   const frame = document.createElement("iframe");
   const url = new URL("gc-module.js", location.href).href;
-  frame.srcdoc = `<script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
+  const base = new URL("missing-base/", location.href).href;
+  frame.srcdoc = `<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
     `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`;
   const loaded = new Promise((resolve, reject) => {
     frame.addEventListener("load", () => resolve(frame), { once: true });
@@ -157,13 +160,19 @@ function loadOwnerFrame(token) {
 }
 
 // Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
-async function moduleOwners(namespaces) {
+async function moduleOwners(namespaces, importer) {
   const owners = [];
   for (const namespace of namespaces) {
-    const owner = await withTimeout(namespace.importOwner(), "owner import");
+    const owner = await withTimeout(namespace[importer](), importer);
     owners.push(owner.ownerToken);
   }
   return owners;
+}
+
+async function checkOwners(name, namespaces, importer, expected) {
+  const owners = await moduleOwners(namespaces, importer);
+  report(name, ...owners.map(String));
+  if (owners.join() !== expected.join()) fail(name);
 }
 
 async function checkModuleOwners() {
@@ -178,13 +187,11 @@ async function checkModuleOwners() {
       return;
     }
     const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
-    const before = await moduleOwners(namespaces);
-    report("module owners", ...before.map(String));
-    if (before.join() !== tokens.join()) fail("module owners");
+    await checkOwners("module owners", namespaces, "importOwner", tokens);
+    await checkOwners("eval module owners", namespaces, "evalImportOwner", tokens);
     await collectOnce();
-    const after = await moduleOwners(namespaces);
-    report("module owners after collection", ...after.map(String));
-    if (after.join() !== tokens.join()) fail("module owners after collection");
+    await checkOwners("module owners after collection", namespaces, "importOwner", tokens);
+    await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
   } finally {
     for (const frame of frames) frame.remove();
   }

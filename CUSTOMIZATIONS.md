@@ -15176,3 +15176,102 @@ RAM or GPU effect was measured. Structural realm/module retention remains open.
 Verification follow-up (2026-10-22): previous-code V8 run39677755124 is green10/10 and
 general run39677754946 green13/13 after macOS retries. Migration/performance MDs record
 these results separately from pending browser verification of0269/0270; no new measurements.
+
+## 2026-10-22 - Dynamic-import referrer from V8 host options; unified source-module metadata
+
+**Files:** `components/roves-js/src/{script_metadata.rs,script_impl.rs,modules_impl.rs,jsapi_impl.rs,runtime_impl.rs,tests.rs}`,
+`support/v8-smoke/{gc-lifecycle.html,gc-module.js,run.sh,test_runner.py}`
+(`0271-host-defined-dynamic-import-referrer.patch`), README, migration plan and wiki.
+
+**Defect (reproduced before the fix).** Eval code gets its own V8 `Script`, which no roves-js
+compile registers. Both `JS_GetScriptedCallerPrivate` and the dynamic-import callback looked the
+private up by the innermost stack frame's script id, so `eval("import(...)")` in a classic
+script or source module, and `eval("readPrivate()")`, reported `undefined` even though V8 had
+passed the original source's host token. New test
+`caller_privates::direct_eval_imports_keep_their_source_owner` on the 0270 code: every eval
+owner and importer `-1` instead of `11/22/33`.
+
+**Primary-source semantics.** V8 152 `Runtime_DynamicImportCall` passes
+`function->shared()->script()->GetEvalOrigin()` as referrer, so the callback's host options are
+those of the source containing the (possibly nested) eval; `Isolate::GetCurrentHostDefinedOptions`
+uses `CurrentReferrerScript()`, which applies the same `GetEvalOrigin()` to the innermost frame
+that `StackTrace` reports. SpiderMonkey (mozjs 140.14 `builtin/Eval.cpp`,
+`vm/CompilationAndEvaluation.cpp::UpdateDebugMetadata`) copies the calling script's private
+into each eval's new source object, and `StartDynamicModuleImport` /
+`JS::GetScriptedCallerPrivate` read the running script's source private. Behaviour now matches
+for direct eval (and V8's indirect eval, which also records an eval origin) with one
+difference: SpiderMonkey snapshots the private when the eval is compiled; roves-js reads the
+origin source's current private. `new Function(...)` remains different: V8's eval origin for
+it is the native context's empty function, whose script has no host token, so its caller
+private and import referrer are `undefined` (scratch probe: owners `[-1, 44]`, importers
+`[-1, 44]` for Function vs indirect eval in a module owning 44), while SpiderMonkey copies the
+caller's private. Fixing it needs a separate design; not attempted.
+
+**Fix.** `dynamic_import` reads the token from the `host_defined_options` V8 passes and looks
+the private up by token; a token without metadata yields `undefined`, never another source's.
+Only sources without a token (event-handler `CompileFunction`, internal helper scripts, the
+Function constructor) fall back to `caller_private`, which now uses
+`get_current_host_defined_options()` instead of a frame script id (no stack heuristic, empty
+stack still `undefined`, `HideScriptedCaller` still not consulted). The token lookup is one call
+of `WeakMap.prototype.get`, captured with the existing WeakMap and `set` at runtime start (so
+user poisoning of `WeakMap`/`get`/`set` has no effect), followed by
+`Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>` on the returned cppgc holder: no index scan,
+filename parsing or second native table.
+
+Source-module privates now reuse `ScriptMetadata` (cppgc `PrivateData`, WeakMap ownership,
+retain-before-release, release hooks outside table borrows) instead of a separate value in
+`ModuleEntry`: `CompileModule1` registers its token under the script id, and
+`SetModulePrivate`/`JS_GetModulePrivate`/the resolve callback/the `import.meta` hook all go
+through one `private_of` helper keyed by the script id cached at compilation (rusty_v8's
+`Module::script_id()` is `None` once a module errors). Removed: `Modules::by_script_id`,
+`module_private(script_id)`, `record_of`'s re-lookup and the per-entry source private with its
+retain/release and tracing. `ModuleEntry` is now `{ cell, kind }` with
+`ModuleKind::Source { script_id }` or `ModuleKind::Json { value, private }`; JSON synthetic
+modules keep their own private, traced and released at shutdown by `release_json_privates`,
+after `ScriptMetadata::release_all` released source metadata once. Identity-hash buckets with
+module matching remain for record APIs. The `DynamicImportSourceToken` private key is
+generalised to `SourceToken`; the 0266 pending-import hold and its promise-hook cleanup, and
+CSP authorization, are unchanged.
+
+**Errored-module lifetime.** Each source-module record's placeholder object also carries the
+token as a hidden V8 private, traced through the existing cell, so the private survives as long
+as the record without relying on what V8 keeps for an errored module. In V8 152 this is
+defensive: `Module::RecordError` reverts `code` to the `SharedFunctionInfo`, which keeps the
+`Script` and its host options, so removing the pin does not make the new errored-module test
+fail. Records are still rooted by the runtime's `Modules` table; module/realm retention is not
+changed or fixed here.
+
+Tests (`cargo test --offline -p roves-js` in `target/v8-incumbent-audit`, absolute
+`CARGO_TARGET_DIR=target/roves-js`): normal 61 passed / 2 ignored, `--features jitless`
+60 / 3; 771 existing warnings unchanged. New: direct eval (plain, nested, escaped arrow kept
+across GC, after `await`, in a promise reaction, and through native re-entry into classic eval
+code) in identical modules in two realms and in classic scripts, before and after GC, with
+`Rc` reference counts; poisoned `WeakMap`/`get`/`set`/`has` after runtime start plus a classic
+source whose private was explicitly cleared (`-1`, not the calling module's 44, for owner and
+import); an errored module (script id `None`) keeping, clearing, re-setting and releasing its
+private through GC and shutdown; JSON and source privates read back by `JS_GetModulePrivate`.
+Existing 0270, cycle, pending-import and replacement/shutdown tests pass unchanged. Negative
+scratch variants: stack-only lookup fails the eval and poisoned/unowned tests; looking `get` up
+on the global `WeakMap` fails three tests; removing the record pin passes (see above).
+
+Browser: `gc-module.js` adds `evalImportOwner()` (direct eval of `import("./gc-owner.js")`);
+`gc-lifecycle.html` gives each same-origin frame a `<base>` under `missing-base/`, where
+`gc-owner.js` does not exist, so an import that lost its module referrer resolves against the
+frame base and fails. Required markers `ROVES-V8 gc eval module owners left right` and `... after
+collection left right`; the fake runner fails a wrong owner (`left left`) and a missing marker
+even with a reported pass. WSL runner contracts 9/9. Chrome DevTools MCP was not accessible to
+Claude (permission not granted). Codex independently ran the evalImportOwner phase with Chrome
+DevTools MCP: Chrome155 Windows x64, loopback page, background tab reporting visible, headless
+unknown; owners left/right, TestUtils undefined. No Chrome GC or performance measurement. **Browser
+verification is pending CI**; no servoshell build.
+
+Replay: 56 preceding patches filtered to the ten files, applied with GNU patch 2.7.6 from absent
+custom paths (none exist in `dd340af`), reproduce `HEAD` byte for byte; 0271 dry-run/apply then
+matches the working tree byte for byte.
+
+Library evaluation: reuses V8 host options, `GetCurrentHostDefinedOptions`, cppgc wrapping and
+the existing captured WeakMap; no dependency, license or platform change. Costs: one cppgc
+holder per source with a private (unchanged for classic scripts, new holder object instead of an
+inline value for source modules), one hidden property per source-module record, one builtin call
+per token lookup; unique host options per source already came with 0270. No CPU, RAM or GPU
+measurement.

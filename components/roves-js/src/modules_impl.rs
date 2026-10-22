@@ -5,10 +5,14 @@
 //! ES modules: SpiderMonkey's module records and hooks on V8 modules.
 //!
 //! - A module record (`*mut JSObject` in the JSAPI) is a placeholder object whose cell holds
-//!   the V8 `Module`. The runtime keeps an entry per module (its cell, its private value and,
-//!   for JSON modules, the parsed value), found from a V8 module by identity hash and from a
-//!   running script by script id. Identity hashes can collide: they only select a bucket,
-//!   whose member is matched by module or script id. Entries live as long as the runtime.
+//!   the V8 `Module`. The runtime keeps an entry per module (its cell and, for JSON modules,
+//!   the parsed value and private), found from a V8 module by identity hash. Identity hashes
+//!   can collide: they only select a bucket, whose member is matched by module. Entries live
+//!   as long as the runtime.
+//! - A source module's private is source metadata, as a classic script's (see
+//!   `script_metadata`): kept by the script id recorded at compilation and by the source's
+//!   host token. The placeholder pins the token too: the V8 API no longer reports an errored
+//!   module's source, so the private's lifetime does not depend on what V8 keeps for it.
 //! - A module request (`ModuleRequestObject`) is an object holding the specifier and the
 //!   module type as V8 privates.
 //! - Linking calls the embedder's resolve hook from V8's resolve callback; dynamic `import()`
@@ -31,29 +35,35 @@ fn raw<'a>(cx: *mut JSContext) -> &'a JSContext {
 
 struct ModuleEntry {
     cell: *mut c_void,
-    // Recorded at compilation: V8 no longer reports the id once a module errors.
-    script_id: Option<i32>,
-    private: JSVal,
-    json: Option<v8::Global<v8::Value>>,
+    kind: ModuleKind,
+}
+
+enum ModuleKind {
+    /// Recorded at compilation: the V8 API no longer reports the id once a module errors.
+    Source { script_id: i32 },
+    /// A synthetic module has no V8 source: its private lives here.
+    Json { value: v8::Global<v8::Value>, private: JSVal },
 }
 
 /// The runtime's modules and module hooks.
 #[derive(Default)]
 pub(crate) struct Modules {
     entries: std::cell::RefCell<HashMap<i32, Vec<ModuleEntry>>>,
-    by_script_id: std::cell::RefCell<HashMap<i32, i32>>,
     resolve_hook: std::cell::Cell<ModuleResolveHook>,
     dynamic_import_hook: std::cell::Cell<ModuleDynamicImportHook>,
     metadata_hook: std::cell::Cell<ModuleMetadataHook>,
 }
 
-/// Keeps the modules (and their privates) alive.
+/// Keeps the modules alive, with JSON privates; a source module's placeholder pins its
+/// host token, which keeps its metadata.
 pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     use crate::gc::RootKind;
     let Ok(entries) = cx.modules.entries.try_borrow() else { return };
     for entry in entries.values().flatten() {
         crate::cell::trace_cell(entry.cell, visitor);
-        entry.private.trace_root(visitor);
+        if let ModuleKind::Json { private, .. } = &entry.kind {
+            private.trace_root(visitor);
+        }
     }
 }
 
@@ -63,34 +73,12 @@ fn module_of<'s>(scope: &mut v8::PinScope<'s, '_>, record: *mut JSObject) -> Opt
     unsafe { crate::cell::cell_module(scope, record as *mut c_void) }
 }
 
-/// The record (cell) of a V8 module, creating and registering it on first sight.
-fn record_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, json: Option<v8::Local<v8::Value>>) -> *mut JSObject {
-    let cx = JSContext::current();
-    let hash = module.get_identity_hash().get();
-    if let Some(entries) = cx.modules.entries.borrow().get(&hash) {
-        for entry in entries {
-            // SAFETY: registered cells are alive (traced by the runtime).
-            if unsafe { crate::cell::cell_module(scope, entry.cell) }.is_some_and(|known| known == module) {
-                return entry.cell as *mut JSObject;
-            }
-        }
-    }
+/// The record (cell) of a newly compiled V8 module, registered with its kind.
+fn new_record(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, kind: ModuleKind) -> *mut JSObject {
     let cell = crate::cell::new_module_cell(scope, module);
-    let json = json.map(|json| v8::Global::new(scope, json));
-    let script_id = module.script_id();
-    cx.modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, script_id, private: UndefinedValue(), json });
-    if let Some(script_id) = script_id {
-        cx.modules.by_script_id.borrow_mut().insert(script_id, hash);
-    }
+    let hash = module.get_identity_hash().get();
+    JSContext::current().modules.entries.borrow_mut().entry(hash).or_default().push(ModuleEntry { cell, kind });
     cell as *mut JSObject
-}
-
-/// The private of the source module with V8 script id `script_id`.
-pub(crate) fn module_private(script_id: i32) -> Option<JSVal> {
-    let cx = JSContext::current();
-    let hash = cx.modules.by_script_id.borrow().get(&script_id).copied()?;
-    let entries = cx.modules.entries.borrow();
-    entries.get(&hash)?.iter().find(|entry| entry.script_id == Some(script_id)).map(|entry| entry.private)
 }
 
 /// Test-only: files `moved`'s entry first in `target`'s identity-hash bucket, as a native
@@ -105,10 +93,8 @@ pub(crate) fn collide_for_testing(scope: &mut v8::PinScope, target: *mut JSObjec
     let bucket = entries.get_mut(&moved_hash).expect("a registered module");
     let index = bucket.iter().position(|entry| entry.cell == moved as *mut c_void).expect("a registered module");
     let entry = bucket.remove(index);
-    let script_id = entry.script_id.expect("a source module");
     let bucket = entries.entry(target_hash).or_default();
     bucket.insert(0, entry);
-    cx.modules.by_script_id.borrow_mut().insert(script_id, target_hash);
     bucket.len()
 }
 
@@ -140,10 +126,20 @@ pub unsafe fn CompileModule1(cx: *mut JSContext, options: *const ReadOnlyCompile
         .catching(|scope| {
             let code = source_string(scope, source)?;
             // The host token keeps identical module sources from sharing one cached script.
-            let (origin, _token) = crate::script_impl::source_origin(scope, options, true);
+            let (origin, token) = crate::script_impl::source_origin(scope, options, true);
             let mut source = v8::script_compiler::Source::new(code, Some(&origin));
             let module = v8::script_compiler::compile_module(scope, &mut source)?;
-            Some(record_of(scope, module, None))
+            let script_id = module.script_id()?;
+            crate::script_impl::register_source(scope, script_id, token);
+            let record = new_record(scope, module, ModuleKind::Source { script_id });
+            // The record keeps the token (and so the metadata) whatever V8 keeps once the
+            // module errors.
+            // SAFETY: the record is a new module cell.
+            let placeholder = unsafe { crate::cell::cell_value(scope, record as *mut c_void) };
+            let placeholder = v8::Local::<v8::Object>::try_from(placeholder).ok()?;
+            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+            placeholder.set_private(scope, key, token.into())?;
+            Some(record)
         })
         .unwrap_or(std::ptr::null_mut())
 }
@@ -158,7 +154,10 @@ fn source_string<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<U
 fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<'s, v8::Module>) -> Option<v8::Local<'s, v8::Value>> {
     // SAFETY: V8 runs the steps with this context entered.
     v8::callback_scope!(unsafe scope, context);
-    let json = with_entry(scope, module, |entry| entry.json.clone())??;
+    let json = with_entry(scope, module, |entry| match &entry.kind {
+        ModuleKind::Json { value, .. } => Some(value.clone()),
+        ModuleKind::Source { .. } => None,
+    })??;
     let json = v8::Local::new(scope, &json);
     let name = v8::String::new(scope, "default")?;
     module.set_synthetic_module_export(scope, name, json)?;
@@ -179,7 +178,8 @@ pub unsafe fn CompileJsonModule1(cx: *mut JSContext, options: *const ReadOnlyCom
             let name = v8::String::new(scope, &crate::script_impl::options_filename(options))?;
             let export = v8::String::new(scope, "default")?;
             let module = v8::Module::create_synthetic_module(scope, name, &[export], json_module_steps);
-            Some(record_of(scope, module, Some(parsed)))
+            let value = v8::Global::new(scope, parsed);
+            Some(new_record(scope, module, ModuleKind::Json { value, private: UndefinedValue() }))
         })
         .unwrap_or(std::ptr::null_mut())
 }
@@ -190,35 +190,58 @@ pub unsafe fn IsCyclicModule(module: *mut JSObject) -> bool {
 
 // --- Privates and hooks ----------------------------------------------------------------------
 
+/// A module's private: its source metadata's or, for a JSON module, its own.
+fn private_of(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> JSVal {
+    let private = with_entry(scope, module, |entry| match &entry.kind {
+        ModuleKind::Source { script_id } => Err(*script_id),
+        ModuleKind::Json { private, .. } => Ok(*private),
+    });
+    match private {
+        Some(Ok(private)) => private,
+        Some(Err(script_id)) => crate::script_impl::script_private(JSContext::current(), script_id).unwrap_or(UndefinedValue()),
+        None => UndefinedValue(),
+    }
+}
+
 pub unsafe fn SetModulePrivate(module: *mut JSObject, value: *const JSVal) {
     // SAFETY: callers pass a valid value.
     let value = unsafe { *value };
     let cx = JSContext::current();
-    let old = cx.with_scope(|scope| {
+    let target = cx.with_scope(|scope| {
         let module = module_of(scope, module)?;
-        with_entry(scope, module, |entry| std::mem::replace(&mut entry.private, value))
+        with_entry(scope, module, |entry| match &mut entry.kind {
+            ModuleKind::Source { script_id } => Err(*script_id),
+            ModuleKind::Json { private, .. } => Ok(std::mem::replace(private, value)),
+        })
     });
-    if let Some(old) = old {
-        // Share the script-source private ownership contract, as SpiderMonkey does.
-        crate::script_impl::retain_private(cx, value);
-        crate::script_impl::release_private(cx, old);
+    // Hooks run outside the module table borrow, under the script-source ownership
+    // contract shared with classic scripts, as SpiderMonkey does.
+    match target {
+        Some(Err(script_id)) => crate::script_impl::set_script_private(cx, script_id, value),
+        Some(Ok(old)) => {
+            crate::script_impl::retain_private(cx, value);
+            crate::script_impl::release_private(cx, old);
+        },
+        None => {},
     }
 }
 
-pub(crate) fn release_privates(cx: &JSContext) {
+/// Releases JSON module privates at shutdown (source modules' are source metadata).
+pub(crate) fn release_json_privates(cx: &JSContext) {
     // Hooks can drop embedder objects: invoke them without borrowing the module table.
     let values: Vec<_> = cx.modules.entries.borrow_mut().values_mut().flatten()
-        .map(|entry| std::mem::replace(&mut entry.private, UndefinedValue())).collect();
+        .filter_map(|entry| match &mut entry.kind {
+            ModuleKind::Json { private, .. } => Some(std::mem::replace(private, UndefinedValue())),
+            ModuleKind::Source { .. } => None,
+        })
+        .collect();
     for value in values {
         crate::script_impl::release_private(cx, value);
     }
 }
 
 pub unsafe fn JS_GetModulePrivate(module: *mut JSObject, mut dest: MutableHandleValue) {
-    let private = JSContext::current().with_scope(|scope| {
-        let module = module_of(scope, module)?;
-        with_entry(scope, module, |entry| entry.private)
-    });
+    let private = JSContext::current().with_scope(|scope| module_of(scope, module).map(|module| private_of(scope, module)));
     dest.set(private.unwrap_or(UndefinedValue()));
 }
 
@@ -355,7 +378,7 @@ fn resolve_callback<'s>(
         crate::native::throw_type_error(scope, "no module resolve hook");
         return None;
     };
-    let private = with_entry(scope, referrer, |entry| entry.private).unwrap_or(UndefinedValue());
+    let private = private_of(scope, referrer);
     let module_type = attributes_type(scope, attributes, 3);
     let request = new_request(scope, specifier, module_type)?;
     let request = from_v8(scope, request.into()).to_object();
@@ -437,20 +460,14 @@ fn dynamic_import<'s>(
     let raw_cx = cx as *const JSContext as *mut JSContext;
     let resolver = v8::PromiseResolver::new(scope)?;
     let promise = resolver.get_promise(scope);
-    // Keep classic source metadata available to the asynchronous host until the
-    // promise is resolved/rejected or abandoned. The token is not exposed to JS.
-    // A module's token is kept the same way; module entries already live as long as
-    // the runtime, so it only costs a promise private until settlement.
-    if host_defined_options.is_fixed_array() {
-        // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
-        let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(host_defined_options) };
-        if options.length() == 1 {
-            let token = options.get(scope, 0);
-            if token.is_symbol() {
-                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
-                promise.set_private(scope, key, token.into())?;
-            }
-        }
+    // V8 passes the referrer's host options: the importing source's, or for eval code the
+    // source containing it (`Script::GetEvalOrigin`). Keep its metadata available to the
+    // asynchronous host until the promise is resolved/rejected or abandoned. The token is
+    // not exposed to JS.
+    let token = crate::script_impl::source_token(scope, host_defined_options);
+    if let Some(token) = token {
+        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+        promise.set_private(scope, key, token.into())?;
     }
     let Some(hook) = cx.modules.dynamic_import_hook.get() else {
         let message = v8::String::new(scope, "dynamic import is not supported here")?;
@@ -458,7 +475,11 @@ fn dynamic_import<'s>(
         resolver.reject(scope, error)?;
         return Some(promise);
     };
-    let private = crate::script_impl::caller_private(scope);
+    // A token without metadata means no private, never another source's.
+    let private = match token {
+        Some(token) => crate::script_impl::token_private(scope, token),
+        None => crate::script_impl::caller_private(scope),
+    };
     // Dynamic-import attributes are (key, value) pairs.
     let module_type = attributes_type(scope, attributes, 2);
     let request = new_request(scope, specifier, module_type)?;
@@ -492,7 +513,7 @@ pub unsafe fn FinishDynamicModuleImport(
         return raw
             .catching(|scope| {
                 let promise = promise_of(scope, promise_obj)?;
-                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+                let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
                 let _source_token = promise.get_private(scope, key)?;
                 // SAFETY: a V8 promise is its own resolver.
                 let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
@@ -517,7 +538,7 @@ pub unsafe fn FinishDynamicModuleImport(
         let namespace = module.get_module_namespace();
         let evaluation = promise_of(scope, evaluation)?;
         let promise = promise_of(scope, promise_obj)?;
-        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
         let _source_token = promise.get_private(scope, key)?;
         // SAFETY: as above.
         let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
@@ -538,7 +559,7 @@ unsafe extern "C" fn import_meta(context: v8::Local<v8::Context>, module: v8::Lo
     let cx = JSContext::current();
     let raw_cx = cx as *const JSContext as *mut JSContext;
     let Some(hook) = cx.modules.metadata_hook.get() else { return };
-    let private = with_entry(scope, module, |entry| entry.private).unwrap_or(UndefinedValue());
+    let private = private_of(scope, module);
     let meta = from_v8(scope, meta.into()).to_object();
     crate::rooted!(in(raw_cx) let private = private);
     crate::rooted!(in(raw_cx) let meta = meta);

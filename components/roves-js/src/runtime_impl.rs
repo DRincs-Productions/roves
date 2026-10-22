@@ -348,7 +348,7 @@ unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<
         // metadata must not remain rooted by an already-resolved promise.
         if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
             v8::callback_scope!(unsafe scope, promise);
-            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::DynamicImportSourceToken);
+            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
             promise.delete_private(scope, key);
         }
         if DRAIN_PENDING.with(Cell::get) {

@@ -6,10 +6,10 @@
 //! saved stacks (SpiderMonkey's `SavedFrame` objects) on V8.
 //!
 //! - A `*mut JSScript` is a cell holding V8's `UnboundScript`; it runs in the current realm.
-//! - Script privates are kept by script id, so the private of the script or module a running
-//!   function came from (`JS_GetScriptedCallerPrivate`) is found from V8's stack trace. Every
-//!   script and module source gets its own host token; for classic scripts it and a native
-//!   WeakMap tie the metadata to the source and its live functions.
+//! - Every classic script and source module gets its own host token, which a native WeakMap
+//!   ties to the source's private (see `script_metadata`), kept by script id too. The private
+//!   of the source a running function (or its eval code) came from is found from the host
+//!   options V8 reports for it: `JS_GetScriptedCallerPrivate` and dynamic `import()`.
 //! - Saved frames are plain objects whose fields are V8 private properties, built from V8's
 //!   current stack trace when captured.
 
@@ -54,10 +54,11 @@ pub(crate) fn release_private(cx: &JSContext, value: JSVal) {
     }
 }
 
-/// Balance embedder-owned private references before the live runtime is dismantled.
+/// Balance embedder-owned private references before the live runtime is dismantled:
+/// source metadata (classic scripts and source modules) once, then JSON module privates.
 pub(crate) fn release_runtime_privates(cx: &JSContext) {
     cx.scripts.metadata.release_all();
-    crate::modules_impl::release_privates(cx);
+    crate::modules_impl::release_json_privates(cx);
 }
 
 pub(crate) fn private_release_hook(cx: &JSContext) -> ScriptPrivateReferenceHook {
@@ -68,9 +69,38 @@ pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> O
     cx.scripts.metadata.initialize(scope)
 }
 
-/// The private of the script with V8 id `script_id`.
+/// The private of the classic script or source module with V8 id `script_id`.
 pub(crate) fn script_private(cx: &JSContext, script_id: i32) -> Option<JSVal> {
     cx.scripts.metadata.private(script_id)
+}
+
+/// Sets the private of the classic script or source module with V8 id `script_id`.
+pub(crate) fn set_script_private(cx: &JSContext, script_id: i32, value: JSVal) {
+    cx.catching(|scope| cx.scripts.metadata.set(cx, scope, script_id, value));
+}
+
+/// Ties a new source's host token to its metadata (see `source_origin`).
+pub(crate) fn register_source(scope: &mut v8::PinScope, script_id: i32, token: v8::Local<v8::Symbol>) {
+    JSContext::current().scripts.metadata.register(scope, script_id, token);
+}
+
+/// The host token in a source's host options (none for sources compiled without one).
+pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
+    if !options.is_fixed_array() {
+        return None;
+    }
+    // ScriptOrigin's host options are a PrimitiveArray (V8's FixedArray storage).
+    let options = unsafe { v8::Local::<v8::PrimitiveArray>::cast_unchecked(options) };
+    if options.length() != 1 {
+        return None;
+    }
+    let token: v8::Local<v8::Value> = options.get(scope, 0).into();
+    v8::Local::<v8::Symbol>::try_from(token).ok()
+}
+
+/// The private of the source whose host token is `token`; undefined if it has none.
+pub(crate) fn token_private(scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> JSVal {
+    JSContext::current().scripts.metadata.token_private(scope, token).unwrap_or(UndefinedValue())
 }
 
 // --- Compile options and sources -----------------------------------------------------------
@@ -167,7 +197,7 @@ pub(crate) fn compile_script<'s>(
         v8::script_compiler::CompileOptions::NoCompileOptions,
         v8::script_compiler::NoCacheReason::NoReason,
     )?;
-    JSContext::current().scripts.metadata.register(scope, script.script_id(), token);
+    register_source(scope, script.script_id(), token);
     Some(script)
 }
 
@@ -316,8 +346,7 @@ pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {
     let cx = JSContext::current();
     let Some(id) = cx.with_scope(|scope| script_id(scope, script)) else { return };
     // SAFETY: callers pass a valid value.
-    let value = unsafe { *value };
-    cx.catching(|scope| cx.scripts.metadata.set(cx, scope, id, value));
+    set_script_private(cx, id, unsafe { *value });
 }
 
 pub unsafe fn JS_GetScriptPrivate(script: *mut JSScript, mut dest: MutableHandleValue) {
@@ -349,12 +378,15 @@ fn caller_frame(scope: &mut v8::PinScope) -> Option<(String, u32, u32)> {
 }
 
 /// The private of the classic script or source module whose code is running, as
-/// SpiderMonkey's source-object private. `HideScriptedCaller` does not hide it.
+/// SpiderMonkey's source-object private: V8 reports the host options of the innermost
+/// frame's source, or of the source containing it for eval code (whose source object
+/// SpiderMonkey gives the caller's private). `HideScriptedCaller` does not hide it.
 pub(crate) fn caller_private(scope: &mut v8::PinScope) -> JSVal {
-    let Some(id) = innermost_frame(scope).map(|frame| frame.get_script_id() as i32) else { return UndefinedValue() };
-    script_private(JSContext::current(), id)
-        .or_else(|| crate::modules_impl::module_private(id))
-        .unwrap_or(UndefinedValue())
+    let options = scope.get_current_host_defined_options();
+    match options.and_then(|options| source_token(scope, options)) {
+        Some(token) => token_private(scope, token),
+        None => UndefinedValue(),
+    }
 }
 
 pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableHandleValue) {

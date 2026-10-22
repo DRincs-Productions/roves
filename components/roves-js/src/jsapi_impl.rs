@@ -921,11 +921,12 @@ pub(crate) enum PrivateKey {
     NativeReserved0,
     NativeReserved1,
     CallableClassBox,
-    DynamicImportSourceToken,
+    /// A source's host token, on a pending dynamic-import promise or a module record.
+    SourceToken,
 }
 
 const PRIVATE_KEY_NAMES: [&str; 5] =
-    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box", "roves-js dynamic import source token"];
+    ["roves-js native function", "roves-js native reserved 0", "roves-js native reserved 1", "roves-js callable class box", "roves-js source token"];
 
 #[derive(Default)]
 pub(crate) struct PrivateKeys([std::cell::OnceCell<v8::Global<v8::Private>>; 5]);

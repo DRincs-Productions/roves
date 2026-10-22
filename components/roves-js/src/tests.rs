@@ -2212,6 +2212,11 @@ mod scripts {
                 SetModulePrivate(module.get(), &private);
             }
             assert_eq!(Rc::strong_count(&owner), 4, "caller plus three engine-owned references");
+            for record in [module.get(), json.get()] {
+                rooted!(in(cx) let mut read = UndefinedValue());
+                unsafe { crate::glue::JS_GetModulePrivate(record, read.handle_mut().into()) };
+                assert_eq!(read.get().to_private(), private.to_private(), "source and JSON module privates");
+            }
             // Ensure retain happens before release even when the engine is the only owner.
             drop(owner);
             let pointer = weak.as_ptr();
@@ -2608,6 +2613,16 @@ mod caller_privates {
         true
     }
 
+    /// Re-enters script from a native: returns the global `classicEvalLoad()`.
+    unsafe extern "C" fn reenter_import(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
+        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
+        rooted!(in(cx) let mut result = UndefinedValue());
+        let ok = unsafe { JS_CallFunctionName(cx, global.handle().into(), c"classicEvalLoad".as_ptr(), &no_arguments, result.handle_mut().into()) };
+        unsafe { *vp = result.get() };
+        ok
+    }
+
     fn runtime() -> Runtime {
         let runtime = Runtime::new(JSEngineHandle::for_tests());
         unsafe {
@@ -2646,6 +2661,21 @@ mod caller_privates {
         let namespace = unsafe { GetModuleNamespace(cx, record.handle().into()) };
         set_global(runtime, name, ObjectValue(namespace));
         record.get()
+    }
+
+    /// Compiles and runs a classic script owned by `private` (none: no private) in the current realm.
+    fn run_classic(runtime: &Runtime, name: &str, source: &str, private: Option<&Rc<i32>>) -> *mut JSScript {
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new(name).unwrap(), 1);
+        let mut text = transform_str_to_source_text(source);
+        rooted!(in(cx) let script = unsafe { Compile1(cx, options.ptr, &mut text) });
+        assert!(!script.get().is_null());
+        if let Some(private) = private {
+            unsafe { SetScriptPrivate(script.get(), &PrivateValue(Rc::as_ptr(private).cast())) };
+        }
+        rooted!(in(cx) let mut result = UndefinedValue());
+        assert!(unsafe { JS_ExecuteScript(cx, script.handle().into(), result.handle_mut().into()) });
+        script.get()
     }
 
     fn script_id(runtime: &Runtime, record: *mut JSObject) -> Option<i32> {
@@ -2774,6 +2804,178 @@ mod caller_privates {
             assert_eq!(take_importers(), vec![44, 33]);
         }
         assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
+    }
+
+    /// Identical code and name for every module of the eval tests. Eval code gets its own
+    /// V8 script: only its origin's host options identify the owner.
+    const EVAL_SOURCE: &str = "export function evalOwner() { return eval('readPrivate()'); }\n\
+         export function evalLoad() { return eval(\"import('leaf.js')\"); }\n\
+         export function nestedLoad() { return eval(\"eval(\\\"import('leaf.js')\\\")\"); }\n\
+         export function evalArrow() { return eval(\"() => import('leaf.js')\"); }\n\
+         export async function asyncLoad() { await null; return eval(\"import('leaf.js')\"); }\n\
+         export function thenLoad() { return Promise.resolve().then(() => eval(\"import('leaf.js')\")); }\n\
+         export function viaNative() { return reenterImport(); }";
+
+    /// Every eval case of `EVAL_SOURCE` in the current realm: the eval's owner and the
+    /// importers, in order: eval, nested eval, escaped arrow, async, microtask, native re-entry.
+    fn observe_eval(runtime: &Runtime) -> (i32, Vec<i32>) {
+        let cx = runtime.raw_cx();
+        let owner = eval(runtime, "ns.evalOwner()").to_int32();
+        eval(runtime, "ns.evalLoad(); ns.nestedLoad(); ns.evalArrow()(); ns.asyncLoad(); ns.thenLoad(); 0");
+        unsafe { RunJobs(cx) };
+        eval(runtime, "ns.viaNative(); 0");
+        (owner, take_importers())
+    }
+
+    #[test]
+    fn direct_eval_imports_keep_their_source_owner() {
+        let owners = [Rc::new(11), Rc::new(22)];
+        let classic = Rc::new(33);
+        {
+            let mut runtime = runtime();
+            let cx = runtime.raw_cx();
+            let new_global = || unsafe {
+                JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+            };
+            rooted!(in(cx) let left = new_global());
+            rooted!(in(cx) let right = new_global());
+            let globals = [left.get(), right.get()];
+            for (global, owner) in globals.into_iter().zip(&owners) {
+                let old = unsafe { EnterRealm(cx, global) };
+                install(&runtime, c"readPrivate", Some(read_private));
+                install(&runtime, c"reenterImport", Some(reenter_import));
+                run_classic(
+                    &runtime,
+                    "classic-eval.js",
+                    "globalThis.classicEvalOwner = function() { return eval('readPrivate()') };\
+                     globalThis.classicEvalLoad = function() { return eval(\"import('leaf.js')\") };\
+                     globalThis.classicEvalArrow = eval(\"() => import('leaf.js')\");\
+                     globalThis.classicToModule = function() { return ns.evalLoad() };",
+                    Some(&classic),
+                );
+                load_module(&runtime, EVAL_SOURCE, owner, c"ns");
+                // Only the module itself may keep an eval arrow alive across the collection.
+                eval(&runtime, "globalThis.keptArrow = ns.evalArrow(); 0");
+                unsafe { LeaveRealm(cx, old) };
+            }
+            let check = |runtime: &Runtime| {
+                let mut seen = Vec::new();
+                for global in globals {
+                    let old = unsafe { EnterRealm(cx, global) };
+                    let module = observe_eval(runtime);
+                    let classic_owner = eval(runtime, "classicEvalOwner()").to_int32();
+                    eval(runtime, "classicEvalLoad(); classicEvalArrow(); classicToModule(); keptArrow(); 0");
+                    seen.push((module, classic_owner, take_importers()));
+                    unsafe { LeaveRealm(cx, old) };
+                }
+                seen
+            };
+            let expected = vec![
+                ((11, vec![11, 11, 11, 11, 11, 33]), 33, vec![33, 33, 11, 11]),
+                ((22, vec![22, 22, 22, 22, 22, 33]), 33, vec![33, 33, 22, 22]),
+            ];
+            assert_eq!(check(&runtime), expected);
+            collect(&mut runtime);
+            assert_eq!(check(&runtime), expected, "after GC");
+            assert_eq!(
+                (Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1]), Rc::strong_count(&classic)),
+                (2, 2, 3),
+                "one reference per source; eval code adds none"
+            );
+        }
+        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1]), Rc::strong_count(&classic)), (1, 1, 1));
+    }
+
+    /// A metadata lookup by host token runs no user code; a source with a token but no
+    /// private never takes another source's.
+    #[test]
+    fn host_metadata_ignores_poisoned_weakmaps_and_unowned_sources() {
+        let (classic, module) = (Rc::new(33), Rc::new(44));
+        {
+            let mut runtime = runtime();
+            install(&runtime, c"readPrivate", Some(read_private));
+            install(&runtime, c"reenterImport", Some(reenter_import));
+            eval(
+                &runtime,
+                "const poison = () => { throw new Error('poisoned') };\
+                 WeakMap.prototype.get = poison; WeakMap.prototype.set = poison; WeakMap.prototype.has = poison;\
+                 globalThis.WeakMap = poison; 0",
+            );
+            run_classic(
+                &runtime,
+                "classic-eval.js",
+                "globalThis.classicEvalOwner = function() { return eval('readPrivate()') };\
+                 globalThis.classicEvalLoad = function() { return eval(\"import('leaf.js')\") };",
+                Some(&classic),
+            );
+            // Explicitly cleared: the token exists, its private is undefined.
+            let unowned = run_classic(
+                &runtime,
+                "unowned.js",
+                "globalThis.unownedOwner = function() { return eval('readPrivate()') };\
+                 globalThis.unownedLoad = function() { return eval(\"import('leaf.js')\") };",
+                Some(&classic),
+            );
+            unsafe { SetScriptPrivate(unowned, &UndefinedValue()) };
+            load_module(
+                &runtime,
+                "export function owner() { return eval('readPrivate()'); }\n\
+                 export function load() { return eval(\"import('leaf.js')\"); }\n\
+                 export function viaNative() { return reenterImport(); }\n\
+                 export function viaUnowned() { return unownedOwner() * 100 + readPrivate(); }\n\
+                 export function viaUnownedLoad() { return unownedLoad(); }",
+                &module,
+                c"mod",
+            );
+            let check = |runtime: &Runtime| {
+                let owners = ["classicEvalOwner()", "mod.owner()", "unownedOwner()", "mod.viaUnowned()"].map(|code| eval(runtime, code).to_int32());
+                eval(runtime, "classicEvalLoad(); mod.load(); mod.viaNative(); unownedLoad(); mod.viaUnownedLoad(); 0");
+                (owners, take_importers())
+            };
+            let expected = ([33, 44, -1, -56], vec![33, 44, 33, -1, -1]);
+            assert_eq!(check(&runtime), expected);
+            collect(&mut runtime);
+            assert_eq!(check(&runtime), expected, "after GC");
+            assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (2, 2), "the cleared source released its reference");
+        }
+        assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
+    }
+
+    /// The V8 API no longer reports an errored module's source; its record keeps the private.
+    #[test]
+    fn errored_module_records_keep_their_private() {
+        let owner = Rc::new(55);
+        {
+            let mut runtime = runtime();
+            let cx = runtime.raw_cx();
+            let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("errored.js").unwrap(), 1);
+            let mut text = transform_str_to_source_text("export function lost() { return 1; }\nthrow new Error('boom');");
+            rooted!(in(cx) let record = unsafe { CompileModule1(cx, options.ptr, &mut text) });
+            assert!(!record.get().is_null());
+            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            assert!(unsafe { ModuleLink(cx, record.handle().into()) });
+            rooted!(in(cx) let mut evaluation = UndefinedValue());
+            assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
+            unsafe { RunJobs(cx) };
+            rooted!(in(cx) let evaluation = evaluation.get().to_object());
+            assert!(!unsafe { ThrowOnModuleEvaluationFailure(cx, evaluation.handle().into(), ModuleErrorBehaviour::ThrowModuleErrorsSync) });
+            unsafe { crate::api::JS_ClearPendingException(cx) };
+            assert_eq!(script_id(&runtime, record.get()), None, "no script id for an errored module");
+            let read = |record: *mut JSObject| {
+                rooted!(in(cx) let mut private = UndefinedValue());
+                unsafe { crate::glue::JS_GetModulePrivate(record, private.handle_mut().into()) };
+                self::owner(private.get())
+            };
+            collect(&mut runtime);
+            assert_eq!(read(record.get()), 55, "the record keeps the private through GC");
+            assert_eq!(Rc::strong_count(&owner), 2);
+            unsafe { SetModulePrivate(record.get(), &UndefinedValue()) };
+            assert_eq!((read(record.get()), Rc::strong_count(&owner)), (-1, 1));
+            unsafe { SetModulePrivate(record.get(), &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            collect(&mut runtime);
+            assert_eq!((read(record.get()), Rc::strong_count(&owner)), (55, 2));
+        }
+        assert_eq!(Rc::strong_count(&owner), 1, "shutdown releases the errored module's private once");
     }
 }
 

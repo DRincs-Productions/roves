@@ -2,8 +2,10 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Script-owned metadata: V8 retains a host token with the compiled source;
-//! a native WeakMap owns the cppgc metadata only while that token is reachable.
+//! Source-owned metadata of classic scripts and source modules: V8 retains a host token
+//! with the compiled source; a native WeakMap owns the cppgc metadata only while that token
+//! is reachable. The metadata is found by script id or, from the host options V8 hands to
+//! callbacks, by token.
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -76,7 +78,7 @@ impl ScriptMetadata {
         if self.cache.borrow().is_some() {
             return Some(());
         }
-        let source = v8::String::new(scope, "[new WeakMap(), WeakMap.prototype.set]")?;
+        let source = v8::String::new(scope, "[new WeakMap(), WeakMap.prototype.set, WeakMap.prototype.get]")?;
         let cache = v8::Script::compile(scope, source, None)?.run(scope)?;
         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
         *self.cache.borrow_mut() = Some(v8::Global::new(scope, cache));
@@ -107,6 +109,18 @@ impl ScriptMetadata {
     pub(crate) fn private(&self, id: i32) -> Option<JSVal> {
         let entries = self.entries.borrow();
         Some(entries.get(&id)?.data.as_ref()?.get()?.value.get())
+    }
+
+    /// The private of the source whose host token is `token` (`None`: the token has no
+    /// metadata). One lookup in the captured WeakMap, whose holder wraps the metadata.
+    pub(crate) fn token_private(&self, scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> Option<JSVal> {
+        let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
+        let map = cache.get_index(scope, 0)?;
+        let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
+        let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
+        // SAFETY: the pointer stays on the stack while the holder (a local) keeps it alive.
+        let data = unsafe { v8::Object::unwrap::<PRIVATE_WRAP_TAG, PrivateData>(scope, holder) }?;
+        Some(unsafe { data.as_ref() }.value.get())
     }
 
     pub(crate) fn set(

@@ -131,6 +131,7 @@ if page == 'gc-lifecycle.html':
                      'retained nodes true true true', 'importer compiled true',
                      'dynamic import after collection 42', 'dropped importer collected true',
                      'module owners left right', 'module owners after collection left right',
+                     'eval module owners left right', 'eval module owners after collection left right',
                      'retained nodes final true true true', 'result pass'):
             if scenario == 'gc-import' and line.startswith('dynamic import'):
                 line = 'dynamic import after collection undefined'
@@ -143,6 +144,11 @@ if page == 'gc-lifecycle.html':
                 line = 'result fail module owners; module owners after collection'
             # A page that claims success without reporting the owner check.
             if scenario == 'gc-owner-missing' and line.startswith('module owners'):
+                continue
+            # Eval code whose import() took the other frame's module owner; the page claims success.
+            if scenario == 'gc-eval-owner' and line.startswith('eval module owners'):
+                line = line.replace('left right', 'left left')
+            if scenario == 'gc-eval-owner-missing' and line.startswith('eval module owners'):
                 continue
             print('ROVES-V8 gc ' + line)
 elif page == 'pref-jitless.html':
@@ -239,6 +245,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
             ('gc-owner', None, "missing 'ROVES-V8 gc module owners left right' (ROVES-V8 gc api true"),
             ('gc-owner-missing', None, "missing 'ROVES-V8 gc module owners after collection left right'"),
+            ('gc-eval-owner', None, "missing 'ROVES-V8 gc eval module owners left right' (ROVES-V8 gc api true"),
+            ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc eval module owners after collection left right'"),
             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
         )
@@ -246,8 +254,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             with self.subTest(scenario=scenario, gc_flag=gc_flag):
                 result = self.run_fixture(scenario, gc_flag=gc_flag)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
-                if scenario == 'gc-owner-missing':
-                    # A reported pass cannot replace a missing required marker.
+                if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing'):
+                    # A reported pass cannot replace a missing or wrong required marker.
                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
                 else:
                     self.assertIn("::error::gc-lifecycle.html: missing 'ROVES-V8 gc result pass'", result.stdout)

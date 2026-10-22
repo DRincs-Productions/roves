@@ -68,7 +68,9 @@ results are pending CI. The same page also loads one module URL in two same-orig
 checks that each copy's dynamic `import()` stays owned by its own frame: every module source now
 keeps its own engine identity, even with identical code and URL, and natives called from module
 code see that module's private. This can reduce V8's compilation-cache reuse for identical
-module sources; it has not been measured.
+module sources; it has not been measured. `import()` inside direct `eval` code is also checked:
+it resolves against the module or script that contains the `eval`, as in browsers (code created
+with `new Function` does not yet inherit its caller's owner).
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe
