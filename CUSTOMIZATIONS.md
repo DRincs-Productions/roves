@@ -1,3 +1,15 @@
+## 2026-10-23 - Fix the unload check of the iframe smoke
+
+**Files:** `support/v8-smoke/events.html`, patch `0313-unload-smoke-discriminator.patch`.
+
+V8 CI run `39967099020` (first run with no panic after 0311/0312) reported `same=true
+text=second unload=false`: the iframe keeps its WindowProxy and reaches the new document, but
+the unload check compared `document.body.textContent` with "first", and the srcdoc body also
+contains the script's text. The handler now checks `window.document === document`: `document`
+is the leaving page's own, `window.document` goes through the WindowProxy, so they differ only
+if the proxy already moved to the next page. The same run's diagnostic reports `0/2` removed
+frame documents released after 8 collections (next work item).
+
 ## 2026-10-23 - Realm JS helpers keep the original built-ins
 
 **Files:** `components/roves-js/src/{values_impl.rs,jsapi_impl.rs,proxy.rs,realm_impl.rs,tests.rs}`,
