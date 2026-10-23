@@ -155,10 +155,22 @@ jobs:
         env:
           DEBIAN_FRONTEND: noninteractive
         run: |
-          if [ "$RUNNER_OS" = Windows ]; then
-            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
-          else
+          if [ "$RUNNER_OS" = Linux ]; then
+            # servoshell's default features build without GStreamer (no gstreamer-sys in its
+            # graph). Its development packages were ~450 of the 485 packages mach installs, and
+            # the runner's apt mirror timed this step out several times. Install the rest, as
+            # mach does (only packages this release has), then skip mach's platform step.
+            sudo apt-get update
+            available=$(apt-cache --generate pkgnames)
+            grep -hv -e '^#' -e '^$' python/servo/platform/linux_packages/apt/apt_common.txt \
+              | grep -v -e gstreamer -e '^libges' \
+              | grep -Fxf <(echo "$available") \
+              | xargs sudo apt-get install -y -m --no-install-recommends
+          fi
+          if [ "$RUNNER_OS" = macOS ]; then
             ./mach bootstrap --force --yes --skip-lints --skip-nextest
+          else
+            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
           fi
       - name: free disk space
         if: runner.os == 'Linux'

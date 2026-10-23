@@ -1,3 +1,18 @@
+## 2026-10-23 - V8 CI: skip GStreamer packages in the Linux bootstrap
+
+**Files:** `.github/workflows/v8.yml` (not part of `patches/`, workflow only).
+
+The Linux `servoshell-v8` jobs timed out in `mach bootstrap` three times in two days: apt had
+to fetch 485 packages (312 MB) and the runner's Azure mirror served them at a few KB/s
+(run `39923807410`, both Ubuntu jobs, 30 minutes, before compilation; Windows/macOS green).
+servoshell's default features do not enable `media-gstreamer` (`cargo tree -i gstreamer-sys`
+finds no path), and the GStreamer/GES development packages pulled most of those 485. On
+Linux the job now installs `apt_common.txt` without GStreamer/GES packages, filtered to the
+packages the release has as mach does, with `--no-install-recommends`, then runs mach
+bootstrap with `--skip-platform` (as on Windows). A local simulation on Ubuntu 26.04 installs
+177 packages instead of 462. No mach or `roves-action` change: `test.yml`, which roves-action
+mirrors, is untouched.
+
 ## 2026-10-23 - Entry global for script V8 runs from its own tasks
 
 **Files:** `components/script/dom/bindings/settings_stack.rs`,

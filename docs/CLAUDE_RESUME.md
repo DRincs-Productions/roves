@@ -7,9 +7,11 @@
   l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
 - Batch `8799e4e` (0287) tutto verde: V8 `39917959741`, generale `39917959712` (anche il job
   Ubuntu portable, timeout di ieri risolto), Android/iOS.
-- Pubblicato dall'utente `9781833` (0288, nota WindowProxy, 0289 + wiki): CI V8 `39921481100`,
-  generale `39921480989`, Android/iOS in corso. Verifica critica: link dei simboli C++
-  mangled di 0289 su Windows (MSVC) e macOS; se fallisce, analizzare il log del linker.
+- `9781833`: V8/generale annullate dal push successivo (non verdi, superate da `5967ef4`).
+- `5967ef4` (0288–0293): V8 `39923807410` ROSSA solo per i due job Ubuntu servoshell, timeout
+  apt in `mach bootstrap` (485 pacchetti, mirror Azure lento); runtime su tutte le piattaforme
+  e smoke Windows/macOS verdi (0289 si collega con MSVC). Correzione locale in `v8.yml`
+  (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
 - Locale non pubblicato: 0290 (costruttori nativi), 0291 (matrice CSP), 0292 (codice morto), 0293
   (smoke browser per 0288/0289/0290). Pushare solo a batch verde; 0293 va guardata negli smoke.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
