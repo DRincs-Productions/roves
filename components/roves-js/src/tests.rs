@@ -4258,6 +4258,31 @@ mod caller_privates {
         assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
     }
 
+    #[test]
+    fn dynamic_functions_import_from_their_calling_module() {
+        let owners = [Rc::new(11), Rc::new(22)];
+        {
+            let runtime = runtime();
+            // Each body names its module: V8's eval cache keys on source, so an identical body
+            // reuses the first compilation's origin, exactly as V8's own constructors do.
+            let source = |tag: &str| format!(
+                "const proto = Object.getPrototypeOf;\n\
+                 export function load() {{\n\
+                   Function(\"return import('{tag}0.js')\")();\n\
+                   new Function('{tag}', \"return import({tag})\")('{tag}1.js');\n\
+                   proto(function*(){{}}).constructor(\"yield import('{tag}2.js')\")().next();\n\
+                   proto(async function(){{}}).constructor(\"return import('{tag}3.js')\")();\n\
+                   new (class extends Function {{}})(\"return import('{tag}4.js')\")();\n\
+                 }}"
+            );
+            load_module(&runtime, &source("a"), &owners[0], c"first");
+            load_module(&runtime, &source("b"), &owners[1], c"second");
+            eval(&runtime, "first.load(); second.load(); first.load(); 0");
+            assert_eq!(take_importers(), [[11; 5], [22; 5], [11; 5]].concat());
+        }
+        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1));
+    }
+
     /// Identical code and name for every module of the eval tests. Eval code gets its own
     /// V8 script: only its origin's host options identify the owner.
     const EVAL_SOURCE: &str = "export function evalOwner() { return eval('readPrivate()'); }\n\

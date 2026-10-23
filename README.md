@@ -72,8 +72,10 @@ checks that each copy's dynamic `import()` stays owned by its own frame: every m
 keeps its own engine identity, even with identical code and URL, and natives called from module
 code see that module's private. This can reduce V8's compilation-cache reuse for identical
 module sources; it has not been measured. `import()` inside direct `eval` code is also checked:
-it resolves against the module or script that contains the `eval`, as in browsers (code created
-with `new Function` does not yet inherit its caller's owner).
+it resolves against the module or script that contains the `eval`, as in browsers. Code created
+with `new Function` (and its generator/async variants) resolves against its calling module or
+script too; like V8's own compilation cache, an identical body built again reuses the first
+caller's origin.
 A module's owner page is now a reference the collector traces, not a permanent root; realm and
 module tables still keep pages and modules alive, so this saves no memory yet (not measured).
 Its main Window fixture and cross-origin iframe use

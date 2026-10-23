@@ -5,7 +5,7 @@
 - Pubblicato: `a4599fb2a5e` (commit vuoto di retry sopra `2e96c8663aa`, che contiene 0282–0286),
   wiki `0928dba`. Claude lavora su Linux/WSL **senza credenziali push**: commit solo locali,
   l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
-- Locale non pubblicato: 0287 (commit root + wiki, vedi `git log`).
+- Locale non pubblicato: 0287, 0288 (commit root + wiki, vedi `git log`).
 - CI su `2e96c86`: V8 `39852305242` verde, Android/iOS verdi; generale `39852305257` rossa solo
   per timeout `mach bootstrap` (apt lento, 90 min, prima della compilazione) del job
   `linux portable`. Il commit vuoto ha avviato solo Android/iOS (verdi), perché generale e V8
@@ -16,8 +16,8 @@
 ## Verifiche locali (Linux/WSL)
 
 `cd components/roves-v8 && CARGO_TARGET_DIR=<repo>/target/roves-v8 cargo test [--features jitless]`
-e analogo per `components/roves-js` con `target/roves-js`. Stato 0287: motore 67+2 doctest,
-runtime 100/99 (2/3 ignorati). Log `target/task-0287/`.
+e analogo per `components/roves-js` con `target/roves-js`. Stato 0288: motore 67+2 doctest,
+runtime 101/100 (2/3 ignorati). Log `target/task-0287/`, `target/task-0288/`.
 
 ## Istruzioni operative attuali
 
@@ -38,6 +38,7 @@ docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico: NON 
 | 0284 | Payload Dispatchable con owner debole; non esegue task in runtime sbagliato o già chiuso. Close impedisce inserzioni dopo shutdown.97/96 test. |
 | 0286 | Rilascio callback ritirate fuori dal mutex globale: evita deadlock da distruttori reentranti. Motore66+2doctest normal/JITless, runtime100/99 (2/3ignorati); negativo e replay2 precedenti verificati. |
 | 0287 | `set_handler(None)` distrugge i task ritardati della registrazione ancora nel timer, fuori dai lock; accodamento sotto lock registro. Test reale `Atomics.waitAsync`, negativo verificato. Motore67+2doctest, runtime100/99. |
+| 0288 | Ex 0273: trap Proxy native per Function/generator/async; `import()` nel corpo usa il chiamante. Corpo identico riusa il primo referrer come V8 nativo (cache eval; disattivata solo con debugger). Runtime101/100. |
 | 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
 Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.
@@ -53,10 +54,10 @@ cancellate/saltate non sono verdi; non cancellare run senza istruzione esplicita
 
 ## Prossimi punti della migrazione
 
-1. Dare priorità a errori delle run effettive del checkpoint0281; non presumere corretto il
-   frontend solo perché il runtime isolato passa. Non avviare Claude oggi.
+1. Dare priorità agli errori delle run CI effettive dopo ogni push; non presumere corretto il
+   frontend solo perché il runtime isolato passa.
 2. Proseguire lo sviluppo del piano V8, studiando prima riuso di API/librerie mantenute.
-   Cache Function0273, navigazione/identità WindowProxy e incumbent sono ancora aperti.
+   Navigazione/identità WindowProxy e incumbent sono ancora aperti (Function: chiusa in 0288).
    Worker/termination/shutdown e WPT/integration richiedono ulteriore copertura.
 3. Task consegnati (0285) e ritardati alla rimozione handler (0287) sono recuperati; task
    immediati senza handler, task in consegna durante la rimozione, sostituzione handler e post
@@ -65,13 +66,10 @@ cancellate/saltate non sono verdi; non cancellare run senza istruzione esplicita
 4. Servo mantiene global e mappe moduli; JSON linkati mai valutati restano forti; realm
    iniziale intenzionalmente forte. Non dichiarare raccolta pagina o risparmioCPU/RAM.
 5. Non pubblicare release/pin consumer finché la migrazione e i criteri del piano non lo
-   giustificano. Nessun flag build/bundle/workflow è cambiato in0281–0286.
+   giustificano. Nessun flag build/bundle/workflow è cambiato in0281–0288.
 
-Cache Function: il WIP0273 locale target/0273-incomplete-native-traps.patch NON va applicato
-alla cieca. Native Proxy traps eliminano il frameJS helper, ma V8 GetFunctionFromEval cerca
-la cache con outer_info empty_function prima di correggere eval_from_shared dal chiamante;
-corpi identici nello stesso realm possono riusare l'origine precedente. Non mascherare con
-commenti/whitespace nel codice visibile o disabilitare globalmente la cache senza valutazione.
+Function: chiusa in 0288 (trap native). Il WIP 0273 su Windows è superato, non riapplicarlo.
+Corpo identico = primo referrer è comportamento V8 nativo (cache eval), documentato.
 WindowProxy: JS_TransplantObject sui global attualmente ritorna il replacement: vecchi riferimenti
 vedono il vecchio Window. Serve progettare riuso/detach del global proxy alla creazioneContext,
 coordinato con attivazione documento, evitando retarget anticipato o perdita del vecchio global.

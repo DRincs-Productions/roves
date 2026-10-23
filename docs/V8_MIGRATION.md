@@ -15,6 +15,15 @@ Lavorare con commit locali. Workspace test: `CARGO_TARGET_DIR=target/roves-v8` p
 `components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
 jitless`). Log in `target/task-NNNN/`.
 
+**0288 (ex 0273) completa localmente:** trap Proxy native per i quattro costruttori
+dinamici; il frame JS dell'installer non è più l'origine eval, quindi `import()` nel corpo
+risolve dal modulo/script chiamante (test: owner corretti 11/22/11, vecchio codice -1).
+Diagnosi cache chiusa: con il V8 152 nativo (nessuna trap, nessun inspector) anche Function
+ed eval indiretto con corpo identico riusano il primo referrer; `--no-compilation-cache` lo
+elimina; `Debug::UpdateState` disabilita la cache con debugger collegato, il che spiega il
+riferimento DevTools a/b. Parità V8 accettata e documentata (README/wiki), nessuna
+disattivazione della cache. Runtime 101/100. Smoke browser e WPT restano da CI.
+
 **0287 completa localmente:** `set_handler(None)` recupera e distrugge, fuori dai lock, i task
 ritardati ancora nel timer della registrazione rimossa (isolate ancora vivo); `post_delayed`
 accoda sotto il lock del registro, quindi nessuna race lascia task orfani. Sostituzione handler

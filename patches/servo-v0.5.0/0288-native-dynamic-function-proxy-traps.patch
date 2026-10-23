@@ -1,0 +1,163 @@
+diff --git a/components/roves-js/src/dynamic_code.rs b/components/roves-js/src/dynamic_code.rs
+index 21812893cd1..35859281251 100644
+--- a/components/roves-js/src/dynamic_code.rs
++++ b/components/roves-js/src/dynamic_code.rs
+@@ -15,7 +15,7 @@ pub(crate) struct FunctionArguments<'a> {
+     pub(crate) body_argument: JSVal,
+ }
+ 
+-const INSTALL: &str = r#"(function(invoke) {
++const INSTALL: &str = r#"(function(handlers) {
+   const define = Object.defineProperty;
+   const descriptor = Object.getOwnPropertyDescriptor;
+   const getPrototype = Object.getPrototypeOf;
+@@ -24,10 +24,9 @@ const INSTALL: &str = r#"(function(invoke) {
+     getPrototype(async function(){}).constructor, getPrototype(async function*(){}).constructor];
+   // Trap-less [[GetPrototypeOf]] and [[PreventExtensions]] forward to the targets,
+   // so Proxy invariants hold whatever scripts later do to the constructors.
+-  const wrappers = constructors.map((target, kind) => new Proxy(target, {
+-    apply(target, receiver, args) { return invoke(target, receiver, undefined, args, kind); },
+-    construct(target, args, newTarget) { return invoke(target, undefined, newTarget, args, kind); }
+-  }));
++  // The traps are native: a JS trap frame would become the eval origin of the
++  // compiled code (and so the referrer of its dynamic imports) instead of the caller.
++  const wrappers = constructors.map((target, kind) => new Proxy(target, handlers[kind]));
+   for (let kind = 0; kind < constructors.length; ++kind) {
+     const target = constructors[kind];
+     // %GeneratorFunction% and its siblings inherit from %Function% (ECMA-262
+@@ -53,28 +52,57 @@ pub(crate) fn install(scope: &mut v8::PinScope) -> Option<()> {
+         let construct = reflect.get(scope, construct_key.into())?;
+         let error_key = v8::String::new(scope, "EvalError")?;
+         let error = global.get(scope, error_key.into())?;
+-        let data = v8::Array::new_with_elements(scope, &[construct, error]);
+-        let invoke = v8::Function::builder(invoke).data(data.into()).build(scope)?;
++        let apply_key = v8::String::new(scope, "apply")?;
++        let construct_key = v8::String::new(scope, "construct")?;
++        let mut handlers = Vec::new();
++        for kind in 0..4 {
++            let kind = v8::Integer::new(scope, kind).into();
++            let data = v8::Array::new_with_elements(scope, &[construct, error, kind]);
++            let handler = v8::Object::new(scope);
++            let apply = v8::Function::builder(apply_trap).data(data.into()).build(scope)?;
++            handler.set(scope, apply_key.into(), apply.into())?;
++            let construct = v8::Function::builder(construct_trap).data(data.into()).build(scope)?;
++            handler.set(scope, construct_key.into(), construct.into())?;
++            handlers.push(handler.into());
++        }
++        let handlers = v8::Array::new_with_elements(scope, &handlers);
+         let source = v8::String::new(scope, INSTALL)?;
+         let installer = v8::Script::compile(scope, source, None)?.run(scope)?;
+         let installer = v8::Local::<v8::Function>::try_from(installer).ok()?;
+         let undefined = v8::undefined(scope).into();
+-        installer.call(scope, undefined, &[invoke.into()])
++        installer.call(scope, undefined, &[handlers.into()])
+     })?;
+     Some(())
+ }
+ 
+-fn invoke<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
+-    if let Some(value) = compile(scope, &args) {
++/// Proxy `apply(target, receiver, arguments)` trap.
++fn apply_trap<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
++    let undefined = v8::undefined(scope).into();
++    if let Some(value) = compile(scope, &args, args.get(1), undefined, args.get(2)) {
++        result.set(value);
++    }
++}
++
++/// Proxy `construct(target, arguments, newTarget)` trap.
++fn construct_trap<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
++    let undefined = v8::undefined(scope).into();
++    if let Some(value) = compile(scope, &args, undefined, args.get(2), args.get(1)) {
+         result.set(value);
+     }
+ }
+ 
+-fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>) -> Option<v8::Local<'s, v8::Value>> {
++fn compile<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    args: &v8::FunctionCallbackArguments<'s>,
++    receiver: v8::Local<'s, v8::Value>,
++    new_target: v8::Local<'s, v8::Value>,
++    inputs: v8::Local<'s, v8::Value>,
++) -> Option<v8::Local<'s, v8::Value>> {
+     let raw = JSContext::current();
+     let cx = raw as *const JSContext as *mut JSContext;
+     let target = v8::Local::<v8::Function>::try_from(args.get(0)).ok()?;
+-    let inputs = v8::Local::<v8::Array>::try_from(args.get(3)).ok()?;
++    let inputs = v8::Local::<v8::Array>::try_from(inputs).ok()?;
++    let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
+     crate::rooted!(in(cx) let mut originals = Vec::<JSVal>::new());
+     crate::rooted!(in(cx) let mut strings = Vec::<*mut JSString>::new());
+     let mut converted = Vec::<v8::Local<v8::Value>>::new();
+@@ -107,7 +135,7 @@ fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArgu
+         }
+         converted.push(string.into());
+     }
+-    let prefix = match args.get(4).int32_value(scope)? {
++    let prefix = match data.get_index(scope, 2)?.int32_value(scope)? {
+         0 => "(function anonymous(",
+         1 => "(function* anonymous(",
+         2 => "(async function anonymous(",
+@@ -144,7 +172,6 @@ fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArgu
+             crate::native::rethrow_pending(scope, raw);
+         } else {
+             let message = v8::String::new(scope, "Code generation from strings disallowed for this context")?;
+-            let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
+             let constructor = data.get_index(scope, 1)?;
+             let constructor = v8::Local::<v8::Function>::try_from(constructor).ok()?;
+             let error = constructor.new_instance(scope, &[message.into()])?;
+@@ -155,14 +182,13 @@ fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArgu
+     // Only the exact source just checked is authorized, once, during this native
+     // constructor call. All ToString callbacks have finished before authorization.
+     let _authorization = crate::runtime_impl::authorize_function(raw, scope, source);
+-    if args.get(2).is_undefined() {
+-        target.call(scope, args.get(1), &converted)
++    if new_target.is_undefined() {
++        target.call(scope, receiver, &converted)
+     } else {
+-        let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
+         let construct = data.get_index(scope, 0)?;
+         let construct = v8::Local::<v8::Function>::try_from(construct).ok()?;
+         let arguments = v8::Array::new_with_elements(scope, &converted);
+         let undefined = v8::undefined(scope).into();
+-        construct.call(scope, undefined, &[target.into(), arguments.into(), args.get(2)])
++        construct.call(scope, undefined, &[target.into(), arguments.into(), new_target])
+     }
+ }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 653fe819198..ccb1fa32a44 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4258,6 +4258,31 @@ mod caller_privates {
+         assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
+     }
+ 
++    #[test]
++    fn dynamic_functions_import_from_their_calling_module() {
++        let owners = [Rc::new(11), Rc::new(22)];
++        {
++            let runtime = runtime();
++            // Each body names its module: V8's eval cache keys on source, so an identical body
++            // reuses the first compilation's origin, exactly as V8's own constructors do.
++            let source = |tag: &str| format!(
++                "const proto = Object.getPrototypeOf;\n\
++                 export function load() {{\n\
++                   Function(\"return import('{tag}0.js')\")();\n\
++                   new Function('{tag}', \"return import({tag})\")('{tag}1.js');\n\
++                   proto(function*(){{}}).constructor(\"yield import('{tag}2.js')\")().next();\n\
++                   proto(async function(){{}}).constructor(\"return import('{tag}3.js')\")();\n\
++                   new (class extends Function {{}})(\"return import('{tag}4.js')\")();\n\
++                 }}"
++            );
++            load_module(&runtime, &source("a"), &owners[0], c"first");
++            load_module(&runtime, &source("b"), &owners[1], c"second");
++            eval(&runtime, "first.load(); second.load(); first.load(); 0");
++            assert_eq!(take_importers(), [[11; 5], [22; 5], [11; 5]].concat());
++        }
++        assert_eq!((Rc::strong_count(&owners[0]), Rc::strong_count(&owners[1])), (1, 1));
++    }
++
+     /// Identical code and name for every module of the eval tests. Eval code gets its own
+     /// V8 script: only its origin's host options identify the owner.
+     const EVAL_SOURCE: &str = "export function evalOwner() { return eval('readPrivate()'); }\n\

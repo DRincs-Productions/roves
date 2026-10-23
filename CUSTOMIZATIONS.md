@@ -1,3 +1,25 @@
+## 2026-10-23 - Native Proxy traps for dynamic Function constructors
+
+**Files:** `components/roves-js/src/{dynamic_code.rs,tests.rs}`, patch
+`0288-native-dynamic-function-proxy-traps.patch`, `README.md`.
+
+The Trusted Types/CSP wrappers of `Function` and its generator/async siblings used JS
+`apply`/`construct` traps. V8 takes the top JS frame as the eval origin of code compiled
+without a position, so that installer frame became the referrer of every `import()` in the
+body: dynamic imports had no owner. The Proxy handlers now hold native `apply`/`construct`
+functions (rusty_v8 `Function::builder`, kind in the callback data); conversion, CSP check,
+exact-source authorization and the original V8 compiler are unchanged. No parser, stack
+heuristic or dependency. The remaining same-body behaviour is V8's: its eval cache keys on
+source, outer info and context, so an identical body reuses the first compilation's origin.
+A probe on the same V8 152 with the builtin constructors and indirect eval (no traps, no
+inspector) gave the first referrer for all 18 calls; with `--no-compilation-cache` each call
+got its own. `Debug::UpdateState` disables that cache while a debugger is attached, which
+explains the earlier DevTools MCP a/b reference. Not masked or disabled here. Regression: two
+modules call all four constructors plus a `Function` subclass; importers are 11×5, 22×5,
+11×5, while the old JS traps give -1 for all 15. Runtime 101 normal/100 JITless (2/3 ignored);
+replay on HEAD identical. Logs `target/task-0288/` (Linux/WSL). Browser smoke and WPT remain
+CI work; no performance measurement.
+
 ## 2026-10-23 - Reclaim delayed V8 tasks when a foreground handler is removed
 
 **Files:** `components/roves-v8/src/foreground.rs`, patch
