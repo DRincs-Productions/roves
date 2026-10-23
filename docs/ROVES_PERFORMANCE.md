@@ -1157,3 +1157,12 @@ verso il thread audio, che Tone.js fa continuamente; pause del GC; il lavoro di 
 In `full-stack` la CPU resta alta perché dominano grafica e UI. Memoria privata invariata (~670 MiB contro
 310 in Chrome). Da fare: attribuire gli stalli del thread principale con audio (profilo del thread script,
 misura di quanto dura `AudioContext.currentTime`).
+
+## 23 ottobre: costo di HideScriptedCaller sul percorso callback (0289)
+
+Micro-misura isolata del runtime `roves-js` (non browser), build `--release`, Linux WSL2,
+Intel i7-1355U, V8 152.2.0 normale, 10^6 iterazioni dopo un riscaldamento, test temporaneo non
+versionato. `HideScriptedCaller` + `UnhideScriptedCaller` (eseguiti da Servo per ogni callback:
+eventi, timer, requestAnimationFrame): ~106 ns per coppia. `GetScriptedCallerGlobal` senza frame
+JS: ~78 ns. Trascurabile rispetto al costo di una callback; nessuna misura in pagina né confronto
+Chrome (MCP non disponibile in questo ambiente).

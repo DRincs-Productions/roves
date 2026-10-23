@@ -76,7 +76,8 @@ while hidden, nested hides). The old implementation fails `other.fromHere() === 
 68+2 doctests normal/JITless; runtime 102 normal/101 JITless (2/3 ignored). Replay on HEAD
 identical. Logs `target/task-0289/` (Linux/WSL). Windows/macOS linking and browser behaviour
 are verified only by CI. Cost per callback: one global handle clone, one small allocation and
-isolate enter/exit; not measured.
+isolate enter/exit; ~106 ns per hide/unhide pair in a release micro-measurement (see
+`docs/ROVES_PERFORMANCE.md`, 23 October).
 
 ## 2026-10-23 - Native Proxy traps for dynamic Function constructors
 
