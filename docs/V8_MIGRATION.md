@@ -742,7 +742,9 @@ prova identifica un difetto nel collegamento a V8.
   Seconda scansione (funzioni pubbliche che ignorano parametri, 49): corretti
   `JS_WriteStructuredClone`/CloneDataPolicy (0297) e `HasDefinedArrayBufferDetachKey` (0298);
   `NewEnvironmentChain` ignora `support_unscopables` correttamente (le estensioni di
-  CompileFunction sono contesti `with` V8, che rispettano @@unscopables). Restano da auditare
+  CompileFunction sono contesti `with` V8, che rispettano @@unscopables). `JS_SetGCParameter`
+  memorizza soltanto: `js_mem_max` vale -1 (nessun limite) e V8 non cambia il limite heap dopo
+  la creazione dell'isolate; gli altri sono tarature SpiderMonkey. Restano da auditare
   le API approssimate con corpo non banale che non ignorano parametri.
 - [ ] Per ogni problema registrare chiamanti di produzione, comportamento atteso, riproduzione
   e test di accettazione. Un nome SpiderMonkey, da solo, non è un difetto.
