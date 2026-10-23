@@ -11,7 +11,7 @@ quindi il retry avverrà con il prossimo push che tocca `patches/**`. Valutare i
 `--no-install-recommends` o mirror alternativo se il timeout si ripete.
 
 Ambiente Claude: Linux/WSL, nessuna credenziale push; l'utente pubblica periodicamente.
-Lavorare con commit locali. Workspace test: `CARGO_TARGET_DIR=target/roves-v8` per
+Lavorare con commit locali (pilot WebIDL e Runtime di fase 1 rimossi in 0302). Workspace test: `CARGO_TARGET_DIR=target/roves-v8` per
 `components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
 jitless`). Log in `target/task-NNNN/`.
 
@@ -1272,6 +1272,9 @@ codice sostituito. Documentare anche le valutazioni che concludono di non aggiun
   fornisce un grafo WebAudio Rust con backend audio nativi, non sostituisce il binding browser
   Servo né certifica AudioWorklet JS V8. Sposterebbe lavoro CPU/audio e gestione dispositivi
   senza ridurre il bridge DOM oggetto di questo piano; valutarla nel backlog WebAudio separato.
+- [x] 23 ottobre, su conferma dell'utente: rimossi Runtime di fase 1 di `roves-v8`, pilot WebIDL,
+  `roves-v8-derive`, backend V8 di `codegen.py`, `run_v8.py`, `test_v8.py`, `v8_coverage.py` (0302).
+  Non servono alla produzione né agli strumenti di confronto prestazioni (`support/perf/`).
 - [x] Rimosso il wiring Cargo/runtime del pilot WebIDL: non generava binding nelle build normali,
   ma aggiungeva una feature e una dipendenza opzionale da `roves-v8` solo per esporre due moduli
   sperimentali. Il driver Python, il backend di generazione e i test restano strumenti di misura;

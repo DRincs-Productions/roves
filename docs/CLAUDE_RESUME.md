@@ -14,7 +14,7 @@
   (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
 - Pubblicato `607b2e5` (fino a 0301 e correzioni apt): TUTTE le CI verdi (V8 `39937024546`,
   generale `39937024442`, Android, iOS). Bootstrap Linux 46–204 s invece dei timeout.
-- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy; poi le tappe WindowProxy.
+- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy, 0302 (rimozione fase 1 roves-v8 e pilot WebIDL); poi le tappe WindowProxy.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)
@@ -34,7 +34,8 @@
    andrebbe ricaricato invece che ripreso, come fa Blink per le pagine non in bfcache. Opzioni:
    (a) riuso + ricarica alla ripresa; (b) lasciare l'identità per documento (attuale). Per
    giochi a pagina singola l'impatto pratico è basso.
-2. **Codice di fase 1 in `roves-v8` — scelta utente 23/10: conservare.** La produzione usa solo `initialize_engine*`,
+2. **Codice di fase 1 in `roves-v8` — RIMOSSO (0302)** dopo il chiarimento dell'utente: non serve
+   ai confronti prestazioni (support/perf) né alla produzione. Testo storico: La produzione usa solo `initialize_engine*`,
    `foreground` e `incumbent`. `Runtime`, i tipi WebIDL, `roves-v8-derive`, il backend V8 di
    `codegen.py` e `test_v8.py` servono solo come strumento di misura del pilot WebIDL (decisione
    del piano: conservarli). Rimuoverli toglierebbe migliaia di righe nostre.

@@ -6,7 +6,6 @@ on:
   push:
     paths:
       - 'components/roves-v8/**'
-      - 'components/roves-v8-derive/**'
       - 'components/roves-js/**'
       - 'components/script_bindings/**'
       - 'support/v8_cutover_check.py'
@@ -39,24 +38,11 @@ jobs:
           mkdir -p "$RUNNER_TEMP/roves-v8/src"
           cp components/roves-v8/Cargo.toml components/roves-v8/Cargo.lock "$RUNNER_TEMP/roves-v8/"
           cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
-          cp -R components/roves-v8/tests "$RUNNER_TEMP/roves-v8/tests"
-          cp -R components/script_bindings "$RUNNER_TEMP/script_bindings"
-          # `#[derive(Trace)]` (a path dependency of roves-v8).
-          cp -R components/roves-v8-derive "$RUNNER_TEMP/roves-v8-derive"
           # roves-js (the mozjs API on V8) builds next to roves-v8, with its own lockfile.
           cp -R components/roves-js "$RUNNER_TEMP/roves-js"
-          if [ -f components/roves-v8/build.rs ]; then
-            cp components/roves-v8/build.rs "$RUNNER_TEMP/roves-v8/"
-          fi
       - name: test smoke runner failure contracts
         shell: bash
         run: python -m unittest discover -s support/v8-smoke -p test_runner.py
-      - name: test V8 WebIDL generator contracts
-        shell: bash
-        run: python -m unittest discover -s components/script_bindings/codegen -p test_v8.py
-      - name: report V8 WebIDL generator coverage
-        shell: bash
-        run: python components/script_bindings/codegen/v8_coverage.py --top 15
       - name: test runtime and compile-fail safety contracts
         shell: bash
         env:
@@ -66,12 +52,6 @@ jobs:
           args=()
           if [ "$V8_TEST_MODE" = jitless ]; then
             args+=(--features jitless)
-          fi
-          cargo test --locked "${args[@]}"
-          if [ "$V8_TEST_MODE" = jitless ]; then
-            args=(--features webidl-pilot,jitless)
-          else
-            args=(--features webidl-pilot)
           fi
           cargo test --locked "${args[@]}"
           # The mozjs-on-V8 layer of the cutover (value model, cells, rooting).

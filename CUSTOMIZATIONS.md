@@ -1,3 +1,23 @@
+## 2026-10-23 - Remove the phase-1 V8 runtime and the WebIDL V8 pilot
+
+**Files:** `components/roves-v8/{Cargo.toml,Cargo.lock,src/lib.rs,src/foreground.rs}` (removed
+`build.rs`, `tests/`), removed `components/roves-v8-derive/`, `components/script_bindings/codegen/codegen.py`
+(removed `run_v8.py`, `test_v8.py`, `v8_coverage.py`), `Cargo.toml`, the three `Cargo.lock` files,
+`.github/workflows/v8.yml`; patch `0302-remove-phase-1-v8-runtime-and-webidl-pilot.patch`.
+
+The user confirmed this code is not needed: production (roves-js) uses only roves-v8's platform
+initialization, `foreground` and `incumbent`, and the Servo-vs-Chrome performance tooling
+(`support/perf/`) runs pages in servoshell and Chrome without it. Removed the phase-1 standalone
+`Runtime`/`Value` API and its WebIDL pilot (~10 700 lines of `roves-v8/src/lib.rs`, its tests and
+build script, the `webidl-pilot` feature), the `roves-v8-derive` crate, and the V8 backend of the
+bindings generator (2069 lines of `codegen.py`, `run_v8.py`, its 75 tests and the coverage report).
+The `foreground` delayed-task test now builds its isolate directly instead of through `Runtime`.
+CI no longer copies those crates or runs the pilot, generator and coverage steps. Checks: roves-v8
+6 tests normal/JITless and roves-js 103/102 with `--locked` in CI's isolated layout; the
+production generator (`run.py`, fixed `PYTHONHASHSEED`) emits the same 1421 files with the same
+members and guards. The remaining differences are member grouping and order, which already vary
+between unseeded runs of the unchanged generator.
+
 ## 2026-10-23 - Parallel apt downloads in the Linux CI bootstraps
 
 **Files:** new `support/apt_prefetch.sh` (patch `0301-apt-prefetch-script.patch`),

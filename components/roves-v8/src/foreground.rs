@@ -278,19 +278,24 @@ mod tests {
     #[test]
     fn removed_registration_reclaims_its_delayed_tasks() {
         // A real delayed V8 task: the timeout of an `Atomics.waitAsync` that never resolves.
-        let mut runtime = crate::Runtime::new();
-        let key = isolate_key(&runtime.isolate);
+        crate::initialize_engine();
+        let mut isolate = v8::Isolate::new(Default::default());
+        let key = isolate_key(&isolate);
         set_handler(key, Some(handler()));
         let registration = Arc::downgrade(&handlers().lock().unwrap()[&key]);
-        runtime
-            .eval("Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1e9).async")
-            .unwrap();
+        {
+            v8::scope!(let scope, &mut isolate);
+            let context = v8::Context::new(scope, Default::default());
+            let scope = &mut v8::ContextScope::new(scope, context);
+            let source = v8::String::new(scope, "Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1e9).async").unwrap();
+            assert!(v8::Script::compile(scope, source, None).unwrap().run(scope).unwrap().is_true());
+        }
         assert_eq!(delayed_count(&registration), 1);
         // Removal destroys it now, with the isolate alive, rather than leaking it when due.
         set_handler(key, None);
         assert_eq!(delayed_count(&registration), 0);
         assert!(registration.upgrade().is_none());
-        drop(runtime);
+        drop(isolate);
     }
 
     #[test]
