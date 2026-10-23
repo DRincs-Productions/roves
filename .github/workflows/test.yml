@@ -419,6 +419,11 @@ jobs:
           fi
 
       # Saved even when bootstrap fails or times out: the next run resumes the download.
+      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
+      - name: prepare apt packages for caching
+        if: always() && matrix.os_name == 'linux'
+        shell: bash
+        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
       - name: save apt packages
         if: always() && matrix.os_name == 'linux'
         uses: actions/cache/save@v4
@@ -1355,6 +1360,11 @@ jobs:
         run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
       # Saved even when bootstrap fails or times out: the next run resumes the download.
+      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
+      - name: prepare apt packages for caching
+        if: always()
+        shell: bash
+        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
       - name: save apt packages
         if: always()
         uses: actions/cache/save@v4

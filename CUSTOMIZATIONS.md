@@ -77,7 +77,9 @@ save are separate steps (`actions/cache/restore`, then `actions/cache/save` with
 and a per-run key, restored by prefix), so downloads finished before a timeout are kept and
 the next run resumes from them: run `39929284910` showed why, its Ubuntu normal job fetched only
 170 of 271 packages (98.8 MB) in 30 minutes and saved nothing. v8.yml's bootstrap timeout is
-now 60 minutes. Old entries are evicted by the Actions cache's own size limit. `roves-action` (third-party CI) is not changed: this is runner infrastructure, not the
+now 60 minutes. The save is preceded by a step that removes apt's root-only `lock` and
+`partial/` and makes the rest world-readable: `actions/cache` exclusions did not stop `tar` from
+opening them, and run `39929284910`'s save failed with exit code 2 (permission denied). Old entries are evicted by the Actions cache's own size limit. `roves-action` (third-party CI) is not changed: this is runner infrastructure, not the
 build/bundle surface it mirrors.
 
 ## 2026-10-23 - V8 smoke: terminate busy workers with pending engine work

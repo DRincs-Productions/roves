@@ -192,6 +192,11 @@ jobs:
             ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
           fi
       # Saved even when bootstrap fails or times out: the next run resumes the download.
+      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
+      - name: prepare apt packages for caching
+        if: always() && runner.os == 'Linux'
+        shell: bash
+        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
       - name: save apt packages
         if: always() && runner.os == 'Linux'
         uses: actions/cache/save@v4
