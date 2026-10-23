@@ -1,3 +1,12 @@
+## 2026-10-23 - Production GC boundary diagnosis (0323, no production change)
+
+Compared public `JS_GC(DOM_TESTUTILS)` with the test-only GC path using existing V8/cppgc
+APIs and MemLab. Two proposed isolated tests pass normal/JITless: a released realm cycle
+collects through public GC, while a live native stack word conservatively retains a realm.
+No production defect established, no unsafe stack-state change and no source patch shipped.
+Draft tests/logs remain under ignored `target/task-0323/`; diagnosis and next evidence step
+are in `docs/V8_MIGRATION.md`. Actual removed-frame retention remains unresolved.
+
 ## 2026-10-23 - One WindowProxy identity per browsing context across origin changes
 
 **Files:** `components/roves-js/src/{object.rs,proxy.rs,realm_impl.rs,tests.rs}`, patch

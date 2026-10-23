@@ -12,6 +12,23 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Pausa quota0323 — 23ottobre22:03 Europe/Rome
+
+Pubblicati root `b38d0a0a8b0` e wiki `343c4bb` (0322). Batch nuovo: V840014801242 e
+generale40014801233 in corso, nessun job rosso al controllo22:03; 6/10 e6/13 già verdi.
+Android40014801183 e iOS40014801157 verdi. Non fare push finché il batch precedente non
+termina e gli eventuali errori non sono corretti. Nessun checkpoint browser0322 ancora verificato.
+Claude0323 ha segnalato: “You've hit your session limit — resets11:40pm (Europe/Rome)”.
+Nessun retry immediato: singolo tentativo autorizzato cinque ore dopo,24ottobre03:03
+Europe/Rome, automazione `ripresa-claude-dopo-quota-0323`. Disattivarla dopo il tentativo;
+se persiste lo stesso limite fermarsi senza concatenarne altri. Nessuna sostituzione Codex.
+La diagnosi0323 sotto è salvata; nessun sorgente WIP: Claude ha ripristinato realm_tests.rs
+salvando i2test proposti in target/task-0323/proposed-realm-tests.diff e i log normal/JITless.
+Codex ha controllato evidenze e stato Git; il prossimo incarico è valutare nomi JSClass nello
+snapshot per identificare i ClassBox referrer. Non applicare NoHeapPointers nel GC pubblico;
+nessuna prova della causa complessiva della retention. Documentazione diagnostica committata
+localmente durante la CI; nessun nuovo push durante le run attive.
+
 ### Checkpoint attuale0318–0320
 
 **Aggiornamento93afe3af909:** Android/iOS verdi; V840007474006 ha entrambi i Linux smoke
@@ -223,7 +240,7 @@ gli oggetti C++ soltanto tramite gli archi embedder esposti (non il grafo cppgc 
 quindi un retainer solo nativo può comparire come radice sintetica. Una sola cattura non prova
 un leak; nessun fix proposto. Log: target/task-0321/*.log, *.json, *.txt.
 
-**0322 (Claude, revisionata da Codex, pronta per commit/push):** identità stabile del WindowProxy per il fallimento
+**0322 (Claude, revisionata da Codex, pubblicata in b38d0a0a8b0):** identità stabile del WindowProxy per il fallimento
 0318 opaco di V840007474006. Causa confermata nel codice: cache WeakMap del realm ricevente
 con chiave = oggetto V8 del proxy corrente e proxy remoti (DissimilarOriginWindow) restituiti
 senza wrapper. Fix in roves-js: record cppgc `WindowIdentity` (proxy corrente tracciato +
@@ -258,10 +275,41 @@ anche se il nodo esiste. Nessuna conclusione di assenza leak: visibilità archi 
 MemLab limitano il risultato. Frame/documento/probe non rilasciati nella scena CI. Dettagli
 in ROVES_PERFORMANCE.md; log target/task-0321/frame-{selection,trace,object}.*.
 
+### Diagnosi0323: `TestUtils.gc` di produzione vs `gc_for_testing` (Claude, nessun difetto stabilito)
+
+Nessuna modifica di sorgente né patch. Differenza da sorgente (v8=152.2.0): `JS_GC`
+(`components/roves-js/src/runtime_impl.rs:450`) chiama `low_memory_notification` →
+`Heap::CollectAllAvailableGarbage` (2–7 GC complete, `heap.cc:1295`) con stato stack
+predefinito `kMayContainHeapPointers` (`heap.h:2315`): cppgc scansiona lo stack nativo in modo
+conservativo. `Runtime::gc_for_testing` (`rust.rs:474`) chiama `CppHeap::CollectGarbageForTesting`
+→ una GC completa `NoHeapPointers`, senza stack. In produzione `JS_GC` gira in un task Servo
+(`testutils.rs:34-37`), senza frame JS. `RunJobs`/`drain_microtasks` usano
+`perform_microtask_checkpoint`, che esegue `ClearKeptObjects` (`microtask-queue.cc:180`).
+Regressione nativa (proposta, `target/task-0323/proposed-realm-tests.diff`, si applica a HEAD):
+(1) realm rilasciato con ciclo global/oggetto/closure, osservato da WeakRef nel realm iniziale e
+WeakPersistent, 8 task `JS_GC(DOM_TESTUTILS)`+`RunJobs`: realm e probe raccolti; (2) una parola
+nativa viva con l'indirizzo del RealmData mantiene il realm sotto `JS_GC` e non sotto
+`gc_for_testing`. Normal e JITless 2/2 ok. Questa prova conferma la differenza
+per le parole di stack; non dimostra equivalenza completa dei due percorsi né la causa browser.
+Snapshot CI0320 (preso dentro l'ottava `JS_GC`, opzioni predefinite = con stack), solo API
+MemLab a un livello (`target/task-0323/stack-roots.js`, `one-level.js`): "C++ native stack
+roots" ha 106 archi verso 11 nodi: realm@2 (pagina, contesto@7485), realm@22 (realm iniziale),
+celle della pagina (proxy@37089, Promise TestUtils@115987, `gc`, `runPromiseJobs`), nessuno del
+frame rimosso. Window figlio@61811 (probe@65595) ← NativeContext@14139 ← realm@1190, tenuto
+solo dall'holder@102781 nel proprio EmbedderDataArray@61809: è il ciclo previsto. Il proxy@48737
+è `global_proxy_object` di due contesti (@14139 e @16847/realm@1486, global@48959: riuso0303);
+le sue celle@1186/@1192/@1488 sono referenziate da diversi `RovesJsClassBox` (slot o trace di
+classi DOM) di classe non identificabile nello snapshot. Ignoto: chi tiene quei ClassBox;
+la scansione conservativa non tiene direttamente il frame, ma via oggetti di pagina non è esclusa.
+Prossimo passo proposto (da revisionare, non implementato): in `object.rs:126` `get_name`
+restituisce il nome statico del `JSClass` del box (es. `HTMLIFrameElement`) invece di
+`RovesJsClassBox`; effetto solo sui nomi dello snapshot. Con il prossimo artifact, interrogare
+a un livello i referrer di quei ClassBox. Log: target/task-0323/ (probe-*.log, *.json, summary.txt).
+
 ### Prossimi punti
 
-1. Pubblicare0322 completa insieme ai documenti0321; batch93afe concluso, unici fallimenti
-   sono i due smoke0318 corretti da0322. Verificare il nuovo batch V8/browser normal e JITless.
+1. Controllare il batch b38d0a0a8b0 indicato in cima, inclusi smoke browser normal/JITless;
+   0322 è pubblicata, i due fallimenti0318 precedenti attendono conferma della correzione.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
