@@ -1,3 +1,15 @@
+## 2026-10-23 - Diagnostic: are removed frames' realms released?
+
+**Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh}`, patch `0304-gc-smoke-removed-frame-diagnostic.patch`.
+
+First step of the plan's open item on releasing realms after navigation or closure. Before the
+gc-lifecycle page removes its two module-owner frames it takes a `WeakRef` to each frame's
+document (kept alive by the frame's Window, so collected only if the realm is released), then
+collects up to eight times and reports `ROVES-V8 gc diagnostic removed frame documents N/2
+released after K collections`. Deliberately not a required marker: run.sh prints it as a
+notice, so CI shows the current behavior before deciding the fix and the requirement. The page
+timeout grows from 20 to 40 s for the extra collections. Runner contracts 9/9.
+
 ## 2026-10-23 - Drop the root Cargo.lock hunk from patch 0302
 
 **Files:** `patches/servo-v0.5.0/0302-remove-phase-1-v8-runtime-and-webidl-pilot.patch`.
