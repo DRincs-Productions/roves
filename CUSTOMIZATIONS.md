@@ -1,3 +1,15 @@
+## 2026-10-23 - Drop the root Cargo.lock hunk from patch 0302
+
+**Files:** `patches/servo-v0.5.0/0302-remove-phase-1-v8-runtime-and-webidl-pilot.patch`.
+
+test.yml's `validate-servo-patches` (run `39953006607` on 7189b10) failed: the root `Cargo.lock`
+hunk of 0302 did not apply to pristine Servo plus the earlier patches, whose root lock differs
+from the repository's (test.yml builds without `--locked`, so that lock is regenerated anyway and
+drops the removed crate itself). The hunk is removed; the crate-local locks stay. A full local
+replay (pristine v0.5.0 zip, every patch in order as the workflow does) applies all patches with
+no failure or reject, and the rebuilt roves-v8, roves-js, codegen, script_thread, prefs and smoke
+files match the repository.
+
 ## 2026-10-23 - Keep WindowProxy identity across navigations on V8
 
 **Files:** new `components/roves-v8/src/global_proxy.rs` (+ `lib.rs`),
