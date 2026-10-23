@@ -1,5 +1,6 @@
 """Regression tests for the smoke protocol and the complete shell runner."""
 
+import json
 import os
 from pathlib import Path
 import re
@@ -86,6 +87,111 @@ class EventsPageTests(unittest.TestCase):
             result = subprocess.run(['node', '-e', 'new (require("vm").Script)(require("fs").readFileSync(0, "utf8"))'],
                                     input=script, capture_output=True, text=True, encoding='utf-8', timeout=30)
             self.assertEqual(0, result.returncode, result.stderr)
+
+
+SCHEDULER_CHECK = 'microtasks run before timer and frame callbacks, in either order'
+# The check events.html used before 0319: it resolved at the frame callback and required the
+# 0 ms timer to have run first, rejecting the valid frame-first order Chrome shows.
+OLD_SCHEDULER_CHECK = r'''check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
+  const order = [];
+  setTimeout(() => order.push("timeout"), 0);
+  requestAnimationFrame(() => { order.push("frame"); resolve(order.join() === "sync,microtask,queueMicrotask,timeout,frame" || order.join()); });
+  Promise.resolve().then(() => order.push("microtask"));
+  queueMicrotask(() => order.push("queueMicrotask"));
+  order.push("sync");
+}));'''
+
+
+def registered_check(page, name):
+    """The source of the `check("name", ...)` call registered by the page's script."""
+    script = ''.join(page_scripts(page))
+    found = re.findall(r'^check\("' + re.escape(name) + r'".*?^\}\)\);$', script, re.S | re.M)
+    assert len(found) == 1, f'{name} registered {len(found)} times'
+    return found[0]
+
+
+def run_scheduler_check(check, steps, late_microtasks=False):
+    """Runs harness.js and one check in Node with mock timer and frame queues.
+
+    `steps` deliver callbacks in order, one per event loop turn: "timer" runs the 0 ms timer,
+    "frame" the animation frame callback, "deadline" the harness timeout. `late_microtasks`
+    makes queueMicrotask callbacks run as later tasks, like an engine violating the order.
+    No real timer or animation timing is involved."""
+    driver = r'''
+const vm = require("vm");
+const [harness, check, steps, late] = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const lines = [], timers = [], frames = [];
+let nextId = 1;
+const context = vm.createContext({
+  console: { log: (...parts) => lines.push(parts.join(" ")) },
+  setTimeout: (fn, ms = 0) => { timers.push({ id: nextId, fn, ms }); return nextId++; },
+  clearTimeout: id => { const index = timers.findIndex(timer => timer.id === id); if (index >= 0) timers.splice(index, 1); },
+  requestAnimationFrame: fn => { frames.push(fn); return frames.length; },
+  queueMicrotask: late ? fn => setImmediate(fn) : queueMicrotask,
+});
+vm.runInContext(harness + "\n" + check + "\nfinish();", context);
+const turn = () => new Promise(resolve => setImmediate(resolve));
+const take = ms => {
+  const index = timers.findIndex(timer => timer.ms === ms);
+  if (index < 0) throw new Error("no timer of " + ms + " ms");
+  return timers.splice(index, 1)[0].fn;
+};
+(async () => {
+  await turn();
+  for (const step of steps) {
+    if (step === "frame") { if (!frames.length) throw new Error("no frame callback"); frames.shift()(); }
+    else take(step === "timer" ? 0 : 10000)();
+    await turn();
+  }
+  await turn();
+  lines.push("pending frames " + frames.length);
+  process.stdout.write(lines.join("\n"));
+})().catch(error => { process.stdout.write("driver " + error.message); process.exitCode = 1; });
+'''
+    payload = json.dumps([(HERE / 'harness.js').read_text(encoding='utf-8'), check, list(steps), late_microtasks])
+    return subprocess.run(['node', '-e', driver], input=payload, capture_output=True,
+                          text=True, encoding='utf-8', timeout=30)
+
+
+@unittest.skipUnless(shutil.which('node'), 'needs Node')
+class SchedulerCheckTests(unittest.TestCase):
+    """Runs the scheduler check events.html registers, with deterministic timer and frame queues."""
+
+    def run_check(self, steps, check=None, late_microtasks=False):
+        result = run_scheduler_check(check or registered_check('events.html', SCHEDULER_CHECK), steps, late_microtasks)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return result.stdout.split('\n')
+
+    def test_either_callback_order_passes(self):
+        for steps in (('timer', 'frame'), ('frame', 'timer')):
+            with self.subTest(steps=steps):
+                lines = self.run_check(steps)
+                self.assertEqual([f'SUITE PASS {SCHEDULER_CHECK}', 'SUITE TOTAL 1/1', 'pending frames 0'], lines)
+                self.assertEqual([], validate('scheduler.html', '\n'.join(lines)))
+
+    def test_callback_before_microtasks_fails(self):
+        for steps, seen in ((('timer', 'frame'), 'sync,microtask,timeout,queueMicrotask,frame'),
+                            (('frame', 'timer'), 'sync,microtask,frame,queueMicrotask,timeout')):
+            with self.subTest(steps=steps):
+                lines = self.run_check(steps, late_microtasks=True)
+                self.assertEqual([f'SUITE FAIL {SCHEDULER_CHECK} :: {seen}', 'SUITE TOTAL 0/1', 'pending frames 0'], lines)
+                self.assertTrue(validate('scheduler.html', '\n'.join(lines)))
+
+    def test_missing_callback_times_out(self):
+        # The check never resolves early: without the second callback only the harness timeout
+        # reports, as a failure.
+        for steps, pending in ((('timer', 'deadline'), 1), (('frame', 'deadline'), 0)):
+            with self.subTest(steps=steps):
+                lines = self.run_check(steps)
+                self.assertEqual([f'SUITE FAIL {SCHEDULER_CHECK} :: timeout', 'SUITE TOTAL 0/1', f'pending frames {pending}'], lines)
+                self.assertTrue(validate('scheduler.html', '\n'.join(lines)))
+
+    def test_old_check_rejected_frame_first(self):
+        old = 'microtasks run before timers, timers before the next frame callback'
+        self.assertEqual([f'SUITE PASS {old}', 'SUITE TOTAL 1/1', 'pending frames 0'],
+                         self.run_check(('timer', 'frame'), OLD_SCHEDULER_CHECK))
+        self.assertEqual([f'SUITE FAIL {old} :: sync,microtask,queueMicrotask,frame', 'SUITE TOTAL 0/1', 'pending frames 0'],
+                         self.run_check(('frame', 'timer'), OLD_SCHEDULER_CHECK))
 
 
 def gc_page_script():

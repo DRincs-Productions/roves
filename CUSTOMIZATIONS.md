@@ -1,3 +1,30 @@
+## 2026-10-23 - Scheduler smoke check: timer and frame callbacks in either order
+
+**Files:** `support/v8-smoke/{events.html,test_runner.py}`, patch
+`0319-scheduler-callback-order-check.patch`. No production source changed.
+
+Chrome DevTools MCP (Chrome 155, visible page over HTTP, run by Codex) passed the 0318 origin
+check but failed events.html's first check, which resolved at the animation frame and required
+the 0 ms timer to have run first; Chrome showed `sync,microtask,queueMicrotask,frame`. HTML
+does not order the two, so the check is renamed `microtasks run before timer and frame
+callbacks, in either order`: it waits for both callbacks (no polling, a pending counter) and
+accepts exactly `sync,microtask,queueMicrotask,timeout,frame` or `...,frame,timeout`, i.e. the
+synchronous prefix, FIFO Promise/queueMicrotask order and both microtasks before either
+callback. A missing callback leaves the check unresolved, so the harness's 10 s timeout reports
+it as a failure. Plain Promise/timer/rAF code; no library needed.
+
+test_runner.py `SchedulerCheckTests` extracts the check registered in events.html and runs it
+with harness.js in Node `vm` with mock timer and frame queues (no real timing): timer-first and
+frame-first pass; queueMicrotask callbacks delivered as later tasks fail in both orders; a
+missing frame or timer callback reports `timeout`, not a pass; the old check passes timer-first
+and fails the valid frame-first order. Mutations (HEAD's events.html, resolving at the first
+callback, accepting only timer-first, not checking the order) each fail the new tests. Not a
+browser run; run.sh, check_results.py and `REQUIRED_CHECKS` unchanged (the scheduler check is
+not required by name, as before). Verified: unittest on Windows (21, 5 POSIX-only skipped);
+0319 dry-run/apply clean on the existing replay scratch (0315..0318); 468 patched paths: 465
+identical, 3 = the documented exceptions. Logs: `target/task-0319/`. Browser results: Codex's
+Chrome MCP rerun and V8 CI.
+
 ## 2026-10-23 - WindowProxy across an iframe's origin change and back
 
 **Files:** `support/v8-smoke/{events.html,check_results.py,test_runner.py}`, patch

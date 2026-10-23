@@ -1,3 +1,12 @@
+## 23 ottobre — conferma Chrome MCP dopo0319
+
+Stessa scena HTTP events.html/loopback19023, Chrome155 Windows, pagina visibile, reload
+ignoreCache tramite Chrome DevTools MCP. Dopo0319 tutti17/17 controlli passano, compreso
+il cambio origine0318. Evidenza target/task-0319/chrome-reference.json.0319 attende timer
+e frame senza imporne l’ordine reciproco, mantenendo microtask prima di entrambi; test Node
+coprono entrambi gli ordini, callback prima delle microtask e callback mancanti.
+È un riscontro di correttezza Chrome; Roves0318/0319 resta daCI, nessun guadagno prestazionale.
+
 ## 23 ottobre — riferimento Chrome MCP per WindowProxy0318
 
 Pagina HTTP http://127.0.0.1:19023/events.html servita dal checkout locale, Chrome155 su

@@ -8,10 +8,20 @@
 <script>
 // Event dispatch and task scheduling on V8: the order of microtasks, timers and animation
 // frames, synthetic input events, focus, listener options and custom events.
-check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
+// HTML does not order a 0 ms timer against the next animation frame: both orders are valid
+// (Chrome runs the frame first in a visible page). Wait for both callbacks; the microtasks queued
+// by the script must run, in FIFO order, before either. A missing callback fails on the harness
+// timeout.
+check("microtasks run before timer and frame callbacks, in either order", () => new Promise(resolve => {
   const order = [];
-  setTimeout(() => order.push("timeout"), 0);
-  requestAnimationFrame(() => { order.push("frame"); resolve(order.join() === "sync,microtask,queueMicrotask,timeout,frame" || order.join()); });
+  let pending = 2;
+  const settle = () => {
+    if (--pending) return;
+    const seen = order.join();
+    resolve(seen === "sync,microtask,queueMicrotask,timeout,frame" || seen === "sync,microtask,queueMicrotask,frame,timeout" || seen);
+  };
+  setTimeout(() => { order.push("timeout"); settle(); }, 0);
+  requestAnimationFrame(() => { order.push("frame"); settle(); });
   Promise.resolve().then(() => order.push("microtask"));
   queueMicrotask(() => order.push("queueMicrotask"));
   order.push("sync");

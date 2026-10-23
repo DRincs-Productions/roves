@@ -124,6 +124,25 @@ attendendo timer e frame e verificando microtask prima di entrambi. Roves0318 an
 0318 va conservato in locale mentre il batch2e9eb7ee15f è attivo. Nessun risultato di
 performance dedotto; evidenze e condizioni in ROVES_PERFORMANCE.md.
 
+**0319 (Claude, da revisionare, non committato):** il primo check di events.html diventa
+"microtasks run before timer and frame callbacks, in either order": attende entrambi i
+callback (contatore, nessun polling) e accetta solo sync,microtask,queueMicrotask seguiti da
+timeout/frame in uno dei due ordini; callback mancante = timeout harness 10 s, FAIL. Nessun
+REQUIRED_CHECKS/run.sh/check_results cambiato; 0318 invariato. Test Node SchedulerCheckTests
+(check estratto dalla pagina + harness.js in vm, code timer/rAF finte, nessun tempo reale):
+timer-first/frame-first PASS, queueMicrotask tardivo FAIL in entrambi gli ordini, callback
+mancante FAIL timeout, vecchio check FAIL frame-first; mutazioni rilevate. Windows21 (5skipPOSIX),
+WSL non necessario (protocollo shell non toccato). Patch0319 dry-run/apply puliti sullo scratch,
+465/468 identici + 3 eccezioni. Log: target/task-0319/. Riverifica Chrome MCP a Codex; Roves daCI.
+
+### Conferma revisione0319
+
+0319 consegnato da Claude e revisionato:21 test Windows (5skipPOSIX), quattro negativi
+rilevati, replay dei2file identico,465/468 con3eccezioni. Nessun protocollo shell modificato,
+nessun motivo per ripetere WSL. Codex ha ricaricato events.html in Chrome DevTools MCP155:
+17/17 verdi, origine0318 compresa. Roves0318/0319 ancora daCI. Commit locali finché il
+batch2e9eb7ee15f è attivo; non confondere esito Chrome con convalida Roves.
+
 ### Prossimi punti
 
 1. Verificare il nuovo batch CI sul checkpoint0316/0317;0315 tutto verde. Il check browser
