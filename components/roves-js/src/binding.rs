@@ -149,11 +149,9 @@ fn self_hosted<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str) -> Option<v8::L
         "ArrayForEach" => "forEach",
         _ => return None,
     };
-    let global = scope.get_current_context().global(scope);
-    let array_key = v8::String::new(scope, "Array")?;
-    let array = v8::Local::<v8::Object>::try_from(global.get(scope, array_key.into())?).ok()?;
-    let prototype_key = v8::String::new(scope, "prototype")?;
-    let prototype = v8::Local::<v8::Object>::try_from(array.get(scope, prototype_key.into())?).ok()?;
+    // The context's own %Array.prototype% (see `jsapi_impl::intrinsic_prototype`).
+    let array = v8::Array::new(scope, 0);
+    let prototype = v8::Local::<v8::Object>::try_from(array.get_prototype(scope)?).ok()?;
     let method_key = v8::String::new(scope, method)?;
     let function = prototype.get(scope, method_key.into())?;
     function.is_function().then_some(function)

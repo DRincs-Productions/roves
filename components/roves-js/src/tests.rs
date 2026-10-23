@@ -4927,6 +4927,15 @@ mod window_proxies {
 
         runtime.gc_for_testing();
         assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "after a collection too");
+        // Servo then builds the new window's interfaces from its realm's intrinsics.
+        for window in [second.get(), first.get()] {
+            let old = unsafe { EnterRealm(cx, window) };
+            assert!(!unsafe { GetRealmObjectPrototype(cx) }.is_null(), "Object.prototype of {}", if window == second.get() { "the new window" } else { "the old window" });
+            assert!(!unsafe { GetRealmFunctionPrototype(cx) }.is_null(), "Function.prototype");
+            assert!(!unsafe { GetRealmErrorPrototype(cx) }.is_null(), "Error.prototype");
+            assert!(!unsafe { GetRealmIteratorPrototype(cx) }.is_null(), "%IteratorPrototype%");
+            unsafe { LeaveRealm(cx, old) };
+        }
         // The previous Window keeps its realm: Servo maps objects back to their global.
         assert_eq!(unsafe { GetNonCCWObjectGlobal(first.get()) }, first.get(), "the previous Window is still its realm's global");
         assert_eq!(unsafe { GetNonCCWObjectGlobal(second.get()) }, second.get());

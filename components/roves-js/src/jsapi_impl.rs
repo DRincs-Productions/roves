@@ -991,29 +991,45 @@ pub unsafe fn RUST_FUNCTION_VALUE_TO_JITINFO(v: JSVal) -> *const crate::jsapi::J
 
 // --- Realm intrinsics ----------------------------------------------------------------------
 
-fn intrinsic(cx: &JSContext, path: &[&str]) -> *mut JSObject {
+#[derive(Clone, Copy)]
+enum Intrinsic {
+    Object,
+    Function,
+    Error,
+}
+
+fn noop(_: &mut v8::PinScope, _: v8::FunctionCallbackArguments, _: v8::ReturnValue) {}
+
+/// The prototype V8 gives a fresh object of the current context: the context's own intrinsic,
+/// not a lookup through its global. A Window that handed over its global proxy
+/// (`RovesNewWindowGlobalReusingProxy`) no longer reaches its global through it, and pages may
+/// replace globals such as `Object`.
+fn intrinsic_prototype(cx: &JSContext, kind: Intrinsic) -> *mut JSObject {
     cx.catching(|scope| {
-        let mut current: v8::Local<v8::Value> = scope.get_current_context().global(scope).into();
-        for name in path {
-            let object = v8::Local::<v8::Object>::try_from(current).ok()?;
-            let key = v8::String::new(scope, name)?;
-            current = object.get(scope, key.into())?;
-        }
-        current.is_object().then(|| from_v8(scope, current).to_object())
+        let object: v8::Local<v8::Object> = match kind {
+            Intrinsic::Object => v8::Object::new(scope),
+            Intrinsic::Function => v8::Function::new(scope, noop)?.into(),
+            Intrinsic::Error => {
+                let message = v8::String::empty(scope);
+                v8::Local::<v8::Object>::try_from(v8::Exception::error(scope, message)).ok()?
+            },
+        };
+        let prototype = object.get_prototype(scope)?;
+        prototype.is_object().then(|| from_v8(scope, prototype).to_object())
     })
     .unwrap_or(std::ptr::null_mut())
 }
 
 pub unsafe fn GetRealmObjectPrototype(cx: *mut JSContext) -> *mut JSObject {
-    intrinsic(raw(cx), &["Object", "prototype"])
+    intrinsic_prototype(raw(cx), Intrinsic::Object)
 }
 
 pub unsafe fn GetRealmFunctionPrototype(cx: *mut JSContext) -> *mut JSObject {
-    intrinsic(raw(cx), &["Function", "prototype"])
+    intrinsic_prototype(raw(cx), Intrinsic::Function)
 }
 
 pub unsafe fn GetRealmErrorPrototype(cx: *mut JSContext) -> *mut JSObject {
-    intrinsic(raw(cx), &["Error", "prototype"])
+    intrinsic_prototype(raw(cx), Intrinsic::Error)
 }
 
 /// `%IteratorPrototype%` (the prototype of `%ArrayIteratorPrototype%`).

@@ -1,3 +1,22 @@
+## 2026-10-23 - Realm intrinsics without a lookup through the global
+
+**Files:** `components/roves-js/src/{jsapi_impl.rs,binding.rs,tests.rs}`, patch
+`0311-realm-intrinsics-without-global-lookup.patch`.
+
+Fix for 0303, found by V8 CI run `39961706705` (Ubuntu smoke): pages with iframes panicked in
+`script_bindings::constructor::create_interface` (`!prototype_proto.is_null()`), which kills the
+script thread (events.html and gc-lifecycle.html then stall). `GetRealmObjectPrototype` and its
+siblings read `Object.prototype` through the current context's global, i.e. its global proxy; a
+Window that handed over that proxy no longer reaches its global through it, and Servo still
+creates interface objects in that realm (DOM objects during the old document's teardown).
+`GetRealm{Object,Function,Error}Prototype` now take the prototype of an object V8 creates in the
+context itself (`Object::new`, a native function, `Exception::error`), and the iterable bindings'
+`Array.prototype` that of `Array::new`, as `GetRealmIteratorPrototype` already did. This also stops
+page scripts that replace `Object`/`Array` from changing those intrinsics. The navigation test now
+asks both windows' realms for every intrinsic; the old realm failed before. Runtime 108 normal/107
+JITless. Other helpers that still look up `Reflect`, `JSON` or `Promise` through the global are a
+known follow-up.
+
 ## 2026-10-23 - Test: held Window wrappers follow repeated navigations
 
 **Files:** `components/roves-js/src/tests.rs`, patch `0310-repeated-navigation-wrapper-test.patch`.
