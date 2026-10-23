@@ -1,3 +1,12 @@
+## 2026-10-23 - Test: held Window wrappers follow repeated navigations
+
+**Files:** `components/roves-js/src/tests.rs`, patch `0310-repeated-navigation-wrapper-test.patch`.
+
+Test only, for 0303/0308: a window navigates twice (proxy takeover, new window proxy,
+transplant, `SetWindowProxy` each time) with a collection after each step, while another realm
+holds a wrapper; the wrapper reaches each new page through the chain of replaced window proxies.
+Runtime 108 normal/107 JITless.
+
 ## 2026-10-23 - Test: held Window wrappers take a cross-origin replacement
 
 **Files:** `components/roves-js/src/tests.rs`, patch `0309-held-window-wrappers-cross-origin-test.patch`.

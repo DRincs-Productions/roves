@@ -1,0 +1,42 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 3bfc8944244..c7ee6f68c85 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4809,6 +4809,37 @@ mod window_proxies {
+         }
+     }
+ 
++    /// Repeated navigations (A, B, C) with a collection between them: references held in another
++    /// realm follow the whole chain of replaced window proxies.
++    #[test]
++    fn held_window_wrappers_follow_repeated_navigations() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
++        rooted!(in(cx) let mut window = unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) });
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        rooted!(in(cx) let mut proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
++        unsafe { LeaveRealm(cx, old) };
++        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
++        rooted!(in(cx) let mut held = ObjectValue(proxy.get()));
++        assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
++        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
++        assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
++        for page in ["b", "c"] {
++            unsafe { RovesReuseWindowProxyForNextGlobal(cx, window.get()) };
++            window.set(unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) });
++            let old = unsafe { EnterRealm(cx, window.get()) };
++            rooted!(in(cx) let next = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
++            eval(&runtime, &format!("globalThis.page = '{page}'; 0"));
++            unsafe { LeaveRealm(cx, old) };
++            proxy.set(unsafe { JS_TransplantObject(cx, proxy.handle().into(), next.handle().into()) });
++            unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
++            runtime.gc_for_testing();
++            assert_eq!(describe(&runtime, eval(&runtime, "held.page")), page);
++        }
++    }
++
+     /// A navigation to another origin (another script thread) replaces the window proxy with a
+     /// real proxy over Servo's DissimilarOriginWindow: wrappers other realms hold switch to it,
+     /// so they get its cross-origin traps instead of the old same-origin window.
