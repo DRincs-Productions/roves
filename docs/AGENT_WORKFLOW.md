@@ -4,11 +4,19 @@ Con run attive e nessuna fallita, continuare il lavoro utile autorizzato, revisi
 committare in locale senza push. Non terminare il ciclo soltanto perché la CI è in corso.
 Controllare il batch al completamento delle implementazioni; pubblicare secondo AGENTS.md.
 
-## Eccezione operativa corrente
+## Delega ripristinata — 23 ottobre 2026
 
-L'utente ha corretto la lettura della quota Codex (97% residuo) e richiesto sviluppo diretto
-Codex senza usare Claude, che è limitato. Nessuna nuova invocazione Claude finché l'utente
-non ripristina la delega. Restano i vincoli CI e nessuna contabilità di consumo per incarico.
+L'utente ha ripristinato Codex direzione/revisione e Claude implementazione via terminale.
+Un solo incarico Claude attivo, nessuna implementazione duplicata, nessun tetto numerico o
+contabilità ordinaria. L'eccezione Codex diretto del22ottobre è terminata. Handoff unico:
+docs/V8_MIGRATION.md; il file temporaneo CLAUDE_RESUME.md è stato rimosso su richiesta.
+Il lavoro remoto di Claude è stato acquisito con fast-forward fino a8e4fb2e6cf4 (wiki b86bb38).
+La CI generale/Android/iOS è verde; V8 fallisce nei due smoke Linux con main non definita
+in gc-lifecycle.html. Correzione mirata delegata; pubblicare dopo revisione e batch concluso. La prima invocazione0315 si è
+fermata per quota effettiva (reset CLI18:40 Europe/Rome23ottobre) prima di verifiche/replay.
+Bozza archiviata sotto docs/handoff, sorgenti ripristinati. Nessuna nuova invocazione o
+attesa automatica; serve richiesta utente per riprendere. Nessun cambio modello/sviluppo
+Codex sostitutivo per aggirare il limite.
 
 # Regola corrente — aggiornamento 22 ottobre 2026
 
@@ -24,7 +32,7 @@ le soglie nelle sezioni seguenti sono storiche, non regole correnti.
 
 Il 22 ottobre 2026 l'utente ha fermato la migrazione e approvato la priorità **minimo consumo
 complessivo**. Nessun rapporto rigido 50/50: token e quote dei due abbonamenti non sono
-unità direttamente confrontabili. La migrazione riprenderà soltanto su nuova richiesta.
+unità direttamente confrontabili. La ripresa è stata autorizzata; questo paragrafo conserva il contesto storico.
 L'automazione `migrazione-v8-ci-e-delega-claude` è stata eliminata; nessun nuovo monitor previsto.
 
 ## Evidenze della sessione del 22 ottobre

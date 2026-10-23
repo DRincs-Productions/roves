@@ -1,35 +1,55 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Stato corrente — 23 ottobre 2026, sera
+## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-Ambiente Claude: Linux/WSL senza credenziali push; l'utente pubblica. Test locali:
-`CARGO_TARGET_DIR=target/roves-v8` in `components/roves-v8`, `target/roves-js` in
-`components/roves-js` (`cargo test --locked [--features jitless]`), più
-`support/v8-smoke/test_runner.py`. Prima di ogni push che tocca `patches/`: replay completo su
-Servo v0.5.0 pristine (come `validate-servo-patches`). Log in `target/task-NNNN/`.
+Acquisito origin/main con fast-forward fino a8e4fb2e6cf4, wiki b86bb38. Tutte le modifiche
+0287–0314 sono già pubblicate: le precedenti indicazioni "solo locale" sono superate.
+Codex dirige/revisiona, Claude implementa via terminale come richiesto di nuovo dall'utente.
+Rimosso il file temporaneo CLAUDE_RESUME.md: questo è il punto di ripresa corrente unico.
 
-**Pubblicato e verde in CI** (fino a `607b2e5`, tutte le run verdi): 0282–0301 — ciclo di vita
-dei task V8 (0282–0287, 0299), `import()` in `new Function` (0288), incumbent V8 e
-`HideScriptedCaller` reale (0289), costruttori dinamici nativi con `toString` corretto (0290),
-matrice CSP (0291), codice morto (0292, 0300), smoke browser (0293, 0295), entry global per le
-callback eseguite da V8 (0294), fixture runner (0296), DataCloneError per SAB/Wasm.Module
-(0297), detach key ArrayBuffer (0298), download apt paralleli e cache in CI (0301, workflow).
+CI sul commit8e4fb2e6cf4: generale39973655174, Android39973654912 e iOS39973655140 verdi.
+V839973655294 conclusa rossa: entrambi i job Ubuntu normal/JITless compilano ma lo smoke
+GC fallisce con ReferenceError: main is not defined. I restanti job passano. Correzione
+mirata0315 delegata, ma CLAUDE LIMITATO prima della consegna: reset indicato18:40 Europe/Rome
+23ottobre. Nessuna verifica/replay completata per0315; bozza salvata separata in
+[handoff/0315-incomplete-gc-smoke-main.patch](handoff/0315-incomplete-gc-smoke-main.patch),
+istruzioni [handoff/0315-gc-smoke-resume.md](handoff/0315-gc-smoke-resume.md).
+Sorgenti ripristinati allo stato pubblicato, nessun WIP pubblicabile. Nessun retry automatico
+o sostituzione di Claude per aggirare la quota. Ripresa solo su richiesta utente.
+Nessun push del checkpoint documentale: il prossimo push deve includere la correzione completa.
 
-**Pubblicato, CI da confermare:** `7189b10` — 0302 rimozione del Runtime di fase 1 di
-`roves-v8`, del pilot WebIDL e del backend V8 di `codegen.py` (V8 in corso; generale rossa per
-l'hunk del `Cargo.lock` radice in 0302, corretto in locale).
+### Risultati acquisiti e limiti della revisione
 
-**Solo locale:** `17654e7` (0302 senza hunk `Cargo.lock` radice, replay completo verificato) e
-`00d3990` 0303 — identità WindowProxy nelle navigazioni dello stesso thread (riuso del global
-proxy con `Context::DetachGlobal`, vecchia cella su oggetto nascosto, canale
-`RovesReuseWindowProxyForNextGlobal`, `session_history_max_length` = 0). Verifica browser da CI
-(`events.html` iframe, `nav1` `persisted=false`).
+-0287/0299 recuperano task timer e post tra close/rimozione handler. Restano casi conservativi
+  di consegna già in volo/senza handler: nessuna prova di assenza leak complessiva.
+-0288–0291 implementano costruttori dinamici nativi/CSP/toString e origine import; corpi
+  identici condividono il referrer cache eval come V8 nativo.0273 WIP è superato.
+-0289/0294 usano incumbent V8 e fallback entry settings per callback V8. Shim simboli C++
+  vincolato a rusty_v8=152.2.0: verificare ABI/simboli a ogni aggiornamento.
+-0292/0300 rimuovono API morte;0302 rimuove Runtime/pilot WebIDL di fase1 e derive.
+-0301/workflow accelerano bootstrap apt; batch607b2e5 tutto verde. Non dedurre tempi runtime.
+-0303–0310 riusano il global proxy con detach e session_history_max_length=0 (ricarica,
+  scelta utente registrata da Claude); vecchi global spostati su holder, unload prima del
+  passaggio e wrapper cross-realm inoltrati. Test ripetuti/cross-origin aggiunti. Non è prova
+  completa di navigazione browser o rilascio delle pagine.
+-0311/0312 catturano intrinseci/builtin prima del retarget;0313 corregge discriminante unload;
+  0304/0314 aggiungono diagnostica WeakRef di elementi/documenti/probe global dei frame rimossi.
+  La diagnostica non è un requisito pass/fail e il batch corrente non la esegue: main manca.
 
-**Aperto** (dettagli nelle sezioni 2 e 4): WindowProxy cross-origin e cambi di origine; rilascio
-di realm/global/moduli dopo navigazione o chiusura; ultimi task V8 abbandonati in casi rari;
-audit delle API approssimate non banali; WPT
-selettivi, stress GC estesi, smoke PixiJS/Three.js, confronto memoria/prestazioni con Chrome
-(serve DevTools MCP, assente in WSL); release e aggiornamento dei pin di Action e Packmaster.
+Revisione iniziale: letti cambi di lifecycle/WindowProxy, shim e log CI pertinenti; non è
+una revisione esaustiva di ogni riga delle158 file cambiate. Non ripetere test identici già
+coperti dalla CI senza dubbio concreto. Build Servo pesanti online; verifiche locali isolate.
+Prima di pubblicare patch nuove, replay completo pristinev0.5.0 come validate-servo-patches.
+
+### Prossimi punti
+
+1. Correggere main nello smoke GC, regressione automatica, replay e revisione; prossimo push
+   deve includerla. Il batch precedente è concluso ma contiene una regressione da correggere.
+2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
+   global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
+3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown
+   worker/task e moduli. Poi WPT selettivi, stress GC, PixiJS/Three.js e confronto Chrome viaMCP.
+4. Release e pin Action/Packmaster solo dopo criteri del piano soddisfatti e verifica artefatti.
 
 ## Storico della ripresa del 22 ottobre (0281–0286; lo stato attuale è in cima)
 
@@ -58,7 +78,7 @@ mantengono le politiche conservative precedenti: non è una prova di assenza lea
 0284 è nel commit locale7bfad886f07/wiki0c5b380;0283 d53e6b51031;0282 7813d44dbc0.
 Pubblicato8b536187562/wiki dcfd9bd; CI V839844591657/generale39844592094 attive senza
 failure all'ultimo controllo, Android/iOS verdi. Nessun nuovo push mentre il batch è attivo.
-CLAUDE_RESUME.md va aggiornato ad ogni checkpoint oggi per la ripresa manuale domani.
+Indicazione storica del22ottobre: il file temporaneo di ripresa è stato rimosso il23ottobre.
 
 **0284 completa localmente — task già consegnati all'event loop:** il payload opaco
 Dispatchable contiene ora il Task e Weak<Foreground> del runtime originale. DispatchableRun
@@ -136,7 +156,7 @@ cacheFunction0273, navigazione WindowProxy, incumbent, workers/termination/shutd
 CI su1094b88f051: Android39842644914 e iOS39842644717 verdi; generale39842644716 e
 V839842644668 ancora in corso. Nessun altro push prima della conclusione del batch.
 
-**Handoff autosufficiente per Claude:** leggere [CLAUDE_RESUME.md](CLAUDE_RESUME.md).
+**Handoff storico:** il file temporaneo di ripresa è stato rimosso il23ottobre; usare lo stato corrente in cima.
 Design, istruzioni e WIP0281 sono ora versionati sotto docs/handoff/, non soltanto target/.
 0279/0280 complete nei commit45d88a513e7/196ee7a5faa;0281 resta fuori dai sorgenti.
 L'utente ha chiesto commit/push di salvataggio per continuare direttamente con Claude

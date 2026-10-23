@@ -1,3 +1,18 @@
+## 2026-10-23 - Review remote Claude work and restore delegated workflow
+
+Fast-forwarded local main to8e4fb2e6cf4 (wiki b86bb38), acquiring completed0287–0314.
+Updated AGENTS.md, docs/AGENT_WORKFLOW.md and the current docs/V8_MIGRATION.md handoff;
+removed temporary docs/CLAUDE_RESUME.md at the user's request. Restored Codex direction/
+review and Claude implementation. Reviewed the current CI: general/Android/iOS pass;
+normal/JITless Linux smoke fail because gc-lifecycle.html calls undefined main after0314.
+
+Delegated task0315 hit the actual Claude session limit before checks/replay. Saved the
+incomplete diff and continuation instructions under docs/handoff, restored production
+sources, and stopped without automatic quota retries. Reset reported18:40 Europe/Rome.
+No production source or numbered patch change; no claim that the GC smoke or overall
+retention is fixed. This documentation checkpoint remains local until the complete fix
+can accompany the next push. Historical prototype evidence remains historical.
+
 ## 2026-10-23 - Removed-frame diagnostic: which part stays alive
 
 **Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh}`, patch `0314-removed-frame-diagnostic-details.patch`.

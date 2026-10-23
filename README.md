@@ -605,3 +605,7 @@ A reference to a window (`iframe.contentWindow`, `window.opener`, a popup from `
 stays the same object when that window navigates to another page served by the same script
 thread, as in browsers. Going back or forward in history therefore reloads the page instead of
 resuming it from memory (`session_history_max_length` defaults to 0).
+
+V8 migration status and agent handoff are maintained in [docs/V8_MIGRATION.md](docs/V8_MIGRATION.md).
+The current Linux GC smoke has an entry-point regression under investigation; removed-frame
+collection remains diagnostic, not a completed page-retention guarantee.

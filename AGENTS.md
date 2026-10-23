@@ -43,20 +43,12 @@ sections only for a concrete issue. Consumption evidence and the first bounded c
 are in `docs/AGENT_WORKFLOW.md`; browser performance history is separate in
 `docs/ROVES_PERFORMANCE.md`. Prototype coverage is not a completed production migration.
 This file is the shared entry point for coding agents.
-Per richiesta dell'utente del22ottobre, durante lo sviluppo di oggi aggiornare anche
-`docs/CLAUDE_RESUME.md` a ogni checkpoint completo: stato pubblicato/locale, verifiche, CI
-pendenti e prossimo intervento. Domani l'utente riprenderà manualmente con Claude; il file
-deve bastare senza lo storico della chat. Nessuna automazione o invocazione Claude oggi.
-
+Dal 23 ottobre 2026 l'utente ha ripristinato la delega a Claude: Codex dirige e revisiona,
+Claude implementa incarichi circoscritti via terminale. L'eccezione del22ottobre (sviluppo
+Codex diretto per quota Claude) è terminata. Il file temporaneo docs/CLAUDE_RESUME.md
+è stato rimosso su richiesta; il punto di ripresa unico è docs/V8_MIGRATION.md.
 
 ## Coordinamento con Claude e pubblicazione durante la CI
-
-**Eccezione corrente richiesta dall'utente (22 ottobre 2026):** Claude ha esaurito la quota
-e non va avviato. Codex implementa e verifica direttamente finché l'utente non richiede di
-ripristinare la delega. La quota Codex quasi esaurita era un errore di lettura dell'utente
-(ha comunicato97% residuo); non trattarla come un blocco. Restano revisioni, vincoli CI,
-build pesanti online, nessuna automazione periodica e nessuna contabilità per incarico.
-Le regole di delega sotto tornano applicabili quando la delega viene ripristinata.
 
 Codex dirige il lavoro: studia il problema, valuta il riuso di librerie mantenute e definisce
 passo per passo un incarico concreto per Claude Code, disponibile tramite terminale.
