@@ -15,7 +15,11 @@
 - Pubblicato `a2a2458` (0290–0294 + correzione bootstrap Linux in v8.yml): batch CI in corso.
   Verificare che i job Ubuntu servoshell-v8 superino ora il bootstrap e che gli smoke nuovi
   (0293 suite/events/modules, 0294 gc-lifecycle) passino.
-- Locale non pubblicato: 0295 (smoke terminazione worker occupati).
+- `a2a2458`: V8 `39928279899` ROSSA nei job runtime per la fixture di test_runner.py senza il
+  marker 0294 (corretta in locale, 0296); generale e altri job da verificare.
+- Locale non pubblicato: 0295 (smoke worker), cache apt nei workflow, 0296 (fixture).
+- Prima di ogni push con modifiche a `support/v8-smoke/run.sh` eseguire
+  `python3 -m unittest discover -s support/v8-smoke -p test_runner.py` (circa 100 s).
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)

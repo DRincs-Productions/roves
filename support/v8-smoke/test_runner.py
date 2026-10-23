@@ -133,7 +133,8 @@ if page == 'gc-lifecycle.html':
                      'module owners left right', 'module owners after collection left right',
                      'eval module owners left right', 'eval module owners after collection left right',
                      'module resolve true', 'module resolve after collection true',
-                     'retained nodes final true true true', 'result pass'):
+                     'retained nodes final true true true',
+                     'cleanup callback entry settings true', 'result pass'):
             if scenario == 'gc-import' and line.startswith('dynamic import'):
                 line = 'dynamic import after collection undefined'
             if scenario == 'gc-import' and line == 'result pass':

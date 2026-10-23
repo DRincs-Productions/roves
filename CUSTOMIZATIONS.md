@@ -1,3 +1,14 @@
+## 2026-10-23 - Smoke runner fixture for the 0294 marker
+
+**Files:** `support/v8-smoke/test_runner.py`, patch
+`0296-smoke-runner-fixture-cleanup-entry-marker.patch`.
+
+0294 made `run.sh` require `ROVES-V8 gc cleanup callback entry settings true`, but the runner's
+own unit test still fed passing gc-lifecycle logs without it, so V8 CI run `39928279899` failed
+its runtime jobs (5 failures, all this missing marker; no runtime test failed). The passing
+fixture now prints the marker. Local: `test_runner.py` 9/9, `test_v8.py` 75/75, roves-v8 with
+`webidl-pilot` normal/JITless green.
+
 ## 2026-10-23 - Cache apt packages in the Linux CI bootstraps
 
 **Files:** `.github/workflows/test.yml` (build-and-publish Linux, steam-emulator-smoke-test),
