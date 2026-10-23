@@ -1,0 +1,86 @@
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 73ed42426ed..0e117d5921d 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -111,6 +111,19 @@ check("MessageChannel delivers as a task, in order", () => new Promise(resolve =
+ check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
+   requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
+ }));
++check("postMessage source is the incumbent: the innermost frame's window", () => new Promise(resolve => {
++  // The iframe's own script enters its realm, then calls a function of this window: the
++  // incumbent is this window (the innermost frame), not the entered iframe.
++  const frame = document.createElement("iframe");
++  window.sendIncumbentProbe = () => window.postMessage("incumbent-probe", "*");
++  addEventListener("message", function listener(event) {
++    if (event.data !== "incumbent-probe") return;
++    removeEventListener("message", listener);
++    resolve(event.source === window || (event.source === frame.contentWindow ? "source is the iframe" : String(event.source)));
++  });
++  frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
++  document.body.append(frame);
++}));
+ finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/modules.html b/support/v8-smoke/modules.html
+index 3f7f2e52620..d968c79c06a 100644
+--- a/support/v8-smoke/modules.html
++++ b/support/v8-smoke/modules.html
+@@ -39,6 +39,11 @@ check("module namespace objects are frozen and sealed", async () => {
+   const ns = await import("./modules/b.mjs");
+   return Object.isFrozen(ns) === false && Object.isSealed(ns) && Object.prototype.toString.call(ns) === "[object Module]";
+ });
++check("import() in new Function code resolves against the calling module", async () => {
++  const [a, b] = await Promise.all([import("./modules/fn-a/creator.mjs"), import("./modules/fn-b/creator.mjs")]);
++  const where = [(await a.load()).where, (await b.load()).where].join();
++  return where === "a,b" || where;
++});
+ await finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/modules/fn-a/creator.mjs b/support/v8-smoke/modules/fn-a/creator.mjs
+new file mode 100644
+index 00000000000..582d4511ff8
+--- /dev/null
++++ b/support/v8-smoke/modules/fn-a/creator.mjs
+@@ -0,0 +1,3 @@
++// Each body names its directory: V8's eval cache would reuse the first origin for an
++// identical body, as with the builtin constructor.
++export function load() { return Function("return import('./leaf.mjs') /* a */")(); }
+diff --git a/support/v8-smoke/modules/fn-a/leaf.mjs b/support/v8-smoke/modules/fn-a/leaf.mjs
+new file mode 100644
+index 00000000000..d8dd420728b
+--- /dev/null
++++ b/support/v8-smoke/modules/fn-a/leaf.mjs
+@@ -0,0 +1 @@
++export const where = "a";
+diff --git a/support/v8-smoke/modules/fn-b/creator.mjs b/support/v8-smoke/modules/fn-b/creator.mjs
+new file mode 100644
+index 00000000000..73b6b812b1b
+--- /dev/null
++++ b/support/v8-smoke/modules/fn-b/creator.mjs
+@@ -0,0 +1,3 @@
++// Each body names its directory: V8's eval cache would reuse the first origin for an
++// identical body, as with the builtin constructor.
++export function load() { return Function("return import('./leaf.mjs') /* b */")(); }
+diff --git a/support/v8-smoke/modules/fn-b/leaf.mjs b/support/v8-smoke/modules/fn-b/leaf.mjs
+new file mode 100644
+index 00000000000..a0d250a1372
+--- /dev/null
++++ b/support/v8-smoke/modules/fn-b/leaf.mjs
+@@ -0,0 +1 @@
++export const where = "b";
+diff --git a/support/v8-smoke/suite.html b/support/v8-smoke/suite.html
+index 354b6bc370b..74a12bb514f 100644
+--- a/support/v8-smoke/suite.html
++++ b/support/v8-smoke/suite.html
+@@ -50,6 +50,9 @@ check("exceptions are DOMException", () => { try { document.querySelector("!!");
+ check("JSON of DOM data", () => JSON.stringify({ a: [1, "x", null] }) === '{"a":[1,"x",null]}' && JSON.parse('{"b":2}').b === 2);
+ check("fetch blob url", () => fetch(URL.createObjectURL(new Blob(["fetched"]))).then(r => r.text()).then(t => t === "fetched"));
+ check("Proxy + Reflect", () => { const p = new Proxy({}, { get: (t, k) => k }); return p.hello === "hello" && Reflect.ownKeys({ a: 1 }).join() === "a"; });
++check("dynamic code constructors print like V8's builtins", () =>
++  Function.prototype.toString.call(Function) === "function Function() { [native code] }" &&
++  String(Object.getPrototypeOf(async function(){}).constructor) === "function AsyncFunction() { [native code] }");
+ check("WeakRef / FinalizationRegistry exist", () => typeof WeakRef === "function" && typeof FinalizationRegistry === "function");
+ check("document.all-ish getters", () => document.documentElement.tagName === "HTML" && document.body === document.querySelector("body"));
+ 

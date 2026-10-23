@@ -111,6 +111,19 @@ check("MessageChannel delivers as a task, in order", () => new Promise(resolve =
 check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
   requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
 }));
+check("postMessage source is the incumbent: the innermost frame's window", () => new Promise(resolve => {
+  // The iframe's own script enters its realm, then calls a function of this window: the
+  // incumbent is this window (the innermost frame), not the entered iframe.
+  const frame = document.createElement("iframe");
+  window.sendIncumbentProbe = () => window.postMessage("incumbent-probe", "*");
+  addEventListener("message", function listener(event) {
+    if (event.data !== "incumbent-probe") return;
+    removeEventListener("message", listener);
+    resolve(event.source === window || (event.source === frame.contentWindow ? "source is the iframe" : String(event.source)));
+  });
+  frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
+  document.body.append(frame);
+}));
 finish();
 </script>
 </body></html>

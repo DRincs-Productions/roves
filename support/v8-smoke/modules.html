@@ -39,6 +39,11 @@ check("module namespace objects are frozen and sealed", async () => {
   const ns = await import("./modules/b.mjs");
   return Object.isFrozen(ns) === false && Object.isSealed(ns) && Object.prototype.toString.call(ns) === "[object Module]";
 });
+check("import() in new Function code resolves against the calling module", async () => {
+  const [a, b] = await Promise.all([import("./modules/fn-a/creator.mjs"), import("./modules/fn-b/creator.mjs")]);
+  const where = [(await a.load()).where, (await b.load()).where].join();
+  return where === "a,b" || where;
+});
 await finish();
 </script>
 </body></html>

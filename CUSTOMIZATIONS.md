@@ -1,3 +1,19 @@
+## 2026-10-23 - V8 browser smoke checks for Function imports, incumbent and toString
+
+**Files:** `support/v8-smoke/{events.html,modules.html,suite.html}`, new
+`support/v8-smoke/modules/fn-{a,b}/{creator,leaf}.mjs`, patch
+`0293-v8-smoke-function-import-incumbent-tostring.patch`.
+
+Browser-level checks for today's runtime changes, run by the existing smoke runner (any
+`SUITE FAIL` line fails the job; no runner change). `modules.html`: `import()` inside
+`new Function` code from two modules in different directories resolves against each calling
+module (0288; distinct bodies, since V8's eval cache reuses the first origin of an identical
+body). `events.html`: a same-origin iframe's own script calls a parent function that posts a
+message; `event.source` must be the parent (the incumbent is the innermost frame's window, not
+the entered iframe; 0289). `suite.html`: the dynamic constructors print as
+`function Function() { [native code] }` (0290). JavaScript syntax checked with Node; no local
+browser or Chrome DevTools MCP reference available here, so results come from CI.
+
 ## 2026-10-23 - Remove dead roves-js helpers
 
 **Files:** `components/roves-js/src/{api.rs,binding.rs,jsapi_impl.rs}`, patch

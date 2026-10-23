@@ -50,6 +50,9 @@ check("exceptions are DOMException", () => { try { document.querySelector("!!");
 check("JSON of DOM data", () => JSON.stringify({ a: [1, "x", null] }) === '{"a":[1,"x",null]}' && JSON.parse('{"b":2}').b === 2);
 check("fetch blob url", () => fetch(URL.createObjectURL(new Blob(["fetched"]))).then(r => r.text()).then(t => t === "fetched"));
 check("Proxy + Reflect", () => { const p = new Proxy({}, { get: (t, k) => k }); return p.hello === "hello" && Reflect.ownKeys({ a: 1 }).join() === "a"; });
+check("dynamic code constructors print like V8's builtins", () =>
+  Function.prototype.toString.call(Function) === "function Function() { [native code] }" &&
+  String(Object.getPrototypeOf(async function(){}).constructor) === "function AsyncFunction() { [native code] }");
 check("WeakRef / FinalizationRegistry exist", () => typeof WeakRef === "function" && typeof FinalizationRegistry === "function");
 check("document.all-ish getters", () => document.documentElement.tagName === "HTML" && document.body === document.querySelector("body"));
 
