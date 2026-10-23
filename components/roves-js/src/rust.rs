@@ -487,6 +487,7 @@ impl Drop for Runtime {
     fn drop(&mut self) {
         self.thread_safe_handle.write().unwrap().take();
         crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
+        crate::runtime_impl::release_hidden_callers(&self.raw);
         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
         // Release embedder references while Runtime::get(), realms and the isolate
         // are still live. Module/script private maps must not leak their Rc owners.

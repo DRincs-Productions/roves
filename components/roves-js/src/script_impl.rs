@@ -449,15 +449,20 @@ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableH
     dest.set(raw(cx).with_scope(caller_private));
 }
 
-/// The global of the realm whose script is running (the entered realm).
+/// The global of the realm of the innermost running script, unless `HideScriptedCaller` hides
+/// it (V8's incumbent context).
 pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
-    raw(cx).with_scope(|scope| {
+    let cx = raw(cx);
+    cx.with_scope(|scope| {
         // An entered context alone does not imply a script is on the stack. Servo's
         // incumbent-settings algorithm must fall back to its explicit callback stack.
         if v8::StackTrace::current_stack_trace(scope, 1).is_none_or(|trace| trace.get_frame_count() == 0) {
             return std::ptr::null_mut();
         }
-        let context = scope.get_entered_or_microtask_context();
+        let context = roves_v8::incumbent::incumbent_context(scope);
+        if crate::runtime_impl::is_hidden_incumbent(cx, scope, context) {
+            return std::ptr::null_mut();
+        }
         let realm = crate::realm_impl::realm_of_context(context);
         // SAFETY: realms come from `register_realm`.
         unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) }

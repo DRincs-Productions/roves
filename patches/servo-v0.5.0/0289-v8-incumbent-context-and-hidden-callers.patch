@@ -1,0 +1,389 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index b54a26792d9..b9855c4d5ea 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -1347,16 +1347,12 @@ pub unsafe fn GetFunctionRealm(cx: *mut JSContext, obj: HandleObject) -> *mut cr
+     crate::realm_impl::realm_of_object(raw(cx), obj.get())
+ }
+ 
+-thread_local! {
+-    static HIDDEN_CALLERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+-}
+-
+-pub unsafe fn HideScriptedCaller(_cx: *mut JSContext) {
+-    HIDDEN_CALLERS.with(|count| count.set(count.get() + 1));
++pub unsafe fn HideScriptedCaller(cx: *mut JSContext) {
++    crate::runtime_impl::hide_scripted_caller(raw(cx));
+ }
+ 
+-pub unsafe fn UnhideScriptedCaller(_cx: *mut JSContext) {
+-    HIDDEN_CALLERS.with(|count| count.set(count.get().saturating_sub(1)));
++pub unsafe fn UnhideScriptedCaller(cx: *mut JSContext) {
++    crate::runtime_impl::unhide_scripted_caller(raw(cx));
+ }
+ 
+ // --- Descriptors and promises --------------------------------------------------------------
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 59c91c817dd..c3e50a6d781 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -60,6 +60,10 @@ pub(crate) struct RuntimeHooks {
+     foreground: std::sync::Arc<Foreground>,
+     consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
+     script_environment_preparer: Cell<InvokeScriptPreparerHook>,
++    /// `HideScriptedCaller` scopes, innermost last (see `hide_scripted_caller`).
++    hidden_callers: RefCell<Vec<roves_v8::incumbent::BackupIncumbentScope>>,
++    /// The incumbent those scopes supply: a context that never runs script.
++    hidden_sentinel: std::cell::OnceCell<v8::Global<v8::Context>>,
+ }
+ 
+ impl Default for RuntimeHooks {
+@@ -83,10 +87,51 @@ impl Default for RuntimeHooks {
+             foreground: Default::default(),
+             consume_stream: Cell::new((None, None)),
+             script_environment_preparer: Cell::new(None),
++            hidden_callers: Default::default(),
++            hidden_sentinel: Default::default(),
+         }
+     }
+ }
+ 
++/// Hides the running script from `GetScriptedCallerGlobal` until the matching unhide, except
++/// for script that starts running later (SpiderMonkey's per-activation contract). V8's backup
++/// incumbent scope gives exactly that: its context is the incumbent only while no JS frame is
++/// newer than the scope, and a sentinel context marks it as hidden.
++pub(crate) fn hide_scripted_caller(cx: &JSContext) {
++    // Callbacks hide their caller on every call: create the sentinel once, then only clone it.
++    let sentinel = match cx.hooks.hidden_sentinel.get() {
++        Some(sentinel) => sentinel.clone(),
++        None => cx.with_scope(|scope| {
++            let context = v8::Context::new(scope, Default::default());
++            cx.hooks.hidden_sentinel.get_or_init(|| v8::Global::new(scope, context)).clone()
++        }),
++    };
++    // SAFETY: the runtime's live isolate, on its own thread.
++    let scope = roves_v8::incumbent::BackupIncumbentScope::enter(unsafe { &*cx.isolate }, sentinel);
++    cx.hooks.hidden_callers.borrow_mut().push(scope);
++}
++
++/// Ends the innermost `hide_scripted_caller`.
++pub(crate) fn unhide_scripted_caller(cx: &JSContext) {
++    let scope = cx.hooks.hidden_callers.borrow_mut().pop();
++    if let Some(scope) = scope {
++        // SAFETY: as above.
++        scope.exit(unsafe { &mut *cx.isolate });
++    }
++}
++
++/// Ends the scopes left by unmatched hides (before the isolate is disposed).
++pub(crate) fn release_hidden_callers(cx: &JSContext) {
++    while !cx.hooks.hidden_callers.borrow().is_empty() {
++        unhide_scripted_caller(cx);
++    }
++}
++
++/// Whether `context` is the incumbent of a hidden caller (see `hide_scripted_caller`).
++pub(crate) fn is_hidden_incumbent(cx: &JSContext, scope: &mut v8::PinScope, context: v8::Local<v8::Context>) -> bool {
++    cx.hooks.hidden_sentinel.get().is_some_and(|sentinel| v8::Local::new(scope, sentinel) == context)
++}
++
+ /// The embedder's dispatch callback and its closure (`SetUpEventLoopDispatch`).
+ #[derive(Clone, Copy)]
+ struct Dispatch(RustDispatchToEventLoopCallback, *mut c_void);
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 15902c17d07..a9c988b2604 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -487,6 +487,7 @@ impl Drop for Runtime {
+     fn drop(&mut self) {
+         self.thread_safe_handle.write().unwrap().take();
+         crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
++        crate::runtime_impl::release_hidden_callers(&self.raw);
+         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
+         // Release embedder references while Runtime::get(), realms and the isolate
+         // are still live. Module/script private maps must not leak their Rc owners.
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index a08d954b821..958f99755b5 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -449,15 +449,20 @@ pub unsafe fn JS_GetScriptedCallerPrivate(cx: *mut JSContext, mut dest: MutableH
+     dest.set(raw(cx).with_scope(caller_private));
+ }
+ 
+-/// The global of the realm whose script is running (the entered realm).
++/// The global of the realm of the innermost running script, unless `HideScriptedCaller` hides
++/// it (V8's incumbent context).
+ pub unsafe fn GetScriptedCallerGlobal(cx: *mut JSContext) -> *mut JSObject {
+-    raw(cx).with_scope(|scope| {
++    let cx = raw(cx);
++    cx.with_scope(|scope| {
+         // An entered context alone does not imply a script is on the stack. Servo's
+         // incumbent-settings algorithm must fall back to its explicit callback stack.
+         if v8::StackTrace::current_stack_trace(scope, 1).is_none_or(|trace| trace.get_frame_count() == 0) {
+             return std::ptr::null_mut();
+         }
+-        let context = scope.get_entered_or_microtask_context();
++        let context = roves_v8::incumbent::incumbent_context(scope);
++        if crate::runtime_impl::is_hidden_incumbent(cx, scope, context) {
++            return std::ptr::null_mut();
++        }
+         let realm = crate::realm_impl::realm_of_context(context);
+         // SAFETY: realms come from `register_realm`.
+         unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index ccb1fa32a44..e2e75db482b 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4258,6 +4258,63 @@ mod caller_privates {
+         assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
+     }
+ 
++    /// `callerGlobal()`: `GetScriptedCallerGlobal`, or null.
++    unsafe extern "C" fn caller_global(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++        let global = unsafe { GetScriptedCallerGlobal(cx) };
++        unsafe { *vp = if global.is_null() { NullValue() } else { ObjectValue(global) } };
++        true
++    }
++
++    /// `hiddenThen(f)`: under `HideScriptedCaller`, checks that the caller is hidden, then
++    /// returns `f()`.
++    unsafe extern "C" fn hidden_then(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        let args = unsafe { CallArgs::from_vp(vp, argc) };
++        rooted!(in(cx) let callee = args.get(0).get());
++        rooted!(in(cx) let this = UndefinedValue());
++        rooted!(in(cx) let mut result = UndefinedValue());
++        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
++        let ok = unsafe {
++            HideScriptedCaller(cx);
++            assert!(GetScriptedCallerGlobal(cx).is_null(), "the calling script is hidden");
++            let ok = Call(cx, this.handle().into(), callee.handle().into(), &no_arguments, result.handle_mut().into());
++            UnhideScriptedCaller(cx);
++            ok
++        };
++        args.rval().set(result.get());
++        ok
++    }
++
++    #[test]
++    fn scripted_caller_global_is_the_innermost_frame_realm() {
++        let runtime = runtime();
++        let cx = runtime.raw_cx();
++        let new_global = || unsafe {
++            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
++        };
++        rooted!(in(cx) let left = new_global());
++        rooted!(in(cx) let right = new_global());
++        for (global, other) in [(left.get(), right.get()), (right.get(), left.get())] {
++            let old = unsafe { EnterRealm(cx, global) };
++            install(&runtime, c"callerGlobal", Some(caller_global));
++            install(&runtime, c"hiddenThen", Some(hidden_then));
++            set_global(&runtime, c"other", ObjectValue(other));
++            eval(&runtime, "globalThis.fromHere = () => callerGlobal(); 0");
++            unsafe { LeaveRealm(cx, old) };
++        }
++        let old = unsafe { EnterRealm(cx, right.get()) };
++        let check = |source: &str| assert!(eval(&runtime, source).to_boolean(), "{source}");
++        check("callerGlobal() === globalThis");
++        // The entered realm is this one; the innermost frame runs in the other.
++        check("other.fromHere() === other");
++        // Script started under a hidden caller is visible again.
++        check("hiddenThen(() => callerGlobal() === globalThis)");
++        check("hiddenThen(() => other.fromHere() === other)");
++        check("hiddenThen(() => hiddenThen(() => callerGlobal() === globalThis))");
++        check("callerGlobal() === globalThis");
++        unsafe { LeaveRealm(cx, old) };
++        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
++    }
++
+     #[test]
+     fn dynamic_functions_import_from_their_calling_module() {
+         let owners = [Rc::new(11), Rc::new(22)];
+diff --git a/components/roves-v8/src/incumbent.rs b/components/roves-v8/src/incumbent.rs
+new file mode 100644
+index 00000000000..44515ee1ff4
+--- /dev/null
++++ b/components/roves-v8/src/incumbent.rs
+@@ -0,0 +1,171 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! V8's incumbent realm API (HTML's incumbent settings object): `Isolate::GetIncumbentContext`
++//! and `Context::BackupIncumbentScope`. rusty_v8 152 does not bind them, but its prebuilt V8
++//! library exports both, so these declare the exported C++ symbols directly. The crate pins
++//! `v8 = "=152.2.0"`; a V8 update must recheck these names and the layout below.
++//!
++//! ABI notes: `Local<T>` is one pointer and `V8_TRIVIAL_ABI`, so it travels in a register.
++//! The Microsoft C++ ABI returns any class from an instance method through a hidden pointer
++//! passed after `this`, and returns that pointer.
++
++use std::ffi::c_void;
++use std::mem::MaybeUninit;
++use std::ptr::NonNull;
++
++/// `v8::Context::BackupIncumbentScope`'s fields.
++#[repr(C)]
++struct RawScope {
++    backup_incumbent_context: *const v8::Context,
++    js_stack_comparable_address: usize,
++    prev: *const c_void,
++}
++
++unsafe extern "C" {
++    #[cfg_attr(not(target_env = "msvc"), link_name = "_ZN2v87Context20BackupIncumbentScopeC1ENS_5LocalIS0_EE")]
++    #[cfg_attr(target_env = "msvc", link_name = "??0BackupIncumbentScope@Context@v8@@QEAA@V?$Local@VContext@v8@@@2@@Z")]
++    fn backup_incumbent_scope_construct(this: *mut RawScope, context: *mut v8::Context);
++
++    #[cfg_attr(not(target_env = "msvc"), link_name = "_ZN2v87Context20BackupIncumbentScopeD1Ev")]
++    #[cfg_attr(target_env = "msvc", link_name = "??1BackupIncumbentScope@Context@v8@@QEAA@XZ")]
++    fn backup_incumbent_scope_destruct(this: *mut RawScope);
++}
++
++#[cfg(not(target_env = "msvc"))]
++unsafe extern "C" {
++    #[link_name = "_ZN2v87Isolate19GetIncumbentContextEv"]
++    fn isolate_get_incumbent_context(isolate: *mut c_void) -> *const v8::Context;
++}
++
++#[cfg(target_env = "msvc")]
++unsafe extern "C" {
++    #[link_name = "?GetIncumbentContext@Isolate@v8@@QEAA?AV?$Local@VContext@v8@@@2@XZ"]
++    fn isolate_get_incumbent_context(isolate: *mut c_void, result: *mut *const v8::Context) -> *mut *const v8::Context;
++}
++
++fn raw_isolate(isolate: &v8::Isolate) -> *mut c_void {
++    // SAFETY: `UnsafeRawIsolatePtr` is one pointer, the C++ `v8::Isolate*`.
++    unsafe { std::mem::transmute::<v8::UnsafeRawIsolatePtr, *mut c_void>(isolate.as_raw_isolate_ptr()) }
++}
++
++/// The incumbent context: the context of the innermost JS frame when it is newer than the
++/// innermost [`BackupIncumbentScope`], else that scope's context, else the entered context.
++pub fn incumbent_context<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Context> {
++    let isolate = raw_isolate(scope);
++    // SAFETY: a live isolate, current on this thread; the handle lands in `scope`.
++    let slot = unsafe {
++        #[cfg(not(target_env = "msvc"))]
++        let slot = isolate_get_incumbent_context(isolate);
++        #[cfg(target_env = "msvc")]
++        let slot = {
++            let mut slot = std::ptr::null();
++            isolate_get_incumbent_context(isolate, &mut slot);
++            slot
++        };
++        slot
++    };
++    // SAFETY: `Local` is a non-null handle slot pointer, which V8 always returns here.
++    unsafe { std::mem::transmute::<*const v8::Context, v8::Local<'s, v8::Context>>(slot) }
++}
++
++/// A `Context::BackupIncumbentScope`: while it is the innermost one, it supplies `context`
++/// as the incumbent unless a newer JS frame runs. Scopes of an isolate must be exited in
++/// reverse order of entry, with [`BackupIncumbentScope::exit`], before the isolate is disposed.
++pub struct BackupIncumbentScope {
++    // Boxed: V8 links scopes by address.
++    raw: Box<MaybeUninit<RawScope>>,
++    // The global handle V8 holds in the scope, as a local: a stable pointer to its slot.
++    slot: NonNull<v8::Context>,
++    exited: bool,
++}
++
++impl BackupIncumbentScope {
++    pub fn enter(isolate: &v8::Isolate, context: v8::Global<v8::Context>) -> Self {
++        let mut raw = Box::new(MaybeUninit::<RawScope>::uninit());
++        let slot = context.into_raw();
++        // SAFETY: the constructor reads `Isolate::Current()`; enter ours for the call.
++        unsafe {
++            isolate.enter();
++            backup_incumbent_scope_construct(raw.as_mut_ptr(), slot.as_ptr());
++            isolate.exit();
++        }
++        BackupIncumbentScope { raw, slot, exited: false }
++    }
++
++    /// Exits the scope. It must be `isolate`'s innermost one.
++    pub fn exit(mut self, isolate: &mut v8::Isolate) {
++        // SAFETY: constructed by `enter` on this isolate, innermost (the caller's contract).
++        unsafe {
++            isolate.enter();
++            backup_incumbent_scope_destruct(self.raw.as_mut_ptr().cast());
++            isolate.exit();
++            drop(v8::Global::from_raw(isolate, self.slot));
++        }
++        self.exited = true;
++    }
++}
++
++impl Drop for BackupIncumbentScope {
++    fn drop(&mut self) {
++        if !self.exited {
++            // Still linked into the isolate: leak the memory and slot V8 may read.
++            std::mem::forget(std::mem::replace(&mut self.raw, Box::new(MaybeUninit::uninit())));
++        }
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    /// `incumbent()`: the global of the incumbent context.
++    fn incumbent(scope: &mut v8::PinScope, _args: v8::FunctionCallbackArguments, mut result: v8::ReturnValue) {
++        let global = incumbent_context(scope).global(scope);
++        result.set(global.into());
++    }
++
++    fn run<'s>(scope: &mut v8::PinScope<'s, '_>, source: &str) -> v8::Local<'s, v8::Value> {
++        let source = v8::String::new(scope, source).unwrap();
++        v8::Script::compile(scope, source, None).unwrap().run(scope).unwrap()
++    }
++
++    #[test]
++    fn incumbent_follows_js_frames_and_backup_scopes() {
++        crate::initialize_engine();
++        let mut isolate = v8::Isolate::new(Default::default());
++        let (a, b, sentinel) = {
++            v8::scope!(let scope, &mut isolate);
++            let token = v8::String::new(scope, "token").unwrap().into();
++            let contexts: Vec<_> = (0..3).map(|_| {
++                let context = v8::Context::new(scope, Default::default());
++                context.set_security_token(token);
++                v8::Global::new(scope, context)
++            }).collect();
++            let [a, b, sentinel] = <[_; 3]>::try_from(contexts).ok().unwrap();
++            (a, b, sentinel)
++        };
++        v8::scope!(let scope, &mut isolate);
++        let (a, b) = (v8::Local::new(scope, &a), v8::Local::new(scope, &b));
++        let (a_global, b_global) = (a.global(scope), b.global(scope));
++        for (context, other) in [(a, b_global), (b, a_global)] {
++            let scope = &mut v8::ContextScope::new(scope, context);
++            let native = v8::Function::new(scope, incumbent).unwrap();
++            let global = context.global(scope);
++            let (key, other_key) = (v8::String::new(scope, "incumbent").unwrap(), v8::String::new(scope, "other").unwrap());
++            global.set(scope, key.into(), native.into());
++            global.set(scope, other_key.into(), other.into());
++            run(scope, "globalThis.viaHere = () => incumbent();");
++        }
++        let scope = &mut v8::ContextScope::new(scope, b);
++        assert!(run(scope, "incumbent() === globalThis").is_true(), "the calling frame's realm");
++        assert!(run(scope, "other.viaHere() === other").is_true(), "the innermost frame's realm, not the entered one");
++        assert!(incumbent_context(scope) == b, "no JS frame and no backup: the entered context");
++        let backup = BackupIncumbentScope::enter(scope, sentinel.clone());
++        assert!(incumbent_context(scope) == v8::Local::new(scope, &sentinel), "no newer JS frame: the backup");
++        assert!(run(scope, "incumbent() === globalThis").is_true(), "a newer JS frame wins over the backup");
++        backup.exit(scope);
++        assert!(incumbent_context(scope) == b);
++    }
++}
+diff --git a/components/roves-v8/src/lib.rs b/components/roves-v8/src/lib.rs
+index 697ddaf3f5a..09ea587d0fa 100644
+--- a/components/roves-v8/src/lib.rs
++++ b/components/roves-v8/src/lib.rs
+@@ -296,6 +296,7 @@ pub mod webidl {
+ }
+ 
+ pub mod foreground;
++pub mod incumbent;
+ 
+ use std::sync::Once;
+ 

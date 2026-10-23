@@ -592,3 +592,7 @@ so a destructor can reenter registration safely (covered by normal/JITless backe
 
 Unregistering a V8 runtime also destroys its delayed engine tasks still waiting in the timer
 (such as `Atomics.waitAsync` timeouts) before the isolate goes away, instead of leaking them.
+
+Code that calls into another same-origin window (for example a parent page calling a function
+defined in an iframe) now reports the window whose code is running as its caller, as browsers
+do, and callbacks run by the engine no longer see the script that registered them as the caller.

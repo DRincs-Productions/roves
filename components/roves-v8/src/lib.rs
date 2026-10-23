@@ -296,6 +296,7 @@ pub mod webidl {
 }
 
 pub mod foreground;
+pub mod incumbent;
 
 use std::sync::Once;
 

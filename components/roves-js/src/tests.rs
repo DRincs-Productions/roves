@@ -4258,6 +4258,63 @@ mod caller_privates {
         assert_eq!((Rc::strong_count(&classic), Rc::strong_count(&module)), (1, 1));
     }
 
+    /// `callerGlobal()`: `GetScriptedCallerGlobal`, or null.
+    unsafe extern "C" fn caller_global(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+        let global = unsafe { GetScriptedCallerGlobal(cx) };
+        unsafe { *vp = if global.is_null() { NullValue() } else { ObjectValue(global) } };
+        true
+    }
+
+    /// `hiddenThen(f)`: under `HideScriptedCaller`, checks that the caller is hidden, then
+    /// returns `f()`.
+    unsafe extern "C" fn hidden_then(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        let args = unsafe { CallArgs::from_vp(vp, argc) };
+        rooted!(in(cx) let callee = args.get(0).get());
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let mut result = UndefinedValue());
+        let no_arguments = HandleValueArray { length_: 0, elements_: ptr::null() };
+        let ok = unsafe {
+            HideScriptedCaller(cx);
+            assert!(GetScriptedCallerGlobal(cx).is_null(), "the calling script is hidden");
+            let ok = Call(cx, this.handle().into(), callee.handle().into(), &no_arguments, result.handle_mut().into());
+            UnhideScriptedCaller(cx);
+            ok
+        };
+        args.rval().set(result.get());
+        ok
+    }
+
+    #[test]
+    fn scripted_caller_global_is_the_innermost_frame_realm() {
+        let runtime = runtime();
+        let cx = runtime.raw_cx();
+        let new_global = || unsafe {
+            JS_NewGlobalObject(cx, &GLOBAL_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null())
+        };
+        rooted!(in(cx) let left = new_global());
+        rooted!(in(cx) let right = new_global());
+        for (global, other) in [(left.get(), right.get()), (right.get(), left.get())] {
+            let old = unsafe { EnterRealm(cx, global) };
+            install(&runtime, c"callerGlobal", Some(caller_global));
+            install(&runtime, c"hiddenThen", Some(hidden_then));
+            set_global(&runtime, c"other", ObjectValue(other));
+            eval(&runtime, "globalThis.fromHere = () => callerGlobal(); 0");
+            unsafe { LeaveRealm(cx, old) };
+        }
+        let old = unsafe { EnterRealm(cx, right.get()) };
+        let check = |source: &str| assert!(eval(&runtime, source).to_boolean(), "{source}");
+        check("callerGlobal() === globalThis");
+        // The entered realm is this one; the innermost frame runs in the other.
+        check("other.fromHere() === other");
+        // Script started under a hidden caller is visible again.
+        check("hiddenThen(() => callerGlobal() === globalThis)");
+        check("hiddenThen(() => other.fromHere() === other)");
+        check("hiddenThen(() => hiddenThen(() => callerGlobal() === globalThis))");
+        check("callerGlobal() === globalThis");
+        unsafe { LeaveRealm(cx, old) };
+        assert!(unsafe { GetScriptedCallerGlobal(cx) }.is_null());
+    }
+
     #[test]
     fn dynamic_functions_import_from_their_calling_module() {
         let owners = [Rc::new(11), Rc::new(22)];

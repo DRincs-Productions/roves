@@ -15,6 +15,15 @@ Lavorare con commit locali. Workspace test: `CARGO_TARGET_DIR=target/roves-v8` p
 `components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
 jitless`). Log in `target/task-NNNN/`.
 
+**0289 completa localmente — incumbent:** binding diretti ai simboli C++ esportati dalla
+libreria precompilata (`GetIncumbentContext`, `BackupIncumbentScope`; nomi MSVC verificati con
+llvm-nm sulla lib Windows ufficiale v152.2.0). `GetScriptedCallerGlobal` usa il realm del frame
+JS più interno; `Hide/UnhideScriptedCaller` sono scope di backup su un context sentinella per
+runtime (nascosto solo finché nessun frame JS più recente). Test motore e runtime; il vecchio
+codice fallisce il caso cross-realm. Runtime 102/101, motore 68+2. Link Windows/macOS e
+comportamento browser solo da CI. `DetachGlobal` è esportato allo stesso modo (per WindowProxy)
+ma non ancora usato: vedi CLAUDE_RESUME per il conflitto con la ripresa dei documenti Servo.
+
 **0288 (ex 0273) completa localmente:** trap Proxy native per i quattro costruttori
 dinamici; il frame JS dell'installer non è più l'origine eval, quindi `import()` nel corpo
 risolve dal modulo/script chiamante (test: owner corretti 11/22/11, vecchio codice -1).

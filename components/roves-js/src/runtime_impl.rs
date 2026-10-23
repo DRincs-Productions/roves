@@ -60,6 +60,10 @@ pub(crate) struct RuntimeHooks {
     foreground: std::sync::Arc<Foreground>,
     consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
     script_environment_preparer: Cell<InvokeScriptPreparerHook>,
+    /// `HideScriptedCaller` scopes, innermost last (see `hide_scripted_caller`).
+    hidden_callers: RefCell<Vec<roves_v8::incumbent::BackupIncumbentScope>>,
+    /// The incumbent those scopes supply: a context that never runs script.
+    hidden_sentinel: std::cell::OnceCell<v8::Global<v8::Context>>,
 }
 
 impl Default for RuntimeHooks {
@@ -83,8 +87,49 @@ impl Default for RuntimeHooks {
             foreground: Default::default(),
             consume_stream: Cell::new((None, None)),
             script_environment_preparer: Cell::new(None),
+            hidden_callers: Default::default(),
+            hidden_sentinel: Default::default(),
         }
     }
+}
+
+/// Hides the running script from `GetScriptedCallerGlobal` until the matching unhide, except
+/// for script that starts running later (SpiderMonkey's per-activation contract). V8's backup
+/// incumbent scope gives exactly that: its context is the incumbent only while no JS frame is
+/// newer than the scope, and a sentinel context marks it as hidden.
+pub(crate) fn hide_scripted_caller(cx: &JSContext) {
+    // Callbacks hide their caller on every call: create the sentinel once, then only clone it.
+    let sentinel = match cx.hooks.hidden_sentinel.get() {
+        Some(sentinel) => sentinel.clone(),
+        None => cx.with_scope(|scope| {
+            let context = v8::Context::new(scope, Default::default());
+            cx.hooks.hidden_sentinel.get_or_init(|| v8::Global::new(scope, context)).clone()
+        }),
+    };
+    // SAFETY: the runtime's live isolate, on its own thread.
+    let scope = roves_v8::incumbent::BackupIncumbentScope::enter(unsafe { &*cx.isolate }, sentinel);
+    cx.hooks.hidden_callers.borrow_mut().push(scope);
+}
+
+/// Ends the innermost `hide_scripted_caller`.
+pub(crate) fn unhide_scripted_caller(cx: &JSContext) {
+    let scope = cx.hooks.hidden_callers.borrow_mut().pop();
+    if let Some(scope) = scope {
+        // SAFETY: as above.
+        scope.exit(unsafe { &mut *cx.isolate });
+    }
+}
+
+/// Ends the scopes left by unmatched hides (before the isolate is disposed).
+pub(crate) fn release_hidden_callers(cx: &JSContext) {
+    while !cx.hooks.hidden_callers.borrow().is_empty() {
+        unhide_scripted_caller(cx);
+    }
+}
+
+/// Whether `context` is the incumbent of a hidden caller (see `hide_scripted_caller`).
+pub(crate) fn is_hidden_incumbent(cx: &JSContext, scope: &mut v8::PinScope, context: v8::Local<v8::Context>) -> bool {
+    cx.hooks.hidden_sentinel.get().is_some_and(|sentinel| v8::Local::new(scope, sentinel) == context)
 }
 
 /// The embedder's dispatch callback and its closure (`SetUpEventLoopDispatch`).

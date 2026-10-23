@@ -1347,16 +1347,12 @@ pub unsafe fn GetFunctionRealm(cx: *mut JSContext, obj: HandleObject) -> *mut cr
     crate::realm_impl::realm_of_object(raw(cx), obj.get())
 }
 
-thread_local! {
-    static HIDDEN_CALLERS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+pub unsafe fn HideScriptedCaller(cx: *mut JSContext) {
+    crate::runtime_impl::hide_scripted_caller(raw(cx));
 }
 
-pub unsafe fn HideScriptedCaller(_cx: *mut JSContext) {
-    HIDDEN_CALLERS.with(|count| count.set(count.get() + 1));
-}
-
-pub unsafe fn UnhideScriptedCaller(_cx: *mut JSContext) {
-    HIDDEN_CALLERS.with(|count| count.set(count.get().saturating_sub(1)));
+pub unsafe fn UnhideScriptedCaller(cx: *mut JSContext) {
+    crate::runtime_impl::unhide_scripted_caller(raw(cx));
 }
 
 // --- Descriptors and promises --------------------------------------------------------------

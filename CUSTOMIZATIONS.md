@@ -1,3 +1,28 @@
+## 2026-10-23 - V8 incumbent context and real HideScriptedCaller
+
+**Files:** `components/roves-v8/src/{lib.rs,incumbent.rs}`,
+`components/roves-js/src/{jsapi_impl.rs,runtime_impl.rs,rust.rs,script_impl.rs,tests.rs}`, patch
+`0289-v8-incumbent-context-and-hidden-callers.patch`, `README.md`.
+
+`GetScriptedCallerGlobal` returned the entered realm, not the realm of the innermost scripted
+frame, and `HideScriptedCaller` only bumped an unused counter. V8 implements HTML's incumbent
+directly (`Isolate::GetIncumbentContext`, `Context::BackupIncumbentScope`), but rusty_v8 152 does
+not bind them. Its prebuilt library exports both, so `roves-v8::incumbent` declares the exported
+C++ symbols (Itanium names for Linux/macOS, MSVC names checked with llvm-nm on the official
+v152.2.0 Windows library; MSVC instance methods return `Local` through a hidden pointer after
+`this`). No C++ shim, no dependency. `HideScriptedCaller` enters a backup scope whose context is
+a per-runtime sentinel that never runs script (created once, then cloned); the incumbent is that
+sentinel only while no JS frame is newer, which is SpiderMonkey's per-activation hiding.
+`UnhideScriptedCaller` exits it; unmatched scopes are exited before the isolate is disposed.
+`GetScriptedCallerGlobal` keeps its no-frame null, then returns null for the sentinel and the
+incumbent's realm otherwise. Tests: an engine test (cross-context frames, backup scope, newer
+frame, exit); a runtime regression (cross-realm innermost frame, hidden caller, script started
+while hidden, nested hides). The old implementation fails `other.fromHere() === other`. Engine
+68+2 doctests normal/JITless; runtime 102 normal/101 JITless (2/3 ignored). Replay on HEAD
+identical. Logs `target/task-0289/` (Linux/WSL). Windows/macOS linking and browser behaviour
+are verified only by CI. Cost per callback: one global handle clone, one small allocation and
+isolate enter/exit; not measured.
+
 ## 2026-10-23 - Native Proxy traps for dynamic Function constructors
 
 **Files:** `components/roves-js/src/{dynamic_code.rs,tests.rs}`, patch

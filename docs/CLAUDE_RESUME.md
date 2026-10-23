@@ -7,7 +7,7 @@
   l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
 - 0287 pubblicata dall'utente (`8799e4eec20`): CI V8 `39917959741` e generale `39917959712`
   in corso all'ultimo controllo (fanno anche da retry del timeout Ubuntu), Android/iOS verdi.
-- Locale non pubblicato: 0288 + nota WindowProxy (root), wiki `0b76146`. Pushare solo con
+- Locale non pubblicato: 0288, nota WindowProxy, 0289 (root); wiki `0b76146` e successivi. Pushare solo con
   batch `8799e4e` tutto verde (o rosse analizzate e corrette).
 - CI su `2e96c86`: V8 `39852305242` verde, Android/iOS verdi; generale `39852305257` rossa solo
   per timeout `mach bootstrap` (apt lento, 90 min, prima della compilazione) del job
@@ -19,8 +19,8 @@
 ## Verifiche locali (Linux/WSL)
 
 `cd components/roves-v8 && CARGO_TARGET_DIR=<repo>/target/roves-v8 cargo test [--features jitless]`
-e analogo per `components/roves-js` con `target/roves-js`. Stato 0288: motore 67+2 doctest,
-runtime 101/100 (2/3 ignorati). Log `target/task-0287/`, `target/task-0288/`.
+e analogo per `components/roves-js` con `target/roves-js`. Stato 0289: motore 68+2 doctest,
+runtime 102/101 (2/3 ignorati). Log `target/task-0287/` … `target/task-0289/`.
 
 ## Istruzioni operative attuali
 
@@ -42,6 +42,7 @@ docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico: NON 
 | 0286 | Rilascio callback ritirate fuori dal mutex globale: evita deadlock da distruttori reentranti. Motore66+2doctest normal/JITless, runtime100/99 (2/3ignorati); negativo e replay2 precedenti verificati. |
 | 0287 | `set_handler(None)` distrugge i task ritardati della registrazione ancora nel timer, fuori dai lock; accodamento sotto lock registro. Test reale `Atomics.waitAsync`, negativo verificato. Motore67+2doctest, runtime100/99. |
 | 0288 | Ex 0273: trap Proxy native per Function/generator/async; `import()` nel corpo usa il chiamante. Corpo identico riusa il primo referrer come V8 nativo (cache eval; disattivata solo con debugger). Runtime101/100. |
+| 0289 | Incumbent V8: `GetIncumbentContext`/`BackupIncumbentScope` via simboli C++ esportati (Itanium/MSVC, verificati con llvm-nm). Caller global = frame più interno; Hide/Unhide = scope con sentinella. Runtime102/101. Link Windows/macOS da CI. |
 | 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
 Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.
@@ -60,7 +61,7 @@ cancellate/saltate non sono verdi; non cancellare run senza istruzione esplicita
 1. Dare priorità agli errori delle run CI effettive dopo ogni push; non presumere corretto il
    frontend solo perché il runtime isolato passa.
 2. Proseguire lo sviluppo del piano V8, studiando prima riuso di API/librerie mantenute.
-   Navigazione/identità WindowProxy e incumbent sono ancora aperti (Function: chiusa in 0288).
+   Navigazione/identità WindowProxy resta aperta (Function chiusa in 0288, incumbent in 0289).
    Worker/termination/shutdown e WPT/integration richiedono ulteriore copertura.
 3. Task consegnati (0285) e ritardati alla rimozione handler (0287) sono recuperati; task
    immediati senza handler, task in consegna durante la rimozione, sostituzione handler e post
@@ -77,9 +78,13 @@ WindowProxy: JS_TransplantObject sui global attualmente ritorna il replacement: 
 vedono il vecchio Window. Serve progettare riuso/detach del global proxy alla creazioneContext,
 coordinato con attivazione documento, evitando retarget anticipato o perdita del vecchio global.
 Verificato 23/10: rusty_v8 152 espone `ContextOptions::global_object` (riuso del global proxy
-in Context::new) ma NON `Context::DetachGlobal`; servirebbe uno shim C++ minimo (crate `cc`
-con gli header `v8/include` del crate) o un upstream rusty_v8. Progetto da fare prima del codice;
-la verifica reale è solo browser/CI.
+in Context::new); `Context::DetachGlobal` non è bindato ma è esportato e si collega come in
+0289 (`_ZN2v87Context12DetachGlobalEv`, MSVC `?DetachGlobal@Context@v8@@QEAAXXZ`). Il blocco
+è di progetto: V8 collega un global proxy a un solo context e solo alla creazione, mentre Servo
+riprende documenti sospesi (Document::set_activity → Window::resume → set_currently_active) e
+attiva la nuova Window dopo l'avvio del parsing (script_thread.rs ~3089). Riusare il proxy
+toglierebbe l'identità al documento ripreso: serve decidere una politica (es. ricaricare
+invece di riprendere quando il proxy è passato a un nuovo documento) prima del codice.
 
 ## Verifiche e artefatti locali riutilizzabili
 
