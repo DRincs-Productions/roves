@@ -1,3 +1,19 @@
+## 2026-10-23 - A Window that handed over its proxy keeps its realm
+
+**Files:** `components/roves-js/src/{object.rs,realm_impl.rs,tests.rs}`, patch
+`0307-rehomed-window-keeps-its-realm.patch`.
+
+Fix for 0303, found by V8 CI run `39956705326` (Ubuntu JIT-less smoke): pages with iframes
+panicked in Servo with `assert_ne!(flags & (DOMJSCLASS | GLOBAL), 0)` in
+`global_scope_from_global` (and `can_run_script()` in `evaluate_js_on_global` on the
+cross-origin page). roves-js maps an object to its realm through its V8 creation context, and
+the hidden object that keeps the previous Window's class box was created in whatever context was
+current during `ScriptThread::load` (the runtime's initial one, whose global is not a DOM
+global). So `GetNonCCWObjectGlobal` of the previous Window returned the wrong global.
+`rehome_global_cell` now creates the hidden object inside the previous Window's own context. The
+roves-js navigation test now checks that both Windows are still their realms' globals; it failed
+before the fix. Runtime 105 normal/104 JITless; browser behavior verified by CI.
+
 ## 2026-10-23 - Unload the replaced document before its window hands over the proxy
 
 **Files:** `components/script/script_thread.rs`, `support/v8-smoke/events.html`, patch

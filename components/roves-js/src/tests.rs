@@ -4806,6 +4806,9 @@ mod window_proxies {
 
         runtime.gc_for_testing();
         assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "after a collection too");
+        // The previous Window keeps its realm: Servo maps objects back to their global.
+        assert_eq!(unsafe { GetNonCCWObjectGlobal(first.get()) }, first.get(), "the previous Window is still its realm's global");
+        assert_eq!(unsafe { GetNonCCWObjectGlobal(second.get()) }, second.get());
         // The previous Window keeps its native state, off the proxy.
         let mut slot = UndefinedValue();
         unsafe { JS_GetReservedSlot(first.get(), 0, &mut slot) };

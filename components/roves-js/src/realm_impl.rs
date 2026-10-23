@@ -484,7 +484,7 @@ unsafe fn new_global(
             // SAFETY: a live global cell; its value is the old context's global proxy.
             let proxy = unsafe { crate::cell::cell_value(scope, previous as *mut c_void) };
             let old_context = data.context(scope);
-            crate::object::rehome_global_cell(scope, previous)?;
+            crate::object::rehome_global_cell(scope, previous, old_context)?;
             roves_v8::global_proxy::detach_global(&old_context);
             reused = Some(proxy);
         }

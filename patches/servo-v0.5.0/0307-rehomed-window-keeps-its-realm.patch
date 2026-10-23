@@ -1,0 +1,50 @@
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 7b8e897e473..7e3397b089f 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -753,13 +753,16 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
+ 
+ /// Moves the class box of the global `cell` onto a new hidden object, which becomes the cell's
+ /// value: another realm took over the global proxy the cell was on (see
+-/// `realm_impl::RovesNewWindowGlobalReusingProxy`). Native access through the cell keeps its
++/// `realm_impl::RovesNewWindowGlobalReusingProxy`). `context` is the global's own context. Native access through the cell keeps its
+ /// box and slots; script cannot reach the hidden object.
+-pub(crate) fn rehome_global_cell(scope: &mut v8::PinScope, cell: *mut JSObject) -> Option<()> {
++pub(crate) fn rehome_global_cell(scope: &mut v8::PinScope, cell: *mut JSObject, context: v8::Local<v8::Context>) -> Option<()> {
+     // SAFETY: a live (rooted) global cell.
+     let member = unsafe { crate::cell::cell_class_member(cell as *mut c_void) }?;
+     let cx = JSContext::current();
+     let template = cx.class_templates.template(scope, &PLAIN_OBJECT_CLASS);
++    // Created in the global's own context: objects map to their realm through their creation
++    // context, and the cell must still resolve to its realm.
++    let scope = &mut v8::ContextScope::new(scope, context);
+     let hidden = template.new_instance(scope)?;
+     // The field holds the box's cppgc object pointer, as `box_to_raw` stores it.
+     let raw = v8::cppgc::GetRustObj::<ClassBox>::get_rust_obj(member) as *mut c_void;
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index f8c1054a636..228271667df 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -484,7 +484,7 @@ unsafe fn new_global(
+             // SAFETY: a live global cell; its value is the old context's global proxy.
+             let proxy = unsafe { crate::cell::cell_value(scope, previous as *mut c_void) };
+             let old_context = data.context(scope);
+-            crate::object::rehome_global_cell(scope, previous)?;
++            crate::object::rehome_global_cell(scope, previous, old_context)?;
+             roves_v8::global_proxy::detach_global(&old_context);
+             reused = Some(proxy);
+         }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index cd95cd5de84..fe1f264bd0e 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4806,6 +4806,9 @@ mod window_proxies {
+ 
+         runtime.gc_for_testing();
+         assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "after a collection too");
++        // The previous Window keeps its realm: Servo maps objects back to their global.
++        assert_eq!(unsafe { GetNonCCWObjectGlobal(first.get()) }, first.get(), "the previous Window is still its realm's global");
++        assert_eq!(unsafe { GetNonCCWObjectGlobal(second.get()) }, second.get());
+         // The previous Window keeps its native state, off the proxy.
+         let mut slot = UndefinedValue();
+         unsafe { JS_GetReservedSlot(first.get(), 0, &mut slot) };
