@@ -1,0 +1,383 @@
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 354c3eaf4d5..06530d77925 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -11,7 +11,9 @@
+ // frames import the same module URL (identical code and name); a dynamic import from each
+ // copy, directly or from its direct eval code, must stay owned by its own frame, before and
+ // after a collection; so must each copy's escaped import.meta.resolve. Module collection itself
+-// is not observed.
++// is not observed. Two more same-origin frames, a blank one and a classic-script-only one, never
++// use modules: removed-frame diagnostics are reported per group, so retention without module
++// ownership can be told apart from the module frames'.
+ "use strict";
+ const MAX_COLLECTIONS = 8;
+ const FRAME_TIMEOUT_MS = 5000;
+@@ -144,20 +146,48 @@ function withTimeout(promise, what) {
+   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+ }
+ 
+-// A same-origin frame whose classic script sets its token and imports gc-module.js. Its base
+-// URL has no gc-owner.js: an import that lost its module referrer would resolve against it.
+-function loadOwnerFrame(token) {
++// A same-origin srcdoc frame; resolves with the frame element once it has loaded.
++function loadFrame(html, what) {
+   const frame = document.createElement("iframe");
+-  const url = new URL("gc-module.js", location.href).href;
+-  const base = new URL("missing-base/", location.href).href;
+-  frame.srcdoc = `<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
+-    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`;
++  frame.srcdoc = html;
+   const loaded = new Promise((resolve, reject) => {
+     frame.addEventListener("load", () => resolve(frame), { once: true });
+-    frame.addEventListener("error", () => reject(new Error(token + " frame failed to load")), { once: true });
++    frame.addEventListener("error", () => reject(new Error(what + " failed to load")), { once: true });
+   });
+   document.body.appendChild(frame);
+-  return withTimeout(loaded, token + " frame load");
++  return withTimeout(loaded, what + " load");
++}
++
++// A same-origin frame whose classic script sets its token and imports gc-module.js. Its base
++// URL has no gc-owner.js: an import that lost its module referrer would resolve against it.
++function loadOwnerFrame(token) {
++  const url = new URL("gc-module.js", location.href).href;
++  const base = new URL("missing-base/", location.href).href;
++  return loadFrame(`<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
++    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`, token + " frame");
++}
++
++// Diagnostic groups (see reportRemovedFrames), each filled by removeFrames.
++const removedFrames = {
++  module: { label: "module", elements: [], documents: [], globals: [] },
++  plain: { label: "no-module", elements: [], documents: [], globals: [] },
++};
++
++// Keeps only WeakRefs to the iframe element (kept by the parent page), the frame's document
++// (kept by its Window) and an object only the frame's global holds, then removes the frames.
++function removeFrames(group, frames) {
++  for (const frame of frames) {
++    group.elements.push(new WeakRef(frame));
++    if (frame.contentDocument) group.documents.push(new WeakRef(frame.contentDocument));
++    if (frame.contentWindow) {
++      const probe = new frame.contentWindow.Object();
++      frame.contentWindow.rovesGlobalProbe = probe;
++      group.globals.push(new WeakRef(probe));
++    }
++    frame.remove();
++  }
++  report("removed frame group", group.label, "elements", group.elements.length,
++    "documents", group.documents.length, "globals", group.globals.length);
+ }
+ 
+ // Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
+@@ -206,34 +236,37 @@ async function checkModuleOwners() {
+     await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
+     checkResolve("module resolve after collection", frames, namespaces);
+   } finally {
+-    for (const frame of frames) {
+-      // Diagnostic (see reportRemovedFrames): the iframe element (kept by the parent page),
+-      // the frame's document (kept by its Window) and an object only the frame's global holds.
+-      removedFrames.elements.push(new WeakRef(frame));
+-      if (frame.contentDocument) removedFrames.documents.push(new WeakRef(frame.contentDocument));
+-      if (frame.contentWindow) {
+-        const probe = new frame.contentWindow.Object();
+-        frame.contentWindow.rovesGlobalProbe = probe;
+-        removedFrames.globals.push(new WeakRef(probe));
+-      }
+-      frame.remove();
+-    }
++    removeFrames(removedFrames.module, frames);
+   }
+ }
+ 
+-const removedFrames = { elements: [], documents: [], globals: [] };
++// Two same-origin frames that never use the module map: a blank document and one whose only
++// content is a classic script setting a global. Both must load; their release is diagnostic.
++async function checkPlainFrames() {
++  const frames = [];
++  try {
++    frames.push(await loadFrame("<!doctype html><title>blank</title>", "blank frame"));
++    frames.push(await loadFrame('<script>globalThis.rovesPlainToken = "script";<\/script>', "script frame"));
++    const tokens = frames.map(frame => String(frame.contentWindow.rovesPlainToken));
++    check("no-module frames loaded", tokens.join() === "undefined,script", tokens.join(" "));
++  } finally {
++    removeFrames(removedFrames.plain, frames);
++  }
++}
+ 
+-// Not a pass/fail check yet: reports which parts of removed frames are released, so CI shows
+-// the current behavior before it becomes a requirement. Frame pipelines close asynchronously,
+-// so collections are spaced out.
++// Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
++// so CI shows the current behavior before it becomes a requirement. Frame pipelines close
++// asynchronously, so collections are spaced out.
+ async function reportRemovedFrames() {
+   for (let round = 0; round < MAX_COLLECTIONS; round++) {
+     await collectOnce();
+     await new Promise(resolve => setTimeout(resolve, 100));
+   }
+   const released = refs => `${refs.length - aliveCount(refs)}/${refs.length}`;
+-  report("diagnostic removed frames released", `elements ${released(removedFrames.elements)}`,
+-    `documents ${released(removedFrames.documents)}`, `globals ${released(removedFrames.globals)}`);
++  for (const group of Object.values(removedFrames)) {
++    report("diagnostic removed frames released", group.label, `elements ${released(group.elements)}`,
++      `documents ${released(group.documents)}`, `globals ${released(group.globals)}`);
++  }
+ }
+ 
+ async function main() {
+@@ -263,6 +296,7 @@ async function main() {
+   if (value !== 42) fail("dynamic import");
+   await expectCollected("dropped importer", dropImporter());
+   await checkModuleOwners();
++  await checkPlainFrames();
+   checkKept("retained nodes final");
+ }
+ 
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index e875412f7ed..32759977eb6 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -169,14 +169,18 @@ fi
+ # Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
+ # hidden in test.html), so it gets its own process. HTTP lets the page import a module and
+ # its same-origin frames import the same module URL, each owning its own dynamic imports,
+-# including those of direct eval code in that module.
++# including those of direct eval code in that module. Two more frames never use modules; both
++# frame groups must be recorded and removed.
+ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+-# Diagnostic only (not required yet): whether removed frames' realms are released.
+-diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frames released' gc-lifecycle.log | head -1)
+-echo "::notice::gc-lifecycle.html: ${diagnostic:-removed frame diagnostic missing}"
++# Whether removed frames are released is diagnostic only (not required yet), but each group
++# must report its released counts out of its two frames.
++for group in module no-module; do
++  diagnostic=$(grep -aE "^ROVES-V8 gc diagnostic removed frames released $group elements [0-9]+/2 documents [0-9]+/2 globals [0-9]+/2\$" gc-lifecycle.log | head -1)
++  if [ -n "$diagnostic" ]; then echo "::notice::gc-lifecycle.html: $diagnostic"; else STATUS=1; echo "::error::gc-lifecycle.html: missing removed frame diagnostic for $group ($(grep -aF 'ROVES-V8 gc diagnostic ' gc-lifecycle.log | tr '\n' ' '))"; fi
++done
+ 
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index c0e2bccab5d..bb20ecefde1 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -2,6 +2,7 @@
+ 
+ import os
+ from pathlib import Path
++import re
+ import shutil
+ import subprocess
+ import sys
+@@ -56,6 +57,84 @@ def gc_page_script():
+     return page.split('<script>', 1)[1].split('</script>', 1)[0]
+ 
+ 
++def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));'):
++    """Runs the page script in a Node vm context without TestUtils or a DOM, then `after`."""
++    harness = r'''
++const vm = require("vm");
++const lines = [];
++const log = (...parts) => lines.push(parts.join(" "));
++const context = vm.createContext({ console: { log, error: log }, setTimeout, clearTimeout, addEventListener() {} });
++''' + setup + r'''
++try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
++catch (error) { lines.push("thrown " + error.name + " " + error.message); }
++setTimeout(() => { ''' + after + ''' }, 200);
++'''
++    result = subprocess.run(['node', '-e', harness], input=script, capture_output=True,
++                            text=True, encoding='utf-8', timeout=30)
++    return result
++
++
++# Mock same-origin frames: each loads one task after insertion, and its classic script token is
++# copied to its window. No module ever loads, so the module group fails its import check but is
++# still recorded. The mock never releases anything: only reporting is checked, not collection.
++FRAME_MOCK = r'''
++const listenerOptions = [];
++const inserted = [];
++context.location = { href: "http://127.0.0.1:18765/gc-lifecycle.html" };
++context.URL = URL;
++context.document = {
++  createElement() {
++    const listeners = {};
++    return {
++      srcdoc: "", contentWindow: null, contentDocument: null, listeners,
++      addEventListener(type, listener, options) { listenerOptions.push(type + " " + JSON.stringify(options)); listeners[type] = listener; },
++      remove() { this.contentWindow = null; this.contentDocument = null; },
++    };
++  },
++  body: {
++    appendChild(frame) {
++      inserted.push(frame);
++      setTimeout(() => {
++        const token = /rovesPlainToken = "([^"]*)"/.exec(frame.srcdoc);
++        frame.contentWindow = token ? { Object, rovesPlainToken: token[1] } : { Object };
++        frame.contentDocument = {};
++        frame.listeners.load();
++      }, 0);
++    },
++  },
++};
++'''
++
++FRAME_GROUPS_RUN = r'''
++context.TestUtils = { gc: async () => {} };
++vm.runInContext(`checkModuleOwners().then(checkPlainFrames).then(reportRemovedFrames).then(() =>
++  console.log("weak only " + Object.values(removedFrames).every(group =>
++    [group.elements, group.documents, group.globals].every(refs => refs.every(ref => ref instanceof WeakRef)))))`, context)
++  .catch(error => lines.push("thrown " + error.name + " " + error.message))
++  .finally(() => {
++    lines.push("listeners " + listenerOptions.join(","));
++    process.stdout.write(lines.join("\n"));
++  });
++'''
++
++FRAME_GROUP_MARKERS = (
++    'ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2',
++    'ROVES-V8 gc no-module frames loaded true',
++    'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2',
++)
++
++
++def frame_group_problems(lines):
++    """What run.sh's frame group checks would miss in this output."""
++    problems = [marker for marker in FRAME_GROUP_MARKERS if marker not in lines]
++    for group in ('module', 'no-module'):
++        pattern = (f'ROVES-V8 gc diagnostic removed frames released {group} '
++                   r'elements \d+/2 documents \d+/2 globals \d+/2')
++        if not any(re.fullmatch(pattern, line) for line in lines):
++            problems.append('diagnostic ' + group)
++    return problems
++
++
+ class GcPageTests(unittest.TestCase):
+     """Static and Node checks of gc-lifecycle.html; they do not run a browser or a collection."""
+ 
+@@ -78,19 +157,12 @@ class GcPageTests(unittest.TestCase):
+         # Without TestUtils or a DOM the page must still define its entry functions, reach main(),
+         # report the missing API, move on to the cleanup check (which fails on the missing Image)
+         # and report one result. A missing entry function throws before any marker.
+-        harness = r'''
+-const vm = require("vm");
+-const lines = [];
+-const log = (...parts) => lines.push(parts.join(" "));
+-const context = vm.createContext({ console: { log, error: log }, setTimeout, addEventListener() {} });
+-try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
+-catch (error) { lines.push("thrown " + error.name + " " + error.message); }
++        after = r'''
+ const entries = ["main", "checkCleanupEntrySettings", "reportRemovedFrames"];
+ lines.push("entries " + entries.map(name => typeof context[name]).join(" "));
+-setTimeout(() => process.stdout.write(lines.join("\n")), 200);
++process.stdout.write(lines.join("\n"));
+ '''
+-        result = subprocess.run(['node', '-e', harness], input=gc_page_script(), capture_output=True,
+-                                text=True, encoding='utf-8', timeout=30)
++        result = run_page_in_node(gc_page_script(), after=after)
+         self.assertEqual('', result.stderr)
+         lines = result.stdout.splitlines()
+         self.assertNotIn('thrown', result.stdout)
+@@ -100,6 +172,43 @@ setTimeout(() => process.stdout.write(lines.join("\n")), 200);
+         self.assertEqual(['ROVES-V8 gc result fail TestUtils.gc unavailable; '
+                           'exception ReferenceError Image is not defined'], results)
+ 
++    def test_main_runs_both_frame_groups(self):
++        main = gc_page_script().split('async function main() {', 1)[1].split('\n}\n', 1)[0]
++        self.assertLess(main.index('await checkModuleOwners();'), main.index('await checkPlainFrames();'))
++        self.assertLess(main.index('await checkPlainFrames();'), main.index('checkKept("retained nodes final");'))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_frame_groups_report(self):
++        # Both groups load two frames through one listener pair each (once) and a bounded
++        # timeout, keep only WeakRefs and report per-group counts. Collection is not observed.
++        result = run_page_in_node(gc_page_script(), FRAME_MOCK, FRAME_GROUPS_RUN)
++        self.assertEqual('', result.stderr)
++        lines = result.stdout.splitlines()
++        self.assertNotIn('thrown', result.stdout)
++        self.assertEqual([], frame_group_problems(lines), result.stdout)
++        self.assertIn('weak only true', lines)
++        self.assertIn('listeners ' + ','.join(['load {"once":true}', 'error {"once":true}'] * 4), lines)
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_frame_group_checks_catch_omissions(self):
++        script = gc_page_script()
++        mutations = (
++            # The no-module group no longer records or removes its frames.
++            ('removeFrames(removedFrames.plain, frames);', '',
++             [FRAME_GROUP_MARKERS[2], 'diagnostic no-module']),
++            # The diagnostic reports only the first group.
++            ('for (const group of Object.values(removedFrames)) {',
++             'for (const group of [removedFrames.module]) {', ['diagnostic no-module']),
++            # The module group skips its records.
++            ('removeFrames(removedFrames.module, frames);', '',
++             [FRAME_GROUP_MARKERS[0], 'diagnostic module']),
++        )
++        for original, replacement, expected in mutations:
++            with self.subTest(original=original):
++                self.assertEqual(1, script.count(original))
++                result = run_page_in_node(script.replace(original, replacement), FRAME_MOCK, FRAME_GROUPS_RUN)
++                self.assertEqual(expected, frame_group_problems(result.stdout.splitlines()), result.stdout)
++
+ 
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+@@ -183,8 +292,22 @@ if page == 'gc-lifecycle.html':
+                      'module owners left right', 'module owners after collection left right',
+                      'eval module owners left right', 'eval module owners after collection left right',
+                      'module resolve true', 'module resolve after collection true',
++                     'removed frame group module elements 2 documents 2 globals 2',
++                     'no-module frames loaded true',
++                     'removed frame group no-module elements 2 documents 2 globals 2',
+                      'retained nodes final true true true',
+-                     'cleanup callback entry settings true', 'result pass'):
++                     'cleanup callback entry settings true',
++                     # Retained frames, as in CI so far: diagnostic, not a failure.
++                     'diagnostic removed frames released module elements 0/2 documents 0/2 globals 0/2',
++                     'diagnostic removed frames released no-module elements 0/2 documents 0/2 globals 0/2',
++                     'result pass'):
++            # A page that skips the no-module group or its diagnostic and still claims success.
++            if scenario == 'gc-plain-missing' and 'no-module' in line and 'diagnostic' not in line:
++                continue
++            if scenario == 'gc-diagnostic-missing' and line.startswith('diagnostic') and 'no-module' in line:
++                continue
++            if scenario == 'gc-diagnostic-count' and line.startswith('diagnostic') and ' module' in line:
++                line = line.replace('/2', '/1')
+             if scenario == 'gc-import' and line.startswith('dynamic import'):
+                 line = 'dynamic import after collection undefined'
+             if scenario == 'gc-import' and line == 'result pass':
+@@ -290,6 +413,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
+                     self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
+                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
++                    for group in ('module', 'no-module'):
++                        self.assertIn(f'::notice::gc-lifecycle.html: ROVES-V8 gc diagnostic removed frames released '
++                                      f'{group} elements 0/2 documents 0/2 globals 0/2', result.stdout)
+                     self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
+ 
+     def test_gc_lifecycle_failures(self):
+@@ -306,6 +432,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc eval module owners after collection left right'"),
+             ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
+             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
++            ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
++            ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
++            ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
+             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
+         )
+@@ -314,7 +443,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 result = self.run_fixture(scenario, gc_flag=gc_flag)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                 if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing', 'gc-resolve',
+-                                'gc-resolve-missing'):
++                                'gc-resolve-missing', 'gc-plain-missing', 'gc-diagnostic-missing',
++                                'gc-diagnostic-count'):
+                     # A reported pass cannot replace a missing or wrong required marker.
+                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                 else:

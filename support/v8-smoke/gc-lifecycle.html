@@ -11,7 +11,9 @@
 // frames import the same module URL (identical code and name); a dynamic import from each
 // copy, directly or from its direct eval code, must stay owned by its own frame, before and
 // after a collection; so must each copy's escaped import.meta.resolve. Module collection itself
-// is not observed.
+// is not observed. Two more same-origin frames, a blank one and a classic-script-only one, never
+// use modules: removed-frame diagnostics are reported per group, so retention without module
+// ownership can be told apart from the module frames'.
 "use strict";
 const MAX_COLLECTIONS = 8;
 const FRAME_TIMEOUT_MS = 5000;
@@ -144,20 +146,48 @@ function withTimeout(promise, what) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
 
+// A same-origin srcdoc frame; resolves with the frame element once it has loaded.
+function loadFrame(html, what) {
+  const frame = document.createElement("iframe");
+  frame.srcdoc = html;
+  const loaded = new Promise((resolve, reject) => {
+    frame.addEventListener("load", () => resolve(frame), { once: true });
+    frame.addEventListener("error", () => reject(new Error(what + " failed to load")), { once: true });
+  });
+  document.body.appendChild(frame);
+  return withTimeout(loaded, what + " load");
+}
+
 // A same-origin frame whose classic script sets its token and imports gc-module.js. Its base
 // URL has no gc-owner.js: an import that lost its module referrer would resolve against it.
 function loadOwnerFrame(token) {
-  const frame = document.createElement("iframe");
   const url = new URL("gc-module.js", location.href).href;
   const base = new URL("missing-base/", location.href).href;
-  frame.srcdoc = `<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
-    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`;
-  const loaded = new Promise((resolve, reject) => {
-    frame.addEventListener("load", () => resolve(frame), { once: true });
-    frame.addEventListener("error", () => reject(new Error(token + " frame failed to load")), { once: true });
-  });
-  document.body.appendChild(frame);
-  return withTimeout(loaded, token + " frame load");
+  return loadFrame(`<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
+    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`, token + " frame");
+}
+
+// Diagnostic groups (see reportRemovedFrames), each filled by removeFrames.
+const removedFrames = {
+  module: { label: "module", elements: [], documents: [], globals: [] },
+  plain: { label: "no-module", elements: [], documents: [], globals: [] },
+};
+
+// Keeps only WeakRefs to the iframe element (kept by the parent page), the frame's document
+// (kept by its Window) and an object only the frame's global holds, then removes the frames.
+function removeFrames(group, frames) {
+  for (const frame of frames) {
+    group.elements.push(new WeakRef(frame));
+    if (frame.contentDocument) group.documents.push(new WeakRef(frame.contentDocument));
+    if (frame.contentWindow) {
+      const probe = new frame.contentWindow.Object();
+      frame.contentWindow.rovesGlobalProbe = probe;
+      group.globals.push(new WeakRef(probe));
+    }
+    frame.remove();
+  }
+  report("removed frame group", group.label, "elements", group.elements.length,
+    "documents", group.documents.length, "globals", group.globals.length);
 }
 
 // Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
@@ -206,34 +236,37 @@ async function checkModuleOwners() {
     await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
     checkResolve("module resolve after collection", frames, namespaces);
   } finally {
-    for (const frame of frames) {
-      // Diagnostic (see reportRemovedFrames): the iframe element (kept by the parent page),
-      // the frame's document (kept by its Window) and an object only the frame's global holds.
-      removedFrames.elements.push(new WeakRef(frame));
-      if (frame.contentDocument) removedFrames.documents.push(new WeakRef(frame.contentDocument));
-      if (frame.contentWindow) {
-        const probe = new frame.contentWindow.Object();
-        frame.contentWindow.rovesGlobalProbe = probe;
-        removedFrames.globals.push(new WeakRef(probe));
-      }
-      frame.remove();
-    }
+    removeFrames(removedFrames.module, frames);
   }
 }
 
-const removedFrames = { elements: [], documents: [], globals: [] };
+// Two same-origin frames that never use the module map: a blank document and one whose only
+// content is a classic script setting a global. Both must load; their release is diagnostic.
+async function checkPlainFrames() {
+  const frames = [];
+  try {
+    frames.push(await loadFrame("<!doctype html><title>blank</title>", "blank frame"));
+    frames.push(await loadFrame('<script>globalThis.rovesPlainToken = "script";<\/script>', "script frame"));
+    const tokens = frames.map(frame => String(frame.contentWindow.rovesPlainToken));
+    check("no-module frames loaded", tokens.join() === "undefined,script", tokens.join(" "));
+  } finally {
+    removeFrames(removedFrames.plain, frames);
+  }
+}
 
-// Not a pass/fail check yet: reports which parts of removed frames are released, so CI shows
-// the current behavior before it becomes a requirement. Frame pipelines close asynchronously,
-// so collections are spaced out.
+// Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
+// so CI shows the current behavior before it becomes a requirement. Frame pipelines close
+// asynchronously, so collections are spaced out.
 async function reportRemovedFrames() {
   for (let round = 0; round < MAX_COLLECTIONS; round++) {
     await collectOnce();
     await new Promise(resolve => setTimeout(resolve, 100));
   }
   const released = refs => `${refs.length - aliveCount(refs)}/${refs.length}`;
-  report("diagnostic removed frames released", `elements ${released(removedFrames.elements)}`,
-    `documents ${released(removedFrames.documents)}`, `globals ${released(removedFrames.globals)}`);
+  for (const group of Object.values(removedFrames)) {
+    report("diagnostic removed frames released", group.label, `elements ${released(group.elements)}`,
+      `documents ${released(group.documents)}`, `globals ${released(group.globals)}`);
+  }
 }
 
 async function main() {
@@ -263,6 +296,7 @@ async function main() {
   if (value !== 42) fail("dynamic import");
   await expectCollected("dropped importer", dropImporter());
   await checkModuleOwners();
+  await checkPlainFrames();
   checkKept("retained nodes final");
 }
 

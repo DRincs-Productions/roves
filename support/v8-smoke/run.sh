@@ -169,14 +169,18 @@ fi
 # Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
 # hidden in test.html), so it gets its own process. HTTP lets the page import a module and
 # its same-origin frames import the same module URL, each owning its own dynamic imports,
-# including those of direct eval code in that module.
+# including those of direct eval code in that module. Two more frames never use modules; both
+# frame groups must be recorded and removed.
 run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
-# Diagnostic only (not required yet): whether removed frames' realms are released.
-diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frames released' gc-lifecycle.log | head -1)
-echo "::notice::gc-lifecycle.html: ${diagnostic:-removed frame diagnostic missing}"
+# Whether removed frames are released is diagnostic only (not required yet), but each group
+# must report its released counts out of its two frames.
+for group in module no-module; do
+  diagnostic=$(grep -aE "^ROVES-V8 gc diagnostic removed frames released $group elements [0-9]+/2 documents [0-9]+/2 globals [0-9]+/2\$" gc-lifecycle.log | head -1)
+  if [ -n "$diagnostic" ]; then echo "::notice::gc-lifecycle.html: $diagnostic"; else STATUS=1; echo "::error::gc-lifecycle.html: missing removed frame diagnostic for $group ($(grep -aF 'ROVES-V8 gc diagnostic ' gc-lifecycle.log | tr '\n' ' '))"; fi
+done
 
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.

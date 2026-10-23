@@ -1,3 +1,33 @@
+## 2026-10-23 - Removed-frame diagnostic groups: with and without modules
+
+**Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh,test_runner.py}`, patch
+`0317-removed-frame-groups-without-modules.patch`. No production source changed.
+
+Real Linux normal/JIT-less V8 CI after 0315 reported `elements 0/2 documents 0/2 globals 0/2`
+for the removed frames, which all import gc-module.js. Before any lifetime fix, the page now
+separates frame retention from module ownership: after the unchanged module-owner checks it
+loads two same-origin srcdoc frames that never use modules (a blank document and one classic
+script setting `rovesPlainToken`), requires `no-module frames loaded true` (the blank frame has
+no token, the script frame has `script`), and removes them. Both groups share `loadFrame` (one
+`load`/`error` listener pair with `{ once: true }`, the existing 5 s `withTimeout`) and
+`removeFrames`, which keeps only WeakRefs to the element, the document and an object created in
+and stored only on the child global, then reports `removed frame group <label> elements N
+documents N globals N`. The frame arrays are locals of async functions that return before
+`reportRemovedFrames`' spaced collections, so the test keeps no strong reference.
+`reportRemovedFrames` prints one line per group: `ROVES-V8 gc diagnostic removed frames
+released <module|no-module> elements N/2 documents N/2 globals N/2` (same prefix as 0314; the
+module group's counts stay directly comparable). run.sh requires both group markers and both
+diagnostic lines with `/2` totals, but any released count passes: release is still not a
+requirement, and no existing required marker changed. Checks reuse Python unittest and the
+runners' Node (no dependency): a Node `vm` mock DOM runs both groups and the per-group report
+(listeners, WeakRef-only storage, counts, not browser GC), mutations that drop a group's record
+or diagnostic are caught, main's call order is checked, and run.sh fixture scenarios fail on a
+missing no-module group, a missing diagnostic or wrong totals while `0/2` passes. Verified:
+unittest on Windows (Node tests) and WSL Ubuntu (POSIX runner tests), and the new runner tests
+fail against HEAD's run.sh. 0317 dry-run/apply clean on the existing 0315+0316 replay scratch;
+all 468 patched paths: 465 identical to HEAD/worktree, 3 = the documented exceptions. Logs:
+`target/task-0317/`. Browser results come from V8 CI.
+
 ## 2026-10-23 - Reconcile unrecorded mobile and content-packer source drift
 
 **Files:** patch `0316-reconcile-mobile-and-content-packer-drift.patch` (records

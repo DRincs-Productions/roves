@@ -1,3 +1,17 @@
+## 23 ottobre — controllo preliminare frame via Chrome DevTools MCP
+
+Scena about:blank,2 iframe srcdoc senza moduli, ciascuno con probe solo sul global del
+figlio; rimossi dopo load, conservate solo WeakRef di elemento/documento/probe. Chrome155
+su Windows, pagina visibility=visible. Nei processi osservati con remote-debugging non compare
+--headless; associazione precisa al processo MCP non stabilita. Non è un benchmark.
+MCP evaluate_script riporta2/2 ancora vivi per ciascuna categoria, ma senza raccolta forzata
+verificata. take_heapsnapshot ha rifiutato il percorso del progetto perché fuori dalle
+workspace roots configurate per il MCP: nessun aggiramento e nessuno snapshot acquisito.
+Il dato preliminare non prova retention né consente confronti con TestUtils.gc di Roves.
+Evidenza sintetica locale target/task-0317/chrome-reference.json; nessuna misuraRAM/CPU/GPU.
+La diagnostica Roves normal/JITless su459f43a5220 riporta elementi/documenti/globali0/2
+rilasciati dopo8 raccolte: condizioni diverse, non un confronto equivalente.
+
 # Roves — Prestazioni
 
 ## Ripresa con delega circoscritta —22 ottobre2026

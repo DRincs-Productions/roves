@@ -48,6 +48,23 @@ README.md progetto, solo hunk storico0243; sonda SDL0042 saltata dalla CI). Nota
 di test.yml "patches/ carries no Cargo.lock diff" è impreciso (0071…0246 hanno hunk sul lock
 radice), workflow non toccato. Log: target/task-0316/verify.log. Nessuna build/test ripetuti.
 
+**0317 (Claude, da revisionare, non committato):** CI reale dopo0315 (Linux normal/JITless):
+frame rimossi del gruppo con moduli elements0/2 documents0/2 globals0/2. Per separare la
+retention dalla proprietà dei moduli, gc-lifecycle.html aggiunge dopo i controlli moduli
+invariati un gruppo no-module di2 frame srcdoc same-origin (vuoto + solo script classico),
+con helper condivisi loadFrame (load/error once, timeout5 s esistente) e removeFrames (solo
+WeakRef a elemento/documento/probe creato e tenuto solo dal global figlio). Marker obbligatori
+nuovi: removed frame group module/no-module elements2 documents2 globals2, no-module frames
+loaded true; diagnostica per gruppo "diagnostic removed frames released <gruppo> elements N/2
+documents N/2 globals N/2" (prefisso0314 invariato): run.sh ne richiede presenza e totali /2,
+qualsiasi numero rilasciato passa. Nessun marker esistente cambiato o indebolito. Verifiche:
+unittest Windows (Node vm mock DOM: entrambi i gruppi, listener once, solo WeakRef; mutazioni
+che tolgono record/diagnostica rilevate) + WSL Ubuntu (fixture run.sh: gruppo no-module o
+diagnostica mancanti e totali errati falliscono, 0/2 passa); i nuovi test falliscono col run.sh
+di HEAD. Mock, non GC browser. Patch0317 dry-run/apply puliti sullo scratch0315+0316 (ora con
+0317 applicata), 465 identici + 3 eccezioni documentate. Log: target/task-0317/. Il confronto
+sorgente/contesto con Chrome è affidato a Codex via MCP; i risultati browser arrivano dalla CI V8.
+
 ### Risultati acquisiti e limiti della revisione
 
 -0287/0299 recuperano task timer e post tra close/rimozione handler. Restano casi conservativi
@@ -73,20 +90,22 @@ Prima di pubblicare patch nuove, replay completo pristinev0.5.0 come validate-se
 
 ### Pubblicazione e prossimo controllo CI
 
-Pubblicato0315 root459f43a5220/wiki cf9718e; checkpoint precedenti di processo inclusi.
-Run: V839991694557 in corso; generale39991694618 in coda; Android39991694436 e
-iOS39991694403 verdi all'ultimo controllo aggregato. Nessuna nuova failure rilevata.
-0316 è completo e resta locale insieme al relativo aggiornamento wiki; non pubblicarlo
-mentre questo batch è attivo. Nessun WIP corrente nei sorgenti. Il prossimo passo della
-diagnosi retention richiede la diagnostica browser0314 che ora0315 torna a eseguire;
-non dedurre risultati dal vecchio batch interrotto prima di main. Nessuna attesa/polling
-continuo né ricontrollo18:45 ancora attivo. Verificare le run alla prossima ripresa.
+Batch0315 root459f43a5220/wiki cf9718e TUTTO VERDE: V839991694557, generale39991694618,
+Android39991694436 e iOS39991694403. Smoke GC reale normal/JITless passati; diagnostica
+0314 ancora elementi/documenti/globali0/2 rilasciati in entrambi. È stato possibile
+pubblicare0316 e0317 insieme dopo revisione; nuove run vanno identificate sul nuovo SHA.
+0317: Windows14 test (5skipPOSIX), WSL14 (3skipNode), unione copre14; negativi omissioni,
+replay465/468 identici con3eccezioni documentate. Moduli e frame senza moduli sono gruppi
+separati, conteggi obbligatori ma raccolta ancora soltanto diagnostica.
+Chrome DevTools MCP disponibile: riferimento preliminare Chrome155/pagina visibile;
+snapshotheap negato per workspace roots del MCP. Nessuna raccolta forzata verificata,
+nessun confronto retention equivalente; dettagli in ROVES_PERFORMANCE.md. Non aggirare
+il blocco del MCP. Nessuna nuova automazione periodica.
 
 ### Prossimi punti
 
-1. Verificare il nuovo batch CI sul checkpoint0315, che include la correzione della run precedente.
-   Deriva patch preesistente: corretta e revisionata in0316 (sopra), trattenuta in locale fino
-   al batch verde; richiede poi nuovaCI sulla ricostruzione.
+1. Verificare il nuovo batch CI sul checkpoint0316/0317;0315 tutto verde. Nel frattempo
+   proseguire con test browser di navigazione tra origini per WindowProxy.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
 3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown

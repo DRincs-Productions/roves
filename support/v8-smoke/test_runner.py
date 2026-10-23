@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -56,6 +57,84 @@ def gc_page_script():
     return page.split('<script>', 1)[1].split('</script>', 1)[0]
 
 
+def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));'):
+    """Runs the page script in a Node vm context without TestUtils or a DOM, then `after`."""
+    harness = r'''
+const vm = require("vm");
+const lines = [];
+const log = (...parts) => lines.push(parts.join(" "));
+const context = vm.createContext({ console: { log, error: log }, setTimeout, clearTimeout, addEventListener() {} });
+''' + setup + r'''
+try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
+catch (error) { lines.push("thrown " + error.name + " " + error.message); }
+setTimeout(() => { ''' + after + ''' }, 200);
+'''
+    result = subprocess.run(['node', '-e', harness], input=script, capture_output=True,
+                            text=True, encoding='utf-8', timeout=30)
+    return result
+
+
+# Mock same-origin frames: each loads one task after insertion, and its classic script token is
+# copied to its window. No module ever loads, so the module group fails its import check but is
+# still recorded. The mock never releases anything: only reporting is checked, not collection.
+FRAME_MOCK = r'''
+const listenerOptions = [];
+const inserted = [];
+context.location = { href: "http://127.0.0.1:18765/gc-lifecycle.html" };
+context.URL = URL;
+context.document = {
+  createElement() {
+    const listeners = {};
+    return {
+      srcdoc: "", contentWindow: null, contentDocument: null, listeners,
+      addEventListener(type, listener, options) { listenerOptions.push(type + " " + JSON.stringify(options)); listeners[type] = listener; },
+      remove() { this.contentWindow = null; this.contentDocument = null; },
+    };
+  },
+  body: {
+    appendChild(frame) {
+      inserted.push(frame);
+      setTimeout(() => {
+        const token = /rovesPlainToken = "([^"]*)"/.exec(frame.srcdoc);
+        frame.contentWindow = token ? { Object, rovesPlainToken: token[1] } : { Object };
+        frame.contentDocument = {};
+        frame.listeners.load();
+      }, 0);
+    },
+  },
+};
+'''
+
+FRAME_GROUPS_RUN = r'''
+context.TestUtils = { gc: async () => {} };
+vm.runInContext(`checkModuleOwners().then(checkPlainFrames).then(reportRemovedFrames).then(() =>
+  console.log("weak only " + Object.values(removedFrames).every(group =>
+    [group.elements, group.documents, group.globals].every(refs => refs.every(ref => ref instanceof WeakRef)))))`, context)
+  .catch(error => lines.push("thrown " + error.name + " " + error.message))
+  .finally(() => {
+    lines.push("listeners " + listenerOptions.join(","));
+    process.stdout.write(lines.join("\n"));
+  });
+'''
+
+FRAME_GROUP_MARKERS = (
+    'ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2',
+    'ROVES-V8 gc no-module frames loaded true',
+    'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2',
+)
+
+
+def frame_group_problems(lines):
+    """What run.sh's frame group checks would miss in this output."""
+    problems = [marker for marker in FRAME_GROUP_MARKERS if marker not in lines]
+    for group in ('module', 'no-module'):
+        pattern = (f'ROVES-V8 gc diagnostic removed frames released {group} '
+                   r'elements \d+/2 documents \d+/2 globals \d+/2')
+        if not any(re.fullmatch(pattern, line) for line in lines):
+            problems.append('diagnostic ' + group)
+    return problems
+
+
 class GcPageTests(unittest.TestCase):
     """Static and Node checks of gc-lifecycle.html; they do not run a browser or a collection."""
 
@@ -78,19 +157,12 @@ class GcPageTests(unittest.TestCase):
         # Without TestUtils or a DOM the page must still define its entry functions, reach main(),
         # report the missing API, move on to the cleanup check (which fails on the missing Image)
         # and report one result. A missing entry function throws before any marker.
-        harness = r'''
-const vm = require("vm");
-const lines = [];
-const log = (...parts) => lines.push(parts.join(" "));
-const context = vm.createContext({ console: { log, error: log }, setTimeout, addEventListener() {} });
-try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
-catch (error) { lines.push("thrown " + error.name + " " + error.message); }
+        after = r'''
 const entries = ["main", "checkCleanupEntrySettings", "reportRemovedFrames"];
 lines.push("entries " + entries.map(name => typeof context[name]).join(" "));
-setTimeout(() => process.stdout.write(lines.join("\n")), 200);
+process.stdout.write(lines.join("\n"));
 '''
-        result = subprocess.run(['node', '-e', harness], input=gc_page_script(), capture_output=True,
-                                text=True, encoding='utf-8', timeout=30)
+        result = run_page_in_node(gc_page_script(), after=after)
         self.assertEqual('', result.stderr)
         lines = result.stdout.splitlines()
         self.assertNotIn('thrown', result.stdout)
@@ -99,6 +171,43 @@ setTimeout(() => process.stdout.write(lines.join("\n")), 200);
         results = [line for line in lines if line.startswith('ROVES-V8 gc result ')]
         self.assertEqual(['ROVES-V8 gc result fail TestUtils.gc unavailable; '
                           'exception ReferenceError Image is not defined'], results)
+
+    def test_main_runs_both_frame_groups(self):
+        main = gc_page_script().split('async function main() {', 1)[1].split('\n}\n', 1)[0]
+        self.assertLess(main.index('await checkModuleOwners();'), main.index('await checkPlainFrames();'))
+        self.assertLess(main.index('await checkPlainFrames();'), main.index('checkKept("retained nodes final");'))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_frame_groups_report(self):
+        # Both groups load two frames through one listener pair each (once) and a bounded
+        # timeout, keep only WeakRefs and report per-group counts. Collection is not observed.
+        result = run_page_in_node(gc_page_script(), FRAME_MOCK, FRAME_GROUPS_RUN)
+        self.assertEqual('', result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertNotIn('thrown', result.stdout)
+        self.assertEqual([], frame_group_problems(lines), result.stdout)
+        self.assertIn('weak only true', lines)
+        self.assertIn('listeners ' + ','.join(['load {"once":true}', 'error {"once":true}'] * 4), lines)
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_frame_group_checks_catch_omissions(self):
+        script = gc_page_script()
+        mutations = (
+            # The no-module group no longer records or removes its frames.
+            ('removeFrames(removedFrames.plain, frames);', '',
+             [FRAME_GROUP_MARKERS[2], 'diagnostic no-module']),
+            # The diagnostic reports only the first group.
+            ('for (const group of Object.values(removedFrames)) {',
+             'for (const group of [removedFrames.module]) {', ['diagnostic no-module']),
+            # The module group skips its records.
+            ('removeFrames(removedFrames.module, frames);', '',
+             [FRAME_GROUP_MARKERS[0], 'diagnostic module']),
+        )
+        for original, replacement, expected in mutations:
+            with self.subTest(original=original):
+                self.assertEqual(1, script.count(original))
+                result = run_page_in_node(script.replace(original, replacement), FRAME_MOCK, FRAME_GROUPS_RUN)
+                self.assertEqual(expected, frame_group_problems(result.stdout.splitlines()), result.stdout)
 
 
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
@@ -183,8 +292,22 @@ if page == 'gc-lifecycle.html':
                      'module owners left right', 'module owners after collection left right',
                      'eval module owners left right', 'eval module owners after collection left right',
                      'module resolve true', 'module resolve after collection true',
+                     'removed frame group module elements 2 documents 2 globals 2',
+                     'no-module frames loaded true',
+                     'removed frame group no-module elements 2 documents 2 globals 2',
                      'retained nodes final true true true',
-                     'cleanup callback entry settings true', 'result pass'):
+                     'cleanup callback entry settings true',
+                     # Retained frames, as in CI so far: diagnostic, not a failure.
+                     'diagnostic removed frames released module elements 0/2 documents 0/2 globals 0/2',
+                     'diagnostic removed frames released no-module elements 0/2 documents 0/2 globals 0/2',
+                     'result pass'):
+            # A page that skips the no-module group or its diagnostic and still claims success.
+            if scenario == 'gc-plain-missing' and 'no-module' in line and 'diagnostic' not in line:
+                continue
+            if scenario == 'gc-diagnostic-missing' and line.startswith('diagnostic') and 'no-module' in line:
+                continue
+            if scenario == 'gc-diagnostic-count' and line.startswith('diagnostic') and ' module' in line:
+                line = line.replace('/2', '/1')
             if scenario == 'gc-import' and line.startswith('dynamic import'):
                 line = 'dynamic import after collection undefined'
             if scenario == 'gc-import' and line == 'result pass':
@@ -290,6 +413,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
                     self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                    for group in ('module', 'no-module'):
+                        self.assertIn(f'::notice::gc-lifecycle.html: ROVES-V8 gc diagnostic removed frames released '
+                                      f'{group} elements 0/2 documents 0/2 globals 0/2', result.stdout)
                     self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
 
     def test_gc_lifecycle_failures(self):
@@ -306,6 +432,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc eval module owners after collection left right'"),
             ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
+            ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
+            ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
+            ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
         )
@@ -314,7 +443,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 result = self.run_fixture(scenario, gc_flag=gc_flag)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
                 if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing', 'gc-resolve',
-                                'gc-resolve-missing'):
+                                'gc-resolve-missing', 'gc-plain-missing', 'gc-diagnostic-missing',
+                                'gc-diagnostic-count'):
                     # A reported pass cannot replace a missing or wrong required marker.
                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
                 else:
