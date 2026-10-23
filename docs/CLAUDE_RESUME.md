@@ -14,6 +14,19 @@
   (smoke browser per 0288/0289/0290). Pushare solo a batch verde; 0293 va guardata negli smoke.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
+## Decisioni aperte per l'utente (23 ottobre)
+
+1. **Identità WindowProxy nella navigazione.** Correggerla con V8 richiede di riusare il global
+   proxy (`DetachGlobal` + `ContextOptions::global_object`) al momento della creazione della
+   nuova Window. Un documento sospeso (cronologia) che ha ceduto il proxy non può più riaverlo:
+   andrebbe ricaricato invece che ripreso, come fa Blink per le pagine non in bfcache. Opzioni:
+   (a) riuso + ricarica alla ripresa; (b) lasciare l'identità per documento (attuale). Per
+   giochi a pagina singola l'impatto pratico è basso.
+2. **Codice di fase 1 in `roves-v8`.** La produzione usa solo `initialize_engine*`,
+   `foreground` e `incumbent`. `Runtime`, i tipi WebIDL, `roves-v8-derive`, il backend V8 di
+   `codegen.py` e `test_v8.py` servono solo come strumento di misura del pilot WebIDL (decisione
+   del piano: conservarli). Rimuoverli toglierebbe migliaia di righe nostre.
+
 ## Verifiche locali (Linux/WSL)
 
 `cd components/roves-v8 && CARGO_TARGET_DIR=<repo>/target/roves-v8 cargo test [--features jitless]`
