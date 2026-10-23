@@ -1,3 +1,13 @@
+## Ripresa dopo limite Claude di5ore — autorizzazione23ottobre
+
+Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
+un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
+Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
+prevale: il tentativo già richiesto per oggi alle18:45 Europe/Rome resta valido.
+Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
+concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
+Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
+
 ## Prosecuzione durante la CI
 
 Con run attive e nessuna fallita, continuare il lavoro utile autorizzato, revisionare e
@@ -14,8 +24,8 @@ Il lavoro remoto di Claude è stato acquisito con fast-forward fino a8e4fb2e6cf4
 La CI generale/Android/iOS è verde; V8 fallisce nei due smoke Linux con main non definita
 in gc-lifecycle.html. Correzione mirata delegata; pubblicare dopo revisione e batch concluso. La prima invocazione0315 si è
 fermata per quota effettiva (reset CLI18:40 Europe/Rome23ottobre) prima di verifiche/replay.
-Bozza archiviata sotto docs/handoff, sorgenti ripristinati. Nessuna nuova invocazione o
-attesa automatica; serve richiesta utente per riprendere. Nessun cambio modello/sviluppo
+Bozza archiviata sotto docs/handoff, sorgenti ripristinati. Il blocco iniziale è storico: l’utente ha poi richiesto il tentativo delle18:45 e autorizzato
+la regola5ore descritta in cima. Nessun cambio modello/sviluppo
 Codex sostitutivo per aggirare il limite.
 
 # Regola corrente — aggiornamento 22 ottobre 2026

@@ -36,7 +36,8 @@ approval at each completed task, and resolve recoverable technical blocks autono
 The user removed per-assignment tool-call ceilings and routine consumption/residual-work
 accounting. Continue useful authorized work autonomously; actual subscription quotas remain
 a stop condition. Historical bounded-task counts are retained only as historical evidence.
-No periodic automation or automatic quota retries are authorized.
+No periodic automation is authorized. A single retry five hours after a confirmed Claude
+five-hour session limit is authorized as specified below; no intermediate polling.
 
 Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
 sections only for a concrete issue. Consumption evidence and the first bounded comparison
@@ -97,10 +98,19 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
-- Al raggiungimento di una quota effettiva dell'abbonamento, salvare il punto di ripresa
-  e fermarsi. Non provare altri modelli o creare attese automatiche per aggirare la quota.
-  Non raccogliere nuovi conteggi di tool call, turni o token per incarico; conservare le
-  evidenze storiche senza presentarle come obblighi correnti.
+- Al raggiungimento di una quota effettiva, salvare il punto di ripresa e sospendere il
+  lavoro. Per il limite della sessione Claude di5ore, l'utente autorizza un singolo tentativo
+  pianificato5ore dopo il messaggio di limite, nella stessa chat, tramite lo scheduler
+  dell'app. Usare un unico ricontrollo con scadenza; riusare quello esistente, senza duplicati
+  o controlli intermedi. Un orario esplicito dell'utente prevale (oggi23ottobre:18:45).
+  Al risveglio riprendere l'incarico salvato se Claude è disponibile, mantenendo revisione,
+  verifiche e vincoli CI. Se lo stesso limite persiste, registrare l'esito e fermarsi senza
+  concatenare altri tentativi per quel blocco. Disattivare il ricontrollo dopo il tentativo.
+  Una nuova sessione di lavoro esaurita in seguito costituisce un nuovo evento5ore.
+  Questa autorizzazione non copre quote settimanali/mensili, stop espliciti o cambi modello
+  per aggirare limiti. Se lo scheduler non è disponibile, dichiararlo senza promettere
+  la ripresa. Non raccogliere nuovi conteggi di tool call, turni o token per incarico;
+  conservare le evidenze storiche senza presentarle come obblighi correnti.
 
 Dopo ogni push, identificare le run CI associate al commit pubblicato con un'unica lettura
 aggregata. Se esiste altro lavoro utile e autorizzato, avviare il prossimo incarico circoscritto

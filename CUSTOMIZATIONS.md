@@ -1,3 +1,11 @@
+## 2026-10-23 - Authorize one deferred retry for Claude session limits
+
+Updated AGENTS.md and current workflow/migration handoffs: a confirmed Claude five-hour
+session limit permits one scheduled attempt five hours after detection, with no intermediate
+polling or duplicate schedules. Explicit user times override that default (today18:45).
+A still-blocked attempt stops; no repeated retries for the same block, model substitution,
+or bypass of other quotas. No implementation, production patch or CI behavior changed.
+
 ## 2026-10-23 - Review remote Claude work and restore delegated workflow
 
 Fast-forwarded local main to8e4fb2e6cf4 (wiki b86bb38), acquiring completed0287–0314.

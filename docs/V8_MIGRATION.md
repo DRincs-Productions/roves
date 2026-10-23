@@ -1,5 +1,15 @@
 # Completamento dell’integrazione V8 in Roves
 
+## Ripresa dopo limite Claude di5ore — autorizzazione23ottobre
+
+Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
+un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
+Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
+prevale: il tentativo già richiesto per oggi alle18:45 Europe/Rome resta valido.
+Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
+concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
+Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
+
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
 Acquisito origin/main con fast-forward fino a8e4fb2e6cf4, wiki b86bb38. Tutte le modifiche
@@ -14,8 +24,8 @@ mirata0315 delegata, ma CLAUDE LIMITATO prima della consegna: reset indicato18:4
 23ottobre. Nessuna verifica/replay completata per0315; bozza salvata separata in
 [handoff/0315-incomplete-gc-smoke-main.patch](handoff/0315-incomplete-gc-smoke-main.patch),
 istruzioni [handoff/0315-gc-smoke-resume.md](handoff/0315-gc-smoke-resume.md).
-Sorgenti ripristinati allo stato pubblicato, nessun WIP pubblicabile. Nessun retry automatico
-o sostituzione di Claude per aggirare la quota. Ripresa solo su richiesta utente.
+Sorgenti ripristinati allo stato pubblicato, nessun WIP pubblicabile. Nessuna sostituzione di Claude per aggirare la quota. L’utente ha poi autorizzato
+il tentativo delle18:45 e la regola generale5ore descritta in cima.
 Nessun push del checkpoint documentale: il prossimo push deve includere la correzione completa.
 
 ### Risultati acquisiti e limiti della revisione
