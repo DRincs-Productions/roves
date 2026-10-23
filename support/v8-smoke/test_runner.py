@@ -51,6 +51,56 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual([], validate('suite2.html', output))
 
 
+def gc_page_script():
+    page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
+    return page.split('<script>', 1)[1].split('</script>', 1)[0]
+
+
+class GcPageTests(unittest.TestCase):
+    """Static and Node checks of gc-lifecycle.html; they do not run a browser or a collection."""
+
+    def test_required_markers_have_a_producer(self):
+        # Each marker run.sh requires must be reported by the page, under a label made of its
+        # leading words, e.g. "unreachable dom collected true" by expectCollected("unreachable dom").
+        script = gc_page_script()
+        runner = (HERE / 'run.sh').read_text(encoding='utf-8')
+        loop = next(line for line in runner.splitlines() if line.startswith('for expected in "ROVES-V8 gc '))
+        markers = [part[len('ROVES-V8 gc '):] for part in loop.split('"')[1::2]]
+        self.assertIn('result pass', markers)
+        for marker in markers:
+            words = marker.split()
+            labels = [' '.join(words[:n]) for n in range(1, len(words) + 1)]
+            with self.subTest(marker=marker):
+                self.assertTrue(any(f'"{label}"' in script for label in labels))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_entry_sequence_runs(self):
+        # Without TestUtils or a DOM the page must still define its entry functions, reach main(),
+        # report the missing API, move on to the cleanup check (which fails on the missing Image)
+        # and report one result. A missing entry function throws before any marker.
+        harness = r'''
+const vm = require("vm");
+const lines = [];
+const log = (...parts) => lines.push(parts.join(" "));
+const context = vm.createContext({ console: { log, error: log }, setTimeout, addEventListener() {} });
+try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
+catch (error) { lines.push("thrown " + error.name + " " + error.message); }
+const entries = ["main", "checkCleanupEntrySettings", "reportRemovedFrames"];
+lines.push("entries " + entries.map(name => typeof context[name]).join(" "));
+setTimeout(() => process.stdout.write(lines.join("\n")), 200);
+'''
+        result = subprocess.run(['node', '-e', harness], input=gc_page_script(), capture_output=True,
+                                text=True, encoding='utf-8', timeout=30)
+        self.assertEqual('', result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertNotIn('thrown', result.stdout)
+        self.assertIn('entries function function function', lines)
+        self.assertIn('ROVES-V8 gc api false', lines)
+        results = [line for line in lines if line.startswith('ROVES-V8 gc result ')]
+        self.assertEqual(['ROVES-V8 gc result fail TestUtils.gc unavailable; '
+                          'exception ReferenceError Image is not defined'], results)
+
+
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):

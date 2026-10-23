@@ -607,8 +607,9 @@ thread, as in browsers. Going back or forward in history therefore reloads the p
 resuming it from memory (`session_history_max_length` defaults to 0).
 
 V8 migration status and agent handoff are maintained in [docs/V8_MIGRATION.md](docs/V8_MIGRATION.md).
-The current Linux GC smoke has an entry-point regression under investigation; removed-frame
-collection remains diagnostic, not a completed page-retention guarantee.
+The Linux GC smoke's missing entry point (after the removed-frame diagnostic change) is fixed
+locally with a lightweight entry-sequence regression; browser confirmation is pending CI.
+Removed-frame collection remains diagnostic, not a completed page-retention guarantee.
 
 The agent workflow documents a single deferred retry after a Claude five-hour session limit;
 see [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).

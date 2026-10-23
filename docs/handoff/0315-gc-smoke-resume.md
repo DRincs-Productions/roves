@@ -1,3 +1,10 @@
+# Archived draft — superseded by completed0315
+
+The authorized18:45 retry succeeded. Production fix is
+patches/servo-v0.5.0/0315-gc-smoke-entry-point.patch; verification/current status is in
+../V8_MIGRATION.md. Do NOT apply the incomplete archive over current sources. The old
+instructions below are historical evidence of the quota interruption, not current work.
+
 # Task0315 — incomplete Claude draft, 23 October 2026
 
 Current published source8e4fb2e6cf4; V8 run39973655294 fails both Linux smoke jobs because

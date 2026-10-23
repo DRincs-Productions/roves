@@ -1,3 +1,19 @@
+## 2026-10-23 - Restore the GC smoke entry point
+
+**Files:** `support/v8-smoke/{gc-lifecycle.html,test_runner.py}`, patch `0315-gc-smoke-entry-point.patch`.
+
+0314 deleted `main()` together with the old diagnostic, so V8 run `39973655294` failed both
+Linux smokes with `ReferenceError: main is not defined` before any marker. `main()` is restored
+byte-identical to its pre-0314 body (the full collection, retained-node, importer and module
+owner sequence); 0314's detailed removed-frame diagnostic and the cleanup entry-settings check
+are kept, and run.sh's required markers are unchanged. `test_runner.py` gains `GcPageTests`,
+reusing Python and the Node already on the runners (no new dependency): every marker run.sh
+requires must have a producer label in the page, and the page script run in a Node `vm`
+context without TestUtils or a DOM must define its entry functions, report `api false`, enter
+the cleanup check and report one result. These are static/mock checks, not a browser
+collection. Verified locally: both tests fail against the published page (missing `main`) and
+the Node test fails when `main` is defined but not called.
+
 ## 2026-10-23 - Authorize one deferred retry for Claude session limits
 
 Updated AGENTS.md and current workflow/migration handoffs: a confirmed Claude five-hour

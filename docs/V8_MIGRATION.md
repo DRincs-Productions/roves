@@ -20,13 +20,23 @@ Rimosso il file temporaneo CLAUDE_RESUME.md: questo è il punto di ripresa corre
 CI sul commit8e4fb2e6cf4: generale39973655174, Android39973654912 e iOS39973655140 verdi.
 V839973655294 conclusa rossa: entrambi i job Ubuntu normal/JITless compilano ma lo smoke
 GC fallisce con ReferenceError: main is not defined. I restanti job passano. Correzione
-mirata0315 delegata, ma CLAUDE LIMITATO prima della consegna: reset indicato18:40 Europe/Rome
-23ottobre. Nessuna verifica/replay completata per0315; bozza salvata separata in
-[handoff/0315-incomplete-gc-smoke-main.patch](handoff/0315-incomplete-gc-smoke-main.patch),
-istruzioni [handoff/0315-gc-smoke-resume.md](handoff/0315-gc-smoke-resume.md).
-Sorgenti ripristinati allo stato pubblicato, nessun WIP pubblicabile. Nessuna sostituzione di Claude per aggirare la quota. L’utente ha poi autorizzato
-il tentativo delle18:45 e la regola generale5ore descritta in cima.
-Nessun push del checkpoint documentale: il prossimo push deve includere la correzione completa.
+mirata0315 delegata: la prima invocazione si era fermata per quota; il tentativo delle18:45
+è riuscito. Claude ha consegnato, Codex ha revisionato diff ed evidenze senza ripetere test
+identici. Il ricontrollo one-shot riprendi-claude-alle-18-45 è stato eliminato dopo il tentativo.
+La bozza e le vecchie istruzioni sotto docs/handoff sono soltanto archivio storico, non WIP.
+
+**0315 completo e revisionato (ripresa18:45, Claude), in questo checkpoint di pubblicazione:** main() ripristinato
+identico al pre-0314, diagnostica0314 e check cleanup entry settings invariati, marker run.sh
+invariati. test_runner.py: GcPageTests (marker run.sh con producer nella pagina; esecuzione
+Node vm senza TestUtils/DOM: funzioni d'ingresso definite, api false, ingresso nel cleanup,
+un solo result). Mock/statici, non GC browser. Esiti: unittest OK (11, 5 skip POSIX-only su
+Windows); negativo pagina pubblicata (main mancante) FAIL su entrambi; negativo main non
+chiamato FAIL. Replay completo pristine v0.5.0 (sha25686f45a1e…) + 312 patch (0042 saltata
+come CI) + REMOVED_PATHS:0315 dry-run/apply puliti, i 2 file uguali al working tree.
+Deriva preesistente non0315 (8 path diversi da HEAD: Cargo.lock, README.md,
+support/MOBILE.md, MainActivity.kt, content-packer pack.rs/roundtrip.rs, ios/App.swift,
+sdl3-gamepad-probe da0042): patch non aggiornate da commit precedenti, da valutare a parte.
+Log in target/task-0315/. Conferma browser attesa dalla CI V8.
 
 ### Risultati acquisiti e limiti della revisione
 
@@ -53,8 +63,9 @@ Prima di pubblicare patch nuove, replay completo pristinev0.5.0 come validate-se
 
 ### Prossimi punti
 
-1. Correggere main nello smoke GC, regressione automatica, replay e revisione; prossimo push
-   deve includerla. Il batch precedente è concluso ma contiene una regressione da correggere.
+1. Verificare il nuovo batch CI sul checkpoint0315, che include la correzione della run precedente.
+   Continuare con incarico separato per la deriva patch preesistente (8 path), senza riestrarre
+   inutilmente l’archivio pristine già disponibile nel replay0315.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
 3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown

@@ -236,6 +236,36 @@ async function reportRemovedFrames() {
     `documents ${released(removedFrames.documents)}`, `globals ${released(removedFrames.globals)}`);
 }
 
+async function main() {
+  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+  report("api", api);
+  if (!api) {
+    fail("TestUtils.gc unavailable");
+    return;
+  }
+  keepNodes();
+  const nodeRefs = [];
+  const cycleRefs = [];
+  for (let batch = 0; batch < 4; batch++) {
+    nodeRefs.push(...dropNodeBatch(60));
+    cycleRefs.push(...dropCycleBatch(100));
+    await collectOnce();
+  }
+  await expectCollected("unreachable dom", nodeRefs);
+  await expectCollected("unreachable cycles", cycleRefs);
+  checkKept("retained nodes");
+
+  check("importer compiled", compileImporter(), "classic script did not define the importer");
+  await collectOnce();
+  await collectOnce();
+  const value = await importThroughRetainedFunction();
+  report("dynamic import after collection", value);
+  if (value !== 42) fail("dynamic import");
+  await expectCollected("dropped importer", dropImporter());
+  await checkModuleOwners();
+  checkKept("retained nodes final");
+}
+
 // FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
 // reads the entry settings object (drawImage's origin check for an image) must still work.
 async function checkCleanupEntrySettings() {

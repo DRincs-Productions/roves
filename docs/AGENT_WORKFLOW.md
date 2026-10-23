@@ -14,6 +14,13 @@ Con run attive e nessuna fallita, continuare il lavoro utile autorizzato, revisi
 committare in locale senza push. Non terminare il ciclo soltanto perché la CI è in corso.
 Controllare il batch al completamento delle implementazioni; pubblicare secondo AGENTS.md.
 
+## Tentativo18:45 eseguito — 23 ottobre 2026
+
+Claude disponibile:0315 consegnato con test positivi/negativi e replay. Codex ha revisionato
+le prove e il diff; nessuna ripetizione senza motivo. Ricontrollo one-shot eliminato dopo
+l'esecuzione. La precedente quota è storica, non un blocco corrente. Prossimo incarico:
+deriva patch preesistente rilevata dal replay completo, mantenendo un solo Claude attivo.
+
 ## Delega ripristinata — 23 ottobre 2026
 
 L'utente ha ripristinato Codex direzione/revisione e Claude implementazione via terminale.

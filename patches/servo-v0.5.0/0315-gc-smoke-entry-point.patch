@@ -1,0 +1,102 @@
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 09d67842201..354c3eaf4d5 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -236,6 +236,36 @@ async function reportRemovedFrames() {
+     `documents ${released(removedFrames.documents)}`, `globals ${released(removedFrames.globals)}`);
+ }
+ 
++async function main() {
++  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
++  report("api", api);
++  if (!api) {
++    fail("TestUtils.gc unavailable");
++    return;
++  }
++  keepNodes();
++  const nodeRefs = [];
++  const cycleRefs = [];
++  for (let batch = 0; batch < 4; batch++) {
++    nodeRefs.push(...dropNodeBatch(60));
++    cycleRefs.push(...dropCycleBatch(100));
++    await collectOnce();
++  }
++  await expectCollected("unreachable dom", nodeRefs);
++  await expectCollected("unreachable cycles", cycleRefs);
++  checkKept("retained nodes");
++
++  check("importer compiled", compileImporter(), "classic script did not define the importer");
++  await collectOnce();
++  await collectOnce();
++  const value = await importThroughRetainedFunction();
++  report("dynamic import after collection", value);
++  if (value !== 42) fail("dynamic import");
++  await expectCollected("dropped importer", dropImporter());
++  await checkModuleOwners();
++  checkKept("retained nodes final");
++}
++
+ // FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
+ // reads the entry settings object (drawImage's origin check for an image) must still work.
+ async function checkCleanupEntrySettings() {
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 41f005dce4d..c0e2bccab5d 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -51,6 +51,56 @@ class ResultsTests(unittest.TestCase):
+         self.assertEqual([], validate('suite2.html', output))
+ 
+ 
++def gc_page_script():
++    page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
++    return page.split('<script>', 1)[1].split('</script>', 1)[0]
++
++
++class GcPageTests(unittest.TestCase):
++    """Static and Node checks of gc-lifecycle.html; they do not run a browser or a collection."""
++
++    def test_required_markers_have_a_producer(self):
++        # Each marker run.sh requires must be reported by the page, under a label made of its
++        # leading words, e.g. "unreachable dom collected true" by expectCollected("unreachable dom").
++        script = gc_page_script()
++        runner = (HERE / 'run.sh').read_text(encoding='utf-8')
++        loop = next(line for line in runner.splitlines() if line.startswith('for expected in "ROVES-V8 gc '))
++        markers = [part[len('ROVES-V8 gc '):] for part in loop.split('"')[1::2]]
++        self.assertIn('result pass', markers)
++        for marker in markers:
++            words = marker.split()
++            labels = [' '.join(words[:n]) for n in range(1, len(words) + 1)]
++            with self.subTest(marker=marker):
++                self.assertTrue(any(f'"{label}"' in script for label in labels))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_entry_sequence_runs(self):
++        # Without TestUtils or a DOM the page must still define its entry functions, reach main(),
++        # report the missing API, move on to the cleanup check (which fails on the missing Image)
++        # and report one result. A missing entry function throws before any marker.
++        harness = r'''
++const vm = require("vm");
++const lines = [];
++const log = (...parts) => lines.push(parts.join(" "));
++const context = vm.createContext({ console: { log, error: log }, setTimeout, addEventListener() {} });
++try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
++catch (error) { lines.push("thrown " + error.name + " " + error.message); }
++const entries = ["main", "checkCleanupEntrySettings", "reportRemovedFrames"];
++lines.push("entries " + entries.map(name => typeof context[name]).join(" "));
++setTimeout(() => process.stdout.write(lines.join("\n")), 200);
++'''
++        result = subprocess.run(['node', '-e', harness], input=gc_page_script(), capture_output=True,
++                                text=True, encoding='utf-8', timeout=30)
++        self.assertEqual('', result.stderr)
++        lines = result.stdout.splitlines()
++        self.assertNotIn('thrown', result.stdout)
++        self.assertIn('entries function function function', lines)
++        self.assertIn('ROVES-V8 gc api false', lines)
++        results = [line for line in lines if line.startswith('ROVES-V8 gc result ')]
++        self.assertEqual(['ROVES-V8 gc result fail TestUtils.gc unavailable; '
++                          'exception ReferenceError Image is not defined'], results)
++
++
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):
