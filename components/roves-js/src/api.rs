@@ -10,8 +10,6 @@
 //! the context's pending exception and the operation reports failure (`false`, null or `Err`),
 //! as SpiderMonkey's API does.
 
-use std::borrow::Cow;
-use std::ffi::CStr;
 use std::ops::ControlFlow;
 
 use crate::cell::{StringChars, string_chars};
@@ -417,5 +415,3 @@ pub unsafe fn maybe_wrap_object_value(cx: &mut SafeJSContext, rval: MutableHandl
 /// No compartments on V8 (see `maybe_wrap_value`).
 pub fn assert_same_compartment(_cx: &SafeJSContext, _obj: *mut JSObject) {}
 
-/// A `Cow` message for conversion failures.
-pub type FailureMessage = Cow<'static, CStr>;

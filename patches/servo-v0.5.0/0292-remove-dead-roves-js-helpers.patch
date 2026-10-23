@@ -1,0 +1,51 @@
+diff --git a/components/roves-js/src/api.rs b/components/roves-js/src/api.rs
+index d0a5c87a315..335d7c77658 100644
+--- a/components/roves-js/src/api.rs
++++ b/components/roves-js/src/api.rs
+@@ -10,8 +10,6 @@
+ //! the context's pending exception and the operation reports failure (`false`, null or `Err`),
+ //! as SpiderMonkey's API does.
+ 
+-use std::borrow::Cow;
+-use std::ffi::CStr;
+ use std::ops::ControlFlow;
+ 
+ use crate::cell::{StringChars, string_chars};
+@@ -417,5 +415,3 @@ pub unsafe fn maybe_wrap_object_value(cx: &mut SafeJSContext, rval: MutableHandl
+ /// No compartments on V8 (see `maybe_wrap_value`).
+ pub fn assert_same_compartment(_cx: &SafeJSContext, _obj: *mut JSObject) {}
+ 
+-/// A `Cow` message for conversion failures.
+-pub type FailureMessage = Cow<'static, CStr>;
+diff --git a/components/roves-js/src/binding.rs b/components/roves-js/src/binding.rs
+index 53e3e69357a..c18a66e616b 100644
+--- a/components/roves-js/src/binding.rs
++++ b/components/roves-js/src/binding.rs
+@@ -13,7 +13,7 @@ use std::ffi::{CStr, c_char, c_void};
+ 
+ use crate::jsapi::{
+     HandleObject, JSContext, JSFunctionSpec, JSJitGetterCallArgs, JSJitInfo, JSJitMethodCallArgs,
+-    JSJitSetterCallArgs, JSNativeWrapper, JSObject, JSPropertySpec, JSPropertySpec_Kind,
++    JSJitSetterCallArgs, JSNativeWrapper, JSPropertySpec, JSPropertySpec_Kind,
+     JSPropertySpec_ValueWrapper_Type, MutableHandle, SymbolCode,
+ };
+ use crate::jsval::{DoubleValue, Int32Value, JSVal, to_v8};
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index b9855c4d5ea..216625b1809 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -661,14 +661,6 @@ pub unsafe fn RUST_JSID_IS_VOID(id: HandleId) -> bool {
+     id.get().is_void()
+ }
+ 
+-fn new_string(cx: &JSContext, text: &str) -> *mut JSString {
+-    cx.catching(|scope| {
+-        let string = v8::String::new(scope, text)?;
+-        Some(from_v8(scope, string.into()).to_string())
+-    })
+-    .unwrap_or(std::ptr::null_mut())
+-}
+-
+ /// The atom of a (UTF-8) C string.
+ pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *mut JSString {
+     // SAFETY: JSAPI callers pass NUL-terminated strings.

@@ -13,7 +13,7 @@ use std::ffi::{CStr, c_char, c_void};
 
 use crate::jsapi::{
     HandleObject, JSContext, JSFunctionSpec, JSJitGetterCallArgs, JSJitInfo, JSJitMethodCallArgs,
-    JSJitSetterCallArgs, JSNativeWrapper, JSObject, JSPropertySpec, JSPropertySpec_Kind,
+    JSJitSetterCallArgs, JSNativeWrapper, JSPropertySpec, JSPropertySpec_Kind,
     JSPropertySpec_ValueWrapper_Type, MutableHandle, SymbolCode,
 };
 use crate::jsval::{DoubleValue, Int32Value, JSVal, to_v8};

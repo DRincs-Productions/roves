@@ -661,14 +661,6 @@ pub unsafe fn RUST_JSID_IS_VOID(id: HandleId) -> bool {
     id.get().is_void()
 }
 
-fn new_string(cx: &JSContext, text: &str) -> *mut JSString {
-    cx.catching(|scope| {
-        let string = v8::String::new(scope, text)?;
-        Some(from_v8(scope, string.into()).to_string())
-    })
-    .unwrap_or(std::ptr::null_mut())
-}
-
 /// The atom of a (UTF-8) C string.
 pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *mut JSString {
     // SAFETY: JSAPI callers pass NUL-terminated strings.

@@ -1,3 +1,14 @@
+## 2026-10-23 - Remove dead roves-js helpers
+
+**Files:** `components/roves-js/src/{api.rs,binding.rs,jsapi_impl.rs}`, patch
+`0292-remove-dead-roves-js-helpers.patch`.
+
+Removed code the compiler reports as never used and no caller in `script`,
+`script_bindings` or `ports` references: the private `jsapi_impl::new_string`, the
+`api::FailureMessage` alias with its now-unused imports, and an unused import in `binding.rs`.
+Unused imports inside the blocks that include generated JSAPI wrappers stay (they mirror the
+generated surface). Runtime 102 normal/101 JITless (2/3 ignored); replay identical.
+
 ## 2026-10-23 - CSP matrix test for every dynamic constructor
 
 **Files:** `components/roves-js/src/tests.rs`, patch `0291-dynamic-constructor-csp-matrix-test.patch`.
