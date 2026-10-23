@@ -449,30 +449,12 @@ pub unsafe fn JS_GetFunctionId(cx: *mut JSContext, fun: Handle<*mut JSFunction>,
     function_name(cx, fun.get(), name)
 }
 
-pub unsafe fn JS_GetFunctionDisplayId(cx: *mut JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool {
-    function_name(cx, fun.get(), name)
-}
-
 /// The function's `length`.
 pub unsafe fn JS_GetFunctionArity(fun: *mut JSFunction) -> u16 {
     with_object(fun as *mut JSObject, 0, |scope, function| {
         let key = v8::String::new(scope, "length").expect("a short string");
         function.get(scope, key.into()).and_then(|length| length.uint32_value(scope)).unwrap_or(0) as u16
     })
-}
-
-pub unsafe fn JS_ValueToFunction(cx: *mut JSContext, v: HandleValue) -> *mut JSFunction {
-    let v = v.get();
-    raw(cx)
-        .catching(|scope| {
-            let function = value(scope, v);
-            if !function.is_function() {
-                crate::native::throw_type_error(scope, "value is not a function");
-                return None;
-            }
-            Some(from_v8(scope, function).to_object() as *mut JSFunction)
-        })
-        .unwrap_or(std::ptr::null_mut())
 }
 
 pub unsafe fn NewFunctionWithReserved(cx: *mut JSContext, call: JSNative, nargs: u32, flags: u32, name: *const c_char) -> *mut JSFunction {

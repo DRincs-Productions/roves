@@ -20,7 +20,7 @@ use crate::jsapi::{
     EnvironmentChain, Handle, HandleObject, JSContext, JSErrorReport, JSErrorFormatString, JSFunction, JSObject,
     JSPrincipals, JSRuntime, JSScript, JSString, JSTracer, MutableHandle, MutableHandleObject, MutableHandleValue,
     ReadOnlyCompileOptions, SavedFrameResult, SavedFrameSelfHosted, ScriptPrivateReferenceHook, SourceText,
-    StackCapture, StackFormat, SupportUnscopables, TaggedColumnNumberOneOrigin, Utf8Unit,
+    StackCapture, StackFormat, SupportUnscopables, Utf8Unit,
 };
 use crate::jsval::{JSVal, UndefinedValue, from_v8};
 
@@ -648,62 +648,6 @@ pub unsafe fn GetSavedFrameParent(
         parent.is_object().then(|| from_v8(scope, parent).to_object())
     });
     parentp.set(parent.unwrap_or(std::ptr::null_mut()));
-    SavedFrameResult::Ok
-}
-
-pub unsafe fn GetSavedFrameSource(
-    cx: *mut JSContext,
-    _principals: *mut JSPrincipals,
-    saved_frame: Handle<*mut JSObject>,
-    mut sourcep: MutableHandle<*mut JSString>,
-    _self_hosted: SavedFrameSelfHosted,
-) -> SavedFrameResult {
-    let source = raw(cx).with_scope(|scope| {
-        let source = frame_field(scope, saved_frame.get(), "source")?;
-        source.is_string().then(|| from_v8(scope, source).to_string())
-    });
-    sourcep.set(source.unwrap_or(std::ptr::null_mut()));
-    SavedFrameResult::Ok
-}
-
-pub unsafe fn GetSavedFrameLine(
-    cx: *mut JSContext,
-    _principals: *mut JSPrincipals,
-    saved_frame: Handle<*mut JSObject>,
-    linep: *mut u32,
-    _self_hosted: SavedFrameSelfHosted,
-) -> SavedFrameResult {
-    let line = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "line").and_then(|line| line.uint32_value(scope)));
-    // SAFETY: callers pass a valid out pointer.
-    unsafe { *linep = line.unwrap_or(0) };
-    SavedFrameResult::Ok
-}
-
-pub unsafe fn GetSavedFrameColumn(
-    cx: *mut JSContext,
-    _principals: *mut JSPrincipals,
-    saved_frame: Handle<*mut JSObject>,
-    columnp: *mut TaggedColumnNumberOneOrigin,
-    _self_hosted: SavedFrameSelfHosted,
-) -> SavedFrameResult {
-    let column = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "column").and_then(|column| column.uint32_value(scope)));
-    // SAFETY: callers pass a valid out pointer.
-    unsafe { (*columnp).value_ = column.unwrap_or(0) };
-    SavedFrameResult::Ok
-}
-
-pub unsafe fn GetSavedFrameFunctionDisplayName(
-    cx: *mut JSContext,
-    _principals: *mut JSPrincipals,
-    saved_frame: Handle<*mut JSObject>,
-    mut namep: MutableHandle<*mut JSString>,
-    _self_hosted: SavedFrameSelfHosted,
-) -> SavedFrameResult {
-    let name = raw(cx).with_scope(|scope| {
-        let name = frame_field(scope, saved_frame.get(), "functionDisplayName")?;
-        name.is_string().then(|| from_v8(scope, name).to_string())
-    });
-    namep.set(name.unwrap_or(std::ptr::null_mut()));
     SavedFrameResult::Ok
 }
 

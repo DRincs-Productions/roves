@@ -30,22 +30,7 @@ pub unsafe fn throw_range_error(cx: *mut RawJSContext, error: &CStr) {
     throw(cx, ErrorKind::Range, error);
 }
 
-/// Throws an internal error (an `Error`) with `error` as its message.
-///
-/// # Safety
-/// `cx` must be a live context.
-pub unsafe fn throw_internal_error(cx: *mut RawJSContext, error: &CStr) {
-    throw(cx, ErrorKind::Internal, error);
-}
-
 pub fn throw_type_error_safe(cx: &mut JSContext, error: &CStr) {
     throw(cx.ptr.as_ptr(), ErrorKind::Type, error);
 }
 
-pub fn throw_range_error_safe(cx: &mut JSContext, error: &CStr) {
-    throw(cx.ptr.as_ptr(), ErrorKind::Range, error);
-}
-
-pub fn throw_internal_error_safe(cx: &mut JSContext, error: &CStr) {
-    throw(cx.ptr.as_ptr(), ErrorKind::Internal, error);
-}

@@ -1,0 +1,489 @@
+diff --git a/components/roves-js/src/conversions.rs b/components/roves-js/src/conversions.rs
+index ba3afd48ebd..4a074b08586 100644
+--- a/components/roves-js/src/conversions.rs
++++ b/components/roves-js/src/conversions.rs
+@@ -629,29 +629,6 @@ pub unsafe fn jsstr_to_string(cx: &crate::context::JSContext, jsstr: NonNull<JSS
+     String::from_utf16_lossy(char_vec)
+ }
+ 
+-/// Converts a `JSString`, encoded in "Latin1" (i.e. U+0000-U+00FF encoded as 0x00-0xFF) into a
+-/// `String`.
+-///
+-/// Use [`latin1_to_string`] if possible as this function will be eventually removed.
+-#[deprecated(note = "Use latin1_to_string instead")]
+-pub unsafe fn unsafe_latin1_to_string(cx: *mut JSContext, s: NonNull<JSString>) -> String {
+-    // while this can break direct invariants of JSContext
+-    // it is ok in the current usage of this function and it avoids duplicating the code
+-    let cx = crate::context::JSContext::from_ptr(NonNull::new(cx).unwrap());
+-    latin1_to_string(&cx, s)
+-}
+-
+-/// Converts a `JSString` into a `String`, regardless of used encoding.
+-///
+-/// Use [`jsstr_to_string`] if possible as this function will be eventually removed.
+-#[deprecated(note = "Use jsstr_to_string instead")]
+-pub unsafe fn unsafe_jsstr_to_string(cx: *mut JSContext, jsstr: NonNull<JSString>) -> String {
+-    // while this can break direct invariants of JSContext
+-    // it is ok in the current usage of this function and it avoids duplicating the code
+-    let cx = crate::context::JSContext::from_ptr(NonNull::new(cx).unwrap());
+-    jsstr_to_string(&cx, jsstr)
+-}
+-
+ // https://heycam.github.io/webidl/#es-USVString
+ impl ToJSValConvertible for str {
+     #[inline]
+diff --git a/components/roves-js/src/error.rs b/components/roves-js/src/error.rs
+index 67dac325af4..fcf48b8aa29 100644
+--- a/components/roves-js/src/error.rs
++++ b/components/roves-js/src/error.rs
+@@ -30,22 +30,7 @@ pub unsafe fn throw_range_error(cx: *mut RawJSContext, error: &CStr) {
+     throw(cx, ErrorKind::Range, error);
+ }
+ 
+-/// Throws an internal error (an `Error`) with `error` as its message.
+-///
+-/// # Safety
+-/// `cx` must be a live context.
+-pub unsafe fn throw_internal_error(cx: *mut RawJSContext, error: &CStr) {
+-    throw(cx, ErrorKind::Internal, error);
+-}
+-
+ pub fn throw_type_error_safe(cx: &mut JSContext, error: &CStr) {
+     throw(cx.ptr.as_ptr(), ErrorKind::Type, error);
+ }
+ 
+-pub fn throw_range_error_safe(cx: &mut JSContext, error: &CStr) {
+-    throw(cx.ptr.as_ptr(), ErrorKind::Range, error);
+-}
+-
+-pub fn throw_internal_error_safe(cx: &mut JSContext, error: &CStr) {
+-    throw(cx.ptr.as_ptr(), ErrorKind::Internal, error);
+-}
+diff --git a/components/roves-js/src/jsimpls.rs b/components/roves-js/src/jsimpls.rs
+index 41930e47f7a..1ac9b6fd793 100644
+--- a/components/roves-js/src/jsimpls.rs
++++ b/components/roves-js/src/jsimpls.rs
+@@ -372,42 +372,10 @@ impl ObjectOpResult {
+         self.fail(JSErrNum::JSMSG_READ_ONLY)
+     }
+ 
+-    pub fn fail_getter_only(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_GETTER_ONLY)
+-    }
+-
+     pub fn fail_cant_delete(&mut self) -> bool {
+         self.fail(JSErrNum::JSMSG_CANT_DELETE)
+     }
+ 
+-    pub fn fail_cant_set_interposed(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_SET_INTERPOSED)
+-    }
+-
+-    pub fn fail_cant_define_window_element(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_DEFINE_WINDOW_ELEMENT)
+-    }
+-
+-    pub fn fail_cant_delete_window_element(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_DELETE_WINDOW_ELEMENT)
+-    }
+-
+-    pub fn fail_cant_define_window_named_property(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_DEFINE_WINDOW_NAMED_PROPERTY)
+-    }
+-
+-    pub fn fail_cant_delete_window_named_property(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_DELETE_WINDOW_NAMED_PROPERTY)
+-    }
+-
+-    pub fn fail_cant_define_window_non_configurable(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_DEFINE_WINDOW_NC)
+-    }
+-
+-    pub fn fail_cant_prevent_extensions(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_CANT_PREVENT_EXTENSIONS)
+-    }
+-
+     pub fn fail_cant_set_proto(&mut self) -> bool {
+         self.fail(JSErrNum::JSMSG_CANT_SET_PROTO)
+     }
+@@ -416,36 +384,6 @@ impl ObjectOpResult {
+         self.fail(JSErrNum::JSMSG_NO_NAMED_SETTER)
+     }
+ 
+-    pub fn fail_no_indexed_setter(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_NO_INDEXED_SETTER)
+-    }
+-
+-    pub fn fail_not_data_descriptor(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_NOT_DATA_DESCRIPTOR)
+-    }
+-
+-    pub fn fail_invalid_descriptor(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_INVALID_DESCRIPTOR)
+-    }
+-
+-    pub fn fail_bad_array_length(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_BAD_ARRAY_LENGTH)
+-    }
+-
+-    pub fn fail_bad_index(&mut self) -> bool {
+-        self.fail(JSErrNum::JSMSG_BAD_INDEX)
+-    }
+-
+-    pub fn failure_code(&self) -> u32 {
+-        assert!(!self.ok());
+-        self.code_ as u32
+-    }
+-
+-    #[deprecated]
+-    #[allow(non_snake_case)]
+-    pub fn failNoNamedSetter(&mut self) -> bool {
+-        self.fail_no_named_setter()
+-    }
+ }
+ 
+ impl Default for ObjectOpResult {
+diff --git a/components/roves-js/src/jsval.rs b/components/roves-js/src/jsval.rs
+index 4b2bee98e0f..8b5e1844038 100644
+--- a/components/roves-js/src/jsval.rs
++++ b/components/roves-js/src/jsval.rs
+@@ -8,7 +8,7 @@
+ 
+ use std::ffi::c_void;
+ 
+-use crate::jsapi::{BigInt, JSObject, JSString, Symbol};
++use crate::jsapi::{JSObject, JSString, Symbol};
+ 
+ const TAG_SHIFT: u64 = 47;
+ const PAYLOAD_MASK: u64 = (1 << TAG_SHIFT) - 1;
+@@ -109,11 +109,6 @@ pub fn SymbolValue(s: &Symbol) -> JSVal {
+     gc_thing(TAG_SYMBOL, s as *const Symbol as *const c_void)
+ }
+ 
+-#[inline]
+-pub fn BigIntValue(b: &BigInt) -> JSVal {
+-    gc_thing(TAG_BIGINT, b as *const BigInt as *const c_void)
+-}
+-
+ /// A magic value (SpiderMonkey's `JS_IS_CONSTRUCTING` marker in a native's `this` slot).
+ pub(crate) fn magic_value() -> JSVal {
+     tagged(TAG_MAGIC, 0)
+@@ -249,11 +244,6 @@ impl JSVal {
+         self.payload() as *mut Symbol
+     }
+ 
+-    pub fn to_bigint(&self) -> *mut BigInt {
+-        assert!(self.is_bigint());
+-        self.payload() as *mut BigInt
+-    }
+-
+     pub fn to_private(&self) -> *const c_void {
+         assert!(self.tag() == TAG_PRIVATE);
+         self.payload() as *const c_void
+diff --git a/components/roves-js/src/realm.rs b/components/roves-js/src/realm.rs
+index 05e5361ae1a..d1e7e08f1f6 100644
+--- a/components/roves-js/src/realm.rs
++++ b/components/roves-js/src/realm.rs
+@@ -158,14 +158,6 @@ impl<'cx> AutoRealm<'cx> {
+         (unsafe { std::mem::transmute(self.global()) }, self)
+     }
+ 
+-    /// Erase the lifetime of this [AutoRealm].
+-    ///
+-    /// # Safety
+-    /// - The caller must ensure that the [AutoRealm] does not outlive the [JSContext] it was created with.
+-    pub unsafe fn erase_lifetime(self) -> AutoRealm<'static> {
+-        std::mem::transmute(self)
+-    }
+-
+     pub fn realm(&self) -> &JSAutoRealm {
+         &self.realm
+     }
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 725cb46dcc2..e904dbcc354 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -34,7 +34,7 @@ use crate::glue::{
+ use crate::jsapi::{
+     BuildIdCharVector, BuildIdOp, ConsumeStreamCallback, ContextOptions, DOMCallbacks, Dispatchable_MaybeShuttingDown,
+     GCReason, GCSliceCallback, HasReleasedWrapperCallback, JSContext, JSGCCallback, JSGCParamKey, JSInterruptCallback,
+-    JSJitCompilerOption, JSReadPrincipalsOp, JSSecurityCallbacks, JSTraceDataOp, JobQueue, PreserveWrapperCallback,
++    JSReadPrincipalsOp, JSSecurityCallbacks, JSTraceDataOp, JobQueue, PreserveWrapperCallback,
+     PromiseRejectionHandlingState, PromiseRejectionTrackerCallback, ReportStreamErrorCallback,
+     ScriptEnvironmentPreparer_Closure, ServoSizes,
+ };
+@@ -321,11 +321,6 @@ pub unsafe fn JS_RequestInterruptCallback(cx: *mut JSContext) {
+     handle.request_interrupt(run_interrupt_callbacks, std::ptr::null_mut());
+ }
+ 
+-pub unsafe fn JS_RequestInterruptCallbackCanWait(cx: *mut JSContext) {
+-    // SAFETY: forwarded.
+-    unsafe { JS_RequestInterruptCallback(cx) }
+-}
+-
+ /// V8's interrupt: runs the interrupt callbacks; one returning `false` stops the script.
+ pub(crate) unsafe extern "C" fn run_interrupt_callbacks(_isolate: v8::UnsafeRawIsolatePtr, _data: *mut c_void) {
+     let Some(cx) = crate::rust::Runtime::get() else { return };
+@@ -349,10 +344,6 @@ pub unsafe fn JS_AddExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp,
+     true
+ }
+ 
+-pub unsafe fn JS_RemoveExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp, data: *mut c_void) {
+-    hooks(cx).extra_roots.borrow_mut().retain(|entry| *entry != (trace, data));
+-}
+-
+ /// Runs the embedder root tracers (from the runtime's root set).
+ pub(crate) fn trace_extra_roots(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     let Ok(roots) = cx.hooks.extra_roots.try_borrow() else { return };
+@@ -627,10 +618,6 @@ pub unsafe fn ContextOptionsRef(cx: *mut JSContext) -> *mut ContextOptions {
+     &*hooks(cx).context_options as *const ContextOptions as *mut ContextOptions
+ }
+ 
+-pub unsafe fn JS_SetGlobalJitCompilerOption(_cx: *mut JSContext, _option: JSJitCompilerOption, _value: u32) {}
+-
+-pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled: bool) {}
+-
+ /// Sets the security callbacks. Their CSP check (`contentSecurityPolicyAllows`) decides on
+ /// `eval`, `Function` and WebAssembly compilation: realms disallow code generation from
+ /// strings, so V8 asks [`code_generation_from_strings`] and [`wasm_code_generation`].
+@@ -769,10 +756,6 @@ thread_local! {
+     static BUILD_ID_OP: Cell<BuildIdOp> = const { Cell::new(None) };
+ }
+ 
+-pub unsafe fn SetProcessBuildIdOp(op: BuildIdOp) {
+-    BUILD_ID_OP.with(|build_id| build_id.set(op));
+-}
+-
+ /// SpiderMonkey's build id vector is a C++ container; V8 has its own cache keys.
+ pub unsafe fn SetBuildId(_build_id: *mut BuildIdCharVector, _chars: *const c_char, _len: usize) -> bool {
+     true
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index a9c988b2604..dce64ce54c6 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -353,9 +353,6 @@ impl ThreadSafeJSContext {
+         }
+     }
+ 
+-    pub fn request_interrupt_callback_can_wait(&self) {
+-        self.request_interrupt_callback();
+-    }
+ }
+ 
+ /// One V8 isolate with its initial realm: the `JSRuntime`/`JSContext` pair of mozjs.
+@@ -852,32 +849,6 @@ impl<'a> CapturedJSStack<'a> {
+         Some(unsafe { crate::conversions::jsstr_to_string(&safe_cx, string) })
+     }
+ 
+-    /// Calls `f` for each frame, innermost first.
+-    pub fn for_each_stack_frame<F>(&self, mut f: F)
+-    where
+-        F: FnMut(Handle<*mut crate::jsapi::JSObject>),
+-    {
+-        let cx = self.cx;
+-        crate::rooted!(in(cx) let mut current = self.stack.get());
+-        crate::rooted!(in(cx) let mut next = std::ptr::null_mut::<crate::jsapi::JSObject>());
+-        loop {
+-            f(current.handle());
+-            // SAFETY: rooted arguments.
+-            let result = unsafe {
+-                crate::script_impl::GetSavedFrameParent(
+-                    cx,
+-                    std::ptr::null_mut(),
+-                    current.handle().into(),
+-                    next.handle_mut().into(),
+-                    crate::jsapi::SavedFrameSelfHosted::Include,
+-                )
+-            };
+-            if result != crate::jsapi::SavedFrameResult::Ok || next.get().is_null() {
+-                return;
+-            }
+-            current.set(next.get());
+-        }
+-    }
+ }
+ 
+ #[macro_export]
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 958f99755b5..d7072fcdcd5 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -20,7 +20,7 @@ use crate::jsapi::{
+     EnvironmentChain, Handle, HandleObject, JSContext, JSErrorReport, JSErrorFormatString, JSFunction, JSObject,
+     JSPrincipals, JSRuntime, JSScript, JSString, JSTracer, MutableHandle, MutableHandleObject, MutableHandleValue,
+     ReadOnlyCompileOptions, SavedFrameResult, SavedFrameSelfHosted, ScriptPrivateReferenceHook, SourceText,
+-    StackCapture, StackFormat, SupportUnscopables, TaggedColumnNumberOneOrigin, Utf8Unit,
++    StackCapture, StackFormat, SupportUnscopables, Utf8Unit,
+ };
+ use crate::jsval::{JSVal, UndefinedValue, from_v8};
+ 
+@@ -651,62 +651,6 @@ pub unsafe fn GetSavedFrameParent(
+     SavedFrameResult::Ok
+ }
+ 
+-pub unsafe fn GetSavedFrameSource(
+-    cx: *mut JSContext,
+-    _principals: *mut JSPrincipals,
+-    saved_frame: Handle<*mut JSObject>,
+-    mut sourcep: MutableHandle<*mut JSString>,
+-    _self_hosted: SavedFrameSelfHosted,
+-) -> SavedFrameResult {
+-    let source = raw(cx).with_scope(|scope| {
+-        let source = frame_field(scope, saved_frame.get(), "source")?;
+-        source.is_string().then(|| from_v8(scope, source).to_string())
+-    });
+-    sourcep.set(source.unwrap_or(std::ptr::null_mut()));
+-    SavedFrameResult::Ok
+-}
+-
+-pub unsafe fn GetSavedFrameLine(
+-    cx: *mut JSContext,
+-    _principals: *mut JSPrincipals,
+-    saved_frame: Handle<*mut JSObject>,
+-    linep: *mut u32,
+-    _self_hosted: SavedFrameSelfHosted,
+-) -> SavedFrameResult {
+-    let line = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "line").and_then(|line| line.uint32_value(scope)));
+-    // SAFETY: callers pass a valid out pointer.
+-    unsafe { *linep = line.unwrap_or(0) };
+-    SavedFrameResult::Ok
+-}
+-
+-pub unsafe fn GetSavedFrameColumn(
+-    cx: *mut JSContext,
+-    _principals: *mut JSPrincipals,
+-    saved_frame: Handle<*mut JSObject>,
+-    columnp: *mut TaggedColumnNumberOneOrigin,
+-    _self_hosted: SavedFrameSelfHosted,
+-) -> SavedFrameResult {
+-    let column = raw(cx).with_scope(|scope| frame_field(scope, saved_frame.get(), "column").and_then(|column| column.uint32_value(scope)));
+-    // SAFETY: callers pass a valid out pointer.
+-    unsafe { (*columnp).value_ = column.unwrap_or(0) };
+-    SavedFrameResult::Ok
+-}
+-
+-pub unsafe fn GetSavedFrameFunctionDisplayName(
+-    cx: *mut JSContext,
+-    _principals: *mut JSPrincipals,
+-    saved_frame: Handle<*mut JSObject>,
+-    mut namep: MutableHandle<*mut JSString>,
+-    _self_hosted: SavedFrameSelfHosted,
+-) -> SavedFrameResult {
+-    let name = raw(cx).with_scope(|scope| {
+-        let name = frame_field(scope, saved_frame.get(), "functionDisplayName")?;
+-        name.is_string().then(|| from_v8(scope, name).to_string())
+-    });
+-    namep.set(name.unwrap_or(std::ptr::null_mut()));
+-    SavedFrameResult::Ok
+-}
+-
+ /// The current stack in SpiderMonkey's format (`name@source:line:column`, one frame a line).
+ fn stack_text(scope: &mut v8::PinScope, limit: usize) -> String {
+     let Some(trace) = v8::StackTrace::current_stack_trace(scope, limit.min(1000)) else { return String::new() };
+diff --git a/components/roves-js/src/typedarray_impl.rs b/components/roves-js/src/typedarray_impl.rs
+index 9154f22605c..fb2a84dcbde 100644
+--- a/components/roves-js/src/typedarray_impl.rs
++++ b/components/roves-js/src/typedarray_impl.rs
+@@ -102,10 +102,6 @@ pub unsafe fn IsArrayBufferObject(obj: *mut JSObject) -> bool {
+     with_value(obj, |_, value| value.is_array_buffer())
+ }
+ 
+-pub unsafe fn IsSharedArrayBufferObject(obj: *mut JSObject) -> bool {
+-    with_value(obj, |_, value| value.is_shared_array_buffer())
+-}
+-
+ pub unsafe fn JS_GetTypedArraySharedness(obj: *mut JSObject) -> bool {
+     with_value(obj, |scope, value| data_of(scope, value).is_some_and(|(_, _, shared)| shared))
+ }
+@@ -118,10 +114,6 @@ pub unsafe fn UnwrapArrayBufferView(obj: *mut JSObject) -> *mut JSObject {
+     with_value(obj, |_, value| if value.is_array_buffer_view() { obj } else { std::ptr::null_mut() })
+ }
+ 
+-pub unsafe fn UnwrapSharedArrayBuffer(obj: *mut JSObject) -> *mut JSObject {
+-    with_value(obj, |_, value| if value.is_shared_array_buffer() { obj } else { std::ptr::null_mut() })
+-}
+-
+ /// Writes `obj`'s length (in elements of `kind`, or bytes), sharedness and data pointer.
+ unsafe fn length_and_data<T>(obj: *mut JSObject, kind: Option<Type>, length: *mut usize, is_shared: *mut bool, data: *mut *mut T) {
+     let found = with_value(obj, |scope, value| data_of(scope, value));
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index fd1ddc3ea3d..6cfb1bf039b 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -449,10 +449,6 @@ pub unsafe fn JS_GetFunctionId(cx: *mut JSContext, fun: Handle<*mut JSFunction>,
+     function_name(cx, fun.get(), name)
+ }
+ 
+-pub unsafe fn JS_GetFunctionDisplayId(cx: *mut JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool {
+-    function_name(cx, fun.get(), name)
+-}
+-
+ /// The function's `length`.
+ pub unsafe fn JS_GetFunctionArity(fun: *mut JSFunction) -> u16 {
+     with_object(fun as *mut JSObject, 0, |scope, function| {
+@@ -461,20 +457,6 @@ pub unsafe fn JS_GetFunctionArity(fun: *mut JSFunction) -> u16 {
+     })
+ }
+ 
+-pub unsafe fn JS_ValueToFunction(cx: *mut JSContext, v: HandleValue) -> *mut JSFunction {
+-    let v = v.get();
+-    raw(cx)
+-        .catching(|scope| {
+-            let function = value(scope, v);
+-            if !function.is_function() {
+-                crate::native::throw_type_error(scope, "value is not a function");
+-                return None;
+-            }
+-            Some(from_v8(scope, function).to_object() as *mut JSFunction)
+-        })
+-        .unwrap_or(std::ptr::null_mut())
+-}
+-
+ pub unsafe fn NewFunctionWithReserved(cx: *mut JSContext, call: JSNative, nargs: u32, flags: u32, name: *const c_char) -> *mut JSFunction {
+     // SAFETY: forwarded.
+     unsafe { crate::jsapi_impl::JS_NewFunction(cx, call, nargs, flags, name) }
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 45270f3557c..e623d7fd714 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -85,14 +85,9 @@ wrap!(jsapi: pub fn NewUCRegExpObject(cx: &mut JSContext, chars: *const u16, len
+ wrap!(jsapi: pub fn ExecuteRegExpNoStatics(cx: &mut JSContext, reobj: Handle<*mut JSObject>, chars: *const u16, length: usize, indexp: *mut usize, test: bool, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn ObjectIsRegExp(cx: &mut JSContext, obj: Handle<*mut JSObject>, isRegExp: *mut bool) -> bool);
+ wrap!(jsapi: pub fn CheckRegExpSyntax(cx: &mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags, error: MutableHandle<Value>) -> bool);
+-wrap!(jsapi: pub fn GetSavedFrameSource(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, sourcep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+-wrap!(jsapi: pub fn GetSavedFrameLine(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, linep: *mut u32, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+-wrap!(jsapi: pub fn GetSavedFrameColumn(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, columnp: *mut TaggedColumnNumberOneOrigin, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+-wrap!(jsapi: pub fn GetSavedFrameFunctionDisplayName(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, namep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn GetSavedFrameParent(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, parentp: MutableHandle<*mut JSObject>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
+ wrap!(jsapi: pub fn JS_CallFunctionName(cx: &mut JSContext, obj: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_AddExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void) -> bool);
+-wrap!(jsapi: pub fn JS_RemoveExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
+ wrap!(jsapi: pub fn JS_SetGCCallback(cx: &JSContext, cb: JSGCCallback, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JS_SetGCParameter(cx: &mut JSContext, key: JSGCParamKey, value: u32));
+@@ -104,7 +99,6 @@ wrap!(jsapi: pub fn JS_NewGlobalObject(cx: &mut JSContext, clasp: *const JSClass
+ wrap!(jsapi: pub fn JS_FireOnNewGlobalObject(cx: &mut JSContext, global: HandleObject));
+ wrap!(jsapi: pub fn JS_AddInterruptCallback(cx: &JSContext, callback: JSInterruptCallback) -> bool);
+ wrap!(jsapi: pub fn JS_RequestInterruptCallback(cx: &JSContext));
+-wrap!(jsapi: pub fn JS_RequestInterruptCallbackCanWait(cx: &JSContext));
+ wrap!(jsapi: pub fn JS_DropPrincipals(cx: &JSContext, principals: *mut JSPrincipals));
+ wrap!(jsapi: pub fn JS_SetSecurityCallbacks(cx: &JSContext, callbacks: *const JSSecurityCallbacks));
+ wrap!(jsapi: pub fn JS_SetTrustedPrincipals(cx: &JSContext, prin: *mut JSPrincipals));
+@@ -136,7 +130,6 @@ wrap!(jsapi: pub fn JS_IterateCompartments(cx: &mut JSContext, data: *mut ::std:
+ wrap!(jsapi: pub fn JS_NewStringCopyN(cx: &mut JSContext, s: *const ::std::os::raw::c_char, n: usize) -> *mut JSString);
+ wrap!(jsapi: pub fn JS_AtomizeStringN(cx: &JSContext, s: *const ::std::os::raw::c_char, length: usize) -> *mut JSString);
+ wrap!(jsapi: pub fn JS_AtomizeAndPinString(cx: &JSContext, s: *const ::std::os::raw::c_char) -> *mut JSString);
+-wrap!(jsapi: pub fn JS_ValueToFunction(cx: &mut JSContext, v: HandleValue) -> *mut JSFunction);
+ wrap!(jsapi: pub fn JS_ValueToSource(cx: &mut JSContext, v: Handle<Value>) -> *mut JSString);
+ wrap!(jsapi: pub fn JS_TypeOfValue(cx: &JSContext, v: Handle<Value>) -> JSType);
+ wrap!(jsapi: pub fn JS_WrapObject(cx: &mut JSContext, objp: MutableHandleObject) -> bool);
+@@ -156,9 +149,6 @@ wrap!(jsapi: pub fn JS_SetPrototype(cx: &mut JSContext, obj: HandleObject, proto
+ wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
+ wrap!(jsapi: pub fn JS_GetFunctionId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
+-wrap!(jsapi: pub fn JS_GetFunctionDisplayId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
+-wrap!(jsapi: pub fn JS_SetOffthreadIonCompilationEnabled(cx: &JSContext, enabled: bool));
+-wrap!(jsapi: pub fn JS_SetGlobalJitCompilerOption(cx: &JSContext, opt: JSJitCompilerOption, value: u32));
+ wrap!(jsapi: pub fn JS_IndexToId(cx: &JSContext, index: u32, arg1: MutableHandleId) -> bool);
+ wrap!(jsapi: pub fn JS_IsIdentifier(cx: &JSContext, str_: HandleString, isIdentifier: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);

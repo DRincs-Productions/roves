@@ -353,9 +353,6 @@ impl ThreadSafeJSContext {
         }
     }
 
-    pub fn request_interrupt_callback_can_wait(&self) {
-        self.request_interrupt_callback();
-    }
 }
 
 /// One V8 isolate with its initial realm: the `JSRuntime`/`JSContext` pair of mozjs.
@@ -852,32 +849,6 @@ impl<'a> CapturedJSStack<'a> {
         Some(unsafe { crate::conversions::jsstr_to_string(&safe_cx, string) })
     }
 
-    /// Calls `f` for each frame, innermost first.
-    pub fn for_each_stack_frame<F>(&self, mut f: F)
-    where
-        F: FnMut(Handle<*mut crate::jsapi::JSObject>),
-    {
-        let cx = self.cx;
-        crate::rooted!(in(cx) let mut current = self.stack.get());
-        crate::rooted!(in(cx) let mut next = std::ptr::null_mut::<crate::jsapi::JSObject>());
-        loop {
-            f(current.handle());
-            // SAFETY: rooted arguments.
-            let result = unsafe {
-                crate::script_impl::GetSavedFrameParent(
-                    cx,
-                    std::ptr::null_mut(),
-                    current.handle().into(),
-                    next.handle_mut().into(),
-                    crate::jsapi::SavedFrameSelfHosted::Include,
-                )
-            };
-            if result != crate::jsapi::SavedFrameResult::Ok || next.get().is_null() {
-                return;
-            }
-            current.set(next.get());
-        }
-    }
 }
 
 #[macro_export]

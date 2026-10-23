@@ -85,14 +85,9 @@ wrap!(jsapi: pub fn NewUCRegExpObject(cx: &mut JSContext, chars: *const u16, len
 wrap!(jsapi: pub fn ExecuteRegExpNoStatics(cx: &mut JSContext, reobj: Handle<*mut JSObject>, chars: *const u16, length: usize, indexp: *mut usize, test: bool, rval: MutableHandle<Value>) -> bool);
 wrap!(jsapi: pub fn ObjectIsRegExp(cx: &mut JSContext, obj: Handle<*mut JSObject>, isRegExp: *mut bool) -> bool);
 wrap!(jsapi: pub fn CheckRegExpSyntax(cx: &mut JSContext, chars: *const u16, length: usize, flags: RegExpFlags, error: MutableHandle<Value>) -> bool);
-wrap!(jsapi: pub fn GetSavedFrameSource(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, sourcep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
-wrap!(jsapi: pub fn GetSavedFrameLine(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, linep: *mut u32, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
-wrap!(jsapi: pub fn GetSavedFrameColumn(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, columnp: *mut TaggedColumnNumberOneOrigin, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
-wrap!(jsapi: pub fn GetSavedFrameFunctionDisplayName(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, namep: MutableHandle<*mut JSString>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
 wrap!(jsapi: pub fn GetSavedFrameParent(cx: &mut JSContext, principals: *mut JSPrincipals, savedFrame: Handle<*mut JSObject>, parentp: MutableHandle<*mut JSObject>, selfHosted: SavedFrameSelfHosted) -> SavedFrameResult);
 wrap!(jsapi: pub fn JS_CallFunctionName(cx: &mut JSContext, obj: Handle<*mut JSObject>, name: *const ::std::os::raw::c_char, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
 wrap!(jsapi: pub fn JS_AddExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void) -> bool);
-wrap!(jsapi: pub fn JS_RemoveExtraGCRootsTracer(cx: &JSContext, traceOp: JSTraceDataOp, data: *mut ::std::os::raw::c_void));
 wrap!(jsapi: pub fn JS_GC(cx: &mut JSContext, reason: GCReason));
 wrap!(jsapi: pub fn JS_SetGCCallback(cx: &JSContext, cb: JSGCCallback, data: *mut ::std::os::raw::c_void));
 wrap!(jsapi: pub fn JS_SetGCParameter(cx: &mut JSContext, key: JSGCParamKey, value: u32));
@@ -104,7 +99,6 @@ wrap!(jsapi: pub fn JS_NewGlobalObject(cx: &mut JSContext, clasp: *const JSClass
 wrap!(jsapi: pub fn JS_FireOnNewGlobalObject(cx: &mut JSContext, global: HandleObject));
 wrap!(jsapi: pub fn JS_AddInterruptCallback(cx: &JSContext, callback: JSInterruptCallback) -> bool);
 wrap!(jsapi: pub fn JS_RequestInterruptCallback(cx: &JSContext));
-wrap!(jsapi: pub fn JS_RequestInterruptCallbackCanWait(cx: &JSContext));
 wrap!(jsapi: pub fn JS_DropPrincipals(cx: &JSContext, principals: *mut JSPrincipals));
 wrap!(jsapi: pub fn JS_SetSecurityCallbacks(cx: &JSContext, callbacks: *const JSSecurityCallbacks));
 wrap!(jsapi: pub fn JS_SetTrustedPrincipals(cx: &JSContext, prin: *mut JSPrincipals));
@@ -136,7 +130,6 @@ wrap!(jsapi: pub fn JS_IterateCompartments(cx: &mut JSContext, data: *mut ::std:
 wrap!(jsapi: pub fn JS_NewStringCopyN(cx: &mut JSContext, s: *const ::std::os::raw::c_char, n: usize) -> *mut JSString);
 wrap!(jsapi: pub fn JS_AtomizeStringN(cx: &JSContext, s: *const ::std::os::raw::c_char, length: usize) -> *mut JSString);
 wrap!(jsapi: pub fn JS_AtomizeAndPinString(cx: &JSContext, s: *const ::std::os::raw::c_char) -> *mut JSString);
-wrap!(jsapi: pub fn JS_ValueToFunction(cx: &mut JSContext, v: HandleValue) -> *mut JSFunction);
 wrap!(jsapi: pub fn JS_ValueToSource(cx: &mut JSContext, v: Handle<Value>) -> *mut JSString);
 wrap!(jsapi: pub fn JS_TypeOfValue(cx: &JSContext, v: Handle<Value>) -> JSType);
 wrap!(jsapi: pub fn JS_WrapObject(cx: &mut JSContext, objp: MutableHandleObject) -> bool);
@@ -156,9 +149,6 @@ wrap!(jsapi: pub fn JS_SetPrototype(cx: &mut JSContext, obj: HandleObject, proto
 wrap!(jsapi: pub fn JS_SetImmutablePrototype(cx: &mut JSContext, obj: HandleObject, succeeded: *mut bool) -> bool);
 wrap!(jsapi: pub fn JS_NewFunction(cx: &mut JSContext, call: JSNative, nargs: ::std::os::raw::c_uint, flags: ::std::os::raw::c_uint, name: *const ::std::os::raw::c_char) -> *mut JSFunction);
 wrap!(jsapi: pub fn JS_GetFunctionId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
-wrap!(jsapi: pub fn JS_GetFunctionDisplayId(cx: &JSContext, fun: Handle<*mut JSFunction>, name: MutableHandle<*mut JSString>) -> bool);
-wrap!(jsapi: pub fn JS_SetOffthreadIonCompilationEnabled(cx: &JSContext, enabled: bool));
-wrap!(jsapi: pub fn JS_SetGlobalJitCompilerOption(cx: &JSContext, opt: JSJitCompilerOption, value: u32));
 wrap!(jsapi: pub fn JS_IndexToId(cx: &JSContext, index: u32, arg1: MutableHandleId) -> bool);
 wrap!(jsapi: pub fn JS_IsIdentifier(cx: &JSContext, str_: HandleString, isIdentifier: *mut bool) -> bool);
 wrap!(jsapi: pub fn JS_ExecuteScript(cx: &mut JSContext, script: Handle<*mut JSScript>, rval: MutableHandle<Value>) -> bool);

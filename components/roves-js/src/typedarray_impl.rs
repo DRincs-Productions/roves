@@ -102,10 +102,6 @@ pub unsafe fn IsArrayBufferObject(obj: *mut JSObject) -> bool {
     with_value(obj, |_, value| value.is_array_buffer())
 }
 
-pub unsafe fn IsSharedArrayBufferObject(obj: *mut JSObject) -> bool {
-    with_value(obj, |_, value| value.is_shared_array_buffer())
-}
-
 pub unsafe fn JS_GetTypedArraySharedness(obj: *mut JSObject) -> bool {
     with_value(obj, |scope, value| data_of(scope, value).is_some_and(|(_, _, shared)| shared))
 }
@@ -116,10 +112,6 @@ pub unsafe fn UnwrapArrayBuffer(obj: *mut JSObject) -> *mut JSObject {
 
 pub unsafe fn UnwrapArrayBufferView(obj: *mut JSObject) -> *mut JSObject {
     with_value(obj, |_, value| if value.is_array_buffer_view() { obj } else { std::ptr::null_mut() })
-}
-
-pub unsafe fn UnwrapSharedArrayBuffer(obj: *mut JSObject) -> *mut JSObject {
-    with_value(obj, |_, value| if value.is_shared_array_buffer() { obj } else { std::ptr::null_mut() })
 }
 
 /// Writes `obj`'s length (in elements of `kind`, or bytes), sharedness and data pointer.

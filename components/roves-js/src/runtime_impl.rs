@@ -34,7 +34,7 @@ use crate::glue::{
 use crate::jsapi::{
     BuildIdCharVector, BuildIdOp, ConsumeStreamCallback, ContextOptions, DOMCallbacks, Dispatchable_MaybeShuttingDown,
     GCReason, GCSliceCallback, HasReleasedWrapperCallback, JSContext, JSGCCallback, JSGCParamKey, JSInterruptCallback,
-    JSJitCompilerOption, JSReadPrincipalsOp, JSSecurityCallbacks, JSTraceDataOp, JobQueue, PreserveWrapperCallback,
+    JSReadPrincipalsOp, JSSecurityCallbacks, JSTraceDataOp, JobQueue, PreserveWrapperCallback,
     PromiseRejectionHandlingState, PromiseRejectionTrackerCallback, ReportStreamErrorCallback,
     ScriptEnvironmentPreparer_Closure, ServoSizes,
 };
@@ -321,11 +321,6 @@ pub unsafe fn JS_RequestInterruptCallback(cx: *mut JSContext) {
     handle.request_interrupt(run_interrupt_callbacks, std::ptr::null_mut());
 }
 
-pub unsafe fn JS_RequestInterruptCallbackCanWait(cx: *mut JSContext) {
-    // SAFETY: forwarded.
-    unsafe { JS_RequestInterruptCallback(cx) }
-}
-
 /// V8's interrupt: runs the interrupt callbacks; one returning `false` stops the script.
 pub(crate) unsafe extern "C" fn run_interrupt_callbacks(_isolate: v8::UnsafeRawIsolatePtr, _data: *mut c_void) {
     let Some(cx) = crate::rust::Runtime::get() else { return };
@@ -347,10 +342,6 @@ pub(crate) unsafe extern "C" fn run_interrupt_callbacks(_isolate: v8::UnsafeRawI
 pub unsafe fn JS_AddExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp, data: *mut c_void) -> bool {
     hooks(cx).extra_roots.borrow_mut().push((trace, data));
     true
-}
-
-pub unsafe fn JS_RemoveExtraGCRootsTracer(cx: *mut JSContext, trace: JSTraceDataOp, data: *mut c_void) {
-    hooks(cx).extra_roots.borrow_mut().retain(|entry| *entry != (trace, data));
 }
 
 /// Runs the embedder root tracers (from the runtime's root set).
@@ -627,10 +618,6 @@ pub unsafe fn ContextOptionsRef(cx: *mut JSContext) -> *mut ContextOptions {
     &*hooks(cx).context_options as *const ContextOptions as *mut ContextOptions
 }
 
-pub unsafe fn JS_SetGlobalJitCompilerOption(_cx: *mut JSContext, _option: JSJitCompilerOption, _value: u32) {}
-
-pub unsafe fn JS_SetOffthreadIonCompilationEnabled(_cx: *mut JSContext, _enabled: bool) {}
-
 /// Sets the security callbacks. Their CSP check (`contentSecurityPolicyAllows`) decides on
 /// `eval`, `Function` and WebAssembly compilation: realms disallow code generation from
 /// strings, so V8 asks [`code_generation_from_strings`] and [`wasm_code_generation`].
@@ -767,10 +754,6 @@ pub unsafe fn JS_InitReadPrincipalsCallback(cx: *mut JSContext, read: JSReadPrin
 
 thread_local! {
     static BUILD_ID_OP: Cell<BuildIdOp> = const { Cell::new(None) };
-}
-
-pub unsafe fn SetProcessBuildIdOp(op: BuildIdOp) {
-    BUILD_ID_OP.with(|build_id| build_id.set(op));
 }
 
 /// SpiderMonkey's build id vector is a C++ container; V8 has its own cache keys.

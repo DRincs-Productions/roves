@@ -629,29 +629,6 @@ pub unsafe fn jsstr_to_string(cx: &crate::context::JSContext, jsstr: NonNull<JSS
     String::from_utf16_lossy(char_vec)
 }
 
-/// Converts a `JSString`, encoded in "Latin1" (i.e. U+0000-U+00FF encoded as 0x00-0xFF) into a
-/// `String`.
-///
-/// Use [`latin1_to_string`] if possible as this function will be eventually removed.
-#[deprecated(note = "Use latin1_to_string instead")]
-pub unsafe fn unsafe_latin1_to_string(cx: *mut JSContext, s: NonNull<JSString>) -> String {
-    // while this can break direct invariants of JSContext
-    // it is ok in the current usage of this function and it avoids duplicating the code
-    let cx = crate::context::JSContext::from_ptr(NonNull::new(cx).unwrap());
-    latin1_to_string(&cx, s)
-}
-
-/// Converts a `JSString` into a `String`, regardless of used encoding.
-///
-/// Use [`jsstr_to_string`] if possible as this function will be eventually removed.
-#[deprecated(note = "Use jsstr_to_string instead")]
-pub unsafe fn unsafe_jsstr_to_string(cx: *mut JSContext, jsstr: NonNull<JSString>) -> String {
-    // while this can break direct invariants of JSContext
-    // it is ok in the current usage of this function and it avoids duplicating the code
-    let cx = crate::context::JSContext::from_ptr(NonNull::new(cx).unwrap());
-    jsstr_to_string(&cx, jsstr)
-}
-
 // https://heycam.github.io/webidl/#es-USVString
 impl ToJSValConvertible for str {
     #[inline]

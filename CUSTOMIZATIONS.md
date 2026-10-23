@@ -1,3 +1,15 @@
+## 2026-10-23 - Remove roves-js API nothing calls
+
+**Files:** `components/roves-js/src/{conversions,error,jsimpls,jsval,realm,runtime_impl,rust,script_impl,typedarray_impl,values_impl}.rs`, `wrappers2.in.rs`, patch `0300-remove-uncalled-roves-js-api.patch`.
+
+Per the project goal of less own code: removed 38 public mozjs-compatibility functions and
+methods that no code calls. Each name appears nowhere in `components` (outside roves-js),
+`ports`, `support` or `python` (including the bindings generator), not in roves-js tests,
+and only at its own definition (plus its `wrappers2.in.rs` entry) inside roves-js:
+`BigIntValue`, `GetSavedFrameColumn`, `GetSavedFrameFunctionDisplayName`, `GetSavedFrameLine`, `GetSavedFrameSource`, `IsSharedArrayBufferObject`, `JS_GetFunctionDisplayId`, `JS_RemoveExtraGCRootsTracer`, `JS_RequestInterruptCallbackCanWait`, `JS_SetGlobalJitCompilerOption`, `JS_SetOffthreadIonCompilationEnabled`, `JS_ValueToFunction`, `SetProcessBuildIdOp`, `UnwrapSharedArrayBuffer`, `erase_lifetime`, `failNoNamedSetter`, `fail_bad_array_length`, `fail_bad_index`, `fail_cant_define_window_element`, `fail_cant_define_window_named_property`, `fail_cant_define_window_non_configurable`, `fail_cant_delete_window_element`, `fail_cant_delete_window_named_property`, `fail_cant_prevent_extensions`, `fail_cant_set_interposed`, `fail_getter_only`, `fail_invalid_descriptor`, `fail_no_indexed_setter`, `fail_not_data_descriptor`, `failure_code`, `for_each_stack_frame`, `request_interrupt_callback_can_wait`, `throw_internal_error`, `throw_internal_error_safe`, `throw_range_error_safe`, `to_bigint`, `unsafe_jsstr_to_string`, `unsafe_latin1_to_string`. The `glue.rs` tracer helpers looked unused to a
+first scan but are used by `gc/`, so they stay. 259 lines removed; three imports that became
+unused removed too. Runtime 103 normal/102 JITless; the script crate is compiled by CI.
+
 ## 2026-10-23 - Destroy V8 tasks posted between close and handler removal
 
 **Files:** `components/roves-js/src/runtime_impl.rs`, patch `0299-destroy-tasks-posted-after-close.patch`.

@@ -8,7 +8,7 @@
 
 use std::ffi::c_void;
 
-use crate::jsapi::{BigInt, JSObject, JSString, Symbol};
+use crate::jsapi::{JSObject, JSString, Symbol};
 
 const TAG_SHIFT: u64 = 47;
 const PAYLOAD_MASK: u64 = (1 << TAG_SHIFT) - 1;
@@ -107,11 +107,6 @@ pub fn ObjectOrNullValue(o: *mut JSObject) -> JSVal {
 #[inline]
 pub fn SymbolValue(s: &Symbol) -> JSVal {
     gc_thing(TAG_SYMBOL, s as *const Symbol as *const c_void)
-}
-
-#[inline]
-pub fn BigIntValue(b: &BigInt) -> JSVal {
-    gc_thing(TAG_BIGINT, b as *const BigInt as *const c_void)
 }
 
 /// A magic value (SpiderMonkey's `JS_IS_CONSTRUCTING` marker in a native's `this` slot).
@@ -247,11 +242,6 @@ impl JSVal {
     pub fn to_symbol(&self) -> *mut Symbol {
         assert!(self.is_symbol());
         self.payload() as *mut Symbol
-    }
-
-    pub fn to_bigint(&self) -> *mut BigInt {
-        assert!(self.is_bigint());
-        self.payload() as *mut BigInt
     }
 
     pub fn to_private(&self) -> *const c_void {

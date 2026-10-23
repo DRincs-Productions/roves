@@ -158,14 +158,6 @@ impl<'cx> AutoRealm<'cx> {
         (unsafe { std::mem::transmute(self.global()) }, self)
     }
 
-    /// Erase the lifetime of this [AutoRealm].
-    ///
-    /// # Safety
-    /// - The caller must ensure that the [AutoRealm] does not outlive the [JSContext] it was created with.
-    pub unsafe fn erase_lifetime(self) -> AutoRealm<'static> {
-        std::mem::transmute(self)
-    }
-
     pub fn realm(&self) -> &JSAutoRealm {
         &self.realm
     }
