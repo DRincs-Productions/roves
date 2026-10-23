@@ -1,0 +1,227 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 976a992d5fe..6ed55bf3c71 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -427,12 +427,9 @@ pub unsafe fn JS_ForwardGetPropertyTo(cx: *mut JSContext, obj: HandleObject, id:
+         let target = object(scope, obj.get())?;
+         let key = id_key(scope, id.get())?;
+         let receiver = value(scope, receiver.get());
+-        let global = scope.get_current_context().global(scope);
+-        let reflect_key = v8::String::new(scope, "Reflect")?;
+-        let reflect = v8::Local::<v8::Object>::try_from(global.get(scope, reflect_key.into())?).ok()?;
+-        let get_key = v8::String::new(scope, "get")?;
+-        let get = v8::Local::<v8::Function>::try_from(reflect.get(scope, get_key.into())?).ok()?;
+-        let result = get.call(scope, reflect.into(), &[target.into(), key.into(), receiver])?;
++        let get = crate::values_impl::helper(scope, "ReflectGet", "(Reflect.get)")?;
++        let undefined = v8::undefined(scope).into();
++        let result = get.call(scope, undefined, &[target.into(), key.into(), receiver])?;
+         Some(from_v8(scope, result))
+     });
+     match found {
+@@ -1052,18 +1049,15 @@ pub unsafe fn GetRealmIteratorPrototype(cx: *mut JSContext) -> *mut JSObject {
+ /// `JSON.stringify(value, replacer, space)`, streamed to `callback` (SpiderMonkey's `ToJSON`).
+ pub unsafe fn ToJSON(cx: *mut JSContext, value_handle: HandleValue, replacer: HandleObject, space: HandleValue, callback: JSONWriteCallback, data: *mut c_void) -> bool {
+     let text = raw(cx).catching(|scope| {
+-        let global = scope.get_current_context().global(scope);
+-        let json_key = v8::String::new(scope, "JSON")?;
+-        let json = v8::Local::<v8::Object>::try_from(global.get(scope, json_key.into())?).ok()?;
+-        let stringify_key = v8::String::new(scope, "stringify")?;
+-        let stringify = v8::Local::<v8::Function>::try_from(json.get(scope, stringify_key.into())?).ok()?;
++        let stringify = crate::values_impl::helper(scope, "JSONStringify", "(JSON.stringify)")?;
+         let target = value(scope, value_handle.get());
+         let replacer: v8::Local<v8::Value> = match object(scope, replacer.get()) {
+             Some(replacer) => replacer.into(),
+             None => v8::undefined(scope).into(),
+         };
+         let space = value(scope, space.get());
+-        let result = stringify.call(scope, json.into(), &[target, replacer, space])?;
++        let undefined = v8::undefined(scope).into();
++        let result = stringify.call(scope, undefined, &[target, replacer, space])?;
+         if result.is_undefined() {
+             return Some(Vec::new());
+         }
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index f13ac85ab83..75ddd3b01a5 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -702,12 +702,13 @@ fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
+ 
+ /// Calls `Reflect[name](...args)`.
+ fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'s, v8::Value>]) -> Option<v8::Local<'s, v8::Value>> {
+-    let global = scope.get_current_context().global(scope);
+-    let reflect_key = v8::String::new(scope, "Reflect")?;
+-    let reflect = v8::Local::<v8::Object>::try_from(global.get(scope, reflect_key.into())?).ok()?;
+-    let key = v8::String::new(scope, name)?;
+-    let function = v8::Local::<v8::Function>::try_from(reflect.get(scope, key.into())?).ok()?;
+-    function.call(scope, reflect.into(), args)
++    let call = crate::values_impl::helper(scope, "ReflectCall", "(function (name, ...args) { return Reflect[name](...args); })")?;
++    let name = v8::String::new(scope, name)?;
++    let mut all = Vec::with_capacity(args.len() + 1);
++    all.push(name.into());
++    all.extend_from_slice(args);
++    let undefined = v8::undefined(scope).into();
++    call.call(scope, undefined, &all)
+ }
+ 
+ fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index 228271667df..3270dbfa65c 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -179,6 +179,8 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+     let null = v8::null(scope).into();
+     cache.set_prototype(scope, null);
+     context.set_embedder_data(CACHE_SLOT, cache.into());
++    // Before any script of the realm runs: helpers keep the original built-ins.
++    assert!(crate::values_impl::install_intrinsics(scope, cache).is_some(), "install the realm's JS helpers");
+     // `eval`, `Function` and WebAssembly compilation then go through the embedder's CSP check
+     // (see `runtime_impl::JS_SetSecurityCallbacks`).
+     context.set_allow_generation_from_strings(false);
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index c27da04a72a..9facf32c320 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -3670,6 +3670,42 @@ mod values {
+         assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
+     }
+ 
++    /// JSAPI operations keep the original built-ins when page scripts replace them.
++    #[test]
++    fn jsapi_operations_ignore_replaced_builtins() {
++        unsafe extern "C" fn collect(buf: *const u16, len: u32, data: *mut std::ffi::c_void) -> bool {
++            // SAFETY: the callback contract (chars, length, closure data).
++            let units = unsafe { std::slice::from_raw_parts(buf, len as usize) };
++            unsafe { &mut *(data as *mut std::string::String) }.push_str(&std::string::String::from_utf16_lossy(units));
++            true
++        }
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let value = eval(&runtime, "({ answer: 42, list: [1, 2] })"));
++        rooted!(in(cx) let date_like = eval(&runtime, "({ valueOf() { return 7 }, toString() { return 'seven' } })").to_object());
++        rooted!(in(cx) let executor = eval(&runtime, "(resolve) => resolve(5)").to_object());
++        eval(&runtime, "JSON.stringify = () => 'replaced'; Reflect.get = () => 'replaced'; \
++            Function.prototype.call = () => 'replaced'; Function.prototype.apply = () => 'replaced'; \
++            Array.prototype[Symbol.iterator] = function* () { yield 'replaced'; }; \
++            globalThis.Promise = function () { throw new Error('replaced'); }; 0");
++
++        let mut json = std::string::String::new();
++        rooted!(in(cx) let space = UndefinedValue());
++        rooted!(in(cx) let replacer = ptr::null_mut::<JSObject>());
++        assert!(unsafe { ToJSON(cx, value.handle().into_handle(), replacer.handle().into_handle(), space.handle().into_handle(), Some(collect), &mut json as *mut std::string::String as *mut std::ffi::c_void) });
++        assert_eq!(json, r#"{"answer":42,"list":[1,2]}"#);
++
++        rooted!(in(cx) let mut primitive = UndefinedValue());
++        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_STRING, primitive.handle_mut().into()) });
++        assert_eq!(describe(&runtime, primitive.get()), "seven");
++        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_UNDEFINED, primitive.handle_mut().into()) });
++        assert_eq!(primitive.get().to_int32(), 7);
++
++        rooted!(in(cx) let promise = unsafe { NewPromiseObject(cx, executor.handle().into_handle()) });
++        assert!(!promise.get().is_null());
++        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Fulfilled);
++    }
++
+     #[test]
+     fn promises_json_and_value_operations() {
+         let runtime = Runtime::new(JSEngineHandle::for_tests());
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index 6cfb1bf039b..11c95b20280 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -60,6 +60,85 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
+     }
+ }
+ 
++/// The engine's JS helpers, made when a realm is created, before any of its scripts run: they
++/// hold the original built-ins, so a page that replaces `Reflect.set`, `JSON.stringify`,
++/// `Function.prototype.call` and the like cannot change how JSAPI operations behave on its
++/// objects (SpiderMonkey's self-hosted code is likewise unaffected). They also work in a realm
++/// whose global proxy went to another Window (see `realm_impl::RovesNewWindowGlobalReusingProxy`).
++/// Each property becomes the realm's `helper(name)`.
++const INTRINSICS: &str = r#"(function () {
++  "use strict";
++  const apply = Reflect.apply;
++  const reflect = Object.create(null);
++  for (const key of Reflect.ownKeys(Reflect)) {
++    if (typeof Reflect[key] === "function") reflect[key] = Reflect[key];
++  }
++  const flags = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get;
++  const source = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get;
++  const includes = String.prototype.includes;
++  const exec = RegExp.prototype.exec;
++  const mapEntries = Map.prototype.entries;
++  const RegExpConstructor = RegExp;
++  const TypeErrorConstructor = TypeError;
++  const toPrimitive = Symbol.toPrimitive;
++  const isObject = value => value !== null && (typeof value === "object" || typeof value === "function");
++  const ordinary = (o, name) => {
++    const method = o[name];
++    if (typeof method === "function") {
++      const result = apply(method, o, []);
++      if (!isObject(result)) return { result };
++    }
++    return null;
++  };
++  return {
++    GetPrototypeOf: Object.getPrototypeOf,
++    ReflectGet: reflect.get,
++    ReflectSet: reflect.set,
++    ReflectCall: function (name, ...args) { return apply(reflect[name], undefined, args); },
++    ForwardTrap: function (name, target, a, b, c) { return apply(reflect[name], undefined, [target, a, b, c]); },
++    MapEntries: function (m) { return apply(mapEntries, m, []); },
++    JSONStringify: JSON.stringify,
++    PromiseConstructor: Promise,
++    ToPrimitive: function (o, hint) {
++      const exotic = o[toPrimitive];
++      if (exotic !== undefined && exotic !== null) {
++        const result = apply(exotic, o, [hint]);
++        if (!isObject(result)) return result;
++        throw new TypeErrorConstructor("Cannot convert object to primitive value");
++      }
++      const first = hint === "string" ? "toString" : "valueOf";
++      const second = hint === "string" ? "valueOf" : "toString";
++      const found = ordinary(o, first) || ordinary(o, second);
++      if (found) return found.result;
++      throw new TypeErrorConstructor("Cannot convert object to primitive value");
++    },
++    ExecuteRegExp: function (re, input, index, test) {
++      const original = apply(flags, re, []);
++      const global = apply(includes, original, ["g"]) || apply(includes, original, ["y"]);
++      const copy = new RegExpConstructor(apply(source, re, []), global ? original : original + "g");
++      copy.lastIndex = index;
++      const match = apply(exec, copy, [input]);
++      return [test ? match !== null : match, copy.lastIndex];
++    },
++  };
++})()"#;
++
++/// Makes the realm's helpers from `INTRINSICS` into `cache` (the realm's cache, see
++/// `realm_impl::realm_cached`). Runs in the new realm's context.
++pub(crate) fn install_intrinsics(scope: &mut v8::PinScope, cache: v8::Local<v8::Object>) -> Option<()> {
++    let code = v8::String::new(scope, INTRINSICS)?;
++    let table = v8::Script::compile(scope, code, None)?.run(scope)?;
++    let table = v8::Local::<v8::Object>::try_from(table).ok()?;
++    let names = table.get_own_property_names(scope, Default::default())?;
++    for index in 0..names.length() {
++        let name = names.get_index(scope, index)?;
++        let value = table.get(scope, name)?;
++        let key = v8::String::new(scope, &format!("helper {}", name.to_rust_string_lossy(scope)))?;
++        cache.set(scope, key.into(), value)?;
++    }
++    Some(())
++}
++
+ /// A function compiled from `source` once per realm (helpers written in JS).
+ pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
+     let function = crate::realm_impl::realm_cached(scope, &format!("helper {name}"), |scope| {
+@@ -92,9 +171,7 @@ pub unsafe fn NewPromiseObject(cx: *mut JSContext, executor: HandleObject) -> *m
+                 return Some(from_v8(scope, promise.into()).to_object());
+             }
+             let executor = object(scope, executor)?;
+-            let global = scope.get_current_context().global(scope);
+-            let key = v8::String::new(scope, "Promise")?;
+-            let constructor = v8::Local::<v8::Function>::try_from(global.get(scope, key.into())?).ok()?;
++            let constructor = helper(scope, "PromiseConstructor", "(Promise)")?;
+             let promise = constructor.new_instance(scope, &[executor.into()])?;
+             Some(from_v8(scope, promise.into()).to_object())
+         })

@@ -179,6 +179,8 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
     let null = v8::null(scope).into();
     cache.set_prototype(scope, null);
     context.set_embedder_data(CACHE_SLOT, cache.into());
+    // Before any script of the realm runs: helpers keep the original built-ins.
+    assert!(crate::values_impl::install_intrinsics(scope, cache).is_some(), "install the realm's JS helpers");
     // `eval`, `Function` and WebAssembly compilation then go through the embedder's CSP check
     // (see `runtime_impl::JS_SetSecurityCallbacks`).
     context.set_allow_generation_from_strings(false);

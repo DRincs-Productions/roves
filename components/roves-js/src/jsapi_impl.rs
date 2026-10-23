@@ -427,12 +427,9 @@ pub unsafe fn JS_ForwardGetPropertyTo(cx: *mut JSContext, obj: HandleObject, id:
         let target = object(scope, obj.get())?;
         let key = id_key(scope, id.get())?;
         let receiver = value(scope, receiver.get());
-        let global = scope.get_current_context().global(scope);
-        let reflect_key = v8::String::new(scope, "Reflect")?;
-        let reflect = v8::Local::<v8::Object>::try_from(global.get(scope, reflect_key.into())?).ok()?;
-        let get_key = v8::String::new(scope, "get")?;
-        let get = v8::Local::<v8::Function>::try_from(reflect.get(scope, get_key.into())?).ok()?;
-        let result = get.call(scope, reflect.into(), &[target.into(), key.into(), receiver])?;
+        let get = crate::values_impl::helper(scope, "ReflectGet", "(Reflect.get)")?;
+        let undefined = v8::undefined(scope).into();
+        let result = get.call(scope, undefined, &[target.into(), key.into(), receiver])?;
         Some(from_v8(scope, result))
     });
     match found {
@@ -1052,18 +1049,15 @@ pub unsafe fn GetRealmIteratorPrototype(cx: *mut JSContext) -> *mut JSObject {
 /// `JSON.stringify(value, replacer, space)`, streamed to `callback` (SpiderMonkey's `ToJSON`).
 pub unsafe fn ToJSON(cx: *mut JSContext, value_handle: HandleValue, replacer: HandleObject, space: HandleValue, callback: JSONWriteCallback, data: *mut c_void) -> bool {
     let text = raw(cx).catching(|scope| {
-        let global = scope.get_current_context().global(scope);
-        let json_key = v8::String::new(scope, "JSON")?;
-        let json = v8::Local::<v8::Object>::try_from(global.get(scope, json_key.into())?).ok()?;
-        let stringify_key = v8::String::new(scope, "stringify")?;
-        let stringify = v8::Local::<v8::Function>::try_from(json.get(scope, stringify_key.into())?).ok()?;
+        let stringify = crate::values_impl::helper(scope, "JSONStringify", "(JSON.stringify)")?;
         let target = value(scope, value_handle.get());
         let replacer: v8::Local<v8::Value> = match object(scope, replacer.get()) {
             Some(replacer) => replacer.into(),
             None => v8::undefined(scope).into(),
         };
         let space = value(scope, space.get());
-        let result = stringify.call(scope, json.into(), &[target, replacer, space])?;
+        let undefined = v8::undefined(scope).into();
+        let result = stringify.call(scope, undefined, &[target, replacer, space])?;
         if result.is_undefined() {
             return Some(Vec::new());
         }

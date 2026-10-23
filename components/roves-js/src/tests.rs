@@ -3670,6 +3670,42 @@ mod values {
         assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), name.as_ptr(), value.handle().into_handle()) });
     }
 
+    /// JSAPI operations keep the original built-ins when page scripts replace them.
+    #[test]
+    fn jsapi_operations_ignore_replaced_builtins() {
+        unsafe extern "C" fn collect(buf: *const u16, len: u32, data: *mut std::ffi::c_void) -> bool {
+            // SAFETY: the callback contract (chars, length, closure data).
+            let units = unsafe { std::slice::from_raw_parts(buf, len as usize) };
+            unsafe { &mut *(data as *mut std::string::String) }.push_str(&std::string::String::from_utf16_lossy(units));
+            true
+        }
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let value = eval(&runtime, "({ answer: 42, list: [1, 2] })"));
+        rooted!(in(cx) let date_like = eval(&runtime, "({ valueOf() { return 7 }, toString() { return 'seven' } })").to_object());
+        rooted!(in(cx) let executor = eval(&runtime, "(resolve) => resolve(5)").to_object());
+        eval(&runtime, "JSON.stringify = () => 'replaced'; Reflect.get = () => 'replaced'; \
+            Function.prototype.call = () => 'replaced'; Function.prototype.apply = () => 'replaced'; \
+            Array.prototype[Symbol.iterator] = function* () { yield 'replaced'; }; \
+            globalThis.Promise = function () { throw new Error('replaced'); }; 0");
+
+        let mut json = std::string::String::new();
+        rooted!(in(cx) let space = UndefinedValue());
+        rooted!(in(cx) let replacer = ptr::null_mut::<JSObject>());
+        assert!(unsafe { ToJSON(cx, value.handle().into_handle(), replacer.handle().into_handle(), space.handle().into_handle(), Some(collect), &mut json as *mut std::string::String as *mut std::ffi::c_void) });
+        assert_eq!(json, r#"{"answer":42,"list":[1,2]}"#);
+
+        rooted!(in(cx) let mut primitive = UndefinedValue());
+        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_STRING, primitive.handle_mut().into()) });
+        assert_eq!(describe(&runtime, primitive.get()), "seven");
+        assert!(unsafe { ToPrimitive(cx, date_like.handle().into_handle(), JSType::JSTYPE_UNDEFINED, primitive.handle_mut().into()) });
+        assert_eq!(primitive.get().to_int32(), 7);
+
+        rooted!(in(cx) let promise = unsafe { NewPromiseObject(cx, executor.handle().into_handle()) });
+        assert!(!promise.get().is_null());
+        assert_eq!(unsafe { GetPromiseState(promise.handle().into_handle()) }, PromiseState::Fulfilled);
+    }
+
     #[test]
     fn promises_json_and_value_operations() {
         let runtime = Runtime::new(JSEngineHandle::for_tests());

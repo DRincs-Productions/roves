@@ -60,6 +60,85 @@ fn set_value(result: Option<JSVal>, mut out: MutableHandleValue) -> bool {
     }
 }
 
+/// The engine's JS helpers, made when a realm is created, before any of its scripts run: they
+/// hold the original built-ins, so a page that replaces `Reflect.set`, `JSON.stringify`,
+/// `Function.prototype.call` and the like cannot change how JSAPI operations behave on its
+/// objects (SpiderMonkey's self-hosted code is likewise unaffected). They also work in a realm
+/// whose global proxy went to another Window (see `realm_impl::RovesNewWindowGlobalReusingProxy`).
+/// Each property becomes the realm's `helper(name)`.
+const INTRINSICS: &str = r#"(function () {
+  "use strict";
+  const apply = Reflect.apply;
+  const reflect = Object.create(null);
+  for (const key of Reflect.ownKeys(Reflect)) {
+    if (typeof Reflect[key] === "function") reflect[key] = Reflect[key];
+  }
+  const flags = Object.getOwnPropertyDescriptor(RegExp.prototype, "flags").get;
+  const source = Object.getOwnPropertyDescriptor(RegExp.prototype, "source").get;
+  const includes = String.prototype.includes;
+  const exec = RegExp.prototype.exec;
+  const mapEntries = Map.prototype.entries;
+  const RegExpConstructor = RegExp;
+  const TypeErrorConstructor = TypeError;
+  const toPrimitive = Symbol.toPrimitive;
+  const isObject = value => value !== null && (typeof value === "object" || typeof value === "function");
+  const ordinary = (o, name) => {
+    const method = o[name];
+    if (typeof method === "function") {
+      const result = apply(method, o, []);
+      if (!isObject(result)) return { result };
+    }
+    return null;
+  };
+  return {
+    GetPrototypeOf: Object.getPrototypeOf,
+    ReflectGet: reflect.get,
+    ReflectSet: reflect.set,
+    ReflectCall: function (name, ...args) { return apply(reflect[name], undefined, args); },
+    ForwardTrap: function (name, target, a, b, c) { return apply(reflect[name], undefined, [target, a, b, c]); },
+    MapEntries: function (m) { return apply(mapEntries, m, []); },
+    JSONStringify: JSON.stringify,
+    PromiseConstructor: Promise,
+    ToPrimitive: function (o, hint) {
+      const exotic = o[toPrimitive];
+      if (exotic !== undefined && exotic !== null) {
+        const result = apply(exotic, o, [hint]);
+        if (!isObject(result)) return result;
+        throw new TypeErrorConstructor("Cannot convert object to primitive value");
+      }
+      const first = hint === "string" ? "toString" : "valueOf";
+      const second = hint === "string" ? "valueOf" : "toString";
+      const found = ordinary(o, first) || ordinary(o, second);
+      if (found) return found.result;
+      throw new TypeErrorConstructor("Cannot convert object to primitive value");
+    },
+    ExecuteRegExp: function (re, input, index, test) {
+      const original = apply(flags, re, []);
+      const global = apply(includes, original, ["g"]) || apply(includes, original, ["y"]);
+      const copy = new RegExpConstructor(apply(source, re, []), global ? original : original + "g");
+      copy.lastIndex = index;
+      const match = apply(exec, copy, [input]);
+      return [test ? match !== null : match, copy.lastIndex];
+    },
+  };
+})()"#;
+
+/// Makes the realm's helpers from `INTRINSICS` into `cache` (the realm's cache, see
+/// `realm_impl::realm_cached`). Runs in the new realm's context.
+pub(crate) fn install_intrinsics(scope: &mut v8::PinScope, cache: v8::Local<v8::Object>) -> Option<()> {
+    let code = v8::String::new(scope, INTRINSICS)?;
+    let table = v8::Script::compile(scope, code, None)?.run(scope)?;
+    let table = v8::Local::<v8::Object>::try_from(table).ok()?;
+    let names = table.get_own_property_names(scope, Default::default())?;
+    for index in 0..names.length() {
+        let name = names.get_index(scope, index)?;
+        let value = table.get(scope, name)?;
+        let key = v8::String::new(scope, &format!("helper {}", name.to_rust_string_lossy(scope)))?;
+        cache.set(scope, key.into(), value)?;
+    }
+    Some(())
+}
+
 /// A function compiled from `source` once per realm (helpers written in JS).
 pub(crate) fn helper<'s>(scope: &mut v8::PinScope<'s, '_>, name: &'static str, source: &str) -> Option<v8::Local<'s, v8::Function>> {
     let function = crate::realm_impl::realm_cached(scope, &format!("helper {name}"), |scope| {
@@ -92,9 +171,7 @@ pub unsafe fn NewPromiseObject(cx: *mut JSContext, executor: HandleObject) -> *m
                 return Some(from_v8(scope, promise.into()).to_object());
             }
             let executor = object(scope, executor)?;
-            let global = scope.get_current_context().global(scope);
-            let key = v8::String::new(scope, "Promise")?;
-            let constructor = v8::Local::<v8::Function>::try_from(global.get(scope, key.into())?).ok()?;
+            let constructor = helper(scope, "PromiseConstructor", "(Promise)")?;
             let promise = constructor.new_instance(scope, &[executor.into()])?;
             Some(from_v8(scope, promise.into()).to_object())
         })

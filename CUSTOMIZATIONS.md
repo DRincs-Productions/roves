@@ -1,3 +1,23 @@
+## 2026-10-23 - Realm JS helpers keep the original built-ins
+
+**Files:** `components/roves-js/src/{values_impl.rs,jsapi_impl.rs,proxy.rs,realm_impl.rs,tests.rs}`,
+patch `0312-realm-helpers-keep-original-builtins.patch`.
+
+Follow-up of 0311. roves-js implements several JSAPI operations with small JS helpers compiled
+per realm on first use, and with lookups of `Reflect`, `JSON` and `Promise` through the current
+global. Both read the page's current globals, so a page that replaced `JSON.stringify`,
+`Reflect.get`, `Function.prototype.call`, the array iterator or `Promise` changed how Servo's
+calls behaved on its objects (`ToJSON` returned the page's result; SpiderMonkey's self-hosted
+code is unaffected by such changes), and the global lookups failed in a realm whose proxy went to
+another Window. `register_realm` now runs one script in the new context, before any of its
+scripts, that captures the original built-ins and returns the helpers written against them
+(`apply` instead of `.call`, captured getters and constructors, no array iteration); each becomes
+the realm's `helper(name)`. `JS_ForwardGetPropertyTo`, `ToJSON`, `NewPromiseObject` and the proxy
+`Reflect[name]` calls use them (`ReflectGet`, `JSONStringify`, `PromiseConstructor`, `ReflectCall`).
+Contexts that skip registration keep the previous lazy helpers. Regression: after a page replaces
+those built-ins, `ToJSON`, `ToPrimitive` and `NewPromiseObject` behave as before; the previous code
+returns "replaced". Runtime 109 normal/108 JITless.
+
 ## 2026-10-23 - Realm intrinsics without a lookup through the global
 
 **Files:** `components/roves-js/src/{jsapi_impl.rs,binding.rs,tests.rs}`, patch

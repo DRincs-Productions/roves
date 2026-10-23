@@ -702,12 +702,13 @@ fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
 
 /// Calls `Reflect[name](...args)`.
 fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'s, v8::Value>]) -> Option<v8::Local<'s, v8::Value>> {
-    let global = scope.get_current_context().global(scope);
-    let reflect_key = v8::String::new(scope, "Reflect")?;
-    let reflect = v8::Local::<v8::Object>::try_from(global.get(scope, reflect_key.into())?).ok()?;
-    let key = v8::String::new(scope, name)?;
-    let function = v8::Local::<v8::Function>::try_from(reflect.get(scope, key.into())?).ok()?;
-    function.call(scope, reflect.into(), args)
+    let call = crate::values_impl::helper(scope, "ReflectCall", "(function (name, ...args) { return Reflect[name](...args); })")?;
+    let name = v8::String::new(scope, name)?;
+    let mut all = Vec::with_capacity(args.len() + 1);
+    all.push(name.into());
+    all.extend_from_slice(args);
+    let undefined = v8::undefined(scope).into();
+    call.call(scope, undefined, &all)
 }
 
 fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
