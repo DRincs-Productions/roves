@@ -101,6 +101,9 @@ WeakMap caches accessors without rooting dead receivers. Linux normal/JIT-less b
 The CSP smoke also covers all four dynamic constructors with trusted/plain argument combinations.
 Runtime regressions check that constructor authorization cannot escape into a newTarget getter.
 The patch set includes its cross-origin HTTP and Wasm CSP fixture pages for pristine-source reconstruction.
+Patch 0316 records the mobile container and content-packer boot-set changes previously missing
+from the patch set; the root `Cargo.lock`, this README and the repository-only SDL probe remain
+documented reconstruction exceptions (see CUSTOMIZATIONS.md).
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional

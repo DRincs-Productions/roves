@@ -1,3 +1,33 @@
+## 2026-10-23 - Reconcile unrecorded mobile and content-packer source drift
+
+**Files:** patch `0316-reconcile-mobile-and-content-packer-drift.patch` (records
+`support/{MOBILE.md,ios/App.swift,content-packer/src/pack.rs,content-packer/tests/roundtrip.rs}`,
+`support/android/apk/servoapp/src/main/java/org/servo/servoshell/MainActivity.kt`), `README.md`.
+No production source changed.
+
+0315's full replay (pristine v0.5.0, sha256 `86f45a1e…`, + 0001–0314 skipping 0042 as test.yml
+does, + REMOVED_PATHS) left 8 patched paths different from HEAD. Five were real source/doc
+changes committed without regenerating their patch: c16f9b5d7ac/16a461ef66a (Android
+`DOWNLOAD_INTERCEPT_SCRIPT` via `addDocumentStartJavaScript`, blob:/data: no longer vetoed in
+`shouldOverrideUrlLoading`, Fullscreen API no-op on Android and iOS), c7debe9164e
+(`support/MOBILE.md` iOS build instructions) and a0b9268e96e (content-packer: every `.js`/`.mjs`/
+`.css` joins the boot set, with the roundtrip tests adjusted). Android/iOS ship from the
+repository checkout, so their artifacts already had this; the content packer is a workspace
+member linked by servoshell, so the reconstructed test.yml build compiled the old boot-set rule
+until now. 0316 is the diff from the replayed state to HEAD for those five files; it adds no
+Cargo.toml/Cargo.lock hunk and no new dependency.
+
+Remaining exceptions, deliberately not patched: root `Cargo.lock` (the replayed lock is pristine
+plus the lock hunks of 0071/0085/0217/0218/0222–0224/0238/0246; test.yml builds without
+`--locked` and re-resolves it, and a root lock hunk already broke validation in 0302 — see the
+entry below); `README.md` (the project README replaces Servo's entirely and changes with almost
+every commit; only 0243's stale hunk touches it, kept as is); `support/sdl3-gamepad-probe/src/main.rs`
+(0042, skipped by test.yml as repository-only CI probe). Verification on the existing 0315 scratch,
+without re-extracting the archive: 0316 dry-run and apply clean, then all 468 paths touched by
+any patch compared with HEAD: 465 identical, 3 different (exactly the exceptions above). Script
+and log: `target/task-0316/{verify.sh,verify.log}`. No build or test rerun: the shipped sources
+are unchanged; CI builds the reconstructed tree.
+
 ## 2026-10-23 - Restore the GC smoke entry point
 
 **Files:** `support/v8-smoke/{gc-lifecycle.html,test_runner.py}`, patch `0315-gc-smoke-entry-point.patch`.

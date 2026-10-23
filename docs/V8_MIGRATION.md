@@ -38,6 +38,16 @@ support/MOBILE.md, MainActivity.kt, content-packer pack.rs/roundtrip.rs, ios/App
 sdl3-gamepad-probe da0042): patch non aggiornate da commit precedenti, da valutare a parte.
 Log in target/task-0315/. Conferma browser attesa dalla CI V8.
 
+**0316 (Claude, revisionato da Codex, commit locale in questo checkpoint):** patch 0316-reconcile-mobile-and-content-packer-drift
+registra 5 path di deriva reale (MainActivity.kt, ios/App.swift, MOBILE.md, content-packer
+pack.rs/roundtrip.rs; commit c16f9b5d7ac, 16a461ef66a, c7debe9164e, a0b9268e96e). Nessun
+sorgente di produzione cambiato; nessun hunk Cargo. Verifica sullo scratch0315 esistente
+(senza riestrarre): dry-run/apply puliti, 468 path patchati vs HEAD: 465 identici, 3 diversi =
+eccezioni documentate in CUSTOMIZATIONS (Cargo.lock radice rigenerato senza --locked;
+README.md progetto, solo hunk storico0243; sonda SDL0042 saltata dalla CI). Nota: il commento
+di test.yml "patches/ carries no Cargo.lock diff" è impreciso (0071…0246 hanno hunk sul lock
+radice), workflow non toccato. Log: target/task-0316/verify.log. Nessuna build/test ripetuti.
+
 ### Risultati acquisiti e limiti della revisione
 
 -0287/0299 recuperano task timer e post tra close/rimozione handler. Restano casi conservativi
@@ -61,11 +71,22 @@ una revisione esaustiva di ogni riga delle158 file cambiate. Non ripetere test i
 coperti dalla CI senza dubbio concreto. Build Servo pesanti online; verifiche locali isolate.
 Prima di pubblicare patch nuove, replay completo pristinev0.5.0 come validate-servo-patches.
 
+### Pubblicazione e prossimo controllo CI
+
+Pubblicato0315 root459f43a5220/wiki cf9718e; checkpoint precedenti di processo inclusi.
+Run: V839991694557 in corso; generale39991694618 in coda; Android39991694436 e
+iOS39991694403 verdi all'ultimo controllo aggregato. Nessuna nuova failure rilevata.
+0316 è completo e resta locale insieme al relativo aggiornamento wiki; non pubblicarlo
+mentre questo batch è attivo. Nessun WIP corrente nei sorgenti. Il prossimo passo della
+diagnosi retention richiede la diagnostica browser0314 che ora0315 torna a eseguire;
+non dedurre risultati dal vecchio batch interrotto prima di main. Nessuna attesa/polling
+continuo né ricontrollo18:45 ancora attivo. Verificare le run alla prossima ripresa.
+
 ### Prossimi punti
 
 1. Verificare il nuovo batch CI sul checkpoint0315, che include la correzione della run precedente.
-   Continuare con incarico separato per la deriva patch preesistente (8 path), senza riestrarre
-   inutilmente l’archivio pristine già disponibile nel replay0315.
+   Deriva patch preesistente: corretta e revisionata in0316 (sopra), trattenuta in locale fino
+   al batch verde; richiede poi nuovaCI sulla ricostruzione.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
 3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown
