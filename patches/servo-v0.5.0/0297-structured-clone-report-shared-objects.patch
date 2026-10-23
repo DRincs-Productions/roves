@@ -1,0 +1,60 @@
+diff --git a/components/roves-js/src/structured_clone_impl.rs b/components/roves-js/src/structured_clone_impl.rs
+index 601202f245e..68cc3ee3bea 100644
+--- a/components/roves-js/src/structured_clone_impl.rs
++++ b/components/roves-js/src/structured_clone_impl.rs
+@@ -159,6 +159,21 @@ impl v8::ValueSerializerImpl for SerializerDelegate {
+         scope.throw_exception(error);
+     }
+ 
++    // Servo's policy never allows shared memory or intra-cluster shared objects, and both would
++    // need a sharing mechanism this serializer does not have: refuse them as SpiderMonkey
++    // does, through the error callback (V8's defaults fail silently or throw a plain Error).
++    fn get_shared_array_buffer_id<'s>(&self, scope: &mut v8::PinScope<'s, '_>, _shared_array_buffer: v8::Local<'s, v8::SharedArrayBuffer>) -> Option<u32> {
++        self.report(crate::jsapi::JS_SCERR_NOT_CLONABLE, "SharedArrayBuffer is not cloneable without cross-origin isolation");
++        throw_marker(scope);
++        None
++    }
++
++    fn get_wasm_module_transfer_id(&self, scope: &mut v8::PinScope<'_, '_>, _module: v8::Local<v8::WasmModuleObject>) -> Option<u32> {
++        self.report(crate::jsapi::JS_SCERR_NOT_CLONABLE, "WebAssembly.Module is not cloneable here");
++        throw_marker(scope);
++        None
++    }
++
+     fn write_host_object<'s>(
+         &self,
+         scope: &mut v8::PinScope<'s, '_>,
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index b322be8d5a1..8ec041cd5e5 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4696,6 +4696,29 @@ mod structured_clone {
+         });
+         assert_eq!(REPORTED.with(Cell::get), 1);
+         assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
++
++        // Shared memory never crosses, as Servo's policy (no shared memory objects) requires,
++        // and the refusal is reported like any other.
++        rooted!(in(cx) let shared = eval(&runtime, "({ shared: new SharedArrayBuffer(8) })"));
++        let refused = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
++        let refused_data = unsafe { &mut (*refused.as_raw_ptr()).data_ };
++        assert!(!unsafe {
++            JS_WriteStructuredClone(cx, shared.handle().into(), refused_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
++        });
++        assert_eq!(REPORTED.with(Cell::get), 2);
++        assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
++
++        // Likewise for a WebAssembly.Module (unavailable in JIT-less builds).
++        if eval(&runtime, "typeof WebAssembly === 'object'").to_boolean() {
++            rooted!(in(cx) let module = eval(&runtime, "new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))"));
++            let module_buffer = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
++            let module_data = unsafe { &mut (*module_buffer.as_raw_ptr()).data_ };
++            assert!(!unsafe {
++                JS_WriteStructuredClone(cx, module.handle().into(), module_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
++            });
++            assert_eq!(REPORTED.with(Cell::get), 3);
++            assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
++        }
+     }
+ }
+ 

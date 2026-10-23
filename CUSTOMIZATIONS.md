@@ -1,3 +1,18 @@
+## 2026-10-23 - Report refused shared objects in structured clone
+
+**Files:** `components/roves-js/src/{structured_clone_impl.rs,tests.rs}`, patch
+`0297-structured-clone-report-shared-objects.patch`, `README.md`.
+
+Found by auditing public functions that ignore parameters (`JS_WriteStructuredClone` ignores
+`CloneDataPolicy`). Servo always passes a policy without shared memory or intra-cluster shared
+objects; SpiderMonkey then refuses a `SharedArrayBuffer` or `WebAssembly.Module` through the
+error callback, which Servo turns into a `DataCloneError`. On V8 the serializer delegate used
+rusty_v8's defaults: a `SharedArrayBuffer` made the write fail silently (no report, no
+exception), and a `WebAssembly.Module` left a plain `Error` ("Deno serializer: ... not
+implemented") pending. The delegate now reports both through the callback and stops the write,
+like other unclonable values. The structured-clone regression covers both (the SAB case failed
+before: no report); Wasm is skipped in JIT-less. Runtime 102 normal/101 JITless; replay identical.
+
 ## 2026-10-23 - Smoke runner fixture for the 0294 marker
 
 **Files:** `support/v8-smoke/test_runner.py`, patch

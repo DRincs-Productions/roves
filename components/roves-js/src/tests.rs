@@ -4696,6 +4696,29 @@ mod structured_clone {
         });
         assert_eq!(REPORTED.with(Cell::get), 1);
         assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
+
+        // Shared memory never crosses, as Servo's policy (no shared memory objects) requires,
+        // and the refusal is reported like any other.
+        rooted!(in(cx) let shared = eval(&runtime, "({ shared: new SharedArrayBuffer(8) })"));
+        let refused = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+        let refused_data = unsafe { &mut (*refused.as_raw_ptr()).data_ };
+        assert!(!unsafe {
+            JS_WriteStructuredClone(cx, shared.handle().into(), refused_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
+        });
+        assert_eq!(REPORTED.with(Cell::get), 2);
+        assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
+
+        // Likewise for a WebAssembly.Module (unavailable in JIT-less builds).
+        if eval(&runtime, "typeof WebAssembly === 'object'").to_boolean() {
+            rooted!(in(cx) let module = eval(&runtime, "new WebAssembly.Module(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0]))"));
+            let module_buffer = unsafe { JSAutoStructuredCloneBufferWrapper::new(StructuredCloneScope::DifferentProcess, &CALLBACKS) };
+            let module_data = unsafe { &mut (*module_buffer.as_raw_ptr()).data_ };
+            assert!(!unsafe {
+                JS_WriteStructuredClone(cx, module.handle().into(), module_data, StructuredCloneScope::DifferentProcess, &policy, &CALLBACKS, ptr::null_mut(), no_transfer.handle().into())
+            });
+            assert_eq!(REPORTED.with(Cell::get), 3);
+            assert!(!unsafe { crate::api::JS_IsExceptionPending(cx) });
+        }
     }
 }
 

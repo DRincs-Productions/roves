@@ -159,6 +159,21 @@ impl v8::ValueSerializerImpl for SerializerDelegate {
         scope.throw_exception(error);
     }
 
+    // Servo's policy never allows shared memory or intra-cluster shared objects, and both would
+    // need a sharing mechanism this serializer does not have: refuse them as SpiderMonkey
+    // does, through the error callback (V8's defaults fail silently or throw a plain Error).
+    fn get_shared_array_buffer_id<'s>(&self, scope: &mut v8::PinScope<'s, '_>, _shared_array_buffer: v8::Local<'s, v8::SharedArrayBuffer>) -> Option<u32> {
+        self.report(crate::jsapi::JS_SCERR_NOT_CLONABLE, "SharedArrayBuffer is not cloneable without cross-origin isolation");
+        throw_marker(scope);
+        None
+    }
+
+    fn get_wasm_module_transfer_id(&self, scope: &mut v8::PinScope<'_, '_>, _module: v8::Local<v8::WasmModuleObject>) -> Option<u32> {
+        self.report(crate::jsapi::JS_SCERR_NOT_CLONABLE, "WebAssembly.Module is not cloneable here");
+        throw_marker(scope);
+        None
+    }
+
     fn write_host_object<'s>(
         &self,
         scope: &mut v8::PinScope<'s, '_>,

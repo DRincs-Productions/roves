@@ -17,7 +17,8 @@
   (0293 suite/events/modules, 0294 gc-lifecycle) passino.
 - `a2a2458`: V8 `39928279899` ROSSA nei job runtime per la fixture di test_runner.py senza il
   marker 0294 (corretta in locale, 0296); generale e altri job da verificare.
-- Locale non pubblicato: 0295 (smoke worker), cache apt nei workflow, 0296 (fixture).
+- Pubblicati 0295, cache apt, 0296 (`791903a`): batch CI in corso.
+- Locale non pubblicato: 0297 (DataCloneError per SAB/Wasm.Module).
 - Prima di ogni push con modifiche a `support/v8-smoke/run.sh` eseguire
   `python3 -m unittest discover -s support/v8-smoke -p test_runner.py` (circa 100 s).
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
