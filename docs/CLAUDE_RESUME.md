@@ -5,7 +5,10 @@
 - Pubblicato: `a4599fb2a5e` (commit vuoto di retry sopra `2e96c8663aa`, che contiene 0282–0286),
   wiki `0928dba`. Claude lavora su Linux/WSL **senza credenziali push**: commit solo locali,
   l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
-- Locale non pubblicato: 0287, 0288 (commit root + wiki, vedi `git log`).
+- 0287 pubblicata dall'utente (`8799e4eec20`): CI V8 `39917959741` e generale `39917959712`
+  in corso all'ultimo controllo (fanno anche da retry del timeout Ubuntu), Android/iOS verdi.
+- Locale non pubblicato: 0288 + nota WindowProxy (root), wiki `0b76146`. Pushare solo con
+  batch `8799e4e` tutto verde (o rosse analizzate e corrette).
 - CI su `2e96c86`: V8 `39852305242` verde, Android/iOS verdi; generale `39852305257` rossa solo
   per timeout `mach bootstrap` (apt lento, 90 min, prima della compilazione) del job
   `linux portable`. Il commit vuoto ha avviato solo Android/iOS (verdi), perché generale e V8
@@ -73,6 +76,10 @@ Corpo identico = primo referrer è comportamento V8 nativo (cache eval), documen
 WindowProxy: JS_TransplantObject sui global attualmente ritorna il replacement: vecchi riferimenti
 vedono il vecchio Window. Serve progettare riuso/detach del global proxy alla creazioneContext,
 coordinato con attivazione documento, evitando retarget anticipato o perdita del vecchio global.
+Verificato 23/10: rusty_v8 152 espone `ContextOptions::global_object` (riuso del global proxy
+in Context::new) ma NON `Context::DetachGlobal`; servirebbe uno shim C++ minimo (crate `cc`
+con gli header `v8/include` del crate) o un upstream rusty_v8. Progetto da fare prima del codice;
+la verifica reale è solo browser/CI.
 
 ## Verifiche e artefatti locali riutilizzabili
 
