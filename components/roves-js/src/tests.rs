@@ -4758,6 +4758,25 @@ mod window_proxies {
     }
 
     #[test]
+    fn a_window_that_handed_over_its_proxy_is_still_collected() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let new_window = || unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        let before = crate::realm_impl::testing::live_realm_count(unsafe { &*cx });
+        rooted!(in(cx) let mut second = ptr::null_mut::<JSObject>());
+        {
+            rooted!(in(cx) let first = new_window());
+            unsafe { RovesReuseWindowProxyForNextGlobal(cx, first.get()) };
+            second.set(new_window());
+        }
+        runtime.gc_for_testing();
+        assert_eq!(crate::realm_impl::testing::live_realm_count(unsafe { &*cx }), before + 1, "only the new window's realm survives");
+        let old = unsafe { EnterRealm(cx, second.get()) };
+        assert_eq!(describe(&runtime, eval(&runtime, "typeof globalThis")), "object");
+        unsafe { LeaveRealm(cx, old) };
+    }
+
+    #[test]
     fn a_navigated_window_takes_over_the_previous_global_proxy() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

@@ -1,3 +1,12 @@
+## 2026-10-23 - Test: a Window that handed over its proxy is still collected
+
+**Files:** `components/roves-js/src/tests.rs`, patch `0305-handed-over-window-realm-collected-test.patch`.
+
+Test only, for 0303: after a Window global hands its global proxy to the next one and its last
+root goes away, a collection releases its realm (only the new window's realm survives besides
+the existing ones), and the new window still runs script. The detached context and the hidden
+object holding the old class box do not keep the old realm alive. Runtime 105 normal/104 JITless.
+
 ## 2026-10-23 - Diagnostic: are removed frames' realms released?
 
 **Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh}`, patch `0304-gc-smoke-removed-frame-diagnostic.patch`.
