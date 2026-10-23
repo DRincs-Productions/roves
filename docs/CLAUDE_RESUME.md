@@ -12,15 +12,9 @@
   apt in `mach bootstrap` (485 pacchetti, mirror Azure lento); runtime su tutte le piattaforme
   e smoke Windows/macOS verdi (0289 si collega con MSVC). Correzione locale in `v8.yml`
   (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
-- Pubblicato `a2a2458` (0290–0294 + correzione bootstrap Linux in v8.yml): batch CI in corso.
-  Verificare che i job Ubuntu servoshell-v8 superino ora il bootstrap e che gli smoke nuovi
-  (0293 suite/events/modules, 0294 gc-lifecycle) passino.
-- `a2a2458`: V8 `39928279899` ROSSA nei job runtime per la fixture di test_runner.py senza il
-  marker 0294 (corretta in locale, 0296); generale e altri job da verificare.
-- Pubblicati 0295, cache apt, 0296 (`791903a`): batch CI in corso.
-- Locale non pubblicato: 0297 (DataCloneError per SAB/Wasm.Module), 0298 (detach key ArrayBuffer), 0299 (task postati tra close e rimozione handler), 0300 (38 funzioni API mai chiamate rimosse), cache apt salvata anche su timeout, download apt paralleli (0301).
-- Prima di ogni push con modifiche a `support/v8-smoke/run.sh` eseguire
-  `python3 -m unittest discover -s support/v8-smoke -p test_runner.py` (circa 100 s).
+- Pubblicato `607b2e5` (fino a 0301 e correzioni apt): TUTTE le CI verdi (V8 `39937024546`,
+  generale `39937024442`, Android, iOS). Bootstrap Linux 46–204 s invece dei timeout.
+- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy; poi le tappe WindowProxy.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)

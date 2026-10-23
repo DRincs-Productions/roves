@@ -12,7 +12,9 @@ connections straight into apt's archive cache; `apt-get install`/mach bootstrap 
 install them, refetching anything missing. Best effort: it never fails the job. v8.yml runs it
 before its reduced install; test.yml runs it (after `apt-get update`, with mach's own package
 list) before both Linux mach bootstraps. Local check: 45 packages fetched in 32 s with 8
-connections, after which apt considered all of them cached. Runner speed is verified by CI.
+connections, after which apt considered all of them cached. On push `607b2e5` every workflow was green and the
+Linux mach bootstraps took 46–204 s (v8.yml 68 s and 110 s), where they had been timing out at
+30 or 90 minutes.
 
 ## 2026-10-23 - Remove roves-js API nothing calls
 
