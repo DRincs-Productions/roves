@@ -1,0 +1,36 @@
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index a6f27d7cf41..9a3eb1d95ea 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -2879,6 +2879,10 @@ impl ScriptThread {
+             .and_then(|proxy| proxy.currently_active())
+             .and_then(|pipeline| self.documents.borrow().find_window(pipeline));
+         if let Some(previous) = &replaced_window {
++            // Unload the replaced document first, while `window` in its handlers still reaches
++            // it: HTML switches the WindowProxy only when the new document becomes active. The
++            // constellation's later UnloadDocument finds the events already fired.
++            previous.Document().unload(cx, false);
+             unsafe {
+                 js::jsapi::RovesReuseWindowProxyForNextGlobal(
+                     cx.raw_cx(),
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index be545de3e79..5b95e107619 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -132,11 +132,14 @@ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(r
+     const held = frame.contentWindow;
+     frame.onload = () => {
+       const text = held.document && held.document.body ? held.document.body.textContent : "none";
+-      resolve((frame.contentWindow === held && text === "second") || `same=${frame.contentWindow === held} text=${text}`);
++      const ok = frame.contentWindow === held && text === "second" && window.unloadSawItsOwnWindow === true;
++      resolve(ok || `same=${frame.contentWindow === held} text=${text} unload=${window.unloadSawItsOwnWindow}`);
+     };
+     frame.srcdoc = "<p>second</p>";
+   };
+-  frame.srcdoc = "<p>first</p>";
++  // The old page's unload handlers still see their own window (HTML switches the WindowProxy
++  // when the new document becomes active).
++  frame.srcdoc = "<p>first</p><script>addEventListener('unload', () => { parent.unloadSawItsOwnWindow = window.document.body.textContent === 'first'; });<\/script>";
+   document.body.append(frame);
+ }));
+ finish();

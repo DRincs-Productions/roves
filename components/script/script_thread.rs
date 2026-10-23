@@ -2879,6 +2879,10 @@ impl ScriptThread {
             .and_then(|proxy| proxy.currently_active())
             .and_then(|pipeline| self.documents.borrow().find_window(pipeline));
         if let Some(previous) = &replaced_window {
+            // Unload the replaced document first, while `window` in its handlers still reaches
+            // it: HTML switches the WindowProxy only when the new document becomes active. The
+            // constellation's later UnloadDocument finds the events already fired.
+            previous.Document().unload(cx, false);
             unsafe {
                 js::jsapi::RovesReuseWindowProxyForNextGlobal(
                     cx.raw_cx(),

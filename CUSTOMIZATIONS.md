@@ -1,3 +1,17 @@
+## 2026-10-23 - Unload the replaced document before its window hands over the proxy
+
+**Files:** `components/script/script_thread.rs`, `support/v8-smoke/events.html`, patch
+`0306-unload-before-window-proxy-handover.patch`.
+
+With 0303 the new Window took over the browsing context's global proxy when created, and the
+constellation's UnloadDocument reached the old document only after the history change, so its
+`pagehide`/`unload` handlers saw the new page through `window`. HTML switches the WindowProxy
+only when the new document becomes active, after unloading the old one. `ScriptThread::load` now
+runs `Document::unload` on the replaced document right before the takeover; `unload` guards its
+events (`page_showing`, `fired_unload`), so the later message fires nothing again. The iframe
+smoke now also requires the first page's unload handler to see its own document through
+`window`. Script crate and smoke verified by CI.
+
 ## 2026-10-23 - Test: a Window that handed over its proxy is still collected
 
 **Files:** `components/roves-js/src/tests.rs`, patch `0305-handed-over-window-realm-collected-test.patch`.

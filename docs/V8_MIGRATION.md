@@ -27,7 +27,7 @@ proxy con `Context::DetachGlobal`, vecchia cella su oggetto nascosto, canale
 
 **Aperto** (dettagli nelle sezioni 2 e 4): WindowProxy cross-origin e cambi di origine; rilascio
 di realm/global/moduli dopo navigazione o chiusura; ultimi task V8 abbandonati in casi rari;
-`unload` eseguito dopo il passaggio del proxy; audit delle API approssimate non banali; WPT
+audit delle API approssimate non banali; WPT
 selettivi, stress GC estesi, smoke PixiJS/Three.js, confronto memoria/prestazioni con Chrome
 (serve DevTools MCP, assente in WSL); release e aggiornamento dei pin di Action e Packmaster.
 
@@ -1210,8 +1210,10 @@ risulta superata nella CI corrente.
   I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
   `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
   0303 (locale): identità preservata nelle navigazioni dello stesso thread script, con ricarica
-  su avanti/indietro. Restano navigazioni verso un altro thread (cross-origin), `document.domain`
-  e l'ordine di `unload` (oggi dopo il passaggio del proxy).
+  su avanti/indietro. `unload` ora prima del passaggio (0306). Restano navigazioni verso un altro thread
+  (cross-origin: servirebbero `Context::NewRemoteContext` e `SetAccessCheckCallbackAndHandler`,
+  esportati ma senza binding rusty_v8, con strutture C++ da costruire a mano: rinviato) e
+  `document.domain`.
 - [x] Correggere `JS_SetImmutablePrototype` sul percorso Window di produzione:
   template canonico V8 e smoke browser Linux normal/JIT-less verdi in `39595584589`.
 - [x] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm: CI

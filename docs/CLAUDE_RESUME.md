@@ -14,7 +14,7 @@
   (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
 - Pubblicato `607b2e5` (fino a 0301 e correzioni apt): TUTTE le CI verdi (V8 `39937024546`,
   generale `39937024442`, Android, iOS). Bootstrap Linux 46–204 s invece dei timeout.
-- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy, 0302 pubblicata (`7189b10`); locale 0303 (WindowProxy).
+- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy, 0302/0303 pubblicate (`17654e7`, CI in corso); locale: piano aggiornato, 0304 diagnostica frame, 0305 test, 0306 unload prima del passaggio del proxy.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)

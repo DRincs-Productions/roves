@@ -132,11 +132,14 @@ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(r
     const held = frame.contentWindow;
     frame.onload = () => {
       const text = held.document && held.document.body ? held.document.body.textContent : "none";
-      resolve((frame.contentWindow === held && text === "second") || `same=${frame.contentWindow === held} text=${text}`);
+      const ok = frame.contentWindow === held && text === "second" && window.unloadSawItsOwnWindow === true;
+      resolve(ok || `same=${frame.contentWindow === held} text=${text} unload=${window.unloadSawItsOwnWindow}`);
     };
     frame.srcdoc = "<p>second</p>";
   };
-  frame.srcdoc = "<p>first</p>";
+  // The old page's unload handlers still see their own window (HTML switches the WindowProxy
+  // when the new document becomes active).
+  frame.srcdoc = "<p>first</p><script>addEventListener('unload', () => { parent.unloadSawItsOwnWindow = window.document.body.textContent === 'first'; });<\/script>";
   document.body.append(frame);
 }));
 finish();
