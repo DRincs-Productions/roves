@@ -1,3 +1,22 @@
+## 2026-10-23 - Reclaim delayed V8 tasks when a foreground handler is removed
+
+**Files:** `components/roves-v8/src/foreground.rs`, patch
+`0287-reclaim-delayed-tasks-on-handler-removal.patch`, `README.md`.
+
+Delayed foreground tasks (for example `Atomics.waitAsync` timeouts) stayed in the timer heap
+after their runtime unregistered and were leaked with `mem::forget` when due. Removal happens
+before isolate disposal (roves-js `unregister_foreground`), so `set_handler(None)` now takes the
+retired registration's waiting delayed tasks out of the heap and destroys them on the caller's
+thread after releasing both locks. `post_delayed` queues under the registry lock, so a
+concurrent removal cannot miss a task. Replacement keeps the earlier policy (that isolate is
+not known to be alive), as does a task the timer already popped. std only; no dependency or
+public API change. A regression posts a real delayed V8 task through `Atomics.waitAsync` and
+checks it leaves the timer on removal; without reclamation it fails (1 task left). Engine
+normal/JITless 67 unit tests and 2 doctests each; roves-js runtime 100 normal/99 JITless
+(2/3 ignored). Replay on HEAD matches tested source byte for byte. Logs:
+`target/task-0287/{normal,jitless,runtime-normal,runtime-jitless,negative-no-reclaim,replay}.log`
+(run on Linux/WSL). No performance measurement.
+
 ## 2026-10-22 - User-authorized evening publication
 
 The user explicitly requested publication of all completed work while the previous V8

@@ -1,60 +1,32 @@
-# Ripresa per Claude — checkpoint del22ottobre2026
+# Ripresa per Claude — checkpoint del 23 ottobre 2026
 
-## Pubblicazione serale autorizzata dopo lo stop
+## Stato e pubblicazione
 
-L'utente ha chiesto esplicitamente di pubblicare tutto anche con il retry V8 precedente
-ancora attivo: eccezione al vincolo ordinario CI per questo push. Wiki `0928dba`, codice
-fino a `1a3aff798fd`, handoff `099f992763b`, più questo checkpoint documentale.
-Attenzione: v8.yml usa cancel-in-progress:true sullo stesso branch; il nuovo push può
-annullare automaticamente il retry39844591657. Non presumere due batch V8 paralleli né
-considerare il retry cancellato come verde. Il nuovo batch dovrà verificare tutte le
-modifiche0282–0286 accumulate; annotare le run associate allo SHA effettivamente pubblicato.
-Lo stop serale resta valido: nessuna nuova implementazione o attesa automatica dopo il push.
+- Pubblicato: `a4599fb2a5e` (commit vuoto di retry sopra `2e96c8663aa`, che contiene 0282–0286),
+  wiki `0928dba`. Claude lavora su Linux/WSL **senza credenziali push**: commit solo locali,
+  l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
+- Locale non pubblicato: 0287 (commit root + wiki, vedi `git log`).
+- CI su `2e96c86`: V8 `39852305242` verde, Android/iOS verdi; generale `39852305257` rossa solo
+  per timeout `mach bootstrap` (apt lento, 90 min, prima della compilazione) del job
+  `linux portable`. Il commit vuoto ha avviato solo Android/iOS (verdi), perché generale e V8
+  sono filtrate per percorso. Il prossimo push con 0287 (tocca `patches/**` e `components/roves-v8/**`)
+  rilancia entrambe: controllarle; se il timeout si ripete, valutare `--no-install-recommends`.
+- PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
+## Verifiche locali (Linux/WSL)
 
-## Chiusura serale del 22 ottobre 2026 — STOP richiesto dall’utente
-
-Sviluppo fermato per oggi. Nessuna attesa automatica, nessun nuovo incarico e nessun push
-alla chiusura: la ripresa domani sarà manuale. Questo stop prevale sulle istruzioni storiche
-di prosecuzione autonoma. Codice completo salvato fino a `1a3aff798fd` (0286), wiki `0928dba`;
-questo aggiornamento documentale è un ulteriore commit locale. Pubblicato resta
-`8b536187562`, wiki `dcfd9bd`;0282–0286 sono ancora soltanto locali.
-
-Ultimo controllo CI alla chiusura: generale `39844592094` **success**, Android/iOS **success**;
-V8 `39844591657` **in_progress**, tentativo2 del solo job Ubuntu normal fallito per timeout
-bootstrap/download apt30min, prima della compilazione. Gli altri9 job del tentativo1 sono
-verdi. Domani verificare il retry prima di pubblicare; se fallisce analizzare prima di
-ripetere. Non cancellare run né usare push per interromperle. Wiki prima del puntatore root
-quando il batch consente il push. I risultati CI correnti verificano0281, non0282–0286:
-dopo la loro pubblicazione servirà il nuovo batch sulle modifiche accumulate.
-
-Restano implementazione cache/origine Function0273, identità WindowProxy in navigazione,
-semantica incumbent, completamento lifecycle worker/task/moduli e verifiche browser/WPT
-previste dal piano. Non dichiarare completata la migrazione o risolta la retention globale.
-Test locali correnti: runtime100 normali/99 JITless (2/3 ignorati); motore66+2doctest in
-entrambe le modalità; negativi e replay documentati. Non ripeterli su sorgenti identici.
-
+`cd components/roves-v8 && CARGO_TARGET_DIR=<repo>/target/roves-v8 cargo test [--features jitless]`
+e analogo per `components/roves-js` con `target/roves-js`. Stato 0287: motore 67+2 doctest,
+runtime 100/99 (2/3 ignorati). Log `target/task-0287/`.
 
 ## Istruzioni operative attuali
 
 Leggere AGENTS.md, questo file e soltanto l'intestazione corrente di docs/V8_MIGRATION.md.
-La chat non serve. Oggi Codex sviluppa direttamente: l'utente aveva letto male la quota
-(Codex97% residuo), mentre Claude ha esaurito la finestra sessione; nessuna invocazione Claude
-è stata fatta dopo lo stop. Domani l'utente vuole riprendere manualmente con Claude.
-Non creare automazioni o tentare cambi modello/aggiramenti di quota. Nessun tetto25/50 o
-contabilità per incarico. Un solo implementatore, lavoro circoscritto e completo, verifiche
-senza duplicazioni, build Servo pesanti online. Aggiornare questo file a ogni checkpoint.
-
-## Git: verificare lo stato reale prima di toccare i sorgenti
-
-- Pubblicato Roves8b536187562 (contiene0281), wiki dcfd9bd.
-- Commit locali completi successivi: e0478fb5acd (regola sviluppo duranteCI),7813d44dbc0
-  (0282),d53e6b51031 (0283),7bfad886f07 (0284), e7f96b0cf99 (0285), 1a3aff798fd (0286).
-- Wiki locale successiva:2cc0a62/91f35c8/0c5b380, 05365d3 (0285), 0928dba (0286).
-- Nessun WIP di questi interventi: sono completi e verificati localmente. Leggere git log e
-  git status per gli SHA finali del checkpoint e del submodule. Non resettare lavoro altrui.
-- docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico:0281 è stata
-  completata e pubblicata. NON riapplicarla. Anche il relativo design è storico.
+La chat non serve. Dal 23 ottobre l'utente ha ripreso con Claude, che sviluppa in autonomia
+con commit locali. Non creare automazioni o tentare cambi modello/aggiramenti di quota.
+Nessun tetto o contabilità per incarico. Lavoro circoscritto e completo, verifiche senza
+duplicazioni, build Servo pesanti online. Aggiornare questo file a ogni checkpoint.
+docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico: NON riapplicarla.
 
 ## Cosa è stato implementato
 
@@ -65,6 +37,7 @@ senza duplicazioni, build Servo pesanti online. Aggiornare questo file a ogni ch
 | 0283 | Timer cattura Weak<Registration> originale invece di cercare il handler per indirizzo isolate alla scadenza. Rimozione/sostituzione invalida la registrazione. Motore65+2doctest normal/JITless, runtime95/94. |
 | 0284 | Payload Dispatchable con owner debole; non esegue task in runtime sbagliato o già chiuso. Close impedisce inserzioni dopo shutdown.97/96 test. |
 | 0286 | Rilascio callback ritirate fuori dal mutex globale: evita deadlock da distruttori reentranti. Motore66+2doctest normal/JITless, runtime100/99 (2/3ignorati); negativo e replay2 precedenti verificati. |
+| 0287 | `set_handler(None)` distrugge i task ritardati della registrazione ancora nel timer, fuori dai lock; accodamento sotto lock registro. Test reale `Atomics.waitAsync`, negativo verificato. Motore67+2doctest, runtime100/99. |
 | 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
 Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.
@@ -75,21 +48,8 @@ Per0285 i test consegna/rifiuto usano Task V8 reali da FinalizationRegistry, non
 
 ## CI da controllare prima di ogni altro push
 
-Batch pubblicato8b536187562:
-- V8 run39844591657:9/10 verdi; Ubuntu normal scaduto nel download apt al bootstrap30min, prima della compilazione. Retry del solo fallito richiesto una volta; controllarne esito.
-- Generale run39844592094: success alla chiusura serale.
-- Android39844592038 e iOS39844591645: verdi.
-
-Non cancellare né soppiantare queste run senza un'altra istruzione esplicita. Se non ci sono
-rosse e il batch è attivo, continuare modifiche/revisioni/commit LOCALI, senza push.
-Al completamento di ogni implementazione controllare il batch aggregato. Una rossa va
-analizzata subito e corretta; attendere anche le altre run prima del push. Tutte verdi:
-pubblicare il lavoro completo accumulato, wiki prima del puntatore submodule root, quindi
-proseguire mentre gira la nuovaCI. Run cancellate/saltate non sono verdi.
-
-Il batch1094b88f051 era stato annullato su esplicita richiesta utente per pubblicare0281;
-non è un precedente che autorizza cancellazioni automatiche. Su47a5cd351e1 erano verdi
-V8/Android/iOS e12/13 generale; Steam era scaduto nel bootstrap90min prima di compilare.
+Vedi "Stato e pubblicazione" in cima. Regole: una rossa va analizzata e corretta; run
+cancellate/saltate non sono verdi; non cancellare run senza istruzione esplicita.
 
 ## Prossimi punti della migrazione
 
@@ -98,8 +58,9 @@ V8/Android/iOS e12/13 generale; Steam era scaduto nel bootstrap90min prima di co
 2. Proseguire lo sviluppo del piano V8, studiando prima riuso di API/librerie mantenute.
    Cache Function0273, navigazione/identità WindowProxy e incumbent sono ancora aperti.
    Worker/termination/shutdown e WPT/integration richiedono ulteriore copertura.
-3. Task accettati consegnati sono ora recuperati, ma task senza handler, timer pendenti e
-   post tardivi dopo chiusura mantengono politiche conservative: non dichiarare assenza leak.
+3. Task consegnati (0285) e ritardati alla rimozione handler (0287) sono recuperati; task
+   immediati senza handler, task in consegna durante la rimozione, sostituzione handler e post
+   tardivi dopo chiusura restano conservativi: non dichiarare assenza leak.
    Dati callback in-flight devono rispettare il lifetime dell'embedder.
 4. Servo mantiene global e mappe moduli; JSON linkati mai valutati restano forti; realm
    iniziale intenzionalmente forte. Non dichiarare raccolta pagina o risparmioCPU/RAM.

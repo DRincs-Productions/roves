@@ -1,0 +1,125 @@
+diff --git a/components/roves-v8/src/foreground.rs b/components/roves-v8/src/foreground.rs
+index 50c737bec25..2ce51c371d8 100644
+--- a/components/roves-v8/src/foreground.rs
++++ b/components/roves-v8/src/foreground.rs
+@@ -12,7 +12,8 @@
+ //! - A task for an isolate without a handler is leaked, never run nor dropped: its isolate may
+ //!   be gone, and destroying a V8 task can touch it.
+ //! - Delayed tasks wait on one timer thread and weakly capture their original registration;
+-//!   removing or replacing it never retargets them to a reused isolate address.
++//!   removing or replacing it never retargets them to a reused isolate address. Removing it
++//!   destroys its waiting delayed tasks on the caller's thread, while the isolate is alive.
+ 
+ use std::collections::{BinaryHeap, HashMap};
+ use std::sync::{Arc, Condvar, Mutex, OnceLock, Weak};
+@@ -58,22 +59,43 @@ pub fn isolate_key(isolate: &v8::Isolate) -> usize {
+ /// before the isolate is disposed. Retired registrations reject later deliveries; tasks
+ /// already handed to the embedder remain subject to its foreground/shutdown ordering.
+ pub fn set_handler(isolate: usize, handler: Option<Handler>) {
+-    let previous = {
++    let (previous, reclaimed) = {
+         let mut handlers = handlers().lock().unwrap();
+         let previous = handlers.remove(&isolate);
+         if let Some(previous) = &previous {
+             previous.active.store(false, AtomicOrdering::Release);
+         }
++        // Removal precedes disposal, so the isolate's delayed tasks can still be destroyed
++        // instead of leaked when due. A replacement keeps the old policy: nothing says that
++        // isolate is still alive.
++        let reclaimed = match (&previous, &handler) {
++            (Some(previous), None) => take_delayed(previous),
++            _ => Vec::new(),
++        };
+         if let Some(handler) = handler {
+             handlers.insert(isolate, Arc::new(Registration { handler, active: AtomicBool::new(true) }));
+         }
+-        previous
++        (previous, reclaimed)
+     };
+     // A captured embedder value can reenter the registry from its destructor. Release the
+-    // registry lock before dropping the retired callback, on both removal and replacement.
++    // registry lock before dropping the retired callback, on both removal and replacement,
++    // and before destroying native tasks.
++    drop(reclaimed);
+     drop(previous);
+ }
+ 
++/// Removes the waiting delayed tasks of `registration`. Called under the registry lock, which
++/// `post_delayed` also holds while queueing, so none can be queued for it afterwards.
++fn take_delayed(registration: &Arc<Registration>) -> Vec<Delayed> {
++    let Some(timer) = TIMER.get() else { return Vec::new() };
++    let mut queue = timer.queue.lock().unwrap();
++    let (taken, kept): (Vec<_>, Vec<_>) = std::mem::take(&mut queue.0)
++        .into_iter()
++        .partition(|delayed| std::ptr::eq(delayed.registration.as_ptr(), Arc::as_ptr(registration)));
++    queue.0 = kept.into();
++    taken
++}
++
+ fn post(isolate: usize, task: v8::Task) {
+     let registration = handlers().lock().unwrap().get(&isolate).cloned();
+     match registration {
+@@ -116,8 +138,9 @@ struct Timer {
+     wake: Condvar,
+ }
+ 
++static TIMER: OnceLock<Timer> = OnceLock::new();
++
+ fn timer() -> &'static Timer {
+-    static TIMER: OnceLock<Timer> = OnceLock::new();
+     TIMER.get_or_init(|| {
+         std::thread::Builder::new()
+             .name("roves-v8 timer".into())
+@@ -129,9 +152,10 @@ fn timer() -> &'static Timer {
+ 
+ fn post_delayed(isolate: usize, task: v8::Task, delay_in_seconds: f64) {
+     // Capture ownership when queued, not when due. Isolate addresses may be reused by a
+-    // later runtime; a delayed task must never be sent to its handler.
+-    let registration = handlers().lock().unwrap().get(&isolate).map(Arc::downgrade);
+-    let Some(registration) = registration else {
++    // later runtime; a delayed task must never be sent to its handler. Queue under the
++    // registry lock, so a concurrent removal reclaims the task (see `take_delayed`).
++    let handlers = handlers().lock().unwrap();
++    let Some(registration) = handlers.get(&isolate).map(Arc::downgrade) else {
+         // Same no-handler policy as an immediate task.
+         std::mem::forget(task);
+         return;
+@@ -148,6 +172,8 @@ fn post_delayed(isolate: usize, task: v8::Task, delay_in_seconds: f64) {
+     let sequence = queue.1;
+     queue.0.push(Delayed { due, sequence, registration, task });
+     timer.wake.notify_one();
++    drop(queue);
++    drop(handlers);
+ }
+ 
+ fn run_timer() {
+@@ -244,6 +270,29 @@ mod tests {
+         }
+     }
+ 
++    fn delayed_count(registration: &Weak<Registration>) -> usize {
++        let queue = timer().queue.lock().unwrap();
++        queue.0.iter().filter(|delayed| delayed.registration.ptr_eq(registration)).count()
++    }
++
++    #[test]
++    fn removed_registration_reclaims_its_delayed_tasks() {
++        // A real delayed V8 task: the timeout of an `Atomics.waitAsync` that never resolves.
++        let mut runtime = crate::Runtime::new();
++        let key = isolate_key(&runtime.isolate);
++        set_handler(key, Some(handler()));
++        let registration = Arc::downgrade(&handlers().lock().unwrap()[&key]);
++        runtime
++            .eval("Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1e9).async")
++            .unwrap();
++        assert_eq!(delayed_count(&registration), 1);
++        // Removal destroys it now, with the isolate alive, rather than leaking it when due.
++        set_handler(key, None);
++        assert_eq!(delayed_count(&registration), 0);
++        assert!(registration.upgrade().is_none());
++        drop(runtime);
++    }
++
+     #[test]
+     fn live_registration_keeps_its_original_handler() {
+         const KEY: usize = 3;

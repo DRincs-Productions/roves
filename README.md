@@ -587,3 +587,6 @@ page's Input section shows every key, mouse button and gamepad event the page re
 
 Retired V8 foreground handlers release captured embedder data outside the registry lock,
 so a destructor can reenter registration safely (covered by normal/JITless backend tests).
+
+Unregistering a V8 runtime also destroys its delayed engine tasks still waiting in the timer
+(such as `Atomics.waitAsync` timeouts) before the isolate goes away, instead of leaking them.

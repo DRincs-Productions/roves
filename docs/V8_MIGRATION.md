@@ -1,39 +1,27 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Pubblicazione serale autorizzata dopo lo stop
+## Stato corrente — 23 ottobre 2026 (ripresa con Claude)
 
-L'utente ha chiesto esplicitamente di pubblicare tutto anche con il retry V8 precedente
-ancora attivo: eccezione al vincolo ordinario CI per questo push. Wiki `0928dba`, codice
-fino a `1a3aff798fd`, handoff `099f992763b`, più questo checkpoint documentale.
-Attenzione: v8.yml usa cancel-in-progress:true sullo stesso branch; il nuovo push può
-annullare automaticamente il retry39844591657. Non presumere due batch V8 paralleli né
-considerare il retry cancellato come verde. Il nuovo batch dovrà verificare tutte le
-modifiche0282–0286 accumulate; annotare le run associate allo SHA effettivamente pubblicato.
-Lo stop serale resta valido: nessuna nuova implementazione o attesa automatica dopo il push.
+Pubblicati 0282–0286 (`2e96c8663aa`, wiki `0928dba`). CI su `2e96c86`: V8 `39852305242`,
+Android, iOS verdi; generale `39852305257` rossa solo per `build-and-publish (ubuntu-24.04,
+linux, portable)`: `mach bootstrap` scaduto a 90 min durante il download apt (438 pacchetti,
+mirror azure lento), prima della compilazione; gli altri 12 job verdi. Il commit vuoto
+`a4599fb2a5e` ha avviato solo Android/iOS (verdi): generale e V8 sono filtrate per percorso,
+quindi il retry avverrà con il prossimo push che tocca `patches/**`. Valutare in seguito
+`--no-install-recommends` o mirror alternativo se il timeout si ripete.
 
+Ambiente Claude: Linux/WSL, nessuna credenziale push; l'utente pubblica periodicamente.
+Lavorare con commit locali. Workspace test: `CARGO_TARGET_DIR=target/roves-v8` per
+`components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
+jitless`). Log in `target/task-NNNN/`.
 
-## Chiusura serale del 22 ottobre 2026 — STOP richiesto dall’utente
-
-Sviluppo fermato per oggi. Nessuna attesa automatica, nessun nuovo incarico e nessun push
-alla chiusura: la ripresa domani sarà manuale. Questo stop prevale sulle istruzioni storiche
-di prosecuzione autonoma. Codice completo salvato fino a `1a3aff798fd` (0286), wiki `0928dba`;
-questo aggiornamento documentale è un ulteriore commit locale. Pubblicato resta
-`8b536187562`, wiki `dcfd9bd`;0282–0286 sono ancora soltanto locali.
-
-Ultimo controllo CI alla chiusura: generale `39844592094` **success**, Android/iOS **success**;
-V8 `39844591657` **in_progress**, tentativo2 del solo job Ubuntu normal fallito per timeout
-bootstrap/download apt30min, prima della compilazione. Gli altri9 job del tentativo1 sono
-verdi. Domani verificare il retry prima di pubblicare; se fallisce analizzare prima di
-ripetere. Non cancellare run né usare push per interromperle. Wiki prima del puntatore root
-quando il batch consente il push. I risultati CI correnti verificano0281, non0282–0286:
-dopo la loro pubblicazione servirà il nuovo batch sulle modifiche accumulate.
-
-Restano implementazione cache/origine Function0273, identità WindowProxy in navigazione,
-semantica incumbent, completamento lifecycle worker/task/moduli e verifiche browser/WPT
-previste dal piano. Non dichiarare completata la migrazione o risolta la retention globale.
-Test locali correnti: runtime100 normali/99 JITless (2/3 ignorati); motore66+2doctest in
-entrambe le modalità; negativi e replay documentati. Non ripeterli su sorgenti identici.
-
+**0287 completa localmente:** `set_handler(None)` recupera e distrugge, fuori dai lock, i task
+ritardati ancora nel timer della registrazione rimossa (isolate ancora vivo); `post_delayed`
+accoda sotto il lock del registro, quindi nessuna race lascia task orfani. Sostituzione handler
+e task già estratti dal timer mantengono la politica conservativa. Test reale con
+`Atomics.waitAsync`; negativo senza recupero fallisce (1 task rimasto). Motore 67+2 doctest
+normal/JITless, runtime 100/99 (2/3 ignorati). Replay su HEAD identico. Restano conservativi:
+task immediati senza handler, task in consegna durante la rimozione, sostituzione handler.
 
 ## Da leggere alla prossima ripresa
 
