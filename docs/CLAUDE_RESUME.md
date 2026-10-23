@@ -18,7 +18,7 @@
 - `a2a2458`: V8 `39928279899` ROSSA nei job runtime per la fixture di test_runner.py senza il
   marker 0294 (corretta in locale, 0296); generale e altri job da verificare.
 - Pubblicati 0295, cache apt, 0296 (`791903a`): batch CI in corso.
-- Locale non pubblicato: 0297 (DataCloneError per SAB/Wasm.Module), 0298 (detach key ArrayBuffer).
+- Locale non pubblicato: 0297 (DataCloneError per SAB/Wasm.Module), 0298 (detach key ArrayBuffer), 0299 (task postati tra close e rimozione handler).
 - Prima di ogni push con modifiche a `support/v8-smoke/run.sh` eseguire
   `python3 -m unittest discover -s support/v8-smoke -p test_runner.py` (circa 100 s).
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
@@ -85,9 +85,10 @@ cancellate/saltate non sono verdi; non cancellare run senza istruzione esplicita
 2. Proseguire lo sviluppo del piano V8, studiando prima riuso di API/librerie mantenute.
    Navigazione/identità WindowProxy resta aperta (Function chiusa in 0288, incumbent in 0289).
    Worker/termination/shutdown e WPT/integration richiedono ulteriore copertura.
-3. Task consegnati (0285) e ritardati alla rimozione handler (0287) sono recuperati; task
-   immediati senza handler, task in consegna durante la rimozione, sostituzione handler e post
-   tardivi dopo chiusura restano conservativi: non dichiarare assenza leak.
+3. Task consegnati (0285), ritardati alla rimozione handler (0287) e postati tra close e
+   rimozione (0299) sono recuperati; task immediati senza handler, task in consegna durante
+   la rimozione, sostituzione handler e post ancora in volo dopo `retire` restano
+   conservativi: non dichiarare assenza leak.
    Dati callback in-flight devono rispettare il lifetime dell'embedder.
 4. Servo mantiene global e mappe moduli; JSON linkati mai valutati restano forti; realm
    iniziale intenzionalmente forte. Non dichiarare raccolta pagina o risparmioCPU/RAM.

@@ -1,0 +1,91 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index c3e50a6d781..725cb46dcc2 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -147,6 +147,9 @@ pub(crate) struct Foreground {
+     /// Tasks waiting for a dispatch callback or for [`RunJobs`].
+     pending: std::sync::Mutex<Vec<v8::Task>>,
+     closed: std::sync::atomic::AtomicBool,
++    /// Set once the isolate's handler is gone and the last tasks were destroyed: from then on
++    /// the isolate may be disposed, so a late task can only be leaked.
++    retired: std::sync::atomic::AtomicBool,
+     /// Runtime ownership lasts until execution or shutdown; opaque event-loop payloads
+     /// must not be the last owners of native tasks after isolate disposal.
+     dispatched: std::sync::Mutex<Vec<std::sync::Arc<DispatchedTask>>>,
+@@ -185,10 +188,16 @@ impl Foreground {
+         // Serialize a pending insertion with close: no task can enter the queue after the
+         // shutdown clear. Never hold this lock while calling the embedder.
+         let mut pending = self.pending.lock().unwrap();
+-        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
++        if self.retired.load(std::sync::atomic::Ordering::Acquire) {
+             std::mem::forget(task);
+             return;
+         }
++        if self.closed.load(std::sync::atomic::Ordering::Acquire) {
++            // Posted between close and the handler's removal, while the isolate is alive:
++            // kept, never run, and destroyed by `retire` on the isolate's thread.
++            pending.push(task);
++            return;
++        }
+         let dispatch = *self.dispatch.lock().unwrap();
+         let Some(Dispatch(Some(callback), closure)) = dispatch else {
+             pending.push(task);
+@@ -234,6 +243,17 @@ impl Foreground {
+             drop(task.take());
+         }
+     }
++
++    /// Destroys the tasks posted after `close`, once no handler can post more (on the
++    /// isolate's thread, before disposal).
++    fn retire(&self) {
++        let late = {
++            let mut pending = self.pending.lock().unwrap();
++            self.retired.store(true, std::sync::atomic::Ordering::Release);
++            std::mem::take(&mut *pending)
++        };
++        drop(late);
++    }
+ }
+ 
+ /// Registers `cx`'s runtime to receive its isolate's foreground tasks.
+@@ -247,11 +267,17 @@ pub(crate) fn register_foreground(cx: &JSContext, isolate: &v8::Isolate) {
+ pub(crate) fn unregister_foreground(cx: &JSContext, isolate: &v8::Isolate) {
+     cx.hooks.foreground.close();
+     roves_v8::foreground::set_handler(roves_v8::foreground::isolate_key(isolate), None);
++    cx.hooks.foreground.retire();
+ }
+ 
+ /// Runs the foreground tasks waiting in `cx`'s runtime; returns whether any ran.
+ pub(crate) fn run_pending_tasks(cx: *mut JSContext) -> bool {
+-    let tasks = std::mem::take(&mut *hooks(cx).foreground.pending.lock().unwrap());
++    let foreground = &hooks(cx).foreground;
++    if foreground.closed.load(std::sync::atomic::Ordering::Acquire) {
++        // Tasks posted after close only wait for `retire`.
++        return false;
++    }
++    let tasks = std::mem::take(&mut *foreground.pending.lock().unwrap());
+     let ran = !tasks.is_empty();
+     for task in tasks {
+         task.run();
+@@ -1033,6 +1059,21 @@ mod dispatch_lifetime_tests {
+         }
+     }
+ 
++    #[test]
++    fn tasks_posted_after_close_are_destroyed_before_disposal() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let foreground = hooks(cx).foreground.clone();
++        // Close as shutdown does, with the isolate's handler still registered.
++        foreground.close();
++        post_real_task(&mut runtime, || !foreground.pending.lock().unwrap().is_empty());
++        assert!(!run_pending_tasks(cx), "a closed runtime never runs late tasks");
++        assert!(!foreground.pending.lock().unwrap().is_empty(), "kept for destruction, not leaked");
++        drop(runtime);
++        assert!(foreground.pending.lock().unwrap().is_empty(), "shutdown destroyed it before disposing the isolate");
++        assert!(foreground.retired.load(std::sync::atomic::Ordering::Acquire));
++    }
++
+     #[test]
+     fn dispatched_owner_accepts_only_its_live_registration() {
+         let foreground = Arc::new(Foreground::default());

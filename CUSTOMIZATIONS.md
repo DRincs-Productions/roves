@@ -1,3 +1,16 @@
+## 2026-10-23 - Destroy V8 tasks posted between close and handler removal
+
+**Files:** `components/roves-js/src/runtime_impl.rs`, patch `0299-destroy-tasks-posted-after-close.patch`.
+
+Runtime shutdown closes the foreground queue, then removes the isolate's platform handler.
+A task V8 posted in between (from a background thread, e.g. FinalizationRegistry or Wasm
+work) reached a closed queue and was leaked, although the isolate was still alive. Closed
+queues now keep such tasks without running them (`run_pending_tasks` returns early), and a
+final `retire` after the handler's removal destroys them on the isolate's thread before
+disposal; only posts still in flight after `retire` are leaked. Regression with a real
+FinalizationRegistry task posted after `close` (the old code never queues it). Runtime 103
+normal/102 JITless (2/3 ignored); replay identical.
+
 ## 2026-10-23 - ArrayBuffer detach keys on V8
 
 **Files:** `components/roves-js/src/{values_impl.rs,tests.rs}`, patch `0298-array-buffer-detach-key.patch`.
