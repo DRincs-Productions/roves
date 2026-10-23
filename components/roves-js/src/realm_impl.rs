@@ -227,6 +227,12 @@ pub(crate) fn realm_cached<'s>(
     Some(value)
 }
 
+/// An object that lives as long as `realm` (its value cache): a weak key for state other
+/// realms keep per realm.
+pub(crate) fn realm_key<'s>(scope: &mut v8::PinScope<'s, '_>, realm: *mut Realm) -> Option<v8::Local<'s, v8::Value>> {
+    realm_data(realm)?.context(scope).get_embedder_data(scope, CACHE_SLOT)
+}
+
 /// The realm a context belongs to.
 pub(crate) fn realm_of_context(context: v8::Local<v8::Context>) -> *mut Realm {
     context.get_aligned_pointer_from_embedder_data(REALM_SLOT) as *mut Realm

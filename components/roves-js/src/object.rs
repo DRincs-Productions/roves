@@ -48,11 +48,12 @@ pub(crate) struct ClassBox {
     /// For a proxy's target: the proxy handler (null for ordinary class objects). The box's
     /// `cell` is then the proxy's cell, and trace/finalize go to the handler's traps.
     pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
-    /// A borrowed Window wrapper keeps its owner in `private`, without owning DOM state.
+    /// A borrowed Window wrapper: its owner is its identity's current window proxy, and it
+    /// owns no DOM state.
     pub(crate) window_wrapper: StdCell<bool>,
-    /// For a window proxy that a navigation replaced (`JS_TransplantObject`): its replacement,
-    /// which wrappers made for this one follow (traced).
-    pub(crate) forwarded: StdCell<*mut JSObject>,
+    /// For window proxies and their wrappers: the browsing context's identity, shared across
+    /// navigations (`JS_TransplantObject`). Isolate thread only (no concurrent marking).
+    pub(crate) window_identity: StdCell<Option<UnsafePtr<WindowIdentity>>>,
     /// A proxy's private value (`GetProxyPrivate`).
     pub(crate) private: StdCell<JSVal>,
     /// Whether a proxy's prototype comes from its handler (`getPrototype` trap).
@@ -84,7 +85,9 @@ unsafe impl GarbageCollected for ClassBox {
             }
         }
         trace_cell(self.cell.get(), visitor);
-        trace_cell(self.forwarded.get() as *mut c_void, visitor);
+        if let Some(identity) = self.identity() {
+            visitor.trace(&Member::new(&identity));
+        }
         let private = self.private.get();
         if private.is_gcthing() {
             trace_cell(private.to_gcthing(), visitor);
@@ -230,22 +233,78 @@ pub(crate) fn immutable_prototype_for_cell<'s>(scope: &v8::PinScope<'s, '_>, obj
     class_box(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
 }
 
-/// The window proxy that now stands for `proxy`: navigations replace a browsing context's
-/// window proxy (`JS_TransplantObject`), and older references follow the replacements.
-pub(crate) fn current_window_proxy(mut proxy: *mut JSObject) -> *mut JSObject {
-    while let Some(class_box) = class_box(proxy) {
-        let forwarded = class_box.forwarded.get();
-        if forwarded.is_null() {
-            break;
-        }
-        proxy = forwarded;
+/// A browsing context's window proxy identity. Navigations replace the window proxy
+/// (`JS_TransplantObject`); every proxy that stood for the context and every wrapper other
+/// realms made for it share this record, which points only at the current proxy, so older
+/// proxies and their windows are not kept alive by it.
+pub(crate) struct WindowIdentity {
+    /// The window proxy that now stands for the context (traced).
+    current: StdCell<*mut JSObject>,
+    /// A non-registered symbol: receiving realms' wrapper caches use it as WeakMap key, which
+    /// stays the same across replacements and keeps no realm alive.
+    token: v8::TracedReference<v8::Value>,
+}
+
+// SAFETY: `trace` reports both references.
+unsafe impl GarbageCollected for WindowIdentity {
+    fn trace(&self, visitor: &mut Visitor) {
+        trace_cell(self.current.get() as *mut c_void, visitor);
+        visitor.trace(&self.token);
     }
-    proxy
+
+    fn get_name(&self) -> &'static CStr {
+        c"RovesJsWindowIdentity"
+    }
+}
+
+impl WindowIdentity {
+    pub(crate) fn token<'s>(&self, scope: &v8::PinScope<'s, '_>) -> Option<v8::Local<'s, v8::Value>> {
+        self.token.get(scope)
+    }
+}
+
+/// The identity of the window proxy `class_box` (its own cell), made on first use.
+pub(crate) fn window_identity(scope: &mut v8::PinScope, class_box: &ClassBox) -> UnsafePtr<WindowIdentity> {
+    if let Some(identity) = class_box.identity() {
+        return identity;
+    }
+    let token = v8::Symbol::new(scope, None);
+    let token = v8::TracedReference::new(scope, token.into());
+    let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");
+    // SAFETY: stored in the (live) box at once.
+    let identity = unsafe {
+        v8::cppgc::make_garbage_collected(heap, WindowIdentity { current: StdCell::new(class_box.cell.get() as *mut JSObject), token })
+    };
+    class_box.window_identity.set(Some(identity));
+    class_box.identity().expect("just set")
+}
+
+/// `replacement` takes over the identity of the window proxy `original` (a navigation).
+pub(crate) fn transfer_window_identity(scope: &mut v8::PinScope, original: &ClassBox, replacement: &ClassBox) {
+    let identity = window_identity(scope, original);
+    // SAFETY: just read from a live box, which traces it.
+    unsafe { identity.as_ref() }.current.set(replacement.cell.get() as *mut JSObject);
+    replacement.window_identity.set(Some(identity));
+}
+
+/// The window proxy that now stands for `proxy` (itself unless a navigation replaced it).
+pub(crate) fn current_window_proxy(proxy: *mut JSObject) -> *mut JSObject {
+    class_box(proxy).and_then(ClassBox::identity_proxy).unwrap_or(proxy)
 }
 
 impl ClassBox {
+    fn identity(&self) -> Option<UnsafePtr<WindowIdentity>> {
+        // SAFETY: `UnsafePtr` is a single pointer; its derived `Copy` only lacks `T: Copy`.
+        unsafe { std::ptr::read(self.window_identity.as_ptr()) }
+    }
+
+    fn identity_proxy(&self) -> Option<*mut JSObject> {
+        // SAFETY: the box traces its identity.
+        self.identity().map(|identity| unsafe { identity.as_ref() }.current.get())
+    }
+
     pub(crate) fn proxy_owner(&self) -> *mut JSObject {
-        if self.window_wrapper.get() { current_window_proxy(self.private.get().to_object()) } else { std::ptr::null_mut() }
+        if self.window_wrapper.get() { self.identity_proxy().unwrap_or(std::ptr::null_mut()) } else { std::ptr::null_mut() }
     }
 
     pub(crate) fn proxy_private(&self) -> JSVal {
@@ -817,7 +876,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 cell: StdCell::new(std::ptr::null_mut()),
                 proxy: StdCell::new(std::ptr::null()),
                 window_wrapper: StdCell::new(false),
-                forwarded: StdCell::new(std::ptr::null_mut()),
+                window_identity: StdCell::new(None),
                 private: StdCell::new(UndefinedValue()),
                 lazy_proto: StdCell::new(false),
                 global_trace: StdCell::new(None),

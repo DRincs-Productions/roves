@@ -1,3 +1,68 @@
+## 2026-10-23 - One WindowProxy identity per browsing context across origin changes
+
+**Files:** `components/roves-js/src/{object.rs,proxy.rs,realm_impl.rs,tests.rs}`, patch
+`0322-stable-window-proxy-identity.patch`.
+
+V8 CI (both Linux smokes, run 40007474006) failed the 0318 events check in its opaque phase:
+`contentWindow` changed, `event.source` was not the held window and the cross-origin allowlist
+(`self`/`window`) returned another object. Cause: `wrap_window_for_realm` keyed each receiving
+realm's WeakMap by the current window proxy's V8 object and returned non-global (remote
+DissimilarOriginWindow) proxies unwrapped, so after `unset_currently_active` the transplant's
+replacement surfaced as a new identity, and the next same-origin window changed the key again.
+
+Fix, reusing the existing per-realm WeakMap and cppgc tracing (no new dependency, no
+process-wide registry): a small cppgc `WindowIdentity` record (traced current window proxy +
+a non-registered V8 `Symbol` token) is shared by every window proxy that stood for a browsing
+context and by every wrapper made for it. `JS_TransplantObject`'s global-proxy branch retargets
+the record to the replacement and hands it over (replacing the old `forwarded` chain field and
+its trace). Wrappers carry only the record (no `private` pointing at the old proxy), so they
+keep the current owner alive but not replaced proxies/windows/realms; the record only points
+forward. Receiving realms key their cache by the token, and remote window proxies now get the
+same wrapper (dynamic owner handler: cross-origin traps while remote). `GetProxyHandler` returns
+that dynamic handler too (Servo's set/descriptor paths), instead of the handler at wrap time.
+Unchanged: the owning realm still gets V8's global proxy (`window === globalThis`), wrappers
+never run DOM finalizers, cross-origin SecurityError/prototype traps are the owner's, public
+JSAPI is the same. Behavior change: a cross-origin window first seen while remote now goes
+through the cached wrapper instead of the raw remote proxy.
+
+Review corrections (same patch): (1) `wrap_window_for_realm` returned any window proxy unwrapped
+in its own realm. JSAPI lets a remote proxy be made in the realm that receives it (Servo itself
+enters the DissimilarOriginWindow's realm in `set_window`/`new_dissimilar_origin`), and that
+realm then saw the raw proxy first and a cached wrapper after the context became local (or the
+reverse). Only a local window's own realm now gets the proxy itself (V8 global proxy, so
+`window === globalThis`); remote proxies always go through the cache. (2) Cross-origin property
+holders were keyed by the (now stable) wrapper, so a new Window reused the previous one's holder,
+against HTML's [[CrossOriginPropertyDescriptorMap]] key (current global, object global,
+property). Window proxies and wrappers now key the receiving realm's existing holder WeakMap by
+their current Window's realm, through that realm's own value-cache object (`realm_key`), which
+lives exactly as long as the realm: no new identity state, no strong map, and a replaced
+Window's holders collect with its realm. Other proxies (Location) keep the proxy as key. A
+Window that took over the previous V8 global proxy has a new realm, hence new holders. (3) Found
+while testing (2): an ordinary remote -> remote `JS_TransplantObject` kept the old V8 Proxy,
+whose creation context is the replaced DissimilarOriginWindow's realm, so that realm never
+collected and `realm_of_object` reported it for the new Window. Every window proxy transplant
+now takes the identity branch (the replacement is returned and adopted by Servo, as for global
+proxies); the ordinary state copy stays for other proxies.
+
+Test `foreign_window_wrappers_keep_identity_across_cross_origin_round_trips`: two
+local→DissimilarOriginWindow→fresh-Window cycles; identity of new conversions of the proxy,
+of the Window global (message-source-like) and of stale previous proxies; allowlist
+`self`/`window`/`parent` and a denied property; replaced realms collect while the wrapper is
+held. Fails before the fix (remote phase identity); a mutation keeping the old proxy in the
+wrapper fails the collection assertion. Review tests:
+`a_remote_first_proxy_made_in_the_receiving_realm_keeps_one_identity` and
+`a_local_first_context_with_remote_proxies_made_in_the_receiving_realm_keeps_one_identity`
+(remote proxies made in the observer's realm; remote/local/remote/remote and
+local/remote/remote/local; stale, contentWindow and message-source conversions, allowlist
+getters, `window === globalThis` in local phases, replaced realms collect);
+`cross_origin_holders_follow_the_current_window` (same Window/realm same holder, another
+receiving realm its own, fresh holders after a reused-global-proxy navigation and a remote one,
+Location holder kept, replaced holders and realms collect);
+`cross_origin_holders_follow_a_remote_to_remote_transplant`. All four fail before the
+corrections (stale reference identity, stale holder); with the old transplant branch the
+replaced remote realm does not collect, and a mutation restoring that branch fails three tests.
+Browser confirmation is the 0318 check in V8 CI.
+
 ## 2026-10-23 - Diagnostic process: reading native V8 heap snapshots with MemLab
 
 No source change and no patch. Retainer paths in the snapshot written by the 0320 debug hook are

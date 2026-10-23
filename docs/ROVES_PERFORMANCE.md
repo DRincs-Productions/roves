@@ -1,3 +1,18 @@
+## 23 ottobre — snapshot reale del frame rimosso (0321)
+
+CI V8 40007474006, job Linux normal 120598951538: cattura nativa Roves alla ottava
+raccolta esplicita, artifact 12524484912, snapshot 4910076 byte. SHA256:
+`d3eec325a044110301bbb8f536924a872fd8263eb85eaec9330be5642220aff0`.
+Il controllo JSON passa; elemento, documento e probe risultano ancora vivi nella scena.
+MemLab trova il probe `rovesFrameRetentionProbe` @65595: riferimenti entranti da
+WeakRef.target (debole), PropertyCell.value e Window[JSGlobalObject] @61811.
+La ricerca del percorso per questo ID esistente restituisce «path is not found» con exit0.
+Non dimostra assenza di retainer o leak: visibilità degli archi nativi nello snapshot e
+filtri dei percorsi MemLab limitano la diagnosi. Nessun fix della retention dedotto.
+Evidenze locali: target/task-0321/frame-selection.json, frame-trace.txt, frame-object.json.
+È analisi dello snapshot CI, non una cattura Chrome MCP né una misura comparativa.
+Il distinto fallimento CI dell'identità WindowProxy è trattato in0322.
+
 ## 23 ottobre — lettura snapshot V8 con MemLab (0321)
 
 Strumento di analisi, non una misura: MemLab2.0.5 (MIT) in prefisso temporaneo WSL, nessun

@@ -18,6 +18,8 @@
 
 use std::ffi::c_void;
 
+use v8::cppgc::UnsafePtr;
+
 use crate::glue::ProxyTraps;
 use crate::jsapi::{
     HandleId, HandleObject, HandleValue, JSClass, JSContext, JSObject, MutableHandle,
@@ -96,7 +98,8 @@ pub unsafe fn IsProxyHandlerFamily(obj: *mut JSObject) -> bool {
 }
 
 pub unsafe fn GetProxyHandler(obj: *mut JSObject) -> *const c_void {
-    proxy_box(obj).map_or(std::ptr::null(), |class_box| class_box.proxy.get() as *const c_void)
+    // A Window wrapper's handler is its current owner's (cross-origin while remote).
+    handler_of(obj).map_or(std::ptr::null(), |handler| handler as *const ProxyHandler as *const c_void)
 }
 
 pub unsafe fn GetProxyHandlerExtra(obj: *mut JSObject) -> *const c_void {
@@ -149,17 +152,16 @@ pub unsafe fn NewProxyObject(
     class: *const JSClass,
     lazy_proto: bool,
 ) -> *mut JSObject {
-    unsafe { new_proxy_object(cx, handler, private, proto, class, lazy_proto, std::ptr::null_mut()) }
+    unsafe { new_proxy_object(cx, handler, private.get(), proto, class, lazy_proto, None) }
 }
 
 unsafe fn new_proxy_object(
-    cx: *mut JSContext, handler: *const c_void, private: HandleValue, proto: *mut JSObject,
-    class: *const JSClass, lazy_proto: bool, owner: *mut JSObject,
+    cx: *mut JSContext, handler: *const c_void, private: JSVal, proto: *mut JSObject,
+    class: *const JSClass, lazy_proto: bool, identity: Option<UnsafePtr<crate::object::WindowIdentity>>,
 ) -> *mut JSObject {
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
     let class = if class.is_null() { &PROXY_CLASS as *const JSClass } else { class };
-    let private = private.get();
     raw.catching(|scope| {
         let template = raw.class_templates.template(scope, class);
         let target = template.new_instance(scope)?;
@@ -174,10 +176,11 @@ unsafe fn new_proxy_object(
         // SAFETY: just created, kept alive by the target.
         let box_ref = unsafe { class_box.as_ref() };
         box_ref.proxy.set(handler as *const ProxyHandler);
-        // Borrowed wrappers are marked before handler/proxy allocation can GC.
-        // Their private traces the owner, and they never run its native finalizer.
-        box_ref.private.set(if owner.is_null() { private } else { crate::jsval::ObjectValue(owner) });
-        box_ref.window_wrapper.set(!owner.is_null());
+        // Borrowed wrappers are marked before handler/proxy allocation can GC. Their
+        // identity traces the current owner, and they never run its native finalizer.
+        box_ref.private.set(private);
+        box_ref.window_wrapper.set(identity.is_some());
+        box_ref.window_identity.set(identity);
         box_ref.lazy_proto.set(lazy_proto);
         let handler_object = handler_object(scope, handler as *const ProxyHandler)?;
         let proxy = v8::Proxy::new(scope, target, handler_object)?;
@@ -871,8 +874,22 @@ pub(crate) fn initialize_window_wrappers<'s>(scope: &mut v8::PinScope<'s, '_>) -
     })
 }
 
+/// The key of `proxy`'s cross-origin holders. HTML keys them by the object's global as well
+/// ([[CrossOriginPropertyDescriptorMap]]): a window proxy or wrapper keeps its identity across
+/// navigations, so it uses its current Window's realm, which every navigation changes (also an
+/// ordinary remote → remote transplant, or a Window that took over the V8 global proxy).
+/// Other proxies (Location) are their own key.
+fn cross_origin_holder_key<'s>(scope: &mut v8::PinScope<'s, '_>, raw: &JSContext, proxy: *mut JSObject) -> Option<v8::Local<'s, v8::Value>> {
+    if unsafe { IsWindowProxy(proxy) } {
+        let window = unsafe { ToWindowIfWindowProxy(proxy) };
+        return crate::realm_impl::realm_key(scope, crate::realm_impl::realm_of_object(raw, window));
+    }
+    Some(unsafe { crate::cell::cell_value(scope, proxy.cast()) })
+}
+
 /// A receiving realm's ephemeron cache of cross-origin WebIDL property holders.
-/// The key and holder are rooted by the JSAPI caller; no native map roots either.
+/// The key and holder are rooted by the JSAPI caller (a Window's realm for window proxies);
+/// no native map roots either.
 pub unsafe fn GetCrossOriginPropertyHolder(
     cx: *mut JSContext, proxy: HandleObject, mut holder: crate::jsapi::MutableHandleObject,
 ) -> bool {
@@ -882,7 +899,7 @@ pub unsafe fn GetCrossOriginPropertyHolder(
         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
         let map = cache.get_index(scope, 3)?;
         let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
-        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
+        let key = cross_origin_holder_key(scope, raw, proxy.get())?;
         let value = get.call(scope, map, &[key])?;
         holder.set(if value.is_undefined() { std::ptr::null_mut() } else { from_v8(scope, value).to_object() });
         Some(())
@@ -898,45 +915,47 @@ pub unsafe fn SetCrossOriginPropertyHolder(
         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
         let map = cache.get_index(scope, 3)?;
         let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
-        let key = unsafe { crate::cell::cell_value(scope, proxy.get().cast()) };
+        let key = cross_origin_holder_key(scope, raw, proxy.get())?;
         let value = unsafe { crate::cell::cell_value(scope, holder.get().cast()) };
         set.call(scope, map, &[key, value])?;
         Some(())
     }).is_some()
 }
 
-/// Wrap a native Window global when it crosses a realm boundary. The owner keeps
-/// the DOM object's trace/finalizer; wrappers only keep that owner's cell alive.
+/// Wrap a window proxy (or a Window global) when it crosses a realm boundary. Each receiving
+/// realm keeps one wrapper per browsing context, keyed by its identity's token, so the same
+/// object comes back whether the context is same-origin or cross-origin (a remote
+/// DissimilarOriginWindow proxy) at the time. The owner keeps the DOM object's
+/// trace/finalizer; wrappers only keep the identity, hence the current owner, alive.
 pub(crate) unsafe fn wrap_window_for_realm(cx: *mut JSContext, object: *mut JSObject) -> *mut JSObject {
-    let mut owner = crate::object::current_window_proxy(unsafe { ToWindowProxyIfWindowSlow(object) });
-    let Some(mut owner_box) = proxy_box(owner) else { return owner };
-    if !owner_box.proxy_owner().is_null() {
-        owner = owner_box.proxy_owner();
-        let Some(original) = proxy_box(owner) else { return std::ptr::null_mut() };
-        owner_box = original;
-    }
+    let owner = crate::object::current_window_proxy(unsafe { ToWindowProxyIfWindowSlow(object) });
     let raw = unsafe { &*cx };
-    if crate::realm_impl::realm_of_object(raw, owner) == raw.current_realm.get() {
+    if !unsafe { IsWindowProxy(owner) } {
         return owner;
     }
-    if !is_global_window_proxy(owner_box) {
+    let Some(owner_box) = proxy_box(owner) else { return owner };
+    // Only a local window's own realm sees the proxy itself (`window === globalThis`). A remote
+    // proxy goes through the cache even in the realm it was made in, so that realm keeps one
+    // identity when the context becomes local (its proxy is then another realm's global proxy).
+    if crate::realm_impl::realm_of_object(raw, owner) == raw.current_realm.get() && is_global_window_proxy(owner_box) {
         return owner;
     }
     crate::rooted!(in(cx) let owner = owner);
-    crate::rooted!(in(cx) let private = owner_box.proxy_private());
     raw.catching(|scope| {
         let cache = initialize_window_wrappers(scope)?;
         let cache = v8::Local::<v8::Array>::try_from(cache).ok()?;
         let map = cache.get_index(scope, 0)?;
         let get = cache.get_index(scope, 1)?;
         let get = v8::Local::<v8::Function>::try_from(get).ok()?;
-        let key = unsafe { crate::cell::cell_value(scope, owner.get() as *mut c_void) };
+        let identity = crate::object::window_identity(scope, owner_box);
+        // SAFETY: the rooted owner's box traces its identity.
+        let key = unsafe { identity.as_ref() }.token(scope)?;
         let cached = get.call(scope, map, &[key])?;
         if !cached.is_undefined() {
             return Some(from_v8(scope, cached).to_object());
         }
         crate::rooted!(in(cx) let wrapper = unsafe {
-            new_proxy_object(cx, owner_box.proxy.get() as *const c_void, private.handle().into(), std::ptr::null_mut(), GetWindowProxyClass(), true, owner.get())
+            new_proxy_object(cx, owner_box.proxy.get() as *const c_void, UndefinedValue(), std::ptr::null_mut(), GetWindowProxyClass(), true, Some(identity))
         });
         let value = unsafe { crate::cell::cell_value(scope, wrapper.get() as *mut c_void) };
         let set = cache.get_index(scope, 2)?;
@@ -1064,21 +1083,24 @@ fn is_global_window_proxy(class_box: &ClassBox) -> bool {
 
 /// SpiderMonkey swaps `origobj`'s identity onto `target`. V8 objects cannot swap identity,
 /// so `origobj` takes `target`'s proxy state (handler, private, slots) and keeps its own
-/// identity, which is what callers observe; `origobj` is returned.
+/// identity, which is what callers observe; `origobj` is returned. Window proxies instead
+/// hand their browsing context's identity to `target`, which is returned.
 pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, target: HandleObject) -> *mut JSObject {
     let (original, replacement) = (origobj.get(), target.get());
     let (Some(original_box), Some(replacement_box)) = (proxy_box(original), proxy_box(replacement)) else {
         return std::ptr::null_mut();
     };
-    if is_global_window_proxy(original_box) || is_global_window_proxy(replacement_box) {
+    let window_proxies = unsafe { IsWindowProxy(original) && IsWindowProxy(replacement) };
+    if window_proxies || is_global_window_proxy(original_box) || is_global_window_proxy(replacement_box) {
         // A window proxy that is a V8 global proxy cannot take another window's state (script
-        // reaches its own global natively): the replacement becomes the window proxy, which
-        // Servo adopts as its reflector. When the new window took over the same V8 global
-        // proxy (`RovesNewWindowGlobalReusingProxy`), scripts already see the new window, and
-        // native references to the old window proxy (wrappers made for other realms) follow
-        // the replacement.
+        // reaches its own global natively), and a remote one keeps the realm it was made in
+        // (the replaced window's) as V8 creation context: the replacement becomes the window
+        // proxy, which Servo adopts as its reflector. When the new window took over the same V8 global
+        // proxy (`RovesNewWindowGlobalReusingProxy`), scripts already see the new window. The
+        // replacement takes over the browsing context's identity: native references to the
+        // old window proxy and wrappers made for other realms follow it.
         if !std::ptr::eq(original_box, replacement_box) {
-            original_box.forwarded.set(replacement);
+            JSContext::current().with_scope(|scope| crate::object::transfer_window_identity(scope, original_box, replacement_box));
         }
         return replacement;
     }

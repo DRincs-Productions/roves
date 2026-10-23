@@ -16,11 +16,13 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 **Aggiornamento93afe3af909:** Android/iOS verdi; V840007474006 ha entrambi i Linux smoke
 rossi per0318: "opaque: contentWindow changed, source is not the held window, cross-origin
-allowlist unusable". Windows V8 e generale40007474044 ancora attivi all’ultimo controllo.
-Non fare push prima della conclusione e correzione. Snapshot0320 RIUSCITO:4.91MB, ottavaGC,
+allowlist unusable". Batch concluso: V8 8/10 verdi, Windows incluso; generale40007474044 13/13 verdi,
+Android/iOS verdi.0322 completa e revisionata localmente: il prossimo push include la
+correzione, poi la CI deve confermare il controllo browser0318. Snapshot0320 RIUSCITO:4.91MB, ottavaGC,
 frame/probe/document ancora vivi; artifact12524484912 (847088byteszip), nome
 v8-heap-snapshot-frame-retention. Il fallimento identità è distinto dalla cattura riuscita.
-Priorità0322: identità stabile del wrapper ricevente nei passaggi locale→remoto→locale.
+0322 pronta per pubblicazione: identità stabile del wrapper ricevente nei passaggi
+locale→remoto→locale, remoto→remoto e holder distinti per il realm del Window corrente.
 La cache corrente usa il vecchio global proxy come chiave e salta la cache per i proxy
 remoti: il nuovo canonicalremote è restituito comeoggetto diverso dall’heldwrapper.
 MemLab0321 convalidato su campione V8 reale, selector tramite API mantenuta, nienteBFSnostro.
@@ -221,10 +223,46 @@ gli oggetti C++ soltanto tramite gli archi embedder esposti (non il grafo cppgc 
 quindi un retainer solo nativo può comparire come radice sintetica. Una sola cattura non prova
 un leak; nessun fix proposto. Log: target/task-0321/*.log, *.json, *.txt.
 
+**0322 (Claude, revisionata da Codex, pronta per commit/push):** identità stabile del WindowProxy per il fallimento
+0318 opaco di V840007474006. Causa confermata nel codice: cache WeakMap del realm ricevente
+con chiave = oggetto V8 del proxy corrente e proxy remoti (DissimilarOriginWindow) restituiti
+senza wrapper. Fix in roves-js: record cppgc `WindowIdentity` (proxy corrente tracciato +
+Symbol non registrato come chiave WeakMap) condiviso da proxy e wrapper; il transplant con
+global proxy lo ritarga e lo passa al sostituto (rimosso il campo `forwarded`); i wrapper non
+tengono più il vecchio proxy in `private`; anche i proxy remoti passano dalla cache;
+`GetProxyHandler` dinamico (handler del proprietario corrente). Invariati `window===globalThis`
+nel realm proprietario, finalizer DOM solo nel proprietario, API JSAPI pubbliche. Test nuovo
+(2 cicli locale→remoto→locale, identità, allowlist/negato, raccolta dei realm sostituiti):
+fallisce prima del fix (round0 remoto), mutazione retention rilevata. roves-js isolato normal
+114ok/2ignored, JITless 113ok/3ignored. Patch0322 dry-run/apply sullo scratch0315…0320,
+468/471 identici + 3 eccezioni note. Log: target/task-0322/. Conferma browser: CI V8 (0318).
+Revisione Codex applicata nella stessa patch: (1) solo il realm proprietario di un Window locale
+riceve il proxy stesso; i proxy remoti passano sempre dalla cache, anche se creati nel realm
+ricevente (test remote-first e local-first); (2) holder cross-origin con chiave = realm del Window
+corrente (`realm_key`, oggetto cache del realm): holder nuovi a ogni navigazione, anche con global
+proxy riusato e remoto→remoto, raccolti col realm; Location invariato; (3) ogni transplant tra
+WindowProxy usa il ramo d'identità: il vecchio V8 Proxy remoto tratteneva il realm sostituito.
+4 test nuovi falliscono prima; mutazione del transplant rilevata. roves-js normal 118ok/2ignored,
+JITless 117ok/3ignored. Patch0322 rigenerata (4 file), reverse+apply sullo scratch, 468/471
+identici + 3 eccezioni note. Log: target/task-0322/review-*.log, negative-review.log.
+Limite: prova unitaria con trap finti; conferma browser in CI V8 (0318).
+
+### Snapshot reale0320 analizzato (Codex,0321)
+
+Artifact12524484912 del job120598951538/run40007474006: snapshot4910076byte,
+SHA256 `d3eec325a044110301bbb8f536924a872fd8263eb85eaec9330be5642220aff0`.
+Il validatore JSON passa. MemLab seleziona il probe@65595 tramite proprietà
+`rovesFrameRetentionProbe`; referrer WeakRef.target debole, PropertyCell.value e
+Window[JSGlobalObject]@61811. `trace --node-id65595` restituisce path is not found, exit0,
+anche se il nodo esiste. Nessuna conclusione di assenza leak: visibilità archi nativi e filtri
+MemLab limitano il risultato. Frame/documento/probe non rilasciati nella scena CI. Dettagli
+in ROVES_PERFORMANCE.md; log target/task-0321/frame-{selection,trace,object}.*.
+
 ### Prossimi punti
 
-1. Verificare il nuovo batch CI sul checkpoint0316/0317;0315 tutto verde. Il check browser
-   di cambio origine WindowProxy (0318) attende revisione, riferimento Chrome via MCP e CI V8.
+1. Pubblicare0322 completa insieme ai documenti0321; batch93afe concluso, unici fallimenti
+   sono i due smoke0318 corretti da0322. Verificare il nuovo batch V8/browser normal e JITless.
+   Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
 3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown

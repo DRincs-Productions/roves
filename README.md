@@ -107,7 +107,10 @@ documented reconstruction exceptions (see CUSTOMIZATIONS.md).
 The opt-in GC smoke now reports removed-frame release separately for module and module-free
 frames; it is a diagnostic, not yet a requirement (see the shell wiki page).
 The events smoke now requires a WindowProxy check across an iframe's origin change (same-origin,
-sandboxed opaque origin, same-origin again); see the shell wiki page.
+sandboxed opaque origin, same-origin again); see the shell wiki page. Other realms now keep one
+WindowProxy wrapper per browsing context across those changes (same `contentWindow` and
+message source), without retaining the replaced windows; each new page still gets its own
+cross-origin members.
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
 Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`

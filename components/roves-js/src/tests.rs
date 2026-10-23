@@ -4914,6 +4914,357 @@ mod window_proxies {
         assert_eq!(eval(&runtime, "held.page").to_int32(), 99, "the held wrapper uses the cross-origin traps");
     }
 
+    /// Servo's `set_window` in a window's realm: a new window proxy, the transplant of the
+    /// previous one (if any), then `SetWindowProxy`. Returns the browsing context's new proxy.
+    unsafe fn navigate(cx: *mut JSContext, previous: HandleObject, window: HandleObject, handler: *const std::ffi::c_void) -> *mut JSObject {
+        unsafe { navigate_in(cx, window.get(), previous, window, handler) }
+    }
+
+    /// [`navigate`] with the new window proxy made in the realm of `realm`.
+    unsafe fn navigate_in(cx: *mut JSContext, realm: *mut JSObject, previous: HandleObject, window: HandleObject, handler: *const std::ffi::c_void) -> *mut JSObject {
+        let old = unsafe { EnterRealm(cx, realm) };
+        rooted!(in(cx) let next = unsafe { NewWindowProxy(cx, window, handler) });
+        rooted!(in(cx) let current = unsafe { JS_TransplantObject(cx, previous, next.handle().into()) });
+        unsafe { SetWindowProxy(cx, window, current.handle().into()) };
+        unsafe { LeaveRealm(cx, old) };
+        current.get()
+    }
+
+    static REMOTE: JSClass = JSClass { name: c"DissimilarOriginWindow".as_ptr(), ..WINDOW_CLASS };
+
+    /// The cross-origin `get`: `self`/`window` are the window proxy and `parent` the window
+    /// in reserved slot 0, converted for the caller's realm; anything else is denied.
+    unsafe extern "C" fn remote_get(cx: *mut JSContext, proxy: HandleObject, _receiver: HandleValue, id: HandleId, mut vp: MutableHandleValue) -> bool {
+        let id_value = id.get();
+        let mut length = 0;
+        let chars = if id_value.is_string() { crate::api::latin1_chars(id_value.to_string(), &mut length) } else { ptr::null() };
+        let name = if chars.is_null() { &[][..] } else { unsafe { std::slice::from_raw_parts(chars, length) } };
+        let mut window = UndefinedValue();
+        unsafe { GetProxyPrivate(proxy.get(), &mut window) };
+        match name {
+            b"self" | b"window" => vp.set(ObjectValue(unsafe { ToWindowProxyIfWindowSlow(window.to_object()) })),
+            b"parent" => {
+                let mut parent = UndefinedValue();
+                unsafe { JS_GetReservedSlot(window.to_object(), 0, &mut parent) };
+                vp.set(parent);
+            },
+            _ => {
+                let message = unsafe { JS_NewStringCopyN(cx, c"SecurityError".as_ptr(), 13) };
+                rooted!(in(cx) let error = StringValue(unsafe { &*message }));
+                unsafe { crate::api::JS_SetPendingException(cx, error.handle().into(), crate::api::ExceptionStackBehavior::DoNotCapture) };
+                return false;
+            },
+        }
+        unsafe { JS_WrapValue(cx, vp) }
+    }
+
+    /// Servo's local → cross-origin → local sequence (`unset_currently_active`, then
+    /// `set_currently_active` with a fresh Window): another realm keeps one wrapper for the
+    /// browsing context. `contentWindow`/`event.source`-like conversions and the cross-origin
+    /// allowlist getters return it in every phase, and the replaced windows' realms collect
+    /// while it is held.
+    #[test]
+    fn foreign_window_wrappers_keep_identity_across_cross_origin_round_trips() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        let mut remote_traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        remote_traps.get = Some(remote_get);
+        let remote_handler = unsafe { CreateWrapperProxyHandler(&remote_traps) };
+        let new_window = |class: &JSClass| unsafe { JS_NewGlobalObject(cx, class, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        let wrapped = move |object: *mut JSObject| {
+            rooted!(in(cx) let mut value = ObjectValue(object));
+            assert!(unsafe { JS_WrapValue(cx, value.handle_mut().into()) });
+            value.get().to_object()
+        };
+        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let mut window = new_window(&WINDOW_CLASS));
+        let old = unsafe { EnterRealm(cx, window.get()) };
+        rooted!(in(cx) let mut proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
+        eval(&runtime, "globalThis.page = 'first'; 0");
+        unsafe { LeaveRealm(cx, old) };
+        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+        rooted!(in(cx) let held = ObjectValue(wrapped(proxy.get())));
+        assert_ne!(held.get().to_object(), proxy.get(), "another realm sees a wrapper");
+        assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
+        let mut replaced = vec![crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) })];
+        for round in 0..2 {
+            {
+                // The previous window proxy, as a stale native reference would keep it.
+                rooted!(in(cx) let previous = proxy.get());
+                window.set(new_window(&REMOTE));
+                unsafe { JS_SetReservedSlot(window.get(), 0, &ObjectValue(observer.get())) };
+                proxy.set(unsafe { navigate(cx, previous.handle().into(), window.handle().into(), remote_handler) });
+                assert_ne!(proxy.get(), previous.get(), "Servo adopts the cross-origin replacement");
+                assert_eq!(wrapped(proxy.get()), held.get().to_object(), "round {round}: contentWindow while cross-origin");
+                assert_eq!(wrapped(window.get()), held.get().to_object(), "round {round}: a remote message source");
+                assert_eq!(wrapped(previous.get()), held.get().to_object(), "round {round}: a stale reference");
+            }
+            replaced.push(crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) }));
+            assert!(eval(&runtime, "held.self === held && held.window === held && held.parent === globalThis").to_boolean(), "round {round}: the allowlist");
+            assert!(
+                eval(&runtime, "(() => { try { held.document; return false; } catch (e) { return e === 'SecurityError'; } })()").to_boolean(),
+                "round {round}: other properties stay denied",
+            );
+            runtime.gc_for_testing();
+            {
+                rooted!(in(cx) let previous = proxy.get());
+                window.set(new_window(&WINDOW_CLASS));
+                let old = unsafe { EnterRealm(cx, window.get()) };
+                eval(&runtime, &format!("globalThis.page = 'local {round}'; 0"));
+                unsafe { LeaveRealm(cx, old) };
+                proxy.set(unsafe { navigate(cx, previous.handle().into(), window.handle().into(), handler) });
+                assert_eq!(wrapped(proxy.get()), held.get().to_object(), "round {round}: contentWindow back on the same origin");
+                assert_eq!(wrapped(window.get()), held.get().to_object(), "round {round}: a local message source");
+                assert_eq!(wrapped(previous.get()), held.get().to_object(), "round {round}: a stale remote reference");
+            }
+            replaced.push(crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) }));
+            assert_eq!(describe(&runtime, eval(&runtime, "held.page")), format!("local {round}"));
+            let old = unsafe { EnterRealm(cx, window.get()) };
+            assert_eq!(eval(&runtime, "globalThis").to_object(), proxy.get(), "round {round}: window === globalThis in its own realm");
+            unsafe { LeaveRealm(cx, old) };
+            runtime.gc_for_testing();
+        }
+        for _ in 0..3 {
+            runtime.gc_for_testing();
+            unsafe { &mut *(*cx).isolate }.low_memory_notification();
+        }
+        let current = replaced.pop().unwrap();
+        assert!(current.get().is_some(), "the current window lives");
+        for (index, realm) in replaced.iter().enumerate() {
+            assert!(realm.get().is_none(), "replaced window {index} collects while the wrapper is held");
+        }
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "local 1", "the held wrapper roots the current window");
+        assert_eq!(wrapped(proxy.get()), held.get().to_object());
+    }
+
+    /// A remote window proxy made in the realm that receives it (JSAPI allows any realm; Servo
+    /// enters the DissimilarOriginWindow's own). Only a local window's own realm sees the proxy
+    /// itself (`window === globalThis`): the receiving realm keeps one wrapper whether it saw
+    /// the context first as remote or as local, across remote ↔ local and remote → remote.
+    fn remote_proxy_made_in_the_receiving_realm(remote_first: bool) {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        let mut remote_traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        remote_traps.get = Some(remote_get);
+        let remote_handler = unsafe { CreateWrapperProxyHandler(&remote_traps) };
+        let wrapped = move |object: *mut JSObject| {
+            rooted!(in(cx) let mut value = ObjectValue(object));
+            assert!(unsafe { JS_WrapValue(cx, value.handle_mut().into()) });
+            value.get().to_object()
+        };
+        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let mut window = ptr::null_mut::<JSObject>());
+        rooted!(in(cx) let mut proxy = ptr::null_mut::<JSObject>());
+        rooted!(in(cx) let mut held = UndefinedValue());
+        let phases: [bool; 4] = if remote_first { [true, false, true, true] } else { [false, true, true, false] };
+        let mut replaced = Vec::new();
+        for (phase, remote) in phases.into_iter().enumerate() {
+            rooted!(in(cx) let previous = proxy.get());
+            window.set(unsafe { JS_NewGlobalObject(cx, if remote { &REMOTE } else { &WINDOW_CLASS }, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) });
+            if remote {
+                unsafe { JS_SetReservedSlot(window.get(), 0, &ObjectValue(observer.get())) };
+            } else {
+                let old = unsafe { EnterRealm(cx, window.get()) };
+                eval(&runtime, &format!("globalThis.page = 'local {phase}'; 0"));
+                unsafe { LeaveRealm(cx, old) };
+            }
+            let (realm, phase_handler) = if remote { (observer.get(), remote_handler) } else { (window.get(), handler) };
+            if previous.get().is_null() {
+                let old = unsafe { EnterRealm(cx, realm) };
+                proxy.set(unsafe { NewWindowProxy(cx, window.handle().into(), phase_handler) });
+                unsafe { LeaveRealm(cx, old) };
+                unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+                held.set(ObjectValue(wrapped(proxy.get())));
+                assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
+            } else {
+                proxy.set(unsafe { navigate_in(cx, realm, previous.handle().into(), window.handle().into(), phase_handler) });
+                assert_ne!(proxy.get(), previous.get(), "phase {phase}: Servo adopts the replacement");
+                assert_eq!(wrapped(previous.get()), held.get().to_object(), "phase {phase}: a stale reference");
+            }
+            if remote {
+                assert_eq!(unsafe { crate::realm_impl::realm_of_object(&*cx, proxy.get()) }, unsafe { GetObjectRealmOrNull(observer.get()) }, "phase {phase}: the remote proxy is the receiving realm's");
+            }
+            assert_eq!(wrapped(proxy.get()), held.get().to_object(), "phase {phase}: contentWindow");
+            assert_eq!(wrapped(window.get()), held.get().to_object(), "phase {phase}: a message source");
+            if remote {
+                assert!(eval(&runtime, "held.self === held && held.window === held && held.parent === globalThis").to_boolean(), "phase {phase}: the allowlist getters");
+            } else {
+                assert_eq!(describe(&runtime, eval(&runtime, "held.page")), format!("local {phase}"));
+                let old = unsafe { EnterRealm(cx, window.get()) };
+                assert_eq!(eval(&runtime, "globalThis").to_object(), proxy.get(), "phase {phase}: window === globalThis in its own realm");
+                unsafe { LeaveRealm(cx, old) };
+            }
+            replaced.push(crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) }));
+            runtime.gc_for_testing();
+        }
+        for _ in 0..3 {
+            runtime.gc_for_testing();
+            unsafe { &mut *(*cx).isolate }.low_memory_notification();
+        }
+        assert!(replaced.pop().unwrap().get().is_some(), "the current window lives");
+        for (index, realm) in replaced.iter().enumerate() {
+            assert!(realm.get().is_none(), "replaced window {index} collects while the wrapper is held");
+        }
+        assert_eq!(wrapped(proxy.get()), held.get().to_object());
+    }
+
+    #[test]
+    fn a_remote_first_proxy_made_in_the_receiving_realm_keeps_one_identity() {
+        remote_proxy_made_in_the_receiving_realm(true);
+    }
+
+    #[test]
+    fn a_local_first_context_with_remote_proxies_made_in_the_receiving_realm_keeps_one_identity() {
+        remote_proxy_made_in_the_receiving_realm(false);
+    }
+
+    /// The current realm's cross-origin holder for `proxy` (null if none).
+    fn holder_of(cx: *mut JSContext, proxy: *mut JSObject) -> *mut JSObject {
+        rooted!(in(cx) let proxy = proxy);
+        rooted!(in(cx) let mut holder = ptr::null_mut::<JSObject>());
+        assert!(unsafe { crate::proxy::GetCrossOriginPropertyHolder(cx, proxy.handle().into(), holder.handle_mut().into()) });
+        holder.get()
+    }
+
+    /// Makes and stores a holder in the current realm, as Servo's
+    /// `ensure_cross_origin_property_holder` does; returns it with a weak handle on it.
+    fn new_holder(runtime: &Runtime, proxy: *mut JSObject) -> (*mut JSObject, v8::Weak<v8::Object>) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let proxy = proxy);
+        rooted!(in(cx) let holder = eval(runtime, "({})").to_object());
+        assert!(unsafe { crate::proxy::SetCrossOriginPropertyHolder(cx, proxy.handle().into(), holder.handle().into()) });
+        let weak = unsafe { &*cx }.with_scope(|scope| {
+            let value = unsafe { crate::cell::cell_value(scope, holder.get() as *mut std::ffi::c_void) };
+            v8::Weak::new(scope, v8::Local::<v8::Object>::try_from(value).unwrap())
+        });
+        (holder.get(), weak)
+    }
+
+    /// HTML's [[CrossOriginPropertyDescriptorMap]] is keyed by (current global, object global,
+    /// property): a held Window wrapper keeps its identity across navigations, but each new
+    /// Window (one that took over the previous V8 global proxy, then a remote one) gets fresh
+    /// holders, one per receiving realm. Holders of replaced Windows and their realms collect;
+    /// other proxies (Location) keep theirs.
+    #[test]
+    fn cross_origin_holders_follow_the_current_window() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        let new_window = |class: &JSClass| unsafe { JS_NewGlobalObject(cx, class, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        let wrapped = move |object: *mut JSObject| {
+            rooted!(in(cx) let mut value = ObjectValue(object));
+            assert!(unsafe { JS_WrapValue(cx, value.handle_mut().into()) });
+            value.get().to_object()
+        };
+        rooted!(in(cx) let other_realm = new_window(&WINDOW_CLASS));
+        rooted!(in(cx) let location = unsafe { NewProxyObject(cx, handler, HandleValue::undefined(), ptr::null_mut(), ptr::null(), false) });
+        let (location_holder, _) = new_holder(&runtime, location.get());
+        rooted!(in(cx) let location_holder = location_holder);
+        rooted!(in(cx) let mut window = new_window(&WINDOW_CLASS));
+        let old = unsafe { EnterRealm(cx, window.get()) };
+        rooted!(in(cx) let mut proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
+        unsafe { LeaveRealm(cx, old) };
+        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+        rooted!(in(cx) let held = wrapped(proxy.get()));
+        let old = unsafe { EnterRealm(cx, other_realm.get()) };
+        rooted!(in(cx) let held_elsewhere = wrapped(proxy.get()));
+        unsafe { LeaveRealm(cx, old) };
+        let mut weak_holders = Vec::new();
+        let mut replaced = Vec::new();
+        for phase in ["first", "reused global proxy", "remote"] {
+            if phase != "first" {
+                rooted!(in(cx) let previous = proxy.get());
+                replaced.push(crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) }));
+                let remote = phase == "remote";
+                if !remote {
+                    unsafe { RovesReuseWindowProxyForNextGlobal(cx, window.get()) };
+                }
+                window.set(new_window(if remote { &REMOTE } else { &WINDOW_CLASS }));
+                proxy.set(unsafe { navigate(cx, previous.handle().into(), window.handle().into(), handler) });
+                if !remote {
+                    let reused = unsafe { &*cx }.with_scope(|scope| unsafe {
+                        let previous = crate::cell::cell_value(scope, previous.get() as *mut std::ffi::c_void);
+                        let current = crate::cell::cell_value(scope, proxy.get() as *mut std::ffi::c_void);
+                        previous.strict_equals(current)
+                    });
+                    assert!(reused, "the new owner is the same raw V8 global proxy");
+                }
+                assert_eq!(wrapped(proxy.get()), held.get(), "{phase}: the wrapper keeps its identity");
+                assert!(holder_of(cx, held.get()).is_null(), "{phase}: a new Window gets no stale holder");
+            }
+            let (holder, weak) = new_holder(&runtime, held.get());
+            assert_eq!(holder_of(cx, held.get()), holder, "{phase}: same Window, same realm, same holder");
+            let old = unsafe { EnterRealm(cx, other_realm.get()) };
+            assert!(holder_of(cx, held_elsewhere.get()).is_null(), "{phase}: another receiving realm has its own holder");
+            let (elsewhere, weak_elsewhere) = new_holder(&runtime, held_elsewhere.get());
+            assert_ne!(elsewhere, holder);
+            assert_eq!(holder_of(cx, held_elsewhere.get()), elsewhere);
+            unsafe { LeaveRealm(cx, old) };
+            assert_eq!(holder_of(cx, held.get()), holder, "{phase}: unaffected by the other realm");
+            weak_holders.push((weak, weak_elsewhere));
+        }
+        assert_eq!(holder_of(cx, location.get()), location_holder.get(), "other proxies keep their holder");
+        for _ in 0..3 {
+            runtime.gc_for_testing();
+            unsafe { &mut *(*cx).isolate }.low_memory_notification();
+        }
+        let (current, current_elsewhere) = weak_holders.pop().unwrap();
+        assert!(!current.is_empty() && !current_elsewhere.is_empty(), "the current Window's holders live");
+        for (index, (weak, weak_elsewhere)) in weak_holders.iter().enumerate() {
+            assert!(weak.is_empty() && weak_elsewhere.is_empty(), "holders of replaced Window {index} collect");
+        }
+        for (index, realm) in replaced.iter().enumerate() {
+            assert!(realm.get().is_none(), "replaced window {index} collects");
+        }
+        assert_eq!(holder_of(cx, location.get()), location_holder.get(), "after a collection too");
+    }
+
+    /// A remote → remote navigation (a new DissimilarOriginWindow): the wrapper keeps its
+    /// identity and gets a fresh holder; the replaced Window, its proxy's creation realm, and
+    /// its holder collect.
+    #[test]
+    fn cross_origin_holders_follow_a_remote_to_remote_transplant() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        let new_remote = || unsafe { JS_NewGlobalObject(cx, &REMOTE, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        rooted!(in(cx) let mut window = new_remote());
+        let old = unsafe { EnterRealm(cx, window.get()) };
+        rooted!(in(cx) let mut proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
+        unsafe { LeaveRealm(cx, old) };
+        unsafe { SetWindowProxy(cx, window.handle().into(), proxy.handle().into()) };
+        rooted!(in(cx) let mut held = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
+        let (first, weak_first) = new_holder(&runtime, held.get().to_object());
+        assert_eq!(holder_of(cx, held.get().to_object()), first);
+        let replaced = crate::realm_impl::testing::realm_weak(unsafe { GetObjectRealmOrNull(window.get()) });
+        window.set(new_remote());
+        rooted!(in(cx) let replacement = unsafe { navigate(cx, proxy.handle().into(), window.handle().into(), handler) });
+        assert_ne!(replacement.get(), proxy.get(), "Servo adopts the replacement");
+        assert_eq!(unsafe { crate::realm_impl::realm_of_object(&*cx, held.get().to_object()) }, unsafe { GetObjectRealmOrNull(window.get()) }, "the wrapper is the new Window's");
+        rooted!(in(cx) let mut again = ObjectValue(replacement.get()));
+        assert!(unsafe { JS_WrapValue(cx, again.handle_mut().into()) });
+        assert_eq!(again.get().to_object(), held.get().to_object(), "the wrapper keeps its identity");
+        assert!(holder_of(cx, held.get().to_object()).is_null(), "the new Window gets no stale holder");
+        let (second, _) = new_holder(&runtime, held.get().to_object());
+        rooted!(in(cx) let second = second);
+        assert_eq!(holder_of(cx, held.get().to_object()), second.get());
+        proxy.set(replacement.get());
+        for _ in 0..3 {
+            runtime.gc_for_testing();
+            unsafe { &mut *(*cx).isolate }.low_memory_notification();
+        }
+        assert!(replaced.get().is_none(), "the replaced Window collects");
+        assert!(weak_first.is_empty(), "the replaced Window's holder collects");
+        assert_eq!(holder_of(cx, held.get().to_object()), second.get(), "the current Window's holder stays cached");
+    }
+
     #[test]
     fn a_window_that_handed_over_its_proxy_is_still_collected() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
