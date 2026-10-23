@@ -70,6 +70,30 @@ check("workers started and terminated in a loop", async () => {
   }
   return true;
 }, 60000);
+check("terminate stops busy workers with pending engine work", async () => {
+  // Each worker leaves V8 work queued (FinalizationRegistry entries, a timer, an
+  // Atomics.waitAsync timeout where shared memory exists) and spins: terminate() must go
+  // through the interrupt and shut the runtime down with that work pending.
+  const busy = URL.createObjectURL(new Blob([`
+    const registry = new FinalizationRegistry(() => {});
+    for (let i = 0; i < 1000; i++) registry.register({}, i);
+    setTimeout(() => {}, 100000);
+    if (typeof SharedArrayBuffer === "function" && typeof Atomics.waitAsync === "function")
+      Atomics.waitAsync(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1e9);
+    postMessage("spinning");
+    for (;;) {}
+  `], { type: "text/javascript" }));
+  for (let i = 0; i < 5; i++) {
+    const worker = new Worker(busy);
+    await new Promise((resolve, reject) => { worker.onmessage = resolve; worker.onerror = e => reject(e.message); });
+    worker.terminate();
+  }
+  // Later workers still start and answer.
+  const echo = new Worker(URL.createObjectURL(new Blob(["onmessage = e => postMessage(e.data + 1);"], { type: "text/javascript" })));
+  const value = await new Promise((resolve, reject) => { echo.onmessage = e => resolve(e.data); echo.onerror = e => reject(e.message); echo.postMessage(41); });
+  echo.terminate();
+  return value === 42 || `echo answered ${value}`;
+}, 60000);
 check("structuredClone of a large graph with cycles and typed arrays", () => {
   // 20 000 objects in cycles of 1 000: V8's serializer recurses along references, and its stack
   // budget is Chrome's (about 1 MB), so a single 20 000-long chain overflows there too.

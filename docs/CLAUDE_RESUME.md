@@ -12,8 +12,10 @@
   apt in `mach bootstrap` (485 pacchetti, mirror Azure lento); runtime su tutte le piattaforme
   e smoke Windows/macOS verdi (0289 si collega con MSVC). Correzione locale in `v8.yml`
   (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
-- Locale non pubblicato: 0290 (costruttori nativi), 0291 (matrice CSP), 0292 (codice morto), 0293
-  (smoke browser per 0288/0289/0290). Pushare solo a batch verde; 0293 va guardata negli smoke.
+- Pubblicato `a2a2458` (0290–0294 + correzione bootstrap Linux in v8.yml): batch CI in corso.
+  Verificare che i job Ubuntu servoshell-v8 superino ora il bootstrap e che gli smoke nuovi
+  (0293 suite/events/modules, 0294 gc-lifecycle) passino.
+- Locale non pubblicato: 0295 (smoke terminazione worker occupati).
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)

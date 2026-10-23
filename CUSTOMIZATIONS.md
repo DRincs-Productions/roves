@@ -1,3 +1,15 @@
+## 2026-10-23 - V8 smoke: terminate busy workers with pending engine work
+
+**Files:** `support/v8-smoke/stress.html`, patch `0295-v8-smoke-terminate-busy-workers.patch`.
+
+Browser check for the worker shutdown path that 0282–0287 changed in the runtime: five workers
+each queue V8 work (1000 FinalizationRegistry entries, a long timer, an `Atomics.waitAsync`
+timeout where shared memory exists), report, then spin in `for (;;) {}`; the page terminates
+them (interrupt, termination, runtime shutdown with that work pending) and then requires a new
+worker to answer. It fails on a crash, a hang of the page or a broken later worker; it cannot
+observe a worker thread that keeps spinning after terminate. Syntax checked with Node; results
+come from CI.
+
 ## 2026-10-23 - V8 CI: skip GStreamer packages in the Linux bootstrap
 
 **Files:** `.github/workflows/v8.yml` (not part of `patches/`, workflow only).
