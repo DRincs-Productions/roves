@@ -733,6 +733,13 @@ prova identifica un difetto nel collegamento a V8.
   implementazione mancante, comportamento errato e verifica assente.
 - [ ] Completare l’audit di `roves-js` cercando funzioni vuote, risultati costanti, API approssimate e
   operazioni che dichiarano successo senza applicare il comportamento richiesto.
+  Scansione 23 ottobre delle funzioni pubbliche con corpo vuoto o costante (15 candidati,
+  script in chat, non versionato): difetti trovati e corretti `HideScriptedCaller` (0289) e,
+  seguendo `RunScriptEnvironmentPreparerClosure`, l'assenza di entry per le callback di
+  cleanup FinalizationRegistry (0294, lato Servo). No-op motivati: opzioni JIT/Ion,
+  compartment, classi standard lazy, hint JobQueue, SetBuildId, InitializeMemoryReporter
+  (about:memory senza dati V8), trace hook del global (cppgc), errori numerati SpiderMonkey.
+  Restano da auditare le API approssimate con corpo non banale.
 - [ ] Per ogni problema registrare chiamanti di produzione, comportamento atteso, riproduzione
   e test di accettazione. Un nome SpiderMonkey, da solo, non è un difetto.
 - [x] Correggere il runner smoke: asserzioni fallite, riepiloghi mancanti, crash e timeout prima
