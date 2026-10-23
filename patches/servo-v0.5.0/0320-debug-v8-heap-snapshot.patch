@@ -1,0 +1,802 @@
+diff --git a/components/roves-js/src/heap_snapshot.rs b/components/roves-js/src/heap_snapshot.rs
+new file mode 100644
+index 00000000000..047cda7b729
+--- /dev/null
++++ b/components/roves-js/src/heap_snapshot.rs
+@@ -0,0 +1,225 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++//! Debug builds only: one V8 heap snapshot at the Nth explicit collection of a runtime
++//! (`JS_GC` with `GCReason::DOM_TESTUTILS`, i.e. Servo's `TestUtils.gc()`), to find what
++//! retains objects in a controlled smoke page (`support/v8-smoke/frame-retention.html`).
++//!
++//! Off unless both private environment variables are set, read once per runtime:
++//! `ROVES_V8_HEAP_SNAPSHOT_PATH`, an absolute path to a new file (never overwritten), and
++//! `ROVES_V8_HEAP_SNAPSHOT_GC`, which explicit collection dumps (from 1). V8's heap profiler
++//! takes and serializes the snapshot (Chrome DevTools' `.heapsnapshot` JSON); it is streamed
++//! to the file. One attempt per runtime: the request is consumed before the dump, and an
++//! invalid configuration or I/O error is reported on stderr, never retried.
++
++use std::cell::Cell;
++use std::ffi::OsString;
++use std::fs::File;
++use std::io::{BufWriter, Write};
++use std::path::{Path, PathBuf};
++
++pub(crate) const PATH_VAR: &str = "ROVES_V8_HEAP_SNAPSHOT_PATH";
++pub(crate) const GC_VAR: &str = "ROVES_V8_HEAP_SNAPSHOT_GC";
++
++/// A pending one-shot snapshot request.
++#[derive(Debug)]
++pub(crate) struct Request {
++    path: PathBuf,
++    collection: u32,
++    /// Explicit collections seen so far; `None` once the request is consumed.
++    seen: Cell<Option<u32>>,
++}
++
++impl Request {
++    /// The request configured by the environment, if any (an invalid one is logged).
++    pub(crate) fn from_env() -> Option<Request> {
++        parse(std::env::var_os(PATH_VAR), std::env::var_os(GC_VAR)).unwrap_or_else(|error| {
++            eprintln!("[roves-heap-snapshot] disabled: {error}");
++            None
++        })
++    }
++
++    /// Counts one explicit collection; true, once, when it is the requested one.
++    pub(crate) fn take(&self) -> bool {
++        let Some(seen) = self.seen.get() else { return false };
++        let seen = seen + 1;
++        let due = seen == self.collection;
++        self.seen.set(if due { None } else { Some(seen) });
++        due
++    }
++
++    /// Writes the snapshot `snapshot` produces (see [`write`]) and reports the outcome.
++    pub(crate) fn dump(&self, snapshot: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool)) {
++        match write(&self.path, snapshot) {
++            Ok(bytes) => eprintln!(
++                "[roves-heap-snapshot] wrote {bytes} bytes to {} at explicit collection {}",
++                self.path.display(),
++                self.collection
++            ),
++            Err(error) => eprintln!(
++                "[roves-heap-snapshot] failed at explicit collection {}: {}: {error}",
++                self.collection,
++                self.path.display()
++            ),
++        }
++    }
++}
++
++/// The request two variable values describe: none when both are unset.
++pub(crate) fn parse(path: Option<OsString>, collection: Option<OsString>) -> Result<Option<Request>, String> {
++    let (path, collection) = match (path, collection) {
++        (None, None) => return Ok(None),
++        (Some(path), Some(collection)) => (PathBuf::from(path), collection),
++        (Some(_), None) => return Err(format!("{PATH_VAR} is set without {GC_VAR}")),
++        (None, Some(_)) => return Err(format!("{GC_VAR} is set without {PATH_VAR}")),
++    };
++    if !path.is_absolute() {
++        return Err(format!("{PATH_VAR} must be an absolute path, not {:?}", path));
++    }
++    let collection = collection
++        .to_str()
++        .and_then(|value| value.parse::<u32>().ok())
++        .filter(|&value| value > 0)
++        .ok_or_else(|| format!("{GC_VAR} must be a positive integer, not {:?}", collection))?;
++    Ok(Some(Request { path, collection, seen: Cell::new(Some(0)) }))
++}
++
++/// Creates `path` (never an existing file) and streams into it the chunks `snapshot` passes
++/// its sink (V8's `take_heap_snapshot`); returns the bytes written. A failed or empty
++/// snapshot removes the file this call created.
++pub(crate) fn write(path: &Path, snapshot: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool)) -> std::io::Result<u64> {
++    let mut out = BufWriter::new(File::options().write(true).create_new(true).open(path)?);
++    let mut written = 0u64;
++    let mut failure = None;
++    snapshot(&mut |chunk: &[u8]| match out.write_all(chunk) {
++        Ok(()) => {
++            written += chunk.len() as u64;
++            true
++        },
++        Err(error) => {
++            failure = Some(error);
++            false
++        },
++    });
++    let result = match failure {
++        Some(error) => Err(error),
++        None if written == 0 => Err(std::io::Error::other("V8 produced no snapshot")),
++        None => out.into_inner().map_err(|error| error.into_error()).and_then(|file| file.sync_all()),
++    };
++    match result {
++        Ok(()) => Ok(written),
++        Err(error) => {
++            let _ = std::fs::remove_file(path);
++            Err(error)
++        },
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use std::ffi::OsString;
++    use std::path::PathBuf;
++
++    use super::*;
++    use crate::jsapi::{GCReason, JS_GC};
++    use crate::rust::{JSEngineHandle, Runtime};
++
++    /// A fresh directory for one test (no shared state between parallel tests).
++    fn scratch(name: &str) -> PathBuf {
++        let directory = std::env::temp_dir().join(format!("roves-heap-snapshot-{}-{name}", std::process::id()));
++        let _ = std::fs::remove_dir_all(&directory);
++        std::fs::create_dir_all(&directory).unwrap();
++        directory
++    }
++
++    fn request(path: &Path, collection: &str) -> Result<Option<Request>, String> {
++        parse(Some(path.as_os_str().to_owned()), Some(OsString::from(collection)))
++    }
++
++    #[test]
++    fn configuration() {
++        let path = std::env::temp_dir().join("roves.heapsnapshot");
++        assert!(parse(None, None).unwrap().is_none());
++        assert_eq!(3, request(&path, "3").unwrap().unwrap().collection);
++        for (path, collection) in [
++            (Some(path.as_os_str().to_owned()), None),
++            (None, Some(OsString::from("1"))),
++            (Some(OsString::from("relative.heapsnapshot")), Some(OsString::from("1"))),
++            (Some(OsString::new()), Some(OsString::from("1"))),
++        ] {
++            assert!(parse(path, collection).is_err());
++        }
++        for collection in ["0", "-1", "two", "", " 1", "4294967296"] {
++            let error = request(&path, collection).unwrap_err();
++            assert!(error.contains(GC_VAR), "{error}");
++        }
++    }
++
++    #[test]
++    fn one_shot_at_the_requested_collection() {
++        let path = std::env::temp_dir().join("unused.heapsnapshot");
++        let first = request(&path, "1").unwrap().unwrap();
++        assert!(first.take());
++        assert!(!first.take());
++        let third = request(&path, "3").unwrap().unwrap();
++        assert_eq!([false, false, true, false, false], std::array::from_fn(|_| third.take()));
++    }
++
++    #[test]
++    fn io_errors_never_overwrite() {
++        let directory = scratch("io");
++        let existing = directory.join("existing.heapsnapshot");
++        std::fs::write(&existing, b"kept").unwrap();
++        let mut called = false;
++        let error = write(&existing, |_| called = true).unwrap_err();
++        assert_eq!(std::io::ErrorKind::AlreadyExists, error.kind());
++        assert!(!called);
++        assert_eq!(b"kept", &std::fs::read(&existing).unwrap()[..]);
++        let missing = directory.join("missing").join("x.heapsnapshot");
++        assert_eq!(std::io::ErrorKind::NotFound, write(&missing, |_| ()).unwrap_err().kind());
++        // An empty snapshot (V8 failed to take one) leaves no file behind.
++        let empty = directory.join("empty.heapsnapshot");
++        assert!(write(&empty, |sink| assert!(sink(&[]))).is_err());
++        assert!(!empty.exists());
++        // A consumed request is not retried after an error.
++        let failing = request(&existing, "1").unwrap().unwrap();
++        assert!(failing.take());
++        failing.dump(|_| unreachable!("the file exists"));
++        assert!(!failing.take());
++        let _ = std::fs::remove_dir_all(&directory);
++    }
++
++    /// Explicit collections of a real runtime: other reasons are not counted, and only the
++    /// requested one streams V8's snapshot of the live heap.
++    #[test]
++    fn real_snapshot_at_the_nth_explicit_collection() {
++        let directory = scratch("v8");
++        let path = directory.join("frame.heapsnapshot");
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        // SAFETY: this thread's live runtime.
++        let hooks = unsafe { &(*cx).hooks };
++        hooks.heap_snapshot.replace(request(&path, "2").unwrap());
++        unsafe { &*cx }.with_scope(|scope| {
++            let source = v8::String::new(scope, "class RovesSnapshotEyecatcher {}; globalThis.eyecatcher = new RovesSnapshotEyecatcher();").unwrap();
++            v8::Script::compile(scope, source, None).unwrap().run(scope).unwrap();
++        });
++        unsafe {
++            JS_GC(cx, GCReason::API);
++            JS_GC(cx, GCReason::DOM_TESTUTILS);
++        }
++        assert!(!path.exists());
++        unsafe { JS_GC(cx, GCReason::DOM_TESTUTILS) };
++        let snapshot = std::fs::read_to_string(&path).unwrap();
++        assert!(snapshot.starts_with("{\"snapshot\":{\"meta\":"), "{}", &snapshot[..snapshot.len().min(80)]);
++        assert!(snapshot.contains("\"RovesSnapshotEyecatcher\""));
++        assert!(snapshot.trim_end().ends_with('}'));
++        // One shot: later explicit collections write nothing, even once the file is gone.
++        std::fs::remove_file(&path).unwrap();
++        unsafe { JS_GC(cx, GCReason::DOM_TESTUTILS) };
++        assert!(!path.exists());
++        drop(runtime);
++        let _ = std::fs::remove_dir_all(&directory);
++    }
++}
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index 098c2f4d97e..d0878629aa5 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -27,6 +27,8 @@ mod jsapi_impl;
+ mod native;
+ mod object;
+ mod dynamic_code;
++#[cfg(debug_assertions)]
++mod heap_snapshot;
+ mod proxy;
+ mod runtime_impl;
+ mod script_impl;
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index e904dbcc354..afb1c2d5e9d 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -64,6 +64,9 @@ pub(crate) struct RuntimeHooks {
+     hidden_callers: RefCell<Vec<roves_v8::incumbent::BackupIncumbentScope>>,
+     /// The incumbent those scopes supply: a context that never runs script.
+     hidden_sentinel: std::cell::OnceCell<v8::Global<v8::Context>>,
++    /// Debug builds: the pending heap snapshot request (see `heap_snapshot`).
++    #[cfg(debug_assertions)]
++    pub(crate) heap_snapshot: RefCell<Option<crate::heap_snapshot::Request>>,
+ }
+ 
+ impl Default for RuntimeHooks {
+@@ -89,6 +92,8 @@ impl Default for RuntimeHooks {
+             script_environment_preparer: Cell::new(None),
+             hidden_callers: Default::default(),
+             hidden_sentinel: Default::default(),
++            #[cfg(debug_assertions)]
++            heap_snapshot: RefCell::new(crate::heap_snapshot::Request::from_env()),
+         }
+     }
+ }
+@@ -440,9 +445,20 @@ pub unsafe fn JS_GetGCParameter(cx: *mut JSContext, key: JSGCParamKey) -> u32 {
+     hooks(cx).gc_parameters.borrow().get(&(key as i32)).copied().unwrap_or(0)
+ }
+ 
+-/// A full collection (V8's low-memory notification).
+-pub unsafe fn JS_GC(cx: *mut JSContext, _reason: GCReason) {
++/// A full collection (V8's low-memory notification). Debug builds may then dump the heap at
++/// an explicit `TestUtils.gc()` collection (see `heap_snapshot`).
++pub unsafe fn JS_GC(cx: *mut JSContext, reason: GCReason) {
+     isolate(cx).low_memory_notification();
++    #[cfg(debug_assertions)]
++    if reason == GCReason::DOM_TESTUTILS {
++        let request = hooks(cx).heap_snapshot.borrow();
++        if let Some(request) = request.as_ref().filter(|request| request.take()) {
++            // SAFETY: callers pass this thread's live context.
++            unsafe { &*cx }.with_scope(|scope| request.dump(|sink| scope.take_heap_snapshot(sink)));
++        }
++    }
++    #[cfg(not(debug_assertions))]
++    let _ = reason;
+ }
+ 
+ // --- Job queue and promises ------------------------------------------------------------------
+diff --git a/support/v8-smoke/check_heap_snapshot.py b/support/v8-smoke/check_heap_snapshot.py
+new file mode 100644
+index 00000000000..13b75e78864
+--- /dev/null
++++ b/support/v8-smoke/check_heap_snapshot.py
+@@ -0,0 +1,44 @@
++#!/usr/bin/env python3
++"""Checks a V8 heap snapshot written by a debug servoshell (see frame-retention.html).
++
++    check_heap_snapshot.py SNAPSHOT [REQUIRED-STRING...]
++
++The file must be V8's complete `.heapsnapshot` JSON: a node table matching the node count its
++metadata declares, and a string table containing every required string. That identifies the
++scene; it says nothing about which objects are retained. Prints one GitHub annotation.
++"""
++
++import json
++import sys
++
++
++def problems(path, required):
++    try:
++        with open(path, encoding='utf-8') as file:
++            data = json.load(file)
++        meta = data['snapshot']['meta']
++        nodes, strings = data['nodes'], data['strings']
++        node_count = data['snapshot']['node_count']
++        width = len(meta['node_fields'])
++    except (OSError, ValueError, KeyError, TypeError) as error:
++        return [f'not a V8 heap snapshot: {type(error).__name__}: {error}']
++    found = []
++    if node_count <= 0 or len(nodes) != node_count * width:
++        found.append(f'{len(nodes)} node fields for {node_count} nodes of {width} fields')
++    present = set(strings)
++    found += [f'missing string {name!r}' for name in required if name not in present]
++    return found
++
++
++def main(argv):
++    path, required = argv[1], argv[2:]
++    found = problems(path, required)
++    if found:
++        print(f'::error::heap snapshot {path}: ' + '; '.join(found))
++        return 1
++    print(f'::notice::heap snapshot {path}: valid V8 snapshot with ' + ', '.join(map(repr, required)))
++    return 0
++
++
++if __name__ == '__main__':
++    sys.exit(main(sys.argv))
+diff --git a/support/v8-smoke/frame-retention.html b/support/v8-smoke/frame-retention.html
+new file mode 100644
+index 00000000000..4df5259b41d
+--- /dev/null
++++ b/support/v8-smoke/frame-retention.html
+@@ -0,0 +1,80 @@
++<!doctype html>
++<html><head><meta charset="utf-8"><title>roves-js removed frame heap snapshot scene</title></head>
++<body>
++<script>
++// A controlled scene for one native V8 heap snapshot of a debug servoshell (run.sh runs it only
++// when V8_SMOKE_HEAP_SNAPSHOT names a destination): one blank same-origin srcdoc frame is
++// loaded, given an identifiable probe object from its own realm, then removed. Exactly
++// COLLECTIONS awaited TestUtils.gc() calls follow; the runner asks for the snapshot at the last
++// one, so its retainers can be read in DevTools' Memory panel. No module, no other frame, no
++// fake collection. Whether the frame is released is reported as a diagnostic only.
++"use strict";
++const COLLECTIONS = 8;
++const FRAME_TIMEOUT_MS = 5000;
++// Searchable in the snapshot: the probe's property on the frame's global, its tag string and
++// the frame element's id.
++const PROBE_TAG = "roves-frame-retention-probe";
++const FRAME_ID = "roves-frame-retention-frame";
++const failures = [];
++const report = (...parts) => console.log("ROVES-V8 frame-retention " + parts.join(" "));
++const fail = reason => { failures.push(reason); report("failure", reason); };
++addEventListener("error", event => fail("error " + event.message));
++addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
++
++const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
++
++// Loads and removes the frame; returns only WeakRefs, so nothing outside this activation keeps
++// the element, its document or the probe once it returns. Listeners and the timer are removed
++// on every exit.
++async function createAndRemoveFrame() {
++  const frame = document.createElement("iframe");
++  frame.id = FRAME_ID;
++  frame.srcdoc = "<!doctype html><title>roves frame retention</title>";
++  let timer, onLoad, onError;
++  try {
++    await new Promise((resolve, reject) => {
++      onLoad = resolve;
++      onError = () => reject(new Error("frame failed to load"));
++      frame.addEventListener("load", onLoad);
++      frame.addEventListener("error", onError);
++      timer = setTimeout(() => reject(new Error("frame load timed out")), FRAME_TIMEOUT_MS);
++      document.body.appendChild(frame);
++    });
++  } finally {
++    clearTimeout(timer);
++    frame.removeEventListener("load", onLoad);
++    frame.removeEventListener("error", onError);
++  }
++  const child = frame.contentWindow, childDocument = frame.contentDocument;
++  if (!child || !childDocument) throw new Error("frame has no window or document");
++  // Created in, and held only by, the frame's realm.
++  const probe = new child.Object();
++  probe.rovesProbeTag = PROBE_TAG;
++  child.rovesFrameRetentionProbe = probe;
++  const refs = { element: new WeakRef(frame), document: new WeakRef(childDocument), probe: new WeakRef(probe) };
++  frame.remove();
++  report("frame created true removed", String(!frame.isConnected));
++  return refs;
++}
++
++async function main() {
++  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
++  report("api", String(api));
++  if (!api) throw new Error("TestUtils.gc unavailable");
++  const refs = await createAndRemoveFrame();
++  // A task boundary ends the job that created the WeakRefs (which keeps their targets alive).
++  await nextTask();
++  for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
++  report("collections complete", String(COLLECTIONS));
++  await nextTask();
++  await nextTask();
++  const released = name => String(refs[name].deref() === undefined);
++  report("diagnostic released element", released("element"), "document", released("document"),
++    "probe", released("probe"));
++}
++
++main()
++  .catch(error => fail("exception " + (error && error.name) + " " + (error && error.message)))
++  .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));
++</script>
++</body></html>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 32759977eb6..66b605110cc 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -18,6 +18,10 @@ STATUS=0
+ # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
+ TOTALS=""
+ HTTP_PORT=18765
++# Native heap snapshot settings reach only the dedicated frame-retention process (PAGE_ENV).
++unset ROVES_V8_HEAP_SNAPSHOT_PATH ROVES_V8_HEAP_SNAPSHOT_GC
++PAGE_ENV=()
++PAGE_ENV_COUNT=0
+ HTTP_CROSS_ORIGIN_PORT=18766
+ HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
+ "$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
+@@ -57,7 +61,11 @@ run_page() {
+   argv+=("$BIN")
+   if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
+   argv+=(-z "$url")
+-  timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
++  if [ "$PAGE_ENV_COUNT" -gt 0 ]; then
++    env "${PAGE_ENV[@]}" timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
++  else
++    timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
++  fi
+   pid=$!
+   if [ -n "$done_pattern" ]; then
+     # The page reports completion before the deadline. GNU timeout forwards TERM to the
+@@ -182,10 +190,52 @@ for group in module no-module; do
+   if [ -n "$diagnostic" ]; then echo "::notice::gc-lifecycle.html: $diagnostic"; else STATUS=1; echo "::error::gc-lifecycle.html: missing removed frame diagnostic for $group ($(grep -aF 'ROVES-V8 gc diagnostic ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ 
++# Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
++# native V8 heap snapshot at the last of frame-retention.html's 8 explicit collections, for
++# reading the retainers of a removed blank frame. A requested snapshot must exist and be valid.
++HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
++HEAP_SNAPSHOT_COLLECTION=8
++SNAPSHOT_LOGS=""
++if [ -n "$HEAP_SNAPSHOT" ]; then
++  case "$HEAP_SNAPSHOT" in
++    /*) snapshot_ok=1 ;;
++    *) snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT must be an absolute path: $HEAP_SNAPSHOT" ;;
++  esac
++  if [ "$snapshot_ok" -eq 1 ] && [ -e "$HEAP_SNAPSHOT" ]; then
++    snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT already exists and is never overwritten: $HEAP_SNAPSHOT"
++  fi
++  if [ "$snapshot_ok" -eq 1 ] && ! mkdir -p "$(dirname "$HEAP_SNAPSHOT")"; then
++    snapshot_ok=0; echo "::error::cannot create the directory of V8_SMOKE_HEAP_SNAPSHOT: $HEAP_SNAPSHOT"
++  fi
++  if [ "$snapshot_ok" -eq 1 ]; then
++    PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=$HEAP_SNAPSHOT_COLLECTION")
++    PAGE_ENV_COUNT=2
++    SNAPSHOT_LOGS="frame-retention.log"
++    run_page frame-retention.html 60 frame-retention.log "http://127.0.0.1:$HTTP_PORT/frame-retention.html" '^ROVES-V8 frame-retention result ' --pref dom_testutils_enabled=true
++    PAGE_ENV=()
++    PAGE_ENV_COUNT=0
++    for expected in "ROVES-V8 frame-retention api true" "ROVES-V8 frame-retention frame created true removed true" "ROVES-V8 frame-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 frame-retention result pass" "[roves-heap-snapshot] wrote " ; do
++      if grep -aFq "$expected" frame-retention.log; then echo "::notice::frame-retention.html: $(grep -aF "$expected" frame-retention.log | head -1)"; else snapshot_ok=0; echo "::error::frame-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 frame-retention ' -e '[roves-heap-snapshot]' frame-retention.log | tr '\n' ' '))"; fi
++    done
++    if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" frame-retention.log; then
++      snapshot_ok=0; echo "::error::frame-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
++    fi
++    # Released counts are diagnostic only, but must be reported.
++    diagnostic=$(grep -aE '^ROVES-V8 frame-retention diagnostic released element (true|false) document (true|false) probe (true|false)$' frame-retention.log | head -1)
++    if [ -n "$diagnostic" ]; then echo "::notice::frame-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::frame-retention.html: missing released diagnostic"; fi
++    if [ ! -s "$HEAP_SNAPSHOT" ]; then
++      snapshot_ok=0; echo "::error::frame-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
++    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesFrameRetentionProbe roves-frame-retention-probe; then
++      snapshot_ok=0
++    fi
++  fi
++  if [ "$snapshot_ok" -ne 1 ]; then STATUS=1; fi
++fi
++
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+-  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log; do
++  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+     echo "V8 smoke diagnostics: $page_log"
+     tail -80 "$page_log"
+   done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 2c4a31dd6f1..c28e4089d8c 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -11,6 +11,7 @@ import tempfile
+ import time
+ import unittest
+ 
++from check_heap_snapshot import problems as snapshot_problems
+ from check_results import REQUIRED_CHECKS, validate
+ 
+ HERE = Path(__file__).resolve().parent
+@@ -352,9 +353,125 @@ process.stdout.write(lines.join("\n"));
+                 self.assertEqual(expected, frame_group_problems(result.stdout.splitlines()), result.stdout)
+ 
+ 
++# A mock blank same-origin frame that loads one task after insertion; counts listeners and the
++# explicit collections. It never releases anything: collection is not observed.
++RETENTION_MOCK = r'''
++const listeners = { added: 0, removed: 0 };
++let collections = 0;
++context.WeakRef = WeakRef;
++context.TestUtils = { gc: async () => { collections++; } };
++context.document = {
++  createElement() {
++    return {
++      id: "", srcdoc: "", isConnected: false, contentWindow: null, contentDocument: null, handlers: {},
++      addEventListener(type, listener) { listeners.added++; this.handlers[type] = listener; },
++      removeEventListener(type, listener) { if (this.handlers[type] === listener) { listeners.removed++; delete this.handlers[type]; } },
++      remove() { this.isConnected = false; },
++    };
++  },
++  body: {
++    appendChild(frame) {
++      frame.isConnected = true;
++      setTimeout(() => { frame.contentWindow = { Object }; frame.contentDocument = {}; frame.handlers.load(); }, 0);
++    },
++  },
++};
++'''
++
++RETENTION_AFTER = r'''
++lines.push("collections " + collections);
++lines.push("listeners " + listeners.added + " added " + listeners.removed + " removed");
++process.stdout.write(lines.join("\n"));
++'''
++
++
++def retention_page_script():
++    scripts = page_scripts('frame-retention.html')
++    assert len(scripts) == 1
++    return scripts[0]
++
++
++def run_retention_page(script, mock=RETENTION_MOCK):
++    return run_page_in_node(script, mock, RETENTION_AFTER)
++
++
++class FrameRetentionPageTests(unittest.TestCase):
++    """Static and Node checks of frame-retention.html; no browser, collection or snapshot."""
++
++    def test_collection_count_matches_the_runner(self):
++        runner = (HERE / 'run.sh').read_text(encoding='utf-8')
++        self.assertIn('HEAP_SNAPSHOT_COLLECTION=8\n', runner)
++        self.assertEqual(1, retention_page_script().count('const COLLECTIONS = 8;'))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_scene_reports_after_exactly_eight_collections(self):
++        result = run_retention_page(retention_page_script())
++        self.assertEqual('', result.stderr)
++        lines = result.stdout.splitlines()
++        for marker in ('ROVES-V8 frame-retention api true', 'ROVES-V8 frame-retention frame created true removed true',
++                       'ROVES-V8 frame-retention collections complete 8',
++                       # The mock keeps everything: reported, not a failure.
++                       'ROVES-V8 frame-retention diagnostic released element false document false probe false',
++                       'ROVES-V8 frame-retention result pass', 'collections 8', 'listeners 2 added 2 removed'):
++            self.assertIn(marker, lines, result.stdout)
++        self.assertEqual(1, sum(line.startswith('ROVES-V8 frame-retention result ') for line in lines))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_missing_api_and_frame_failures_report_one_result(self):
++        script = retention_page_script()
++        lines = run_page_in_node(script).stdout.splitlines()
++        self.assertIn('ROVES-V8 frame-retention api false', lines)
++        self.assertEqual(['ROVES-V8 frame-retention result fail exception Error TestUtils.gc unavailable'],
++                         [line for line in lines if line.startswith('ROVES-V8 frame-retention result ')])
++        # A frame that never loads times out (bounded) and still removes its listeners.
++        stalled = RETENTION_MOCK.replace(' frame.handlers.load(); }, 0);', ' }, 0);')
++        self.assertNotEqual(stalled, RETENTION_MOCK)
++        result = run_retention_page(script.replace('FRAME_TIMEOUT_MS = 5000', 'FRAME_TIMEOUT_MS = 20'), stalled)
++        lines = result.stdout.splitlines()
++        self.assertIn('ROVES-V8 frame-retention result fail exception Error frame load timed out', lines, result.stdout)
++        self.assertIn('collections 0', lines)
++        self.assertIn('listeners 2 added 2 removed', lines)
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_mutations_are_caught(self):
++        script = retention_page_script()
++        for original, replacement, missing in (
++            ('const COLLECTIONS = 8;', 'const COLLECTIONS = 7;', 'collections 8'),
++            ('    frame.removeEventListener("load", onLoad);\n', '', 'listeners 2 added 2 removed'),
++            ('  frame.remove();\n', '', 'ROVES-V8 frame-retention frame created true removed true'),
++        ):
++            with self.subTest(original=original):
++                self.assertEqual(1, script.count(original))
++                result = run_retention_page(script.replace(original, replacement))
++                self.assertNotIn(missing, result.stdout.splitlines(), result.stdout)
++
++
++class HeapSnapshotCheckTests(unittest.TestCase):
++    """check_heap_snapshot.py on synthetic files (the real format comes from V8 in CI)."""
++
++    def check(self, content, *required):
++        with tempfile.TemporaryDirectory() as directory:
++            path = Path(directory) / 'scene.heapsnapshot'
++            if content is not None:
++                path.write_text(content, encoding='utf-8')
++            return snapshot_problems(str(path), required)
++
++    def test_valid_and_invalid_snapshots(self):
++        valid = json.dumps({'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 2},
++                            'nodes': [0, 0, 0, 1], 'strings': ['a', 'probe']})
++        self.assertEqual([], self.check(valid, 'probe'))
++        self.assertEqual(["missing string 'other'"], self.check(valid, 'probe', 'other'))
++        self.assertEqual(['3 node fields for 2 nodes of 2 fields'], self.check(valid.replace('[0, 0, 0, 1]', '[0, 0, 0]')))
++        for content in (None, '', valid[:-5], '{"snapshot": {}}', '[]'):
++            with self.subTest(content=content):
++                found = self.check(content)
++                self.assertEqual(1, len(found))
++                self.assertTrue(found[0].startswith('not a V8 heap snapshot: '), found)
++
++
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+-    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):
++    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):
+         with tempfile.TemporaryDirectory() as directory:
+             directory = Path(directory)
+             runner = HERE / 'run.sh'
+@@ -363,9 +480,11 @@ class RunnerTests(unittest.TestCase):
+                 copy = directory / 'smoke'
+                 copy.mkdir()
+                 shutil.copy(HERE / 'check_results.py', copy)
++                shutil.copy(HERE / 'check_heap_snapshot.py', copy)
+                 source = runner.read_text()
++                gc_original = "'^ROVES-V8 gc result ' --pref dom_testutils_enabled=true\n"
+                 for original, replacement in ((" --pref js_disable_jit=true\n", pref_flag),
+-                                              (" --pref dom_testutils_enabled=true\n", gc_flag)):
++                                              (gc_original, None if gc_flag is None else "'^ROVES-V8 gc result '" + gc_flag)):
+                     self.assertEqual(1, source.count(original))
+                     if replacement is not None:
+                         source = source.replace(original, replacement + "\n")
+@@ -387,7 +506,7 @@ else:
+             # Stub browser launches and HTTP setup; execute the real runner and validator.
+             launcher = directory / 'timeout'
+             launcher.write_text('''#!/usr/bin/env python3
+-import os, sys
++import json, os, sys
+ if os.environ['SMOKE_TEST_WRAPPED'] == '1':
+     assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
+     browser = 4
+@@ -400,13 +519,21 @@ page = sys.argv[-1].rsplit('/', 1)[-1]
+ scenario = os.environ['SMOKE_TEST_SCENARIO']
+ if scenario == 'crash' and page == 'suite.html':
+     raise SystemExit(139)
+-if page not in ('pref-jitless.html', 'gc-lifecycle.html'):
++snapshot_env = {name: os.environ[name] for name in ('ROVES_V8_HEAP_SNAPSHOT_PATH', 'ROVES_V8_HEAP_SNAPSHOT_GC') if name in os.environ}
++if page == 'frame-retention.html':
++    with open('snapshot-env.txt', 'w') as received:
++        received.write(json.dumps([snapshot_env, options]))
++else:
++    # Only the dedicated snapshot process gets the native settings.
++    assert snapshot_env == {}, (page, snapshot_env)
++if page not in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
+     # Only the dedicated fresh processes may change a preference.
+     assert options == [], sys.argv
+ prefs = {}
+-if page in ('pref-jitless.html', 'gc-lifecycle.html'):
+-    with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
+-        received.write('\\n'.join(sys.argv[2:browser + 1] + options))
++if page in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
++    if page != 'frame-retention.html':
++        with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
++            received.write('\\n'.join(sys.argv[2:browser + 1] + options))
+     # Like servoshell: each `--pref name[=value]` must name a real preference.
+     for flag, value in zip(options[::2], options[1::2]):
+         assert flag == '--pref', sys.argv
+@@ -473,6 +600,27 @@ if page == 'gc-lifecycle.html':
+             if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
+                 continue
+             print('ROVES-V8 gc ' + line)
++elif page == 'frame-retention.html':
++    # Like a debug servoshell: the snapshot is written at the requested explicit collection.
++    path = snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_PATH')
++    api = prefs.get('dom_testutils_enabled', False)
++    print('ROVES-V8 frame-retention api ' + str(api).lower())
++    if api and scenario != 'snapshot-scene':
++        print('ROVES-V8 frame-retention frame created true removed true')
++    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '8' and scenario != 'snapshot-dump-failed':
++        if scenario != 'snapshot-file-missing':
++            with open(path, 'x') as written:
++                written.write('{"broken"' if scenario == 'snapshot-invalid' else json.dumps(
++                    {'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 1}, 'nodes': [0, 0],
++                     'strings': ['rovesFrameRetentionProbe', 'roves-frame-retention-probe']}))
++        print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 8', file=sys.stderr)
++    elif scenario == 'snapshot-dump-failed':
++        print(f'[roves-heap-snapshot] failed at explicit collection 8: {path}: No space left on device', file=sys.stderr)
++    if api:
++        print('ROVES-V8 frame-retention collections complete 8')
++        if scenario != 'snapshot-diagnostic':
++            print('ROVES-V8 frame-retention diagnostic released element false document false probe false')
++    print('ROVES-V8 frame-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
+ elif page == 'pref-jitless.html':
+     if scenario == 'pref-cli' and '--pref' in options:
+         print('error: --pref is not expected in this context', file=sys.stderr)
+@@ -545,6 +693,15 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                        SMOKE_TEST_REAL_PYTHON=python,
+                        SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
+             env.pop('GITHUB_STEP_SUMMARY', None)
++            env.pop('V8_SMOKE_HEAP_SNAPSHOT', None)
++            if snapshot == 'relative':
++                env['V8_SMOKE_HEAP_SNAPSHOT'] = 'relative.heapsnapshot'
++            elif snapshot is not None:
++                env['V8_SMOKE_HEAP_SNAPSHOT'] = str(directory / snapshot)
++                if snapshot.startswith('existing/'):
++                    (directory / 'existing').mkdir()
++                    (directory / snapshot).write_text('kept')
++            env.update(extra_env or {})
+             result = subprocess.run(['bash', str(runner), 'unused-browser',
+                                      *(['wrapper with spaces', '--option'] if wrapped else [])],
+                                     cwd=directory, env=env, capture_output=True, text=True, timeout=20)
+@@ -552,8 +709,62 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             result.pref_args = received.read_text().split('\n') if received.exists() else None
+             received = directory / 'gc-args.txt'
+             result.gc_args = received.read_text().split('\n') if received.exists() else None
++            received = directory / 'snapshot-env.txt'
++            result.snapshot_env = json.loads(received.read_text()) if received.exists() else None
++            written = directory / 'out' / 'scene.heapsnapshot'
++            result.snapshot = written.read_text() if written.exists() else None
++            existing = directory / 'existing' / 'scene.heapsnapshot'
++            result.existing = existing.read_text() if existing.exists() else None
+             return result
+ 
++    def test_heap_snapshot_is_opt_in(self):
++        # Unset: the snapshot page does not run, even when the job's environment carries the
++        # native settings (the stub fails any other page that receives them).
++        result = self.run_fixture('pass', extra_env={'ROVES_V8_HEAP_SNAPSHOT_PATH': '/tmp/leak.heapsnapshot',
++                                                     'ROVES_V8_HEAP_SNAPSHOT_GC': '1'})
++        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++        self.assertIsNone(result.snapshot_env)
++        self.assertNotIn('frame-retention', result.stdout)
++
++    def test_requested_heap_snapshot(self):
++        for wrapped in (False, True):
++            with self.subTest(wrapped=wrapped):
++                result = self.run_fixture('pass', wrapped=wrapped, snapshot='out/scene.heapsnapshot')
++                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++                settings, options = result.snapshot_env
++                self.assertEqual(['ROVES_V8_HEAP_SNAPSHOT_GC', 'ROVES_V8_HEAP_SNAPSHOT_PATH'], sorted(settings))
++                self.assertEqual('8', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
++                self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
++                self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
++                self.assertIsNotNone(result.snapshot)
++                self.assertIn('::notice::frame-retention.html: ROVES-V8 frame-retention diagnostic released element false', result.stdout)
++                self.assertIn("valid V8 snapshot with 'rovesFrameRetentionProbe', 'roves-frame-retention-probe'", result.stdout)
++                wrapper = ['wrapper with spaces', '--option'] if wrapped else []
++                self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
++
++    def test_requested_heap_snapshot_failures(self):
++        cases = (
++            ('snapshot-dump-failed', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
++            ('snapshot-file-missing', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
++            ('snapshot-invalid', 'out/scene.heapsnapshot', '::error::heap snapshot '),
++            ('snapshot-scene', 'out/scene.heapsnapshot', "missing 'ROVES-V8 frame-retention frame created true removed true'"),
++            ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
++            ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
++            ('pass', 'relative', 'must be an absolute path'),
++        )
++        for scenario, snapshot, message in cases:
++            with self.subTest(scenario=scenario, snapshot=snapshot):
++                result = self.run_fixture(scenario, snapshot=snapshot)
++                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
++                self.assertIn(message, result.stdout)
++                if snapshot != 'out/scene.heapsnapshot':
++                    # Refused before launching: nothing runs, nothing is overwritten.
++                    self.assertIsNone(result.snapshot_env)
++                    if snapshot.startswith('existing/'):
++                        self.assertEqual('kept', result.existing)
++                else:
++                    self.assertIn('V8 smoke diagnostics: frame-retention.log', result.stdout)
++
+     def test_complete_and_post_completion_timeout(self):
+         for wrapped in (False, True):
+             for scenario in ('pass', 'timeout'):

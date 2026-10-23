@@ -11,6 +11,7 @@ import tempfile
 import time
 import unittest
 
+from check_heap_snapshot import problems as snapshot_problems
 from check_results import REQUIRED_CHECKS, validate
 
 HERE = Path(__file__).resolve().parent
@@ -352,9 +353,125 @@ process.stdout.write(lines.join("\n"));
                 self.assertEqual(expected, frame_group_problems(result.stdout.splitlines()), result.stdout)
 
 
+# A mock blank same-origin frame that loads one task after insertion; counts listeners and the
+# explicit collections. It never releases anything: collection is not observed.
+RETENTION_MOCK = r'''
+const listeners = { added: 0, removed: 0 };
+let collections = 0;
+context.WeakRef = WeakRef;
+context.TestUtils = { gc: async () => { collections++; } };
+context.document = {
+  createElement() {
+    return {
+      id: "", srcdoc: "", isConnected: false, contentWindow: null, contentDocument: null, handlers: {},
+      addEventListener(type, listener) { listeners.added++; this.handlers[type] = listener; },
+      removeEventListener(type, listener) { if (this.handlers[type] === listener) { listeners.removed++; delete this.handlers[type]; } },
+      remove() { this.isConnected = false; },
+    };
+  },
+  body: {
+    appendChild(frame) {
+      frame.isConnected = true;
+      setTimeout(() => { frame.contentWindow = { Object }; frame.contentDocument = {}; frame.handlers.load(); }, 0);
+    },
+  },
+};
+'''
+
+RETENTION_AFTER = r'''
+lines.push("collections " + collections);
+lines.push("listeners " + listeners.added + " added " + listeners.removed + " removed");
+process.stdout.write(lines.join("\n"));
+'''
+
+
+def retention_page_script():
+    scripts = page_scripts('frame-retention.html')
+    assert len(scripts) == 1
+    return scripts[0]
+
+
+def run_retention_page(script, mock=RETENTION_MOCK):
+    return run_page_in_node(script, mock, RETENTION_AFTER)
+
+
+class FrameRetentionPageTests(unittest.TestCase):
+    """Static and Node checks of frame-retention.html; no browser, collection or snapshot."""
+
+    def test_collection_count_matches_the_runner(self):
+        runner = (HERE / 'run.sh').read_text(encoding='utf-8')
+        self.assertIn('HEAP_SNAPSHOT_COLLECTION=8\n', runner)
+        self.assertEqual(1, retention_page_script().count('const COLLECTIONS = 8;'))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_scene_reports_after_exactly_eight_collections(self):
+        result = run_retention_page(retention_page_script())
+        self.assertEqual('', result.stderr)
+        lines = result.stdout.splitlines()
+        for marker in ('ROVES-V8 frame-retention api true', 'ROVES-V8 frame-retention frame created true removed true',
+                       'ROVES-V8 frame-retention collections complete 8',
+                       # The mock keeps everything: reported, not a failure.
+                       'ROVES-V8 frame-retention diagnostic released element false document false probe false',
+                       'ROVES-V8 frame-retention result pass', 'collections 8', 'listeners 2 added 2 removed'):
+            self.assertIn(marker, lines, result.stdout)
+        self.assertEqual(1, sum(line.startswith('ROVES-V8 frame-retention result ') for line in lines))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_missing_api_and_frame_failures_report_one_result(self):
+        script = retention_page_script()
+        lines = run_page_in_node(script).stdout.splitlines()
+        self.assertIn('ROVES-V8 frame-retention api false', lines)
+        self.assertEqual(['ROVES-V8 frame-retention result fail exception Error TestUtils.gc unavailable'],
+                         [line for line in lines if line.startswith('ROVES-V8 frame-retention result ')])
+        # A frame that never loads times out (bounded) and still removes its listeners.
+        stalled = RETENTION_MOCK.replace(' frame.handlers.load(); }, 0);', ' }, 0);')
+        self.assertNotEqual(stalled, RETENTION_MOCK)
+        result = run_retention_page(script.replace('FRAME_TIMEOUT_MS = 5000', 'FRAME_TIMEOUT_MS = 20'), stalled)
+        lines = result.stdout.splitlines()
+        self.assertIn('ROVES-V8 frame-retention result fail exception Error frame load timed out', lines, result.stdout)
+        self.assertIn('collections 0', lines)
+        self.assertIn('listeners 2 added 2 removed', lines)
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_mutations_are_caught(self):
+        script = retention_page_script()
+        for original, replacement, missing in (
+            ('const COLLECTIONS = 8;', 'const COLLECTIONS = 7;', 'collections 8'),
+            ('    frame.removeEventListener("load", onLoad);\n', '', 'listeners 2 added 2 removed'),
+            ('  frame.remove();\n', '', 'ROVES-V8 frame-retention frame created true removed true'),
+        ):
+            with self.subTest(original=original):
+                self.assertEqual(1, script.count(original))
+                result = run_retention_page(script.replace(original, replacement))
+                self.assertNotIn(missing, result.stdout.splitlines(), result.stdout)
+
+
+class HeapSnapshotCheckTests(unittest.TestCase):
+    """check_heap_snapshot.py on synthetic files (the real format comes from V8 in CI)."""
+
+    def check(self, content, *required):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'scene.heapsnapshot'
+            if content is not None:
+                path.write_text(content, encoding='utf-8')
+            return snapshot_problems(str(path), required)
+
+    def test_valid_and_invalid_snapshots(self):
+        valid = json.dumps({'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 2},
+                            'nodes': [0, 0, 0, 1], 'strings': ['a', 'probe']})
+        self.assertEqual([], self.check(valid, 'probe'))
+        self.assertEqual(["missing string 'other'"], self.check(valid, 'probe', 'other'))
+        self.assertEqual(['3 node fields for 2 nodes of 2 fields'], self.check(valid.replace('[0, 0, 0, 1]', '[0, 0, 0]')))
+        for content in (None, '', valid[:-5], '{"snapshot": {}}', '[]'):
+            with self.subTest(content=content):
+                found = self.check(content)
+                self.assertEqual(1, len(found))
+                self.assertTrue(found[0].startswith('not a V8 heap snapshot: '), found)
+
+
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
-    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None):
+    def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):
         with tempfile.TemporaryDirectory() as directory:
             directory = Path(directory)
             runner = HERE / 'run.sh'
@@ -363,9 +480,11 @@ class RunnerTests(unittest.TestCase):
                 copy = directory / 'smoke'
                 copy.mkdir()
                 shutil.copy(HERE / 'check_results.py', copy)
+                shutil.copy(HERE / 'check_heap_snapshot.py', copy)
                 source = runner.read_text()
+                gc_original = "'^ROVES-V8 gc result ' --pref dom_testutils_enabled=true\n"
                 for original, replacement in ((" --pref js_disable_jit=true\n", pref_flag),
-                                              (" --pref dom_testutils_enabled=true\n", gc_flag)):
+                                              (gc_original, None if gc_flag is None else "'^ROVES-V8 gc result '" + gc_flag)):
                     self.assertEqual(1, source.count(original))
                     if replacement is not None:
                         source = source.replace(original, replacement + "\n")
@@ -387,7 +506,7 @@ else:
             # Stub browser launches and HTTP setup; execute the real runner and validator.
             launcher = directory / 'timeout'
             launcher.write_text('''#!/usr/bin/env python3
-import os, sys
+import json, os, sys
 if os.environ['SMOKE_TEST_WRAPPED'] == '1':
     assert sys.argv[2:4] == ['wrapper with spaces', '--option'], sys.argv
     browser = 4
@@ -400,13 +519,21 @@ page = sys.argv[-1].rsplit('/', 1)[-1]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
-if page not in ('pref-jitless.html', 'gc-lifecycle.html'):
+snapshot_env = {name: os.environ[name] for name in ('ROVES_V8_HEAP_SNAPSHOT_PATH', 'ROVES_V8_HEAP_SNAPSHOT_GC') if name in os.environ}
+if page == 'frame-retention.html':
+    with open('snapshot-env.txt', 'w') as received:
+        received.write(json.dumps([snapshot_env, options]))
+else:
+    # Only the dedicated snapshot process gets the native settings.
+    assert snapshot_env == {}, (page, snapshot_env)
+if page not in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
     # Only the dedicated fresh processes may change a preference.
     assert options == [], sys.argv
 prefs = {}
-if page in ('pref-jitless.html', 'gc-lifecycle.html'):
-    with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
-        received.write('\\n'.join(sys.argv[2:browser + 1] + options))
+if page in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
+    if page != 'frame-retention.html':
+        with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
+            received.write('\\n'.join(sys.argv[2:browser + 1] + options))
     # Like servoshell: each `--pref name[=value]` must name a real preference.
     for flag, value in zip(options[::2], options[1::2]):
         assert flag == '--pref', sys.argv
@@ -473,6 +600,27 @@ if page == 'gc-lifecycle.html':
             if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
                 continue
             print('ROVES-V8 gc ' + line)
+elif page == 'frame-retention.html':
+    # Like a debug servoshell: the snapshot is written at the requested explicit collection.
+    path = snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_PATH')
+    api = prefs.get('dom_testutils_enabled', False)
+    print('ROVES-V8 frame-retention api ' + str(api).lower())
+    if api and scenario != 'snapshot-scene':
+        print('ROVES-V8 frame-retention frame created true removed true')
+    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '8' and scenario != 'snapshot-dump-failed':
+        if scenario != 'snapshot-file-missing':
+            with open(path, 'x') as written:
+                written.write('{"broken"' if scenario == 'snapshot-invalid' else json.dumps(
+                    {'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 1}, 'nodes': [0, 0],
+                     'strings': ['rovesFrameRetentionProbe', 'roves-frame-retention-probe']}))
+        print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 8', file=sys.stderr)
+    elif scenario == 'snapshot-dump-failed':
+        print(f'[roves-heap-snapshot] failed at explicit collection 8: {path}: No space left on device', file=sys.stderr)
+    if api:
+        print('ROVES-V8 frame-retention collections complete 8')
+        if scenario != 'snapshot-diagnostic':
+            print('ROVES-V8 frame-retention diagnostic released element false document false probe false')
+    print('ROVES-V8 frame-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
 elif page == 'pref-jitless.html':
     if scenario == 'pref-cli' and '--pref' in options:
         print('error: --pref is not expected in this context', file=sys.stderr)
@@ -545,6 +693,15 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                        SMOKE_TEST_REAL_PYTHON=python,
                        SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
             env.pop('GITHUB_STEP_SUMMARY', None)
+            env.pop('V8_SMOKE_HEAP_SNAPSHOT', None)
+            if snapshot == 'relative':
+                env['V8_SMOKE_HEAP_SNAPSHOT'] = 'relative.heapsnapshot'
+            elif snapshot is not None:
+                env['V8_SMOKE_HEAP_SNAPSHOT'] = str(directory / snapshot)
+                if snapshot.startswith('existing/'):
+                    (directory / 'existing').mkdir()
+                    (directory / snapshot).write_text('kept')
+            env.update(extra_env or {})
             result = subprocess.run(['bash', str(runner), 'unused-browser',
                                      *(['wrapper with spaces', '--option'] if wrapped else [])],
                                     cwd=directory, env=env, capture_output=True, text=True, timeout=20)
@@ -552,7 +709,61 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             result.pref_args = received.read_text().split('\n') if received.exists() else None
             received = directory / 'gc-args.txt'
             result.gc_args = received.read_text().split('\n') if received.exists() else None
+            received = directory / 'snapshot-env.txt'
+            result.snapshot_env = json.loads(received.read_text()) if received.exists() else None
+            written = directory / 'out' / 'scene.heapsnapshot'
+            result.snapshot = written.read_text() if written.exists() else None
+            existing = directory / 'existing' / 'scene.heapsnapshot'
+            result.existing = existing.read_text() if existing.exists() else None
             return result
+
+    def test_heap_snapshot_is_opt_in(self):
+        # Unset: the snapshot page does not run, even when the job's environment carries the
+        # native settings (the stub fails any other page that receives them).
+        result = self.run_fixture('pass', extra_env={'ROVES_V8_HEAP_SNAPSHOT_PATH': '/tmp/leak.heapsnapshot',
+                                                     'ROVES_V8_HEAP_SNAPSHOT_GC': '1'})
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIsNone(result.snapshot_env)
+        self.assertNotIn('frame-retention', result.stdout)
+
+    def test_requested_heap_snapshot(self):
+        for wrapped in (False, True):
+            with self.subTest(wrapped=wrapped):
+                result = self.run_fixture('pass', wrapped=wrapped, snapshot='out/scene.heapsnapshot')
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                settings, options = result.snapshot_env
+                self.assertEqual(['ROVES_V8_HEAP_SNAPSHOT_GC', 'ROVES_V8_HEAP_SNAPSHOT_PATH'], sorted(settings))
+                self.assertEqual('8', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
+                self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
+                self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
+                self.assertIsNotNone(result.snapshot)
+                self.assertIn('::notice::frame-retention.html: ROVES-V8 frame-retention diagnostic released element false', result.stdout)
+                self.assertIn("valid V8 snapshot with 'rovesFrameRetentionProbe', 'roves-frame-retention-probe'", result.stdout)
+                wrapper = ['wrapper with spaces', '--option'] if wrapped else []
+                self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
+
+    def test_requested_heap_snapshot_failures(self):
+        cases = (
+            ('snapshot-dump-failed', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
+            ('snapshot-file-missing', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
+            ('snapshot-invalid', 'out/scene.heapsnapshot', '::error::heap snapshot '),
+            ('snapshot-scene', 'out/scene.heapsnapshot', "missing 'ROVES-V8 frame-retention frame created true removed true'"),
+            ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
+            ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
+            ('pass', 'relative', 'must be an absolute path'),
+        )
+        for scenario, snapshot, message in cases:
+            with self.subTest(scenario=scenario, snapshot=snapshot):
+                result = self.run_fixture(scenario, snapshot=snapshot)
+                self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertIn(message, result.stdout)
+                if snapshot != 'out/scene.heapsnapshot':
+                    # Refused before launching: nothing runs, nothing is overwritten.
+                    self.assertIsNone(result.snapshot_env)
+                    if snapshot.startswith('existing/'):
+                        self.assertEqual('kept', result.existing)
+                else:
+                    self.assertIn('V8 smoke diagnostics: frame-retention.log', result.stdout)
 
     def test_complete_and_post_completion_timeout(self):
         for wrapped in (False, True):

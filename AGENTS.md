@@ -102,7 +102,8 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   lavoro. Per il limite della sessione Claude di5ore, l'utente autorizza un singolo tentativo
   pianificato5ore dopo il messaggio di limite, nella stessa chat, tramite lo scheduler
   dell'app. Usare un unico ricontrollo con scadenza; riusare quello esistente, senza duplicati
-  o controlli intermedi. Un orario esplicito dell'utente prevale (oggi23ottobre:18:45).
+  o controlli intermedi. Un orario esplicito dell'utente prevale; il tentativo23ottobre18:45 è già concluso,
+  non riutilizzare quell'orario per nuovi eventi di quota.
   Al risveglio riprendere l'incarico salvato se Claude è disponibile, mantenendo revisione,
   verifiche e vincoli CI. Se lo stesso limite persiste, registrare l'esito e fermarsi senza
   concatenare altri tentativi per quel blocco. Disattivare il ricontrollo dopo il tentativo.

@@ -110,6 +110,10 @@ The events smoke now requires a WindowProxy check across an iframe's origin chan
 sandboxed opaque origin, same-origin again); see the shell wiki page.
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
+Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`
+(private `ROVES_V8_HEAP_SNAPSHOT_PATH`/`ROVES_V8_HEAP_SNAPSHOT_GC`; compiled out of release
+builds). V8 CI's Linux normal smoke captures one for a removed blank frame as a 3-day artifact,
+to read its retainers; release is still diagnostic only (see the shell wiki page).
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional

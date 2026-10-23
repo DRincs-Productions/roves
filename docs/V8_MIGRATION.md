@@ -5,12 +5,29 @@
 Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
 un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
 Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
-prevale: il tentativo già richiesto per oggi alle18:45 Europe/Rome resta valido.
+prevale: il tentativo del23ottobre alle18:45 è già concluso ed eliminato; non riusarlo.
 Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
 concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
 Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
+
+### Checkpoint attuale0318–0320
+
+Codex ha revisionato0318/0319 (origine WindowProxy e scheduler): Chrome MCP155 HTTP/visibile
+17/17; Roves ancora da nuovaCI.0318 commit20170c737db,0319 ad91debe7d7.0320 completo:
+snapshot heap nativo V8 opt-in/debug, one-shot all’ottava TestUtils.gc della scena conun
+frame vuoto, JSON controllato, nessuna API JS o dipendenza nuova. Test nativi4normal+4JITless,
+cargo check senza debugassertions,29runner Windows(8skipPOSIX)/29WSL tutti; replay468/471
+identici con3eccezioni note. Anche roves-action README aggiornato, nessun input/pin cambiato.
+
+Batch2e9eb7ee15f TUTTO VERDE: V839999937163, generale39999937068, Android39999936958,
+iOS39999936976. Si può pubblicare0318–0320. Lo snapshot sarà prodotto dal prossimo job
+Linux normal come artifact v8-heap-snapshot-frame-retention (3giorni), non dal MCP Chrome.
+Prossimo lavoro circoscritto: analizzatore di percorsi candidati nello snapshot con stdlib
+Python/metadati V8, poi lettura dell’artifact reale. Niente ipotesi di fix globale senza prove.
+0317 reale normal/JITless: moduli E frame senza moduli0/2 rilasciati in tutte le categorie.
+Il percorso moduli non è l’unica causa. Evitare di ripetere misure Chrome non equivalenti.
 
 Acquisito origin/main con fast-forward fino a8e4fb2e6cf4, wiki b86bb38. Tutte le modifiche
 0287–0314 sono già pubblicate: le precedenti indicazioni "solo locale" sono superate.
@@ -142,6 +159,19 @@ rilevati, replay dei2file identico,465/468 con3eccezioni. Nessun protocollo shel
 nessun motivo per ripetere WSL. Codex ha ricaricato events.html in Chrome DevTools MCP155:
 17/17 verdi, origine0318 compresa. Roves0318/0319 ancora daCI. Commit locali finché il
 batch2e9eb7ee15f è attivo; non confondere esito Chrome con convalida Roves.
+
+**0320 (Claude, da revisionare, non committato):** dump nativo V8 solo debug per trovare i
+retainer dei frame rimossi (0/2 rilasciati in entrambi i gruppi). Riusa
+Isolate::take_heap_snapshot di v8=152.2.0, nessuna dipendenza. heap_snapshot.rs con
+debug_assertions: ROVES_V8_HEAP_SNAPSHOT_PATH (assoluto, create_new) e _GC (N>0) letti una
+volta per RuntimeHooks; conta solo JS_GC DOM_TESTUTILS, richiesta consumata prima del dump dopo
+low_memory_notification, streaming BufWriter, errori su stderr senza panic/retry, file parziale
+rimosso. Nuova frame-retention.html (un frame srcdoc vuoto, probe nel realm figlio, 8 gc
+attese, rilascio solo diagnostico) eseguita da run.sh solo con V8_SMOKE_HEAP_SNAPSHOT; env
+nativo solo a quel processo, file/marker/validatore obbligatori. v8.yml: solo Linux normal,
+artifact v8-heap-snapshot-frame-retention 3 giorni. Test: nativi normal/JITless (4),
+unittest Windows29 (8skip POSIX)/WSL29, negativi con run.sh di HEAD. Snapshot V8 Roves, non
+MCP (snapshot Chrome MCP negato); nessun risparmio RAM. Log: target/task-0320/.
 
 ### Prossimi punti
 

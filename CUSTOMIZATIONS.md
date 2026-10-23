@@ -1,3 +1,64 @@
+## 2026-10-23 - Debug-only native V8 heap snapshot of a removed blank frame
+
+**Files:** `components/roves-js/src/{heap_snapshot.rs (new),runtime_impl.rs,lib.rs}`,
+`support/v8-smoke/{frame-retention.html (new),check_heap_snapshot.py (new),run.sh,test_runner.py}`,
+patch `0320-debug-v8-heap-snapshot.patch`. Also `.github/workflows/v8.yml` (workflow only, not
+part of `patches/`, as before) and `README.md` (documented reconstruction exception, no hunk).
+
+Linux normal/JIT-less CI after 0317 reports removed frames of both groups, with and without
+modules, as elements/documents/globals 0/2 released. Guessing at retainers or clearing roots
+blindly is unsafe; this collects evidence instead. V8's own heap profiler in the pinned
+`v8 = 152.2.0` crate (`Isolate::take_heap_snapshot`, which serializes Chrome DevTools'
+`.heapsnapshot` JSON) does all the work: no serializer of ours, no new dependency.
+
+`heap_snapshot.rs` exists only with `debug_assertions` (CI's debug servoshell); release and
+production builds compile it out and `JS_GC` is unchanged there. Each `RuntimeHooks` parses two
+private environment variables once: `ROVES_V8_HEAP_SNAPSHOT_PATH` (absolute path of a new file)
+and `ROVES_V8_HEAP_SNAPSHOT_GC` (positive integer N). Both unset = off; only one set, a relative
+path or a non-positive/non-integer N disables it with one stderr line, never a panic. `JS_GC`
+counts only `GCReason::DOM_TESTUTILS` collections (`TestUtils.gc()`); at the Nth one, after
+V8's low-memory notification, the request is consumed first (one attempt, even on error), then
+the snapshot is taken inside the runtime's existing handle/context scope (`with_scope`) and
+streamed through a `BufWriter` into `File::create_new` (never overwrites). An open error, a
+write error mid-stream or an empty snapshot removes the file this call created and logs
+`[roves-heap-snapshot] failed ...`; success logs `[roves-heap-snapshot] wrote B bytes to PATH at
+explicit collection N`. No JS API, WebIDL, pref or mach flag; page scripts cannot pick the path.
+Limitation: each runtime has its own request, so a worker calling `TestUtils.gc()` would count
+separately (and fail `create_new` on the same path); the fixture uses no worker.
+
+`frame-retention.html`: one blank same-origin srcdoc frame (id `roves-frame-retention-frame`)
+gets a probe object from its own realm (`rovesFrameRetentionProbe`, tag
+`roves-frame-retention-probe`) and is removed after load by a helper that returns only WeakRefs
+(listeners removed and the 5 s timer cleared on every exit). After a task boundary exactly 8
+awaited `TestUtils.gc()` calls run, then two more task boundaries before the WeakRefs are read.
+Markers: api, frame created/removed, collections complete 8, released element/document/probe
+(diagnostic only, any value passes), one result. No modules, no fake collection.
+
+`run.sh` runs this page only when `V8_SMOKE_HEAP_SNAPSHOT` names an absolute path that does not
+exist yet. It unsets the native variables for the whole script and passes them (`env`, N=8) to
+that one process. It then requires the markers, the native `wrote ... to PATH at explicit
+collection 8` line, a non-empty file and `check_heap_snapshot.py` (stdlib JSON: node table
+matching `node_count`, both probe strings present; this identifies the scene, not retention).
+Any miss fails the smoke, never a silent green. Unset: unchanged for normal and JIT-less.
+
+`v8.yml`: only the Linux normal smoke sets `V8_SMOKE_HEAP_SNAPSHOT` under
+`github.workspace/target/v8-heap-snapshot/`; `actions/upload-artifact@v4` uploads it (3-day
+retention, `always()` on Linux normal, `if-no-files-found: warn` for runs whose build failed
+earlier; the smoke step itself fails on a missing requested file). Cost, CI only: one more
+servoshell process (60 s timeout) and one snapshot sized by that page's JS heap. JIT-less gets
+no new CI profile (its native unit tests cover the module). Chrome DevTools MCP's heap snapshot
+was denied for the MCP workspace roots, so these are Roves' own V8 snapshots, not MCP
+measurements; no memory saving is claimed. roves-action README notes that this diagnostic is
+not enabled by the action (no inputs or pin changed).
+
+Verified: roves-js `heap_snapshot` tests (configuration, one-shot count, I/O errors without
+overwrite, real V8 snapshot streamed at the Nth explicit collection with other GC reasons not
+counted) pass in normal and JIT-less with the CI isolation layout and CARGO_TARGET_DIR
+`target/roves-js`; `cargo check` without debug assertions passes; a real V8 snapshot from that
+test passes `check_heap_snapshot.py`. Smoke unittests: Windows 29 (8 POSIX-only skipped), WSL
+Ubuntu 29; the new runner tests fail against HEAD's run.sh. Patch 0320 dry-run/apply clean on
+the existing replay scratch (through 0319). Logs: `target/task-0320/`. Browser results: V8 CI.
+
 ## 2026-10-23 - Scheduler smoke check: timer and frame callbacks in either order
 
 **Files:** `support/v8-smoke/{events.html,test_runner.py}`, patch

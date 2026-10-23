@@ -64,6 +64,9 @@ pub(crate) struct RuntimeHooks {
     hidden_callers: RefCell<Vec<roves_v8::incumbent::BackupIncumbentScope>>,
     /// The incumbent those scopes supply: a context that never runs script.
     hidden_sentinel: std::cell::OnceCell<v8::Global<v8::Context>>,
+    /// Debug builds: the pending heap snapshot request (see `heap_snapshot`).
+    #[cfg(debug_assertions)]
+    pub(crate) heap_snapshot: RefCell<Option<crate::heap_snapshot::Request>>,
 }
 
 impl Default for RuntimeHooks {
@@ -89,6 +92,8 @@ impl Default for RuntimeHooks {
             script_environment_preparer: Cell::new(None),
             hidden_callers: Default::default(),
             hidden_sentinel: Default::default(),
+            #[cfg(debug_assertions)]
+            heap_snapshot: RefCell::new(crate::heap_snapshot::Request::from_env()),
         }
     }
 }
@@ -440,9 +445,20 @@ pub unsafe fn JS_GetGCParameter(cx: *mut JSContext, key: JSGCParamKey) -> u32 {
     hooks(cx).gc_parameters.borrow().get(&(key as i32)).copied().unwrap_or(0)
 }
 
-/// A full collection (V8's low-memory notification).
-pub unsafe fn JS_GC(cx: *mut JSContext, _reason: GCReason) {
+/// A full collection (V8's low-memory notification). Debug builds may then dump the heap at
+/// an explicit `TestUtils.gc()` collection (see `heap_snapshot`).
+pub unsafe fn JS_GC(cx: *mut JSContext, reason: GCReason) {
     isolate(cx).low_memory_notification();
+    #[cfg(debug_assertions)]
+    if reason == GCReason::DOM_TESTUTILS {
+        let request = hooks(cx).heap_snapshot.borrow();
+        if let Some(request) = request.as_ref().filter(|request| request.take()) {
+            // SAFETY: callers pass this thread's live context.
+            unsafe { &*cx }.with_scope(|scope| request.dump(|sink| scope.take_heap_snapshot(sink)));
+        }
+    }
+    #[cfg(not(debug_assertions))]
+    let _ = reason;
 }
 
 // --- Job queue and promises ------------------------------------------------------------------

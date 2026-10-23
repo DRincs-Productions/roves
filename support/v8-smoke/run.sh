@@ -18,6 +18,10 @@ STATUS=0
 # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
 TOTALS=""
 HTTP_PORT=18765
+# Native heap snapshot settings reach only the dedicated frame-retention process (PAGE_ENV).
+unset ROVES_V8_HEAP_SNAPSHOT_PATH ROVES_V8_HEAP_SNAPSHOT_GC
+PAGE_ENV=()
+PAGE_ENV_COUNT=0
 HTTP_CROSS_ORIGIN_PORT=18766
 HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
 "$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
@@ -57,7 +61,11 @@ run_page() {
   argv+=("$BIN")
   if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
   argv+=(-z "$url")
-  timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+  if [ "$PAGE_ENV_COUNT" -gt 0 ]; then
+    env "${PAGE_ENV[@]}" timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+  else
+    timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+  fi
   pid=$!
   if [ -n "$done_pattern" ]; then
     # The page reports completion before the deadline. GNU timeout forwards TERM to the
@@ -182,10 +190,52 @@ for group in module no-module; do
   if [ -n "$diagnostic" ]; then echo "::notice::gc-lifecycle.html: $diagnostic"; else STATUS=1; echo "::error::gc-lifecycle.html: missing removed frame diagnostic for $group ($(grep -aF 'ROVES-V8 gc diagnostic ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
 
+# Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
+# native V8 heap snapshot at the last of frame-retention.html's 8 explicit collections, for
+# reading the retainers of a removed blank frame. A requested snapshot must exist and be valid.
+HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
+HEAP_SNAPSHOT_COLLECTION=8
+SNAPSHOT_LOGS=""
+if [ -n "$HEAP_SNAPSHOT" ]; then
+  case "$HEAP_SNAPSHOT" in
+    /*) snapshot_ok=1 ;;
+    *) snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT must be an absolute path: $HEAP_SNAPSHOT" ;;
+  esac
+  if [ "$snapshot_ok" -eq 1 ] && [ -e "$HEAP_SNAPSHOT" ]; then
+    snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT already exists and is never overwritten: $HEAP_SNAPSHOT"
+  fi
+  if [ "$snapshot_ok" -eq 1 ] && ! mkdir -p "$(dirname "$HEAP_SNAPSHOT")"; then
+    snapshot_ok=0; echo "::error::cannot create the directory of V8_SMOKE_HEAP_SNAPSHOT: $HEAP_SNAPSHOT"
+  fi
+  if [ "$snapshot_ok" -eq 1 ]; then
+    PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=$HEAP_SNAPSHOT_COLLECTION")
+    PAGE_ENV_COUNT=2
+    SNAPSHOT_LOGS="frame-retention.log"
+    run_page frame-retention.html 60 frame-retention.log "http://127.0.0.1:$HTTP_PORT/frame-retention.html" '^ROVES-V8 frame-retention result ' --pref dom_testutils_enabled=true
+    PAGE_ENV=()
+    PAGE_ENV_COUNT=0
+    for expected in "ROVES-V8 frame-retention api true" "ROVES-V8 frame-retention frame created true removed true" "ROVES-V8 frame-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 frame-retention result pass" "[roves-heap-snapshot] wrote " ; do
+      if grep -aFq "$expected" frame-retention.log; then echo "::notice::frame-retention.html: $(grep -aF "$expected" frame-retention.log | head -1)"; else snapshot_ok=0; echo "::error::frame-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 frame-retention ' -e '[roves-heap-snapshot]' frame-retention.log | tr '\n' ' '))"; fi
+    done
+    if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" frame-retention.log; then
+      snapshot_ok=0; echo "::error::frame-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
+    fi
+    # Released counts are diagnostic only, but must be reported.
+    diagnostic=$(grep -aE '^ROVES-V8 frame-retention diagnostic released element (true|false) document (true|false) probe (true|false)$' frame-retention.log | head -1)
+    if [ -n "$diagnostic" ]; then echo "::notice::frame-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::frame-retention.html: missing released diagnostic"; fi
+    if [ ! -s "$HEAP_SNAPSHOT" ]; then
+      snapshot_ok=0; echo "::error::frame-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
+    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesFrameRetentionProbe roves-frame-retention-probe; then
+      snapshot_ok=0
+    fi
+  fi
+  if [ "$snapshot_ok" -ne 1 ]; then STATUS=1; fi
+fi
+
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log; do
+  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done

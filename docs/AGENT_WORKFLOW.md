@@ -3,7 +3,7 @@
 Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
 un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
 Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
-prevale: il tentativo già richiesto per oggi alle18:45 Europe/Rome resta valido.
+prevale: il tentativo del23ottobre alle18:45 Europe/Rome è concluso ed eliminato.
 Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
 concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
 Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.

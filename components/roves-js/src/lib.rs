@@ -27,6 +27,8 @@ mod jsapi_impl;
 mod native;
 mod object;
 mod dynamic_code;
+#[cfg(debug_assertions)]
+mod heap_snapshot;
 mod proxy;
 mod runtime_impl;
 mod script_impl;
