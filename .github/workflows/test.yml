@@ -359,6 +359,26 @@ jobs:
           echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway, holders:"
           sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>&1 || true
 
+      # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
+      # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
+      # apt-get keeps them in a runner-owned directory, restored and saved around the job.
+      - name: cache apt packages (Linux only)
+        if: matrix.os_name == 'linux'
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/apt-archives
+            !~/apt-archives/lock
+            !~/apt-archives/partial
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}
+          restore-keys: apt-${{ runner.os }}-
+      - name: point apt's package cache at the cached directory (Linux only)
+        if: matrix.os_name == 'linux'
+        shell: bash
+        run: |
+          mkdir -p "$HOME/apt-archives/partial"
+          sudo chmod -R a+rwX "$HOME/apt-archives"
+          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
       # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
       # --skip-platform — their own bootstrap paths install GStreamer non-interactively
       # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
@@ -1294,6 +1314,24 @@ jobs:
           sudo sed -i 's|archive.ubuntu.com|azure.archive.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources
           grep -n '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
 
+      # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
+      # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
+      # apt-get keeps them in a runner-owned directory, restored and saved around the job.
+      - name: cache apt packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/apt-archives
+            !~/apt-archives/lock
+            !~/apt-archives/partial
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}
+          restore-keys: apt-${{ runner.os }}-
+      - name: point apt's package cache at the cached directory
+        shell: bash
+        run: |
+          mkdir -p "$HOME/apt-archives/partial"
+          sudo chmod -R a+rwX "$HOME/apt-archives"
+          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
       - name: mach bootstrap (installs build dependencies, real GStreamer)
         shell: bash
         working-directory: servo-src

@@ -1,3 +1,18 @@
+## 2026-10-23 - Cache apt packages in the Linux CI bootstraps
+
+**Files:** `.github/workflows/test.yml` (build-and-publish Linux, steam-emulator-smoke-test),
+`.github/workflows/v8.yml` (servoshell-v8 Linux). Workflow only, not part of `patches/`.
+
+Linux bootstraps keep timing out while apt downloads Servo's build packages from the runner's
+Azure mirror at a few KB/s (test.yml 90 minutes on 22 October; run `39923807266` on 5967ef4 had
+both Linux jobs still in bootstrap when it was cancelled; v8.yml see the previous entry). Before
+bootstrap, apt now keeps its downloads in `~/apt-archives` (`Dir::Cache::Archives`,
+`APT::Keep-Downloaded-Packages`), restored and saved by `actions/cache@v4` with a key on the apt
+package lists; the root-only `lock` and `partial/` are excluded from the cache. After one
+successful run the packages come from the Actions cache. The first run still downloads from the
+mirror. `roves-action` (third-party CI) is not changed: this is runner infrastructure, not the
+build/bundle surface it mirrors.
+
 ## 2026-10-23 - V8 smoke: terminate busy workers with pending engine work
 
 **Files:** `support/v8-smoke/stress.html`, patch `0295-v8-smoke-terminate-busy-workers.patch`.
