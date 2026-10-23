@@ -907,7 +907,7 @@ pub unsafe fn SetCrossOriginPropertyHolder(
 /// Wrap a native Window global when it crosses a realm boundary. The owner keeps
 /// the DOM object's trace/finalizer; wrappers only keep that owner's cell alive.
 pub(crate) unsafe fn wrap_window_for_realm(cx: *mut JSContext, object: *mut JSObject) -> *mut JSObject {
-    let mut owner = unsafe { ToWindowProxyIfWindowSlow(object) };
+    let mut owner = crate::object::current_window_proxy(unsafe { ToWindowProxyIfWindowSlow(object) });
     let Some(mut owner_box) = proxy_box(owner) else { return owner };
     if !owner_box.proxy_owner().is_null() {
         owner = owner_box.proxy_owner();
@@ -1072,7 +1072,13 @@ pub unsafe fn JS_TransplantObject(_cx: *mut JSContext, origobj: HandleObject, ta
     if is_global_window_proxy(original_box) || is_global_window_proxy(replacement_box) {
         // A window proxy that is a V8 global proxy cannot take another window's state (script
         // reaches its own global natively): the replacement becomes the window proxy, which
-        // Servo adopts as its reflector. Code holding the old one sees the old window.
+        // Servo adopts as its reflector. When the new window took over the same V8 global
+        // proxy (`RovesNewWindowGlobalReusingProxy`), scripts already see the new window, and
+        // native references to the old window proxy (wrappers made for other realms) follow
+        // the replacement.
+        if !std::ptr::eq(original_box, replacement_box) {
+            original_box.forwarded.set(replacement);
+        }
         return replacement;
     }
     original_box.proxy.set(replacement_box.proxy.get());

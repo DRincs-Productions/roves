@@ -50,6 +50,9 @@ pub(crate) struct ClassBox {
     pub(crate) proxy: StdCell<*const crate::proxy::ProxyHandler>,
     /// A borrowed Window wrapper keeps its owner in `private`, without owning DOM state.
     pub(crate) window_wrapper: StdCell<bool>,
+    /// For a window proxy that a navigation replaced (`JS_TransplantObject`): its replacement,
+    /// which wrappers made for this one follow (traced).
+    pub(crate) forwarded: StdCell<*mut JSObject>,
     /// A proxy's private value (`GetProxyPrivate`).
     pub(crate) private: StdCell<JSVal>,
     /// Whether a proxy's prototype comes from its handler (`getPrototype` trap).
@@ -81,6 +84,7 @@ unsafe impl GarbageCollected for ClassBox {
             }
         }
         trace_cell(self.cell.get(), visitor);
+        trace_cell(self.forwarded.get() as *mut c_void, visitor);
         let private = self.private.get();
         if private.is_gcthing() {
             trace_cell(private.to_gcthing(), visitor);
@@ -226,9 +230,22 @@ pub(crate) fn immutable_prototype_for_cell<'s>(scope: &v8::PinScope<'s, '_>, obj
     class_box(object)?.immutable_prototype.borrow().as_ref()?.get(scope)
 }
 
+/// The window proxy that now stands for `proxy`: navigations replace a browsing context's
+/// window proxy (`JS_TransplantObject`), and older references follow the replacements.
+pub(crate) fn current_window_proxy(mut proxy: *mut JSObject) -> *mut JSObject {
+    while let Some(class_box) = class_box(proxy) {
+        let forwarded = class_box.forwarded.get();
+        if forwarded.is_null() {
+            break;
+        }
+        proxy = forwarded;
+    }
+    proxy
+}
+
 impl ClassBox {
     pub(crate) fn proxy_owner(&self) -> *mut JSObject {
-        if self.window_wrapper.get() { self.private.get().to_object() } else { std::ptr::null_mut() }
+        if self.window_wrapper.get() { current_window_proxy(self.private.get().to_object()) } else { std::ptr::null_mut() }
     }
 
     pub(crate) fn proxy_private(&self) -> JSVal {
@@ -800,6 +817,7 @@ pub(crate) fn new_class_box(scope: &mut v8::PinScope, class: *const JSClass) -> 
                 cell: StdCell::new(std::ptr::null_mut()),
                 proxy: StdCell::new(std::ptr::null()),
                 window_wrapper: StdCell::new(false),
+                forwarded: StdCell::new(std::ptr::null_mut()),
                 private: StdCell::new(UndefinedValue()),
                 lazy_proto: StdCell::new(false),
                 global_trace: StdCell::new(None),

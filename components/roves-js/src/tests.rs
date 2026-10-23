@@ -4757,6 +4757,58 @@ mod window_proxies {
         static WINDOW_OWNERS_FINALIZED: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
     }
 
+    /// Servo's navigation sequence on top of the proxy takeover (`WindowProxy::set_window`):
+    /// a new window proxy, the transplant, `SetWindowProxy`, then the conversions it relies on.
+    #[test]
+    fn servo_navigation_sequence_keeps_window_proxy_conversions_consistent() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
+        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+        let new_window = || unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        let window_proxy_for = |window: HandleObject| {
+            let old = unsafe { EnterRealm(cx, window.get()) };
+            let proxy = unsafe { NewWindowProxy(cx, window, handler) };
+            unsafe { LeaveRealm(cx, old) };
+            proxy
+        };
+        rooted!(in(cx) let first = new_window());
+        rooted!(in(cx) let first_proxy = window_proxy_for(first.handle().into()));
+        unsafe { SetWindowProxy(cx, first.handle().into(), first_proxy.handle().into()) };
+        rooted!(in(cx) let mut held = ObjectValue(first_proxy.get()));
+        assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
+        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
+        assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
+
+        unsafe { RovesReuseWindowProxyForNextGlobal(cx, first.get()) };
+        rooted!(in(cx) let second = new_window());
+        rooted!(in(cx) let second_proxy = window_proxy_for(second.handle().into()));
+        rooted!(in(cx) let transplanted = unsafe { JS_TransplantObject(cx, first_proxy.handle().into(), second_proxy.handle().into()) });
+        assert_eq!(transplanted.get(), second_proxy.get(), "Servo adopts the replacement as its reflector");
+        unsafe { SetWindowProxy(cx, second.handle().into(), transplanted.handle().into()) };
+
+        let old = unsafe { EnterRealm(cx, second.get()) };
+        eval(&runtime, "globalThis.page = 'second'; 0");
+        rooted!(in(cx) let inside = eval(&runtime, "globalThis").to_object());
+        unsafe { LeaveRealm(cx, old) };
+        assert_eq!(inside.get(), transplanted.get(), "scripts see the window proxy as globalThis");
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second");
+        // Another realm sees one wrapper per window proxy, the same before and after.
+        rooted!(in(cx) let seen = eval(&runtime, "held").to_object());
+        rooted!(in(cx) let mut current = ObjectValue(transplanted.get()));
+        assert!(unsafe { JS_WrapValue(cx, current.handle_mut().into()) });
+        assert_eq!(seen.get(), current.get().to_object(), "the held wrapper is the current window proxy's wrapper");
+        runtime.gc_for_testing();
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "after a collection too");
+        unsafe {
+            assert_eq!(ToWindowIfWindowProxy(transplanted.get()), second.get());
+            assert_eq!(ToWindowProxyIfWindowSlow(second.get()), transplanted.get());
+            assert_eq!(GetNonCCWObjectGlobal(second.get()), second.get());
+            assert_eq!(GetNonCCWObjectGlobal(first.get()), first.get());
+            assert!(IsWindowProxy(transplanted.get()));
+        }
+    }
+
     #[test]
     fn a_window_that_handed_over_its_proxy_is_still_collected() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());

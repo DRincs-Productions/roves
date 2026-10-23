@@ -1,3 +1,20 @@
+## 2026-10-23 - Cross-realm Window wrappers follow navigations
+
+**Files:** `components/roves-js/src/{object.rs,proxy.rs,tests.rs}`, patch
+`0308-cross-realm-window-wrappers-follow-navigation.patch`.
+
+Fix for 0303, found by a new roves-js test that replays Servo's navigation sequence
+(`NewWindowProxy`, `JS_TransplantObject`, `SetWindowProxy` on top of the proxy takeover). A
+reference held in another realm, such as a parent's `iframe.contentWindow`, is a per-realm
+wrapper (0259) whose owner is the window proxy cell Servo used when the wrapper was made, and
+wrappers are cached by the V8 global proxy, which a takeover keeps. So after a navigation the
+cached wrapper still forwarded to the old Window (`held.page` was undefined). `JS_TransplantObject`
+now records the replacement on the replaced window proxy's class box (`forwarded`, traced), and
+wrappers resolve their owner through `object::current_window_proxy`; `wrap_window_for_realm`
+starts from the current one too. Existing wrappers in every realm thus follow without being
+enumerated. The test also checks globals, proxy/window conversions, the per-realm wrapper's
+identity and a collection; without `forwarded` it fails. Runtime 106 normal/105 JITless.
+
 ## 2026-10-23 - A Window that handed over its proxy keeps its realm
 
 **Files:** `components/roves-js/src/{object.rs,realm_impl.rs,tests.rs}`, patch
