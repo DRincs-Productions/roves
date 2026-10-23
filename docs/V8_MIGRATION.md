@@ -1210,8 +1210,10 @@ risulta superata nella CI corrente.
   I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
   `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
   0303 (locale): identità preservata nelle navigazioni dello stesso thread script, con ricarica
-  su avanti/indietro. `unload` ora prima del passaggio (0306). Restano navigazioni verso un altro thread
-  (cross-origin: servirebbero `Context::NewRemoteContext` e `SetAccessCheckCallbackAndHandler`,
+  su avanti/indietro. `unload` ora prima del passaggio (0306). I wrapper tenuti da
+  altri realm seguono la sostituzione, anche verso la finestra cross-origin di Servo (0308,
+  0309). Restano i riferimenti tenuti dal realm della vecchia finestra stessa dopo una
+  navigazione verso un altro thread (servirebbero `Context::NewRemoteContext` e `SetAccessCheckCallbackAndHandler`,
   esportati ma senza binding rusty_v8, con strutture C++ da costruire a mano: rinviato) e
   `document.domain`.
 - [x] Correggere `JS_SetImmutablePrototype` sul percorso Window di produzione:
