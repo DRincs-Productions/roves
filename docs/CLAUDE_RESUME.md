@@ -25,13 +25,22 @@
 
 ## Decisioni aperte per l'utente (23 ottobre)
 
-1. **Identità WindowProxy nella navigazione.** Correggerla con V8 richiede di riusare il global
+1. **Identità WindowProxy nella navigazione — scelta utente 23/10: riuso + ricarica.**
+   Analisi successiva: in roves-js il global della Window E il global proxy sono lo stesso
+   oggetto V8 (`JS_NewGlobalObject` attacca la cella del global a `context.global()`, cioè al
+   proxy; `NewWindowProxy` aggiunge una seconda cella allo stesso oggetto). V8 azzera lo
+   stato del proxy riusato: la cella del global della vecchia Window (reflector Servo)
+   punterebbe alla nuova. Prerequisito: separare global interno (JSGlobalObject = reflector
+   Window) e global proxy (= WindowProxy) come Blink, rivedendo this/holder dei binding Window,
+   cache wrapper, `window === globalThis` e tracing; poi plumbing in script e ricarica alla
+   ripresa (eviction della pipeline precedente). Lavoro di più giorni, confermato all'utente
+   prima di iniziare. Testo precedente: Correggerla con V8 richiede di riusare il global
    proxy (`DetachGlobal` + `ContextOptions::global_object`) al momento della creazione della
    nuova Window. Un documento sospeso (cronologia) che ha ceduto il proxy non può più riaverlo:
    andrebbe ricaricato invece che ripreso, come fa Blink per le pagine non in bfcache. Opzioni:
    (a) riuso + ricarica alla ripresa; (b) lasciare l'identità per documento (attuale). Per
    giochi a pagina singola l'impatto pratico è basso.
-2. **Codice di fase 1 in `roves-v8`.** La produzione usa solo `initialize_engine*`,
+2. **Codice di fase 1 in `roves-v8` — scelta utente 23/10: conservare.** La produzione usa solo `initialize_engine*`,
    `foreground` e `incumbent`. `Runtime`, i tipi WebIDL, `roves-v8-derive`, il backend V8 di
    `codegen.py` e `test_v8.py` servono solo come strumento di misura del pilot WebIDL (decisione
    del piano: conservarli). Rimuoverli toglierebbe migliaia di righe nostre.
