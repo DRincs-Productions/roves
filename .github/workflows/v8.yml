@@ -181,10 +181,13 @@ jobs:
             # mach does (only packages this release has), then skip mach's platform step.
             sudo apt-get update
             available=$(apt-cache --generate pkgnames)
-            grep -hv -e '^#' -e '^$' python/servo/platform/linux_packages/apt/apt_common.txt \
+            packages=$(grep -hv -e '^#' -e '^$' python/servo/platform/linux_packages/apt/apt_common.txt \
               | grep -v -e gstreamer -e '^libges' \
-              | grep -Fxf <(echo "$available") \
-              | xargs sudo apt-get install -y -m --no-install-recommends
+              | grep -Fxf <(echo "$available"))
+            # shellcheck disable=SC2086
+            bash support/apt_prefetch.sh $packages
+            # shellcheck disable=SC2086
+            sudo apt-get install -y -m --no-install-recommends $packages
           fi
           if [ "$RUNNER_OS" = macOS ]; then
             ./mach bootstrap --force --yes --skip-lints --skip-nextest

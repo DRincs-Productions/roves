@@ -1,3 +1,19 @@
+## 2026-10-23 - Parallel apt downloads in the Linux CI bootstraps
+
+**Files:** new `support/apt_prefetch.sh` (patch `0301-apt-prefetch-script.patch`),
+`.github/workflows/{test.yml,v8.yml}`.
+
+The cache in the previous entries only helps from the second run. The bootstrap timeouts come
+from apt downloading one file at a time from a runner mirror that sometimes serves a single
+connection at a few KB/s (run `39929284910`: 170 of 271 files in 30 minutes). The script asks
+apt for the files it would download (`--print-uris`), resolves the runners' `mirror+file:`
+URLs with every listed mirror (round robin), and fetches them with 16 parallel `curl`
+connections straight into apt's archive cache; `apt-get install`/mach bootstrap then verify and
+install them, refetching anything missing. Best effort: it never fails the job. v8.yml runs it
+before its reduced install; test.yml runs it (after `apt-get update`, with mach's own package
+list) before both Linux mach bootstraps. Local check: 45 packages fetched in 32 s with 8
+connections, after which apt considered all of them cached. Runner speed is verified by CI.
+
 ## 2026-10-23 - Remove roves-js API nothing calls
 
 **Files:** `components/roves-js/src/{conversions,error,jsimpls,jsval,realm,runtime_impl,rust,script_impl,typedarray_impl,values_impl}.rs`, `wrappers2.in.rs`, patch `0300-remove-uncalled-roves-js-api.patch`.

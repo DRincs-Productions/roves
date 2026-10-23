@@ -381,6 +381,13 @@ jobs:
           mkdir -p "$HOME/apt-archives/partial"
           sudo chmod -R a+rwX "$HOME/apt-archives"
           printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
+          # Fetch mach's apt packages in parallel first (see support/apt_prefetch.sh); mach
+          # bootstrap then finds them in the cache.
+          sudo apt-get update
+          available=$(apt-cache --generate pkgnames)
+          packages=$(grep -hv -e '^#' -e '^$' servo-src/python/servo/platform/linux_packages/apt/apt_*.txt | grep -Fxf <(echo "$available"))
+          # shellcheck disable=SC2086
+          bash support/apt_prefetch.sh $packages
       # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
       # --skip-platform — their own bootstrap paths install GStreamer non-interactively
       # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
@@ -1351,6 +1358,13 @@ jobs:
           mkdir -p "$HOME/apt-archives/partial"
           sudo chmod -R a+rwX "$HOME/apt-archives"
           printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
+          # Fetch mach's apt packages in parallel first (see support/apt_prefetch.sh); mach
+          # bootstrap then finds them in the cache.
+          sudo apt-get update
+          available=$(apt-cache --generate pkgnames)
+          packages=$(grep -hv -e '^#' -e '^$' servo-src/python/servo/platform/linux_packages/apt/apt_*.txt | grep -Fxf <(echo "$available"))
+          # shellcheck disable=SC2086
+          bash support/apt_prefetch.sh $packages
       - name: mach bootstrap (installs build dependencies, real GStreamer)
         shell: bash
         working-directory: servo-src
