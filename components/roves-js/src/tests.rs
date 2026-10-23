@@ -4758,6 +4758,67 @@ mod window_proxies {
     }
 
     #[test]
+    fn a_navigated_window_takes_over_the_previous_global_proxy() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let new_window = || unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) };
+        rooted!(in(cx) let first = new_window());
+        let old = unsafe { EnterRealm(cx, first.get()) };
+        eval(&runtime, "globalThis.page = 'first'; 0");
+        unsafe { JS_SetReservedSlot(first.get(), 0, &Int32Value(7)) };
+        unsafe { LeaveRealm(cx, old) };
+        // Another realm (a parent page) keeps a reference to the first window.
+        rooted!(in(cx) let mut held = ObjectValue(first.get()));
+        assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
+        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
+        assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "first");
+
+        rooted!(in(cx) let second = unsafe { RovesNewWindowGlobalReusingProxy(cx, &WINDOW_CLASS, ptr::null_mut(), ptr::null(), first.get()) });
+        assert!(!second.get().is_null());
+        assert_ne!(second.get(), first.get(), "a new Window global");
+        let old = unsafe { EnterRealm(cx, second.get()) };
+        assert_eq!(describe(&runtime, eval(&runtime, "typeof page")), "undefined", "a fresh global");
+        eval(&runtime, "globalThis.page = 'second'; 0");
+        rooted!(in(cx) let seen = eval(&runtime, "globalThis").to_object());
+        assert_eq!(seen.get(), second.get(), "the new realm's script sees its own global");
+        unsafe { LeaveRealm(cx, old) };
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "old references reach the new window");
+
+        runtime.gc_for_testing();
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "second", "after a collection too");
+        // The previous Window keeps its native state, off the proxy.
+        let mut slot = UndefinedValue();
+        unsafe { JS_GetReservedSlot(first.get(), 0, &mut slot) };
+        assert_eq!(slot.to_int32(), 7);
+        let mut fresh = UndefinedValue();
+        unsafe { JS_GetReservedSlot(second.get(), 0, &mut fresh) };
+        assert!(fresh.is_undefined());
+        let aliases = unsafe { &*cx }.with_scope(|scope| unsafe {
+            let first = crate::cell::cell_value(scope, first.get() as *mut std::ffi::c_void);
+            let second = crate::cell::cell_value(scope, second.get() as *mut std::ffi::c_void);
+            first.strict_equals(second)
+        });
+        assert!(!aliases, "the previous Window no longer aliases the proxy");
+        // Only a registered global of the same class can hand over its proxy.
+        rooted!(in(cx) let plain = eval(&runtime, "({})").to_object());
+        assert!(unsafe { RovesNewWindowGlobalReusingProxy(cx, &WINDOW_CLASS, ptr::null_mut(), ptr::null(), plain.get()) }.is_null());
+
+        // The side channel bindings use: the next Window global takes over the proxy.
+        unsafe { RovesReuseWindowProxyForNextGlobal(cx, second.get()) };
+        rooted!(in(cx) let third = new_window());
+        let old = unsafe { EnterRealm(cx, third.get()) };
+        eval(&runtime, "globalThis.page = 'third'; 0");
+        unsafe { LeaveRealm(cx, old) };
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "third");
+        // An invalid previous global falls back to a fresh one.
+        unsafe { RovesReuseWindowProxyForNextGlobal(cx, plain.get()) };
+        rooted!(in(cx) let fourth = new_window());
+        assert!(!fourth.get().is_null());
+        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "third", "no takeover");
+    }
+
+    #[test]
     fn foreign_window_wrappers_keep_identity_realm_and_single_native_owner() {
         unsafe extern "C" fn get_prototype(cx: *mut JSContext, proxy: HandleObject, prototype: MutableHandleObject) -> bool {
             if unsafe { GetObjectRealmOrNull(proxy.get()) } == unsafe { GetCurrentRealmOrNull(cx) } {

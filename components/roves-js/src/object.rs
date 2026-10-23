@@ -751,6 +751,26 @@ pub(crate) fn attach_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::O
     cell as *mut JSObject
 }
 
+/// Moves the class box of the global `cell` onto a new hidden object, which becomes the cell's
+/// value: another realm took over the global proxy the cell was on (see
+/// `realm_impl::RovesNewWindowGlobalReusingProxy`). Native access through the cell keeps its
+/// box and slots; script cannot reach the hidden object.
+pub(crate) fn rehome_global_cell(scope: &mut v8::PinScope, cell: *mut JSObject) -> Option<()> {
+    // SAFETY: a live (rooted) global cell.
+    let member = unsafe { crate::cell::cell_class_member(cell as *mut c_void) }?;
+    let cx = JSContext::current();
+    let template = cx.class_templates.template(scope, &PLAIN_OBJECT_CLASS);
+    let hidden = template.new_instance(scope)?;
+    // The field holds the box's cppgc object pointer, as `box_to_raw` stores it.
+    let raw = v8::cppgc::GetRustObj::<ClassBox>::get_rust_obj(member) as *mut c_void;
+    hidden.set_aligned_pointer_in_internal_field(0, raw, CLASS_BOX_TAG);
+    // SAFETY: as in `make_class_box`; the cell keeps the hidden object alive.
+    unsafe { v8::Object::wrap::<CLASS_WRAP_TAG, ClassBox>(scope, hidden, member) };
+    // SAFETY: a live cell, its value not borrowed.
+    unsafe { crate::cell::set_cell_value(scope, cell as *mut c_void, hidden.into()) };
+    Some(())
+}
+
 /// Creates `object`'s class box (stored in its internal field, kept alive by the object).
 pub(crate) fn make_class_box(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, class: *const JSClass) -> UnsafePtr<ClassBox> {
     let class_box = new_class_box(scope, class);

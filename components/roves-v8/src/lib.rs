@@ -7,6 +7,7 @@
 //! roves-js owns isolates, contexts and the JSAPI surface (see ../../docs/V8_MIGRATION.md).
 
 pub mod foreground;
+pub mod global_proxy;
 pub mod incumbent;
 
 use std::sync::Once;

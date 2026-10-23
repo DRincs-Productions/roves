@@ -13,7 +13,7 @@ pub use crate::gc::Heap;
 pub use crate::realm_impl::{
     CurrentGlobal, CurrentGlobalOrNull, EnterRealm, GetCurrentRealmOrNull, GetObjectRealmOrNull,
     GetRealmGlobalOrNull, GetRealmPrincipals, JS_FireOnNewGlobalObject, JS_GlobalObjectTraceHook,
-    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
+    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject, RovesNewWindowGlobalReusingProxy, RovesReuseWindowProxyForNextGlobal,
     JS_ResolveStandardClass, LeaveRealm,
 };
 pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
@@ -128,6 +128,9 @@ pub struct JSContext {
     /// last: GC roots until the matching leave restores them. Borrowed only for a push, a pop
     /// or a trace, never across a V8 call.
     pub(crate) saved_realms: RefCell<Vec<*mut Realm>>,
+    /// The Window global whose proxy the next Window global takes over
+    /// (`RovesReuseWindowProxyForNextGlobal`), or null.
+    pub(crate) next_window_proxy_reuse: std::cell::Cell<*mut JSObject>,
     /// Weak registry of this runtime's realms (see `realm_impl::RealmEntry`).
     pub(crate) realms: RefCell<Vec<crate::realm_impl::RealmEntry>>,
     /// The registry size at which the entries of collected realms are dropped.

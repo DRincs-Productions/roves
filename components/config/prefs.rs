@@ -563,7 +563,10 @@ impl Preferences {
             network_local_directory_listing_enabled: true,
             network_use_webpki_roots: false,
             network_max_content_length: 5 * 1024 * 1024,
-            session_history_max_length: 20,
+            // Roves: 0, so navigating back or forward reloads a page instead of resuming it. A
+            // navigation hands the page's WindowProxy (its V8 global proxy) to the next page,
+            // and a resumed page could not get it back (see script_thread.rs `load`).
+            session_history_max_length: 0,
             shell_background_color_rgba: [1.0, 1.0, 1.0, 1.0],
             thread_pool_workers_max: 4,
             thread_pool_async_runtime_workers_max: 6,

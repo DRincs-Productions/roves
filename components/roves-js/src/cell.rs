@@ -44,7 +44,7 @@ impl Interned {
         entries.retain(|entry| entry.get().is_some());
         for entry in entries.iter() {
             let cell = entry.get()?;
-            if cell.value.get(scope).is_some_and(|held| held.strict_equals(value)) {
+            if cell.value().get(scope).is_some_and(|held| held.strict_equals(value)) {
                 // SAFETY: the entry is alive (checked above) and stays so for this call.
                 let pointer = unsafe { UnsafePtr::new(entry) }?;
                 return Some(to_raw(pointer));
@@ -105,7 +105,8 @@ fn identity_hash(value: v8::Local<v8::Value>) -> Option<i32> {
 }
 
 pub(crate) struct Cell {
-    value: TracedReference<v8::Value>,
+    /// Only `set_cell_value` replaces it, on the isolate's thread (no concurrent marking).
+    value: std::cell::UnsafeCell<TracedReference<v8::Value>>,
     /// A string cell's characters, copied out on first request: SpiderMonkey lends raw
     /// character pointers that stay valid while the string lives, and the cell gives the same
     /// guarantee (it does not move and is freed only with the string's last reference).
@@ -116,6 +117,13 @@ pub(crate) struct Cell {
     script: Option<TracedReference<v8::UnboundScript>>,
     /// A module record's module (see `modules_impl`).
     module: Option<TracedReference<v8::Module>>,
+}
+
+impl Cell {
+    fn value(&self) -> &TracedReference<v8::Value> {
+        // SAFETY: replaced only by `set_cell_value`, never while borrowed.
+        unsafe { &*self.value.get() }
+    }
 }
 
 pub(crate) enum StringChars {
@@ -139,7 +147,7 @@ impl Drop for Cell {
 // SAFETY: `trace` reports the cell's only reference.
 unsafe impl GarbageCollected for Cell {
     fn trace(&self, visitor: &mut Visitor) {
-        visitor.trace(&self.value);
+        visitor.trace(self.value());
         if let Some(class) = &self.class {
             visitor.trace(class);
         }
@@ -239,7 +247,7 @@ pub(crate) fn new_cell_with_class(
     // SAFETY: the returned pointer is handed straight to the caller, who roots or stores it
     // (the documented contract of an unrooted GC-thing pointer).
     let cell = unsafe {
-        v8::cppgc::make_garbage_collected(heap, Cell { value: reference, chars: std::cell::OnceCell::new(), class, script: None, module: None })
+        v8::cppgc::make_garbage_collected(heap, Cell { value: std::cell::UnsafeCell::new(reference), chars: std::cell::OnceCell::new(), class, script: None, module: None })
     };
     to_raw(cell)
 }
@@ -254,7 +262,7 @@ pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::Un
     let cell = unsafe {
         v8::cppgc::make_garbage_collected(
             heap,
-            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: Some(script), module: None },
+            Cell { value: std::cell::UnsafeCell::new(reference), chars: std::cell::OnceCell::new(), class: None, script: Some(script), module: None },
         )
     };
     to_raw(cell)
@@ -278,7 +286,18 @@ pub(crate) unsafe fn cell_value<'s>(scope: &mut v8::PinScope<'s, '_>, pointer: *
     let cell = from_raw(pointer).expect("a non-null GC-thing pointer");
     // SAFETY: the caller guarantees the cell is alive.
     let cell = unsafe { cell.as_ref() };
-    cell.value.get(scope).expect("a live cell holds its value")
+    cell.value().get(scope).expect("a live cell holds its value")
+}
+
+/// Points the live cell `pointer` at `value`. Only for a cell whose object must change
+/// (a Window global whose proxy moved to another realm, see `realm_impl`).
+///
+/// # Safety
+/// `pointer` must be a live cell, and no reference to its value may be held.
+pub(crate) unsafe fn set_cell_value(scope: &mut v8::PinScope, pointer: *mut c_void, value: v8::Local<v8::Value>) {
+    let cell = from_raw(pointer).expect("a non-null GC-thing pointer");
+    // SAFETY: the caller guarantees the cell is alive and its value is not borrowed.
+    unsafe { (*cell.as_ref().value.get()).reset(scope, Some(value)) };
 }
 
 /// Marks the cell `pointer` (if any) as reachable, from a trace method.
@@ -309,7 +328,7 @@ pub(crate) unsafe fn string_chars<'c>(scope: &mut v8::PinScope, pointer: *mut c_
     // SAFETY: the caller guarantees the cell is alive; the returned reference is tied to it.
     let cell: &'c Cell = unsafe { &*(cell.as_ref() as *const Cell) };
     cell.chars.get_or_init(|| {
-        let value = cell.value.get(scope).expect("a live cell holds its value");
+        let value = cell.value().get(scope).expect("a live cell holds its value");
         let string = v8::Local::<v8::String>::try_from(value).expect("a string cell");
         // One copy out of V8's flat representation (no allocation can happen while the view
         // lives). DOM strings are almost always one-byte: those were copied out as UTF-16 and
@@ -336,6 +355,17 @@ pub(crate) fn cell_class_box(pointer: *mut c_void) -> Option<*mut c_void> {
     Some(class_box as *const crate::object::ClassBox as *mut c_void)
 }
 
+/// The class box member of the live cell `pointer` (to put the same box on another object).
+///
+/// # Safety
+/// `pointer` must be a live cell; the reference must not outlive it.
+pub(crate) unsafe fn cell_class_member<'c>(pointer: *mut c_void) -> Option<&'c Member<crate::object::ClassBox>> {
+    let cell = from_raw(pointer)?;
+    // SAFETY: the caller guarantees the cell is alive for the returned lifetime.
+    let cell: &'c Cell = unsafe { &*(cell.as_ref() as *const Cell) };
+    cell.class.as_ref()
+}
+
 /// A module record: a placeholder object whose cell holds the V8 module.
 pub(crate) fn new_module_cell(scope: &mut v8::PinScope, module: v8::Local<v8::Module>) -> *mut c_void {
     let placeholder = v8::Object::new(scope);
@@ -346,7 +376,7 @@ pub(crate) fn new_module_cell(scope: &mut v8::PinScope, module: v8::Local<v8::Mo
     let cell = unsafe {
         v8::cppgc::make_garbage_collected(
             heap,
-            Cell { value: reference, chars: std::cell::OnceCell::new(), class: None, script: None, module: Some(module) },
+            Cell { value: std::cell::UnsafeCell::new(reference), chars: std::cell::OnceCell::new(), class: None, script: None, module: Some(module) },
         )
     };
     to_raw(cell)

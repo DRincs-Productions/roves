@@ -14,12 +14,17 @@
   (niente pacchetti GStreamer su Linux). Generale `39923807266` in corso, Android/iOS verdi.
 - Pubblicato `607b2e5` (fino a 0301 e correzioni apt): TUTTE le CI verdi (V8 `39937024546`,
   generale `39937024442`, Android, iOS). Bootstrap Linux 46–204 s invece dei timeout.
-- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy, 0302 (rimozione fase 1 roves-v8 e pilot WebIDL); poi le tappe WindowProxy.
+- Locale non pubblicato: aggiornamenti wiki/doc, decisioni WindowProxy, 0302 pubblicata (`7189b10`); locale 0303 (WindowProxy).
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Decisioni aperte per l'utente (23 ottobre)
 
-1. **Identità WindowProxy nella navigazione — scelta utente 23/10: riuso + ricarica.**
+1. **Identità WindowProxy — IMPLEMENTATA in locale (0303), da verificare in CI/browser.**
+   Approccio più piccolo del previsto: il proxy si riusa a `Window::new` (canale
+   `RovesReuseWindowProxyForNextGlobal` da `ScriptThread::load`), la vecchia cella global va su
+   un oggetto nascosto, `session_history_max_length`=0 (avanti/indietro ricaricano). Smoke:
+   `events.html` iframe contentWindow; `nav1` ora `persisted=false`. Analisi precedente:
+   **scelta utente 23/10: riuso + ricarica.**
    Analisi successiva: in roves-js il global della Window E il global proxy sono lo stesso
    oggetto V8 (`JS_NewGlobalObject` attacca la cella del global a `context.global()`, cioè al
    proxy; `NewWindowProxy` aggiunge una seconda cella allo stesso oggetto). V8 azzera lo

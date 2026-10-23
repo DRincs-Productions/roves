@@ -124,6 +124,21 @@ check("postMessage source is the incumbent: the innermost frame's window", () =>
   frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
   document.body.append(frame);
 }));
+check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
+  // As in browsers, a reference to a browsing context's window outlives its document: after
+  // the iframe navigates, the same object reaches the new document.
+  const frame = document.createElement("iframe");
+  frame.onload = () => {
+    const held = frame.contentWindow;
+    frame.onload = () => {
+      const text = held.document && held.document.body ? held.document.body.textContent : "none";
+      resolve((frame.contentWindow === held && text === "second") || `same=${frame.contentWindow === held} text=${text}`);
+    };
+    frame.srcdoc = "<p>second</p>";
+  };
+  frame.srcdoc = "<p>first</p>";
+  document.body.append(frame);
+}));
 finish();
 </script>
 </body></html>

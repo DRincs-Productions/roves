@@ -423,9 +423,72 @@ pub unsafe fn JS_NewGlobalObject(
 ) -> *mut JSObject {
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
+    let previous = raw.next_window_proxy_reuse.replace(std::ptr::null_mut());
+    if !previous.is_null() && crate::object::is_window_global_class(clasp) {
+        // SAFETY: forwarded; `previous` is a live Window global (the caller's contract).
+        let global = unsafe { new_global(cx, clasp, principals, options, previous) };
+        if !global.is_null() {
+            return global;
+        }
+    }
+    // SAFETY: forwarded.
+    unsafe { new_global(cx, clasp, principals, options, std::ptr::null_mut()) }
+}
+
+/// Roves extension: the next Window global `JS_NewGlobalObject` creates takes over the global
+/// proxy of `previous` (see `RovesNewWindowGlobalReusingProxy`), so a navigation keeps its
+/// browsing context's WindowProxy identity without changing how bindings create globals.
+/// `previous` must stay alive until then; a mismatch falls back to a fresh global.
+pub unsafe fn RovesReuseWindowProxyForNextGlobal(cx: *mut JSContext, previous: *mut JSObject) {
+    // SAFETY: callers pass a live context.
+    unsafe { &*cx }.next_window_proxy_reuse.set(previous);
+}
+
+/// Roves extension: like `JS_NewGlobalObject`, but the new realm takes over the global proxy of
+/// `previous`, a global of the same class (V8 keeps one proxy per browsing context, and scripts'
+/// references to the old window then reach the new one, as in browsers). `previous` keeps its
+/// box and slots on a hidden object; its realm's script no longer reaches it through the proxy.
+/// Null when `previous` is not a registered global of `clasp`.
+pub unsafe fn RovesNewWindowGlobalReusingProxy(
+    cx: *mut JSContext,
+    clasp: *const crate::jsapi::JSClass,
+    principals: *mut JSPrincipals,
+    options: *const crate::jsapi::RealmOptions,
+    previous: *mut JSObject,
+) -> *mut JSObject {
+    if previous.is_null() {
+        return std::ptr::null_mut();
+    }
+    // SAFETY: forwarded.
+    unsafe { new_global(cx, clasp, principals, options, previous) }
+}
+
+unsafe fn new_global(
+    cx: *mut JSContext,
+    clasp: *const crate::jsapi::JSClass,
+    principals: *mut JSPrincipals,
+    options: *const crate::jsapi::RealmOptions,
+    previous: *mut JSObject,
+) -> *mut JSObject {
+    // SAFETY: callers pass a live context.
+    let raw = unsafe { &*cx };
     let created = raw.catching(|scope| {
         let template = raw.class_templates.template(scope, clasp);
-        let context = v8::Context::new(scope, v8::ContextOptions { global_template: Some(template), ..Default::default() });
+        let mut reused = None;
+        if !previous.is_null() {
+            let data = realm_data(realm_of_object(raw, previous))?;
+            let same_class = crate::object::class_box(previous).is_some_and(|class_box| class_box.class == clasp);
+            if data.global.get() != previous || !same_class {
+                return None;
+            }
+            // SAFETY: a live global cell; its value is the old context's global proxy.
+            let proxy = unsafe { crate::cell::cell_value(scope, previous as *mut c_void) };
+            let old_context = data.context(scope);
+            crate::object::rehome_global_cell(scope, previous)?;
+            roves_v8::global_proxy::detach_global(&old_context);
+            reused = Some(proxy);
+        }
+        let context = v8::Context::new(scope, v8::ContextOptions { global_template: Some(template), global_object: reused, ..Default::default() });
         // The class box goes on the global proxy (what scripts see as `globalThis`) before
         // anything converts it.
         let global = context.global(scope);

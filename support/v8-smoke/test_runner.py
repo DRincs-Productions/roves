@@ -194,7 +194,7 @@ elif page == 'wasm-csp.html':
     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
 elif page == 'nav1.html':
     print('ROVES-V8 nav2 loaded nav2.html true second page')
-    if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=true')
+    if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
 else:
     if page == 'suite.html' and scenario == 'assertion':
         print('SUITE FAIL example :: intentionally false')

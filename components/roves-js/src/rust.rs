@@ -411,6 +411,7 @@ impl Runtime {
             modules: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             saved_realms: RefCell::new(Vec::new()),
+            next_window_proxy_reuse: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
             realm_sweep: std::cell::Cell::new(0),
         });

@@ -2867,6 +2867,26 @@ impl ScriptThread {
             embedder_chan: self.senders.pipeline_to_embedder_sender.clone(),
         };
 
+        // Roves (V8): keep the browsing context's WindowProxy identity across navigations. V8
+        // keeps one global proxy per context, so the new Window's global takes over the proxy of
+        // the window it replaces in this thread; references scripts hold to the old window then
+        // reach the new one, as in browsers. The replaced document cannot get the proxy back:
+        // session history reloads it instead of resuming it (`session_history_max_length` is 0).
+        // Rooted until `Window::new` below has created the global that consumes it.
+        let replaced_window = self
+            .window_proxies
+            .find_window_proxy(incomplete.browsing_context_id)
+            .and_then(|proxy| proxy.currently_active())
+            .and_then(|pipeline| self.documents.borrow().find_window(pipeline));
+        if let Some(previous) = &replaced_window {
+            unsafe {
+                js::jsapi::RovesReuseWindowProxyForNextGlobal(
+                    cx.raw_cx(),
+                    previous.reflector().get_jsobject().get(),
+                );
+            }
+        }
+
         // Create the window and document objects.
         let window = Window::new(
             cx,

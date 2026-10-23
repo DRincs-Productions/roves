@@ -1,3 +1,33 @@
+## 2026-10-23 - Keep WindowProxy identity across navigations on V8
+
+**Files:** new `components/roves-v8/src/global_proxy.rs` (+ `lib.rs`),
+`components/roves-js/src/{cell.rs,object.rs,realm_impl.rs,jsapi.rs,rust.rs,tests.rs}`,
+`components/script/script_thread.rs`, `components/config/prefs.rs`,
+`support/v8-smoke/{events.html,run.sh,test_runner.py}`; patch
+`0303-window-proxy-identity-across-navigations.patch`, `README.md`.
+
+Before, a navigation gave the new Window a new V8 global proxy, so references to the old window
+(`iframe.contentWindow`, openers) kept seeing the old page. V8 keeps identity only by creating
+the new context on the old global proxy (`ContextOptions::global_object`) after detaching it
+(`Context::DetachGlobal`, bound like 0289's incumbent symbols: Itanium and MSVC names, the MSVC one
+checked with llvm-nm on the official v152.2.0 Windows library). In roves-js a Window global's
+JSAPI cell is the proxy itself, so the previous Window's cell is first moved to a hidden object
+carrying its class box (`object::rehome_global_cell`; cells' traced value became replaceable,
+`cell::set_cell_value`), so Servo's later teardown of the old document cannot touch the new
+window. `RovesNewWindowGlobalReusingProxy` does this explicitly; `RovesReuseWindowProxyForNextGlobal`
+makes the next Window global `JS_NewGlobalObject` creates take it over, so generated bindings are
+unchanged. `ScriptThread::load` sets it to the browsing context's currently active window in the
+same thread. A page that handed over its proxy cannot get it back, so `session_history_max_length`
+now defaults to 0 (back/forward reload pages; the navigation smoke now expects
+`pageshow persisted=false`), as the user chose. Known difference: Servo runs the old page's
+`unload` handlers after the takeover. Tests: a V8-level test (old references see the new global);
+a roves-js test (held references reach the new window, also after GC, fresh global, old native
+state kept off the proxy, invalid previous rejected or ignored, side channel). A first
+implementation passed the class box's object pointer instead of its cppgc pointer to `wrap`,
+crashing in GC marking; the GC step in the test catches it. New smoke: an iframe keeps its
+`contentWindow` across a `srcdoc` navigation. Engine 7 tests, runtime 104 normal/103 JITless,
+smoke runner 9/9; script crate and browser behavior verified by CI.
+
 ## 2026-10-23 - Remove the phase-1 V8 runtime and the WebIDL V8 pilot
 
 **Files:** `components/roves-v8/{Cargo.toml,Cargo.lock,src/lib.rs,src/foreground.rs}` (removed

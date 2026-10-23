@@ -600,3 +600,8 @@ do, and callbacks run by the engine no longer see the script that registered the
 crashing the page's script thread.
 `postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
 `DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
+
+A reference to a window (`iframe.contentWindow`, `window.opener`, a popup from `window.open`)
+stays the same object when that window navigates to another page served by the same script
+thread, as in browsers. Going back or forward in history therefore reloads the page instead of
+resuming it from memory (`session_history_max_length` defaults to 0).
