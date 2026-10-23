@@ -1,3 +1,10 @@
+## 2026-10-23 - Diagnostic process: reading native V8 heap snapshots with MemLab
+
+No source change and no patch. Retainer paths in the snapshot written by the 0320 debug hook are
+read with Meta's MemLab (MIT, `memlab@2.0.5`) installed in a throwaway prefix outside the repo,
+instead of a heap-graph parser of ours. Not a project dependency. Runbook and limitations:
+`docs/V8_MIGRATION.md` (0321).
+
 ## 2026-10-23 - Debug-only native V8 heap snapshot of a removed blank frame
 
 **Files:** `components/roves-js/src/{heap_snapshot.rs (new),runtime_impl.rs,lib.rs}`,

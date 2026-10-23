@@ -1,3 +1,9 @@
+## 23 ottobre — lettura snapshot V8 con MemLab (0321)
+
+Strumento di analisi, non una misura: MemLab2.0.5 (MIT) in prefisso temporaneo WSL, nessun
+browser, nessun profilo. Sulla cattura unitaria nativa0320 trova e traccia l’eyecatcher;
+runbook, comandi e limiti in V8_MIGRATION.md (0321). Nessun dato RAM/CPU/GPU né risparmio.
+
 ## 23 ottobre — conferma Chrome MCP dopo0319
 
 Stessa scena HTTP events.html/loopback19023, Chrome155 Windows, pagina visibile, reload

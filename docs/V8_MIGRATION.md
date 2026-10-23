@@ -14,6 +14,17 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ### Checkpoint attuale0318–0320
 
+**Aggiornamento93afe3af909:** Android/iOS verdi; V840007474006 ha entrambi i Linux smoke
+rossi per0318: "opaque: contentWindow changed, source is not the held window, cross-origin
+allowlist unusable". Windows V8 e generale40007474044 ancora attivi all’ultimo controllo.
+Non fare push prima della conclusione e correzione. Snapshot0320 RIUSCITO:4.91MB, ottavaGC,
+frame/probe/document ancora vivi; artifact12524484912 (847088byteszip), nome
+v8-heap-snapshot-frame-retention. Il fallimento identità è distinto dalla cattura riuscita.
+Priorità0322: identità stabile del wrapper ricevente nei passaggi locale→remoto→locale.
+La cache corrente usa il vecchio global proxy come chiave e salta la cache per i proxy
+remoti: il nuovo canonicalremote è restituito comeoggetto diverso dall’heldwrapper.
+MemLab0321 convalidato su campione V8 reale, selector tramite API mantenuta, nienteBFSnostro.
+
 Codex ha revisionato0318/0319 (origine WindowProxy e scheduler): Chrome MCP155 HTTP/visibile
 17/17; Roves ancora da nuovaCI.0318 commit20170c737db,0319 ad91debe7d7.0320 completo:
 snapshot heap nativo V8 opt-in/debug, one-shot all’ottava TestUtils.gc della scena conun
@@ -24,8 +35,8 @@ identici con3eccezioni note. Anche roves-action README aggiornato, nessun input/
 Batch2e9eb7ee15f TUTTO VERDE: V839999937163, generale39999937068, Android39999936958,
 iOS39999936976. Si può pubblicare0318–0320. Lo snapshot sarà prodotto dal prossimo job
 Linux normal come artifact v8-heap-snapshot-frame-retention (3giorni), non dal MCP Chrome.
-Prossimo lavoro circoscritto: analizzatore di percorsi candidati nello snapshot con stdlib
-Python/metadati V8, poi lettura dell’artifact reale. Niente ipotesi di fix globale senza prove.
+Analizzatore proprio di percorsi superato da0321: si usa MemLab (vedi runbook sotto), poi
+lettura dell’artifact reale. Niente ipotesi di fix globale senza prove.
 0317 reale normal/JITless: moduli E frame senza moduli0/2 rilasciati in tutte le categorie.
 Il percorso moduli non è l’unica causa. Evitare di ripetere misure Chrome non equivalenti.
 
@@ -172,6 +183,43 @@ nativo solo a quel processo, file/marker/validatore obbligatori. v8.yml: solo Li
 artifact v8-heap-snapshot-frame-retention 3 giorni. Test: nativi normal/JITless (4),
 unittest Windows29 (8skip POSIX)/WSL29, negativi con run.sh di HEAD. Snapshot V8 Roves, non
 MCP (snapshot Chrome MCP negato); nessun risparmio RAM. Log: target/task-0320/.
+
+**0321 (Claude, revisionato da Codex, solo documentazione + strumenti temporanei ignorati):** runbook
+MemLab per i retainer dello snapshot nativo. Riuso invece di un parser/BFS nostro: MemLab
+(Meta, licenza MIT, npm `memlab@2.0.5`, gitHead d454ded1a817, puppeteer24.31.0 non usato)
+legge il formato `.heapsnapshot` di `Isolate::take_heap_snapshot` senza conversioni. Nessuna
+dipendenza di progetto/Cargo/lock, nessun browser scaricato o avviato, nessun risparmio RAM.
+Installazione provata solo in WSL Ubuntu (Node24.12.0, npm11.6.2; Windows nativo non provato),
+prefisso temporaneo `/tmp/roves-task0321-memlab` (≈190MB, rimuovibile con `rm -rf`):
+
+    PUPPETEER_SKIP_DOWNLOAD=1 npm install --prefix /tmp/roves-task0321-memlab \
+      --cache /tmp/roves-task0321-memlab/.npm-cache --no-audit --no-fund --ignore-scripts memlab@2.0.5
+
+Lo shebang `#!/usr/bin/env node --expose-gc ...` (senza `-S`) non funziona su Linux e resta
+bloccato al100% CPU; invocare `node --expose-gc --max-old-space-size=4096
+.../node_modules/@memlab/cli/bin/memlab.js` (wrapper `target/task-0321/ml.sh`, timeout300 s).
+Anche `memlab help <cmd>` resta bloccato dopo l’intestazione: usare docs ufficiali/sorgente.
+Script ignorati in `target/task-0321/`: `install.sh`, `ml.sh`, `run-analyze.sh`, `run-trace.sh`,
+`select-node.js` (selettore di ID one-off: solo `getFullHeapFromFile` e iterazione API MemLab,
+per `--class NOME` o `--edge PROPRIETÀ`; exit1 se nessun nodo). Per l’artifact frame:
+
+    node target/task-0321/select-node.js SNAP --edge rovesFrameRetentionProbe > sel.json
+    target/task-0321/ml.sh trace --snapshot SNAP --node-id <id da sel.json> --work-dir W
+    target/task-0321/ml.sh analyze object --snapshot SNAP --node-id <id> --work-dir W --output json
+
+Il probe è un `Object` semplice: selezionarlo per proprietà, non per classe; assenza del nodo
+nello snapshot = probe raccolto oppure scena diversa (verificare i marker run.sh prima).
+Esito sulla cattura unitaria 0320 (`real.heapsnapshot`, 1.16MB): parse/dominatori riusciti;
+eyecatcher `RovesSnapshotEyecatcher` @22409 (104 B), referrer `eyecatcher` dal JSGlobalObject
+@21673 e `value` da PropertyCell; trace: GC roots → C++ native stack roots → RovesJsRealm @2 →
+RovesJsCell @8 → JSGlobalProxy @21671 → global_object → eyecatcher. Percorso atteso per un
+realm tenuto vivo dal test, non prova di retention browser. Limiti: `trace` con ID inesistente
+esce0 senza alcuna traccia né errore (controllare che l’output contenga `@<id>`); snapshot non
+valido: exit1 "Error parsing heap snapshot". `analyze global-variable` richiede un nodo
+`Window` e qui restituisce `[]`. MemLab mostra solo il percorso più breve; lo snapshot V8 vede
+gli oggetti C++ soltanto tramite gli archi embedder esposti (non il grafo cppgc unificato),
+quindi un retainer solo nativo può comparire come radice sintetica. Una sola cattura non prova
+un leak; nessun fix proposto. Log: target/task-0321/*.log, *.json, *.txt.
 
 ### Prossimi punti
 
