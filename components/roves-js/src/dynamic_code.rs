@@ -15,33 +15,33 @@ pub(crate) struct FunctionArguments<'a> {
     pub(crate) body_argument: JSVal,
 }
 
-const INSTALL: &str = r#"(function(handlers) {
+const INSTALL: &str = r#"(function(wrappers) {
   const define = Object.defineProperty;
   const descriptor = Object.getOwnPropertyDescriptor;
   const getPrototype = Object.getPrototypeOf;
   const setPrototype = Object.setPrototypeOf;
   const constructors = [Function, getPrototype(function*(){}).constructor,
     getPrototype(async function(){}).constructor, getPrototype(async function*(){}).constructor];
-  // Trap-less [[GetPrototypeOf]] and [[PreventExtensions]] forward to the targets,
-  // so Proxy invariants hold whatever scripts later do to the constructors.
-  // The traps are native: a JS trap frame would become the eval origin of the
-  // compiled code (and so the referrer of its dynamic imports) instead of the caller.
-  const wrappers = constructors.map((target, kind) => new Proxy(target, handlers[kind]));
   for (let kind = 0; kind < constructors.length; ++kind) {
-    const target = constructors[kind];
-    // %GeneratorFunction% and its siblings inherit from %Function% (ECMA-262
-    // 27.3.2, 27.4.2, 27.7.2); relink them so the original never leaks.
+    const target = constructors[kind], wrapper = wrappers[kind];
+    // Each wrapper takes its constructor's place: same prototype object (ECMA-262
+    // 20.2.2.2: non-writable, non-enumerable, non-configurable) and, for
+    // %GeneratorFunction% and its siblings, %Function% as [[Prototype]] (27.3.2,
+    // 27.4.2, 27.7.2), so the original never leaks.
+    define(wrapper, 'prototype', { value: target.prototype, writable: false, enumerable: false, configurable: false });
     if (kind !== 0) {
       if (getPrototype(target) !== Function) throw new TypeError('unexpected constructor parent');
-      setPrototype(target, wrappers[0]);
+      setPrototype(wrapper, wrappers[0]);
     }
     const property = descriptor(target.prototype, 'constructor');
-    property.value = wrappers[kind];
+    property.value = wrapper;
     define(target.prototype, 'constructor', property);
   }
   globalThis.Function = wrappers[0];
   return true;
 })"#;
+
+const NAMES: [&str; 4] = ["Function", "GeneratorFunction", "AsyncFunction", "AsyncGeneratorFunction"];
 
 pub(crate) fn install(scope: &mut v8::PinScope) -> Option<()> {
     crate::realm_impl::realm_cached(scope, "DynamicFunctionCsp", |scope| {
@@ -52,41 +52,41 @@ pub(crate) fn install(scope: &mut v8::PinScope) -> Option<()> {
         let construct = reflect.get(scope, construct_key.into())?;
         let error_key = v8::String::new(scope, "EvalError")?;
         let error = global.get(scope, error_key.into())?;
-        let apply_key = v8::String::new(scope, "apply")?;
-        let construct_key = v8::String::new(scope, "construct")?;
-        let mut handlers = Vec::new();
-        for kind in 0..4 {
-            let kind = v8::Integer::new(scope, kind).into();
-            let data = v8::Array::new_with_elements(scope, &[construct, error, kind]);
-            let handler = v8::Object::new(scope);
-            let apply = v8::Function::builder(apply_trap).data(data.into()).build(scope)?;
-            handler.set(scope, apply_key.into(), apply.into())?;
-            let construct = v8::Function::builder(construct_trap).data(data.into()).build(scope)?;
-            handler.set(scope, construct_key.into(), construct.into())?;
-            handlers.push(handler.into());
+        let source = v8::String::new(scope, CONSTRUCTORS)?;
+        let targets = v8::Script::compile(scope, source, None)?.run(scope)?;
+        let targets = v8::Local::<v8::Array>::try_from(targets).ok()?;
+        let mut wrappers = Vec::new();
+        for (kind, name) in NAMES.into_iter().enumerate() {
+            let target = targets.get_index(scope, kind as u32)?;
+            let kind = v8::Integer::new(scope, kind as i32).into();
+            let data = v8::Array::new_with_elements(scope, &[construct, error, kind, target]);
+            // A native function, not a Proxy: `toString` gives `function Function() {
+            // [native code] }`, and no JS frame becomes the eval origin of compiled code
+            // (and so the referrer of its dynamic imports) instead of the caller.
+            let wrapper = v8::Function::builder(create_dynamic_function).data(data.into()).length(1).build(scope)?;
+            let name = v8::String::new(scope, name)?;
+            wrapper.set_name(name);
+            wrappers.push(wrapper.into());
         }
-        let handlers = v8::Array::new_with_elements(scope, &handlers);
+        let wrappers = v8::Array::new_with_elements(scope, &wrappers);
         let source = v8::String::new(scope, INSTALL)?;
         let installer = v8::Script::compile(scope, source, None)?.run(scope)?;
         let installer = v8::Local::<v8::Function>::try_from(installer).ok()?;
         let undefined = v8::undefined(scope).into();
-        installer.call(scope, undefined, &[handlers.into()])
+        installer.call(scope, undefined, &[wrappers.into()])
     })?;
     Some(())
 }
 
-/// Proxy `apply(target, receiver, arguments)` trap.
-fn apply_trap<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
-    let undefined = v8::undefined(scope).into();
-    if let Some(value) = compile(scope, &args, args.get(1), undefined, args.get(2)) {
-        result.set(value);
-    }
-}
+/// The original constructors, by kind.
+const CONSTRUCTORS: &str = "[Function, Object.getPrototypeOf(function*(){}).constructor, \
+    Object.getPrototypeOf(async function(){}).constructor, Object.getPrototypeOf(async function*(){}).constructor]";
 
-/// Proxy `construct(target, arguments, newTarget)` trap.
-fn construct_trap<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
-    let undefined = v8::undefined(scope).into();
-    if let Some(value) = compile(scope, &args, undefined, args.get(2), args.get(1)) {
+/// CreateDynamicFunction (ECMA-262 20.2.1.1.1), called or constructed: checks and authorizes
+/// the source, then lets the original constructor compile it.
+fn create_dynamic_function<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut result: v8::ReturnValue<'s>) {
+    let inputs = (0..args.length()).map(|index| args.get(index)).collect::<Vec<_>>();
+    if let Some(value) = compile(scope, &args, args.new_target(), &inputs) {
         result.set(value);
     }
 }
@@ -94,22 +94,19 @@ fn construct_trap<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallba
 fn compile<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     args: &v8::FunctionCallbackArguments<'s>,
-    receiver: v8::Local<'s, v8::Value>,
     new_target: v8::Local<'s, v8::Value>,
-    inputs: v8::Local<'s, v8::Value>,
+    inputs: &[v8::Local<'s, v8::Value>],
 ) -> Option<v8::Local<'s, v8::Value>> {
     let raw = JSContext::current();
     let cx = raw as *const JSContext as *mut JSContext;
-    let target = v8::Local::<v8::Function>::try_from(args.get(0)).ok()?;
-    let inputs = v8::Local::<v8::Array>::try_from(inputs).ok()?;
     let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
+    let target = v8::Local::<v8::Function>::try_from(data.get_index(scope, 3)?).ok()?;
     crate::rooted!(in(cx) let mut originals = Vec::<JSVal>::new());
     crate::rooted!(in(cx) let mut strings = Vec::<*mut JSString>::new());
     let mut converted = Vec::<v8::Local<v8::Value>>::new();
     // HostGetCodeForEval reads a TrustedScript's real data before ToString. This
     // ignores forged coercion methods on branded objects, matching direct eval.
-    for index in 0..inputs.length() {
-        let input = inputs.get_index(scope, index)?;
+    for (index, &input) in inputs.iter().enumerate() {
         let original = from_v8(scope, input);
         originals.push(original);
         crate::rooted!(in(cx) let mut extracted = std::ptr::null_mut::<JSString>());
@@ -131,7 +128,7 @@ fn compile<'s>(
         // Servo's TrustedScriptOrString arguments retain objects, while untrusted
         // primitive arguments are represented by their already-converted strings.
         if !input.is_object() && !input.is_string() {
-            originals[index as usize] = string_value;
+            originals[index] = string_value;
         }
         converted.push(string.into());
     }
@@ -183,7 +180,8 @@ fn compile<'s>(
     // constructor call. All ToString callbacks have finished before authorization.
     let _authorization = crate::runtime_impl::authorize_function(raw, scope, source);
     if new_target.is_undefined() {
-        target.call(scope, receiver, &converted)
+        let undefined = v8::undefined(scope).into();
+        target.call(scope, undefined, &converted)
     } else {
         let construct = data.get_index(scope, 0)?;
         let construct = v8::Local::<v8::Function>::try_from(construct).ok()?;

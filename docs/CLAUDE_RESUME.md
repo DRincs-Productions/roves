@@ -5,15 +5,12 @@
 - Pubblicato: `a4599fb2a5e` (commit vuoto di retry sopra `2e96c8663aa`, che contiene 0282–0286),
   wiki `0928dba`. Claude lavora su Linux/WSL **senza credenziali push**: commit solo locali,
   l'utente pubblica periodicamente con `git push origin main` (wiki prima del puntatore root).
-- 0287 pubblicata dall'utente (`8799e4eec20`): CI V8 `39917959741` e generale `39917959712`
-  in corso all'ultimo controllo (fanno anche da retry del timeout Ubuntu), Android/iOS verdi.
-- Locale non pubblicato: 0288, nota WindowProxy, 0289 (root); wiki `0b76146` e successivi. Pushare solo con
-  batch `8799e4e` tutto verde (o rosse analizzate e corrette).
-- CI su `2e96c86`: V8 `39852305242` verde, Android/iOS verdi; generale `39852305257` rossa solo
-  per timeout `mach bootstrap` (apt lento, 90 min, prima della compilazione) del job
-  `linux portable`. Il commit vuoto ha avviato solo Android/iOS (verdi), perché generale e V8
-  sono filtrate per percorso. Il prossimo push con 0287 (tocca `patches/**` e `components/roves-v8/**`)
-  rilancia entrambe: controllarle; se il timeout si ripete, valutare `--no-install-recommends`.
+- Batch `8799e4e` (0287) tutto verde: V8 `39917959741`, generale `39917959712` (anche il job
+  Ubuntu portable, timeout di ieri risolto), Android/iOS.
+- Pubblicato dall'utente `9781833` (0288, nota WindowProxy, 0289 + wiki): CI V8 `39921481100`,
+  generale `39921480989`, Android/iOS in corso. Verifica critica: link dei simboli C++
+  mangled di 0289 su Windows (MSVC) e macOS; se fallisce, analizzare il log del linker.
+- Locale non pubblicato: 0290 (costruttori dinamici nativi). Pushare solo a batch verde.
 - PAT di sola lettura: l'utente lo fornisce in chat; usarlo inline, mai salvarlo.
 
 ## Verifiche locali (Linux/WSL)
@@ -43,6 +40,7 @@ docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico: NON 
 | 0287 | `set_handler(None)` distrugge i task ritardati della registrazione ancora nel timer, fuori dai lock; accodamento sotto lock registro. Test reale `Atomics.waitAsync`, negativo verificato. Motore67+2doctest, runtime100/99. |
 | 0288 | Ex 0273: trap Proxy native per Function/generator/async; `import()` nel corpo usa il chiamante. Corpo identico riusa il primo referrer come V8 nativo (cache eval; disattivata solo con debugger). Runtime101/100. |
 | 0289 | Incumbent V8: `GetIncumbentContext`/`BackupIncumbentScope` via simboli C++ esportati (Itanium/MSVC, verificati con llvm-nm). Caller global = frame più interno; Hide/Unhide = scope con sentinella. Runtime102/101. Link Windows/macOS da CI. |
+| 0290 | Costruttori dinamici come funzioni native con nome (non Proxy): `toString` come V8 nativo. Runtime102/101. |
 | 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
 Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.

@@ -1,3 +1,21 @@
+## 2026-10-23 - Native functions instead of Proxies for dynamic Function constructors
+
+**Files:** `components/roves-js/src/{dynamic_code.rs,tests.rs}`, patch
+`0290-native-dynamic-function-constructors.patch`.
+
+The Trusted Types/CSP wrappers of `Function` and its generator/async siblings were Proxies
+(native traps since 0288). V8 prints a callable Proxy as `function () { [native code] }`, so
+`Function.prototype.toString.call(Function)` lost the constructor name that V8's own
+constructors (and Chrome) print. Each wrapper is now a rusty_v8 native function named after
+its constructor, with length 1; one callback serves call and construct (`new_target`), with
+the same conversion, CSP check, authorization and original compiler. The installer gives
+each wrapper the original `prototype` object (non-writable, non-enumerable, non-configurable)
+and, for the siblings, `Function` as [[Prototype]]; the originals stay unreachable. Less code:
+no Proxy handlers or separate apply/construct traps. The constructor-graph regression now
+requires the exact `function <Name>() { [native code] }`; the Proxy version fails with
+`source 0`. Runtime 102 normal/101 JITless (2/3 ignored); replay on HEAD identical. Logs
+`target/task-0290/` (Linux/WSL).
+
 ## 2026-10-23 - V8 incumbent context and real HideScriptedCaller
 
 **Files:** `components/roves-v8/src/{lib.rs,incumbent.rs}`,

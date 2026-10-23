@@ -15,6 +15,10 @@ Lavorare con commit locali. Workspace test: `CARGO_TARGET_DIR=target/roves-v8` p
 `components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
 jitless`). Log in `target/task-NNNN/`.
 
+**0290 completa localmente:** i costruttori dinamici sono funzioni native con nome invece di
+Proxy; `toString` dà `function Function() { [native code] }` come V8 nativo. Grafo dei
+costruttori invariato (test reso esatto sul sorgente; il Proxy fallisce). Runtime 102/101.
+
 **0289 completa localmente — incumbent:** binding diretti ai simboli C++ esportati dalla
 libreria precompilata (`GetIncumbentContext`, `BackupIncumbentScope`; nomi MSVC verificati con
 llvm-nm sulla lib Windows ufficiale v152.2.0). `GetScriptedCallerGlobal` usa il realm del frame
@@ -1361,6 +1365,9 @@ newTarget, Trusted Types/CSP e toString. Il riferimento Chrome MCP a/b resta rea
 sessione inspector non dimostra come lavori la cache in un browser senza inspector.
 
 ### Incarichi successivi già studiati (da precisare prima della delega)
+
+Aggiornamento 23 ottobre: entrambi completati (import.meta.resolve in 0274, registro debole
+dei moduli sorgente in 0275); il testo sotto resta solo come storico.
 
 - **Lifetime import.meta.resolve:** oggi SLOT_MODULEPRIVATE contiene il private grezzo,
   senza trattenere Rc<ModuleScript>. Prima di indebolire la tabella Modules, la funzione

@@ -1852,7 +1852,8 @@ mod runtime_hooks {
             if (Object.getPrototypeOf(C) !== (kind === 0 ? Function.prototype : Function)) return 'parent ' + kind;
             if (kind !== 0 && Object.getPrototypeOf(prototype) !== Function.prototype) return 'prototype parent ' + kind;
             if (typeof C !== 'function' || !(C instanceof Function)) return 'instanceof ' + kind;
-            if (!/^function \w*\(\) \{ \[native code\] \}$/.test(Function.prototype.toString.call(C))) return 'source ' + kind;
+            // V8's own constructors print their name; a Proxy wrapper printed none.
+            if (Function.prototype.toString.call(C) !== `function ${names[kind]}() { [native code] }`) return 'source ' + kind;
         }
         return 'ok';
     })()"#;
