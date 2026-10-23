@@ -1,51 +1,37 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Stato corrente — 23 ottobre 2026 (ripresa con Claude)
+## Stato corrente — 23 ottobre 2026, sera
 
-Pubblicati 0282–0286 (`2e96c8663aa`, wiki `0928dba`). CI su `2e96c86`: V8 `39852305242`,
-Android, iOS verdi; generale `39852305257` rossa solo per `build-and-publish (ubuntu-24.04,
-linux, portable)`: `mach bootstrap` scaduto a 90 min durante il download apt (438 pacchetti,
-mirror azure lento), prima della compilazione; gli altri 12 job verdi. Il commit vuoto
-`a4599fb2a5e` ha avviato solo Android/iOS (verdi): generale e V8 sono filtrate per percorso,
-quindi il retry avverrà con il prossimo push che tocca `patches/**`. Valutare in seguito
-`--no-install-recommends` o mirror alternativo se il timeout si ripete.
+Ambiente Claude: Linux/WSL senza credenziali push; l'utente pubblica. Test locali:
+`CARGO_TARGET_DIR=target/roves-v8` in `components/roves-v8`, `target/roves-js` in
+`components/roves-js` (`cargo test --locked [--features jitless]`), più
+`support/v8-smoke/test_runner.py`. Prima di ogni push che tocca `patches/`: replay completo su
+Servo v0.5.0 pristine (come `validate-servo-patches`). Log in `target/task-NNNN/`.
 
-Ambiente Claude: Linux/WSL, nessuna credenziale push; l'utente pubblica periodicamente.
-Lavorare con commit locali (pilot WebIDL e Runtime di fase 1 rimossi in 0302). Workspace test: `CARGO_TARGET_DIR=target/roves-v8` per
-`components/roves-v8`, `target/roves-js` per `components/roves-js` (cargo test, `--features
-jitless`). Log in `target/task-NNNN/`.
+**Pubblicato e verde in CI** (fino a `607b2e5`, tutte le run verdi): 0282–0301 — ciclo di vita
+dei task V8 (0282–0287, 0299), `import()` in `new Function` (0288), incumbent V8 e
+`HideScriptedCaller` reale (0289), costruttori dinamici nativi con `toString` corretto (0290),
+matrice CSP (0291), codice morto (0292, 0300), smoke browser (0293, 0295), entry global per le
+callback eseguite da V8 (0294), fixture runner (0296), DataCloneError per SAB/Wasm.Module
+(0297), detach key ArrayBuffer (0298), download apt paralleli e cache in CI (0301, workflow).
 
-**0290 completa localmente:** i costruttori dinamici sono funzioni native con nome invece di
-Proxy; `toString` dà `function Function() { [native code] }` come V8 nativo. Grafo dei
-costruttori invariato (test reso esatto sul sorgente; il Proxy fallisce). Runtime 102/101.
+**Pubblicato, CI da confermare:** `7189b10` — 0302 rimozione del Runtime di fase 1 di
+`roves-v8`, del pilot WebIDL e del backend V8 di `codegen.py` (V8 in corso; generale rossa per
+l'hunk del `Cargo.lock` radice in 0302, corretto in locale).
 
-**0289 completa localmente — incumbent:** binding diretti ai simboli C++ esportati dalla
-libreria precompilata (`GetIncumbentContext`, `BackupIncumbentScope`; nomi MSVC verificati con
-llvm-nm sulla lib Windows ufficiale v152.2.0). `GetScriptedCallerGlobal` usa il realm del frame
-JS più interno; `Hide/UnhideScriptedCaller` sono scope di backup su un context sentinella per
-runtime (nascosto solo finché nessun frame JS più recente). Test motore e runtime; il vecchio
-codice fallisce il caso cross-realm. Runtime 102/101, motore 68+2. Link Windows/macOS e
-comportamento browser solo da CI. `DetachGlobal` è esportato allo stesso modo (per WindowProxy)
-ma non ancora usato: vedi CLAUDE_RESUME per il conflitto con la ripresa dei documenti Servo.
+**Solo locale:** `17654e7` (0302 senza hunk `Cargo.lock` radice, replay completo verificato) e
+`00d3990` 0303 — identità WindowProxy nelle navigazioni dello stesso thread (riuso del global
+proxy con `Context::DetachGlobal`, vecchia cella su oggetto nascosto, canale
+`RovesReuseWindowProxyForNextGlobal`, `session_history_max_length` = 0). Verifica browser da CI
+(`events.html` iframe, `nav1` `persisted=false`).
 
-**0288 (ex 0273) completa localmente:** trap Proxy native per i quattro costruttori
-dinamici; il frame JS dell'installer non è più l'origine eval, quindi `import()` nel corpo
-risolve dal modulo/script chiamante (test: owner corretti 11/22/11, vecchio codice -1).
-Diagnosi cache chiusa: con il V8 152 nativo (nessuna trap, nessun inspector) anche Function
-ed eval indiretto con corpo identico riusano il primo referrer; `--no-compilation-cache` lo
-elimina; `Debug::UpdateState` disabilita la cache con debugger collegato, il che spiega il
-riferimento DevTools a/b. Parità V8 accettata e documentata (README/wiki), nessuna
-disattivazione della cache. Runtime 101/100. Smoke browser e WPT restano da CI.
+**Aperto** (dettagli nelle sezioni 2 e 4): WindowProxy cross-origin e cambi di origine; rilascio
+di realm/global/moduli dopo navigazione o chiusura; ultimi task V8 abbandonati in casi rari;
+`unload` eseguito dopo il passaggio del proxy; audit delle API approssimate non banali; WPT
+selettivi, stress GC estesi, smoke PixiJS/Three.js, confronto memoria/prestazioni con Chrome
+(serve DevTools MCP, assente in WSL); release e aggiornamento dei pin di Action e Packmaster.
 
-**0287 completa localmente:** `set_handler(None)` recupera e distrugge, fuori dai lock, i task
-ritardati ancora nel timer della registrazione rimossa (isolate ancora vivo); `post_delayed`
-accoda sotto il lock del registro, quindi nessuna race lascia task orfani. Sostituzione handler
-e task già estratti dal timer mantengono la politica conservativa. Test reale con
-`Atomics.waitAsync`; negativo senza recupero fallisce (1 task rimasto). Motore 67+2 doctest
-normal/JITless, runtime 100/99 (2/3 ignorati). Replay su HEAD identico. Restano conservativi:
-task immediati senza handler, task in consegna durante la rimozione, sostituzione handler.
-
-## Da leggere alla prossima ripresa
+## Storico della ripresa del 22 ottobre (0281–0286; lo stato attuale è in cima)
 
 **0286 completa localmente:** rimozione/sostituzione handler invalida sotto mutex ma
 rilascia la callback fuori dal registro; i distruttori embedder possono rientrare senza
@@ -499,7 +485,7 @@ diventano raccoglibili; nessun risparmio RAM dimostrato (non misurato). Rischio 
 `import.meta.resolve` conserva il private grezzo in uno slot nativo senza riferimento. Nessuna
 prova browser, nessun MCP Chrome per Claude, nessuna misura CPU/RAM/GPU.
 
-### Ordine operativo alla prossima ripresa
+### Ordine operativo alla ripresa del 22 ottobre (storico)
 
 1. Leggere AGENTS.md e questo riepilogo; verificare stato Git e SHA delle run.
 2. Controllare tutte le CI del batch e709fb3f10b elencate sopra. Analizzare e correggere
@@ -1223,13 +1209,15 @@ risulta superata nella CI corrente.
 - [ ] Verificare WindowProxy durante navigazione, accessi tra origini e cambi di origine.
   I trap prototipo riusano gli helper Servo; lo smoke strict ora copre prototipo same-origin,
   `null` cross-origin, scrittura invariata/respinta e preserva identità, descrittori ed eccezioni.
+  0303 (locale): identità preservata nelle navigazioni dello stesso thread script, con ricarica
+  su avanti/indietro. Restano navigazioni verso un altro thread (cross-origin), `document.domain`
+  e l'ordine di `unload` (oggi dopo il passaggio del proxy).
 - [x] Correggere `JS_SetImmutablePrototype` sul percorso Window di produzione:
   template canonico V8 e smoke browser Linux normal/JIT-less verdi in `39595584589`.
-- [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
-  CI `39595584589` conferma eval, Function trusted/guardie e Wasm CSP Linux normal/JIT-less.
-  Matrice estesa sui quattro costruttori (0291), stringificazione (0290) e import dinamico
-  (0288) coperti localmente; la 0267 corregge localmente il grafo dei genitori (CI e smoke browser da
-  verificare). Preservare le decisioni di sicurezza del runtime web.
+- [x] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm: CI
+  `39595584589` (eval, Function trusted/guardie, Wasm CSP Linux normal/JIT-less), grafo dei
+  genitori 0267 (`csp.html` constructor graph), matrice sui quattro costruttori (0291),
+  stringificazione (0290) e import dinamico (0288) verdi in CI fino a `607b2e5`.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. La 0266 implementa
   ownership dei metadati classici tramite token/WeakMap/cppgc, con regressioni locali verdi;
   restano verifica browser e misure, realm/moduli e callback. Rilasciare gli oggetti
@@ -1238,7 +1226,10 @@ risulta superata nella CI corrente.
 - [x] Ricontrollare i costruttori callable: il collegamento alla raggiungibilità JS è già stato
   introdotto e non deve essere ripianificato come interamente mancante.
 - [ ] Verificare creazione/terminazione worker, interruzione di script, shutdown e callback
-  pendenti, evitando accessi a isolate o contesti distrutti.
+  pendenti, evitando accessi a isolate o contesti distrutti. Fatto: drain/timer/task per
+  runtime e recupero allo shutdown (0282–0287, 0299), terminazione V8 annullata a stack vuoto
+  come SpiderMonkey (verificato 23/10), smoke worker occupati con lavoro V8 in coda (0295).
+  Restano task immediati senza handler e post in volo dopo `retire` (abbandonati di proposito).
 
 **Criterio di uscita:** test ripetuti di navigazione, worker e GC dimostrano identità corretta,
 finalizzazione senza duplicazioni e rilascio degli oggetti diventati irraggiungibili.
@@ -1254,11 +1245,10 @@ codice sostituito. Documentare anche le valutazioni che concludono di non aggiun
   ha trovato un adattatore parallelo sostituibile senza cambiare i contratti JSAPI/DOM. Restare
   sulla API V8 diretta per nuove migrazioni e rimuovere gli adattamenti solo quando i chiamanti
   risultano sostituiti.
-- [x] **Servo WebIDL — valutazione completata:** conservare parser e semantica del generatore.
-  `v8_coverage.py` accetta 477/477 definizioni alla fase di generazione; questa misura non
-  compila né esegue i binding. Il pilot opt-in esporta solo `Screen` e `ValidityState`, non è
-  usato dal DOM di produzione e non dimostra compatibilità di runtime. Non adottarlo come
-  backend di produzione finché non copre e verifica un insieme ampio di interfacce reali.
+- [x] **Servo WebIDL — valutazione completata:** conservare parser e semantica del generatore
+  (i binding di produzione girano invariati su `roves-js`). Il pilot di un backend V8 separato
+  (misurato con `v8_coverage.py`, 477/477 definizioni accettate alla sola generazione) è stato
+  rimosso in 0302.
 - [x] **serde_v8 — non adottata:** nessuna conversione di API native Roves da tipi Serde è stata
   identificata; l’interfaccia corrente passa valori JS/DOM e le conversioni frequenti devono
   preservare identità. Il crate non è nel `Cargo.lock`; l’upstream dedicato è archiviato e il
@@ -1275,11 +1265,9 @@ codice sostituito. Documentare anche le valutazioni che concludono di non aggiun
 - [x] 23 ottobre, su conferma dell'utente: rimossi Runtime di fase 1 di `roves-v8`, pilot WebIDL,
   `roves-v8-derive`, backend V8 di `codegen.py`, `run_v8.py`, `test_v8.py`, `v8_coverage.py` (0302).
   Non servono alla produzione né agli strumenti di confronto prestazioni (`support/perf/`).
-- [x] Rimosso il wiring Cargo/runtime del pilot WebIDL: non generava binding nelle build normali,
-  ma aggiungeva una feature e una dipendenza opzionale da `roves-v8` solo per esporre due moduli
-  sperimentali. Il driver Python, il backend di generazione e i test restano strumenti di misura;
-  non sono codice runtime. Continuare a eliminare feature senza effetto solo quando i chiamanti
-  sono verificati, preservando rooting/tracing e senza imporre la rimozione di `roves-js`.
+- [x] Rimosso il wiring Cargo/runtime del pilot WebIDL (0246), poi anche driver, backend e test
+  del pilot (0302). Continuare a eliminare codice senza effetto solo quando i chiamanti sono
+  verificati, preservando rooting/tracing.
 
 **Criterio di uscita:** ogni sostituzione elimina codice effettivamente usato in precedenza,
 passa i test pertinenti e ha una decisione documentata. Una valutazione negativa motivata
@@ -1325,11 +1313,8 @@ alle API native.
 La migrazione è conclusa quando le verifiche obbligatorie sono bloccanti e verdi, le lacune
 d’integrazione individuate sono risolte, i test di ciclo di vita passano e il codice obsoleto
 sostituito è rimosso. Le attività indipendenti del runtime web restano nel backlog performance.
-Al 21 ottobre la CI V8 `39595584589` è verde (10/10) e quella generale `39595584650`
-è verde (13/13). La run `39625090343` conclude con sette job verdi e tre macOS cancellati.
-I nuovi controlli
-delle proprietà WindowProxy, slot iniziale GC e matrice Trusted Types attendono ancora
-la pubblicazione e la verifica online. I criteri aperti sopra restano vincolanti.
+Al 23 ottobre tutte le run di `607b2e5` sono verdi; lo stato aggiornato è in cima al documento.
+I criteri aperti sopra restano vincolanti.
 
 I tipi V8 restano confinati al livello scripting. Non sono previste nuove API pubbliche Roves;
 eventuali cambiamenti del comportamento web devono seguire gli standard e avere test dedicati.
@@ -1343,7 +1328,7 @@ Procedere per modifiche buildabili: verifica locale pertinente, commit, push, at
 correzione dei fallimenti prima del passo successivo. Non dichiarare conclusa la migrazione
 sulla base di sole compilazioni o dell’avvio della CI.
 
-### Preparazione del prossimo incarico — 0273
+### Preparazione del prossimo incarico — 0273 (storico: risolto in 0288)
 
 Codex ha verificato compiler.cc V8 152: GetFunctionFromValidatedString parte da empty_function,
 ma GetFunctionFromEval sostituisce eval_from_shared con il primo frame JS quando la posizione
@@ -1358,7 +1343,7 @@ aperta in background ma visible, headless non determinato: due moduli /a/creator
 otto ripetizioni (16 risultati alternati). Nessuna GC o misura prestazionale.
 Prompt dettagliato locale in target/task-0273-native-traps-plan.txt; ricostruibile dai vincoli qui.
 
-### 0273 sospesa dopo diagnosi riproducibile — 22 ottobre, ore 09:55
+### 0273 sospesa dopo diagnosi riproducibile — 22 ottobre, ore 09:55 (storico: risolto in 0288)
 
 Claude ha raggiunto il limite di sessione (ripristino dichiarato alle 13:10 Europe/Rome).
 AGENTS.md richiede implementazione delegata: Codex ha chiesto se procedere direttamente o
