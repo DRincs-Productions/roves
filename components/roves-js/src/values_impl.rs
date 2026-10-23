@@ -779,9 +779,15 @@ pub unsafe fn DetachArrayBuffer(cx: *mut JSContext, obj: Handle<*mut JSObject>) 
     raw(cx).catching(|scope| buffer(scope, obj)?.detach(None)).unwrap_or(false)
 }
 
-pub unsafe fn HasDefinedArrayBufferDetachKey(_cx: *mut JSContext, _obj: Handle<*mut JSObject>, is_defined: *mut bool) -> bool {
+/// V8 has no detach keys. SpiderMonkey defines one for WebAssembly.Memory buffers, which V8
+/// makes non-detachable instead. Like SpiderMonkey, fails for an object that is not a buffer.
+pub unsafe fn HasDefinedArrayBufferDetachKey(cx: *mut JSContext, obj: Handle<*mut JSObject>, is_defined: *mut bool) -> bool {
+    let obj = obj.get();
+    let Some(detachable) = raw(cx).with_scope(|scope| buffer(scope, obj).map(|buffer| buffer.is_detachable())) else {
+        return false;
+    };
     // SAFETY: callers pass a valid out pointer.
-    unsafe { *is_defined = false };
+    unsafe { *is_defined = !detachable };
     true
 }
 

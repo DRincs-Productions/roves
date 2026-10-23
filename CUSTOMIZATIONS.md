@@ -1,3 +1,16 @@
+## 2026-10-23 - ArrayBuffer detach keys on V8
+
+**Files:** `components/roves-js/src/{values_impl.rs,tests.rs}`, patch `0298-array-buffer-detach-key.patch`.
+
+Found by the same parameter audit. `HasDefinedArrayBufferDetachKey` always answered "no key",
+so Servo's Streams `CanTransferArrayBuffer` (`buffer_source.rs`) treated WebAssembly.Memory
+buffers as transferable, and accepted views. SpiderMonkey defines a key for Wasm buffers and
+fails for non-buffers. V8 has no detach keys but makes Wasm memory buffers non-detachable, so
+the key is now reported exactly when `ArrayBuffer::is_detachable()` is false; a non-buffer
+object fails as in SpiderMonkey. Regression in `promises_json_and_value_operations`: ordinary
+buffer (no key), view (fails), Wasm memory buffer (key; skipped in JIT-less). The old code fails
+it. Runtime 102 normal/101 JITless; replay identical.
+
 ## 2026-10-23 - Report refused shared objects in structured clone
 
 **Files:** `components/roves-js/src/{structured_clone_impl.rs,tests.rs}`, patch

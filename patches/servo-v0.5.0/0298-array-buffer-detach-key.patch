@@ -1,0 +1,46 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8ec041cd5e5..579f16a5878 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -3778,6 +3778,19 @@ mod values {
+         assert_eq!(unsafe { std::slice::from_raw_parts(stolen, 4) }, &[1, 2, 3, 4]);
+         unsafe { libc::free(stolen as *mut std::ffi::c_void) };
+         assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
++
++        // Detach keys: ordinary buffers have none; WebAssembly.Memory buffers (non-detachable
++        // in V8) have one; a view is not a buffer.
++        let detach_key = |object: *mut JSObject| {
++            rooted!(in(cx) let object = object);
++            let mut defined = false;
++            unsafe { HasDefinedArrayBufferDetachKey(cx, object.handle().into_handle(), &mut defined) }.then_some(defined)
++        };
++        assert_eq!(detach_key(clone.get()), Some(false));
++        assert_eq!(detach_key(view.get()), None);
++        if eval(&runtime, "typeof WebAssembly === 'object'").to_boolean() {
++            assert_eq!(detach_key(eval(&runtime, "new WebAssembly.Memory({ initial: 1 }).buffer").to_object()), Some(true));
++        }
+     }
+ }
+ 
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index 959fba34fae..fd1ddc3ea3d 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -779,9 +779,15 @@ pub unsafe fn DetachArrayBuffer(cx: *mut JSContext, obj: Handle<*mut JSObject>)
+     raw(cx).catching(|scope| buffer(scope, obj)?.detach(None)).unwrap_or(false)
+ }
+ 
+-pub unsafe fn HasDefinedArrayBufferDetachKey(_cx: *mut JSContext, _obj: Handle<*mut JSObject>, is_defined: *mut bool) -> bool {
++/// V8 has no detach keys. SpiderMonkey defines one for WebAssembly.Memory buffers, which V8
++/// makes non-detachable instead. Like SpiderMonkey, fails for an object that is not a buffer.
++pub unsafe fn HasDefinedArrayBufferDetachKey(cx: *mut JSContext, obj: Handle<*mut JSObject>, is_defined: *mut bool) -> bool {
++    let obj = obj.get();
++    let Some(detachable) = raw(cx).with_scope(|scope| buffer(scope, obj).map(|buffer| buffer.is_detachable())) else {
++        return false;
++    };
+     // SAFETY: callers pass a valid out pointer.
+-    unsafe { *is_defined = false };
++    unsafe { *is_defined = !detachable };
+     true
+ }
+ 

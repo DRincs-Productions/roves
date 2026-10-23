@@ -3778,6 +3778,19 @@ mod values {
         assert_eq!(unsafe { std::slice::from_raw_parts(stolen, 4) }, &[1, 2, 3, 4]);
         unsafe { libc::free(stolen as *mut std::ffi::c_void) };
         assert!(unsafe { IsDetachedArrayBufferObject(buffer.get()) });
+
+        // Detach keys: ordinary buffers have none; WebAssembly.Memory buffers (non-detachable
+        // in V8) have one; a view is not a buffer.
+        let detach_key = |object: *mut JSObject| {
+            rooted!(in(cx) let object = object);
+            let mut defined = false;
+            unsafe { HasDefinedArrayBufferDetachKey(cx, object.handle().into_handle(), &mut defined) }.then_some(defined)
+        };
+        assert_eq!(detach_key(clone.get()), Some(false));
+        assert_eq!(detach_key(view.get()), None);
+        if eval(&runtime, "typeof WebAssembly === 'object'").to_boolean() {
+            assert_eq!(detach_key(eval(&runtime, "new WebAssembly.Memory({ initial: 1 }).buffer").to_object()), Some(true));
+        }
     }
 }
 
