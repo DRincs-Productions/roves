@@ -1,3 +1,15 @@
+## 2026-10-23 - Test: held Window wrappers take a cross-origin replacement
+
+**Files:** `components/roves-js/src/tests.rs`, patch `0309-held-window-wrappers-cross-origin-test.patch`.
+
+Test only, for 0308: when a window navigates to another origin, Servo replaces its window proxy
+with a real proxy over a DissimilarOriginWindow (`unset_currently_active`). A wrapper another
+realm already holds (a parent's `iframe.contentWindow`) now dispatches to the replacement's
+handler, so it gets the cross-origin traps instead of still exposing the old same-origin
+window. Without 0308's forwarding it keeps returning the old page's property. Runtime 107
+normal/106 JITless. References held in the old window's own realm are not covered (that needs
+V8 remote contexts, deferred).
+
 ## 2026-10-23 - Cross-realm Window wrappers follow navigations
 
 **Files:** `components/roves-js/src/{object.rs,proxy.rs,tests.rs}`, patch

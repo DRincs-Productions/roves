@@ -1,0 +1,49 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 0b832225d21..3bfc8944244 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4809,6 +4809,44 @@ mod window_proxies {
+         }
+     }
+ 
++    /// A navigation to another origin (another script thread) replaces the window proxy with a
++    /// real proxy over Servo's DissimilarOriginWindow: wrappers other realms hold switch to it,
++    /// so they get its cross-origin traps instead of the old same-origin window.
++    #[test]
++    fn held_window_wrappers_take_the_cross_origin_replacement() {
++        unsafe extern "C" fn cross_origin_get(_cx: *mut JSContext, _proxy: HandleObject, _receiver: HandleValue, _id: HandleId, mut vp: MutableHandleValue) -> bool {
++            vp.set(Int32Value(99));
++            true
++        }
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        let handler = unsafe { CreateWrapperProxyHandler(&traps) };
++        let mut cross_origin_traps: ProxyTraps = unsafe { std::mem::zeroed() };
++        cross_origin_traps.get = Some(cross_origin_get);
++        let cross_origin_handler = unsafe { CreateWrapperProxyHandler(&cross_origin_traps) };
++        rooted!(in(cx) let window = unsafe { JS_NewGlobalObject(cx, &WINDOW_CLASS, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) });
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        rooted!(in(cx) let window_proxy = unsafe { NewWindowProxy(cx, window.handle().into(), handler) });
++        unsafe { LeaveRealm(cx, old) };
++        unsafe { SetWindowProxy(cx, window.handle().into(), window_proxy.handle().into()) };
++        let old = unsafe { EnterRealm(cx, window.get()) };
++        eval(&runtime, "globalThis.page = 'same-origin'; 0");
++        unsafe { LeaveRealm(cx, old) };
++        rooted!(in(cx) let mut held = ObjectValue(window_proxy.get()));
++        assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
++        rooted!(in(cx) let observer = eval(&runtime, "globalThis").to_object());
++        assert!(unsafe { JS_SetProperty(cx, observer.handle().into(), c"held".as_ptr(), held.handle().into()) });
++        assert_eq!(describe(&runtime, eval(&runtime, "held.page")), "same-origin");
++
++        // Servo's `unset_currently_active`: a DissimilarOriginWindow behind a real proxy.
++        rooted!(in(cx) let dissimilar = unsafe { JS_NewPlainObject(cx) });
++        rooted!(in(cx) let replacement = unsafe { NewWindowProxy(cx, dissimilar.handle().into(), cross_origin_handler) });
++        rooted!(in(cx) let transplanted = unsafe { JS_TransplantObject(cx, window_proxy.handle().into(), replacement.handle().into()) });
++        assert_eq!(transplanted.get(), replacement.get());
++        assert_eq!(eval(&runtime, "held.page").to_int32(), 99, "the held wrapper uses the cross-origin traps");
++    }
++
+     #[test]
+     fn a_window_that_handed_over_its_proxy_is_still_collected() {
+         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
