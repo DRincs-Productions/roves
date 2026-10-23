@@ -362,16 +362,18 @@ jobs:
       # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
       # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
       # apt-get keeps them in a runner-owned directory, restored and saved around the job.
-      - name: cache apt packages (Linux only)
+      - name: restore cached apt packages (Linux only)
         if: matrix.os_name == 'linux'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/apt-archives
             !~/apt-archives/lock
             !~/apt-archives/partial
-          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}
-          restore-keys: apt-${{ runner.os }}-
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-
+            apt-${{ runner.os }}-
       - name: point apt's package cache at the cached directory (Linux only)
         if: matrix.os_name == 'linux'
         shell: bash
@@ -416,6 +418,16 @@ jobs:
             timeout 120 sudo apt-get install -y --no-install-recommends dpkg-dev
           fi
 
+      # Saved even when bootstrap fails or times out: the next run resumes the download.
+      - name: save apt packages
+        if: always() && matrix.os_name == 'linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/apt-archives
+            !~/apt-archives/lock
+            !~/apt-archives/partial
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: verify surfman X11 feature is Linux-only
         shell: bash
         working-directory: servo-src
@@ -1317,15 +1329,17 @@ jobs:
       # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
       # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
       # apt-get keeps them in a runner-owned directory, restored and saved around the job.
-      - name: cache apt packages
-        uses: actions/cache@v4
+      - name: restore cached apt packages
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/apt-archives
             !~/apt-archives/lock
             !~/apt-archives/partial
-          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}
-          restore-keys: apt-${{ runner.os }}-
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-
+            apt-${{ runner.os }}-
       - name: point apt's package cache at the cached directory
         shell: bash
         run: |
@@ -1340,6 +1354,16 @@ jobs:
         timeout-minutes: 90
         run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
 
+      # Saved even when bootstrap fails or times out: the next run resumes the download.
+      - name: save apt packages
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/apt-archives
+            !~/apt-archives/lock
+            !~/apt-archives/partial
+          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: mach build (debug, --features steam)
         shell: bash
         working-directory: servo-src

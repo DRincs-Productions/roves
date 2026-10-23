@@ -150,16 +150,18 @@ jobs:
           ) -Wait -PassThru
           if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
       # See test.yml: apt's downloaded packages live in an Actions cache, not only on the mirror.
-      - name: cache apt packages
+      - name: restore cached apt packages
         if: runner.os == 'Linux'
-        uses: actions/cache@v4
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/apt-archives
             !~/apt-archives/lock
             !~/apt-archives/partial
-          key: apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}
-          restore-keys: apt-v8-${{ runner.os }}-
+          key: apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-
+            apt-v8-${{ runner.os }}-
       - name: point apt's package cache at the cached directory
         if: runner.os == 'Linux'
         run: |
@@ -167,7 +169,7 @@ jobs:
           sudo chmod -R a+rwX "$HOME/apt-archives"
           printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
       - name: mach bootstrap (system build dependencies)
-        timeout-minutes: 30
+        timeout-minutes: 60
         shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
@@ -189,6 +191,16 @@ jobs:
           else
             ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
           fi
+      # Saved even when bootstrap fails or times out: the next run resumes the download.
+      - name: save apt packages
+        if: always() && runner.os == 'Linux'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/apt-archives
+            !~/apt-archives/lock
+            !~/apt-archives/partial
+          key: apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: free disk space
         if: runner.os == 'Linux'
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
