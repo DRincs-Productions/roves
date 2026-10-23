@@ -175,7 +175,7 @@ for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected tr
   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
 # Diagnostic only (not required yet): whether removed frames' realms are released.
-diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frame documents' gc-lifecycle.log | head -1)
+diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frames released' gc-lifecycle.log | head -1)
 echo "::notice::gc-lifecycle.html: ${diagnostic:-removed frame diagnostic missing}"
 
 if [ "$STATUS" -ne 0 ]; then

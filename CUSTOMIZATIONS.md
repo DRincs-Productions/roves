@@ -1,3 +1,15 @@
+## 2026-10-23 - Removed-frame diagnostic: which part stays alive
+
+**Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh}`, patch `0314-removed-frame-diagnostic-details.patch`.
+
+0304's diagnostic reported `0/2` removed frame documents released (run `39967099020`). To see
+what keeps them, the page now also weakly tracks each removed `<iframe>` element (kept by the
+parent page) and an object stored only on each frame's global (kept by the frame's realm), and
+spaces its eight collections 100 ms apart because Servo closes a removed frame's pipeline
+through asynchronous constellation messages. Marker: `ROVES-V8 gc diagnostic removed frames
+released elements N/2 documents N/2 globals N/2`; still a notice, not a requirement. The
+parent's cross-realm Window wrapper cache is a WeakMap (ephemeron), so it is not the holder.
+
 ## 2026-10-23 - Fix the unload check of the iframe smoke
 
 **Files:** `support/v8-smoke/events.html`, patch `0313-unload-smoke-discriminator.patch`.

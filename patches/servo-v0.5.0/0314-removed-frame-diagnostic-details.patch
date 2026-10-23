@@ -1,0 +1,92 @@
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 40c5a1627d2..09d67842201 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -207,56 +207,33 @@ async function checkModuleOwners() {
+     checkResolve("module resolve after collection", frames, namespaces);
+   } finally {
+     for (const frame of frames) {
+-      // Diagnostic: a removed frame's document is kept by its Window, so it is collected only
+-      // if the frame's realm is released (see reportRemovedFrames).
+-      if (frame.contentDocument) removedFrameDocuments.push(new WeakRef(frame.contentDocument));
++      // Diagnostic (see reportRemovedFrames): the iframe element (kept by the parent page),
++      // the frame's document (kept by its Window) and an object only the frame's global holds.
++      removedFrames.elements.push(new WeakRef(frame));
++      if (frame.contentDocument) removedFrames.documents.push(new WeakRef(frame.contentDocument));
++      if (frame.contentWindow) {
++        const probe = new frame.contentWindow.Object();
++        frame.contentWindow.rovesGlobalProbe = probe;
++        removedFrames.globals.push(new WeakRef(probe));
++      }
+       frame.remove();
+     }
+   }
+ }
+ 
+-const removedFrameDocuments = [];
++const removedFrames = { elements: [], documents: [], globals: [] };
+ 
+-// Not a pass/fail check yet: reports whether removed frames' realms are released, so CI shows
+-// the current behavior before it becomes a requirement.
++// Not a pass/fail check yet: reports which parts of removed frames are released, so CI shows
++// the current behavior before it becomes a requirement. Frame pipelines close asynchronously,
++// so collections are spaced out.
+ async function reportRemovedFrames() {
+-  let alive = removedFrameDocuments.length, rounds = 0;
+-  while (alive > 0 && rounds < MAX_COLLECTIONS) {
+-    await collectOnce();
+-    rounds++;
+-    alive = aliveCount(removedFrameDocuments);
+-  }
+-  report("diagnostic removed frame documents", `${removedFrameDocuments.length - alive}/${removedFrameDocuments.length} released after ${rounds} collections`);
+-}
+-
+-async function main() {
+-  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+-  report("api", api);
+-  if (!api) {
+-    fail("TestUtils.gc unavailable");
+-    return;
+-  }
+-  keepNodes();
+-  const nodeRefs = [];
+-  const cycleRefs = [];
+-  for (let batch = 0; batch < 4; batch++) {
+-    nodeRefs.push(...dropNodeBatch(60));
+-    cycleRefs.push(...dropCycleBatch(100));
++  for (let round = 0; round < MAX_COLLECTIONS; round++) {
+     await collectOnce();
++    await new Promise(resolve => setTimeout(resolve, 100));
+   }
+-  await expectCollected("unreachable dom", nodeRefs);
+-  await expectCollected("unreachable cycles", cycleRefs);
+-  checkKept("retained nodes");
+-
+-  check("importer compiled", compileImporter(), "classic script did not define the importer");
+-  await collectOnce();
+-  await collectOnce();
+-  const value = await importThroughRetainedFunction();
+-  report("dynamic import after collection", value);
+-  if (value !== 42) fail("dynamic import");
+-  await expectCollected("dropped importer", dropImporter());
+-  await checkModuleOwners();
+-  checkKept("retained nodes final");
++  const released = refs => `${refs.length - aliveCount(refs)}/${refs.length}`;
++  report("diagnostic removed frames released", `elements ${released(removedFrames.elements)}`,
++    `documents ${released(removedFrames.documents)}`, `globals ${released(removedFrames.globals)}`);
+ }
+ 
+ // FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 381ec9ca27f..e875412f7ed 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -175,7 +175,7 @@ for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected tr
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ # Diagnostic only (not required yet): whether removed frames' realms are released.
+-diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frame documents' gc-lifecycle.log | head -1)
++diagnostic=$(grep -aF 'ROVES-V8 gc diagnostic removed frames released' gc-lifecycle.log | head -1)
+ echo "::notice::gc-lifecycle.html: ${diagnostic:-removed frame diagnostic missing}"
+ 
+ if [ "$STATUS" -ne 0 ]; then
