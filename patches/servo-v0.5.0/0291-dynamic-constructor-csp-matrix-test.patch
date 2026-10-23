@@ -1,0 +1,29 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8686587ac46..b322be8d5a1 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1822,6 +1822,24 @@ mod runtime_hooks {
+             }
+             return true;
+         })()"#).to_boolean(), "exact-source authorization cannot escape into a newTarget prototype getter");
++        assert_eq!(super::describe(&runtime, eval(&runtime, r#"(() => {
++            const constructors = [Function, (function*(){}).constructor,
++                (async function(){}).constructor, (async function*(){}).constructor];
++            const calls = [(C, ...args) => C(...args), (C, ...args) => new C(...args)];
++            const rejected = make => { try { make(); return false; } catch (e) { return e instanceof EvalError; } };
++            for (let kind = 0; kind < 4; kind++) {
++                const C = constructors[kind];
++                for (let how = 0; how < 2; how++) {
++                    const make = (...args) => calls[how](C, ...args);
++                    const where = kind + '/' + how;
++                    if (typeof make(trust('x'), trust('return x')) !== 'function') return 'trusted ' + where;
++                    if (!rejected(() => make('return 1'))) return 'untrusted body ' + where;
++                    if (!rejected(() => make('x', trust('return x')))) return 'untrusted parameter ' + where;
++                    if (!rejected(() => make(trust('x'), 'return x'))) return 'untrusted body with trusted parameter ' + where;
++                }
++            }
++            return 'ok';
++        })()"#)), "ok", "every dynamic constructor, called or constructed, checks every argument");
+         assert!(eval(&runtime, "(() => { const G = Object.getPrototypeOf(function*(){}).constructor; return G(trust('yield 42'))().next().value === 42; })()").to_boolean());
+         assert!(eval(&runtime, "(() => { const A = Object.getPrototypeOf(async function(){}).constructor; const AG = Object.getPrototypeOf(async function*(){}).constructor; return A(trust('return 42'))() instanceof Promise && AG(trust('yield 42'))().next() instanceof Promise; })()").to_boolean());
+         assert!(eval(&runtime, "(() => { try { Function(Symbol()); return false; } catch(e) { return e instanceof TypeError; } })()").to_boolean());

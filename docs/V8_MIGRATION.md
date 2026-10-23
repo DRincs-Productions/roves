@@ -1214,8 +1214,8 @@ risulta superata nella CI corrente.
   template canonico V8 e smoke browser Linux normal/JIT-less verdi in `39595584589`.
 - [ ] Verificare `TrustedScript` e CSP insieme a `eval`, `Function` e compilazione Wasm; il
   CI `39595584589` conferma eval, Function trusted/guardie e Wasm CSP Linux normal/JIT-less.
-  Restano matrice estesa sui quattro costruttori, stringificazione degli intrinseci proxy
-  e import dinamico; la 0267 corregge localmente il grafo dei genitori (CI e smoke browser da
+  Matrice estesa sui quattro costruttori (0291), stringificazione (0290) e import dinamico
+  (0288) coperti localmente; la 0267 corregge localmente il grafo dei genitori (CI e smoke browser da
   verificare). Preservare le decisioni di sicurezza del runtime web.
 - [ ] Esaminare proprietà e radici di realm, script, moduli e callback. La 0266 implementa
   ownership dei metadati classici tramite token/WeakMap/cppgc, con regressioni locali verdi;

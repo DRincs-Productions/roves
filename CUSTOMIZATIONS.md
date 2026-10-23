@@ -1,3 +1,13 @@
+## 2026-10-23 - CSP matrix test for every dynamic constructor
+
+**Files:** `components/roves-js/src/tests.rs`, patch `0291-dynamic-constructor-csp-matrix-test.patch`.
+
+Test only. The Trusted Types/CSP regression checked untrusted rejection only through
+`Function`. It now covers `Function`, `GeneratorFunction`, `AsyncFunction` and
+`AsyncGeneratorFunction`, each called and constructed, with a trusted source accepted and an
+untrusted body, an untrusted parameter, or an untrusted body next to a trusted parameter
+rejected with `EvalError`. Passes normal and JITless; no defect found. Replay identical.
+
 ## 2026-10-23 - Native functions instead of Proxies for dynamic Function constructors
 
 **Files:** `components/roves-js/src/{dynamic_code.rs,tests.rs}`, patch
