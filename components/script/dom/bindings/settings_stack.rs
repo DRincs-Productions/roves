@@ -41,7 +41,19 @@ pub(crate) fn entry_global() -> DomRoot<GlobalScope> {
                 .find(|entry| entry.kind == StackEntryKind::Entry)
                 .map(|entry| DomRoot::from_ref(&*entry.global))
         })
-        .unwrap()
+        .unwrap_or_else(engine_entry_global)
+}
+
+/// V8 runs some script itself, from a task no Servo code prepared: `FinalizationRegistry`
+/// cleanup callbacks. HTML prepares that script with the registry's realm, which is the realm
+/// of the innermost scripted frame (the callback) unless the callback comes from another realm.
+fn engine_entry_global() -> DomRoot<GlobalScope> {
+    unsafe {
+        let cx = Runtime::get().expect("no entry global after runtime shutdown");
+        let global = GetScriptedCallerGlobal(cx.as_ptr());
+        assert!(!global.is_null(), "no entry global: no script is running");
+        GlobalScope::from_object(global)
+    }
 }
 
 /// Returns the ["incumbent"] global object.

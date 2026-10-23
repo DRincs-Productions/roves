@@ -1,3 +1,21 @@
+## 2026-10-23 - Entry global for script V8 runs from its own tasks
+
+**Files:** `components/script/dom/bindings/settings_stack.rs`,
+`support/v8-smoke/{gc-lifecycle.html,run.sh}`, patch
+`0294-entry-global-for-engine-run-callbacks.patch`, `README.md`.
+
+V8 calls `FinalizationRegistry` cleanup callbacks itself, inside a foreground task that Servo
+dispatches as a plain task without `run_a_script` (SpiderMonkey asked the embedder's script
+environment preparer, which V8 lacks). With no Entry entry on the settings stack,
+`entry_global()` unwrapped `None`: a cleanup callback calling an API that reads the entry
+settings object (`drawImage` of an image, `Location` setters, `document.open`, ImageBitmap)
+panicked the script thread. `entry_global()` now falls back to the realm of the innermost
+scripted frame (`GetScriptedCallerGlobal`, the callback itself; HTML prepares that script with
+the registry's realm, the same one unless the callback comes from another realm). Servo-side
+only, no roves-js API. The `gc-lifecycle.html` smoke runs a cleanup callback that draws an
+image and requires the new marker. The script crate is not built locally (heavy builds run
+in CI), so compilation and the browser check come from CI.
+
 ## 2026-10-23 - V8 browser smoke checks for Function imports, incumbent and toString
 
 **Files:** `support/v8-smoke/{events.html,modules.html,suite.html}`, new

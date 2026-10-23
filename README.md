@@ -596,3 +596,5 @@ Unregistering a V8 runtime also destroys its delayed engine tasks still waiting 
 Code that calls into another same-origin window (for example a parent page calling a function
 defined in an iframe) now reports the window whose code is running as its caller, as browsers
 do, and callbacks run by the engine no longer see the script that registered them as the caller.
+`FinalizationRegistry` cleanup callbacks can call page APIs such as `drawImage` on V8 without
+crashing the page's script thread.

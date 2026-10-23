@@ -240,7 +240,24 @@ async function main() {
   checkKept("retained nodes final");
 }
 
+// FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
+// reads the entry settings object (drawImage's origin check for an image) must still work.
+async function checkCleanupEntrySettings() {
+  const image = new Image();
+  image.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  await image.decode();
+  const context = document.createElement("canvas").getContext("2d");
+  let outcome;
+  const registry = new FinalizationRegistry(() => {
+    try { context.drawImage(image, 0, 0); outcome = "drawn"; } catch (error) { outcome = String(error); }
+  });
+  (() => { registry.register({}, 0); })();
+  for (let round = 0; round < MAX_COLLECTIONS && outcome === undefined; round++) await collectOnce();
+  check("cleanup callback entry settings", outcome === "drawn", String(outcome));
+}
+
 main()
+  .then(checkCleanupEntrySettings)
   .catch(error => fail("exception " + error.name + " " + error.message))
   .finally(() => report("result", failures.length === 0 ? "pass" : "fail " + failures.join("; ")));
 </script>

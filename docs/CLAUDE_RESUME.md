@@ -55,6 +55,7 @@ docs/handoff/0281-incomplete-realm-registry.patch è SOLO archivio storico: NON 
 | 0288 | Ex 0273: trap Proxy native per Function/generator/async; `import()` nel corpo usa il chiamante. Corpo identico riusa il primo referrer come V8 nativo (cache eval; disattivata solo con debugger). Runtime101/100. |
 | 0289 | Incumbent V8: `GetIncumbentContext`/`BackupIncumbentScope` via simboli C++ esportati (Itanium/MSVC, verificati con llvm-nm). Caller global = frame più interno; Hide/Unhide = scope con sentinella. Runtime102/101. Link Windows/macOS da CI. |
 | 0290 | Costruttori dinamici come funzioni native con nome (non Proxy): `toString` come V8 nativo. Runtime102/101. |
+| 0294 | `entry_global()` di Servo: fallback al realm del frame più interno quando V8 esegue JS da un proprio task (cleanup FinalizationRegistry) senza voce Entry; prima panic con drawImage/Location. Crate script non compilato localmente: verifica CI + smoke gc-lifecycle. |
 | 0285 | Runtime possiede gli slot Arc dei task accettati, consuma Option<Task> una volta e distrugge nativi prima di dismettere isolate; payload tardivi vuoti, rifiuti recuperati a shutdown, metadati completati ripuliti ammortizzati.100/99 test. |
 
 Il primo numero dei test è normal, il secondo JITless; restano2/3 test ignorati come prima.

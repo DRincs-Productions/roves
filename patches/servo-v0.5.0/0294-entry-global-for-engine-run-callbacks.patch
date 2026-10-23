@@ -1,0 +1,67 @@
+diff --git a/components/script/dom/bindings/settings_stack.rs b/components/script/dom/bindings/settings_stack.rs
+index d9869798bae..83ce79aa6f5 100644
+--- a/components/script/dom/bindings/settings_stack.rs
++++ b/components/script/dom/bindings/settings_stack.rs
+@@ -41,7 +41,19 @@ pub(crate) fn entry_global() -> DomRoot<GlobalScope> {
+                 .find(|entry| entry.kind == StackEntryKind::Entry)
+                 .map(|entry| DomRoot::from_ref(&*entry.global))
+         })
+-        .unwrap()
++        .unwrap_or_else(engine_entry_global)
++}
++
++/// V8 runs some script itself, from a task no Servo code prepared: `FinalizationRegistry`
++/// cleanup callbacks. HTML prepares that script with the registry's realm, which is the realm
++/// of the innermost scripted frame (the callback) unless the callback comes from another realm.
++fn engine_entry_global() -> DomRoot<GlobalScope> {
++    unsafe {
++        let cx = Runtime::get().expect("no entry global after runtime shutdown");
++        let global = GetScriptedCallerGlobal(cx.as_ptr());
++        assert!(!global.is_null(), "no entry global: no script is running");
++        GlobalScope::from_object(global)
++    }
+ }
+ 
+ /// Returns the ["incumbent"] global object.
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 7f80bcc8369..23bbef0e1cd 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -240,7 +240,24 @@ async function main() {
+   checkKept("retained nodes final");
+ }
+ 
++// FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
++// reads the entry settings object (drawImage's origin check for an image) must still work.
++async function checkCleanupEntrySettings() {
++  const image = new Image();
++  image.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
++  await image.decode();
++  const context = document.createElement("canvas").getContext("2d");
++  let outcome;
++  const registry = new FinalizationRegistry(() => {
++    try { context.drawImage(image, 0, 0); outcome = "drawn"; } catch (error) { outcome = String(error); }
++  });
++  (() => { registry.register({}, 0); })();
++  for (let round = 0; round < MAX_COLLECTIONS && outcome === undefined; round++) await collectOnce();
++  check("cleanup callback entry settings", outcome === "drawn", String(outcome));
++}
++
+ main()
++  .then(checkCleanupEntrySettings)
+   .catch(error => fail("exception " + error.name + " " + error.message))
+   .finally(() => report("result", failures.length === 0 ? "pass" : "fail " + failures.join("; ")));
+ </script>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index fe8d7f7158d..8a39154246b 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -171,7 +171,7 @@ fi
+ # its same-origin frames import the same module URL, each owning its own dynamic imports,
+ # including those of direct eval code in that module.
+ run_page gc-lifecycle.html 20 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ 
