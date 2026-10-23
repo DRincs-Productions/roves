@@ -1,3 +1,37 @@
+## 2026-10-23 - WindowProxy across an iframe's origin change and back
+
+**Files:** `support/v8-smoke/{events.html,check_results.py,test_runner.py}`, patch
+`0318-window-proxy-origin-change-check.patch`. No production source changed.
+
+Complements the same-origin navigation check in events.html and the unit-level fake
+cross-origin coverage of 0310 with a real browser check, without DNS or a second server:
+`an iframe keeps its WindowProxy across origin changes and back` loads a same-origin srcdoc,
+then sets `sandbox="allow-scripts"` and a new srcdoc (an opaque origin), then removes the
+attribute and loads a final same-origin srcdoc. In every phase the child posts a
+token-tagged message and the parent checks `contentWindow === held`, `event.source === held`,
+`event.origin` and the child's `self.origin` (the parent's origin, or `"null"` while sandboxed),
+and what the child sees of `parent.document`. Same-origin phases check `held.document ===
+contentDocument`, the document's marker and a child global. The opaque phase requires
+`held.document` and a child global to throw a `SecurityError` `DOMException`, a null
+`contentDocument`, a usable allowlist (`closed`, `window`, `self`, `frames`, `length`, `parent`,
+`postMessage`) and a ping/echo round trip through `held.postMessage`. Under `file://` (as run.sh
+loads the suites) both origins serialize as `"null"`: the access checks tell them apart.
+One message listener filters on the token and fails on unexpected phases; an 8 s timer (below
+the harness's 10 s) and every exit path clear the timer, remove the listener and the frame;
+the check sets no parent global. Focused inspection found Servo already derives an opaque
+origin from the sandboxed-origin flag (`components/script/navigation.rs`); no fix proposed.
+
+The validator counted results but no names, so dropping a check still gave a consistent total:
+`check_results.py` gains `REQUIRED_CHECKS` (only this check today) and reports `missing
+required check`. test_runner.py: validator unit test, a static test that each required name is
+defined once in its page, a Node `vm.Script` syntax check of the events page script (not a
+browser run), and the run.sh fixture prints the required name for events.html with an
+`events-origin-missing` scenario that must fail. Verified: unittest on Windows (17, 5 POSIX-only
+skipped) and WSL Ubuntu (17, all run); the new validator and fixture tests fail against HEAD's
+check_results.py. 0318 dry-run/apply clean on the existing replay scratch (0315+0316+0317);
+all 468 patched paths: 465 identical to HEAD (working tree for the 3 changed files), 3 = the
+documented exceptions. Logs: `target/task-0318/`. Browser results come from V8 CI.
+
 ## 2026-10-23 - Removed-frame diagnostic groups: with and without modules
 
 **Files:** `support/v8-smoke/{gc-lifecycle.html,run.sh,test_runner.py}`, patch

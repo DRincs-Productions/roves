@@ -65,6 +65,19 @@ di HEAD. Mock, non GC browser. Patch0317 dry-run/apply puliti sullo scratch0315+
 0317 applicata), 465 identici + 3 eccezioni documentate. Log: target/task-0317/. Il confronto
 sorgente/contesto con Chrome è affidato a Codex via MCP; i risultati browser arrivano dalla CI V8.
 
+**0318 (Claude, da revisionare, non committato):** events.html aggiunge il check obbligatorio
+"an iframe keeps its WindowProxy across origin changes and back": srcdoc same-origin, poi
+sandbox="allow-scripts" + nuovo srcdoc (origine opaca), poi senza sandbox. In ogni fase:
+contentWindow/event.source === held, origini (parent vs "null"), parent.document visto dal
+figlio; fase opaca: held.document e global figlio SecurityError DOMException, contentDocument
+null, allowlist e ping/echo via held.postMessage; ritorno: document/marker/global finali.
+Token, listener unico filtrato, timer8 s, pulizia frame/listener su ogni uscita. Sotto file://
+entrambe le origini sono "null": distinguono i controlli di accesso. check_results.py:
+REQUIRED_CHECKS (missing required check). Ispezione: Servo deriva già l'origine opaca dal flag
+sandbox (navigation.rs), nessun fix proposto. Verifiche: unittest Windows17 (5skipPOSIX), WSL17;
+nuovi test falliscono col validatore di HEAD; sintassi via Node vm.Script, non browser.
+Patch0318 dry-run/apply puliti sullo scratch, 465/468 identici + 3 eccezioni. Log: target/task-0318/.
+
 ### Risultati acquisiti e limiti della revisione
 
 -0287/0299 recuperano task timer e post tra close/rimozione handler. Restano casi conservativi
@@ -102,10 +115,19 @@ snapshotheap negato per workspace roots del MCP. Nessuna raccolta forzata verifi
 nessun confronto retention equivalente; dettagli in ROVES_PERFORMANCE.md. Non aggirare
 il blocco del MCP. Nessuna nuova automazione periodica.
 
+### Revisione0318 e riferimento Chrome
+
+Codex: controllo origine0318 confermato vero via Chrome DevTools MCP155 su HTTP loopback,
+pagina visibile. Suite16/17: fallisce soltanto il vecchio requisito timer-prima-di-rAF;
+ordine osservato sync,microtask,queueMicrotask,frame.0319 correggerà quel requisito errato,
+attendendo timer e frame e verificando microtask prima di entrambi. Roves0318 ancora daCI.
+0318 va conservato in locale mentre il batch2e9eb7ee15f è attivo. Nessun risultato di
+performance dedotto; evidenze e condizioni in ROVES_PERFORMANCE.md.
+
 ### Prossimi punti
 
-1. Verificare il nuovo batch CI sul checkpoint0316/0317;0315 tutto verde. Nel frattempo
-   proseguire con test browser di navigazione tra origini per WindowProxy.
+1. Verificare il nuovo batch CI sul checkpoint0316/0317;0315 tutto verde. Il check browser
+   di cambio origine WindowProxy (0318) attende revisione, riferimento Chrome via MCP e CI V8.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.
 3. Rivedere casi navigazione cross-origin/cambi thread e API approssimate non banali, shutdown

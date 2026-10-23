@@ -1,0 +1,228 @@
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 64b2c17feac..eec967a95de 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -17,6 +17,10 @@ WASM_SKIPS = {
+     ("suite2.html", "WebAssembly.compileStreaming (fetched)"),
+     ("games.html", "module Worker instantiates WebAssembly"),
+ }
++# Checks a page must report: a page that drops one still reports a consistent total.
++REQUIRED_CHECKS = {
++    "events.html": ("an iframe keeps its WindowProxy across origin changes and back",),
++}
+ TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
+ 
+ 
+@@ -72,6 +76,9 @@ def validate(page, output, mode="normal", allow_missing_devices=False):
+             errors.append("total does not match individual results")
+         if not total:
+             errors.append("suite executed no checks")
++    for name in REQUIRED_CHECKS.get(page, ()):
++        if name not in names:
++            errors.append(f"missing required check: {name}")
+     return errors
+ 
+ 
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index f7651514e1e..c59a2298a5b 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -142,6 +142,96 @@ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(r
+   frame.srcdoc = "<p>first</p><script>addEventListener('unload', () => { parent.unloadSawItsOwnWindow = window.document === document; });<\/script>";
+   document.body.append(frame);
+ }));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++check("an iframe keeps its WindowProxy across origin changes and back", () => new Promise(resolve => {
++  // A same-origin srcdoc document, then an opaque-origin one (sandbox="allow-scripts", no
++  // allow-same-origin), then a same-origin one again: the held WindowProxy must stay the
++  // frame's window, cross-origin access must throw a SecurityError DOMException while the
++  // cross-origin allowlist keeps working, and access must come back with the last document.
++  // Under file:// both origins serialize as "null": the access checks tell them apart.
++  const token = `origin-change-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  const parentOrigin = self.origin;
++  const frame = document.createElement("iframe");
++  const waiting = new Map();
++  let phase = "same", done = false, held = null;
++  const end = outcome => {
++    if (done) return;
++    done = true;
++    clearTimeout(timer);
++    removeEventListener("message", onMessage);
++    frame.remove();
++    resolve(outcome);
++  };
++  const timer = setTimeout(() => end(`timeout waiting for phase ${phase}`), 8000);
++  function onMessage(event) {
++    const data = event.data;
++    if (!data || data.token !== token) return;
++    const deliver = waiting.get(data.phase);
++    if (!deliver) return end(`unexpected message for phase ${data.phase} while waiting for ${phase}`);
++    waiting.delete(data.phase);
++    deliver(event);
++  }
++  addEventListener("message", onMessage);
++  const message = name => new Promise(deliver => { phase = name; waiting.set(name, deliver); });
++  const child = (name, body) => `<p id="marker">${name}</p><script>window.rovesOriginPhase = "${name}";${body}<\/script>`;
++  const post = name => `parent.postMessage({ token: "${token}", phase: "${name}", origin: self.origin, parentDocument: (() => { try { return parent.document ? "accessible" : "none"; } catch (error) { return error.name; } })() }, "*");`;
++  const securityError = (problems, label, get) => {
++    try { get(); problems.push(`${label} did not throw`); }
++    catch (error) { if (!(error instanceof DOMException && error.name === "SecurityError")) problems.push(`${label} threw ${error && error.name}`); }
++  };
++  const common = (problems, event, origin) => {
++    if (frame.contentWindow !== held) problems.push("contentWindow changed");
++    if (event.source !== held) problems.push("source is not the held window");
++    if (event.origin !== origin) problems.push(`origin ${event.origin}`);
++    if (event.data.origin !== origin) problems.push(`child origin ${event.data.origin}`);
++  };
++  const sameOrigin = (problems, event, name) => {
++    common(problems, event, parentOrigin);
++    if (event.data.parentDocument !== "accessible") problems.push(`child parent.document ${event.data.parentDocument}`);
++    const marker = held.document.getElementById("marker");
++    if (held.document !== frame.contentDocument) problems.push("document differs from contentDocument");
++    if (!marker || marker.textContent !== name) problems.push(`document shows ${marker && marker.textContent}`);
++    if (held.rovesOriginPhase !== name) problems.push(`global phase ${held.rovesOriginPhase}`);
++  };
++  const report = (name, problems) => { if (problems.length) throw new Error(`${name}: ${problems.join(", ")}`); };
++  (async () => {
++    let event, problems;
++    const first = message("same");
++    frame.srcdoc = child("same", post("same"));
++    document.body.append(frame);
++    event = await first;
++    held = frame.contentWindow;
++    sameOrigin(problems = [], event, "same");
++    report("same", problems);
++
++    const opaque = message("opaque");
++    frame.setAttribute("sandbox", "allow-scripts");
++    frame.srcdoc = child("opaque", `addEventListener("message", event => { if (!event.data || event.data.token !== "${token}" || event.data.phase !== "ping") return; event.source.postMessage({ token: "${token}", phase: "echo", origin: self.origin, from: event.origin, fromParent: event.source === parent }, "*"); });` + post("opaque"));
++    event = await opaque;
++    common(problems = [], event, "null");
++    if (event.data.parentDocument !== "SecurityError") problems.push(`child parent.document ${event.data.parentDocument}`);
++    if (frame.contentDocument !== null) problems.push("contentDocument is not null");
++    securityError(problems, "document", () => held.document);
++    securityError(problems, "global", () => held.rovesOriginPhase);
++    if (held.closed !== false || held.window !== held || held.self !== held || held.frames !== held || held.length !== 0 || held.parent !== window || typeof held.postMessage !== "function")
++      problems.push("cross-origin allowlist unusable");
++    report("opaque", problems);
++    const echo = message("echo");
++    held.postMessage({ token, phase: "ping" }, "*");
++    event = await echo;
++    common(problems = [], event, "null");
++    if (event.data.from !== parentOrigin || event.data.fromParent !== true) problems.push(`ping seen from ${event.data.from} parent ${event.data.fromParent}`);
++    report("echo", problems);
++
++    const last = message("final");
++    frame.removeAttribute("sandbox");
++    frame.srcdoc = child("final", post("final"));
++    event = await last;
++    sameOrigin(problems = [], event, "final");
++    report("final", problems);
++    end(true);
++  })().catch(error => end(String((error && error.message) || error)));
++}));
+ finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index bb20ecefde1..6c79c69528c 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -10,7 +10,7 @@ import tempfile
+ import time
+ import unittest
+ 
+-from check_results import validate
++from check_results import REQUIRED_CHECKS, validate
+ 
+ HERE = Path(__file__).resolve().parent
+ 
+@@ -51,6 +51,42 @@ class ResultsTests(unittest.TestCase):
+         self.assertTrue(validate('suite2.html', output, 'jitless'))
+         self.assertEqual([], validate('suite2.html', output))
+ 
++    def test_required_checks(self):
++        # A page that drops a required check still reports a consistent total: reject it.
++        name = REQUIRED_CHECKS['events.html'][0]
++        self.assertEqual([f'missing required check: {name}'],
++                         validate('events.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
++        self.assertEqual([], validate('events.html', f'SUITE PASS example\nSUITE PASS {name}\nSUITE TOTAL 2/2\n'))
++        self.assertTrue(validate('events.html', f'SUITE FAIL {name} :: final: contentWindow changed\nSUITE TOTAL 0/1\n'))
++        self.assertTrue(validate('events.html', f'SUITE SKIP {name}\nSUITE TOTAL 0/0 (1 skipped)\n'))
++        self.assertEqual([], validate('suite.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
++
++
++def page_scripts(page):
++    # Inline page scripts open and close on their own lines; srcdoc strings hold inline tags.
++    text = (HERE / page).read_text(encoding='utf-8')
++    return re.findall(r'^<script>\n(.*?)^</script>$', text, re.S | re.M)
++
++
++class EventsPageTests(unittest.TestCase):
++    """Static and syntax checks of events.html; the origin-change check needs a real browser."""
++
++    def test_required_checks_are_defined(self):
++        for page, names in REQUIRED_CHECKS.items():
++            scripts = ''.join(page_scripts(page))
++            for name in names:
++                with self.subTest(page=page, name=name):
++                    self.assertEqual(1, scripts.count(f'check("{name}"'))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_scripts_compile(self):
++        scripts = page_scripts('events.html')
++        self.assertEqual(1, len(scripts))
++        for script in scripts:
++            result = subprocess.run(['node', '-e', 'new (require("vm").Script)(require("fs").readFileSync(0, "utf8"))'],
++                                    input=script, capture_output=True, text=True, encoding='utf-8', timeout=30)
++            self.assertEqual(0, result.returncode, result.stderr)
++
+ 
+ def gc_page_script():
+     page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
+@@ -369,7 +405,16 @@ elif page == 'nav1.html':
+     print('ROVES-V8 nav2 loaded nav2.html true second page')
+     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
+ else:
+-    if page == 'suite.html' and scenario == 'assertion':
++    if page == 'events.html':
++        # The required origin-change check; the scenario drops it with a consistent total.
++        if scenario == 'events-origin-missing':
++            print('SUITE PASS example')
++            print('SUITE TOTAL 1/1')
++        else:
++            print('SUITE PASS example')
++            print('SUITE PASS ' + os.environ['SMOKE_TEST_EVENTS_CHECK'])
++            print('SUITE TOTAL 2/2')
++    elif page == 'suite.html' and scenario == 'assertion':
+         print('SUITE FAIL example :: intentionally false')
+         print('SUITE TOTAL 0/1')
+     elif page == 'suite.html' and scenario == 'incomplete':
+@@ -391,7 +436,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
+                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
+                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
+-                       SMOKE_TEST_REAL_PYTHON=python)
++                       SMOKE_TEST_REAL_PYTHON=python,
++                       SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
+             env.pop('GITHUB_STEP_SUMMARY', None)
+             result = subprocess.run(['bash', str(runner), 'unused-browser',
+                                      *(['wrapper with spaces', '--option'] if wrapped else [])],
+@@ -472,7 +518,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default'):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', 'events-origin-missing'):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+@@ -487,6 +533,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
+                 if scenario == 'constructor-graph':
+                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
++                if scenario == 'events-origin-missing':
++                    self.assertIn('::error::events.html: missing required check: ' + REQUIRED_CHECKS['events.html'][0], result.stdout)
+                 if scenario == 'testutils-default':
+                     self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
+ 

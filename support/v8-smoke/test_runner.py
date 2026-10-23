@@ -10,7 +10,7 @@ import tempfile
 import time
 import unittest
 
-from check_results import validate
+from check_results import REQUIRED_CHECKS, validate
 
 HERE = Path(__file__).resolve().parent
 
@@ -50,6 +50,42 @@ class ResultsTests(unittest.TestCase):
         output = 'SUITE PASS WebAssembly.instantiate (async compile)\nSUITE TOTAL 1/1'
         self.assertTrue(validate('suite2.html', output, 'jitless'))
         self.assertEqual([], validate('suite2.html', output))
+
+    def test_required_checks(self):
+        # A page that drops a required check still reports a consistent total: reject it.
+        name = REQUIRED_CHECKS['events.html'][0]
+        self.assertEqual([f'missing required check: {name}'],
+                         validate('events.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+        self.assertEqual([], validate('events.html', f'SUITE PASS example\nSUITE PASS {name}\nSUITE TOTAL 2/2\n'))
+        self.assertTrue(validate('events.html', f'SUITE FAIL {name} :: final: contentWindow changed\nSUITE TOTAL 0/1\n'))
+        self.assertTrue(validate('events.html', f'SUITE SKIP {name}\nSUITE TOTAL 0/0 (1 skipped)\n'))
+        self.assertEqual([], validate('suite.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+
+
+def page_scripts(page):
+    # Inline page scripts open and close on their own lines; srcdoc strings hold inline tags.
+    text = (HERE / page).read_text(encoding='utf-8')
+    return re.findall(r'^<script>\n(.*?)^</script>$', text, re.S | re.M)
+
+
+class EventsPageTests(unittest.TestCase):
+    """Static and syntax checks of events.html; the origin-change check needs a real browser."""
+
+    def test_required_checks_are_defined(self):
+        for page, names in REQUIRED_CHECKS.items():
+            scripts = ''.join(page_scripts(page))
+            for name in names:
+                with self.subTest(page=page, name=name):
+                    self.assertEqual(1, scripts.count(f'check("{name}"'))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_scripts_compile(self):
+        scripts = page_scripts('events.html')
+        self.assertEqual(1, len(scripts))
+        for script in scripts:
+            result = subprocess.run(['node', '-e', 'new (require("vm").Script)(require("fs").readFileSync(0, "utf8"))'],
+                                    input=script, capture_output=True, text=True, encoding='utf-8', timeout=30)
+            self.assertEqual(0, result.returncode, result.stderr)
 
 
 def gc_page_script():
@@ -369,7 +405,16 @@ elif page == 'nav1.html':
     print('ROVES-V8 nav2 loaded nav2.html true second page')
     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
 else:
-    if page == 'suite.html' and scenario == 'assertion':
+    if page == 'events.html':
+        # The required origin-change check; the scenario drops it with a consistent total.
+        if scenario == 'events-origin-missing':
+            print('SUITE PASS example')
+            print('SUITE TOTAL 1/1')
+        else:
+            print('SUITE PASS example')
+            print('SUITE PASS ' + os.environ['SMOKE_TEST_EVENTS_CHECK'])
+            print('SUITE TOTAL 2/2')
+    elif page == 'suite.html' and scenario == 'assertion':
         print('SUITE FAIL example :: intentionally false')
         print('SUITE TOTAL 0/1')
     elif page == 'suite.html' and scenario == 'incomplete':
@@ -391,7 +436,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             env = dict(os.environ, PATH=str(directory) + os.pathsep + os.environ['PATH'],
                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
-                       SMOKE_TEST_REAL_PYTHON=python)
+                       SMOKE_TEST_REAL_PYTHON=python,
+                       SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
             env.pop('GITHUB_STEP_SUMMARY', None)
             result = subprocess.run(['bash', str(runner), 'unused-browser',
                                      *(['wrapper with spaces', '--option'] if wrapped else [])],
@@ -472,7 +518,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', 'events-origin-missing'):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -487,6 +533,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
                 if scenario == 'constructor-graph':
                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
+                if scenario == 'events-origin-missing':
+                    self.assertIn('::error::events.html: missing required check: ' + REQUIRED_CHECKS['events.html'][0], result.stdout)
                 if scenario == 'testutils-default':
                     self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
 

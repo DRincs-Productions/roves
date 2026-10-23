@@ -17,6 +17,10 @@ WASM_SKIPS = {
     ("suite2.html", "WebAssembly.compileStreaming (fetched)"),
     ("games.html", "module Worker instantiates WebAssembly"),
 }
+# Checks a page must report: a page that drops one still reports a consistent total.
+REQUIRED_CHECKS = {
+    "events.html": ("an iframe keeps its WindowProxy across origin changes and back",),
+}
 TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
 
 
@@ -72,6 +76,9 @@ def validate(page, output, mode="normal", allow_missing_devices=False):
             errors.append("total does not match individual results")
         if not total:
             errors.append("suite executed no checks")
+    for name in REQUIRED_CHECKS.get(page, ()):
+        if name not in names:
+            errors.append(f"missing required check: {name}")
     return errors
 
 

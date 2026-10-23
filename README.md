@@ -106,6 +106,8 @@ from the patch set; the root `Cargo.lock`, this README and the repository-only S
 documented reconstruction exceptions (see CUSTOMIZATIONS.md).
 The opt-in GC smoke now reports removed-frame release separately for module and module-free
 frames; it is a diagnostic, not yet a requirement (see the shell wiki page).
+The events smoke now requires a WindowProxy check across an iframe's origin change (same-origin,
+sandboxed opaque origin, same-origin again); see the shell wiki page.
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional

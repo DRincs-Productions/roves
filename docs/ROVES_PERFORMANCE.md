@@ -1,3 +1,16 @@
+## 23 ottobre — riferimento Chrome MCP per WindowProxy0318
+
+Pagina HTTP http://127.0.0.1:19023/events.html servita dal checkout locale, Chrome155 su
+Windows, visibility=visible. Chrome DevTools MCP navigate_page/evaluate_script conferma
+true per "an iframe keeps its WindowProxy across origin changes and back": iframe srcdoc
+stessa origine → sandbox allow-scripts/origine opaca → stessa origine. È un riscontro di
+correttezza, non un benchmark né prova di Roves. Evidenza target/task-0318/chrome-reference.json.
+Suite completa16/17: unico errore preesistente "microtasks run before timers, timers before
+the next frame callback", sequenza sync,microtask,queueMicrotask,frame. Il controllo presume
+un ordine timer/rAF non garantito e termina al primo frame prima di osservare il timer.
+Correzione separata0319 prevista; non dichiarare tutta la pagina verde da questo controllo.
+Nessuna misuraRAM/CPU/GPU o profilo costoso.
+
 ## 23 ottobre — controllo preliminare frame via Chrome DevTools MCP
 
 Scena about:blank,2 iframe srcdoc senza moduli, ciascuno con probe solo sul global del
