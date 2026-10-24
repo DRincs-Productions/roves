@@ -12,22 +12,21 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Pausa quota0323 — 23ottobre22:03 Europe/Rome
+### Ripresa24ottobre —0324 revisionata, pubblicazione in corso
 
-Pubblicati root `b38d0a0a8b0` e wiki `343c4bb` (0322). Batch nuovo: V840014801242 e
-generale40014801233 in corso, nessun job rosso al controllo22:03; 6/10 e6/13 già verdi.
-Android40014801183 e iOS40014801157 verdi. Non fare push finché il batch precedente non
-termina e gli eventuali errori non sono corretti. Nessun checkpoint browser0322 ancora verificato.
-Claude0323 ha segnalato: “You've hit your session limit — resets11:40pm (Europe/Rome)”.
-Nessun retry immediato: singolo tentativo autorizzato cinque ore dopo,24ottobre03:03
-Europe/Rome, automazione `ripresa-claude-dopo-quota-0323`. Disattivarla dopo il tentativo;
-se persiste lo stesso limite fermarsi senza concatenarne altri. Nessuna sostituzione Codex.
-La diagnosi0323 sotto è salvata; nessun sorgente WIP: Claude ha ripristinato realm_tests.rs
-salvando i2test proposti in target/task-0323/proposed-realm-tests.diff e i log normal/JITless.
-Codex ha controllato evidenze e stato Git; il prossimo incarico è valutare nomi JSClass nello
-snapshot per identificare i ClassBox referrer. Non applicare NoHeapPointers nel GC pubblico;
-nessuna prova della causa complessiva della retention. Documentazione diagnostica committata
-localmente durante la CI; nessun nuovo push durante le run attive.
+Il tentativo singolo dopo quota0323 è riuscito alle09:33 circa del24ottobre (scheduler
+eseguito dopo la scadenza03:03). Eliminata l'automazione `ripresa-claude-dopo-quota-0323`;
+nessun polling o retry periodico rimane. Claude0324 ha completato l'incarico, Codex ha
+revisionato diff, risultati normal/JITless, negativo vecchio codice e replay, senza ripeterli.
+Batch b38d0a0a8b0 TUTTO VERDE: V840014801242 10/10, generale40014801233 13/13,
+Android40014801183 e iOS40014801157 verdi. Il controllo browser0318 conferma0322.
+La diagnostica reale resta module/no-module0/2 e frame/document/probe non rilasciati;
+lo snapshot della scena è riuscito (4898314byte). Nessuna soluzione retention complessiva.
+0324 nomina i ClassBox nello snapshot attraverso JSClass.name e distingue wrapper:
+nessuna nuova libreria, nessun cambiamento a tracing/GC/finalizer.119normal/118JITless
+passati (2/3ignorati); replay468/471 identici, stesse3eccezioni note. Prossima evidenza:
+artifact CI con i nomi nuovi, leggere referrer con MemLab mantenuto, non un BFS nostro.
+Le proposte0323 restano in target/task-0323/proposed-realm-tests.diff, non pubblicate.
 
 ### Checkpoint attuale0318–0320
 
@@ -306,10 +305,26 @@ restituisce il nome statico del `JSClass` del box (es. `HTMLIFrameElement`) inve
 `RovesJsClassBox`; effetto solo sui nomi dello snapshot. Con il prossimo artifact, interrogare
 a un livello i referrer di quei ClassBox. Log: target/task-0323/ (probe-*.log, *.json, summary.txt).
 
+### Nomi ClassBox nello snapshot0324 (Claude, diagnostica, non una correzione)
+
+Implementato il passo sopra (patch `0324-class-box-snapshot-names.patch`). `ClassBox::get_name`
+(API cppgc `GarbageCollected::get_name` di rusty_v8152.2.0, già usata) restituisce
+`JSClass.name` del box; `RovesJsClassBox` resta per classi senza nome e i wrapper Window
+prestati (`window_wrapper`) si chiamano `RovesJsWindowWrapper`, distinti dal Window reale.
+Contratto `'static`: rusty_v8 richiede nomi vivi per sempre fuori dallo snapshot; le classi
+sono statiche e tutti i `JSClass.name` del codice (Servo codegen `str_to_cstr_ptr`, script,
+roves-js) sono letterali C. Nessuna dipendenza, registro o stringa allocata; trace/finalizer
+invariati. Test `heap_snapshot::tests::class_boxes_carry_their_class_names` (snapshot V8 reale:
+due classi distinte, fallback senza nome, wrapper prestato e nome della sua classe assente);
+con il vecchio `get_name` fallisce. roves-js normal119/119 e JITless118/118 (ignorati2/3).
+Replay pristine: dry-run/apply ok, 468/471 identici con le stesse3 eccezioni. Log:
+`target/task-0324/`. La retention del frame rimosso resta irrisolta: serve il prossimo artifact
+CI0320 per leggere a un livello i referrer dei ClassBox ora nominati.
+
 ### Prossimi punti
 
-1. Controllare il batch b38d0a0a8b0 indicato in cima, inclusi smoke browser normal/JITless;
-   0322 è pubblicata, i due fallimenti0318 precedenti attendono conferma della correzione.
+1. Pubblicare0324 revisionata (batch b38d0a0a8b0 tutto verde); controllare il nuovo batch
+   e leggere lo snapshot con i nomi delle classi.0322 confermata nel browser normal/JITless.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.

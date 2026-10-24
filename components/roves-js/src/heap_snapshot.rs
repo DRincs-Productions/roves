@@ -222,4 +222,44 @@ mod tests {
         drop(runtime);
         let _ = std::fs::remove_dir_all(&directory);
     }
+
+    /// V8 names the cppgc box of a class-based object after its `JSClass`; a nameless class
+    /// keeps the generic name, and a borrowed Window wrapper is named apart from its class.
+    #[test]
+    fn class_boxes_carry_their_class_names() {
+        use crate::jsapi::{JS_NewObject, JSClass};
+        const fn class(name: *const std::os::raw::c_char) -> JSClass {
+            use std::ptr::null;
+            JSClass { name, flags: 0, cOps: null(), spec: null(), ext: null(), oOps: null() }
+        }
+        static ALPHA: JSClass = class(c"RovesSnapshotAlphaClass".as_ptr());
+        static BETA: JSClass = class(c"RovesSnapshotBetaClass".as_ptr());
+        static NAMELESS: JSClass = class(std::ptr::null());
+        static BORROWED: JSClass = class(c"RovesSnapshotBorrowedClass".as_ptr());
+        let directory = scratch("names");
+        let path = directory.join("names.heapsnapshot");
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        {
+            crate::rooted!(in(cx) let alpha = unsafe { JS_NewObject(cx, &ALPHA) });
+            crate::rooted!(in(cx) let beta = unsafe { JS_NewObject(cx, &BETA) });
+            crate::rooted!(in(cx) let nameless = unsafe { JS_NewObject(cx, &NAMELESS) });
+            crate::rooted!(in(cx) let borrowed = unsafe { JS_NewObject(cx, &BORROWED) });
+            for object in [alpha.get(), beta.get(), nameless.get(), borrowed.get()] {
+                assert!(!object.is_null());
+            }
+            let borrowed_box = crate::object::class_box(borrowed.get()).unwrap();
+            borrowed_box.window_wrapper.set(true);
+            // SAFETY: this thread's live runtime.
+            unsafe { &*cx }.with_scope(|scope| write(&path, |sink| scope.take_heap_snapshot(sink))).unwrap();
+            borrowed_box.window_wrapper.set(false);
+        }
+        let snapshot = std::fs::read_to_string(&path).unwrap();
+        for name in ["RovesSnapshotAlphaClass", "RovesSnapshotBetaClass", "RovesJsClassBox", "RovesJsWindowWrapper"] {
+            assert!(snapshot.contains(&format!("\"{name}\"")), "{name} missing");
+        }
+        assert!(!snapshot.contains("RovesSnapshotBorrowedClass"));
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
 }

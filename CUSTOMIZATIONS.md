@@ -1,3 +1,18 @@
+## 2026-10-24 - Class names for class boxes in native V8 heap snapshots (0324)
+
+**Files:** `components/roves-js/src/{object.rs,heap_snapshot.rs}`, patch
+`0324-class-box-snapshot-names.patch`.
+
+Diagnostic only, not a retention fix. The 0320 removed-frame snapshot showed cells retained by
+cppgc boxes all named `RovesJsClassBox`, hiding which DOM class held them. `ClassBox::get_name`
+(rusty_v8's existing cppgc `GarbageCollected::get_name`, serialized by V8's own snapshot
+generator) now returns the box's `JSClass.name`; nameless classes keep `RovesJsClassBox`, and
+borrowed Window wrappers are named `RovesJsWindowWrapper` so they are not mistaken for the
+window itself. rusty_v8 requires names that live forever outside snapshot generation: classes
+are static and every class name in the tree is a C string literal (SpiderMonkey's `JSClass`
+contract), so no copy, registry or leak is needed. Tracing and finalization are unchanged.
+A heap-snapshot test checks distinct class names, the nameless fallback and the wrapper name.
+
 ## 2026-10-23 - Production GC boundary diagnosis (0323, no production change)
 
 Compared public `JS_GC(DOM_TESTUTILS)` with the test-only GC path using existing V8/cppgc

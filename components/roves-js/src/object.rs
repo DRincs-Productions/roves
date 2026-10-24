@@ -123,8 +123,17 @@ unsafe impl GarbageCollected for ClassBox {
         }
     }
 
+    /// Heap snapshots name a box after its class (`Window`, `HTMLDivElement`, ...); borrowed
+    /// Window wrappers own no DOM state and are named apart from the windows they stand for.
     fn get_name(&self) -> &'static std::ffi::CStr {
-        c"RovesJsClassBox"
+        if self.window_wrapper.get() {
+            return c"RovesJsWindowWrapper";
+        }
+        // SAFETY: classes are static, and so are their names (SpiderMonkey's `JSClass`
+        // contract; every class here names itself with a C string literal), which is what V8
+        // needs from a name returned outside snapshot generation.
+        let name = unsafe { (*self.class).name };
+        if name.is_null() { c"RovesJsClassBox" } else { unsafe { CStr::from_ptr(name) } }
     }
 }
 
