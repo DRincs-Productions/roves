@@ -14,6 +14,12 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ### STOP quota settimanale —24ottobre11:23 Europe/Rome
 
+**Pubblicato checkpoint completo `226b7c0cec7` / wiki `2e77a2f`:** include0327/0328,
+esclude0329. Nuovo batch V8 **40081979370**, generale **40081979510**, Android
+**40081979357**, iOS **40081979379** avviato/in coda al controllo dopo push. Non verificato;
+nessun polling per quota settimanale e nessuna automazione di ripresa. Questo aggiornamento
+con gli ID è conservato come commit documentale locale, senza nuovo push durante le run.
+
 Claude0329/revisione ha risposto: `You've hit your weekly limit · resets 8am (Europe/Rome)`.
 Il messaggio non indica il giorno: non inferire una data. Sviluppo sospeso; nessun nuovo
 modello, sessione alternativa o automazione. Il retry5ore NON vale per una quota settimanale.
@@ -21,8 +27,8 @@ Il singolo ricontrollo `ripresa-claude-dopo-quota-0323` è stato eliminato dopo 
 
 Batch e80e43898e1 TUTTO VERDE: V840078536565 10/10, generale40078536546 13/13,
 Android40078536525 e iOS40078536540 verdi. Confermate le navigazioni opache consecutive0325.
-0327 (4a9335fcc41) e0328 (9f0da3885e6), wiki35f4d62, complete e revisionate: pubblicare
-insieme a questo checkpoint documentale, poi registrare il nuovo batch senza polling.
+0327 (4a9335fcc41) e0328 (9f0da3885e6), wiki35f4d62, complete e revisionate e incluse
+nel checkpoint226b7c0cec7/wiki2e77a2f. Gli ID del nuovo batch sono in cima, senza polling.
 0327 native120normal/119JITless;0328 wrapper generati byte-identici,37runner test8skip.
 La retention complessiva dei frame NON è risolta.
 
