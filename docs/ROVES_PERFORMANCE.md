@@ -1,3 +1,16 @@
+## 24 ottobre — snapshot nominato0326 e limiti MemLab
+
+Artifact12553680992/run40075199667 (4911213byte,
+SHA2569a358fb91e404d4a3c9d98e86cc244f058631268bbe83f15a4e4f1ea8951805a):
+probe@84963, Window@54631 e due realm figli condividono il proxy riusato@54629.
+Le interrogazioni MemLab mostrano cicli interni e cache WeakMap con chiavi Symbol;
+nessun arco forte esterno identificato nei dati visibili. Questo non dimostra assenza di leak.
+MemLab classifica euristicamente i nodi nativi con nome Window… come radici e tratta le
+voci WeakMap come essenziali per i dominatori: una trace che parte da WindowProxy non
+prova una radice reale. La riproduzione nativa con GC precisa raccoglie i realm abbandonati,
+mentre un wrapper radicato li trattiene. Non prova il rilascio del frame browser.
+Nessuna correzione o misura prestazionale; evidenze target/task-0326/, handoff V8_MIGRATION.md.
+
 ## 24 ottobre — Chrome MCP e navigazioni opache consecutive (0325)
 
 Chrome155 Windows, pagina visibile HTTP127.0.0.1:19025/events.html, contesto isolato,

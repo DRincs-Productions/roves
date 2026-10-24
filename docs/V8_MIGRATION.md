@@ -12,7 +12,7 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Ripresa24ottobre —0324 pubblicata,0325 completa localmente
+### Ripresa24ottobre —0324 verde,0325 revisionata,0326 analizzata
 
 Il tentativo singolo dopo quota0323 è riuscito alle09:33 circa del24ottobre (scheduler
 eseguito dopo la scadenza03:03). Eliminata l'automazione `ripresa-claude-dopo-quota-0323`;
@@ -22,6 +22,9 @@ Batch b38d0a0a8b0 TUTTO VERDE: V840014801242 10/10, generale40014801233 13/13,
 Android40014801183 e iOS40014801157 verdi. Il controllo browser0318 conferma0322.
 La diagnostica reale resta module/no-module0/2 e frame/document/probe non rilasciati;
 lo snapshot della scena è riuscito (4898314byte). Nessuna soluzione retention complessiva.
+0324 pubblicata8dd9fa77dae/wiki6f1f071, batch40075199667(V8),40075199664(generale),
+40075199647(Android),40075199638(iOS) TUTTO VERDE.0325 commit localeab0cadb725d/wiki6eca57a,
+Chrome MCP17/17 finale; pubblicabile col checkpoint documentale0326.
 0324 nomina i ClassBox nello snapshot attraverso JSClass.name e distingue wrapper:
 nessuna nuova libreria, nessun cambiamento a tracing/GC/finalizer.119normal/118JITless
 passati (2/3ignorati); replay468/471 identici, stesse3eccezioni note. Prossima evidenza:
@@ -340,12 +343,44 @@ in entrambe. 13 mutazioni della pagina (incl. events.html di HEAD, senza ping/ec
 Windows31 test (8skip POSIX); run.sh/check_results invariati, WSL non ripetuto. Patch0325
 dry-run/apply sullo scratch, 468/471 identici + 3 eccezioni. Log: target/task-0325/.
 
+### Snapshot nominato0326 analizzato (Claude, nessun difetto stabilito, nessuna modifica)
+
+Artifact12553680992 della run40075199667: 4911213byte, SHA256
+`9a358fb91e404d4a3c9d98e86cc244f058631268bbe83f15a4e4f1ea8951805a`; validatore JSON ok. Solo API
+MemLab2.0.5 a un livello (`one-level.js`, `stack-roots.js`, `select-node.js`). Probe@84963 ←
+Window[JSGlobalObject]@54631. Due realm figli condividono il proxy riusato@54629 (0303):
+realm@1192/contesto@14139/global@54631/`Window (cppgc)`@1190 e realm@1486/@16847/@54643/@1484.
+Ogni referrer forte di probe, global, contesti, proxy, celle@930/@1188/@1488, `WindowProxy`
+@1274/@1566, `HTMLIFrameElement`@1480, Document@1254/@1550, realm e loro EmbedderDataArray è
+interno al cluster del frame (cicli attesi) o debole. L'unico ponte dai root: due
+`RovesJsWindowWrapper`@1094/@970 ← JSProxy tenuti solo da voci efemerone di WeakMap@97915/@97341
+(cache d'identità di due realm riceventi), chiave Symbol@97357 tenuto solo da
+`RovesJsWindowIdentity`@928, nel cluster. Radici stack nativo (10), Persistent (RootSet@22,
+MicrotaskQueue), traced handles, Handle scope/Stack roots: nessun nodo del frame.
+Attenzione MemLab: `isRootNode` considera radice ogni nodo nativo che inizia per "Window"
+(`@memlab/core/dist/lib/Utils.js:305`): con i nomi0324 `trace` parte da `WindowProxy`@1274,
+euristica e non radice GC; i dominatori contano gli archi efemerone come essenziali.
+`TakeHeapSnapshot` di rusty_v8 (opzioni predefinite) esegue `CollectAllAvailableGarbage` con
+`kMayContainHeapPointers` e completa lo sweep prima del grafo (`heap-snapshot-generator.cc:3658`):
+il cluster è sopravvissuto a quella GC senza un arco forte visibile.
+Test diagnostico solo su copia di lavoro (`target/task-0326/abandoned-window-test.rs`, repo
+intatto): Window incapsulato in due cache, proxy riusato da navigazione, tutto abbandonato,
+`gc_for_testing`: raccolti, normal e JITless ok; negativo con un wrapper radicato FALLISCE come
+previsto. Le cache d'identità non trattengono sotto GC precisa: nessun arco forte ingiustificato,
+nessun fix. Ipotesi aperta, non provata: retainer non rappresentato come arco (parole conservative
+dello stack durante la GC stessa; lo snapshot registra solo la propria scansione successiva).
+Revisione Codex: questi dati descrivono soltanto gli archi visibili, non dimostrano
+l’assenza di un retainer. La proposta di una GC browser senza scansione stack NON è
+autorizzata né implementata: NoHeapPointers è insicuro senza una prova del punto sicuro.
+Prossimo controllo distinto: TODO ClearKeptObjects allo step6 del checkpoint HTML
+(components/script/microtask.rs), mentre V8 svuota i kept objects solo quando viene
+eseguito perform_microtask_checkpoint; verificare i job senza Promise V8 prima di cambiare codice. Log: `target/task-0326/summary.txt`.
+
 ### Prossimi punti
 
-1.0324 pubblicata root8dd9fa77dae/wiki6f1f071. V840075199667 10/10 verdi;
-   generale40075199664 12/13 verdi, Linuxportable120817428277 ancora attivo: nessun push.
-  0325 completa/revisionata da committare localmente; attendere batch prima di pubblicare.
-   Snapshot nominato disponibile: artifact12553680992 (846166bytezip), da analizzare.
+1.0324 batch TUTTO VERDE; pubblicare0325 commitab0cadb725d e diagnosi0326 completa,
+   poi verificare il nuovo batch normal/JITless. Nessun fix retention dimostrato.
+   Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.

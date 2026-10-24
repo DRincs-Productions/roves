@@ -1,3 +1,13 @@
+## 2026-10-24 - Named removed-frame snapshot diagnosis (0326, no source change)
+
+Read artifact12553680992 using maintained MemLab APIs. Named DOM boxes expose the frame's
+internal cycles and identity-cache ephemerons, but no unjustified external strong root was
+identified in visible edges. MemLab heuristically treats native Window-prefixed names as roots;
+trace/dominator results need that qualification. Scratch precise-GC reproduction collects the
+abandoned realms, a rooted wrapper negative retains them. Browser retention remains open;
+no speculative GC/stack-state change or production patch. Details: V8_MIGRATION.md and
+ROVES_PERFORMANCE.md.
+
 ## 2026-10-24 - Opaque-to-opaque navigations in the origin-change check (0325)
 
 **Files:** `support/v8-smoke/{events.html,test_runner.py}`, patch
