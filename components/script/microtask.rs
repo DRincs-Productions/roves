@@ -11,7 +11,7 @@ use std::mem;
 use std::rc::Rc;
 
 use js::context::JSContext;
-use js::rust::wrappers2::JobQueueMayNotBeEmpty;
+use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty};
 use malloc_size_of::MallocSizeOf;
 use script_bindings::cell::DomRefCell;
 use script_bindings::root::Dom;
@@ -166,7 +166,10 @@ impl MicrotaskQueue {
             }
         }
 
-        // TODO: Step 6. Perform ClearKeptObjects().
+        // Step 6. Perform ClearKeptObjects().
+        // V8 also clears them after running promise jobs, but a checkpoint without any (no
+        // promise was settled) must still release the WeakRef targets kept since the last one.
+        unsafe { ClearKeptObjects(cx) };
 
         // Step 7. Set the event loop's performing a microtask checkpoint to false.
         self.performing_a_microtask_checkpoint.set(false);

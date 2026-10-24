@@ -631,6 +631,91 @@ class HeapSnapshotCheckTests(unittest.TestCase):
                 self.assertTrue(found[0].startswith('not a V8 heap snapshot: '), found)
 
 
+ROOT = HERE.parents[1]
+
+
+def braced_body(source, marker):
+    opening = source.index('{', source.index(marker))
+    depth = 0
+    for index in range(opening, len(source)):
+        depth += {'{': 1, '}': -1}.get(source[index], 0)
+        if depth == 0:
+            return source[opening + 1:index]
+    raise AssertionError(f'unclosed block after {marker!r}')
+
+
+def checkpoint_problems(microtask, runtime, wrappers):
+    """Whether the HTML microtask checkpoint performs step 6 (ClearKeptObjects) through the
+    roves-js bridge: once per outermost checkpoint, unconditionally (an empty microtask queue
+    included), after the rejected-promise and IndexedDB steps and before the flag is reset."""
+    problems = []
+    code = re.sub(r'//[^\n]*', '', microtask)
+    if not re.search(r'use js::rust::wrappers2::\{[^}]*\bClearKeptObjects\b', code):
+        problems.append('microtask.rs does not import the ClearKeptObjects wrapper')
+    body = braced_body(code, 'fn checkpoint(')
+    calls = [match.start() for match in re.finditer(r'\bClearKeptObjects\(cx\)', body)]
+    if len(calls) != 1:
+        return problems + [f'checkpoint calls ClearKeptObjects {len(calls)} times']
+    statement = re.search(r'unsafe \{ ClearKeptObjects\(cx\) \};', body)
+    if statement is None:
+        return problems + ['step 6 is not a statement of its own']
+    calls = [statement.start()]
+    call = calls[0]
+    reentry = body.find('if self.performing_a_microtask_checkpoint.get()')
+    steps = [body.find('notify_about_rejected_promises('), body.find('cleanup_indexeddb_transactions(')]
+    reset = body.find('self.performing_a_microtask_checkpoint.set(false)')
+    if reentry < 0 or reentry > call:
+        problems.append('step 6 runs before the re-entrancy guard')
+    if min(steps) < 0 or max(steps) > call:
+        problems.append('step 6 runs before the rejected-promise or IndexedDB steps')
+    if reset < 0 or reset < call:
+        problems.append('step 6 runs after performing a microtask checkpoint is reset')
+    if body[:call].count('{') != body[:call].count('}'):
+        problems.append('step 6 is conditional or inside a loop')
+    bridge = braced_body(runtime, 'pub unsafe fn ClearKeptObjects(') if 'pub unsafe fn ClearKeptObjects(' in runtime else ''
+    if 'clear_kept_objects()' not in bridge or 'perform_microtask_checkpoint' in bridge:
+        problems.append("the bridge must call V8's clear_kept_objects, not run microtasks")
+    if 'wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));' not in wrappers:
+        problems.append('wrappers2 does not export ClearKeptObjects')
+    return problems
+
+
+class MicrotaskCheckpointContractTests(unittest.TestCase):
+    """The browser's checkpoint is not built here; its source is checked against the contract
+    (the bridge itself is covered by roves-js's native WeakRef test)."""
+
+    def sources(self):
+        return [(ROOT / path).read_text(encoding='utf-8') for path in (
+            'components/script/microtask.rs', 'components/roves-js/src/runtime_impl.rs',
+            'components/roves-js/src/wrappers2.in.rs')]
+
+    def test_step_six_clears_kept_objects(self):
+        self.assertEqual([], checkpoint_problems(*self.sources()))
+
+    def test_mutations_are_caught(self):
+        microtask, runtime, wrappers = self.sources()
+        call = '        unsafe { ClearKeptObjects(cx) };\n'
+        self.assertEqual(1, microtask.count(call))
+        without = microtask.replace(call, '')
+        cases = {
+            'missing': without,
+            'commented': microtask.replace(call, '        // unsafe { ClearKeptObjects(cx) };\n'),
+            'before IndexedDB': without.replace('        for global in globalscopes.iter() {', call + '        for global in globalscopes.iter() {'),
+            'after reset': without.replace('        // TODO: Step 8.', call + '        // TODO: Step 8.'),
+            'only when jobs ran': without.replace('        // Step 7.', '        if !globalscopes.is_empty() {\n    ' + call + '        }\n        // Step 7.'),
+            'inside the loop': without.replace('                job.handler(cx);\n', '                job.handler(cx);\n        ' + call),
+        }
+        for name, mutated in cases.items():
+            with self.subTest(name):
+                self.assertNotEqual(microtask, mutated)
+                self.assertNotEqual([], checkpoint_problems(mutated, runtime, wrappers))
+        run_jobs = runtime.replace('isolate(cx).clear_kept_objects();', 'isolate(cx).perform_microtask_checkpoint();')
+        self.assertNotEqual(runtime, run_jobs)
+        self.assertNotEqual([], checkpoint_problems(microtask, run_jobs, wrappers))
+        unexported = wrappers.replace('wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));\n', '')
+        self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
+
+
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):

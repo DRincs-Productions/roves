@@ -1,0 +1,190 @@
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index afb1c2d5e9d..299b1f8b250 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -592,6 +592,13 @@ unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut c
+ 
+ pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
+ 
++/// Releases the WeakRef targets kept alive since the last clear (the HTML microtask
++/// checkpoint's step 6). V8 clears them itself only after `perform_microtask_checkpoint`,
++/// which runs just when promise jobs were queued (`drain_microtasks`).
++pub unsafe fn ClearKeptObjects(cx: *mut JSContext) {
++    isolate(cx).clear_kept_objects();
++}
++
+ /// Runs the pending promise jobs (a V8 microtask checkpoint).
+ /// Runs the waiting foreground tasks and promise jobs (embedders without a job queue).
+ pub unsafe fn RunJobs(cx: *mut JSContext) {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 1d1d0fc246e..8ddfba391c0 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2061,6 +2061,34 @@ mod runtime_hooks {
+         });
+     }
+ 
++    #[test]
++    fn clear_kept_objects_releases_weak_ref_targets_without_promise_jobs() {
++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        // Creating or dereferencing a WeakRef keeps its target until ClearKeptObjects. No
++        // promise job runs here, so V8's own clear (after promise jobs) never happens.
++        eval(&runtime, "globalThis.held = {}; globalThis.strong = new WeakRef(held); globalThis.weak = new WeakRef({}); 0");
++        runtime.gc_for_testing();
++        assert!(eval(&runtime, "weak.deref() !== undefined").to_boolean(), "a kept target survives until a clear");
++        runtime.gc_for_testing();
++        assert!(eval(&runtime, "weak.deref() !== undefined").to_boolean(), "without a clear it stays kept");
++
++        // The script crate's path (the HTML microtask checkpoint's step 6).
++        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        unsafe { crate::rust::wrappers2::ClearKeptObjects(&safe) };
++        runtime.gc_for_testing();
++        assert!(eval(&runtime, "weak.deref() === undefined").to_boolean(), "a released, unreachable target is collected");
++        assert!(eval(&runtime, "strong.deref() === held").to_boolean(), "a target held elsewhere survives");
++
++        // A target dereferenced after the clear is kept again until the next one.
++        eval(&runtime, "globalThis.again = new WeakRef(held); delete globalThis.held; again.deref(); 0");
++        runtime.gc_for_testing();
++        assert!(eval(&runtime, "again.deref() !== undefined").to_boolean(), "kept again until the next clear");
++        unsafe { ClearKeptObjects(cx) };
++        runtime.gc_for_testing();
++        assert!(eval(&runtime, "again.deref() === undefined && strong.deref() === undefined").to_boolean());
++    }
++
+     #[test]
+     fn runtime_hooks_roots_interrupts_jobs_and_rejections() {
+         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index e623d7fd714..3157350b4a7 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -23,6 +23,7 @@ wrap!(jsapi: pub fn LeaveRealm(cx: &JSContext, oldRealm: *mut Realm));
+ wrap!(jsapi: pub fn Call(cx: &mut JSContext, thisv: Handle<Value>, fun: Handle<Value>, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn Construct1(cx: &mut JSContext, fun: Handle<Value>, args: *const HandleValueArray, objp: MutableHandle<*mut JSObject>) -> bool);
+ wrap!(jsapi: pub fn SetGCSliceCallback(cx: &JSContext, callback: GCSliceCallback) -> GCSliceCallback);
++wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));
+ wrap!(jsapi: pub fn CurrentGlobalOrNull(cx: &JSContext) -> *mut JSObject);
+ wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
+ wrap!(jsapi: pub fn MapSize(cx: &JSContext, obj: HandleObject) -> u32);
+diff --git a/components/script/microtask.rs b/components/script/microtask.rs
+index ed2362b6c61..7254f3b7245 100644
+--- a/components/script/microtask.rs
++++ b/components/script/microtask.rs
+@@ -11,7 +11,7 @@ use std::mem;
+ use std::rc::Rc;
+ 
+ use js::context::JSContext;
+-use js::rust::wrappers2::JobQueueMayNotBeEmpty;
++use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty};
+ use malloc_size_of::MallocSizeOf;
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::root::Dom;
+@@ -166,7 +166,10 @@ impl MicrotaskQueue {
+             }
+         }
+ 
+-        // TODO: Step 6. Perform ClearKeptObjects().
++        // Step 6. Perform ClearKeptObjects().
++        // V8 also clears them after running promise jobs, but a checkpoint without any (no
++        // promise was settled) must still release the WeakRef targets kept since the last one.
++        unsafe { ClearKeptObjects(cx) };
+ 
+         // Step 7. Set the event loop's performing a microtask checkpoint to false.
+         self.performing_a_microtask_checkpoint.set(false);
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 96e5ea86273..26ef4f616df 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -631,6 +631,91 @@ class HeapSnapshotCheckTests(unittest.TestCase):
+                 self.assertTrue(found[0].startswith('not a V8 heap snapshot: '), found)
+ 
+ 
++ROOT = HERE.parents[1]
++
++
++def braced_body(source, marker):
++    opening = source.index('{', source.index(marker))
++    depth = 0
++    for index in range(opening, len(source)):
++        depth += {'{': 1, '}': -1}.get(source[index], 0)
++        if depth == 0:
++            return source[opening + 1:index]
++    raise AssertionError(f'unclosed block after {marker!r}')
++
++
++def checkpoint_problems(microtask, runtime, wrappers):
++    """Whether the HTML microtask checkpoint performs step 6 (ClearKeptObjects) through the
++    roves-js bridge: once per outermost checkpoint, unconditionally (an empty microtask queue
++    included), after the rejected-promise and IndexedDB steps and before the flag is reset."""
++    problems = []
++    code = re.sub(r'//[^\n]*', '', microtask)
++    if not re.search(r'use js::rust::wrappers2::\{[^}]*\bClearKeptObjects\b', code):
++        problems.append('microtask.rs does not import the ClearKeptObjects wrapper')
++    body = braced_body(code, 'fn checkpoint(')
++    calls = [match.start() for match in re.finditer(r'\bClearKeptObjects\(cx\)', body)]
++    if len(calls) != 1:
++        return problems + [f'checkpoint calls ClearKeptObjects {len(calls)} times']
++    statement = re.search(r'unsafe \{ ClearKeptObjects\(cx\) \};', body)
++    if statement is None:
++        return problems + ['step 6 is not a statement of its own']
++    calls = [statement.start()]
++    call = calls[0]
++    reentry = body.find('if self.performing_a_microtask_checkpoint.get()')
++    steps = [body.find('notify_about_rejected_promises('), body.find('cleanup_indexeddb_transactions(')]
++    reset = body.find('self.performing_a_microtask_checkpoint.set(false)')
++    if reentry < 0 or reentry > call:
++        problems.append('step 6 runs before the re-entrancy guard')
++    if min(steps) < 0 or max(steps) > call:
++        problems.append('step 6 runs before the rejected-promise or IndexedDB steps')
++    if reset < 0 or reset < call:
++        problems.append('step 6 runs after performing a microtask checkpoint is reset')
++    if body[:call].count('{') != body[:call].count('}'):
++        problems.append('step 6 is conditional or inside a loop')
++    bridge = braced_body(runtime, 'pub unsafe fn ClearKeptObjects(') if 'pub unsafe fn ClearKeptObjects(' in runtime else ''
++    if 'clear_kept_objects()' not in bridge or 'perform_microtask_checkpoint' in bridge:
++        problems.append("the bridge must call V8's clear_kept_objects, not run microtasks")
++    if 'wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));' not in wrappers:
++        problems.append('wrappers2 does not export ClearKeptObjects')
++    return problems
++
++
++class MicrotaskCheckpointContractTests(unittest.TestCase):
++    """The browser's checkpoint is not built here; its source is checked against the contract
++    (the bridge itself is covered by roves-js's native WeakRef test)."""
++
++    def sources(self):
++        return [(ROOT / path).read_text(encoding='utf-8') for path in (
++            'components/script/microtask.rs', 'components/roves-js/src/runtime_impl.rs',
++            'components/roves-js/src/wrappers2.in.rs')]
++
++    def test_step_six_clears_kept_objects(self):
++        self.assertEqual([], checkpoint_problems(*self.sources()))
++
++    def test_mutations_are_caught(self):
++        microtask, runtime, wrappers = self.sources()
++        call = '        unsafe { ClearKeptObjects(cx) };\n'
++        self.assertEqual(1, microtask.count(call))
++        without = microtask.replace(call, '')
++        cases = {
++            'missing': without,
++            'commented': microtask.replace(call, '        // unsafe { ClearKeptObjects(cx) };\n'),
++            'before IndexedDB': without.replace('        for global in globalscopes.iter() {', call + '        for global in globalscopes.iter() {'),
++            'after reset': without.replace('        // TODO: Step 8.', call + '        // TODO: Step 8.'),
++            'only when jobs ran': without.replace('        // Step 7.', '        if !globalscopes.is_empty() {\n    ' + call + '        }\n        // Step 7.'),
++            'inside the loop': without.replace('                job.handler(cx);\n', '                job.handler(cx);\n        ' + call),
++        }
++        for name, mutated in cases.items():
++            with self.subTest(name):
++                self.assertNotEqual(microtask, mutated)
++                self.assertNotEqual([], checkpoint_problems(mutated, runtime, wrappers))
++        run_jobs = runtime.replace('isolate(cx).clear_kept_objects();', 'isolate(cx).perform_microtask_checkpoint();')
++        self.assertNotEqual(runtime, run_jobs)
++        self.assertNotEqual([], checkpoint_problems(microtask, run_jobs, wrappers))
++        unexported = wrappers.replace('wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));\n', '')
++        self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
++
++
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):

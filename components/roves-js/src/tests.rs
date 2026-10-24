@@ -2062,6 +2062,34 @@ mod runtime_hooks {
     }
 
     #[test]
+    fn clear_kept_objects_releases_weak_ref_targets_without_promise_jobs() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // Creating or dereferencing a WeakRef keeps its target until ClearKeptObjects. No
+        // promise job runs here, so V8's own clear (after promise jobs) never happens.
+        eval(&runtime, "globalThis.held = {}; globalThis.strong = new WeakRef(held); globalThis.weak = new WeakRef({}); 0");
+        runtime.gc_for_testing();
+        assert!(eval(&runtime, "weak.deref() !== undefined").to_boolean(), "a kept target survives until a clear");
+        runtime.gc_for_testing();
+        assert!(eval(&runtime, "weak.deref() !== undefined").to_boolean(), "without a clear it stays kept");
+
+        // The script crate's path (the HTML microtask checkpoint's step 6).
+        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        unsafe { crate::rust::wrappers2::ClearKeptObjects(&safe) };
+        runtime.gc_for_testing();
+        assert!(eval(&runtime, "weak.deref() === undefined").to_boolean(), "a released, unreachable target is collected");
+        assert!(eval(&runtime, "strong.deref() === held").to_boolean(), "a target held elsewhere survives");
+
+        // A target dereferenced after the clear is kept again until the next one.
+        eval(&runtime, "globalThis.again = new WeakRef(held); delete globalThis.held; again.deref(); 0");
+        runtime.gc_for_testing();
+        assert!(eval(&runtime, "again.deref() !== undefined").to_boolean(), "kept again until the next clear");
+        unsafe { ClearKeptObjects(cx) };
+        runtime.gc_for_testing();
+        assert!(eval(&runtime, "again.deref() === undefined && strong.deref() === undefined").to_boolean());
+    }
+
+    #[test]
     fn runtime_hooks_roots_interrupts_jobs_and_rejections() {
         let mut runtime = Runtime::new(JSEngineHandle::for_tests());
         let cx = runtime.raw_cx();

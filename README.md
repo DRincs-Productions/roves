@@ -615,6 +615,8 @@ defined in an iframe) now reports the window whose code is running as its caller
 do, and callbacks run by the engine no longer see the script that registered them as the caller.
 `FinalizationRegistry` cleanup callbacks can call page APIs such as `drawImage` on V8 without
 crashing the page's script thread.
+An object reachable only through a `WeakRef` can now be collected once the current task and its
+microtasks finish, as in browsers, even if no promise ran in between (see the shell wiki page).
 `postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
 `DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
 

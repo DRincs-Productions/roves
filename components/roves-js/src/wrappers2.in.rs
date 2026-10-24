@@ -23,6 +23,7 @@ wrap!(jsapi: pub fn LeaveRealm(cx: &JSContext, oldRealm: *mut Realm));
 wrap!(jsapi: pub fn Call(cx: &mut JSContext, thisv: Handle<Value>, fun: Handle<Value>, args: *const HandleValueArray, rval: MutableHandle<Value>) -> bool);
 wrap!(jsapi: pub fn Construct1(cx: &mut JSContext, fun: Handle<Value>, args: *const HandleValueArray, objp: MutableHandle<*mut JSObject>) -> bool);
 wrap!(jsapi: pub fn SetGCSliceCallback(cx: &JSContext, callback: GCSliceCallback) -> GCSliceCallback);
+wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));
 wrap!(jsapi: pub fn CurrentGlobalOrNull(cx: &JSContext) -> *mut JSObject);
 wrap!(jsapi: pub fn CurrentGlobal(cx: &JSContext) -> *const *mut JSObject);
 wrap!(jsapi: pub fn MapSize(cx: &JSContext, obj: HandleObject) -> u32);

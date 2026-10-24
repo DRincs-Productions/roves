@@ -372,14 +372,31 @@ dello stack durante la GC stessa; lo snapshot registra solo la propria scansione
 Revisione Codex: questi dati descrivono soltanto gli archi visibili, non dimostrano
 l’assenza di un retainer. La proposta di una GC browser senza scansione stack NON è
 autorizzata né implementata: NoHeapPointers è insicuro senza una prova del punto sicuro.
-Prossimo controllo distinto: TODO ClearKeptObjects allo step6 del checkpoint HTML
-(components/script/microtask.rs), mentre V8 svuota i kept objects solo quando viene
-eseguito perform_microtask_checkpoint; verificare i job senza Promise V8 prima di cambiare codice. Log: `target/task-0326/summary.txt`.
+Prossimo controllo distinto (svolto in0327, sotto): TODO ClearKeptObjects allo step6 del
+checkpoint HTML. Log: `target/task-0326/summary.txt`.
+
+### Step6 ClearKeptObjects del checkpoint HTML (Claude0327, revisionata da Codex)
+
+Gap confermato: V8 svuota i kept objects solo in `PerformCheckpointInternal`
+(`microtask-queue.cc:180`), che roves-js esegue solo nel drain job accodato dal promise hook;
+`JobQueueIsEmpty`/`MayNotBeEmpty` sono no-op e script non usa `RunJobs`. Senza Promise (script,
+timer, `queueMicrotask`) i target WeakRef restavano tenuti fino a una Promise successiva.
+Fix: `ClearKeptObjects(cx)` (nome mozjs) in `runtime_impl.rs` → `Isolate::clear_kept_objects`
+di rusty_v8152.2.0, riga in `wrappers2.in.rs`; chiamato una volta in `MicrotaskQueue::checkpoint`
+dopo rifiuti/IDB e prima del flag false. Tutti i chiamanti (window, worker, parser) passano da qui.
+Non spiega la retention della scena (usa Promise). Clear anticipato dentro il drain job invariato.
+Test: nativo normal120/JITless119 ok (2/3ignorati); contratto statico in `test_runner.py`
+(sorgente attuale ok, codice precedente e8mutazioni falliscono); unittest33 ok (8skip POSIX).
+Patch0327 dry-run/apply sullo scratch: 469/472 identici + 3 eccezioni note. Nessuna fixture
+browser (l'harness usa Promise e maschererebbe il caso). Nota: `gen_wrappers2.py` rieseguito
+toglierebbe3voci esistenti; non rigenerato. Log: `target/task-0327/`.
 
 ### Prossimi punti
 
-1.0324 batch TUTTO VERDE; pubblicare0325 commitab0cadb725d e diagnosi0326 completa,
-   poi verificare il nuovo batch normal/JITless. Nessun fix retention dimostrato.
+1.0325/0326 pubblicati nel checkpoint e80e43898e1/wiki f598a06. Nuovo batch
+   V840078536565 e generale40078536546:6/10 e6/13 verdi, rimanenti attivi senza rossi
+   al controllo0327. Android40078536525/iOS40078536540 da controllo aggregato finale.
+  0327 completa/revisionata, commit solo locale: non fare push durante batch attivo.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

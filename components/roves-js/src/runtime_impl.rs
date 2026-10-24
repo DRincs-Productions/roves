@@ -592,6 +592,13 @@ unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut c
 
 pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
 
+/// Releases the WeakRef targets kept alive since the last clear (the HTML microtask
+/// checkpoint's step 6). V8 clears them itself only after `perform_microtask_checkpoint`,
+/// which runs just when promise jobs were queued (`drain_microtasks`).
+pub unsafe fn ClearKeptObjects(cx: *mut JSContext) {
+    isolate(cx).clear_kept_objects();
+}
+
 /// Runs the pending promise jobs (a V8 microtask checkpoint).
 /// Runs the waiting foreground tasks and promise jobs (embedders without a job queue).
 pub unsafe fn RunJobs(cx: *mut JSContext) {

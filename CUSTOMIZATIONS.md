@@ -1,3 +1,30 @@
+## 2026-10-24 - ClearKeptObjects at the HTML microtask checkpoint (0327)
+
+**Files:** `components/script/microtask.rs`,
+`components/roves-js/src/{runtime_impl.rs,wrappers2.in.rs,tests.rs}`,
+`support/v8-smoke/test_runner.py`, patch `0327-html-checkpoint-clear-kept-objects.patch`.
+
+The checkpoint's step 6 was a TODO. On V8 the kept-objects set (WeakRef targets created or
+dereferenced) was cleared only by V8's own `PerformMicrotaskCheckpoint`, which roves-js runs
+just inside the drain job that its promise hook enqueues; `JobQueueIsEmpty`/`MayNotBeEmpty` are
+no-ops. A checkpoint with no promise settled since the last drain (plain scripts, timers,
+`queueMicrotask`) therefore left kept targets alive until some later promise. roves-js now
+implements mozjs's `ClearKeptObjects(cx)` with rusty_v8's `Isolate::clear_kept_objects` (no
+microtasks run, no reordering), exported through the existing `wrappers2` list (one line added in
+the position `gen_wrappers2.py` gives it; rerunning the generator also drops three existing
+hand-kept entries, so the file was not regenerated wholesale). `MicrotaskQueue::checkpoint`
+calls it once, unconditionally, after the rejected-promise and IndexedDB steps and before the
+flag is reset; the re-entrancy guard keeps it to the outermost checkpoint, which every caller
+(window, dedicated/service workers via `WorkerGlobalScope`, parser) runs with an empty JS stack.
+V8's clear after promise jobs is unchanged; it still happens inside the drain job, i.e. possibly
+before later HTML microtasks of the same checkpoint (a pre-existing, earlier-than-spec clear,
+not addressed). Not claimed to explain the removed-frame retention (that scene uses promises).
+A native normal/JITless test shows a kept target surviving precise GCs without a clear, then
+collected after the bridge, with a strongly held target surviving and a post-clear `deref()`
+kept again. `MicrotaskCheckpointContractTests` checks the production source (bridge imported,
+called once, unconditional, ordering, bridge not running microtasks, wrapper exported) and
+rejects eight mutations; the previous source fails it.
+
 ## 2026-10-24 - Named removed-frame snapshot diagnosis (0326, no source change)
 
 Read artifact12553680992 using maintained MemLab APIs. Named DOM boxes expose the frame's
