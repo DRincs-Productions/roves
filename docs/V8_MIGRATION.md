@@ -12,7 +12,7 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Ripresa24ottobre —0324 revisionata, pubblicazione in corso
+### Ripresa24ottobre —0324 pubblicata,0325 completa localmente
 
 Il tentativo singolo dopo quota0323 è riuscito alle09:33 circa del24ottobre (scheduler
 eseguito dopo la scadenza03:03). Eliminata l'automazione `ripresa-claude-dopo-quota-0323`;
@@ -321,10 +321,31 @@ Replay pristine: dry-run/apply ok, 468/471 identici con le stesse3 eccezioni. Lo
 `target/task-0324/`. La retention del frame rimosso resta irrisolta: serve il prossimo artifact
 CI0320 per leggere a un livello i referrer dei ClassBox ora nominati.
 
+**0325 (Claude, revisionata da Codex, completa localmente):** copertura browser di0322 remoto→remoto.
+Il check obbligatorio0318 (nome invariato, tutte le prove precedenti conservate) esegue due
+round same→opaco-a→opaco-b→same (7 navigazioni, timer8 s, harness10 s). Token distinti per
+documento/ping/echo: messaggio di un passo precedente = FAIL "stale message". Payload figlio
+con fase, marker e global: documento non cambiato = FAIL. Per ogni documento opaco: letture e
+descrittori di `postMessage` uguali, chiamata con `send.call(held, …)`, invariato dopo l'echo;
+l'echo deve portare il token del documento corrente (instradamento a un documento vecchio =
+token errato o timeout). Nessun confronto di identità tra documenti: riferimento Codex Chrome155
+MCP (Windows, visibile, HTTP loopback) dà lo stesso `postMessage` per due opachi successivi;
+la bozza precedente vi passava16/17, unico fallimento quell'asserzione, rimossa. Rinnovo holder
+coperto dai test nativi0322. Conferma finale Codex Chrome DevTools MCP:17/17, Chrome155 Windows, pagina visibile,
+HTTP127.0.0.1:19025/events.html, reload senza cache. Nessuna misura prestazionale.
+`OriginCheckTests` (Node vm, iframe finto, timer accelerati, non browser) con due strategie
+valide (postMessage condiviso instradato al documento corrente come Chrome, o nuovo per
+documento): entrambe passano; 8 guasti a opaque-b-0 (incl. stale-routing) falliscono con pulizia
+in entrambe. 13 mutazioni della pagina (incl. events.html di HEAD, senza ping/echo) rilevate.
+Windows31 test (8skip POSIX); run.sh/check_results invariati, WSL non ripetuto. Patch0325
+dry-run/apply sullo scratch, 468/471 identici + 3 eccezioni. Log: target/task-0325/.
+
 ### Prossimi punti
 
-1. Pubblicare0324 revisionata (batch b38d0a0a8b0 tutto verde); controllare il nuovo batch
-   e leggere lo snapshot con i nomi delle classi.0322 confermata nel browser normal/JITless.
+1.0324 pubblicata root8dd9fa77dae/wiki6f1f071. V840075199667 10/10 verdi;
+   generale40075199664 12/13 verdi, Linuxportable120817428277 ancora attivo: nessun push.
+  0325 completa/revisionata da committare localmente; attendere batch prima di pubblicare.
+   Snapshot nominato disponibile: artifact12553680992 (846166bytezip), da analizzare.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di
    global/realm/moduli senza dichiarare risolta la retention. JSON linkati mai valutati forti.

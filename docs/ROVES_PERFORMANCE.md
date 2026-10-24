@@ -1,3 +1,14 @@
+## 24 ottobre — Chrome MCP e navigazioni opache consecutive (0325)
+
+Chrome155 Windows, pagina visibile HTTP127.0.0.1:19025/events.html, contesto isolato,
+reload senza cache tramite Chrome DevTools MCP. Pagina finale17/17: due round con due
+navigazioni opache consecutive ciascuno. Una prova dedicata ha confermato che postMessage
+può conservare la stessa identità tra documenti opachi: rimossa l'aspettativa contraria
+che faceva fallire solo quel check (16/17 nella bozza). Restano stabilità nella stessa fase,
+descrittori, echo dal documento corrente, identità WindowProxy e controlli SecurityError.
+È conferma di correttezza Chrome, non un benchmark o una prova di rilascio memoria Roves.
+0322 passa nella CI reale40014801242; i frame rimossi restano0/2 nei gruppi con/senza moduli.
+
 ## 23 ottobre — snapshot reale del frame rimosso (0321)
 
 CI V8 40007474006, job Linux normal 120598951538: cattura nativa Roves alla ottava

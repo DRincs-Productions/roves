@@ -1,0 +1,332 @@
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 46e2927e14c..a3de46efb66 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -154,16 +154,23 @@ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(r
+ }));
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+ check("an iframe keeps its WindowProxy across origin changes and back", () => new Promise(resolve => {
+-  // A same-origin srcdoc document, then an opaque-origin one (sandbox="allow-scripts", no
+-  // allow-same-origin), then a same-origin one again: the held WindowProxy must stay the
+-  // frame's window, cross-origin access must throw a SecurityError DOMException while the
+-  // cross-origin allowlist keeps working, and access must come back with the last document.
++  // Two rounds of: a same-origin srcdoc document, two successive opaque-origin ones
++  // (sandbox="allow-scripts", no allow-same-origin: each document gets its own opaque origin),
++  // then a same-origin one again. The held WindowProxy must stay the frame's window, cross-origin
++  // access must throw a SecurityError DOMException while the cross-origin allowlist keeps
++  // working, and access must come back with the last document. Within one opaque document,
++  // postMessage reads and descriptors give one function, and calling it must reach that current
++  // document (its echo carries the document's own token). The function may or may not be the
++  // one an earlier document returned: Chrome 155 reuses it, so identity is not checked.
+   // Under file:// both origins serialize as "null": the access checks tell them apart.
+-  const token = `origin-change-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  // Every document, ping and echo has its own token: a message of an earlier step fails.
++  const run = `origin-change-${Date.now()}-${Math.random().toString(36).slice(2)}`;
++  let serial = 0;
++  const nonce = label => `${run}-${label}-${serial++}`;
++  const issued = new Set();
+   const parentOrigin = self.origin;
+   const frame = document.createElement("iframe");
+-  const waiting = new Map();
+-  let phase = "same", done = false, held = null;
++  let phase = "same-0", done = false, held = null, expected = null;
+   const end = outcome => {
+     if (done) return;
+     done = true;
+@@ -172,73 +179,86 @@ check("an iframe keeps its WindowProxy across origin changes and back", () => ne
+     frame.remove();
+     resolve(outcome);
+   };
+-  const timer = setTimeout(() => end(`timeout waiting for phase ${phase}`), 8000);
++  const timer = setTimeout(() => end(`timeout waiting for ${phase}`), 8000);
+   function onMessage(event) {
+     const data = event.data;
+-    if (!data || data.token !== token) return;
+-    const deliver = waiting.get(data.phase);
+-    if (!deliver) return end(`unexpected message for phase ${data.phase} while waiting for ${phase}`);
+-    waiting.delete(data.phase);
++    if (!data || typeof data.token !== "string" || !issued.has(data.token)) return;
++    if (!expected || data.token !== expected.token) return end(`stale message from ${data.phase} while waiting for ${phase}`);
++    const deliver = expected.deliver;
++    expected = null;
+     deliver(event);
+   }
+   addEventListener("message", onMessage);
+-  const message = name => new Promise(deliver => { phase = name; waiting.set(name, deliver); });
++  const message = (name, token) => {
++    issued.add(token);
++    phase = name;
++    return new Promise(deliver => { expected = { token, deliver }; });
++  };
+   const child = (name, body) => `<p id="marker">${name}</p><script>window.rovesOriginPhase = "${name}";${body}<\/script>`;
+-  const post = name => `parent.postMessage({ token: "${token}", phase: "${name}", origin: self.origin, parentDocument: (() => { try { return parent.document ? "accessible" : "none"; } catch (error) { return error.name; } })() }, "*");`;
++  const state = name => `phase: "${name}", marker: document.getElementById("marker").textContent, global: window.rovesOriginPhase, origin: self.origin`;
++  const post = (name, token) => `parent.postMessage({ token: "${token}", ${state(name)}, parentDocument: (() => { try { return parent.document ? "accessible" : "none"; } catch (error) { return error.name; } })() }, "*");`;
+   const securityError = (problems, label, get) => {
+     try { get(); problems.push(`${label} did not throw`); }
+     catch (error) { if (!(error instanceof DOMException && error.name === "SecurityError")) problems.push(`${label} threw ${error && error.name}`); }
+   };
+-  const common = (problems, event, origin) => {
++  const common = (problems, event, origin, name) => {
+     if (frame.contentWindow !== held) problems.push("contentWindow changed");
+     if (event.source !== held) problems.push("source is not the held window");
+     if (event.origin !== origin) problems.push(`origin ${event.origin}`);
+     if (event.data.origin !== origin) problems.push(`child origin ${event.data.origin}`);
++    if (event.data.phase !== name || event.data.marker !== name || event.data.global !== name)
++      problems.push(`child shows ${event.data.phase}/${event.data.marker}/${event.data.global}`);
+   };
+-  const sameOrigin = (problems, event, name) => {
+-    common(problems, event, parentOrigin);
++  const report = (name, problems) => { if (problems.length) throw new Error(`${name}: ${problems.join(", ")}`); };
++  const sameOrigin = async name => {
++    const token = nonce(name), load = message(name, token);
++    frame.removeAttribute("sandbox");
++    frame.srcdoc = child(name, post(name, token));
++    if (!frame.isConnected) document.body.append(frame);
++    const event = await load;
++    if (!held) held = frame.contentWindow;
++    const problems = [];
++    common(problems, event, parentOrigin, name);
+     if (event.data.parentDocument !== "accessible") problems.push(`child parent.document ${event.data.parentDocument}`);
+     const marker = held.document.getElementById("marker");
+     if (held.document !== frame.contentDocument) problems.push("document differs from contentDocument");
+     if (!marker || marker.textContent !== name) problems.push(`document shows ${marker && marker.textContent}`);
+     if (held.rovesOriginPhase !== name) problems.push(`global phase ${held.rovesOriginPhase}`);
++    report(name, problems);
+   };
+-  const report = (name, problems) => { if (problems.length) throw new Error(`${name}: ${problems.join(", ")}`); };
+-  (async () => {
+-    let event, problems;
+-    const first = message("same");
+-    frame.srcdoc = child("same", post("same"));
+-    document.body.append(frame);
+-    event = await first;
+-    held = frame.contentWindow;
+-    sameOrigin(problems = [], event, "same");
+-    report("same", problems);
+-
+-    const opaque = message("opaque");
++  const opaque = async name => {
++    const ping = nonce(`${name}-ping`), echoToken = nonce(`${name}-echo`), loadToken = nonce(name);
++    const load = message(name, loadToken);
+     frame.setAttribute("sandbox", "allow-scripts");
+-    frame.srcdoc = child("opaque", `addEventListener("message", event => { if (!event.data || event.data.token !== "${token}" || event.data.phase !== "ping") return; event.source.postMessage({ token: "${token}", phase: "echo", origin: self.origin, from: event.origin, fromParent: event.source === parent }, "*"); });` + post("opaque"));
+-    event = await opaque;
+-    common(problems = [], event, "null");
++    frame.srcdoc = child(name, `addEventListener("message", event => { if (!event.data || event.data.token !== "${ping}") return; event.source.postMessage({ token: "${echoToken}", ${state(name)}, from: event.origin, fromParent: event.source === parent }, "*"); });` + post(name, loadToken));
++    let event = await load, problems = [];
++    common(problems, event, "null", name);
+     if (event.data.parentDocument !== "SecurityError") problems.push(`child parent.document ${event.data.parentDocument}`);
+     if (frame.contentDocument !== null) problems.push("contentDocument is not null");
+     securityError(problems, "document", () => held.document);
+     securityError(problems, "global", () => held.rovesOriginPhase);
+     if (held.closed !== false || held.window !== held || held.self !== held || held.frames !== held || held.length !== 0 || held.parent !== window || typeof held.postMessage !== "function")
+       problems.push("cross-origin allowlist unusable");
+-    report("opaque", problems);
+-    const echo = message("echo");
+-    held.postMessage({ token, phase: "ping" }, "*");
++    const send = held.postMessage;
++    const descriptors = [Object.getOwnPropertyDescriptor(held, "postMessage"), Object.getOwnPropertyDescriptor(held, "postMessage")];
++    if (held.postMessage !== send) problems.push("postMessage reads differ");
++    if (descriptors.some(descriptor => !descriptor || descriptor.value !== send)) problems.push("postMessage descriptor differs from reads");
++    report(name, problems);
++    const echo = message(`${name} echo`, echoToken);
++    send.call(held, { token: ping }, "*");
+     event = await echo;
+-    common(problems = [], event, "null");
++    common(problems = [], event, "null", name);
+     if (event.data.from !== parentOrigin || event.data.fromParent !== true) problems.push(`ping seen from ${event.data.from} parent ${event.data.fromParent}`);
+-    report("echo", problems);
+-
+-    const last = message("final");
+-    frame.removeAttribute("sandbox");
+-    frame.srcdoc = child("final", post("final"));
+-    event = await last;
+-    sameOrigin(problems = [], event, "final");
+-    report("final", problems);
++    if (held.postMessage !== send) problems.push("postMessage changed after messaging");
++    report(`${name} echo`, problems);
++  };
++  (async () => {
++    await sameOrigin("same-0");
++    for (const round of [0, 1]) {
++      await opaque(`opaque-a-${round}`);
++      await opaque(`opaque-b-${round}`);
++      await sameOrigin(`same-${round + 1}`);
++    }
+     end(true);
+   })().catch(error => end(String((error && error.message) || error)));
+ }));
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index c28e4089d8c..96e5ea86273 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -195,6 +195,168 @@ class SchedulerCheckTests(unittest.TestCase):
+                          self.run_check(('frame', 'timer'), OLD_SCHEDULER_CHECK))
+ 
+ 
++ORIGIN_CHECK = REQUIRED_CHECKS['events.html'][0]
++# Mock iframe for the origin-change check: each srcdoc navigation runs the child script in a new
++# Node vm context one task later; a sandbox without allow-same-origin gives the document an
++# opaque origin, so the held proxy then exposes only the cross-origin allowlist and throws a
++# SecurityError DOMException for anything else. `strategy` picks how postMessage is exposed:
++# "shared" returns one function that routes to the current document (as Chrome 155 does),
++# "fresh" a new function per document. `fault` makes the mock misbehave like a broken engine
++# from the second opaque document on. Timers run 20 times faster than requested.
++ORIGIN_DRIVER = r'''
++const vm = require("vm");
++const [harness, check, fault, strategy] = JSON.parse(require("fs").readFileSync(0, "utf8"));
++const lines = [], navigations = [];
++const later = fn => setImmediate(fn);
++const clone = data => JSON.parse(JSON.stringify(data));
++class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } }
++const parentOrigin = "http://roves.test";
++const parentListeners = new Set();
++const parent = vm.createContext({
++  console: { log: (...parts) => lines.push(parts.join(" ")) },
++  setTimeout: (fn, ms = 0) => setTimeout(fn, ms / 20), clearTimeout, DOMException,
++  addEventListener: (type, fn) => { if (type === "message") parentListeners.add(fn); },
++  removeEventListener: (type, fn) => { if (type === "message") parentListeners.delete(fn); },
++});
++const parentGlobal = vm.runInContext("globalThis.window = globalThis.self = globalThis;", parent);
++parent.origin = parentOrigin;
++const dispatch = (listeners, event) => later(() => { for (const fn of [...listeners]) fn(event); });
++// The parent as a sandboxed child sees it: document access throws (postMessage is mocked below).
++const parentSeenFromOpaque = new Proxy({}, { get() { throw new DOMException("cross-origin", "SecurityError"); } });
++let current = null, previousOpaque = null, lastOpaque = null, opaqueCount = 0, connected = false, removed = 0, staleProxy = null;
++const allowlist = { closed: () => false, window: () => proxy, self: () => proxy, frames: () => proxy, length: () => 0, parent: () => parentGlobal };
++const handler = {
++  get(target, key) {
++    if (!current) return undefined;
++    if (!current.opaque) return key === "document" ? current.document : current.global[key];
++    if (key === "postMessage") return fault === "unstable-postmessage" && opaqueCount > 1 ? current.makePostMessage() : current.postMessage;
++    if (key in allowlist) return allowlist[key]();
++    if (fault === "document-readable" && opaqueCount > 1 && key === "document") return current.document;
++    throw new DOMException("cross-origin", "SecurityError");
++  },
++  getOwnPropertyDescriptor(target, key) {
++    if (current && current.opaque && key === "postMessage") {
++      const value = fault === "descriptor-postmessage" && opaqueCount > 1 ? current.makePostMessage() : current.postMessage;
++      return { value, writable: false, enumerable: false, configurable: true };
++    }
++    throw new DOMException("cross-origin", "SecurityError");
++  },
++};
++const proxy = new Proxy({}, handler);
++// `owner` is the document a fresh function belongs to; "stale-routing" delivers to the previous
++// opaque document instead of the current one.
++const postMessageFor = owner => function postMessage(data) {
++  if (this !== proxy) throw new TypeError("illegal invocation");
++  const target = fault === "stale-routing" && opaqueCount > 1 ? previousOpaque : strategy === "shared" ? current : owner;
++  dispatch(target.childListeners, { data: clone(data), source: target.global.parent, origin: parentOrigin });
++};
++const sharedPostMessage = postMessageFor(null);
++function load(srcdoc, opaque) {
++  const match = /^<p id="marker">(.*?)<\/p><script>([\s\S]*)<\/script>$/.exec(srcdoc);
++  if (!match) throw new Error("unexpected srcdoc " + srcdoc);
++  const childListeners = new Set();
++  const marker = { textContent: match[1] };
++  const document = { getElementById: id => (id === "marker" ? marker : null) };
++  const origin = opaque ? "null" : parentOrigin;
++  const source = fault === "new-proxy" && opaque && opaqueCount > 1 ? (staleProxy = staleProxy || new Proxy({}, handler)) : proxy;
++  const parentView = opaque ? parentSeenFromOpaque : parent;
++  const toParent = data => dispatch(parentListeners, { data: clone(data), source, origin });
++  const global = vm.createContext({ document, addEventListener: (type, fn) => { if (type === "message") childListeners.add(fn); } });
++  vm.runInContext("globalThis.window = globalThis.self = globalThis;", global);
++  global.origin = origin;
++  if (fault === "stale-content" && opaque && opaqueCount > 1) {
++    // The new script runs, but the document and global still show the previous opaque one.
++    marker.textContent = current.document.getElementById("marker").textContent;
++    Object.defineProperty(global, "rovesOriginPhase", { get: () => marker.textContent, set() {} });
++  }
++  global.parent = new Proxy(parentView, { get: (target, key) => (key === "postMessage" ? toParent : Reflect.get(target, key)) });
++  const doc = { opaque, document, global, childListeners, script: match[2], makePostMessage: () => postMessageFor(doc) };
++  doc.postMessage = strategy === "shared" ? sharedPostMessage : doc.makePostMessage();
++  if (opaque) [previousOpaque, lastOpaque] = [lastOpaque, doc];
++  current = doc;
++  vm.runInContext(match[2], global);
++}
++const frame = {
++  sandbox: null, value: "",
++  setAttribute(name, value) { if (name === "sandbox") this.sandbox = String(value); },
++  removeAttribute(name) { if (name === "sandbox") this.sandbox = null; },
++  get isConnected() { return connected; },
++  get contentWindow() { return connected ? (fault === "new-proxy" && opaqueCount > 1 && current.opaque ? staleProxy || proxy : proxy) : null; },
++  get contentDocument() { return connected && current && !current.opaque ? current.document : null; },
++  set srcdoc(value) { this.value = value; if (connected) this.navigate(); },
++  get srcdoc() { return this.value; },
++  remove() { connected = false; removed++; },
++  navigate() {
++    const opaque = this.sandbox !== null && !this.sandbox.split(/\s+/).includes("allow-same-origin");
++    navigations.push(opaque ? "opaque" : "same");
++    if (opaque) opaqueCount++;
++    const previous = current, srcdoc = this.value;
++    if (opaque && opaqueCount === 2 && fault === "no-load") return;
++    if (opaque && opaqueCount === 2 && fault === "keep-document") {
++      // The old opaque document stays and posts its load message again.
++      return later(() => { current = previous; vm.runInContext(previous.script, previous.global); });
++    }
++    later(() => load(srcdoc, opaque));
++  },
++};
++parent.document = { createElement: () => frame, body: { append: () => { connected = true; frame.navigate(); } } };
++vm.runInContext(harness + "\n" + check + "\nfinish();", parent);
++setTimeout(() => {
++  lines.push("navigations " + navigations.join(","), "listeners " + parentListeners.size, "connected " + connected + " removed " + removed);
++  process.stdout.write(lines.join("\n"));
++}, 1500);
++'''
++
++
++def run_origin_check(check, fault='', strategy='fresh'):
++    payload = json.dumps([(HERE / 'harness.js').read_text(encoding='utf-8'), check, fault, strategy])
++    return subprocess.run(['node', '-e', ORIGIN_DRIVER], input=payload, capture_output=True,
++                          text=True, encoding='utf-8', timeout=30)
++
++
++@unittest.skipUnless(shutil.which('node'), 'needs Node')
++class OriginCheckTests(unittest.TestCase):
++    """Runs the origin-change check of events.html against a mock iframe, not a browser."""
++
++    NAVIGATIONS = 'navigations same,opaque,opaque,same,opaque,opaque,same'
++    CLEANUP = ['listeners 0', 'connected false removed 1']
++
++    STRATEGIES = ('shared', 'fresh')
++
++    def run_check(self, fault='', strategy='fresh'):
++        result = run_origin_check(registered_check('events.html', ORIGIN_CHECK), fault, strategy)
++        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++        return result.stdout.split('\n')
++
++    def test_two_opaque_documents_per_round_pass(self):
++        # Reusing one postMessage across documents and minting a new one are both valid.
++        for strategy in self.STRATEGIES:
++            with self.subTest(strategy=strategy):
++                lines = self.run_check(strategy=strategy)
++                self.assertEqual([f'SUITE PASS {ORIGIN_CHECK}', 'SUITE TOTAL 1/1', self.NAVIGATIONS] + self.CLEANUP, lines)
++                self.assertEqual([], validate('events.html', '\n'.join(lines)))
++
++    def test_engine_faults_fail_and_clean_up(self):
++        # Every fault starts at the second opaque document (opaque-b-0) and is reported there.
++        for fault, detail in (
++            ('stale-routing', 'timeout waiting for opaque-b-0 echo'),
++            ('unstable-postmessage', 'opaque-b-0: postMessage reads differ, postMessage descriptor differs from reads'),
++            ('descriptor-postmessage', 'opaque-b-0: postMessage descriptor differs from reads'),
++            ('new-proxy', 'opaque-b-0: contentWindow changed, source is not the held window'),
++            ('document-readable', 'opaque-b-0: document did not throw'),
++            ('stale-content', 'opaque-b-0: child shows opaque-b-0/opaque-a-0/opaque-a-0'),
++            ('keep-document', 'stale message from opaque-a-0 while waiting for opaque-b-0'),
++            ('no-load', 'timeout waiting for opaque-b-0'),
++        ):
++            for strategy in self.STRATEGIES:
++                with self.subTest(fault=fault, strategy=strategy):
++                    lines = self.run_check(fault, strategy)
++                    self.assertEqual(f'SUITE FAIL {ORIGIN_CHECK} :: {detail}', lines[0])
++                    self.assertEqual(['SUITE TOTAL 0/1'], lines[1:2])
++                    self.assertEqual(self.CLEANUP, lines[-2:])
++                    self.assertTrue(validate('events.html', '\n'.join(lines[:2])))
++
++
+ def gc_page_script():
+     page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
+     return page.split('<script>', 1)[1].split('</script>', 1)[0]

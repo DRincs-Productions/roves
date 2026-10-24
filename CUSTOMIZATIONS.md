@@ -1,3 +1,33 @@
+## 2026-10-24 - Opaque-to-opaque navigations in the origin-change check (0325)
+
+**Files:** `support/v8-smoke/{events.html,test_runner.py}`, patch
+`0325-origin-change-opaque-to-opaque-check.patch`. No production source changed.
+
+Browser coverage for 0322's remote-to-remote case, which only native unit tests covered. The
+required check keeps its name and every 0318 proof, and now runs same-origin, two successive
+opaque sandbox srcdoc documents, same-origin again, twice (7 navigations, one 8 s internal
+timer inside the 10 s harness deadline). Each document, ping and echo has its own token; a
+message carrying an earlier step's token fails the check instead of satisfying the new step.
+Every child reports its phase, marker text and global in the posted payload, so a document
+that did not really change fails. In each opaque document, repeated `postMessage` reads and
+`getOwnPropertyDescriptor` values must be the same function, called with the held proxy for the
+ping, and unchanged after the echo; the echo must carry that document's own token, so a call
+routed to an earlier document fails by wrong token or by timeout. Function identity across
+documents is not checked: the Chrome 155 reference (Codex, Chrome DevTools MCP, Windows,
+visible, HTTP loopback) returns the same `postMessage` for two successive opaque documents, so
+a different function is not a portable freshness signal; holder renewal stays covered by 0322's
+native unit tests. Codex's MCP run of the earlier draft passed 16 of 17 checks, failing only
+that dropped cross-document identity assertion. Prohibited members are only read where a
+SecurityError is asserted. `OriginCheckTests` runs the registered check against a Node vm mock
+iframe (fast fake timers, not a browser) under two valid strategies, one shared `postMessage`
+routed to the current document (as in Chrome) and a fresh one per document: both pass with the
+expected navigation sequence and cleanup. Under both, postMessage routed to the previous
+document, unstable or descriptor-mismatched `postMessage`, a new proxy, a readable opaque
+document, stale content, a stale message and a missing load fail at `opaque-b-0`, always
+removing the frame and listener. Thirteen weakened copies of the page (the 0318 version, no
+second opaque phase, one round, no ping/echo round trip, no token match, each removed check, no
+listener cleanup) fail the tests.
+
 ## 2026-10-24 - Class names for class boxes in native V8 heap snapshots (0324)
 
 **Files:** `components/roves-js/src/{object.rs,heap_snapshot.rs}`, patch

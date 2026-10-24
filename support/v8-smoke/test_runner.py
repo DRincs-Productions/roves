@@ -195,6 +195,168 @@ class SchedulerCheckTests(unittest.TestCase):
                          self.run_check(('frame', 'timer'), OLD_SCHEDULER_CHECK))
 
 
+ORIGIN_CHECK = REQUIRED_CHECKS['events.html'][0]
+# Mock iframe for the origin-change check: each srcdoc navigation runs the child script in a new
+# Node vm context one task later; a sandbox without allow-same-origin gives the document an
+# opaque origin, so the held proxy then exposes only the cross-origin allowlist and throws a
+# SecurityError DOMException for anything else. `strategy` picks how postMessage is exposed:
+# "shared" returns one function that routes to the current document (as Chrome 155 does),
+# "fresh" a new function per document. `fault` makes the mock misbehave like a broken engine
+# from the second opaque document on. Timers run 20 times faster than requested.
+ORIGIN_DRIVER = r'''
+const vm = require("vm");
+const [harness, check, fault, strategy] = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const lines = [], navigations = [];
+const later = fn => setImmediate(fn);
+const clone = data => JSON.parse(JSON.stringify(data));
+class DOMException extends Error { constructor(message, name) { super(message); this.name = name; } }
+const parentOrigin = "http://roves.test";
+const parentListeners = new Set();
+const parent = vm.createContext({
+  console: { log: (...parts) => lines.push(parts.join(" ")) },
+  setTimeout: (fn, ms = 0) => setTimeout(fn, ms / 20), clearTimeout, DOMException,
+  addEventListener: (type, fn) => { if (type === "message") parentListeners.add(fn); },
+  removeEventListener: (type, fn) => { if (type === "message") parentListeners.delete(fn); },
+});
+const parentGlobal = vm.runInContext("globalThis.window = globalThis.self = globalThis;", parent);
+parent.origin = parentOrigin;
+const dispatch = (listeners, event) => later(() => { for (const fn of [...listeners]) fn(event); });
+// The parent as a sandboxed child sees it: document access throws (postMessage is mocked below).
+const parentSeenFromOpaque = new Proxy({}, { get() { throw new DOMException("cross-origin", "SecurityError"); } });
+let current = null, previousOpaque = null, lastOpaque = null, opaqueCount = 0, connected = false, removed = 0, staleProxy = null;
+const allowlist = { closed: () => false, window: () => proxy, self: () => proxy, frames: () => proxy, length: () => 0, parent: () => parentGlobal };
+const handler = {
+  get(target, key) {
+    if (!current) return undefined;
+    if (!current.opaque) return key === "document" ? current.document : current.global[key];
+    if (key === "postMessage") return fault === "unstable-postmessage" && opaqueCount > 1 ? current.makePostMessage() : current.postMessage;
+    if (key in allowlist) return allowlist[key]();
+    if (fault === "document-readable" && opaqueCount > 1 && key === "document") return current.document;
+    throw new DOMException("cross-origin", "SecurityError");
+  },
+  getOwnPropertyDescriptor(target, key) {
+    if (current && current.opaque && key === "postMessage") {
+      const value = fault === "descriptor-postmessage" && opaqueCount > 1 ? current.makePostMessage() : current.postMessage;
+      return { value, writable: false, enumerable: false, configurable: true };
+    }
+    throw new DOMException("cross-origin", "SecurityError");
+  },
+};
+const proxy = new Proxy({}, handler);
+// `owner` is the document a fresh function belongs to; "stale-routing" delivers to the previous
+// opaque document instead of the current one.
+const postMessageFor = owner => function postMessage(data) {
+  if (this !== proxy) throw new TypeError("illegal invocation");
+  const target = fault === "stale-routing" && opaqueCount > 1 ? previousOpaque : strategy === "shared" ? current : owner;
+  dispatch(target.childListeners, { data: clone(data), source: target.global.parent, origin: parentOrigin });
+};
+const sharedPostMessage = postMessageFor(null);
+function load(srcdoc, opaque) {
+  const match = /^<p id="marker">(.*?)<\/p><script>([\s\S]*)<\/script>$/.exec(srcdoc);
+  if (!match) throw new Error("unexpected srcdoc " + srcdoc);
+  const childListeners = new Set();
+  const marker = { textContent: match[1] };
+  const document = { getElementById: id => (id === "marker" ? marker : null) };
+  const origin = opaque ? "null" : parentOrigin;
+  const source = fault === "new-proxy" && opaque && opaqueCount > 1 ? (staleProxy = staleProxy || new Proxy({}, handler)) : proxy;
+  const parentView = opaque ? parentSeenFromOpaque : parent;
+  const toParent = data => dispatch(parentListeners, { data: clone(data), source, origin });
+  const global = vm.createContext({ document, addEventListener: (type, fn) => { if (type === "message") childListeners.add(fn); } });
+  vm.runInContext("globalThis.window = globalThis.self = globalThis;", global);
+  global.origin = origin;
+  if (fault === "stale-content" && opaque && opaqueCount > 1) {
+    // The new script runs, but the document and global still show the previous opaque one.
+    marker.textContent = current.document.getElementById("marker").textContent;
+    Object.defineProperty(global, "rovesOriginPhase", { get: () => marker.textContent, set() {} });
+  }
+  global.parent = new Proxy(parentView, { get: (target, key) => (key === "postMessage" ? toParent : Reflect.get(target, key)) });
+  const doc = { opaque, document, global, childListeners, script: match[2], makePostMessage: () => postMessageFor(doc) };
+  doc.postMessage = strategy === "shared" ? sharedPostMessage : doc.makePostMessage();
+  if (opaque) [previousOpaque, lastOpaque] = [lastOpaque, doc];
+  current = doc;
+  vm.runInContext(match[2], global);
+}
+const frame = {
+  sandbox: null, value: "",
+  setAttribute(name, value) { if (name === "sandbox") this.sandbox = String(value); },
+  removeAttribute(name) { if (name === "sandbox") this.sandbox = null; },
+  get isConnected() { return connected; },
+  get contentWindow() { return connected ? (fault === "new-proxy" && opaqueCount > 1 && current.opaque ? staleProxy || proxy : proxy) : null; },
+  get contentDocument() { return connected && current && !current.opaque ? current.document : null; },
+  set srcdoc(value) { this.value = value; if (connected) this.navigate(); },
+  get srcdoc() { return this.value; },
+  remove() { connected = false; removed++; },
+  navigate() {
+    const opaque = this.sandbox !== null && !this.sandbox.split(/\s+/).includes("allow-same-origin");
+    navigations.push(opaque ? "opaque" : "same");
+    if (opaque) opaqueCount++;
+    const previous = current, srcdoc = this.value;
+    if (opaque && opaqueCount === 2 && fault === "no-load") return;
+    if (opaque && opaqueCount === 2 && fault === "keep-document") {
+      // The old opaque document stays and posts its load message again.
+      return later(() => { current = previous; vm.runInContext(previous.script, previous.global); });
+    }
+    later(() => load(srcdoc, opaque));
+  },
+};
+parent.document = { createElement: () => frame, body: { append: () => { connected = true; frame.navigate(); } } };
+vm.runInContext(harness + "\n" + check + "\nfinish();", parent);
+setTimeout(() => {
+  lines.push("navigations " + navigations.join(","), "listeners " + parentListeners.size, "connected " + connected + " removed " + removed);
+  process.stdout.write(lines.join("\n"));
+}, 1500);
+'''
+
+
+def run_origin_check(check, fault='', strategy='fresh'):
+    payload = json.dumps([(HERE / 'harness.js').read_text(encoding='utf-8'), check, fault, strategy])
+    return subprocess.run(['node', '-e', ORIGIN_DRIVER], input=payload, capture_output=True,
+                          text=True, encoding='utf-8', timeout=30)
+
+
+@unittest.skipUnless(shutil.which('node'), 'needs Node')
+class OriginCheckTests(unittest.TestCase):
+    """Runs the origin-change check of events.html against a mock iframe, not a browser."""
+
+    NAVIGATIONS = 'navigations same,opaque,opaque,same,opaque,opaque,same'
+    CLEANUP = ['listeners 0', 'connected false removed 1']
+
+    STRATEGIES = ('shared', 'fresh')
+
+    def run_check(self, fault='', strategy='fresh'):
+        result = run_origin_check(registered_check('events.html', ORIGIN_CHECK), fault, strategy)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return result.stdout.split('\n')
+
+    def test_two_opaque_documents_per_round_pass(self):
+        # Reusing one postMessage across documents and minting a new one are both valid.
+        for strategy in self.STRATEGIES:
+            with self.subTest(strategy=strategy):
+                lines = self.run_check(strategy=strategy)
+                self.assertEqual([f'SUITE PASS {ORIGIN_CHECK}', 'SUITE TOTAL 1/1', self.NAVIGATIONS] + self.CLEANUP, lines)
+                self.assertEqual([], validate('events.html', '\n'.join(lines)))
+
+    def test_engine_faults_fail_and_clean_up(self):
+        # Every fault starts at the second opaque document (opaque-b-0) and is reported there.
+        for fault, detail in (
+            ('stale-routing', 'timeout waiting for opaque-b-0 echo'),
+            ('unstable-postmessage', 'opaque-b-0: postMessage reads differ, postMessage descriptor differs from reads'),
+            ('descriptor-postmessage', 'opaque-b-0: postMessage descriptor differs from reads'),
+            ('new-proxy', 'opaque-b-0: contentWindow changed, source is not the held window'),
+            ('document-readable', 'opaque-b-0: document did not throw'),
+            ('stale-content', 'opaque-b-0: child shows opaque-b-0/opaque-a-0/opaque-a-0'),
+            ('keep-document', 'stale message from opaque-a-0 while waiting for opaque-b-0'),
+            ('no-load', 'timeout waiting for opaque-b-0'),
+        ):
+            for strategy in self.STRATEGIES:
+                with self.subTest(fault=fault, strategy=strategy):
+                    lines = self.run_check(fault, strategy)
+                    self.assertEqual(f'SUITE FAIL {ORIGIN_CHECK} :: {detail}', lines[0])
+                    self.assertEqual(['SUITE TOTAL 0/1'], lines[1:2])
+                    self.assertEqual(self.CLEANUP, lines[-2:])
+                    self.assertTrue(validate('events.html', '\n'.join(lines[:2])))
+
+
 def gc_page_script():
     page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
     return page.split('<script>', 1)[1].split('</script>', 1)[0]
