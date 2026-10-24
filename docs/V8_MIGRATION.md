@@ -10,7 +10,7 @@ Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuov
 concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
 Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
-## Stato corrente — 23 ottobre 2026, revisione Codex dopo il lavoro Claude
+## Stato corrente — 24 ottobre 2026, revisione Codex dopo il lavoro Claude
 
 ### Ripresa24ottobre —0324 verde,0325 revisionata,0326 analizzata
 
@@ -389,14 +389,28 @@ Test: nativo normal120/JITless119 ok (2/3ignorati); contratto statico in `test_r
 (sorgente attuale ok, codice precedente e8mutazioni falliscono); unittest33 ok (8skip POSIX).
 Patch0327 dry-run/apply sullo scratch: 469/472 identici + 3 eccezioni note. Nessuna fixture
 browser (l'harness usa Promise e maschererebbe il caso). Nota: `gen_wrappers2.py` rieseguito
-toglierebbe3voci esistenti; non rigenerato. Log: `target/task-0327/`.
+toglierebbe3voci esistenti (corretto in0328). Log: `target/task-0327/`.
+
+### Generatore wrappers2: voci proprie di roves-js (Claude0328)
+
+Causa: `JS_InitGlobalInterfaceProperties`, `Get/SetCrossOriginPropertyHolder` non esistono nelle
+liste di mozjs0.21.6 (aggiunte a mano in 240b1b6/8d32714), quindi nessuna regola di visibilità
+poteva conservarle. `gen_wrappers2.py`: tabella `ROVES_ENTRIES` ancorata alla voce mozjs
+precedente (errore se ancora o funzione mancano), `generate()` di sola lettura e `--check`.
+Rigenerazione con mozjs0.21.6 byte-identica al file versionato (incluso ClearKeptObjects);
+`wrappers2.in.rs`/API invariati, nessuna compilazione Rust necessaria. `Wrappers2GeneratorTests`
+in `test_runner.py`: rigenerazione da liste ricostruite (gira in CI), firme vs funzioni raw e
+mutabilità cx, negativo senza tabella; `--check` reale solo se mozjs è nel registry locale
+(saltato in CI). Generatore HEAD: perde le3 righe. Unittest37 ok (8skip). Patch0328 sullo
+scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 ### Prossimi punti
 
 1.0325/0326 pubblicati nel checkpoint e80e43898e1/wiki f598a06. Nuovo batch
-   V840078536565 e generale40078536546:6/10 e6/13 verdi, rimanenti attivi senza rossi
-   al controllo0327. Android40078536525/iOS40078536540 da controllo aggregato finale.
+   V840078536565 e generale40078536546:9/10 e11/13 verdi, Windows V8 e due portable
+   ancora attivi senza rossi al controllo0328. Android40078536525/iOS40078536540 da controllo aggregato finale.
   0327 completa/revisionata, commit solo locale: non fare push durante batch attivo.
+   0328 (generatore wrappers2) completa/revisionata da Codex, commit locale dopo0327.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

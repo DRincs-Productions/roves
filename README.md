@@ -118,6 +118,8 @@ Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtil
 builds). V8 CI's Linux normal smoke captures one for a removed blank frame as a 3-day artifact,
 to read its retainers; release is still diagnostic only (see the shell wiki page). Native
 objects in these snapshots are named after their class (e.g. `HTMLIFrameElement`).
+Maintainers can validate the generated V8 adapter wrappers without rewriting them with
+`support/roves_js/gen_wrappers2.py --check` (see the shell wiki page).
 The V8 caller adapter now handles an empty script stack safely and allows Servo to use its
 callback settings stack when no JavaScript caller is active. Callback activation overrides
 remain under migration audit. Object realm lookup uses V8 creation contexts; unused optional

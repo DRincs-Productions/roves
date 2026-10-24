@@ -1109,5 +1109,84 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
         self.assertLess(time.monotonic() - started, 15)
 
 
+ROVES_JS = HERE.parents[1] / 'components' / 'roves-js' / 'src'
+GEN_WRAPPERS2 = HERE.parent / 'roves_js' / 'gen_wrappers2.py'
+sys.path.insert(0, str(GEN_WRAPPERS2.parent))
+import gen_wrappers2  # noqa: E402
+
+
+def mozjs_lists():
+    """mozjs 0.21.6's wrapper lists in the local cargo registry, if fetched."""
+    registry = Path(os.environ.get('CARGO_HOME', Path.home() / '.cargo')) / 'registry' / 'src'
+    return next((path / 'src' for path in registry.glob('*/mozjs-0.21.6')), None)
+
+
+def raw_signature(name):
+    """Parameter types (last path segment) and return type of roves-js's raw `name`."""
+    for path in ROVES_JS.glob('*.rs'):
+        match = re.search(r'pub unsafe fn ' + name + r'\(([^)]*)\)\s*(?:->\s*([\w:]+))?\s*\{', path.read_text(encoding='utf-8'))
+        if match:
+            params = [p.split(':', 1)[1].strip() for p in match.group(1).split(',') if p.strip()]
+            return [p.replace('*mut ', '&').split('::')[-1] for p in params], match.group(2)
+    raise AssertionError(name + ' is not defined in roves-js')
+
+
+class Wrappers2GeneratorTests(unittest.TestCase):
+    # mozjs entries plus roves-js's own; the 0327 entry keeps mozjs's shared context.
+    REQUIRED = [
+        'wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));',
+        *[line for lines in gen_wrappers2.ROVES_ENTRIES.values() for line in lines],
+    ]
+
+    def setUp(self):
+        self.checked_in = (ROVES_JS / 'wrappers2.in.rs').read_bytes().decode('utf-8')
+
+    def mozjs_from_checked_in(self, directory):
+        """Rebuilds mozjs-shaped lists from the checked-in file, without roves-js's entries."""
+        own = {line for lines in gen_wrappers2.ROVES_ENTRIES.values() for line in lines}
+        entries = [line for line in self.checked_in.splitlines() if line.startswith('wrap!(') and line not in own]
+        for module in ('jsapi', 'glue'):
+            Path(directory, module + '2_wrappers.in.rs').write_text(
+                ''.join(line + '\n' for line in entries if line.startswith(f'wrap!({module}:')), encoding='utf-8')
+
+    def test_generation_keeps_roves_entries_in_place(self):
+        with tempfile.TemporaryDirectory() as mozjs:
+            self.mozjs_from_checked_in(mozjs)
+            self.assertEqual(self.checked_in, gen_wrappers2.generate(mozjs, str(ROVES_JS))[0])
+
+    def test_required_entries_and_context_mutability(self):
+        lines = self.checked_in.splitlines()
+        for line in self.REQUIRED:
+            self.assertEqual(1, lines.count(line), line)
+            module, name = gen_wrappers2.ENTRY.match(line).groups()
+            self.assertIn(name, gen_wrappers2.visible(str(ROVES_JS), module + '.rs'))
+            wrapped = re.search(r'fn \w+\((.*)\)(?: -> (\w+))?\);$', line)
+            types = [p.split(':', 1)[1].strip().replace('&mut ', '&') for p in wrapped.group(1).split(', ')]
+            self.assertEqual(raw_signature(name), (types, wrapped.group(2)), line)
+        self.assertNotIn('ClearKeptObjects(cx: &mut', self.checked_in)
+
+    def test_generator_without_roves_entries_drops_them(self):
+        with tempfile.TemporaryDirectory() as mozjs:
+            self.mozjs_from_checked_in(mozjs)
+            original = gen_wrappers2.ROVES_ENTRIES
+            gen_wrappers2.ROVES_ENTRIES = {}
+            try:
+                text = gen_wrappers2.generate(mozjs, str(ROVES_JS))[0]
+            finally:
+                gen_wrappers2.ROVES_ENTRIES = original
+        self.assertNotEqual(self.checked_in, text)
+        self.assertEqual(self.REQUIRED[:1], [line for line in self.REQUIRED if line in text])
+
+    @unittest.skipUnless(mozjs_lists(), "needs mozjs 0.21.6's source in the cargo registry")
+    def test_real_mozjs_lists_regenerate_the_checked_in_file(self):
+        target = ROVES_JS / 'wrappers2.in.rs'
+        before = target.stat().st_mtime_ns
+        result = subprocess.run([sys.executable, '-I', str(GEN_WRAPPERS2), '--check', str(mozjs_lists()), str(ROVES_JS), str(target)],
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(before, target.stat().st_mtime_ns)
+        self.assertEqual(self.checked_in.encode('utf-8'), target.read_bytes())
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,3 +1,22 @@
+## 2026-10-24 - wrappers2 generator keeps roves-js's own entries (0328)
+
+**Files:** `support/roves_js/gen_wrappers2.py`, `support/v8-smoke/test_runner.py`, patch
+`0328-wrappers2-generator-roves-entries.patch`.
+
+Rerunning `gen_wrappers2.py` dropped `JS_InitGlobalInterfaceProperties` (jsapi) and
+`Get/SetCrossOriginPropertyHolder` (glue) from `wrappers2.in.rs`: mozjs 0.21.6's lists do not
+contain them at all (they were hand-added with their roves-js functions), so no visibility rule
+could keep them. The generator now has a `ROVES_ENTRIES` table that writes each after the mozjs
+entry it followed, and fails if an anchor disappears or an entry's function is not reachable as
+`crate::<module>::NAME`. `generate()` returns the text without writing; `--check` compares it with
+the file. Against mozjs 0.21.6 the output is byte-identical to the checked-in file (0327's
+`ClearKeptObjects` included); `wrappers2.in.rs` and the API are unchanged. `test_runner.py`'s
+`Wrappers2GeneratorTests` regenerates the file from mozjs-shaped lists rebuilt from it (runs in
+CI), checks the four entries' module, signature against the raw roves-js function and context
+mutability (`ClearKeptObjects` keeps `&JSContext`), shows that without the table the three are
+lost, and runs `--check` on the real lists without touching the file when mozjs 0.21.6 is in the
+local cargo registry (skipped in CI, which does not fetch mozjs).
+
 ## 2026-10-24 - ClearKeptObjects at the HTML microtask checkpoint (0327)
 
 **Files:** `components/script/microtask.rs`,
@@ -11,8 +30,8 @@ no-ops. A checkpoint with no promise settled since the last drain (plain scripts
 `queueMicrotask`) therefore left kept targets alive until some later promise. roves-js now
 implements mozjs's `ClearKeptObjects(cx)` with rusty_v8's `Isolate::clear_kept_objects` (no
 microtasks run, no reordering), exported through the existing `wrappers2` list (one line added in
-the position `gen_wrappers2.py` gives it; rerunning the generator also drops three existing
-hand-kept entries, so the file was not regenerated wholesale). `MicrotaskQueue::checkpoint`
+the position `gen_wrappers2.py` gives it; the generator's loss of three other entries is
+fixed in 0328). `MicrotaskQueue::checkpoint`
 calls it once, unconditionally, after the rejected-promise and IndexedDB steps and before the
 flag is reset; the re-entrancy guard keeps it to the outermost checkpoint, which every caller
 (window, dedicated/service workers via `WorkerGlobalScope`, parser) runs with an empty JS stack.
