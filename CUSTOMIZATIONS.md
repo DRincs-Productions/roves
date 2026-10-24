@@ -1,3 +1,11 @@
+## 2026-10-24 - Park incomplete FIFO microtask implementation after weekly quota
+
+0329 reproduces a real ordering gap (nested Promise vs queueMicrotask), but the common V8
+FIFO implementation still needs termination/fallback and runtime-lifecycle review. Claude hit
+a weekly quota. Saved the full draft and a code-only patch under ignored target/task-0329/;
+restored all publishable sources/wiki and replay scratch to completed0328. No0329 production
+patch shipped, no quota bypass or five-hour retry scheduled. See current V8_MIGRATION handoff.
+
 ## 2026-10-24 - wrappers2 generator keeps roves-js's own entries (0328)
 
 **Files:** `support/roves_js/gen_wrappers2.py`, `support/v8-smoke/test_runner.py`, patch

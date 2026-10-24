@@ -12,6 +12,45 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 24 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### STOP quota settimanale —24ottobre11:23 Europe/Rome
+
+Claude0329/revisione ha risposto: `You've hit your weekly limit · resets 8am (Europe/Rome)`.
+Il messaggio non indica il giorno: non inferire una data. Sviluppo sospeso; nessun nuovo
+modello, sessione alternativa o automazione. Il retry5ore NON vale per una quota settimanale.
+Il singolo ricontrollo `ripresa-claude-dopo-quota-0323` è stato eliminato dopo la ripresa riuscita.
+
+Batch e80e43898e1 TUTTO VERDE: V840078536565 10/10, generale40078536546 13/13,
+Android40078536525 e iOS40078536540 verdi. Confermate le navigazioni opache consecutive0325.
+0327 (4a9335fcc41) e0328 (9f0da3885e6), wiki35f4d62, complete e revisionate: pubblicare
+insieme a questo checkpoint documentale, poi registrare il nuovo batch senza polling.
+0327 native120normal/119JITless;0328 wrapper generati byte-identici,37runner test8skip.
+La retention complessiva dei frame NON è risolta.
+
+**0329 NON pubblicabile:** implementazione della FIFO comune V8 consegnata con native verdi,
+ma revisione di fallback/terminazione/shutdown incompleta per quota. Ripristinati TUTTI i
+sorgenti pubblicabili a HEAD0328, incluso il wiki. Ricostruzione0329 spostata fuori da patches/.
+Salvataggi ignorati (base9f0da3885e6):
+- target/task-0329/0329-incomplete-code-only.patch: solo components/ e support/, apply--check OK;
+  SHA2561d1a95f29d7fe6e626e747bade7f55765484ef458df929daff8c26a170abbceb.
+- 0329-incomplete-before-review.patch: diff intero (contiene documentazione vecchia: NON
+  applicarlo senza filtrare perché il nuovo handoff contiene questo stop); parked-wip.json.
+- 0329-incomplete-wiki.patch (basewiki35f4d62) e0329-incomplete-reconstruction.patch.
+- prompt.txt, review-prompt.txt, claude-result.json eclaude-review-result.json; log test/replay.
+Scratch pristine roves-0315-replay-gAXo/w/src riportato a0328 invertendo la prima0329 con
+successo: park-replay-reverse.log. Non riestrarre né applicare due volte la vecchia patch.
+Alla ripresa: verificare Git, applicare SOLO il code-only patch, leggere review-prompt.txt,
+delegare a Claude la revisione terminazione/fallback e abbandono runtime prima di committare.
+Non ricreare CLAUDE_RESUME.md, non trasformare questa bozza in una modifica completa per fretta.
+
+0329 riproduce un difetto reale: Promise annidata con queueMicrotask produce p1,p2,q anziché
+p1,q,p2. Vecchio modello negativo: negative-old.log. La bozza usa Isolate.enqueue_microtask e
+una callback nel realm iniziale per una FIFO comune; non è approvata. Riferimento Codex
+Chrome DevTools MCP155 Windows visibile: p1,q,p2 e q1,p1,p2,q2; events.html della BOZZA18/18
+su HTTP127.0.0.1:19029, non verifica il sorgente pubblicato (17check). Browser/server chiusi.
+Dubbio di revisione: fallback HTML dopo V8 termination può accodare nuove Promise/turni da
+ricongiungere alla FIFO senza lasciare turni obsoleti; verificare anche eccezioni e nuovo runtime
+sullo stesso thread. Nessun fix frame o garanzia globale WeakRef dichiarato.
+
 ### Ripresa24ottobre —0324 verde,0325 revisionata,0326 analizzata
 
 Il tentativo singolo dopo quota0323 è riuscito alle09:33 circa del24ottobre (scheduler
@@ -406,11 +445,9 @@ scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 ### Prossimi punti
 
-1.0325/0326 pubblicati nel checkpoint e80e43898e1/wiki f598a06. Nuovo batch
-   V840078536565 e generale40078536546:9/10 e11/13 verdi, Windows V8 e due portable
-   ancora attivi senza rossi al controllo0328. Android40078536525/iOS40078536540 da controllo aggregato finale.
-  0327 completa/revisionata, commit solo locale: non fare push durante batch attivo.
-   0328 (generatore wrappers2) completa/revisionata da Codex, commit locale dopo0327.
+1. Priorità allo STOP settimanale in cima:0327/0328 complete,0329 parcheggiata.
+   Dopo quota riprendere0329 dal code-only patch e completare la revisione, senza altri retry
+   automatici. Batch e80e tutto verde; nuovo batch del checkpoint0328 da registrare.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

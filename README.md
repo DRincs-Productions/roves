@@ -111,6 +111,8 @@ two successive sandboxed opaque origins, same-origin again, twice); see the shel
 WindowProxy wrapper per browsing context across those changes (same `contentWindow` and
 message source), without retaining the replaced windows; each new page still gets its own
 cross-origin members.
+Nested Promise/`queueMicrotask` interleaving remains under migration audit; the pending fix
+is not part of this checkpoint (see the shell wiki page).
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
 Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`
