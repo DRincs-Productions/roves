@@ -1,0 +1,39 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index de91623b004..7e63f48320a 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -655,6 +655,34 @@ mod object_model {
+         assert!(unsafe { IsArrayObject(cx, function_value.handle().into_handle(), &mut callable) } && !callable);
+     }
+ 
++    #[test]
++    fn is_array_object_follows_the_builtin_class_contract() {
++        // SpiderMonkey's JS::IsArrayObject compares the builtin class (ESClass::Array): scripted
++        // proxies report ESClass::Other, so a proxied or revoked-proxy array is not an array and
++        // nothing is thrown. It is not the ECMAScript IsArray abstract operation, and
++        // script_bindings::is_array_like asserts the call never fails.
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        eval(&runtime, "Array.isArray = () => { throw new Error('poisoned'); };");
++        for (source, expected) in [
++            ("[1, 2]", true),
++            ("new (class extends Array {})()", true),
++            ("new Proxy([], {})", false),
++            ("new Proxy(new Proxy([], {}), {})", false),
++            ("(() => { const r = Proxy.revocable([], {}); r.revoke(); return r.proxy; })()", false),
++            ("({ length: 0 })", false),
++            ("(function () {})", false),
++            ("'array'", false),
++            ("undefined", false),
++        ] {
++            rooted!(in(cx) let value = eval(&runtime, source));
++            let mut is_array = !expected;
++            assert!(unsafe { IsArrayObject(cx, value.handle().into_handle(), &mut is_array) }, "{source}");
++            assert_eq!(is_array, expected, "{source}");
++            assert!(!unsafe { JS_IsExceptionPending(cx) }, "{source}");
++        }
++    }
++
+     #[test]
+     fn dynamic_native_functions_die_with_their_function() {
+         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());

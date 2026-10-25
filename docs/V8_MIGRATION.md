@@ -12,6 +12,30 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0341 — batch precedente tutto verde, pubblicazione
+
+Batch2fc8a3f73f6 concluso: V84020463406610/10, generale4020463410213/13,
+Android40204634068 e iOS40204634081 verdi. Pubblicare0337/0338/0340 e diagnosi0339/
+testcontratto0341 completi e revisionati. Nessuna modifica WIP.0341 conferma contratto
+SpiderMonkey IsArrayObject (non ECMAIsArray), nessun cambio produzione:134normal/133JITless,
+replay470/473 con3eccezioni. Niente verifiche browser duplicate per un test di contratto.
+Riprendere retention frame con un incarico diagnostico mirato, evitando altre ricerche
+sovrapposte o modifiche speculative. La migrazione di produzione non è dichiarata conclusa.
+
+### Claude0341 — audit IsArrayObject: ipotesi falsa, solo test di contratto (da revisionare, non committato)
+
+Base 8eda6652133; CI non controllata. SpiderMonkey fissato (`mozjs_sys`140.14.0-0) implementa
+`JS::IsArrayObject` con `ESClass::Array`, non con `JS::IsArray`: Proxy scriptati, anche revocati,
+danno `false` senza eccezione (lo dice anche `js/public/Array.h`). `value.is_array()` di V8 coincide;
+nessun wrapper cross-compartment in Roves. Chiamanti: `is_array_like` fa `assert!` sul successo
+(un throw sui revocati diventerebbe panic), IndexedDB chiede un "Array exotic object". Nessuna
+correzione di codice; nuovo test nativo (array, sottoclasse, proxy radice/annidato/revocato,
+array-like, funzione, primitivi, `Array.isArray` avvelenato, outparam/eccezioni). Nessun negativo
+sul vecchio codice: il codice è invariato e il test passa. roves-js normal134/2ign, JITless133/3ign;
+patch `0341-is-array-object-builtin-class-contract-test.patch`, replay470/473 con le3eccezioni
+note. README/wiki invariati (nessun cambiamento visibile). Nessuna prova browser. Log `target/task-0341/`.
+Frame retention aperta.
+
 ### Codex0340 revisionata — atomi deboli, pin espliciti conservati
 
 Revisione diff/log conclusa: riuso Interned e hash/confronto mantenuti V8, niente nuova tabella

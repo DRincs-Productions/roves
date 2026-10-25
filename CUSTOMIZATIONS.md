@@ -1,3 +1,22 @@
+## 2026-10-25 - IsArrayObject contract audit: builtin class, not ECMAScript IsArray (0341)
+
+**Files:** `components/roves-js/src/tests.rs`, patch
+`0341-is-array-object-builtin-class-contract-test.patch`. Test only; no behavior change.
+
+Audit of whether `IsArrayObject` (a direct `v8::Value::is_array()` check) should follow the
+ECMAScript `IsArray` operation (proxy-transparent, throwing on revoked proxies). It should not.
+The pinned SpiderMonkey (`mozjs_sys` 140.14.0-0, `js/src/builtin/Array.cpp`) implements
+`JS::IsArrayObject` as `IsGivenTypeObject(ESClass::Array)`; `ScriptedProxyHandler::getBuiltinClass`
+returns `ESClass::Other` even when revoked, and `js/public/Array.h` states that a proxy over an
+array is not an Array. Only transparent cross-compartment wrappers are unwrapped, and Roves has
+none. The V8 predicate already gives the same answers with no exception and no use of
+`Array.isArray`. Callers depend on this: `script_bindings::is_array_like` asserts that the call
+never fails, so throwing on revoked proxies would turn a script value into a panic. IndexedDB key
+conversion (`indexeddb.rs`) checks for an "Array exotic object", and proxies are not Array exotic
+objects. The new native test covers arrays, subclass instances, root, nested and revoked proxies,
+array-like objects, functions and primitives with a poisoned global `Array.isArray`. It checks the
+out parameter, the `true` return and that no exception is pending.
+
 ## 2026-10-25 - Unpinned string atoms are collected when no id references them (0340)
 
 **Files:** `components/roves-js/src/cell.rs`, `components/roves-js/src/jsapi_impl.rs`,
