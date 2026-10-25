@@ -4,7 +4,7 @@ Chrome155 Windows, visibile. Prima prova: worker Blob classico in about:blank, m
 separati danno p1,q,p2 e q1,p1,p2,q2; un terzo messaggio riceve risposta. Poi il check reale
 registrato in stress.html (HTTP127.0.0.1:19032) passa anche dopo la correzione della pulizia
 su costruttore/send che lanciano. Solo quel check eseguito, altri stress registrati ma esclusi.
-Worker terminato/URL revocato e pagina/server di riferimento da chiudere dopo la verifica.
+Worker terminato/URL revocato; pagina e server di riferimento chiusi dopo la verifica.
 È correttezza Chrome, non esito Roves, benchmark o prova di rilascio memoria. Esito Roves allaCI.
 
 ## 25 ottobre — conferma FIFO nel browser Roves, retention invariata

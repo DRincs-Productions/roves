@@ -12,16 +12,18 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Checkpoint Codex —0330/0331/0332 complete, ultimo job0329 pendente
+### Checkpoint Codex —0330/0331/0332 committate locali, ultimo job0329 pendente
 
-0330 commit96b6c7b0862 e0331 commit82cfd790a60 sono complete/revisionate in locale;
-0332 check worker FIFO completo/revisionato, pronto al commit. Chrome DevTools MCP155
+0330 commit96b6c7b0862,0331 commit82cfd790a60,0332 commit2495225b863 complete e
+revisionate in locale; wiki locale0f7b9da. Root remoto resta bda0f74e7f4/wiki aad5440. Chrome DevTools MCP155
 Windows visibile, HTTP127.0.0.1:19032: il CHECK REALE registrato in stress.html finale passa,
 senza eseguire gli altri stress (nessuna misura costosa o performance). Include pulizia
 idempotente, errore costruttore worker, errore evento, postMessage che lancia; negativi rilevati.
 42runner test8skip prima della revisione,4test mirati dopo;3file replay0332 identici.
 V840178691100 TUTTO VERDE10/10, generale4017869087512/13 verdi: resta solo
-Linuxportable121125440097 attivo al controllo finale0332. Nessun push finché non termina.
+Linuxportable121125440097 attivo al controllo finale0332, step run layout unit tests
+(ICU4X line breaking). Android40178690892 e iOS40178690851 verdi. Nessun push finché
+non termina. Nessuna run cancellata o sostituita; nessun altro Claude attivo.
 Nessuna nuova correzione runtime dimostrata da aprire nell’attesa; evitare ricerca senza limite.
 Prossimo passo: completare la conferma CI0329, pubblicare0330–0332 e verificare worker FIFO
 nel browser Roves normal/JITless. Retention frame0/2 ancora irrisolta. Nessuna automazione.
