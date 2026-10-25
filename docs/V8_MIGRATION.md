@@ -12,6 +12,33 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0343 revisionata — retention nativa sensibile ai frame
+
+Solo diagnosi parcheggiata target/task-0343, nessun test flaky pubblicato. ProduzioneJS_GC
+1/8 volte lascia secondaWindow viva; low_memory_notification diretto e GCtest con entrambi
+stackstate raccolgono; wrapper vivo controprova mantiene secondaWindow in ogni variante.
+Normal/JITless10/10, processi separati3/3. Differenza disposizione frame, non dimostrazione
+della causa DOM reale. Prossimo snapshotdebug del repro calibrerà visibilità delle radici
+conservative nel grafo; nessun nuovo profiler/parser/BFS o modificaGC produzione.
+Batchaa028313991 V8/generale attive, mobile verdi: commitlocali, niente push.
+
+### Claude0343 — forma0326 con sola GC di produzione: ritenzione riprodotta (da revisionare, nessun codice)
+
+Base aa028313991; CI non controllata; nessuna modifica a sorgenti/patch/wiki. Test scratch
+(`target/task-0343/production-gc-test.rs` via `native.sh`, inserito solo in copie in %TEMP%):
+cluster0326 creato in un helper `#[inline(never)]` che restituisce solo `WeakPersistent` dei
+realm, poi solo `JS_GC(DOM_TESTUTILS)`. Esito deterministico (debug, normale e JITless, 10/10 e
+3/3 un test per processo): con1 o8 chiamate il realm della seconda Window sopravvive senza
+wrapper tenuto, la prima viene raccolta; controprova con wrapper tenuto: vivo in ogni variante.
+Unica variabile isolata in runtime separati: `low_memory_notification` chiamata direttamente
+(la stessa chiamata di `JS_GC`, senza il suo frame) raccoglie; la GC di testing raccoglie sia
+con NoHeapPointers sia con MayContainHeapPointers. Inferenza, non prova: unico input dipendente
+dal layout dei frame è la scansione conservativa dello stack (parola stantia dell'helper);
+parola/frame non identificati. Non dimostra la stessa causa nella scena DOM reale, che resta
+aperta, né conferma o smentisce la lettura0342 dello snapshot. Nessun test pubblicabile (esito
+legato al layout della build). Prossimo passo proposto: snapshot debug esistente alla prima
+`JS_GC` di questo repro per vedere se compare un arco stack/radice. Log `target/task-0343/RESULTS.txt`.
+
 ### Revisione Codex0342 — prossimo test sul percorso GC di produzione
 
 Diagnosi sorgenti conferma il percorso detach→RemoveIFrame/reply→ExitPipeline→rimozione
