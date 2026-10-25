@@ -23,19 +23,19 @@ use js::context::JSContext;
 use js::conversions::jsstr_to_string;
 use js::gc::StackGCVector;
 use js::glue::{
-    CreateJobQueue, DeleteJobQueue, DispatchablePointer, JS_GetReservedSlot, JobQueueTraps,
+    CreateJobQueue, DeleteJobQueue, DispatchablePointer, JobQueueTraps,
     RUST_js_GetErrorMessage, RegisterScriptEnvironmentPreparer,
     RunScriptEnvironmentPreparerClosure, StreamConsumerConsumeChunk,
     StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
 };
 use js::jsapi::{
     CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
-    GCOptions, GCProgress, GCReason, GetPromiseUserInputEventHandlingState, Handle as RawHandle,
+    GCOptions, GCProgress, GCReason, Handle as RawHandle,
     HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
     JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
     JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
     JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
-    MutableHandleString, PromiseRejectionHandlingState, PromiseUserInputEventHandlingState,
+    MutableHandleString, PromiseRejectionHandlingState,
     RuntimeCode, ScriptEnvironmentPreparer_Closure,
     StreamConsumer as JSStreamConsumer,
 };
@@ -67,7 +67,6 @@ use servo_config::opts::{self, DiagnosticsLoggingOption};
 use servo_config::pref;
 use style::thread_state::{self, ThreadState};
 
-use crate::dom::bindings::codegen::Bindings::PromiseBinding::PromiseJobCallback;
 use crate::dom::bindings::codegen::Bindings::ResponseBinding::Response_Binding::ResponseMethods;
 use crate::dom::bindings::codegen::Bindings::ResponseBinding::ResponseType as DOMResponseType;
 use crate::dom::bindings::codegen::UnionTypes::TrustedScriptOrString;
@@ -94,7 +93,7 @@ use crate::dom::promiserejectionevent::PromiseRejectionEvent;
 use crate::dom::response::Response;
 use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
-use crate::microtask::{EnqueuedPromiseCallback, MicrotaskQueue};
+use crate::microtask::MicrotaskQueue;
 use crate::realms::enter_auto_realm;
 use crate::script_module::EnsureModuleHooksInitialized;
 use crate::task_source::TaskSourceName;
@@ -102,7 +101,8 @@ use crate::{DomTypeHolder, ScriptThread};
 
 static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
     getHostDefinedData: Some(get_host_defined_data),
-    enqueuePromiseJob: Some(enqueue_promise_job),
+    // V8 queues and runs the promise jobs itself (see `run_jobs`).
+    enqueuePromiseJob: None,
     runJobs: Some(run_jobs),
     empty: Some(empty),
     pushNewInterruptQueue: Some(push_new_interrupt_queue),
@@ -369,59 +369,6 @@ unsafe extern "C" fn drop_interrupt_queues(interrupt_queues: *mut c_void) {
             unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
         drop(interrupt_queues);
     });
-}
-
-/// <https://searchfox.org/mozilla-central/rev/2a8a30f4c9b918b726891ab9d2d62b76152606f1/xpcom/base/CycleCollectedJSContext.cpp#355>
-/// SM callback for promise job resolution. Adds a promise callback to the current
-/// global's microtask queue.
-#[expect(unsafe_code)]
-unsafe extern "C" fn enqueue_promise_job(
-    extra: *const c_void,
-    cx: *mut RawJSContext,
-    promise: HandleObject,
-    job: HandleObject,
-    _allocation_site: HandleObject,
-    host_defined_data: HandleObject,
-) -> bool {
-    // SAFETY: it is safe to construct a JSContext from engine hook.
-    let mut cx = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
-    let cx = &mut cx;
-
-    let mut result = false;
-    wrap_panic(&mut || {
-        let microtask_queue = unsafe { &*(extra as *const MicrotaskQueue) };
-        let global = if !host_defined_data.is_null() {
-            let mut incumbent_global = UndefinedValue();
-            unsafe {
-                JS_GetReservedSlot(
-                    host_defined_data.get(),
-                    INCUMBENT_SETTING_SLOT,
-                    &mut incumbent_global,
-                );
-                GlobalScope::from_object(incumbent_global.to_object())
-            }
-        } else {
-            let mut realm = CurrentRealm::assert(cx);
-            GlobalScope::from_current_realm(&mut realm)
-        };
-        let interaction = if promise.get().is_null() {
-            PromiseUserInputEventHandlingState::DontCare
-        } else {
-            unsafe { GetPromiseUserInputEventHandlingState(promise) }
-        };
-        let is_user_interacting =
-            interaction == PromiseUserInputEventHandlingState::HadUserInteractionAtCreation;
-        microtask_queue.enqueue(
-            cx,
-            Box::new(EnqueuedPromiseCallback {
-                callback: unsafe { PromiseJobCallback::new(cx, job.get()) },
-                global: global.as_traced(),
-                is_user_interacting,
-            }),
-        );
-        result = true
-    });
-    result
 }
 
 #[expect(unsafe_code)]

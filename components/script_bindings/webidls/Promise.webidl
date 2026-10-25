@@ -5,8 +5,6 @@
 // This interface is entirely internal to Servo, and should not be accessible to
 // web pages.
 
-callback PromiseJobCallback = undefined();
-
 [TreatNonCallableAsNull]
 callback AnyCallback = any (any value);
 

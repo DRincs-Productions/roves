@@ -1,0 +1,234 @@
+diff --git a/components/script/microtask.rs b/components/script/microtask.rs
+index 430e8b52844..0d9ed7ff1d3 100644
+--- a/components/script/microtask.rs
++++ b/components/script/microtask.rs
+@@ -18,7 +18,6 @@ use script_bindings::root::Dom;
+ 
+ use crate::JSTraceable;
+ use crate::dom::bindings::callback::ExceptionHandling;
+-use crate::dom::bindings::codegen::Bindings::PromiseBinding::PromiseJobCallback;
+ use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
+ use crate::dom::bindings::root::DomRoot;
+ use crate::dom::globalscope::GlobalScope;
+@@ -70,29 +69,8 @@ pub(crate) trait MicrotaskRunnable: JSTraceable + MallocSizeOf {
+     fn handler(&self, _cx: &mut JSContext) {}
+ }
+ 
+-/// A promise callback scheduled to run during the next microtask checkpoint (#4283).
+-#[derive(JSTraceable, MallocSizeOf)]
+-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+-pub(crate) struct EnqueuedPromiseCallback {
+-    #[conditional_malloc_size_of]
+-    pub(crate) callback: Rc<PromiseJobCallback>,
+-    pub(crate) global: Dom<GlobalScope>,
+-    pub(crate) is_user_interacting: bool,
+-}
+-
+-impl MicrotaskRunnable for EnqueuedPromiseCallback {
+-    fn handler(&self, cx: &mut JSContext) {
+-        let _guard = ScriptThread::user_interacting_guard();
+-        let mut realm = enter_auto_realm(cx, &*self.global);
+-        let cx = &mut realm;
+-        let _ = self
+-            .callback
+-            .Call_(cx, &*self.global, ExceptionHandling::Report);
+-    }
+-}
+-
+-/// A microtask that comes from a queueMicrotask() Javascript call,
+-/// identical to EnqueuedPromiseCallback once it's on the queue
++/// A microtask that comes from a queueMicrotask() Javascript call. Promise jobs are not
++/// queued here: V8 queues and runs them itself (see `MicrotaskQueue::enqueue`).
+ #[derive(JSTraceable, MallocSizeOf)]
+ #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+ pub(crate) struct UserMicrotask {
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 17e512f7742..8ef7c62c21c 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -23,19 +23,19 @@ use js::context::JSContext;
+ use js::conversions::jsstr_to_string;
+ use js::gc::StackGCVector;
+ use js::glue::{
+-    CreateJobQueue, DeleteJobQueue, DispatchablePointer, JS_GetReservedSlot, JobQueueTraps,
++    CreateJobQueue, DeleteJobQueue, DispatchablePointer, JobQueueTraps,
+     RUST_js_GetErrorMessage, RegisterScriptEnvironmentPreparer,
+     RunScriptEnvironmentPreparerClosure, StreamConsumerConsumeChunk,
+     StreamConsumerNoteResponseURLs, StreamConsumerStreamEnd, StreamConsumerStreamError,
+ };
+ use js::jsapi::{
+     CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
+-    GCOptions, GCProgress, GCReason, GetPromiseUserInputEventHandlingState, Handle as RawHandle,
++    GCOptions, GCProgress, GCReason, Handle as RawHandle,
+     HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
+     JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
+     JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
+     JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
+-    MutableHandleString, PromiseRejectionHandlingState, PromiseUserInputEventHandlingState,
++    MutableHandleString, PromiseRejectionHandlingState,
+     RuntimeCode, ScriptEnvironmentPreparer_Closure,
+     StreamConsumer as JSStreamConsumer,
+ };
+@@ -67,7 +67,6 @@ use servo_config::opts::{self, DiagnosticsLoggingOption};
+ use servo_config::pref;
+ use style::thread_state::{self, ThreadState};
+ 
+-use crate::dom::bindings::codegen::Bindings::PromiseBinding::PromiseJobCallback;
+ use crate::dom::bindings::codegen::Bindings::ResponseBinding::Response_Binding::ResponseMethods;
+ use crate::dom::bindings::codegen::Bindings::ResponseBinding::ResponseType as DOMResponseType;
+ use crate::dom::bindings::codegen::UnionTypes::TrustedScriptOrString;
+@@ -94,7 +93,7 @@ use crate::dom::promiserejectionevent::PromiseRejectionEvent;
+ use crate::dom::response::Response;
+ use crate::dom::trustedtypes::trustedscript::TrustedScript;
+ use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
+-use crate::microtask::{EnqueuedPromiseCallback, MicrotaskQueue};
++use crate::microtask::MicrotaskQueue;
+ use crate::realms::enter_auto_realm;
+ use crate::script_module::EnsureModuleHooksInitialized;
+ use crate::task_source::TaskSourceName;
+@@ -102,7 +101,8 @@ use crate::{DomTypeHolder, ScriptThread};
+ 
+ static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
+     getHostDefinedData: Some(get_host_defined_data),
+-    enqueuePromiseJob: Some(enqueue_promise_job),
++    // V8 queues and runs the promise jobs itself (see `run_jobs`).
++    enqueuePromiseJob: None,
+     runJobs: Some(run_jobs),
+     empty: Some(empty),
+     pushNewInterruptQueue: Some(push_new_interrupt_queue),
+@@ -371,59 +371,6 @@ unsafe extern "C" fn drop_interrupt_queues(interrupt_queues: *mut c_void) {
+     });
+ }
+ 
+-/// <https://searchfox.org/mozilla-central/rev/2a8a30f4c9b918b726891ab9d2d62b76152606f1/xpcom/base/CycleCollectedJSContext.cpp#355>
+-/// SM callback for promise job resolution. Adds a promise callback to the current
+-/// global's microtask queue.
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn enqueue_promise_job(
+-    extra: *const c_void,
+-    cx: *mut RawJSContext,
+-    promise: HandleObject,
+-    job: HandleObject,
+-    _allocation_site: HandleObject,
+-    host_defined_data: HandleObject,
+-) -> bool {
+-    // SAFETY: it is safe to construct a JSContext from engine hook.
+-    let mut cx = unsafe { JSContext::from_ptr(NonNull::new(cx).unwrap()) };
+-    let cx = &mut cx;
+-
+-    let mut result = false;
+-    wrap_panic(&mut || {
+-        let microtask_queue = unsafe { &*(extra as *const MicrotaskQueue) };
+-        let global = if !host_defined_data.is_null() {
+-            let mut incumbent_global = UndefinedValue();
+-            unsafe {
+-                JS_GetReservedSlot(
+-                    host_defined_data.get(),
+-                    INCUMBENT_SETTING_SLOT,
+-                    &mut incumbent_global,
+-                );
+-                GlobalScope::from_object(incumbent_global.to_object())
+-            }
+-        } else {
+-            let mut realm = CurrentRealm::assert(cx);
+-            GlobalScope::from_current_realm(&mut realm)
+-        };
+-        let interaction = if promise.get().is_null() {
+-            PromiseUserInputEventHandlingState::DontCare
+-        } else {
+-            unsafe { GetPromiseUserInputEventHandlingState(promise) }
+-        };
+-        let is_user_interacting =
+-            interaction == PromiseUserInputEventHandlingState::HadUserInteractionAtCreation;
+-        microtask_queue.enqueue(
+-            cx,
+-            Box::new(EnqueuedPromiseCallback {
+-                callback: unsafe { PromiseJobCallback::new(cx, job.get()) },
+-                global: global.as_traced(),
+-                is_user_interacting,
+-            }),
+-        );
+-        result = true
+-    });
+-    result
+-}
+-
+ #[expect(unsafe_code)]
+ /// <https://html.spec.whatwg.org/multipage/#the-hostpromiserejectiontracker-implementation>
+ unsafe extern "C" fn promise_rejection_tracker(
+diff --git a/components/script_bindings/webidls/Promise.webidl b/components/script_bindings/webidls/Promise.webidl
+index 2e402d1a54e..b8876f82c08 100644
+--- a/components/script_bindings/webidls/Promise.webidl
++++ b/components/script_bindings/webidls/Promise.webidl
+@@ -5,8 +5,6 @@
+ // This interface is entirely internal to Servo, and should not be accessible to
+ // web pages.
+ 
+-callback PromiseJobCallback = undefined();
+-
+ [TreatNonCallableAsNull]
+ callback AnyCallback = any (any value);
+ 
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index c0986622237..31dbfbb42a0 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -792,6 +792,58 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
+         self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
+ 
+ 
++def job_queue_problems(script_runtime, microtask, webidl, runtime):
++    """Whether the script's job queue leaves the promise jobs to V8 (0330): roves-js only calls
++    the `runJobs` trap, so `enqueuePromiseJob` is `None` and Servo's old promise path is gone."""
++    problems = []
++    code = re.sub(r'//[^\n]*', '', script_runtime)
++    traps = braced_body(code, 'static JOB_QUEUE_TRAPS: JobQueueTraps')
++    if not re.search(r'\benqueuePromiseJob: None,', traps):
++        problems.append('JOB_QUEUE_TRAPS installs an enqueuePromiseJob trap')
++    if not re.search(r'\brunJobs: Some\(run_jobs\),', traps):
++        problems.append('JOB_QUEUE_TRAPS does not install run_jobs')
++    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback')
++    for name, source in (('script_runtime.rs', code), ('microtask.rs', re.sub(r'//[^\n]*', '', microtask)),
++                         ('Promise.webidl', re.sub(r'//[^\n]*', '', webidl))):
++        problems += [f'{name} keeps {symbol}' for symbol in old if re.search(rf'\b{symbol}\b', source)]
++    native = re.sub(r'//[^\n]*', '', runtime)
++    if re.search(r'\.enqueuePromiseJob\b', native):
++        problems.append('roves-js calls the enqueuePromiseJob trap')
++    if '_traps.runJobs' not in native:
++        problems.append('roves-js does not call the runJobs trap')
++    return problems
++
++
++class JobQueueTrapContractTests(unittest.TestCase):
++    """The script crate is not built here: its job queue traps are checked against what
++    roves-js calls (the native job queue tests cover roves-js itself)."""
++
++    def sources(self):
++        return [(ROOT / path).read_text(encoding='utf-8') for path in (
++            'components/script/script_runtime.rs', 'components/script/microtask.rs',
++            'components/script_bindings/webidls/Promise.webidl', 'components/roves-js/src/runtime_impl.rs')]
++
++    def test_promise_jobs_stay_in_v8(self):
++        self.assertEqual([], job_queue_problems(*self.sources()))
++
++    def test_old_promise_path_is_caught(self):
++        script_runtime, microtask, webidl, runtime = self.sources()
++        trap = '    enqueuePromiseJob: None,\n'
++        self.assertEqual(1, script_runtime.count(trap))
++        mutations = {
++            'trap installed': (script_runtime.replace(trap, '    enqueuePromiseJob: Some(enqueue_promise_job),\n'), microtask, webidl, runtime),
++            'no run_jobs': (script_runtime.replace('runJobs: Some(run_jobs),', 'runJobs: None,'), microtask, webidl, runtime),
++            'old runnable': (script_runtime, microtask + '\npub(crate) struct EnqueuedPromiseCallback {}\n', webidl, runtime),
++            'old callback type': (script_runtime, microtask, webidl + '\ncallback PromiseJobCallback = undefined();\n', runtime),
++            'roves-js enqueues': (script_runtime, microtask, webidl, runtime.replace(
++                'if let Some(run) = queue._traps.runJobs {', 'if let Some(run) = queue._traps.enqueuePromiseJob {')),
++        }
++        for name, mutated in mutations.items():
++            with self.subTest(name):
++                self.assertNotEqual((script_runtime, microtask, webidl, runtime), mutated)
++                self.assertNotEqual([], job_queue_problems(*mutated))
++
++
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+ class RunnerTests(unittest.TestCase):
+     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):

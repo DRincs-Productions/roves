@@ -18,7 +18,6 @@ use script_bindings::root::Dom;
 
 use crate::JSTraceable;
 use crate::dom::bindings::callback::ExceptionHandling;
-use crate::dom::bindings::codegen::Bindings::PromiseBinding::PromiseJobCallback;
 use crate::dom::bindings::codegen::Bindings::VoidFunctionBinding::VoidFunction;
 use crate::dom::bindings::root::DomRoot;
 use crate::dom::globalscope::GlobalScope;
@@ -70,29 +69,8 @@ pub(crate) trait MicrotaskRunnable: JSTraceable + MallocSizeOf {
     fn handler(&self, _cx: &mut JSContext) {}
 }
 
-/// A promise callback scheduled to run during the next microtask checkpoint (#4283).
-#[derive(JSTraceable, MallocSizeOf)]
-#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-pub(crate) struct EnqueuedPromiseCallback {
-    #[conditional_malloc_size_of]
-    pub(crate) callback: Rc<PromiseJobCallback>,
-    pub(crate) global: Dom<GlobalScope>,
-    pub(crate) is_user_interacting: bool,
-}
-
-impl MicrotaskRunnable for EnqueuedPromiseCallback {
-    fn handler(&self, cx: &mut JSContext) {
-        let _guard = ScriptThread::user_interacting_guard();
-        let mut realm = enter_auto_realm(cx, &*self.global);
-        let cx = &mut realm;
-        let _ = self
-            .callback
-            .Call_(cx, &*self.global, ExceptionHandling::Report);
-    }
-}
-
-/// A microtask that comes from a queueMicrotask() Javascript call,
-/// identical to EnqueuedPromiseCallback once it's on the queue
+/// A microtask that comes from a queueMicrotask() Javascript call. Promise jobs are not
+/// queued here: V8 queues and runs them itself (see `MicrotaskQueue::enqueue`).
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct UserMicrotask {

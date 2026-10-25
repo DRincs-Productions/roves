@@ -12,7 +12,27 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Ripresa 25 ottobre —0329 completa e revisionata, pronta alla pubblicazione
+### Claude0330 — rimosso il vecchio enqueue Promise di Servo (da revisionare, non committato)
+
+Base bda0f74e7f4 (0329 pubblicata). Grafo verificato: roves-js in produzione chiama solo
+`_traps.runJobs` (`run_embedder_microtask`); `enqueuePromiseJob` è letto solo dal test nativo
+con trap proprie. Rimossi `enqueue_promise_job`, `EnqueuedPromiseCallback`, il callback WebIDL
+interno `PromiseJobCallback` (usato solo lì) e gli import relativi; `enqueuePromiseJob: None`.
+Invariati roves-js (nessun test nativo rieseguito), gli altri trap (host-defined data,
+interrupt queue, ecc.), FIFO/terminazione0329 e passo6 0327. Codegen deterministico
+(PYTHONHASHSEED=0) HEAD vs nuovo: solo79 righe `PromiseJobCallback` in meno. Nuovo
+`JobQueueTrapContractTests`: runner40 OK/8skip; mutazioni e sorgenti bda0f74e7f4 falliscono.
+rustfmt: nessuna nuova differenza. Patch `0330-remove-servo-promise-enqueue-path.patch`:
+replay sullo scratch 470/473, stesse3 eccezioni. README/wiki invariati (nessun effetto
+visibile). Log: `target/task-0330/`. Compilazione del crate script: CI.
+
+### Ripresa25ottobre —0329 pubblicata,0330 completa localmente
+
+0329 pubblicata rootbda0f74e7f4/wiki aad5440. Nuovo batch V840178691100, generale
+40178690875, Android40178690892, iOS40178690851. Al controllo0330: V86/10 e generale6/13
+verdi, restanti build attive, nessun rosso. Nessun push durante il batch.0330 revisionata:
+callback enqueue Promise morto e WebIDL interno rimossi, codegen deterministico conferma
+solo79righe eliminate;40runner test/8skip, replay470/473 con3eccezioni note. Commit locale.
 
 Codex ha revisionato diff, negativi e corrispondenza dei sorgenti testati/replay. Batch
 226b7c0cec7 TUTTO VERDE: V840081979370 10/10, generale40081979510 13/13,
@@ -484,7 +504,7 @@ scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 1.0329 completa e revisionata, pubblicare dopo il batch226b7c0cec7 confermato tutto verde.
    Identificare il nuovo batch dopo push e verificare compilazione script/smoke normal/JITless.
-   Nel frattempo eliminare il codice morto del vecchio enqueue Promise in un incarico separato.
+   Codice morto del vecchio enqueue Promise: rimosso da0330 (in revisione, sopra).
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

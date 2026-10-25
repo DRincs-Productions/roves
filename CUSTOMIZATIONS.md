@@ -1,3 +1,23 @@
+## 2026-10-25 - Remove Servo's unreachable promise-enqueue path (0330)
+
+**Files:** `components/script/{microtask.rs,script_runtime.rs}`,
+`components/script_bindings/webidls/Promise.webidl`, `support/v8-smoke/test_runner.py`, patch
+`0330-remove-servo-promise-enqueue-path.patch`.
+
+Since 0329 V8 queues and runs the promise jobs itself, and the only job queue trap production
+roves-js calls is `runJobs` (`run_embedder_microtask`; `enqueuePromiseJob` is read only by a
+native test with its own trap table). Servo's `enqueue_promise_job` trap, its
+`EnqueuedPromiseCallback` runnable and the internal `PromiseJobCallback` WebIDL callback (used
+only there) are deleted, with the imports only they used; `JOB_QUEUE_TRAPS.enqueuePromiseJob`
+is `None`. The other traps, `get_host_defined_data`/`INCUMBENT_SETTING_SLOT`, the
+user-interaction guard, rejection tracking and the interrupt-queue traps are unchanged, as is
+roves-js (`JobQueueTraps` layout, exports, the 0329 FIFO/termination loop and 0327's step 6).
+The generated bindings differ only by the removed `PromiseJobCallback` (deterministic codegen of
+both trees). `JobQueueTrapContractTests` checks the trap table, the absence of the old path in
+the script sources and the WebIDL, and that roves-js calls `runJobs` but never
+`enqueuePromiseJob`; mutations and the pre-0330 sources fail it. Script crate compilation is
+left to CI.
+
 ## 2026-10-25 - One FIFO for promise jobs and HTML microtasks (0329)
 
 **Files:** `components/roves-js/src/{runtime_impl.rs,realm_impl.rs,wrappers2.in.rs,tests.rs}`,
@@ -27,7 +47,7 @@ fallback queues run in the same checkpoint; the first draft ran all leftovers af
 those in V8's queue. The queue is a `VecDeque`. The drain machinery (promise-hook enqueue,
 `drain_pending`, per-realm drain function) is gone; the promise hook only clears import
 metadata. Servo's `enqueue_promise_job` trap and `EnqueuedPromiseCallback` are no longer called
-by roves-js (left in place, removal is a follow-up). V8's own kept-objects clear now happens at
+by roves-js (left in place here, removed by 0330). V8's own kept-objects clear now happens at
 the end of V8's queue; step 6's `ClearKeptObjects` (0327) stays. Not claimed to change the
 removed-frame retention or WeakRef semantics beyond that.
 Tests: native tests with a host queue that mirrors Servo's checkpoint (guard, loop, fallback)

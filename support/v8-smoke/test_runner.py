@@ -792,6 +792,58 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
         self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
 
 
+def job_queue_problems(script_runtime, microtask, webidl, runtime):
+    """Whether the script's job queue leaves the promise jobs to V8 (0330): roves-js only calls
+    the `runJobs` trap, so `enqueuePromiseJob` is `None` and Servo's old promise path is gone."""
+    problems = []
+    code = re.sub(r'//[^\n]*', '', script_runtime)
+    traps = braced_body(code, 'static JOB_QUEUE_TRAPS: JobQueueTraps')
+    if not re.search(r'\benqueuePromiseJob: None,', traps):
+        problems.append('JOB_QUEUE_TRAPS installs an enqueuePromiseJob trap')
+    if not re.search(r'\brunJobs: Some\(run_jobs\),', traps):
+        problems.append('JOB_QUEUE_TRAPS does not install run_jobs')
+    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback')
+    for name, source in (('script_runtime.rs', code), ('microtask.rs', re.sub(r'//[^\n]*', '', microtask)),
+                         ('Promise.webidl', re.sub(r'//[^\n]*', '', webidl))):
+        problems += [f'{name} keeps {symbol}' for symbol in old if re.search(rf'\b{symbol}\b', source)]
+    native = re.sub(r'//[^\n]*', '', runtime)
+    if re.search(r'\.enqueuePromiseJob\b', native):
+        problems.append('roves-js calls the enqueuePromiseJob trap')
+    if '_traps.runJobs' not in native:
+        problems.append('roves-js does not call the runJobs trap')
+    return problems
+
+
+class JobQueueTrapContractTests(unittest.TestCase):
+    """The script crate is not built here: its job queue traps are checked against what
+    roves-js calls (the native job queue tests cover roves-js itself)."""
+
+    def sources(self):
+        return [(ROOT / path).read_text(encoding='utf-8') for path in (
+            'components/script/script_runtime.rs', 'components/script/microtask.rs',
+            'components/script_bindings/webidls/Promise.webidl', 'components/roves-js/src/runtime_impl.rs')]
+
+    def test_promise_jobs_stay_in_v8(self):
+        self.assertEqual([], job_queue_problems(*self.sources()))
+
+    def test_old_promise_path_is_caught(self):
+        script_runtime, microtask, webidl, runtime = self.sources()
+        trap = '    enqueuePromiseJob: None,\n'
+        self.assertEqual(1, script_runtime.count(trap))
+        mutations = {
+            'trap installed': (script_runtime.replace(trap, '    enqueuePromiseJob: Some(enqueue_promise_job),\n'), microtask, webidl, runtime),
+            'no run_jobs': (script_runtime.replace('runJobs: Some(run_jobs),', 'runJobs: None,'), microtask, webidl, runtime),
+            'old runnable': (script_runtime, microtask + '\npub(crate) struct EnqueuedPromiseCallback {}\n', webidl, runtime),
+            'old callback type': (script_runtime, microtask, webidl + '\ncallback PromiseJobCallback = undefined();\n', runtime),
+            'roves-js enqueues': (script_runtime, microtask, webidl, runtime.replace(
+                'if let Some(run) = queue._traps.runJobs {', 'if let Some(run) = queue._traps.enqueuePromiseJob {')),
+        }
+        for name, mutated in mutations.items():
+            with self.subTest(name):
+                self.assertNotEqual((script_runtime, microtask, webidl, runtime), mutated)
+                self.assertNotEqual([], job_queue_problems(*mutated))
+
+
 @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
 class RunnerTests(unittest.TestCase):
     def run_fixture(self, scenario, wrapped=False, pref_flag=None, gc_flag=None, snapshot=None, extra_env=None):

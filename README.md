@@ -623,6 +623,8 @@ An object reachable only through a `WeakRef` can now be collected once the curre
 microtasks finish, as in browsers, even if no promise ran in between (see the shell wiki page).
 Promise and `queueMicrotask` callbacks now run in the order they were queued, as in browsers,
 instead of all pending promise callbacks first (see the shell wiki page).
+The unused Servo Promise-enqueue callback and its internal WebIDL adapter have been removed;
+V8 owns Promise jobs directly (see the shell wiki page).
 `postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
 `DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
 
