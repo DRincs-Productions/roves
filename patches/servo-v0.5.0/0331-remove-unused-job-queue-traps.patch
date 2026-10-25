@@ -1,0 +1,277 @@
+diff --git a/components/script/microtask.rs b/components/script/microtask.rs
+index 0d9ed7ff1d3..c61b5f7a4c7 100644
+--- a/components/script/microtask.rs
++++ b/components/script/microtask.rs
+@@ -164,10 +164,6 @@ impl MicrotaskQueue {
+         // TODO: Step 8. Record timing info for microtask checkpoint.
+     }
+ 
+-    pub(crate) fn empty(&self) -> bool {
+-        self.microtask_queue.borrow().is_empty()
+-    }
+-
+     pub(crate) fn clear(&self) {
+         self.microtask_queue.borrow_mut().clear();
+     }
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 8ef7c62c21c..d0220c2854f 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -31,10 +31,9 @@ use js::glue::{
+ use js::jsapi::{
+     CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
+     GCOptions, GCProgress, GCReason, Handle as RawHandle,
+-    HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
+-    JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
++    HandleObject, HandleString, HandleValue as RawHandleValue, Heap,
+     JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
+-    JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
++    JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType,
+     MutableHandleString, PromiseRejectionHandlingState,
+     RuntimeCode, ScriptEnvironmentPreparer_Closure,
+     StreamConsumer as JSStreamConsumer,
+@@ -46,7 +45,7 @@ pub(crate) use js::rust::ThreadSafeJSContext;
+ use js::rust::wrappers2::{
+     CollectServoSizes, ContextOptionsRef, DispatchableRun, InitConsumeStreamCallback,
+     JS_AddExtraGCRootsTracer, JS_InitDestroyPrincipalsCallback,
+-    JS_InitReadPrincipalsCallback, JS_NewObject, JS_NewStringCopyUTF8N, JS_SetGCCallback,
++    JS_InitReadPrincipalsCallback, JS_NewStringCopyUTF8N, JS_SetGCCallback,
+     JS_SetGCParameter,
+     JS_SetSecurityCallbacks, SetDOMCallbacks, SetGCSliceCallback, SetJobQueue,
+     SetPreserveWrapperCallbacks, SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
+@@ -60,7 +59,6 @@ use malloc_size_of_derive::MallocSizeOf;
+ use profile_traits::mem::{Report, ReportKind};
+ use profile_traits::path;
+ use profile_traits::time::ProfilerCategory;
+-use script_bindings::reflector::dom_object_value;
+ use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
+ use script_bindings::settings_stack::run_a_script;
+ use servo_config::opts::{self, DiagnosticsLoggingOption};
+@@ -99,15 +97,16 @@ use crate::script_module::EnsureModuleHooksInitialized;
+ use crate::task_source::TaskSourceName;
+ use crate::{DomTypeHolder, ScriptThread};
+ 
++/// roves-js only calls `runJobs`: V8 queues and runs the promise jobs itself (see `run_jobs`)
++/// and has no host-defined data or debugger interrupt queues.
+ static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
+-    getHostDefinedData: Some(get_host_defined_data),
+-    // V8 queues and runs the promise jobs itself (see `run_jobs`).
++    getHostDefinedData: None,
+     enqueuePromiseJob: None,
+     runJobs: Some(run_jobs),
+-    empty: Some(empty),
+-    pushNewInterruptQueue: Some(push_new_interrupt_queue),
+-    popInterruptQueue: Some(pop_interrupt_queue),
+-    dropInterruptQueues: Some(drop_interrupt_queues),
++    empty: None,
++    pushNewInterruptQueue: None,
++    popInterruptQueue: None,
++    dropInterruptQueues: None,
+ };
+ 
+ static SECURITY_CALLBACKS: JSSecurityCallbacks = JSSecurityCallbacks {
+@@ -248,67 +247,6 @@ impl From<ScriptThreadEventCategory> for ScriptHangAnnotation {
+     }
+ }
+ 
+-static HOST_DEFINED_DATA: JSClassOps = JSClassOps {
+-    addProperty: None,
+-    delProperty: None,
+-    enumerate: None,
+-    newEnumerate: None,
+-    resolve: None,
+-    mayResolve: None,
+-    finalize: None,
+-    call: None,
+-    construct: None,
+-    trace: None,
+-};
+-
+-static HOST_DEFINED_DATA_CLASS: JSClass = JSClass {
+-    name: c"HostDefinedData".as_ptr(),
+-    flags: (HOST_DEFINED_DATA_SLOTS & JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT,
+-    cOps: &HOST_DEFINED_DATA,
+-    spec: ptr::null(),
+-    ext: ptr::null(),
+-    oOps: ptr::null(),
+-};
+-
+-const INCUMBENT_SETTING_SLOT: u32 = 0;
+-const HOST_DEFINED_DATA_SLOTS: u32 = 1;
+-
+-/// <https://searchfox.org/mozilla-central/rev/2a8a30f4c9b918b726891ab9d2d62b76152606f1/xpcom/base/CycleCollectedJSContext.cpp#316>
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn get_host_defined_data(
+-    _: *const c_void,
+-    cx: *mut RawJSContext,
+-    data: MutableHandleObject,
+-) -> bool {
+-    let mut cx = unsafe {
+-        // SAFETY: We are in SM hook
+-        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in SM hook"))
+-    };
+-    wrap_panic(&mut || {
+-        let Some(incumbent_global) = GlobalScope::incumbent() else {
+-            data.set(ptr::null_mut());
+-            return;
+-        };
+-
+-        let mut realm = enter_auto_realm(&mut cx, &*incumbent_global);
+-        let cx = &mut realm.current_realm();
+-
+-        rooted!(&in(cx) let result = unsafe { JS_NewObject(cx, &HOST_DEFINED_DATA_CLASS)});
+-        assert!(!result.is_null());
+-
+-        unsafe {
+-            JS_SetReservedSlot(
+-                *result,
+-                INCUMBENT_SETTING_SLOT,
+-                &dom_object_value(&*incumbent_global),
+-            )
+-        };
+-
+-        data.set(result.get());
+-    });
+-    true
+-}
+-
+ /// Runs the oldest queued microtask: roves-js calls this on its turn in V8's microtask
+ /// queue, which also holds the promise jobs (see `MicrotaskQueue::enqueue`).
+ #[expect(unsafe_code)]
+@@ -323,54 +261,6 @@ unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSCont
+     });
+ }
+ 
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn empty(extra: *const c_void) -> bool {
+-    let mut result = false;
+-    wrap_panic(&mut || {
+-        let microtask_queue = unsafe { &*(extra as *const MicrotaskQueue) };
+-        result = microtask_queue.empty()
+-    });
+-    result
+-}
+-
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn push_new_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
+-    let mut result = std::ptr::null();
+-    wrap_panic(&mut || {
+-        let mut interrupt_queues =
+-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
+-        let new_queue = Rc::new(MicrotaskQueue::default());
+-        result = Rc::as_ptr(&new_queue) as *const c_void;
+-        interrupt_queues.push(new_queue);
+-        std::mem::forget(interrupt_queues);
+-    });
+-    result
+-}
+-
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn pop_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
+-    let mut result = std::ptr::null();
+-    wrap_panic(&mut || {
+-        let mut interrupt_queues =
+-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
+-        let popped_queue: Rc<MicrotaskQueue> =
+-            interrupt_queues.pop().expect("Guaranteed by SpiderMonkey?");
+-        // Dangling, but jsglue.cpp will only use this for pointer comparison.
+-        result = Rc::as_ptr(&popped_queue) as *const c_void;
+-        std::mem::forget(interrupt_queues);
+-    });
+-    result
+-}
+-
+-#[expect(unsafe_code)]
+-unsafe extern "C" fn drop_interrupt_queues(interrupt_queues: *mut c_void) {
+-    wrap_panic(&mut || {
+-        let interrupt_queues =
+-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
+-        drop(interrupt_queues);
+-    });
+-}
+-
+ #[expect(unsafe_code)]
+ /// <https://html.spec.whatwg.org/multipage/#the-hostpromiserejectiontracker-implementation>
+ unsafe extern "C" fn promise_rejection_tracker(
+@@ -810,11 +700,6 @@ impl Runtime {
+ 
+         let microtask_queue = Rc::new(MicrotaskQueue::default());
+ 
+-        // Extra queues for debugger scripts (“interrupts”) via AutoDebuggerJobQueueInterruption and saveJobQueue().
+-        // Moved indefinitely to mozjs via CreateJobQueue(), borrowed from mozjs via JobQueueTraps, and moved back from
+-        // mozjs for dropping via DeleteJobQueue().
+-        let interrupt_queues: Box<Vec<Rc<MicrotaskQueue>>> = Box::default();
+-
+         let cx_opts;
+         let job_queue;
+         unsafe {
+@@ -822,7 +707,8 @@ impl Runtime {
+             job_queue = CreateJobQueue(
+                 &JOB_QUEUE_TRAPS,
+                 &*microtask_queue as *const _ as *const c_void,
+-                Box::into_raw(interrupt_queues) as *mut c_void,
++                // No debugger interrupt queues: roves-js never calls their traps.
++                ptr::null_mut(),
+             );
+             SetJobQueue(cx, job_queue);
+             SetPromiseRejectionTrackerCallback(
+@@ -940,7 +826,7 @@ impl Drop for Runtime {
+         // Clear our main microtask_queue.
+         self.microtask_queue.clear();
+ 
+-        // Delete the RustJobQueue in mozjs, which will destroy our interrupt queues.
++        // Delete the job queue created in roves-js.
+         unsafe {
+             DeleteJobQueue(self.job_queue);
+         }
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 31dbfbb42a0..5d07f3d4bfb 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -794,7 +794,8 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
+ 
+ def job_queue_problems(script_runtime, microtask, webidl, runtime):
+     """Whether the script's job queue leaves the promise jobs to V8 (0330): roves-js only calls
+-    the `runJobs` trap, so `enqueuePromiseJob` is `None` and Servo's old promise path is gone."""
++    the `runJobs` trap, so every other trap is `None`, Servo's old promise and debugger interrupt
++    paths are gone and no interrupt queues are allocated (0331)."""
+     problems = []
+     code = re.sub(r'//[^\n]*', '', script_runtime)
+     traps = braced_body(code, 'static JOB_QUEUE_TRAPS: JobQueueTraps')
+@@ -802,7 +803,18 @@ def job_queue_problems(script_runtime, microtask, webidl, runtime):
+         problems.append('JOB_QUEUE_TRAPS installs an enqueuePromiseJob trap')
+     if not re.search(r'\brunJobs: Some\(run_jobs\),', traps):
+         problems.append('JOB_QUEUE_TRAPS does not install run_jobs')
+-    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback')
++    # 0331: roves-js reads no other trap and never frees the interrupt queues pointer.
++    for trap in ('getHostDefinedData', 'empty', 'pushNewInterruptQueue', 'popInterruptQueue', 'dropInterruptQueues'):
++        if not re.search(rf'\b{trap}: None,', traps):
++            problems.append(f'JOB_QUEUE_TRAPS installs a {trap} trap')
++    create = re.search(r'CreateJobQueue\((.*?)\);', code, re.S)
++    if not create or not re.search(r',\s*ptr::null_mut\(\),?\s*$', create.group(1)):
++        problems.append('CreateJobQueue gets interrupt queues roves-js never frees')
++    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback', 'get_host_defined_data',
++           'HOST_DEFINED_DATA_CLASS', 'INCUMBENT_SETTING_SLOT', 'push_new_interrupt_queue', 'pop_interrupt_queue',
++           'drop_interrupt_queues', 'interrupt_queues')
++    if re.search(r'\bfn empty\b', re.sub(r'//[^\n]*', '', microtask)):
++        problems.append('microtask.rs keeps the empty trap helper')
+     for name, source in (('script_runtime.rs', code), ('microtask.rs', re.sub(r'//[^\n]*', '', microtask)),
+                          ('Promise.webidl', re.sub(r'//[^\n]*', '', webidl))):
+         problems += [f'{name} keeps {symbol}' for symbol in old if re.search(rf'\b{symbol}\b', source)]
+@@ -837,6 +849,16 @@ class JobQueueTrapContractTests(unittest.TestCase):
+             'old callback type': (script_runtime, microtask, webidl + '\ncallback PromiseJobCallback = undefined();\n', runtime),
+             'roves-js enqueues': (script_runtime, microtask, webidl, runtime.replace(
+                 'if let Some(run) = queue._traps.runJobs {', 'if let Some(run) = queue._traps.enqueuePromiseJob {')),
++            'host data trap': (script_runtime.replace('getHostDefinedData: None,', 'getHostDefinedData: Some(get_host_defined_data),'),
++                               microtask, webidl, runtime),
++            'interrupt trap': (script_runtime.replace('dropInterruptQueues: None,', 'dropInterruptQueues: Some(drop_interrupt_queues),'),
++                               microtask, webidl, runtime),
++            'interrupt allocation': (script_runtime.replace(
++                '                ptr::null_mut(),\n            );\n            SetJobQueue',
++                '                Box::into_raw(interrupt_queues) as *mut c_void,\n            );\n            SetJobQueue'),
++                microtask, webidl, runtime),
++            'empty helper': (script_runtime, microtask + '\nimpl MicrotaskQueue { pub(crate) fn empty(&self) -> bool { true } }\n',
++                             webidl, runtime),
+         }
+         for name, mutated in mutations.items():
+             with self.subTest(name):

@@ -1,3 +1,12 @@
+## 25 ottobre — conferma FIFO nel browser Roves, retention invariata
+
+CI40178691100 sul commitbda0f74e7f4: entrambi gli smoke Linux normal/JITless passano il
+check FIFO Promise/queueMicrotask obbligatorio introdotto0329. Linux normal job121124868674
+continua a riportare0/2 rilasciati per elementi/documenti/global nei gruppi con/senza moduli;
+scena frame-retention: elemento/documento/probe ancora vivi, snapshot4894613byte scritto
+all'ottava raccolta. La correzione FIFO non ha risolto questa retention osservata.
+Nessun benchmark o confronto quantitativo RAM/CPU/GPU dedotto dai dati diagnostici.
+
 ## 25 ottobre — ripresa0329, confronto correttezza già acquisito
 
 La pagina events.html della0329 revisionata è byte-identica alla bozza verificata il24ottobre

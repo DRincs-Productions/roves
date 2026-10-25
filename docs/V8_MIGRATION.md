@@ -12,7 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Claude0330 — rimosso il vecchio enqueue Promise di Servo (da revisionare, non committato)
+### Checkpoint Codex25ottobre —0330/0331 complete in locale
+
+0330 revisionata/committata96b6c7b0862/wiki3e344a9.0331 revisionata: solo runJobs è letto
+in produzione; eliminati hook inutilizzati e Box<Vec<Rc<MicrotaskQueue>>> mai ripreso da
+DeleteJobQueue. Nessun cambiamento ABI roves-js;40runner test8skip, replay470/473 con3
+soleeccezioni note. Preparare commit locale, nessun push durante il batch0329.
+Batch bda0f74e7f4: V8401786911009/10 verdi (Windows build121124868688 attiva),
+generale401786908757/13 verdi; nessun rosso al controllo0331. Entrambi i Linux browser
+normal/JITless passano la nuova FIFO obbligatoria:0329 confermata in Roves su Linux.
+GC normal continua module/no-module0/2 per elementi/documenti/global; scena singola
+frame/document/probe non rilasciati. Snapshot0329 riuscito4894613byte: retention irrisolta.
+
+
+### Claude0331 — rimossi i trap inutilizzati e l'allocazione interrupt queue (da revisionare, non committato)
+
+Base 96b6c7b0862 (0330 locale). Grafo: roves-js legge solo `_traps.runJobs`; `CreateJobQueue`
+memorizza `interrupt_queues` senza leggerlo e `DeleteJobQueue` libera solo `RustJobQueue`
+(nessun `Drop`, `dropInterruptQueues` mai chiamato): il `Box<Vec<Rc<MicrotaskQueue>>>` di ogni
+runtime script non veniva mai liberato. Ora `ptr::null_mut()`; `getHostDefinedData`, `empty` e i
+tre trap interrupt sono `None`; rimossi `get_host_defined_data`, `HOST_DEFINED_DATA(_CLASS)`,
+`INCUMBENT_SETTING_SLOT` (usato solo lì), `empty`/`MicrotaskQueue::empty`, i trap interrupt e gli
+import relativi. roves-js invariato (layout ABI, export). Nessun WebIDL: nessun codegen.
+Contratto esteso: runner40 OK/8skip; HEAD96b6c7b0862 → 14 problemi; mutazioni falliscono.
+rustfmt: stesse5 differenze preesistenti. Patch `0331-remove-unused-job-queue-traps.patch`:
+replay 470/473, stesse3 eccezioni. README, CUSTOMIZATIONS, wiki `shell.mdx` (non committato).
+Log `target/task-0331/`. Compilazione crate script: CI. Ritenzione frame: questione distinta, aperta.
+
+### Claude0330 — rimosso il vecchio enqueue Promise (revisionato, commit96b6c7b0862)
 
 Base bda0f74e7f4 (0329 pubblicata). Grafo verificato: roves-js in produzione chiama solo
 `_traps.runJobs` (`run_embedder_microtask`); `enqueuePromiseJob` è letto solo dal test nativo
@@ -502,9 +529,9 @@ scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 ### Prossimi punti
 
-1.0329 completa e revisionata, pubblicare dopo il batch226b7c0cec7 confermato tutto verde.
-   Identificare il nuovo batch dopo push e verificare compilazione script/smoke normal/JITless.
-   Codice morto del vecchio enqueue Promise: rimosso da0330 (in revisione, sopra).
+1. Completare il batch0329 indicato in cima prima del push;0330/0331 complete in locale.
+   FIFO browser Linux normal/JITless già verde. Continuare con verifica worker FIFO/chiusura
+   in un incarico circoscritto mentre le build residue girano. Nessun polling continuo.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

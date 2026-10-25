@@ -794,7 +794,8 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
 
 def job_queue_problems(script_runtime, microtask, webidl, runtime):
     """Whether the script's job queue leaves the promise jobs to V8 (0330): roves-js only calls
-    the `runJobs` trap, so `enqueuePromiseJob` is `None` and Servo's old promise path is gone."""
+    the `runJobs` trap, so every other trap is `None`, Servo's old promise and debugger interrupt
+    paths are gone and no interrupt queues are allocated (0331)."""
     problems = []
     code = re.sub(r'//[^\n]*', '', script_runtime)
     traps = braced_body(code, 'static JOB_QUEUE_TRAPS: JobQueueTraps')
@@ -802,7 +803,18 @@ def job_queue_problems(script_runtime, microtask, webidl, runtime):
         problems.append('JOB_QUEUE_TRAPS installs an enqueuePromiseJob trap')
     if not re.search(r'\brunJobs: Some\(run_jobs\),', traps):
         problems.append('JOB_QUEUE_TRAPS does not install run_jobs')
-    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback')
+    # 0331: roves-js reads no other trap and never frees the interrupt queues pointer.
+    for trap in ('getHostDefinedData', 'empty', 'pushNewInterruptQueue', 'popInterruptQueue', 'dropInterruptQueues'):
+        if not re.search(rf'\b{trap}: None,', traps):
+            problems.append(f'JOB_QUEUE_TRAPS installs a {trap} trap')
+    create = re.search(r'CreateJobQueue\((.*?)\);', code, re.S)
+    if not create or not re.search(r',\s*ptr::null_mut\(\),?\s*$', create.group(1)):
+        problems.append('CreateJobQueue gets interrupt queues roves-js never frees')
+    old = ('enqueue_promise_job', 'EnqueuedPromiseCallback', 'PromiseJobCallback', 'get_host_defined_data',
+           'HOST_DEFINED_DATA_CLASS', 'INCUMBENT_SETTING_SLOT', 'push_new_interrupt_queue', 'pop_interrupt_queue',
+           'drop_interrupt_queues', 'interrupt_queues')
+    if re.search(r'\bfn empty\b', re.sub(r'//[^\n]*', '', microtask)):
+        problems.append('microtask.rs keeps the empty trap helper')
     for name, source in (('script_runtime.rs', code), ('microtask.rs', re.sub(r'//[^\n]*', '', microtask)),
                          ('Promise.webidl', re.sub(r'//[^\n]*', '', webidl))):
         problems += [f'{name} keeps {symbol}' for symbol in old if re.search(rf'\b{symbol}\b', source)]
@@ -837,6 +849,16 @@ class JobQueueTrapContractTests(unittest.TestCase):
             'old callback type': (script_runtime, microtask, webidl + '\ncallback PromiseJobCallback = undefined();\n', runtime),
             'roves-js enqueues': (script_runtime, microtask, webidl, runtime.replace(
                 'if let Some(run) = queue._traps.runJobs {', 'if let Some(run) = queue._traps.enqueuePromiseJob {')),
+            'host data trap': (script_runtime.replace('getHostDefinedData: None,', 'getHostDefinedData: Some(get_host_defined_data),'),
+                               microtask, webidl, runtime),
+            'interrupt trap': (script_runtime.replace('dropInterruptQueues: None,', 'dropInterruptQueues: Some(drop_interrupt_queues),'),
+                               microtask, webidl, runtime),
+            'interrupt allocation': (script_runtime.replace(
+                '                ptr::null_mut(),\n            );\n            SetJobQueue',
+                '                Box::into_raw(interrupt_queues) as *mut c_void,\n            );\n            SetJobQueue'),
+                microtask, webidl, runtime),
+            'empty helper': (script_runtime, microtask + '\nimpl MicrotaskQueue { pub(crate) fn empty(&self) -> bool { true } }\n',
+                             webidl, runtime),
         }
         for name, mutated in mutations.items():
             with self.subTest(name):

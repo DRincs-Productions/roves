@@ -164,10 +164,6 @@ impl MicrotaskQueue {
         // TODO: Step 8. Record timing info for microtask checkpoint.
     }
 
-    pub(crate) fn empty(&self) -> bool {
-        self.microtask_queue.borrow().is_empty()
-    }
-
     pub(crate) fn clear(&self) {
         self.microtask_queue.borrow_mut().clear();
     }

@@ -31,10 +31,9 @@ use js::glue::{
 use js::jsapi::{
     CompilationType, Dispatchable_MaybeShuttingDown, GCDescription,
     GCOptions, GCProgress, GCReason, Handle as RawHandle,
-    HandleObject, HandleString, HandleValue as RawHandleValue, Heap, JS_SetReservedSlot,
-    JSCLASS_RESERVED_SLOTS_MASK, JSCLASS_RESERVED_SLOTS_SHIFT, JSClass, JSClassOps,
+    HandleObject, HandleString, HandleValue as RawHandleValue, Heap,
     JSContext as RawJSContext, JSGCParamKey, JSGCStatus, JSObject,
-    JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType, MutableHandleObject,
+    JSSecurityCallbacks, JSString, JSTracer, JobQueue, MimeType,
     MutableHandleString, PromiseRejectionHandlingState,
     RuntimeCode, ScriptEnvironmentPreparer_Closure,
     StreamConsumer as JSStreamConsumer,
@@ -46,7 +45,7 @@ pub(crate) use js::rust::ThreadSafeJSContext;
 use js::rust::wrappers2::{
     CollectServoSizes, ContextOptionsRef, DispatchableRun, InitConsumeStreamCallback,
     JS_AddExtraGCRootsTracer, JS_InitDestroyPrincipalsCallback,
-    JS_InitReadPrincipalsCallback, JS_NewObject, JS_NewStringCopyUTF8N, JS_SetGCCallback,
+    JS_InitReadPrincipalsCallback, JS_NewStringCopyUTF8N, JS_SetGCCallback,
     JS_SetGCParameter,
     JS_SetSecurityCallbacks, SetDOMCallbacks, SetGCSliceCallback, SetJobQueue,
     SetPreserveWrapperCallbacks, SetPromiseRejectionTrackerCallback, SetUpEventLoopDispatch,
@@ -60,7 +59,6 @@ use malloc_size_of_derive::MallocSizeOf;
 use profile_traits::mem::{Report, ReportKind};
 use profile_traits::path;
 use profile_traits::time::ProfilerCategory;
-use script_bindings::reflector::dom_object_value;
 use script_bindings::script_runtime::{mark_runtime_dead, runtime_is_alive, temp_cx};
 use script_bindings::settings_stack::run_a_script;
 use servo_config::opts::{self, DiagnosticsLoggingOption};
@@ -99,15 +97,16 @@ use crate::script_module::EnsureModuleHooksInitialized;
 use crate::task_source::TaskSourceName;
 use crate::{DomTypeHolder, ScriptThread};
 
+/// roves-js only calls `runJobs`: V8 queues and runs the promise jobs itself (see `run_jobs`)
+/// and has no host-defined data or debugger interrupt queues.
 static JOB_QUEUE_TRAPS: JobQueueTraps = JobQueueTraps {
-    getHostDefinedData: Some(get_host_defined_data),
-    // V8 queues and runs the promise jobs itself (see `run_jobs`).
+    getHostDefinedData: None,
     enqueuePromiseJob: None,
     runJobs: Some(run_jobs),
-    empty: Some(empty),
-    pushNewInterruptQueue: Some(push_new_interrupt_queue),
-    popInterruptQueue: Some(pop_interrupt_queue),
-    dropInterruptQueues: Some(drop_interrupt_queues),
+    empty: None,
+    pushNewInterruptQueue: None,
+    popInterruptQueue: None,
+    dropInterruptQueues: None,
 };
 
 static SECURITY_CALLBACKS: JSSecurityCallbacks = JSSecurityCallbacks {
@@ -248,67 +247,6 @@ impl From<ScriptThreadEventCategory> for ScriptHangAnnotation {
     }
 }
 
-static HOST_DEFINED_DATA: JSClassOps = JSClassOps {
-    addProperty: None,
-    delProperty: None,
-    enumerate: None,
-    newEnumerate: None,
-    resolve: None,
-    mayResolve: None,
-    finalize: None,
-    call: None,
-    construct: None,
-    trace: None,
-};
-
-static HOST_DEFINED_DATA_CLASS: JSClass = JSClass {
-    name: c"HostDefinedData".as_ptr(),
-    flags: (HOST_DEFINED_DATA_SLOTS & JSCLASS_RESERVED_SLOTS_MASK) << JSCLASS_RESERVED_SLOTS_SHIFT,
-    cOps: &HOST_DEFINED_DATA,
-    spec: ptr::null(),
-    ext: ptr::null(),
-    oOps: ptr::null(),
-};
-
-const INCUMBENT_SETTING_SLOT: u32 = 0;
-const HOST_DEFINED_DATA_SLOTS: u32 = 1;
-
-/// <https://searchfox.org/mozilla-central/rev/2a8a30f4c9b918b726891ab9d2d62b76152606f1/xpcom/base/CycleCollectedJSContext.cpp#316>
-#[expect(unsafe_code)]
-unsafe extern "C" fn get_host_defined_data(
-    _: *const c_void,
-    cx: *mut RawJSContext,
-    data: MutableHandleObject,
-) -> bool {
-    let mut cx = unsafe {
-        // SAFETY: We are in SM hook
-        JSContext::from_ptr(NonNull::new(cx).expect("JSContext should not be null in SM hook"))
-    };
-    wrap_panic(&mut || {
-        let Some(incumbent_global) = GlobalScope::incumbent() else {
-            data.set(ptr::null_mut());
-            return;
-        };
-
-        let mut realm = enter_auto_realm(&mut cx, &*incumbent_global);
-        let cx = &mut realm.current_realm();
-
-        rooted!(&in(cx) let result = unsafe { JS_NewObject(cx, &HOST_DEFINED_DATA_CLASS)});
-        assert!(!result.is_null());
-
-        unsafe {
-            JS_SetReservedSlot(
-                *result,
-                INCUMBENT_SETTING_SLOT,
-                &dom_object_value(&*incumbent_global),
-            )
-        };
-
-        data.set(result.get());
-    });
-    true
-}
-
 /// Runs the oldest queued microtask: roves-js calls this on its turn in V8's microtask
 /// queue, which also holds the promise jobs (see `MicrotaskQueue::enqueue`).
 #[expect(unsafe_code)]
@@ -320,54 +258,6 @@ unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSCont
     wrap_panic(&mut || {
         let microtask_queue = unsafe { &*(microtask_queue as *const MicrotaskQueue) };
         microtask_queue.run_next(&mut cx);
-    });
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn empty(extra: *const c_void) -> bool {
-    let mut result = false;
-    wrap_panic(&mut || {
-        let microtask_queue = unsafe { &*(extra as *const MicrotaskQueue) };
-        result = microtask_queue.empty()
-    });
-    result
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn push_new_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
-    let mut result = std::ptr::null();
-    wrap_panic(&mut || {
-        let mut interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        let new_queue = Rc::new(MicrotaskQueue::default());
-        result = Rc::as_ptr(&new_queue) as *const c_void;
-        interrupt_queues.push(new_queue);
-        std::mem::forget(interrupt_queues);
-    });
-    result
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn pop_interrupt_queue(interrupt_queues: *mut c_void) -> *const c_void {
-    let mut result = std::ptr::null();
-    wrap_panic(&mut || {
-        let mut interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        let popped_queue: Rc<MicrotaskQueue> =
-            interrupt_queues.pop().expect("Guaranteed by SpiderMonkey?");
-        // Dangling, but jsglue.cpp will only use this for pointer comparison.
-        result = Rc::as_ptr(&popped_queue) as *const c_void;
-        std::mem::forget(interrupt_queues);
-    });
-    result
-}
-
-#[expect(unsafe_code)]
-unsafe extern "C" fn drop_interrupt_queues(interrupt_queues: *mut c_void) {
-    wrap_panic(&mut || {
-        let interrupt_queues =
-            unsafe { Box::from_raw(interrupt_queues as *mut Vec<Rc<MicrotaskQueue>>) };
-        drop(interrupt_queues);
     });
 }
 
@@ -810,11 +700,6 @@ impl Runtime {
 
         let microtask_queue = Rc::new(MicrotaskQueue::default());
 
-        // Extra queues for debugger scripts (“interrupts”) via AutoDebuggerJobQueueInterruption and saveJobQueue().
-        // Moved indefinitely to mozjs via CreateJobQueue(), borrowed from mozjs via JobQueueTraps, and moved back from
-        // mozjs for dropping via DeleteJobQueue().
-        let interrupt_queues: Box<Vec<Rc<MicrotaskQueue>>> = Box::default();
-
         let cx_opts;
         let job_queue;
         unsafe {
@@ -822,7 +707,8 @@ impl Runtime {
             job_queue = CreateJobQueue(
                 &JOB_QUEUE_TRAPS,
                 &*microtask_queue as *const _ as *const c_void,
-                Box::into_raw(interrupt_queues) as *mut c_void,
+                // No debugger interrupt queues: roves-js never calls their traps.
+                ptr::null_mut(),
             );
             SetJobQueue(cx, job_queue);
             SetPromiseRejectionTrackerCallback(
@@ -940,7 +826,7 @@ impl Drop for Runtime {
         // Clear our main microtask_queue.
         self.microtask_queue.clear();
 
-        // Delete the RustJobQueue in mozjs, which will destroy our interrupt queues.
+        // Delete the job queue created in roves-js.
         unsafe {
             DeleteJobQueue(self.job_queue);
         }

@@ -112,7 +112,8 @@ WindowProxy wrapper per browsing context across those changes (same `contentWind
 message source), without retaining the replaced windows; each new page still gets its own
 cross-origin members.
 Nested Promise and `queueMicrotask` callbacks now share V8's FIFO queue; browser confirmation
-for Roves comes from the V8 CI smoke (see the shell wiki page).
+for Roves comes from the V8 CI smoke (see the shell wiki page). Unused job-queue hooks
+left from Servo's old engine, and the small per-runtime allocation they leaked, are removed.
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
 Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`

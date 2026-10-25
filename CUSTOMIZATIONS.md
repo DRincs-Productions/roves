@@ -1,3 +1,23 @@
+## 2026-10-25 - Remove the unused job queue traps and interrupt-queue allocation (0331)
+
+**Files:** `components/script/{microtask.rs,script_runtime.rs}`, `support/v8-smoke/test_runner.py`,
+patch `0331-remove-unused-job-queue-traps.patch`.
+
+Production roves-js reads a single field of the trap table, `runJobs` (`run_embedder_microtask`);
+`CreateJobQueue` only stores the `interrupt_queues` pointer and `DeleteJobQueue` drops its own
+`RustJobQueue` box without calling `dropInterruptQueues`, so the `Box<Vec<Rc<MicrotaskQueue>>>`
+the script runtime handed over was never freed (one small allocation per script runtime). The
+script runtime now passes a null pointer, and `getHostDefinedData`, `empty` and the three
+interrupt-queue traps are `None`; their Servo implementations (`get_host_defined_data` with
+`HOST_DEFINED_DATA_CLASS`/`INCUMBENT_SETTING_SLOT`, `empty` with `MicrotaskQueue::empty`,
+`push_new_interrupt_queue`, `pop_interrupt_queue`, `drop_interrupt_queues`) and the imports only
+they used are deleted. Unchanged: roves-js (public `JobQueueTraps` layout and exports, the
+stored pointer), `run_jobs`, incumbent/callback settings handling, rejection tracking, the script
+environment preparer and runtime shutdown. `JobQueueTrapContractTests` now also requires every
+other trap to be `None`, a null interrupt-queue argument and no leftover helpers; mutations and
+the pre-0331 sources fail it. No WebIDL change, so no codegen difference. Script crate
+compilation is left to CI.
+
 ## 2026-10-25 - Remove Servo's unreachable promise-enqueue path (0330)
 
 **Files:** `components/script/{microtask.rs,script_runtime.rs}`,
