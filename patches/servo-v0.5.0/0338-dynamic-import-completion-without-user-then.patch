@@ -1,0 +1,115 @@
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 1cee3011f7d..e3100cfea8d 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -951,18 +951,38 @@ pub unsafe fn FinishDynamicModuleImport(
+         let promise = promise_of(scope, promise_obj)?;
+         let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+         let _source_token = promise.get_private(scope, key)?;
+-        // SAFETY: as above.
+-        let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
+-        let source = "(function (evaluation, namespace) { return evaluation.then(() => namespace); })";
+-        let code = v8::String::new(scope, source)?;
+-        let then = v8::Local::<v8::Function>::try_from(v8::Script::compile(scope, code, None)?.run(scope)?).ok()?;
+-        let undefined = v8::undefined(scope).into();
+-        let chained = then.call(scope, undefined, &[evaluation.into(), namespace])?;
+-        resolver.resolve(scope, chained)
++        // `then2` is V8's PerformPromiseThen: no `then` or species lookup that a patched
++        // `Promise.prototype` could intercept. The namespace is resolved once, as in
++        // ContinueDynamicImport, so a callable `then` export is still assimilated.
++        let data = v8::Array::new_with_elements(scope, &[promise.into(), namespace]);
++        let fulfilled = v8::Function::builder(dynamic_import_fulfilled).data(data.into()).build(scope)?;
++        let rejected = v8::Function::builder(dynamic_import_rejected).data(data.into()).build(scope)?;
++        evaluation.then2(scope, fulfilled, rejected).map(|_| true)
+     })
+     .unwrap_or(false)
+ }
+ 
++/// Settles the dynamic import's promise (`data[0]`) with its namespace (`data[1]`) or the
++/// evaluation's rejection reason.
++fn settle_dynamic_import(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, fulfilled: bool) -> Option<bool> {
++    let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
++    let promise = v8::Local::<v8::Promise>::try_from(data.get_index(scope, 0)?).ok()?;
++    // SAFETY: as above.
++    let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
++    match fulfilled {
++        true => resolver.resolve(scope, data.get_index(scope, 1)?),
++        false => resolver.reject(scope, args.get(0)),
++    }
++}
++
++fn dynamic_import_fulfilled(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
++    settle_dynamic_import(scope, &args, true);
++}
++
++fn dynamic_import_rejected(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
++    settle_dynamic_import(scope, &args, false);
++}
++
+ /// V8's `import.meta` initialization: the embedder's metadata hook fills the object.
+ unsafe extern "C" fn import_meta(context: v8::Local<v8::Context>, module: v8::Local<v8::Module>, meta: v8::Local<v8::Object>) {
+     // SAFETY: V8 calls this with the context entered.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 39924167800..904ca6b3eab 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -4383,6 +4383,59 @@ mod modules {
+         assert_eq!(crate::modules_impl::json_records_for_testing(), (0, 0), "the evaluated record collected");
+         check(&runtime, "loaded.default === first && first.k[0] === 3");
+     }
++
++    /// Host completion of `import()` waits on the evaluation promise without user-patchable
++    /// `Promise.prototype.then`; a namespace's own `then` export is still assimilated.
++    #[test]
++    fn dynamic_import_completion_ignores_patched_promise_then() {
++        let patches = [
++            "function () { hijacked++; throw new Error('hijacked'); }",
++            "function (f) { hijacked++; if (typeof f === 'function') f(); return 'hostile'; }",
++        ];
++        for patch in patches {
++            let mut runtime = Runtime::new(JSEngineHandle::for_tests());
++            let cx = runtime.raw_cx();
++            let rt = runtime.rt();
++            unsafe {
++                SetModuleResolveHook(rt, Some(resolve));
++                SetModuleDynamicImportHook(rt, Some(dynamic_import));
++            }
++            let check = |runtime: &Runtime, source: &str| assert_eq!(describe(runtime, eval(runtime, source)), "true", "{patch}: {source}");
++            eval(&runtime, "globalThis.results = {}; globalThis.hijacked = 0; globalThis.gate = new Promise(r => globalThis.open = r); 0");
++            rooted!(in(cx) let tla = compile(&runtime, "tla.js", "export const v = 1; await gate;", false));
++            rooted!(in(cx) let fails = compile(&runtime, "fails.js", "throw new Error('boom');", false));
++            rooted!(in(cx) let thenable = compile(&runtime, "thenable.js", "export function then(resolve) { resolve('assimilated'); }", false));
++            eval(&runtime, &format!("Promise.prototype.then = {patch}; 0"));
++            for (name, record) in [("tla.js", tla.get()), ("fails.js", fails.get()), ("thenable.js", thenable.get())] {
++                // `await` on a native promise performs PromiseThen without looking up `then`.
++                eval(&runtime, &format!("(async () => {{ try {{ results['{name}'] = await import('{name}'); }} catch (e) {{ results['{name}'] = e; }} }})(); 0"));
++                let (importer, request, promise) = DYNAMIC.with(|dynamic| dynamic.borrow_mut().take()).expect("the dynamic import hook ran");
++                rooted!(in(cx) let importer = importer);
++                rooted!(in(cx) let request = request as *mut JSObject);
++                rooted!(in(cx) let promise = promise as *mut JSObject);
++                rooted!(in(cx) let record = record);
++                assert!(unsafe { ModuleLink(cx, record.handle().into()) });
++                rooted!(in(cx) let mut evaluation = UndefinedValue());
++                assert!(unsafe { ModuleEvaluate(cx, record.handle().into(), evaluation.handle_mut().into()) });
++                rooted!(in(cx) let evaluation = evaluation.get().to_object());
++                assert!(
++                    unsafe { FinishDynamicModuleImport(cx, evaluation.handle().into(), importer.handle().into(), request.handle().into(), promise.handle().into()) },
++                    "{patch}: {name} completion is registered"
++                );
++            }
++            // SAFETY: the runtime's live context.
++            unsafe { &mut *(*cx).isolate }.request_garbage_collection_for_testing(v8::GarbageCollectionType::Full);
++            runtime.gc_for_testing();
++            unsafe { RunJobs(cx) };
++            check(&runtime, "!('tla.js' in results)");
++            check(&runtime, "results['fails.js'] instanceof Error && results['fails.js'].message === 'boom'");
++            check(&runtime, "results['thenable.js'] === 'assimilated'");
++            eval(&runtime, "open(); 0");
++            unsafe { RunJobs(cx) };
++            check(&runtime, "results['tla.js'].v === 1 && Object.prototype.toString.call(results['tla.js']) === '[object Module]'");
++            check(&runtime, "hijacked === 0");
++        }
++    }
+ }
+ 
+ /// The private of the running classic script or source module (SpiderMonkey's source-object

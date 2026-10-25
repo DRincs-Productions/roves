@@ -1,3 +1,35 @@
+## 2026-10-25 - Dynamic import completion ignores a patched `Promise.prototype.then` (0338)
+
+**Files:** `components/roves-js/src/modules_impl.rs`, `components/roves-js/src/tests.rs`, patch
+`0338-dynamic-import-completion-without-user-then.patch`.
+
+`FinishDynamicModuleImport` compiled and ran
+`(function (evaluation, namespace) { return evaluation.then(() => namespace); })` on every
+call, then resolved the import's promise with the result. Both steps consulted the
+user-mutable `Promise.prototype.then`: once on the evaluation promise, and again when the
+promise resolution assimilated the chained (native) promise. A page that replaced `then`
+could make the completion fail (a throwing `then`: the call returned `false` and the import
+never settled) or deliver anything at any time (a `then` that calls its callback immediately
+and returns `'hostile'`: the import resolved with `'hostile'` before the module's top-level
+`await` finished). The new native test shows both on the old code, in normal and JIT-less
+builds.
+
+The function now registers two native reactions with `v8::Promise::then2`. In the pinned V8
+152.2 sources (`api.cc`), `Promise::Then` calls the `perform_promise_then` builtin directly
+and avoids both `then` and species lookups; this is the spec's PerformPromiseThen used by
+ContinueDynamicImport. The reactions share one internal array holding the import promise
+and the namespace. The fulfilled reaction resolves the promise with the namespace once,
+so a module exporting a callable `then` is still assimilated as the language requires. The
+rejected reaction rejects with the evaluation's reason. The functions are created in the
+current context, as the compiled function was, and the reactions keep their data alive
+while the evaluation is pending (the test collects garbage before settling). The per-call
+script compilation is gone. The no-evaluation-promise rejection path is unchanged. The
+existing promise-to-resolver cast is kept because the crate has no checked conversion.
+
+Servo's own page path (`module_loading.rs` `continue_dynamic_import`) does not call this
+function: it uses `AddPromiseReactions`, which already uses `then2`, so pages were not
+affected. The fix covers the exported embedder API and its native tests.
+
 ## 2026-10-25 - Linked JSON module records live as long as their module graph (0337)
 
 **Files:** `components/roves-js/src/modules_impl.rs`, `components/roves-js/src/script_metadata.rs`,

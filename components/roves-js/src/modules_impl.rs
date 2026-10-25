@@ -951,16 +951,36 @@ pub unsafe fn FinishDynamicModuleImport(
         let promise = promise_of(scope, promise_obj)?;
         let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
         let _source_token = promise.get_private(scope, key)?;
-        // SAFETY: as above.
-        let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
-        let source = "(function (evaluation, namespace) { return evaluation.then(() => namespace); })";
-        let code = v8::String::new(scope, source)?;
-        let then = v8::Local::<v8::Function>::try_from(v8::Script::compile(scope, code, None)?.run(scope)?).ok()?;
-        let undefined = v8::undefined(scope).into();
-        let chained = then.call(scope, undefined, &[evaluation.into(), namespace])?;
-        resolver.resolve(scope, chained)
+        // `then2` is V8's PerformPromiseThen: no `then` or species lookup that a patched
+        // `Promise.prototype` could intercept. The namespace is resolved once, as in
+        // ContinueDynamicImport, so a callable `then` export is still assimilated.
+        let data = v8::Array::new_with_elements(scope, &[promise.into(), namespace]);
+        let fulfilled = v8::Function::builder(dynamic_import_fulfilled).data(data.into()).build(scope)?;
+        let rejected = v8::Function::builder(dynamic_import_rejected).data(data.into()).build(scope)?;
+        evaluation.then2(scope, fulfilled, rejected).map(|_| true)
     })
     .unwrap_or(false)
+}
+
+/// Settles the dynamic import's promise (`data[0]`) with its namespace (`data[1]`) or the
+/// evaluation's rejection reason.
+fn settle_dynamic_import(scope: &mut v8::PinScope, args: &v8::FunctionCallbackArguments, fulfilled: bool) -> Option<bool> {
+    let data = v8::Local::<v8::Array>::try_from(args.data()).ok()?;
+    let promise = v8::Local::<v8::Promise>::try_from(data.get_index(scope, 0)?).ok()?;
+    // SAFETY: as above.
+    let resolver = unsafe { std::mem::transmute::<v8::Local<v8::Promise>, v8::Local<v8::PromiseResolver>>(promise) };
+    match fulfilled {
+        true => resolver.resolve(scope, data.get_index(scope, 1)?),
+        false => resolver.reject(scope, args.get(0)),
+    }
+}
+
+fn dynamic_import_fulfilled(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    settle_dynamic_import(scope, &args, true);
+}
+
+fn dynamic_import_rejected(scope: &mut v8::PinScope, args: v8::FunctionCallbackArguments, _: v8::ReturnValue) {
+    settle_dynamic_import(scope, &args, false);
 }
 
 /// V8's `import.meta` initialization: the embedder's metadata hook fills the object.

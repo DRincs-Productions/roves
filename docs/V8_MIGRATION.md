@@ -12,6 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0338 revisionata — altro commit locale durante CI
+
+FinishDynamicModuleImport usa ora Promise::then2 pubblico V8 invece di compilare ogni volta
+un helper che legge evaluation.then mutabile. Negativi normal/JITless dimostrano eccezione
+oppure consegna anticipata con then ostile.128normal/127JITless, TLA/rejection/namespace
+thenable eGC passano; replay470/473 con3eccezioni note. Nessuna nuova dipendenza.
+Il percorso pagine Servo usa già AddPromiseReactions/then2: questa è una correzione della
+API embedder roves-js, non un difetto delle pagine dimostrato. Nessun test browser duplicato.
+Batch2fc8a3f73f6: V840204634066 conclusa verde10/10, mobile verdi; generale40204634102
+ancora attiva. Commit locali consentiti, NON pushare. Proseguire prossimo incarico.
+
+### Claude0338 — completamento import() senza `then` utente (da revisionare, non committato)
+
+Base e73b987f350; CI non controllata da Claude. Contratto host: Servo (`module_loading.rs`
+`continue_dynamic_import`) NON chiama `FinishDynamicModuleImport`, usa `AddPromiseReactions`
+(già `then2`): pagine non affette; il difetto riguarda l'API esportata e i test nativi. Difetto
+dimostrato sul codice vecchio normal/JITless: `then` che lancia → Finish `false`, import mai
+risolto; `then` ostile che chiama subito il callback → import risolto con `'hostile'` prima della
+fine del TLA (anche `resolve(chained)` assimilava via `then` utente). Verificato in V8152.2
+`api.cc`: `Promise::Then` chiama `perform_promise_then`, niente lookup `then`/species. Fix: due
+reazioni native `then2` con dati in un array interno [promise, namespace]; namespace risolto una
+volta (export `then` ancora assimilato), rifiuto propagato; nessuna compilazione per chiamata.
+Cast promise→resolver invariato (nessuna conversione controllata pubblica). Test nuovo: due patch
+ostili × TLA pendente/errore/namespace thenable, GC prima del settle. roves-js normal128/2ign,
+JITless127/3ign, warning749 invariati; patch `0338-dynamic-import-completion-without-user-then.patch`,
+replay470/473 con3eccezioni note. Nessun check browser (percorso pagina non usa la funzione),
+REQUIRED_CHECKS invariati. Log `target/task-0338/`. Retention frame/no-module resta aperta.
+
 ### Codex0337 revisionata — commit locale durante CI0335/0336
 
 0337 elimina la radice forte dei JSON collegati mai valutati: namespace V8 come chiave

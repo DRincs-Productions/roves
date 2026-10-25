@@ -75,7 +75,10 @@ module sources; it has not been measured. `import()` inside direct `eval` code i
 it resolves against the module or script that contains the `eval`, as in browsers. Code created
 with `new Function` (and its generator/async variants) resolves against its calling module or
 script too; like V8's own compilation cache, an identical body built again reuses the first
-caller's origin.
+caller's origin. The engine's embedder API for completing an `import()` now waits for module
+evaluation without consulting a page-replaced `Promise.prototype.then` (as Servo's own page
+path already did), so the module is never delivered early; a module exporting `then` behaves
+as specified.
 A module's owner page is now a reference the collector traces, not a permanent root; realm and
 module tables still keep pages and modules alive, so this saves no memory yet (not measured).
 Its main Window fixture and cross-origin iframe use
