@@ -94,6 +94,64 @@ check("terminate stops busy workers with pending engine work", async () => {
   echo.terminate();
   return value === 42 || `echo answered ${value}`;
 }, 60000);
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// The FIFO microtask order of events.html inside a dedicated worker (Chrome 155: "p1,q,p2", then
+// "q1,p1,p2,q2"; the batched drain before 0329 gives "p1,p2,q"). Each case runs in its own worker
+// message task and is read one task later; the last reply shows the worker still answers. Replies
+// carry this run's nonce and phase, so a stale reply cannot satisfy a later step. Every outcome,
+// the check's own deadline and a throwing Worker constructor or postMessage included, terminates
+// the worker (if one was created) and revokes its URL, once.
+check("dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue", () => new Promise(resolve => {
+  const url = URL.createObjectURL(new Blob([`
+    const cases = {
+      a(order) {
+        Promise.resolve().then(() => { order.push("p1"); Promise.resolve().then(() => order.push("p2")); });
+        queueMicrotask(() => order.push("q"));
+      },
+      b(order) {
+        queueMicrotask(() => { order.push("q1"); Promise.resolve().then(() => order.push("p2")); queueMicrotask(() => order.push("q2")); });
+        Promise.resolve().then(() => order.push("p1"));
+      },
+      ping(order) { order.push("pong"); },
+    };
+    onmessage = e => {
+      const { nonce, phase } = e.data, order = [];
+      cases[phase](order);
+      setTimeout(() => postMessage({ nonce, phase, seen: order.join() }), 0);
+    };
+  `], { type: "text/javascript" }));
+  const nonce = Math.random().toString(36).slice(2);
+  const steps = [["a", "p1,q,p2"], ["b", "q1,p1,p2,q2"], ["ping", "pong"]];
+  let step = 0, worker = null, timer, finished = false;
+  const done = outcome => {
+    if (finished) return;
+    finished = true;
+    clearTimeout(timer);
+    if (worker) {
+      worker.onmessage = worker.onerror = null;
+      worker.terminate();
+    }
+    URL.revokeObjectURL(url);
+    resolve(outcome);
+  };
+  const send = () => {
+    try { worker.postMessage({ nonce, phase: steps[step][0] }); }
+    catch (e) { done(`postMessage ${steps[step][0]} threw: ${e.name}: ${e.message}`); }
+  };
+  try { worker = new Worker(url); }
+  catch (e) { return done(`new Worker threw: ${e.name}: ${e.message}`); }
+  timer = setTimeout(() => done(`timeout waiting for ${steps[step][0]}`), 5000);
+  worker.onerror = e => { e.preventDefault(); done(`worker error: ${e.message}`); };
+  worker.onmessage = ({ data }) => {
+    const [phase, expected] = steps[step];
+    if (!data || data.nonce !== nonce) return done(`reply from another run while waiting for ${phase}`);
+    if (data.phase !== phase) return done(`stale reply ${data.phase} while waiting for ${phase}`);
+    if (data.seen !== expected) return done(`${phase}: ${data.seen}`);
+    if (++step === steps.length) return done(true);
+    send();
+  };
+  send();
+}));
 check("structuredClone of a large graph with cycles and typed arrays", () => {
   // 20 000 objects in cycles of 1 000: V8's serializer recurses along references, and its stack
   // budget is Chrome's (about 1 MB), so a single 20 000-long chain overflows there too.

@@ -68,6 +68,11 @@ class ResultsTests(unittest.TestCase):
         self.assertTrue(validate('events.html', f'SUITE FAIL {name} :: final: contentWindow changed\nSUITE TOTAL 0/1\n'))
         self.assertTrue(validate('events.html', f'SUITE SKIP {name}\nSUITE TOTAL 0/0 (1 skipped)\n'))
         self.assertEqual([], validate('suite.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+        # stress.html: dropping the worker FIFO check leaves a consistent total that must fail.
+        worker = REQUIRED_CHECKS['stress.html'][0]
+        self.assertEqual([f'missing required check: {worker}'],
+                         validate('stress.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+        self.assertTrue(validate('stress.html', f'SUITE SKIP {worker}\nSUITE TOTAL 0/0 (1 skipped)\n'))
 
 
 def page_scripts(page):
@@ -88,8 +93,8 @@ class EventsPageTests(unittest.TestCase):
 
     @unittest.skipUnless(shutil.which('node'), 'needs Node')
     def test_scripts_compile(self):
-        scripts = page_scripts('events.html')
-        self.assertEqual(1, len(scripts))
+        scripts = page_scripts('events.html') + page_scripts('stress.html')
+        self.assertEqual(2, len(scripts))
         for script in scripts:
             result = subprocess.run(['node', '-e', 'new (require("vm").Script)(require("fs").readFileSync(0, "utf8"))'],
                                     input=script, capture_output=True, text=True, encoding='utf-8', timeout=30)
@@ -210,6 +215,103 @@ class SchedulerCheckTests(unittest.TestCase):
                          self.run_check(('timer', 'frame'), OLD_SCHEDULER_CHECK))
         self.assertEqual([f'SUITE FAIL {old} :: sync,microtask,queueMicrotask,frame', 'SUITE TOTAL 0/1', 'pending frames 0'],
                          self.run_check(('frame', 'timer'), OLD_SCHEDULER_CHECK))
+
+
+WORKER_FIFO_CHECK = REQUIRED_CHECKS['stress.html'][0]
+# Mock dedicated worker for the worker FIFO check of stress.html: the Blob source (the page's real
+# worker program) runs in its own Node vm context; each worker task (message, 0 ms timer) is one
+# setImmediate turn, and Node's queueMicrotask shares V8's queue with promise jobs. `fault`:
+# "batched" runs queueMicrotask callbacks as later tasks (the drain before 0329), "duplicate"
+# posts every reply twice, "foreign" replaces the nonce, "silent" never answers the ping,
+# "construct" makes the constructor throw, "error" fires an error event instead of answering b,
+# "send" makes postMessage of b throw. Page timers run 50 times faster than requested. Not a
+# browser: a real worker is checked by CI.
+WORKER_DRIVER = r'''
+const vm = require("vm");
+const [harness, check, fault] = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const lines = [], sources = new Map(), revoked = [], workers = [];
+let terminated = 0;
+const clone = data => JSON.parse(JSON.stringify(data));
+const domError = (name, message) => Object.assign(new Error(message), { name });
+class Worker {
+  constructor(url) {
+    if (fault === "construct") throw domError("SecurityError", "blocked by CSP");
+    workers.push(this);
+    this.alive = true;
+    const task = fn => setImmediate(() => { if (this.alive) fn(); });
+    const reply = data => setImmediate(() => { if (this.onmessage) this.onmessage({ data: clone(data) }); });
+    const scope = vm.createContext({
+      setTimeout: fn => task(fn),
+      queueMicrotask: fault === "batched" ? fn => task(fn) : queueMicrotask,
+      postMessage: data => {
+        if (fault === "silent" && data.phase === "ping") return;
+        if (fault === "foreign") data = { ...data, nonce: "other" };
+        reply(data);
+        if (fault === "duplicate") reply(data);
+      },
+    });
+    vm.runInContext(sources.get(url), scope);
+    this.postMessage = data => {
+      if (fault === "send" && data.phase === "b") throw domError("DataCloneError", "could not clone");
+      if (fault === "error" && data.phase === "b") {
+        return setImmediate(() => { if (this.onerror) this.onerror({ message: "boom", preventDefault() {} }); });
+      }
+      task(() => scope.onmessage({ data: clone(data) }));
+    };
+  }
+  terminate() { this.alive = false; terminated++; }
+}
+const context = vm.createContext({
+  console: { log: (...parts) => lines.push(parts.join(" ")) },
+  setTimeout: (fn, ms = 0) => setTimeout(fn, ms / 50), clearTimeout, Worker,
+  Blob: class { constructor(parts) { this.text = parts.join(""); } },
+  URL: { createObjectURL: blob => { const url = "blob:" + sources.size; sources.set(url, blob.text); return url; },
+         revokeObjectURL: url => revoked.push(url) },
+});
+vm.runInContext(harness + "\n" + check + "\nfinish();", context);
+setTimeout(() => {
+  const live = workers.filter(worker => worker.alive || worker.onmessage || worker.onerror).length;
+  lines.push(`workers ${workers.length} live ${live} terminated ${terminated} revoked ${revoked.length}`);
+  process.stdout.write(lines.join("\n"));
+}, 600);
+'''
+
+
+@unittest.skipUnless(shutil.which('node'), 'needs Node')
+class WorkerFifoCheckTests(unittest.TestCase):
+    """Runs the worker FIFO check of stress.html against a mock worker, not a browser."""
+
+    CLEANUP = 'workers 1 live 0 terminated 1 revoked 1'
+
+    def run_check(self, fault=''):
+        payload = json.dumps([(HERE / 'harness.js').read_text(encoding='utf-8'),
+                              registered_check('stress.html', WORKER_FIFO_CHECK), fault])
+        result = subprocess.run(['node', '-e', WORKER_DRIVER], input=payload, capture_output=True,
+                                text=True, encoding='utf-8', timeout=30)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        return result.stdout.split('\n')
+
+    def test_fifo_worker_passes(self):
+        lines = self.run_check()
+        self.assertEqual([f'SUITE PASS {WORKER_FIFO_CHECK}', 'SUITE TOTAL 1/1', self.CLEANUP], lines)
+        self.assertEqual([], validate('stress.html', '\n'.join(lines)))
+
+    def test_faults_fail_and_clean_up(self):
+        for fault, detail in (
+            ('batched', 'a: p1,p2,q'),
+            ('duplicate', 'stale reply a while waiting for b'),
+            ('foreign', 'reply from another run while waiting for a'),
+            ('silent', 'timeout waiting for ping'),
+            ('construct', 'new Worker threw: SecurityError: blocked by CSP'),
+            ('error', 'worker error: boom'),
+            ('send', 'postMessage b threw: DataCloneError: could not clone'),
+        ):
+            with self.subTest(fault=fault):
+                lines = self.run_check(fault)
+                cleanup = 'workers 0 live 0 terminated 0 revoked 1' if fault == 'construct' else self.CLEANUP
+                self.assertEqual([f'SUITE FAIL {WORKER_FIFO_CHECK} :: {detail}', 'SUITE TOTAL 0/1', cleanup], lines)
+                self.assertEqual([f'failed check: {WORKER_FIFO_CHECK} :: {detail}'],
+                                 validate('stress.html', '\n'.join(lines)))
 
 
 ORIGIN_CHECK = REQUIRED_CHECKS['events.html'][0]

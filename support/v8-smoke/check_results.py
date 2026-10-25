@@ -23,6 +23,9 @@ REQUIRED_CHECKS = {
         "an iframe keeps its WindowProxy across origin changes and back",
         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
     ),
+    "stress.html": (
+        "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+    ),
 }
 TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
 

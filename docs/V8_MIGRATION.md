@@ -12,6 +12,21 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex —0330/0331/0332 complete, ultimo job0329 pendente
+
+0330 commit96b6c7b0862 e0331 commit82cfd790a60 sono complete/revisionate in locale;
+0332 check worker FIFO completo/revisionato, pronto al commit. Chrome DevTools MCP155
+Windows visibile, HTTP127.0.0.1:19032: il CHECK REALE registrato in stress.html finale passa,
+senza eseguire gli altri stress (nessuna misura costosa o performance). Include pulizia
+idempotente, errore costruttore worker, errore evento, postMessage che lancia; negativi rilevati.
+42runner test8skip prima della revisione,4test mirati dopo;3file replay0332 identici.
+V840178691100 TUTTO VERDE10/10, generale4017869087512/13 verdi: resta solo
+Linuxportable121125440097 attivo al controllo finale0332. Nessun push finché non termina.
+Nessuna nuova correzione runtime dimostrata da aprire nell’attesa; evitare ricerca senza limite.
+Prossimo passo: completare la conferma CI0329, pubblicare0330–0332 e verificare worker FIFO
+nel browser Roves normal/JITless. Retention frame0/2 ancora irrisolta. Nessuna automazione.
+
+
 ### Checkpoint Codex25ottobre —0330/0331 complete in locale
 
 0330 revisionata/committata96b6c7b0862/wiki3e344a9.0331 revisionata: solo runJobs è letto
@@ -24,6 +39,28 @@ normal/JITless passano la nuova FIFO obbligatoria:0329 confermata in Roves su Li
 GC normal continua module/no-module0/2 per elementi/documenti/global; scena singola
 frame/document/probe non rilasciati. Snapshot0329 riuscito4894613byte: retention irrisolta.
 
+
+### Claude0332 — check FIFO microtask nel worker dedicato (da revisionare, non committato)
+
+Base 82cfd790a60. Solo smoke/validator/test, nessun codice di produzione. `stress.html`: nuovo
+check obbligatorio con worker Blob classico, casi `a` (`p1,q,p2`) e `b` (`q1,p1,p2,q2`) in due
+task messaggio distinti più `ping`; nonce/fase per risposta, scadenza propria5s (dentro i10s
+dell'harness), pulizia (timer, handler, terminate, revoke) in ogni esito. Busy-termination
+invariati. `check_results.py`: `REQUIRED_CHECKS["stress.html"]`. `WorkerFifoCheckTests` esegue il
+check e il programma worker reali in Node con un mock minimo: FIFO passa; batched (`a: p1,p2,q`),
+risposte duplicate/nonce estraneo, worker muto falliscono, sempre1 worker terminato e1 URL
+revocato. Runner42 OK/8skip. Negativi su copie fresche: oracolo batched, senza revoke, senza
+nonce, validator senza loop obbligatori o di HEAD falliscono. Patch
+`0332-worker-microtask-fifo-smoke.patch` applicata pulita sullo scratch (base = HEAD, risultato
+identico al working tree). Limite: Node non è un browser; l'ordine reale nel worker Roves
+normal/JITless lo verifica la CI. Log `target/task-0332/`. Ritenzione frame: aperta.
+Revisione: Chrome155 (Windows, visibile, HTTP) ha passato il check registrato prima della
+correzione della pulizia; sorgente finale non rieseguita in Chrome. Correzione: stato di
+pulizia inizializzato prima di `new Worker`, costruttore e `postMessage` protetti con esito
+informativo (nome e messaggio dell'eccezione), `done` idempotente. Nuovi casi mock: costruttore
+che lancia (0 worker, 1 revoke), evento error e `postMessage` che lancia (1 terminate, 1 revoke).
+`WorkerFifoCheckTests` + contratti dei check obbligatori: 4 OK; negativo senza protezione del
+costruttore fallisce (`log-review-*.log`).
 
 ### Claude0331 — rimossi i trap inutilizzati e l'allocazione interrupt queue (da revisionare, non committato)
 
@@ -529,9 +566,9 @@ scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 ### Prossimi punti
 
-1. Completare il batch0329 indicato in cima prima del push;0330/0331 complete in locale.
-   FIFO browser Linux normal/JITless già verde. Continuare con verifica worker FIFO/chiusura
-   in un incarico circoscritto mentre le build residue girano. Nessun polling continuo.
+1. Completare il batch0329 (ultimoLinuxportable in cima) prima del push;0330–0332 complete
+   in locale. FIFO Window Linux normal/JITless già verde; nuovo check worker daCI dopo push.
+   Se nessuna implementazione circoscritta pronta, lasciare questo handoff senza polling.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

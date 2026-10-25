@@ -1,3 +1,28 @@
+## 2026-10-25 - Worker microtask FIFO browser check (0332)
+
+**Files:** `support/v8-smoke/{stress.html,check_results.py,test_runner.py}`, patch
+`0332-worker-microtask-fifo-smoke.patch`. No production or runtime API change.
+
+0329's FIFO bridge is shared by every script runtime, but only the Window order was checked in
+a browser. `stress.html` now runs the two Chrome references of `events.html` (`p1,q,p2`, then
+`q1,p1,p2,q2`) inside a dedicated classic Blob worker, one case per worker message task, read
+one task later, then a plain `ping` reply proving the worker still answers. Replies carry the
+run's nonce and phase; a reply from another run, an earlier phase, a worker error or the
+check's own 5 s deadline fail it, as does a throwing `Worker` constructor (SecurityError, CSP)
+or `postMessage`, reported with the exception's name and message. An idempotent `done` runs
+once per outcome: it clears the deadline, detaches the handlers, terminates the worker if one
+was created and revokes its URL. The busy-termination checks are unchanged
+(they cover shutdown). `check_results.py` requires the check on `stress.html`, so a page that
+drops it fails even with a consistent total. `WorkerFifoCheckTests` runs the page's actual
+check and worker program in Node with a small mock worker (vm context per worker, one
+`setImmediate` turn per worker task): the FIFO order passes; batched `queueMicrotask` (the
+pre-0329 drain, `a: p1,p2,q`), duplicated or foreign-nonce replies, a silent worker, an error
+event and a throwing `postMessage` fail with one worker terminated once and its URL revoked
+once; a throwing constructor fails with no worker and the URL revoked once. Node is not a
+browser: the real worker order in Roves normal/JIT-less is verified by the CI browser run.
+Chrome 155 (Windows, visible, over HTTP) passed the registered check before this cleanup
+change; the final source has not been re-run in Chrome.
+
 ## 2026-10-25 - Remove the unused job queue traps and interrupt-queue allocation (0331)
 
 **Files:** `components/script/{microtask.rs,script_runtime.rs}`, `support/v8-smoke/test_runner.py`,
