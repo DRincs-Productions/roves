@@ -12,6 +12,33 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0340 revisionata — atomi deboli, pin espliciti conservati
+
+Revisione diff/log conclusa: riuso Interned e hash/confronto mantenuti V8, niente nuova tabella
+UTF16 permanente. RootSet traccia solo pin espliciti; IdVector riceve subito ogni id e guardie
+RESOLVING tracciate.133normal/132JITless e negativi vecchi normal/JITless confermati;
+replay470/473 con3eccezioni. Rischio rooting verificato nei chiamanti; manca test GC dedicato
+nel read-back RESOLVING (documentato, nessuna GC precisa aggiunta in callback di produzione).
+Batch2fc8a3f73f6: V8/mobile verdi, generale4020463410212/13 verdi; solo Linuxportable
+121203442294 attivo. NON pushare. Prossimo: verificare contratto IsArrayObject con proxy
+array/revocati e chiamanti DOM/IndexedDB, prima di proporre correzioni. Frame retention aperta.
+
+### Claude0340 — atomi non pinned raccolti senza riferimenti (da revisionare, non committato)
+
+Base 42e4825f2b7; CI non controllata da Claude. Difetto dimostrato con test nativi nuovi sul
+codice vecchio normal/JITless: 64 atomi enumerati restano dopo il rilascio degli id (0 invece
+di64 finalizzati), atomo rilasciato da un owner `Heap<jsid>` mai raccolto, 8×2048 chiavi
+transitorie mai recuperate. Fix: atomi nella tabella debole esistente `cell::Interned`
+(hash stringa V8, confronto per contenuto, sweep ammortizzato), nessuna tabella/dipendenza
+nuova; `JS_AtomizeAndPinString` resta permanente (insieme pinned tracciato), `JS_AtomizeStringN`
+e `key_id` no, come SpiderMonkey. Audit chiamanti: Servo radica subito; corretti
+`GetPropertyKeys` (Vec non radicato, anche simboli) e guardia `RESOLVING` ora tracciata.
+roves-js normal133/2ign, JITless132/3ign, warning749 invariati; patch
+`0340-unpinned-atoms-collected-when-unreferenced.patch`, replay470/473 con3eccezioni note.
+Nessun test RESOLVING dedicato (GC durante il read-back non riproducibile con GC preciso),
+nessun browser/build Servo. Nessun miglioramento memoria complessivo dichiarato. Log
+`target/task-0340/`.
+
 ### Codex0339 — diagnosi revisionata, nessuna modifica di codice
 
 Base 5ec9debf9e2; CI non controllata. Contratto SpiderMonkey (mozjs_sys140.14 `jsfriendapi.h`,

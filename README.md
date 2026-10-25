@@ -142,7 +142,9 @@ Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
 [agent workflow audit](./docs/AGENT_WORKFLOW.md) records the development process.
 Escaped `import.meta.resolve` retains its module metadata across garbage collections.
 Inside the V8 backend, unreachable source modules, JSON modules (evaluated, unlinked, or linked in an abandoned graph),
-native functions and immutable prototypes can be collected with their owners. Realm contexts
+native functions and immutable prototypes can be collected with their owners. Property-name
+atoms created for enumeration or descriptors are freed once no id references them; explicitly
+pinned atoms still live for the runtime. Realm contexts
 now use a weak registry and traced ownership too; current realms, saved nested entries,
 rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
 released once at collection or shutdown. Promise-job drain scheduling is isolated per runtime,

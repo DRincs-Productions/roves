@@ -15,15 +15,17 @@
 //!
 //! Objects and symbols have **one cell each** while the cell lives, so pointer comparison is
 //! identity as in SpiderMonkey: class objects and native functions find theirs through their
-//! own storage, other objects through the runtime's weak [`Interned`] table.
+//! own storage, other objects through the runtime's weak [`Interned`] table. String atoms
+//! (string ids) have one cell per contents the same way.
 
 use std::ffi::c_void;
 
 use v8::TracedReference;
 use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor, WeakPersistent};
 
-/// The cells of objects and symbols by identity hash, held weakly (a cell lives while it is
-/// traced; its V8 value does not keep it alive). Owned by the runtime's raw context.
+/// The cells of objects, symbols and string atoms by identity (string) hash, held weakly (a
+/// cell lives while it is traced; its V8 value does not keep it alive). Owned by the runtime's
+/// raw context.
 #[derive(Default)]
 pub(crate) struct Interned {
     /// Keyed by V8's identity hash (already random, so a cheap hasher suffices); almost every
@@ -51,6 +53,12 @@ impl Interned {
             }
         }
         None
+    }
+
+    /// The live and not yet swept entries (tests check the table stays bounded).
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.cells.borrow().values().map(|entries| entries.len()).sum()
     }
 
     fn insert(&self, hash: i32, cell: *mut c_void) {
@@ -225,6 +233,17 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
 /// The cell of an object or symbol from the runtime's identity table (a new one if none lives).
 fn interned_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> *mut c_void {
     let Some(hash) = identity_hash(value) else { return new_cell_with_class(scope, value, None) };
+    interned_cell_with_hash(scope, hash, value)
+}
+
+/// The atom cell of a string: the live cell with the same contents, else a new one. Held
+/// weakly like object cells, so an atom lives while an id, root or traced owner references it
+/// (`jsapi_impl::atomize`). Strings are compared by contents, hashed with V8's string hash.
+pub(crate) fn atom_cell(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut c_void {
+    interned_cell_with_hash(scope, string.get_identity_hash().get(), string.into())
+}
+
+fn interned_cell_with_hash(scope: &mut v8::PinScope, hash: i32, value: v8::Local<v8::Value>) -> *mut c_void {
     let Some(cx) = crate::rust::Runtime::get() else { return new_cell_with_class(scope, value, None) };
     // SAFETY: the runtime's raw context outlives its scopes.
     let interned = unsafe { &cx.as_ref().interned };

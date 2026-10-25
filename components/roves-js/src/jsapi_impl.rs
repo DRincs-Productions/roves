@@ -84,35 +84,35 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
                 return IntId(index as i32);
             }
         }
-        return StringId(atomize(scope, string));
+        return StringId(atomize(scope, string, false));
     }
     VoidId()
 }
 
-/// SpiderMonkey's atoms: one string per content, so string ids compare by pointer.
+/// The pinned atoms (`JS_AtomizeAndPinString`), kept for the runtime's lifetime.
 #[derive(Default)]
 pub(crate) struct Atoms {
-    cells: std::cell::RefCell<std::collections::HashMap<Vec<u16>, *mut c_void>>,
+    pinned: std::cell::RefCell<rustc_hash::FxHashSet<*mut c_void>>,
 }
 
-/// The atom for `string`'s contents (kept for the runtime's lifetime, like pinned atoms).
-pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut JSString {
+/// The atom for `string`'s contents: SpiderMonkey's atoms, one string per contents while it
+/// lives, so string ids compare by pointer. Like SpiderMonkey's, an unpinned atom is collected
+/// once no id, root or traced owner references it; the next atomization makes a new one.
+pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>, pin: bool) -> *mut JSString {
     let mut units = vec![0u16; string.length()];
     string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
-    let atoms = &JSContext::current().atoms;
-    if let Some(cell) = atoms.cells.borrow().get(&units) {
-        return *cell as *mut JSString;
-    }
     let internalized = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Internalized).unwrap_or(string);
-    let cell = crate::cell::new_cell_with_class(scope, internalized.into(), None);
-    atoms.cells.borrow_mut().insert(units, cell);
+    let cell = crate::cell::atom_cell(scope, internalized);
+    if pin {
+        JSContext::current().atoms.pinned.borrow_mut().insert(cell);
+    }
     cell as *mut JSString
 }
 
-/// Keeps the atoms alive.
+/// Keeps the pinned atoms alive.
 pub(crate) fn trace_atoms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
-    let Ok(cells) = cx.atoms.cells.try_borrow() else { return };
-    for cell in cells.values() {
+    let Ok(cells) = cx.atoms.pinned.try_borrow() else { return };
+    for cell in cells.iter() {
         crate::cell::trace_cell(*cell, visitor);
     }
 }
@@ -731,7 +731,7 @@ pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *m
     raw(cx)
         .catching(|scope| {
             let string = v8::String::new(scope, &text)?;
-            Some(atomize(scope, string))
+            Some(atomize(scope, string, true))
         })
         .unwrap_or(std::ptr::null_mut())
 }
@@ -744,7 +744,7 @@ pub unsafe fn JS_AtomizeStringN(cx: *mut JSContext, s: *const c_char, length: us
     raw(cx)
         .catching(|scope| {
             let string = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
-            Some(atomize(scope, string))
+            Some(atomize(scope, string, false))
         })
         .unwrap_or(std::ptr::null_mut())
 }
@@ -1230,7 +1230,7 @@ pub unsafe fn GCTraceKindToAscii(kind: crate::jsapi::TraceKind) -> *const c_char
 /// The ids of `obj`'s properties (`JSITER_OWNONLY`, `JSITER_HIDDEN`, `JSITER_SYMBOLS`).
 pub unsafe fn GetPropertyKeys(cx: *mut JSContext, obj: HandleObject, flags: u32, props: crate::jsapi::MutableHandleIdVector) -> bool {
     use crate::jsapi::{JSITER_HIDDEN, JSITER_OWNONLY, JSITER_SYMBOLS};
-    let ids = raw(cx).catching(|scope| {
+    raw(cx).catching(|scope| {
         let target = object(scope, obj.get())?;
         let mut filter = if flags & JSITER_HIDDEN != 0 { v8::PropertyFilter::ALL_PROPERTIES } else { v8::PropertyFilter::ONLY_ENUMERABLE };
         if flags & JSITER_SYMBOLS == 0 {
@@ -1246,24 +1246,22 @@ pub unsafe fn GetPropertyKeys(cx: *mut JSContext, obj: HandleObject, flags: u32,
                 key_conversion: v8::KeyConversionMode::KeepNumbers,
             },
         )?;
-        let mut ids = Vec::with_capacity(keys.length() as usize);
         for index in 0..keys.length() {
             let key = keys.get_index(scope, index)?;
-            ids.push(if key.is_number() {
+            let id = if key.is_number() {
                 let number = key.uint32_value(scope)?;
                 if number <= i32::MAX as u32 { IntId(number as i32) } else { key_id(scope, key) }
             } else {
                 key_id(scope, key)
-            });
+            };
+            // Appended at once: the vector roots the id, whose atom or symbol cell the next
+            // allocation's GC could otherwise collect.
+            // SAFETY: forwarded to the vector behind the handle.
+            unsafe { crate::rust::append_to_id_vector(props, id) };
         }
-        Some(ids)
-    });
-    let Some(ids) = ids else { return false };
-    for id in ids {
-        // SAFETY: forwarded to the vector behind the handle.
-        unsafe { crate::rust::append_to_id_vector(props, id) };
-    }
-    true
+        Some(())
+    })
+    .is_some()
 }
 
 pub unsafe fn AppendToIdVector(v: crate::jsapi::MutableHandleIdVector, id: HandleId) -> bool {

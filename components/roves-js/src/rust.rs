@@ -204,6 +204,7 @@ unsafe impl GarbageCollected for RootSet {
             crate::realm_impl::trace_realm_roots(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.
             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
+            crate::object::trace_resolving(visitor);
             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
             // SAFETY: as above.

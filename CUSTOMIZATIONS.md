@@ -1,3 +1,49 @@
+## 2026-10-25 - Unpinned string atoms are collected when no id references them (0340)
+
+**Files:** `components/roves-js/src/cell.rs`, `components/roves-js/src/jsapi_impl.rs`,
+`components/roves-js/src/jsapi.rs`, `components/roves-js/src/object.rs`,
+`components/roves-js/src/rust.rs`, `components/roves-js/src/tests.rs`, patch
+`0340-unpinned-atoms-collected-when-unreferenced.patch`.
+
+String ids (SpiderMonkey atoms, compared by pointer) came from a per-runtime
+`HashMap<Vec<u16>, cell>` whose cells were all traced from the root set: every distinct
+property name ever turned into an id stayed alive until shutdown, as if pinned. `key_id`
+atomizes in production for `GetPropertyKeys`, proxy and resolve traps, `JS_IndexToId` and
+`RUST_INTERNED_STRING_TO_JSID`, so arbitrary transient names (e.g. enumerating objects with
+generated keys) accumulated permanently. New native tests show it on the old code, in normal
+and JIT-less builds: 64 enumerated transient atoms stay after their ids are dropped (0
+finalized instead of 64), an atom released by a traced `Heap<jsid>` owner is never collected,
+and 8 x 2048 transient keys are never reclaimed.
+
+SpiderMonkey only keeps atoms alive while they are marked (roots, ids, traced owners), except
+pinned ones (`JS_AtomizeAndPinString`). Atoms now use the runtime's existing weak identity
+table (`cell::Interned`, `WeakPersistent` entries with amortized sweeping), keyed by V8's
+string hash (`Name::GetIdentityHash`, the content hash for strings) and compared by contents
+(`StrictEquals`), so a live atom is found again with the same pointer and a dead one is
+recreated with the same contents; no new table or dependency. Contents are still copied as
+UTF-16 and internalized, so lone surrogates are kept exactly. `JS_AtomizeAndPinString` adds
+the atom to a pinned set traced for the runtime's lifetime (an ordinary atom that is pinned
+later keeps its pointer); `JS_AtomizeStringN` and `key_id` are unpinned, as in SpiderMonkey.
+
+Callers were audited for unrooted ids across a possible GC. Servo's
+(`script_bindings/{proxyhandler,interface,utils}.rs`) root every atom/id at once and read
+characters only through rooted handles. In roves-js, proxy traps, `JS_IndexToId` and the
+global/resolve interceptors root before any allocation. Two spots did not and are fixed:
+`GetPropertyKeys` collected ids in a plain `Vec` while atomizing further keys (also a latent
+hazard for symbol cells, which were already weak); ids are now appended to the rooted
+vector at once (a failure leaves a partial vector, as SpiderMonkey's can). The resolve guard
+list (`object.rs` `RESOLVING`) keeps an id while a resolved property is read back after its
+root is gone; it is now traced, so a getter that collects garbage cannot make the guard miss
+a recreated atom or match a reused address.
+
+Tests (`tests::atoms`): exact finalization counts for enumerated atoms and a traced owner,
+identity and contents across precise and production (`LowMemoryNotification`) GCs, the same
+id from every atomization path, re-atomization after collection used as a property key,
+lone surrogates/pairs/Latin-1, pinned and later-pinned atoms surviving collection, and the
+table staying bounded (at most 4096 + 2048 entries after 16384 transient insertions).
+Collection is asserted with precise test GCs only. This establishes no page-level or overall
+memory improvement.
+
 ## 2026-10-25 - Dynamic import completion ignores a patched `Promise.prototype.then` (0338)
 
 **Files:** `components/roves-js/src/modules_impl.rs`, `components/roves-js/src/tests.rs`, patch

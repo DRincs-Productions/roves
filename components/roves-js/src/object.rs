@@ -537,6 +537,18 @@ thread_local! {
     static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
 }
 
+/// Keeps the ids of the guards alive: after a hook resolved, its id is no longer rooted while
+/// the property is read back (a getter may GC), and a recreated atom would not match.
+pub(crate) fn trace_resolving(visitor: &mut v8::cppgc::Visitor) {
+    use crate::gc::RootKind;
+    RESOLVING.with(|resolving| {
+        let Ok(resolving) = resolving.try_borrow() else { return };
+        for (_, id) in resolving.iter() {
+            id.trace_root(visitor);
+        }
+    });
+}
+
 /// The class object behind an interceptor's holder. A global's holder may be its proxy (which
 /// carries the box) or, for unqualified name lookups, the inner global object: that one maps
 /// to its realm's global.

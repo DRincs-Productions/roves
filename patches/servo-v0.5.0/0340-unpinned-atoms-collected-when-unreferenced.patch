@@ -1,0 +1,434 @@
+diff --git a/components/roves-js/src/cell.rs b/components/roves-js/src/cell.rs
+index 66a661be48f..1734988fcc6 100644
+--- a/components/roves-js/src/cell.rs
++++ b/components/roves-js/src/cell.rs
+@@ -15,15 +15,17 @@
+ //!
+ //! Objects and symbols have **one cell each** while the cell lives, so pointer comparison is
+ //! identity as in SpiderMonkey: class objects and native functions find theirs through their
+-//! own storage, other objects through the runtime's weak [`Interned`] table.
++//! own storage, other objects through the runtime's weak [`Interned`] table. String atoms
++//! (string ids) have one cell per contents the same way.
+ 
+ use std::ffi::c_void;
+ 
+ use v8::TracedReference;
+ use v8::cppgc::{GarbageCollected, Member, UnsafePtr, Visitor, WeakPersistent};
+ 
+-/// The cells of objects and symbols by identity hash, held weakly (a cell lives while it is
+-/// traced; its V8 value does not keep it alive). Owned by the runtime's raw context.
++/// The cells of objects, symbols and string atoms by identity (string) hash, held weakly (a
++/// cell lives while it is traced; its V8 value does not keep it alive). Owned by the runtime's
++/// raw context.
+ #[derive(Default)]
+ pub(crate) struct Interned {
+     /// Keyed by V8's identity hash (already random, so a cheap hasher suffices); almost every
+@@ -53,6 +55,12 @@ impl Interned {
+         None
+     }
+ 
++    /// The live and not yet swept entries (tests check the table stays bounded).
++    #[cfg(test)]
++    pub(crate) fn len(&self) -> usize {
++        self.cells.borrow().values().map(|entries| entries.len()).sum()
++    }
++
+     fn insert(&self, hash: i32, cell: *mut c_void) {
+         let Some(pointer) = from_raw(cell) else { return };
+         let mut cells = self.cells.borrow_mut();
+@@ -225,6 +233,17 @@ pub(crate) fn new_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) ->
+ /// The cell of an object or symbol from the runtime's identity table (a new one if none lives).
+ fn interned_cell(scope: &mut v8::PinScope, value: v8::Local<v8::Value>) -> *mut c_void {
+     let Some(hash) = identity_hash(value) else { return new_cell_with_class(scope, value, None) };
++    interned_cell_with_hash(scope, hash, value)
++}
++
++/// The atom cell of a string: the live cell with the same contents, else a new one. Held
++/// weakly like object cells, so an atom lives while an id, root or traced owner references it
++/// (`jsapi_impl::atomize`). Strings are compared by contents, hashed with V8's string hash.
++pub(crate) fn atom_cell(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut c_void {
++    interned_cell_with_hash(scope, string.get_identity_hash().get(), string.into())
++}
++
++fn interned_cell_with_hash(scope: &mut v8::PinScope, hash: i32, value: v8::Local<v8::Value>) -> *mut c_void {
+     let Some(cx) = crate::rust::Runtime::get() else { return new_cell_with_class(scope, value, None) };
+     // SAFETY: the runtime's raw context outlives its scopes.
+     let interned = unsafe { &cx.as_ref().interned };
+diff --git a/components/roves-js/src/jsapi.rs b/components/roves-js/src/jsapi.rs
+index 67781b12405..84deb817ba2 100644
+--- a/components/roves-js/src/jsapi.rs
++++ b/components/roves-js/src/jsapi.rs
+@@ -149,7 +149,7 @@ pub struct JSContext {
+     pub(crate) private_keys: crate::jsapi_impl::PrivateKeys,
+     /// The cells of plain objects and symbols (see `cell`).
+     pub(crate) interned: crate::cell::Interned,
+-    /// String atoms (see `jsapi_impl::atomize`).
++    /// Pinned string atoms (see `jsapi_impl::atomize`).
+     pub(crate) atoms: crate::jsapi_impl::Atoms,
+     /// The embedder's runtime hooks and settings (see `runtime_impl`).
+     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 15720f08ea5..5f38442c92f 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -84,35 +84,35 @@ pub(crate) fn key_id(scope: &mut v8::PinScope, key: v8::Local<v8::Value>) -> jsi
+                 return IntId(index as i32);
+             }
+         }
+-        return StringId(atomize(scope, string));
++        return StringId(atomize(scope, string, false));
+     }
+     VoidId()
+ }
+ 
+-/// SpiderMonkey's atoms: one string per content, so string ids compare by pointer.
++/// The pinned atoms (`JS_AtomizeAndPinString`), kept for the runtime's lifetime.
+ #[derive(Default)]
+ pub(crate) struct Atoms {
+-    cells: std::cell::RefCell<std::collections::HashMap<Vec<u16>, *mut c_void>>,
++    pinned: std::cell::RefCell<rustc_hash::FxHashSet<*mut c_void>>,
+ }
+ 
+-/// The atom for `string`'s contents (kept for the runtime's lifetime, like pinned atoms).
+-pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>) -> *mut JSString {
++/// The atom for `string`'s contents: SpiderMonkey's atoms, one string per contents while it
++/// lives, so string ids compare by pointer. Like SpiderMonkey's, an unpinned atom is collected
++/// once no id, root or traced owner references it; the next atomization makes a new one.
++pub(crate) fn atomize(scope: &mut v8::PinScope, string: v8::Local<v8::String>, pin: bool) -> *mut JSString {
+     let mut units = vec![0u16; string.length()];
+     string.write_v2(scope, 0, &mut units, v8::WriteFlags::empty());
+-    let atoms = &JSContext::current().atoms;
+-    if let Some(cell) = atoms.cells.borrow().get(&units) {
+-        return *cell as *mut JSString;
+-    }
+     let internalized = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Internalized).unwrap_or(string);
+-    let cell = crate::cell::new_cell_with_class(scope, internalized.into(), None);
+-    atoms.cells.borrow_mut().insert(units, cell);
++    let cell = crate::cell::atom_cell(scope, internalized);
++    if pin {
++        JSContext::current().atoms.pinned.borrow_mut().insert(cell);
++    }
+     cell as *mut JSString
+ }
+ 
+-/// Keeps the atoms alive.
++/// Keeps the pinned atoms alive.
+ pub(crate) fn trace_atoms(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+-    let Ok(cells) = cx.atoms.cells.try_borrow() else { return };
+-    for cell in cells.values() {
++    let Ok(cells) = cx.atoms.pinned.try_borrow() else { return };
++    for cell in cells.iter() {
+         crate::cell::trace_cell(*cell, visitor);
+     }
+ }
+@@ -731,7 +731,7 @@ pub unsafe fn JS_AtomizeAndPinString(cx: *mut JSContext, s: *const c_char) -> *m
+     raw(cx)
+         .catching(|scope| {
+             let string = v8::String::new(scope, &text)?;
+-            Some(atomize(scope, string))
++            Some(atomize(scope, string, true))
+         })
+         .unwrap_or(std::ptr::null_mut())
+ }
+@@ -744,7 +744,7 @@ pub unsafe fn JS_AtomizeStringN(cx: *mut JSContext, s: *const c_char, length: us
+     raw(cx)
+         .catching(|scope| {
+             let string = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
+-            Some(atomize(scope, string))
++            Some(atomize(scope, string, false))
+         })
+         .unwrap_or(std::ptr::null_mut())
+ }
+@@ -1230,7 +1230,7 @@ pub unsafe fn GCTraceKindToAscii(kind: crate::jsapi::TraceKind) -> *const c_char
+ /// The ids of `obj`'s properties (`JSITER_OWNONLY`, `JSITER_HIDDEN`, `JSITER_SYMBOLS`).
+ pub unsafe fn GetPropertyKeys(cx: *mut JSContext, obj: HandleObject, flags: u32, props: crate::jsapi::MutableHandleIdVector) -> bool {
+     use crate::jsapi::{JSITER_HIDDEN, JSITER_OWNONLY, JSITER_SYMBOLS};
+-    let ids = raw(cx).catching(|scope| {
++    raw(cx).catching(|scope| {
+         let target = object(scope, obj.get())?;
+         let mut filter = if flags & JSITER_HIDDEN != 0 { v8::PropertyFilter::ALL_PROPERTIES } else { v8::PropertyFilter::ONLY_ENUMERABLE };
+         if flags & JSITER_SYMBOLS == 0 {
+@@ -1246,24 +1246,22 @@ pub unsafe fn GetPropertyKeys(cx: *mut JSContext, obj: HandleObject, flags: u32,
+                 key_conversion: v8::KeyConversionMode::KeepNumbers,
+             },
+         )?;
+-        let mut ids = Vec::with_capacity(keys.length() as usize);
+         for index in 0..keys.length() {
+             let key = keys.get_index(scope, index)?;
+-            ids.push(if key.is_number() {
++            let id = if key.is_number() {
+                 let number = key.uint32_value(scope)?;
+                 if number <= i32::MAX as u32 { IntId(number as i32) } else { key_id(scope, key) }
+             } else {
+                 key_id(scope, key)
+-            });
++            };
++            // Appended at once: the vector roots the id, whose atom or symbol cell the next
++            // allocation's GC could otherwise collect.
++            // SAFETY: forwarded to the vector behind the handle.
++            unsafe { crate::rust::append_to_id_vector(props, id) };
+         }
+-        Some(ids)
+-    });
+-    let Some(ids) = ids else { return false };
+-    for id in ids {
+-        // SAFETY: forwarded to the vector behind the handle.
+-        unsafe { crate::rust::append_to_id_vector(props, id) };
+-    }
+-    true
++        Some(())
++    })
++    .is_some()
+ }
+ 
+ pub unsafe fn AppendToIdVector(v: crate::jsapi::MutableHandleIdVector, id: HandleId) -> bool {
+diff --git a/components/roves-js/src/object.rs b/components/roves-js/src/object.rs
+index 59a2f279021..bd3442700c7 100644
+--- a/components/roves-js/src/object.rs
++++ b/components/roves-js/src/object.rs
+@@ -537,6 +537,18 @@ thread_local! {
+     static RESOLVING: RefCell<Vec<(*mut JSObject, crate::jsid::jsid)>> = const { RefCell::new(Vec::new()) };
+ }
+ 
++/// Keeps the ids of the guards alive: after a hook resolved, its id is no longer rooted while
++/// the property is read back (a getter may GC), and a recreated atom would not match.
++pub(crate) fn trace_resolving(visitor: &mut v8::cppgc::Visitor) {
++    use crate::gc::RootKind;
++    RESOLVING.with(|resolving| {
++        let Ok(resolving) = resolving.try_borrow() else { return };
++        for (_, id) in resolving.iter() {
++            id.trace_root(visitor);
++        }
++    });
++}
++
+ /// The class object behind an interceptor's holder. A global's holder may be its proxy (which
+ /// carries the box) or, for unqualified name lookups, the inner global object: that one maps
+ /// to its realm's global.
+diff --git a/components/roves-js/src/rust.rs b/components/roves-js/src/rust.rs
+index 9b100e2e081..084b46ffe0a 100644
+--- a/components/roves-js/src/rust.rs
++++ b/components/roves-js/src/rust.rs
+@@ -204,6 +204,7 @@ unsafe impl GarbageCollected for RootSet {
+             crate::realm_impl::trace_realm_roots(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+             crate::jsapi_impl::trace_atoms(unsafe { cx.as_ref() }, visitor);
++            crate::object::trace_resolving(visitor);
+             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
+             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
+             // SAFETY: as above.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 904ca6b3eab..de91623b004 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1047,6 +1047,210 @@ fn plain_objects_and_symbols_have_one_cell_while_it_lives() {
+     assert_eq!(again.to_object(), eval(&runtime, "kept").to_object());
+ }
+ 
++mod atoms {
++    use super::{eval, finalized};
++    use crate::gc::Heap;
++    use crate::jsapi::*;
++    use crate::jsval::*;
++    use crate::rust::{IdVector, Runtime};
++    use v8::cppgc::{GarbageCollected, Persistent, Visitor};
++
++    /// A string id's code units, read back through the cell's characters.
++    fn units(id: jsid) -> Vec<u16> {
++        assert!(id.is_string());
++        let mut length = 0;
++        let latin1 = crate::api::latin1_chars(id.to_string(), &mut length);
++        if !latin1.is_null() {
++            return unsafe { std::slice::from_raw_parts(latin1, length) }.iter().map(|byte| *byte as u16).collect();
++        }
++        let two_byte = crate::api::two_byte_chars(id.to_string(), &mut length);
++        unsafe { std::slice::from_raw_parts(two_byte, length) }.to_vec()
++    }
++
++    /// The id of the string `source` evaluates to (atomized like a property key).
++    fn string_id(runtime: &Runtime, source: &str, id: crate::gc::MutableHandleId) {
++        let string = eval(runtime, source).to_string();
++        unsafe { RUST_INTERNED_STRING_TO_JSID(runtime.raw_cx(), string, id.into_handle()) };
++    }
++
++    /// The atom of Latin-1 `text` (`JS_AtomizeStringN`, not pinned).
++    fn atomize(runtime: &Runtime, text: &[u8]) -> *mut JSString {
++        unsafe { JS_AtomizeStringN(runtime.raw_cx(), text.as_ptr() as *const std::ffi::c_char, text.len()) }
++    }
++
++    fn production_gc(runtime: &Runtime) {
++        unsafe { &mut *(*runtime.raw_cx()).isolate }.low_memory_notification();
++    }
++
++    fn atom_count(runtime: &Runtime) -> usize {
++        unsafe { &(*runtime.raw_cx()).interned }.len()
++    }
++
++    #[test]
++    fn enumerated_transient_atoms_are_collected_once_their_ids_are_gone() {
++        const COUNT: usize = 64;
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let object = eval(&runtime, "(() => { const o = {}; for (let i = 0; i < 64; i++) o['transient' + i] = i; return o; })()").to_object());
++        runtime.gc_for_testing();
++        let before = finalized();
++        {
++            let mut keys = unsafe { IdVector::new(cx) };
++            assert!(unsafe { GetPropertyKeys(cx, object.handle().into_handle(), JSITER_OWNONLY, keys.handle_mut()) });
++            assert_eq!(keys.len(), COUNT);
++            let first = keys[0];
++            runtime.gc_for_testing();
++            assert_eq!(finalized(), before, "the id vector keeps its atoms");
++            assert_eq!(units(first), "transient0".encode_utf16().collect::<Vec<_>>());
++            // Re-enumeration while they live finds the same atoms.
++            let mut again = unsafe { IdVector::new(cx) };
++            assert!(unsafe { GetPropertyKeys(cx, object.handle().into_handle(), JSITER_OWNONLY, again.handle_mut()) });
++            assert!(keys.iter().zip(again.iter()).all(|(a, b)| a == b), "one atom per contents while it lives");
++        }
++        runtime.gc_for_testing();
++        assert_eq!(finalized(), before + COUNT, "transient atoms are collected once no id references them");
++        // Re-atomization after collection gives working ids.
++        let mut keys = unsafe { IdVector::new(cx) };
++        assert!(unsafe { GetPropertyKeys(cx, object.handle().into_handle(), JSITER_OWNONLY, keys.handle_mut()) });
++        rooted!(in(cx) let id = keys[5]);
++        rooted!(in(cx) let mut value = UndefinedValue());
++        assert!(unsafe { JS_GetPropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), value.handle_mut().into_handle()) });
++        assert_eq!(value.get().to_int32(), 5);
++    }
++
++    #[test]
++    fn live_atoms_keep_identity_and_contents_across_gc() {
++        struct Owner {
++            id: Heap<jsid>,
++        }
++
++        unsafe impl GarbageCollected for Owner {
++            fn trace(&self, visitor: &mut Visitor) {
++                self.id.trace_visitor(visitor);
++            }
++
++            fn get_name(&self) -> &'static std::ffi::CStr {
++                c"AtomOwner"
++            }
++        }
++
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let mut kept = crate::jsid::VoidId());
++        string_id(&runtime, "'kept' + 'Atom'", kept.handle_mut());
++        // A traced native owner, like a DOM object holding a `Heap<jsid>`.
++        let owner = unsafe { &*cx }.with_scope(|scope| {
++            let heap = scope.get_cpp_heap().unwrap();
++            let owner = unsafe { v8::cppgc::make_garbage_collected(heap, Owner { id: Heap::default() }) };
++            Persistent::new(&owner)
++        });
++        rooted!(in(cx) let mut owned = crate::jsid::VoidId());
++        string_id(&runtime, "'owned\\u00e9'", owned.handle_mut());
++        owner.get().unwrap().id.set(owned.get());
++        let owned_pointer = owned.get();
++        owned.set(crate::jsid::VoidId());
++        // Collects the evaluated temporaries first, so the counts below are exact.
++        runtime.gc_for_testing();
++        let before = finalized();
++        runtime.gc_for_testing();
++        production_gc(&runtime);
++        runtime.gc_for_testing();
++        assert_eq!(finalized(), before, "rooted and owned atoms stay alive");
++        assert_eq!(units(kept.get()), "keptAtom".encode_utf16().collect::<Vec<_>>());
++        assert_eq!(units(owner.get().unwrap().id.get()), "owned\u{e9}".encode_utf16().collect::<Vec<_>>());
++        // Every atomization path finds the live atom.
++        assert_eq!(atomize(&runtime, b"keptAtom"), kept.get().to_string(), "JS_AtomizeStringN finds the rooted atom");
++        rooted!(in(cx) let mut again = crate::jsid::VoidId());
++        string_id(&runtime, "['kept', 'Atom'].join('')", again.handle_mut());
++        assert_eq!(again.get(), kept.get(), "a key with the same contents is the same id");
++        string_id(&runtime, "'owned\\u00e9'", again.handle_mut());
++        assert_eq!(again.get(), owned_pointer, "the owner's atom is found again");
++        again.set(crate::jsid::VoidId());
++        runtime.gc_for_testing();
++        let before = finalized();
++        // Dropping the owner's id releases its atom, exactly once.
++        owner.get().unwrap().id.set(crate::jsid::VoidId());
++        runtime.gc_for_testing();
++        assert_eq!(finalized(), before + 1, "the released atom is collected");
++        string_id(&runtime, "'owned\\u00e9'", again.handle_mut());
++        assert_eq!(units(again.get()), "owned\u{e9}".encode_utf16().collect::<Vec<_>>());
++        drop(owner);
++    }
++
++    #[test]
++    fn atoms_preserve_utf16_contents_including_lone_surrogates() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let mut high = crate::jsid::VoidId());
++        rooted!(in(cx) let mut low = crate::jsid::VoidId());
++        rooted!(in(cx) let mut pair = crate::jsid::VoidId());
++        string_id(&runtime, "'\\uD800x'", high.handle_mut());
++        string_id(&runtime, "'\\uDC00x'", low.handle_mut());
++        string_id(&runtime, "'\\uD83D\\uDE00'", pair.handle_mut());
++        runtime.gc_for_testing();
++        assert_eq!(units(high.get()), [0xD800, 0x78]);
++        assert_eq!(units(low.get()), [0xDC00, 0x78]);
++        assert_eq!(units(pair.get()), [0xD83D, 0xDE00]);
++        assert_ne!(high.get(), low.get(), "lone surrogates are not replaced with U+FFFD");
++        rooted!(in(cx) let mut again = crate::jsid::VoidId());
++        string_id(&runtime, "String.fromCharCode(0xD800) + 'x'", again.handle_mut());
++        assert_eq!(again.get(), high.get());
++        // Latin-1 contents atomize to the same atom whatever the source.
++        string_id(&runtime, "'caf\\u00e9'", again.handle_mut());
++        assert_eq!(atomize(&runtime, b"caf\xe9"), again.get().to_string());
++        // Array-index strings stay int ids.
++        string_id(&runtime, "'42'", again.handle_mut());
++        assert!(again.get().is_int() && again.get().to_int() == 42);
++    }
++
++    #[test]
++    fn pinned_atoms_live_for_the_runtime() {
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let pinned = unsafe { JS_AtomizeAndPinString(cx, c"pinnedAtom".as_ptr()) };
++        // An ordinary atom pinned later is pinned too.
++        let later = {
++            rooted!(in(cx) let ordinary = atomize(&runtime, b"laterPinned"));
++            let later = unsafe { JS_AtomizeAndPinString(cx, c"laterPinned".as_ptr()) };
++            assert_eq!(later, ordinary.get(), "pinning keeps the live atom");
++            later
++        };
++        let before = finalized();
++        runtime.gc_for_testing();
++        production_gc(&runtime);
++        runtime.gc_for_testing();
++        assert_eq!(finalized(), before, "pinned atoms are not collected");
++        assert_eq!(unsafe { JS_AtomizeAndPinString(cx, c"pinnedAtom".as_ptr()) }, pinned);
++        assert_eq!(atomize(&runtime, b"pinnedAtom"), pinned);
++        assert_eq!(atomize(&runtime, b"laterPinned"), later);
++        rooted!(in(cx) let mut id = crate::jsid::VoidId());
++        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, pinned, id.handle_mut().into_handle()) };
++        assert_eq!(units(id.get()), "pinnedAtom".encode_utf16().collect::<Vec<_>>());
++    }
++
++    #[test]
++    fn the_atom_table_stays_bounded_under_transient_keys() {
++        const ROUNDS: usize = 8;
++        const KEYS: usize = 2048;
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        runtime.gc_for_testing();
++        let before = finalized();
++        for round in 0..ROUNDS {
++            {
++                rooted!(in(cx) let object = eval(&runtime, &format!("(() => {{ const o = {{}}; for (let i = 0; i < {KEYS}; i++) o['r{round}_' + i] = i; return o; }})()")).to_object());
++                let mut keys = unsafe { IdVector::new(cx) };
++                assert!(unsafe { GetPropertyKeys(cx, object.handle().into_handle(), JSITER_OWNONLY, keys.handle_mut()) });
++                assert_eq!(keys.len(), KEYS);
++            }
++            runtime.gc_for_testing();
++        }
++        assert!(finalized() >= before + ROUNDS * KEYS, "every round's atoms are collected");
++        // Dead entries are swept after a number of insertions proportional to the survivors.
++        assert!(atom_count(&runtime) <= 4096 + KEYS, "the table holds {} entries", atom_count(&runtime));
++    }
++}
++
+ mod realms {
+     use std::ptr;
+ 

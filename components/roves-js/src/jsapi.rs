@@ -149,7 +149,7 @@ pub struct JSContext {
     pub(crate) private_keys: crate::jsapi_impl::PrivateKeys,
     /// The cells of plain objects and symbols (see `cell`).
     pub(crate) interned: crate::cell::Interned,
-    /// String atoms (see `jsapi_impl::atomize`).
+    /// Pinned string atoms (see `jsapi_impl::atomize`).
     pub(crate) atoms: crate::jsapi_impl::Atoms,
     /// The embedder's runtime hooks and settings (see `runtime_impl`).
     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
