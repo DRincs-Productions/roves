@@ -12,6 +12,44 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0345 revisionata — radici reali identificate; confronto discardChrome
+
+Artefatto corrente mostra Persistent→RootSet→celle26/28/30/96→oggetti dei realm figli:
+FontFaceSet promise, listenerclick injected, Performance (proprietario da identificare).
+Questo corregge la precedente lettura0342: il RootSet raggiunge il cluster. Nessuna radice
+stack verso cluster nello snapshot corrente. Roots Promise/Callback già presenti inServo0.5
+pristino (verifica diretta archivio), non introdotte dalla migrazione. Non indebolirle globalmente.
+Chrome DevTools MCP155 Windows visibile HTTP19046: dopoiframe.remove+task, listenerWindow/
+Document/element non chiamati (conteggi invariati1/1/1), FontFaceSet identica, ready prima stabile
+poi undefined, vecchiaPromise conserva risultato. È riferimento Chrome, non prescrizione di
+replicare ogni dettaglio. Tab/server chiusi; logtarget/task-0346/CODEX_CHROME_REFERENCE.txt.
+Batchaa028313991 ora TUTTO VERDE V8/mobile/generale. Prima del fix identificare proprietario
+rootPerformance e verificare cleanupdiscard esistente senza rompere riferimenti nativi vivi.
+
+### Claude0345 — radici dirette dello snapshot browser corrente: trovate (da revisionare, nessun codice)
+
+Base8d20e438a0c; CI non controllata; nessuna modifica a sorgenti/patch/wiki. Artefatto12604704563
+(run40208620536, aa028313991), hash verificato; MemLab2.0.5 (WSL Node24), helper0323/0344 più
+query a un livello in `target/task-0345/` (solo parser/accessor MemLab, nessuna BFS nostra).
+Il cluster del frame SOPRAVVIVE: probe 38851 sul global 54857 del realm srcdoc354/contesto14127;
+sopravvive anche il realm about:blank iniziale796/16839 (stesso proxy54855, la sua Window794
+tiene la cella WindowProxy100 → Window corrente). Nessun arco `C++ native stack roots` verso il
+cluster. Archi diretti reali: `C++ Persistent roots` → RovesJsRootSet → celle che contengono
+oggetti dei realm del frame: [7] Promise `document.fonts.ready` dello srcdoc (risolta con la
+FontFaceSet stessa), [5] Promise della FontFaceSet di about:blank, [6] listener `click` dello
+user script save/export di servoshell (`ports/servoshell/desktop/app.rs:116`) sul Document del
+frame, [46] Performance di about:blank (proprietario non identificato). Correzione della lettura
+0342: RootSet raggiunge il frame tramite queste celle. Causa: radici permanenti
+`Promise::root`/`CallbackObject::root` (AddRawValueRoot, rilasciate solo nel Drop dell'Rc)
+possedute da oggetti DOM del documento scartato → ciclo mai raccoglibile; `clear_js_runtime`
+applica già questo schema solo a custom elements (servo#15318) e pending_image_callbacks.
+Nessun fix: completo solo rilasciando tutte le radici del documento, e la radice Performance non
+è mappata. Prossima azione unica: in `clear_js_runtime` rilasciare listener (verificando che
+`remove_all_listeners` faccia davvero cadere i CallbackObject) e Promise della FontFaceSet,
+dopo aver identificato chi radica Performance; verificare con lo snapshot CI frame-retention e
+le stesse query. Limiti: un solo snapshot; attribuzione about:blank/srcdoc dedotta. Log
+`target/task-0345/RESULTS.txt`. Frame retention aperta, causa candidata concreta.
+
 ### Codex0344 revisionata — snapshot cambia il repro, nuovo artefatto browser acquisito
 
 Stessobinario0343: senza hook secondaWindow viva, con hook raccolta dalla GC dello snapshot

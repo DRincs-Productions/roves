@@ -1,3 +1,14 @@
+## 25 ottobre — checkpointaa028313991, retention frame ancora presente
+
+CI V840208620536/job121214852263 Linuxnormal: modulo e no-module ancora0/2 per
+esemplari/documenti/global; scena singolaframe8GC: element/document/probe false
+alla verifica del rilascio. Snapshot4876611byte acquisito (artifact12604704563,
+SHA256ce5d4263c2b3aad9f960c18a82466b7caa055bb134829aa31c1a2e0e0371fe26).
+Questo checkpoint include lifetimeJSON0337 e atomi0340: i miglioramenti nativi isolati
+non hanno risolto il caso DOM reale. Diagnosi0343/0344 su Windowsdebug mostra retention
+nativa sensibile ai frame e snapshot che cambia l’esito; non prova la stessa causa DOM.
+Nessun benchmark o risparmio RAM/CPU/GPU dedotto. Analisi mantenuta MemLab in0345.
+
 ## 25 ottobre — divergenza Chrome sui descrittori DOM0336
 
 Chrome155 Windows visibile, Chrome DevTools MCP, HTTP127.0.0.1:19036.
