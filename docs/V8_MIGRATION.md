@@ -12,6 +12,24 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Stop quota0347 — 25 ottobre17:40 Europe/Rome; ripresa unica22:42
+
+Claude: `You've hit your session limit · resets 8:50pm (Europe/Rome)`.
+Nessuna modifica sorgente0347 lasciata; repository pulito prima di questo handoff. Non
+sostituire Claude con Codex né tentare prima della ripresa singola autorizzata5ore dopo.
+Scheduler app confermato: ripresa-unica-claude-dopo-quota-0347, COUNT1 alle22:42 locale,
+destination thread. Se stesso limite persiste registrare e fermarsi senza concatenare retry;
+disattivare dopo il tentativo. Nessuna automazione periodica. Reset indicato20:50 distinto
+dal tentativo22:42 richiesto dalla regola5ore dal blocco.
+
+Batchaa028313991 completato TUTTO VERDE: V84020862053610/10, generale4020862053813/13,
+Android40208620533, iOS40208620526. Diagnosi0342–0346 committate; ultimo commit prima di
+questo handoff7940989387f. Prossimo incarico completo e durevole:
+[0347: scarto task pipeline chiuse](handoff/0347-discarded-pipeline-tasks.md).
+Sorgenti invariati dalle0341; patch0342–0346 inesistenti perché sola diagnosi.
+Non rieseguire snapshot/query già acquisite senza nuova domanda. FixPerformanceTask è
+separato dal successivo cleanup FontFaceSet/callback: retentionframe ancora irrisolta.
+
 ### Codex0346 revisionata — coda task di pipeline chiusa
 
 Performance root è coerente con Trusted<Performance> di taskPerformanceTimeline parcheggiato

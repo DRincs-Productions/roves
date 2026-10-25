@@ -1,3 +1,14 @@
+## 2026-10-25 - Current frame-retention root diagnosis (0342-0346, documentation only)
+
+Current CI snapshot12604704563/run40208620536 still retains the removed frame after eight
+collections. MemLab direct-root queries identify RootSet edges to FontFaceSet promises,
+an injected document listener, and a Performance object consistent with Trusted ownership
+in a queued task of a closed pipeline. Upstream Promise/Callback permanent roots were
+confirmed in the pristine Servo0.5 archive. No production cleanup or GC behavior changed;
+0347 is prepared but stopped by Claude session quota. Native stack/snapshot calibration
+is diagnostic only and does not resolve real DOM retention. Updated README/wiki/handoff;
+no machine patch is needed for these diagnostic-only findings.
+
 ## 2026-10-25 - IsArrayObject contract audit: builtin class, not ECMAScript IsArray (0341)
 
 **Files:** `components/roves-js/src/tests.rs`, patch

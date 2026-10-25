@@ -81,6 +81,10 @@ path already did), so the module is never delivered early; a module exporting `t
 as specified.
 A module's owner page is now a reference the collector traces, not a permanent root; realm and
 module tables still keep pages and modules alive, so this saves no memory yet (not measured).
+The current removed-frame diagnostic still retains its probe: native roots include
+FontFaceSet promises, an injected event listener and a Performance owner consistent with a
+parked task of a closed pipeline. Cleanup is under investigation; no overall retention fix
+has been validated.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe
