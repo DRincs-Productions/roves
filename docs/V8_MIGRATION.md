@@ -12,6 +12,17 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0339 — diagnosi revisionata, nessuna modifica di codice
+
+Base 5ec9debf9e2; CI non controllata. Contratto SpiderMonkey (mozjs_sys140.14 `jsfriendapi.h`,
+`JSObject.cpp`): dst senza proprietà, stessa classe, copia shape/slot, false solo per OOM.
+Chiamanti reali (`wrap.rs`, `codegen.py`): reflector o expando appena creati, holder riempito
+solo con membri LegacyUnforgeable. Indici omessi: irraggiungibili, identificatori WebIDL mai
+numerici (`t_IDENTIFIER`). `Some(false)` ignorato: irraggiungibile, definire su oggetto vuoto
+estensibile non può essere rifiutato; template senza definer/setter; eccezioni già propagate.
+ConvertToString/rifiuto cambierebbero solo casi fuori contratto: nessun cambio speculativo,
+nessun test/patch/browser. Log `target/task-0339/RESULTS.txt`.
+
 ### Codex0338 revisionata — altro commit locale durante CI
 
 FinishDynamicModuleImport usa ora Promise::then2 pubblico V8 invece di compilare ogni volta
