@@ -12,6 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Revisione Codex0342 — prossimo test sul percorso GC di produzione
+
+Diagnosi sorgenti conferma il percorso detach→RemoveIFrame/reply→ExitPipeline→rimozione
+Document/clear_js_runtime. È atteso prima/tra gli8taskGC, ma la sola lettura non prova il
+timing effettivo nella scena. Snapshot senza edge RootSet/stack verso frame restringe le
+ipotesi, NON esclude radici non rappresentate o errori nella lettura del grafo. La condivisione
+dello stack marker V8 è evidenza utile, non prova assoluta dell’assenza di radici conservative.
+Nessuna radice trattenente dimostrata, nessun fix. Prossima prova circoscritta: shape nativa
+0326 con sola JS_GC(DOM_TESTUTILS), senza preventiva gc_for_testing; controprova wrapper vivo.
+V8/generalebatchaa028313991 ancora attive, mobile verdi: non pushare. Log target/task-0342/.
+
+### Claude0342 — ciclo di vita del frame rimosso: nessuna radice provata (da revisionare, nessun codice)
+
+Base aa028313991; CI non controllata; nessun codice/patch/browser/build. Pipeline di rimozione
+invariata rispetto a upstream (nessuna patch tocca le righe): `unbind_from_tree` →
+`destroy_child_navigable` toglie il WindowProxy da ScriptWindowProxies, invia `RemoveIFrame`
+e attende la risposta; il constellation chiude tutte le pipeline del contesto (about:blank e
+srcdoc) e accoda `ExitPipeline` prima di rispondere, quindi lo ScriptThread toglie il Document
+da `documents` e chiama `clear_js_runtime` prima o tra i task delle8GC. Tutte le radici Servo
+passano solo da RootSet, che nello snapshot0326 (all'ottava GC) non raggiunge il frame: pipeline
+già uscita, nessuna radice embedder. Global roves-js fuori da RootSet: nessuno per realm figlio
+(contesti figli solo [weak]). Ipotesi0326 dello stack conservativo eliminata: V8152.2 usa un unico
+marker per GC e grafo dello snapshot (`heap-profiler.cc:129-132`), quindi una parola di stack
+sarebbe apparsa come arco. Resta non spiegato: il cluster sopravvive a una GC senza arco forte
+visibile. Prossimo passo unico: test nativo della forma0326 raccolta solo con
+`JS_GC(DOM_TESTUTILS)` di produzione (oggi i test usano prima `gc_for_testing`), con un negativo.
+Log `target/task-0342/RESULTS.txt`. Frame retention aperta.
+
 ### Checkpoint Codex0341 — batch precedente tutto verde, pubblicazione
 
 Batch2fc8a3f73f6 concluso: V84020463406610/10, generale4020463410213/13,
