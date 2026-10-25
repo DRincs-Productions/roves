@@ -1,0 +1,16 @@
+[package]
+name = "roves-task-queue-contracts"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[dependencies]
+crossbeam-channel = "0.5"
+rustc-hash = "2.1.2"
+strum = { version = "0.28", features = ["derive"] }
+
+[lib]
+path = "lib.rs"

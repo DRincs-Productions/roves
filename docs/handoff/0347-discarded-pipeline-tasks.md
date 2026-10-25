@@ -1,7 +1,8 @@
-# Ripresa0347 — scarto task pipeline permanentemente chiuse
+# Incarico0347 — completato localmente da Codex su autorizzazione utente
 
-Stato25ottobre2026: quotaClaude, nessuna modifica sorgente lasciata. Batchaa028 tuttoverde.
-Incarico preparato e autorizzato, non completato. Leggere il corrente docs/V8_MIGRATION.md
+Stato25ottobre2026 aggiornato: Codex ha completato la0347 durante quotaClaude, dopo
+autorizzazione esplicita dell’utente.4test positivi,3negativi vecchiocodice, replay478/481.
+Il prompt sottostante è storico: NON reimplementarlo senza controllare lo stato corrente. Leggere il corrente docs/V8_MIGRATION.md
 per Git/CI/scheduler aggiornati. Seguono istruzioni operative salvate prima del limite.
 
 Task0347 implement COMPLETE bounded discard of queued tasks for permanently exited pipelines (0346 proof). Codex directs/reviews Claude implementsthenstops no commit/push/newtasks/modelchange/CIpolling. ReadAGENTS/currenthandoffonce. aa028batchallgreen, localdiagnosticsCodex reviewed; Codex owns nextpush. Quotaexactmessagestop safeWIP.

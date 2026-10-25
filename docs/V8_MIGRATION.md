@@ -12,6 +12,27 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0347 completa — sviluppo diretto autorizzato dall’utente durante quotaClaude
+
+L’utente ha chiesto esplicitamente di implementare direttamente nel frattempo: eccezione
+corrente alla delega, non cambio permanente del processo. Nessun nuovo tentativoClaude.
+TaskQueue scarta task inactive/throttled/ready di pipeline uscite e arrivi tardivi prima del
+bypassRendering; controlmessages, workerNone e altrepipeline conservati. Distruttori fuori
+dai borrow, sullo scriptthread. Unico setchiusure nella coda: sostituito closed_pipelines
+inScriptThread, anche per guardiaheaders tardivi, senza raddoppiare memoria dei tombstone.
+4/4 contratti Windows passano compilando sorgente reale con tipi contorno leggeri;
+negativo vecchiocodice+entrypointnoop:3falliscono, controlloaltrapipeline/worker passa.
+Logtarget/task-0347/queue-tests.log e negative-old-queue.log. Nessuna buildServo locale.
+Patch0347 dryrun/apply scratch:478/481 identiciLF, sole3eccezioni note. Scratch ora0347.
+WorkflowV8 esteso ai duefilelifecycle e harness; test su3OS normal (logicaindipendenteJIT),
+servoshell normal/JITless e snapshot allaCI. test.yml/buildflags invariati, actionnonrichiedesync.
+Ultimobatchpubblicatoc650f8a19ad: mobile40213022469/40213022395 verdi, sorgenti identici
+ad aa028 già tuttoverde. Pubblicare0347 completa; validazione browser ancora pendente.
+Non dichiarare rootPerformance eliminata finché nuovo snapshot lo conferma; restanoFontFaceSet/
+callback. Prossimo0348: cleanupdiscard listener/promise, verificando contrattoHTML e riferimenti
+nativi vivi prima di cambiare radici. ConfrontoChrome salvato task0346, non ripeterlosenzamotivo.
+Scheduler22:42 aggiornato: leggerequestohandoff e NON reimplementare0347 dal vecchioprompt.
+
 ### Stop quota0347 — 25 ottobre17:40 Europe/Rome; ripresa unica22:42
 
 Claude: `You've hit your session limit · resets 8:50pm (Europe/Rome)`.

@@ -1,3 +1,32 @@
+## 2026-10-25 - Drop queued tasks of permanently exited pipelines (0347)
+
+Files: `components/script/task_queue.rs`, `components/script/script_thread.rs`,
+`support/task-queue-tests/`, `.github/workflows/v8.yml`.
+Patch: `0347-discard-exited-pipeline-tasks.patch`.
+
+Pipeline exit previously canceled task execution but left captures in inactive/throttled
+queues forever. In particular, a parked PerformanceTimeline task can own a Trusted reference
+to an exited frame's Performance object. TaskQueue now records discarded pipeline ids,
+extracts their inactive, throttled and ready tasks, and drops them after all queue borrows
+end. Late tasks are filtered before throttling or the Rendering bypass; control messages,
+other inactive pipelines and pipeline-less workers are retained. Pipeline ids are never
+reused. The queue replaces ScriptThread.closed_pipelines as the single source of closed ids,
+including the existing late page-header guard: no duplicate ever-growing set is added.
+
+Reuse: existing crossbeam, standard VecDeque/iterator partition, and rustc-hash; no new
+production dependency or scheduler. VecDeque.extract_if is still unstable in Rust1.95,
+so extraction uses stable partition and transient storage only during pipeline discard.
+The standalone harness compiles the real queue source with lightweight surrounding types.
+Four positive contracts pass; the old queue plus a no-op discard entry point fails three,
+while the unrelated-pipeline/worker control passes. Tests verify destruction exactly once,
+script-thread destruction and destructor reentry. CI runs the harness on three desktop OSes
+and now triggers V8 integration for these lifecycle files. No build/bundle flags or test.yml
+reference workflow changed, so roves-action's mirrored interface needs no update.
+
+This is a scoped queued-capture fix, not proof that removed frames collect: FontFaceSet
+promise and callback roots remain. Heavy browser builds/snapshot validation stay in CI.
+README/wiki and current migration handoff are updated with the direct Codex authorization.
+
 ## 2026-10-25 - Current frame-retention root diagnosis (0342-0346, documentation only)
 
 Current CI snapshot12604704563/run40208620536 still retains the removed frame after eight

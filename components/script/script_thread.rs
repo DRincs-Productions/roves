@@ -312,10 +312,6 @@ pub struct ScriptThread {
     /// The JavaScript runtime.
     js_runtime: Rc<Runtime>,
 
-    /// List of pipelines that have been owned and closed by this script thread.
-    #[no_trace]
-    closed_pipelines: DomRefCell<FxHashSet<PipelineId>>,
-
     /// <https://html.spec.whatwg.org/multipage/#microtask-queue>
     microtask_queue: Rc<MicrotaskQueue>,
 
@@ -940,7 +936,6 @@ impl ScriptThread {
                     timer_scheduler: Default::default(),
                     microtask_queue,
                     js_runtime: Rc::new(runtime),
-                    closed_pipelines: DomRefCell::new(FxHashSet::default()),
                     mutation_observers: Default::default(),
                     system_font_service: Arc::new(state.system_font_service.to_proxy()),
                     webgl_chan: state.webgl_chan,
@@ -2530,7 +2525,7 @@ impl ScriptThread {
         origin: MutableOrigin,
         cx: &mut js::context::JSContext,
     ) -> Option<DomRoot<ServoParser>> {
-        if self.closed_pipelines.borrow().contains(&pipeline_id) {
+        if self.task_queue.is_pipeline_discarded(pipeline_id) {
             // If the pipeline closed, do not process the headers.
             return None;
         }
@@ -2641,7 +2636,7 @@ impl ScriptThread {
         }
 
         // Prevent any further work for this Pipeline.
-        self.closed_pipelines.borrow_mut().insert(pipeline_id);
+        self.task_queue.discard_tasks_for_pipeline(pipeline_id);
 
         debug!("{pipeline_id}: Sending PipelineExited message to constellation");
         self.senders

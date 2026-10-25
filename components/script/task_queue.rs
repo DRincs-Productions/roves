@@ -19,6 +19,13 @@ use crate::script_runtime::ScriptThreadEventCategory;
 use crate::task::TaskBox;
 use crate::task_source::TaskSourceName;
 
+/// Move removed entries out without running their destructors under a queue borrow.
+fn partition_out<T>(queue: &mut VecDeque<T>, discard: impl Fn(&T) -> bool) -> VecDeque<T> {
+    let (removed, kept) = std::mem::take(queue).into_iter().partition(discard);
+    *queue = kept;
+    removed
+}
+
 #[derive(MallocSizeOf)]
 pub(crate) struct QueuedTask {
     pub(crate) worker: Option<TrustedWorkerAddress>,
@@ -54,6 +61,8 @@ pub(crate) struct TaskQueue<T> {
     throttled: DomRefCell<FxHashMap<TaskSourceName, VecDeque<QueuedTask>>>,
     /// Tasks for not fully-active documents.
     inactive: DomRefCell<FxHashMap<PipelineId, VecDeque<QueuedTask>>>,
+    /// Pipeline ids are never reused. Late tasks must not repopulate their queues.
+    discarded_pipelines: DomRefCell<FxHashSet<PipelineId>>,
 }
 
 impl<T: QueuedTaskConversion> TaskQueue<T> {
@@ -65,7 +74,33 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
             taken_task_counter: Default::default(),
             throttled: Default::default(),
             inactive: Default::default(),
+            discarded_pipelines: Default::default(),
         }
+    }
+
+    /// Release captures of tasks that can never run, on their owning script thread.
+    pub(crate) fn discard_tasks_for_pipeline(&self, pipeline_id: PipelineId) {
+        self.discarded_pipelines.borrow_mut().insert(pipeline_id);
+        let inactive = self.inactive.borrow_mut().remove(&pipeline_id);
+        let mut throttled = Vec::new();
+        for queue in self.throttled.borrow_mut().values_mut() {
+            throttled.extend(partition_out(queue, |task| task.pipeline_id == Some(pipeline_id)));
+        }
+        let ready = partition_out(&mut self.msg_queue.borrow_mut(), |msg| {
+            msg.task_source_name().is_some() && msg.pipeline_id() == Some(pipeline_id)
+        });
+        // Task destructors (including Trusted captures) may reenter this queue.
+        // All queue and tombstone borrows must have ended before any task is dropped.
+        drop((inactive, throttled, ready));
+    }
+
+    fn is_discarded_task(&self, msg: &T) -> bool {
+        msg.task_source_name().is_some()
+            && msg.pipeline_id().is_some_and(|id| self.is_pipeline_discarded(id))
+    }
+
+    pub(crate) fn is_pipeline_discarded(&self, pipeline_id: PipelineId) -> bool {
+        self.discarded_pipelines.borrow().contains(&pipeline_id)
     }
 
     /// Release previously held-back tasks for documents that are now fully-active.
@@ -122,6 +157,10 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
                 incoming.push(msg);
             }
         }
+
+        // Filter before both throttling and the Rendering bypass. Control messages are
+        // not tasks and must still reach their handlers, even for a closed pipeline.
+        incoming.retain(|msg| !self.is_discarded_task(msg));
 
         // 4. Filter tasks from non-priority task-sources.
         // TODO: This can use `extract_if` once that is stabilized.

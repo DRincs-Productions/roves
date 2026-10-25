@@ -1,0 +1,823 @@
+diff --git a/components/script/script_thread.rs b/components/script/script_thread.rs
+index 9a3eb1d95ea..202b5d5177b 100644
+--- a/components/script/script_thread.rs
++++ b/components/script/script_thread.rs
+@@ -312,10 +312,6 @@ pub struct ScriptThread {
+     /// The JavaScript runtime.
+     js_runtime: Rc<Runtime>,
+ 
+-    /// List of pipelines that have been owned and closed by this script thread.
+-    #[no_trace]
+-    closed_pipelines: DomRefCell<FxHashSet<PipelineId>>,
+-
+     /// <https://html.spec.whatwg.org/multipage/#microtask-queue>
+     microtask_queue: Rc<MicrotaskQueue>,
+ 
+@@ -940,7 +936,6 @@ impl ScriptThread {
+                     timer_scheduler: Default::default(),
+                     microtask_queue,
+                     js_runtime: Rc::new(runtime),
+-                    closed_pipelines: DomRefCell::new(FxHashSet::default()),
+                     mutation_observers: Default::default(),
+                     system_font_service: Arc::new(state.system_font_service.to_proxy()),
+                     webgl_chan: state.webgl_chan,
+@@ -2530,7 +2525,7 @@ impl ScriptThread {
+         origin: MutableOrigin,
+         cx: &mut js::context::JSContext,
+     ) -> Option<DomRoot<ServoParser>> {
+-        if self.closed_pipelines.borrow().contains(&pipeline_id) {
++        if self.task_queue.is_pipeline_discarded(pipeline_id) {
+             // If the pipeline closed, do not process the headers.
+             return None;
+         }
+@@ -2641,7 +2636,7 @@ impl ScriptThread {
+         }
+ 
+         // Prevent any further work for this Pipeline.
+-        self.closed_pipelines.borrow_mut().insert(pipeline_id);
++        self.task_queue.discard_tasks_for_pipeline(pipeline_id);
+ 
+         debug!("{pipeline_id}: Sending PipelineExited message to constellation");
+         self.senders
+diff --git a/components/script/task_queue.rs b/components/script/task_queue.rs
+index 42519534b01..8c109b3a83e 100644
+--- a/components/script/task_queue.rs
++++ b/components/script/task_queue.rs
+@@ -19,6 +19,13 @@ use crate::script_runtime::ScriptThreadEventCategory;
+ use crate::task::TaskBox;
+ use crate::task_source::TaskSourceName;
+ 
++/// Move removed entries out without running their destructors under a queue borrow.
++fn partition_out<T>(queue: &mut VecDeque<T>, discard: impl Fn(&T) -> bool) -> VecDeque<T> {
++    let (removed, kept) = std::mem::take(queue).into_iter().partition(discard);
++    *queue = kept;
++    removed
++}
++
+ #[derive(MallocSizeOf)]
+ pub(crate) struct QueuedTask {
+     pub(crate) worker: Option<TrustedWorkerAddress>,
+@@ -54,6 +61,8 @@ pub(crate) struct TaskQueue<T> {
+     throttled: DomRefCell<FxHashMap<TaskSourceName, VecDeque<QueuedTask>>>,
+     /// Tasks for not fully-active documents.
+     inactive: DomRefCell<FxHashMap<PipelineId, VecDeque<QueuedTask>>>,
++    /// Pipeline ids are never reused. Late tasks must not repopulate their queues.
++    discarded_pipelines: DomRefCell<FxHashSet<PipelineId>>,
+ }
+ 
+ impl<T: QueuedTaskConversion> TaskQueue<T> {
+@@ -65,7 +74,33 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
+             taken_task_counter: Default::default(),
+             throttled: Default::default(),
+             inactive: Default::default(),
++            discarded_pipelines: Default::default(),
++        }
++    }
++
++    /// Release captures of tasks that can never run, on their owning script thread.
++    pub(crate) fn discard_tasks_for_pipeline(&self, pipeline_id: PipelineId) {
++        self.discarded_pipelines.borrow_mut().insert(pipeline_id);
++        let inactive = self.inactive.borrow_mut().remove(&pipeline_id);
++        let mut throttled = Vec::new();
++        for queue in self.throttled.borrow_mut().values_mut() {
++            throttled.extend(partition_out(queue, |task| task.pipeline_id == Some(pipeline_id)));
+         }
++        let ready = partition_out(&mut self.msg_queue.borrow_mut(), |msg| {
++            msg.task_source_name().is_some() && msg.pipeline_id() == Some(pipeline_id)
++        });
++        // Task destructors (including Trusted captures) may reenter this queue.
++        // All queue and tombstone borrows must have ended before any task is dropped.
++        drop((inactive, throttled, ready));
++    }
++
++    fn is_discarded_task(&self, msg: &T) -> bool {
++        msg.task_source_name().is_some()
++            && msg.pipeline_id().is_some_and(|id| self.is_pipeline_discarded(id))
++    }
++
++    pub(crate) fn is_pipeline_discarded(&self, pipeline_id: PipelineId) -> bool {
++        self.discarded_pipelines.borrow().contains(&pipeline_id)
+     }
+ 
+     /// Release previously held-back tasks for documents that are now fully-active.
+@@ -123,6 +158,10 @@ impl<T: QueuedTaskConversion> TaskQueue<T> {
+             }
+         }
+ 
++        // Filter before both throttling and the Rendering bypass. Control messages are
++        // not tasks and must still reach their handlers, even for a closed pipeline.
++        incoming.retain(|msg| !self.is_discarded_task(msg));
++
+         // 4. Filter tasks from non-priority task-sources.
+         // TODO: This can use `extract_if` once that is stabilized.
+         let mut to_be_throttled = Vec::new();
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+new file mode 100644
+index 00000000000..1cba0bfc01a
+--- /dev/null
++++ b/.github/workflows/v8.yml
+@@ -0,0 +1,232 @@
++name: V8 migration checks
++
++# Use workflow_dispatch to retry transient runner or dependency-download failures.
++
++on:
++  push:
++    paths:
++      - 'components/roves-v8/**'
++      - 'components/roves-js/**'
++      - 'components/script_bindings/**'
++      - 'components/script/task_queue.rs'
++      - 'components/script/script_thread.rs'
++      - 'support/task-queue-tests/**'
++      - 'support/v8_cutover_check.py'
++      - 'support/v8-smoke/**'
++      - '.github/workflows/v8.yml'
++  workflow_dispatch: {}
++
++concurrency:
++  group: v8-${{ github.ref }}
++  cancel-in-progress: true
++
++jobs:
++  runtime:
++    strategy:
++      fail-fast: false
++      matrix:
++        os: [ubuntu-24.04, windows-latest, macos-latest]
++        mode: [normal, jitless]
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 20
++    steps:
++      - uses: actions/checkout@v4
++      - uses: dtolnay/rust-toolchain@1.95.0
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - name: isolate the runtime crate from unrelated Servo dependencies
++        shell: bash
++        run: |
++          mkdir -p "$RUNNER_TEMP/roves-v8/src"
++          cp components/roves-v8/Cargo.toml components/roves-v8/Cargo.lock "$RUNNER_TEMP/roves-v8/"
++          cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
++          # roves-js (the mozjs API on V8) builds next to roves-v8, with its own lockfile.
++          cp -R components/roves-js "$RUNNER_TEMP/roves-js"
++      - name: test smoke runner failure contracts
++        shell: bash
++        run: python -m unittest discover -s support/v8-smoke -p test_runner.py
++      - name: test discarded-pipeline task ownership
++        if: matrix.mode == 'normal'
++        shell: bash
++        env:
++          CARGO_TARGET_DIR: ${{ runner.temp }}/task-queue-contracts
++        run: cargo test --locked --manifest-path support/task-queue-tests/Cargo.toml
++      - name: test runtime and compile-fail safety contracts
++        shell: bash
++        env:
++          V8_TEST_MODE: ${{ matrix.mode }}
++        run: |
++          cd "$RUNNER_TEMP/roves-v8"
++          args=()
++          if [ "$V8_TEST_MODE" = jitless ]; then
++            args+=(--features jitless)
++          fi
++          cargo test --locked "${args[@]}"
++          # The mozjs-on-V8 layer of the cutover (value model, cells, rooting).
++          cd "$RUNNER_TEMP/roves-js"
++          if [ "$V8_TEST_MODE" = jitless ]; then
++            cargo test --locked --features jitless
++          else
++            cargo test --locked
++          fi
++
++  # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey on every
++  # desktop platform Roves ships, then (Linux) the smoke pages in support/v8-smoke/ run
++  # headlessly. This is the end-to-end check of the V8 cutover, kept in CI so no local machine
++  # has to link the browser.
++  servoshell-v8:
++    strategy:
++      fail-fast: false
++      matrix:
++        os: [ubuntu-24.04, windows-latest, macos-latest]
++        mode: [normal]
++        include:
++          # V8 without its JIT, the console configuration (docs/V8_MIGRATION.md, "JIT-less").
++          - os: ubuntu-24.04
++            mode: jitless
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 180
++    steps:
++      - uses: actions/checkout@v4
++      - name: make mach executable
++        if: runner.os != 'Windows'
++        run: chmod +x mach
++      - uses: actions/setup-python@v5
++        with:
++          python-version: '3.12'
++      - uses: astral-sh/setup-uv@v5
++      # See release.yml: background apt jobs can hold the dpkg lock right after boot.
++      - name: stop background apt processes
++        if: runner.os == 'Linux'
++        run: |
++          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
++          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
++          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
++          for i in $(seq 1 60); do
++            sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock >/dev/null 2>&1 || exit 0
++            sleep 1
++          done
++      # See test.yml: GStreamer's Windows installer, run without elevation, at the path mach
++      # expects; `--skip-platform` then keeps bootstrap from trying again.
++      - name: install GStreamer (Windows, non-interactive)
++        if: runner.os == 'Windows'
++        shell: pwsh
++        run: |
++          $ErrorActionPreference = "Stop"
++          $version = "1.28.7"
++          $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
++          $installer = Join-Path $env:RUNNER_TEMP $name
++          # Our own copy first (see gstreamer-mirror.yml); gstreamer.freedesktop.org cuts responses
++          # after ~1 MiB, so it is only the fallback, fetched by resuming until complete.
++          $mirror = "https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-$version/$name"
++          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name"
++          try {
++            Invoke-WebRequest -Uri $mirror -OutFile $installer
++          } catch {
++            Write-Host "GStreamer mirror unavailable ($_), falling back to gstreamer.freedesktop.org"
++            $length = [int64](((curl.exe -sIL $url) -match '^content-length:' | Select-Object -Last 1) -replace '\D', '')
++            for ($request = 0; -not ((Test-Path $installer) -and (Get-Item $installer).Length -ge $length); $request++) {
++              if ($request -ge 4000) { throw "GStreamer download did not complete" }
++              curl.exe -sSL -C - -o $installer $url
++              if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 5 }
++            }
++          }
++          $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"
++          New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
++          $proc = Start-Process -FilePath $installer -ArgumentList @(
++            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$installDir`""
++          ) -Wait -PassThru
++          if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
++      # See test.yml: apt's downloaded packages live in an Actions cache, not only on the mirror.
++      - name: restore cached apt packages
++        if: runner.os == 'Linux'
++        uses: actions/cache/restore@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++          restore-keys: |
++            apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-
++            apt-v8-${{ runner.os }}-
++      - name: point apt's package cache at the cached directory
++        if: runner.os == 'Linux'
++        run: |
++          mkdir -p "$HOME/apt-archives/partial"
++          sudo chmod -R a+rwX "$HOME/apt-archives"
++          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
++      - name: mach bootstrap (system build dependencies)
++        timeout-minutes: 60
++        shell: bash
++        env:
++          DEBIAN_FRONTEND: noninteractive
++        run: |
++          if [ "$RUNNER_OS" = Linux ]; then
++            # servoshell's default features build without GStreamer (no gstreamer-sys in its
++            # graph). Its development packages were ~450 of the 485 packages mach installs, and
++            # the runner's apt mirror timed this step out several times. Install the rest, as
++            # mach does (only packages this release has), then skip mach's platform step.
++            sudo apt-get update
++            available=$(apt-cache --generate pkgnames)
++            packages=$(grep -hv -e '^#' -e '^$' python/servo/platform/linux_packages/apt/apt_common.txt \
++              | grep -v -e gstreamer -e '^libges' \
++              | grep -Fxf <(echo "$available"))
++            # shellcheck disable=SC2086
++            bash support/apt_prefetch.sh $packages
++            # shellcheck disable=SC2086
++            sudo apt-get install -y -m --no-install-recommends $packages
++          fi
++          if [ "$RUNNER_OS" = macOS ]; then
++            ./mach bootstrap --force --yes --skip-lints --skip-nextest
++          else
++            ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform
++          fi
++      # Saved even when bootstrap fails or times out: the next run resumes the download.
++      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
++      - name: prepare apt packages for caching
++        if: always() && runner.os == 'Linux'
++        shell: bash
++        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
++      - name: save apt packages
++        if: always() && runner.os == 'Linux'
++        uses: actions/cache/save@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-v8-${{ runner.os }}-${{ hashFiles('python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++      - name: free disk space
++        if: runner.os == 'Linux'
++        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL || true
++      - name: build servoshell on roves-js (V8)
++        shell: bash
++        run: |
++          features=""
++          if [ "${{ matrix.mode }}" = jitless ]; then features="--features roves-js/jitless"; fi
++          python support/v8_cutover_check.py servoshell --build --online --top 40 $features
++          ls target/v8-cutover/debug/servoshell*
++      # Linux normal only: one extra debug servoshell process (one page, bounded by its 60 s
++      # timeout) loads frame-retention.html and writes one native V8 heap snapshot of a removed
++      # blank frame; its size follows the page's JS heap. Kept 3 days, for reading retainers in
++      # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.
++      - name: run the V8 smoke pages headlessly
++        if: runner.os == 'Linux'
++        env:
++          V8_SMOKE_MODE: ${{ matrix.mode }}
++          V8_SMOKE_ALLOW_MISSING_DEVICES: '1'
++          V8_SMOKE_HEAP_SNAPSHOT: ${{ matrix.mode == 'normal' && format('{0}/target/v8-heap-snapshot/frame-retention.heapsnapshot', github.workspace) || '' }}
++        run: |
++          sudo apt-get install -y --no-install-recommends xvfb
++          chmod +x support/v8-smoke/run.sh
++          support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
++      - name: upload the removed-frame heap snapshot
++        if: always() && runner.os == 'Linux' && matrix.mode == 'normal'
++        uses: actions/upload-artifact@v4
++        with:
++          name: v8-heap-snapshot-frame-retention
++          path: target/v8-heap-snapshot/frame-retention.heapsnapshot
++          retention-days: 3
++          if-no-files-found: warn
+diff --git a/support/task-queue-tests/build.rs b/support/task-queue-tests/build.rs
+new file mode 100644
+index 00000000000..2be54631d18
+--- /dev/null
++++ b/support/task-queue-tests/build.rs
+@@ -0,0 +1,35 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use std::{env, fs, path::PathBuf};
++fn main() {
++    let source = env::var("TASK_QUEUE_SOURCE")
++        .unwrap_or_else(|_| "../../components/script/task_queue.rs".into());
++    println!("cargo:rerun-if-env-changed=TASK_QUEUE_SOURCE");
++    println!("cargo:rerun-if-changed={source}");
++    let source = fs::read_to_string(source).unwrap();
++    // Only allocator-accounting derives/attributes and inner module docs need removal.
++    // The queue implementation is compiled verbatim; fail if these annotations change.
++    assert_eq!(source.matches("#[derive(MallocSizeOf)]").count(), 2);
++    let source = source
++        .replace("#[derive(MallocSizeOf)]", "")
++        .replace("#[ignore_malloc_size_of = \"TaskBox is difficult\"]", "")
++        .replace("//!", "//");
++    assert!(!source.contains("ignore_malloc_size_of"));
++    let out = PathBuf::from(env::var_os("OUT_DIR").unwrap());
++    fs::write(out.join("task_queue.rs"), source).unwrap();
++    let path = "../../components/script/task_source.rs";
++    println!("cargo:rerun-if-changed={path}");
++    let source = fs::read_to_string(path).unwrap();
++    let start = source.find("pub(crate) enum TaskSourceName {").unwrap();
++    let end = start + source[start..].find("\n}\n").unwrap() + 2;
++    fs::write(
++        out.join("task_source.rs"),
++        format!(
++            "#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, strum::VariantArray)]\n{}",
++            &source[start..end]
++        ),
++    )
++    .unwrap();
++}
+diff --git a/support/task-queue-tests/Cargo.lock b/support/task-queue-tests/Cargo.lock
+new file mode 100644
+index 00000000000..fee6e7fe5ac
+--- /dev/null
++++ b/support/task-queue-tests/Cargo.lock
+@@ -0,0 +1,95 @@
++# This file is automatically @generated by Cargo.
++# It is not intended for manual editing.
++version = 4
++
++[[package]]
++name = "crossbeam-channel"
++version = "0.5.16"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "d85363c37faeca707aef026efa9f3b34d077bce547e48f770770625c6013679e"
++dependencies = [
++ "crossbeam-utils",
++]
++
++[[package]]
++name = "crossbeam-utils"
++version = "0.8.22"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "61803da095bee82a81bb1a452ecc25d3b2f1416d1897eb86430c6159ef717c17"
++
++[[package]]
++name = "heck"
++version = "0.5.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
++
++[[package]]
++name = "proc-macro2"
++version = "1.0.107"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
++dependencies = [
++ "unicode-ident",
++]
++
++[[package]]
++name = "quote"
++version = "1.0.47"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001"
++dependencies = [
++ "proc-macro2",
++]
++
++[[package]]
++name = "roves-task-queue-contracts"
++version = "0.1.0"
++dependencies = [
++ "crossbeam-channel",
++ "rustc-hash",
++ "strum",
++]
++
++[[package]]
++name = "rustc-hash"
++version = "2.1.3"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
++
++[[package]]
++name = "strum"
++version = "0.28.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "9628de9b8791db39ceda2b119bbe13134770b56c138ec1d3af810d045c04f9bd"
++dependencies = [
++ "strum_macros",
++]
++
++[[package]]
++name = "strum_macros"
++version = "0.28.0"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "ab85eea0270ee17587ed4156089e10b9e6880ee688791d45a905f5b1ca36f664"
++dependencies = [
++ "heck",
++ "proc-macro2",
++ "quote",
++ "syn",
++]
++
++[[package]]
++name = "syn"
++version = "2.0.119"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "872831b642d1a07999a962a351ed35b955ea2cfc8f3862091e2a240a84f17297"
++dependencies = [
++ "proc-macro2",
++ "quote",
++ "unicode-ident",
++]
++
++[[package]]
++name = "unicode-ident"
++version = "1.0.27"
++source = "registry+https://github.com/rust-lang/crates.io-index"
++checksum = "a2c754d6c33795a1c324727428e5a7dedb5b06195f9890bdbcba760d3e246563"
+diff --git a/support/task-queue-tests/Cargo.toml b/support/task-queue-tests/Cargo.toml
+new file mode 100644
+index 00000000000..316aae40ccc
+--- /dev/null
++++ b/support/task-queue-tests/Cargo.toml
+@@ -0,0 +1,16 @@
++[package]
++name = "roves-task-queue-contracts"
++version = "0.1.0"
++edition = "2024"
++publish = false
++license = "MPL-2.0"
++
++[workspace]
++
++[dependencies]
++crossbeam-channel = "0.5"
++rustc-hash = "2.1.2"
++strum = { version = "0.28", features = ["derive"] }
++
++[lib]
++path = "lib.rs"
+diff --git a/support/task-queue-tests/lib.rs b/support/task-queue-tests/lib.rs
+new file mode 100644
+index 00000000000..6e74483de38
+--- /dev/null
++++ b/support/task-queue-tests/lib.rs
+@@ -0,0 +1,42 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++#![allow(dead_code)]
++extern crate self as js;
++extern crate self as script_bindings;
++extern crate self as servo_base;
++pub mod cell {
++    pub type DomRefCell<T> = std::cell::RefCell<T>;
++}
++pub mod id {
++    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
++    pub struct PipelineId(pub u64);
++}
++pub mod context {
++    pub struct JSContext;
++}
++pub mod dom {
++    pub mod worker {
++        pub type TrustedWorkerAddress = ();
++    }
++}
++pub mod script_runtime {
++    pub type ScriptThreadEventCategory = ();
++}
++pub mod task {
++    pub trait TaskBox: Send {
++        fn name(&self) -> &'static str;
++        fn run_box(self: Box<Self>, cx: &mut crate::context::JSContext);
++    }
++}
++mod task_source {
++    include!(concat!(env!("OUT_DIR"), "/task_source.rs"));
++}
++mod task_queue {
++    include!(concat!(env!("OUT_DIR"), "/task_queue.rs"));
++    #[cfg(test)]
++    mod tests {
++        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests.rs"));
++    }
++}
+diff --git a/support/task-queue-tests/README.md b/support/task-queue-tests/README.md
+new file mode 100644
+index 00000000000..ad9aa651592
+--- /dev/null
++++ b/support/task-queue-tests/README.md
+@@ -0,0 +1,18 @@
++# Task queue ownership contracts
++
++`cargo test --locked --manifest-path support/task-queue-tests/Cargo.toml`
++
++This small standalone test crate compiles the actual `components/script/task_queue.rs`
++implementation and the actual TaskSourceName variants. Its build script removes only the
++allocator-accounting annotations and inner module documentation. It never copies or mirrors
++the queue algorithm. The ordinary channel/hash/enum libraries are the same maintained
++packages used by Servo; no production dependency was added.
++
++To avoid linking Servo, the test shell replaces DomRefCell with RefCell and supplies minimal
++PipelineId, worker, event-category and TaskBox types. Tests check capture destruction, thread
++ownership, reentrancy, inactive/ready/throttled queues, late tasks and unrelated pipelines.
++They do not validate Servo type integration, real Trusted captures or browser collection;
++the full CI build and frame-retention snapshot cover that integration.
++
++`TASK_QUEUE_SOURCE` can select an alternate source file for a negative fixture. The checked
++build-script annotation counts deliberately fail when the source layout changes unexpectedly.
+diff --git a/support/task-queue-tests/tests.rs b/support/task-queue-tests/tests.rs
+new file mode 100644
+index 00000000000..d59247ea6be
+--- /dev/null
++++ b/support/task-queue-tests/tests.rs
+@@ -0,0 +1,230 @@
++/* This Source Code Form is subject to the terms of the Mozilla Public
++ * License, v. 2.0. If a copy of the MPL was not distributed with this
++ * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
++
++use super::*;
++use std::cell::RefCell;
++use std::rc::{Rc, Weak};
++use std::sync::{Arc, Mutex};
++use std::thread::{self, ThreadId};
++
++type Log = Arc<Mutex<Vec<usize>>>;
++const CLOSED: PipelineId = PipelineId(1);
++const LIVE: PipelineId = PipelineId(2);
++thread_local! { static REENTER: RefCell<Weak<TaskQueue<Message>>> = RefCell::new(Weak::new()); }
++
++struct Capture {
++    tag: usize,
++    log: Log,
++    owner: ThreadId,
++    reenter: bool,
++}
++impl TaskBox for Capture {
++    fn name(&self) -> &'static str {
++        "drop probe"
++    }
++    fn run_box(self: Box<Self>, _: &mut js::context::JSContext) {
++        panic!("discard must not execute tasks");
++    }
++}
++impl Drop for Capture {
++    fn drop(&mut self) {
++        assert_eq!(thread::current().id(), self.owner);
++        self.log.lock().unwrap().push(self.tag);
++        if self.reenter {
++            let Some(queue) = REENTER.with(|slot| slot.borrow().upgrade()) else {
++                return; // Queue teardown (also during a failing negative fixture).
++            };
++            queue.discard_tasks_for_pipeline(CLOSED);
++            // Both a late task and a control message may arrive during destruction.
++            queue.take_tasks(
++                message(
++                    Some(CLOSED),
++                    TaskSourceName::Rendering,
++                    99,
++                    &self.log,
++                    false,
++                ),
++                &FxHashSet::default(),
++            );
++        }
++    }
++}
++enum Message {
++    Task(QueuedTask),
++    Control(PipelineId),
++    Wake,
++    Inactive,
++}
++impl QueuedTaskConversion for Message {
++    fn task_source_name(&self) -> Option<&TaskSourceName> {
++        match self {
++            Self::Task(t) => Some(&t.task_source),
++            _ => None,
++        }
++    }
++    fn pipeline_id(&self) -> Option<PipelineId> {
++        match self {
++            Self::Task(t) => t.pipeline_id,
++            Self::Control(id) => Some(*id),
++            _ => None,
++        }
++    }
++    fn into_queued_task(self) -> Option<QueuedTask> {
++        match self {
++            Self::Task(t) => Some(t),
++            _ => None,
++        }
++    }
++    fn from_queued_task(t: QueuedTask) -> Self {
++        Self::Task(t)
++    }
++    fn inactive_msg() -> Self {
++        Self::Inactive
++    }
++    fn wake_up_msg() -> Self {
++        Self::Wake
++    }
++    fn is_wake_up(&self) -> bool {
++        matches!(self, Self::Wake)
++    }
++}
++fn message(
++    id: Option<PipelineId>,
++    source: TaskSourceName,
++    tag: usize,
++    log: &Log,
++    reenter: bool,
++) -> Message {
++    Message::Task(QueuedTask {
++        worker: None,
++        event_category: (),
++        pipeline_id: id,
++        task_source: source,
++        task: Box::new(Capture {
++            tag,
++            log: log.clone(),
++            owner: thread::current().id(),
++            reenter,
++        }),
++    })
++}
++fn queue() -> (Rc<TaskQueue<Message>>, Sender<Message>) {
++    let (tx, rx) = crossbeam_channel::unbounded();
++    (Rc::new(TaskQueue::new(rx, tx.clone())), tx)
++}
++fn tags(log: &Log) -> Vec<usize> {
++    let mut tags = log.lock().unwrap().clone();
++    tags.sort_unstable();
++    tags
++}
++
++#[test]
++fn discarded_pipeline_releases_inactive_throttled_and_ready_captures_once() {
++    let (q, _) = queue();
++    let log = Log::default();
++    let active = FxHashSet::default();
++    q.take_tasks(
++        message(Some(CLOSED), TaskSourceName::Timer, 1, &log, false),
++        &active,
++    );
++    q.process_incoming_tasks(
++        message(
++            Some(CLOSED),
++            TaskSourceName::PerformanceTimeline,
++            2,
++            &log,
++            false,
++        ),
++        &active,
++    );
++    q.process_incoming_tasks(
++        message(Some(CLOSED), TaskSourceName::Rendering, 3, &log, false),
++        &active,
++    );
++    assert!(tags(&log).is_empty());
++    q.discard_tasks_for_pipeline(CLOSED);
++    assert_eq!(tags(&log), [1, 2, 3]);
++    assert!(q.is_pipeline_discarded(CLOSED));
++    assert!(!q.is_pipeline_discarded(LIVE));
++    assert!(!q.inactive.borrow().contains_key(&CLOSED));
++    assert!(q.throttled.borrow().values().all(VecDeque::is_empty));
++    q.discard_tasks_for_pipeline(CLOSED);
++    drop(q);
++    assert_eq!(tags(&log), [1, 2, 3]);
++}
++
++#[test]
++fn late_tasks_are_dropped_before_rendering_or_throttling_but_control_survives() {
++    let (q, tx) = queue();
++    let log = Log::default();
++    q.discard_tasks_for_pipeline(CLOSED);
++    tx.send(message(
++        Some(CLOSED),
++        TaskSourceName::PerformanceTimeline,
++        2,
++        &log,
++        false,
++    ))
++    .ok()
++    .unwrap();
++    tx.send(message(Some(CLOSED), TaskSourceName::Timer, 3, &log, false))
++        .ok()
++        .unwrap();
++    tx.send(Message::Control(CLOSED)).ok().unwrap();
++    q.take_tasks(
++        message(Some(CLOSED), TaskSourceName::Rendering, 1, &log, false),
++        &[CLOSED].into_iter().collect(),
++    );
++    assert_eq!(tags(&log), [1, 2, 3]);
++    assert!(matches!(q.recv(), Ok(Message::Control(CLOSED))));
++    assert!(q.recv().is_err());
++    assert!(q.inactive.borrow().is_empty());
++    assert!(q.throttled.borrow().values().all(VecDeque::is_empty));
++}
++
++#[test]
++fn live_inactive_pipeline_and_pipeline_less_worker_tasks_are_preserved() {
++    let (q, _) = queue();
++    let log = Log::default();
++    q.take_tasks(
++        message(Some(LIVE), TaskSourceName::Timer, 1, &log, false),
++        &FxHashSet::default(),
++    );
++    q.process_incoming_tasks(
++        message(None, TaskSourceName::Timer, 2, &log, false),
++        &FxHashSet::default(),
++    );
++    q.discard_tasks_for_pipeline(CLOSED);
++    assert!(tags(&log).is_empty());
++    q.select();
++    q.take_tasks(Message::Wake, &[LIVE].into_iter().collect());
++    let mut ids = Vec::new();
++    while let Ok(msg) = q.recv() {
++        if let Message::Task(t) = msg {
++            ids.push(t.pipeline_id);
++            drop(t);
++        }
++    }
++    assert_eq!(ids, [None, Some(LIVE)]);
++    assert_eq!(tags(&log), [1, 2]);
++}
++
++#[test]
++fn capture_destructors_can_reenter_every_queue_without_borrow_panics() {
++    for source in [
++        TaskSourceName::Timer,
++        TaskSourceName::PerformanceTimeline,
++        TaskSourceName::Rendering,
++    ] {
++        let (q, _) = queue();
++        let log = Log::default();
++        REENTER.with(|slot| *slot.borrow_mut() = Rc::downgrade(&q));
++        q.process_incoming_tasks(
++            message(Some(CLOSED), source, 1, &log, true),
++            &FxHashSet::default(),
++        );
++        q.discard_tasks_for_pipeline(CLOSED);
++        assert_eq!(tags(&log), [1, 99]);
++    }
++}
