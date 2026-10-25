@@ -12,6 +12,37 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0346 revisionata — coda task di pipeline chiusa
+
+Performance root è coerente con Trusted<Performance> di taskPerformanceTimeline parcheggiato
+per pipelineabout:blank uscita. Non è AddRawValueRoot: ordine RootSet lo pone nei tracerServo.
+Proprietario dedotto da sorgenti/archi, entrytype e inactive-vs-throttled non misurati. Coda
+inactive rilascia solo se pipeline torna fullyactive, impossibile dopoExitPipeline; cancellare
+flag non distrugge task/Trusted. Prossimo0347 cleanup code all’exit e arrivi tardivi, test altre
+pipeline/worker/cancellazione/Drop su scriptthread, nessuna rimozione globale di root vive.
+Retentionframe non si chiude da questo solo fix: promiseFontFaceSet e callback restano.
+Batchaa028 tuttoverde; prossimo push includerà fixcoerente e diagnosi locali revisionate.
+
+### Claude0346 — proprietario della radice Performance: task parcheggiato (da revisionare, nessun codice)
+
+Base46f778f09a7; solo sorgenti più output0345 esistenti; nessuna build, misura browser, patch o wiki.
+RootSet[46] non è AddRawValueRoot: l'ordine degli archi lo colloca dopo gli atomi, nel tracer
+extra di Servo `trace_rust_roots` (42/43 documents/window_proxies, 48 = promise_table), quindi
+DomRoot o `Trusted`. Unici proprietari possibili: `Trusted::new(self)` in `performance.rs`
+(`queue_entry`:315, :234, :420) nel task `notify_performance_observers`; nessun DomRoot conservato.
+Percorso: l'unload del documento about:blank sostituito (`update_visibility_state(Hidden)`,
+document.rs:2170, chiamato da script_thread.rs:2885) accoda la voce; la sorgente performance-timeline
+è throttled e, per pipeline non fully-active, il task finisce in `TaskQueue.inactive`
+(task_queue.rs:91-106). Quella mappa si svuota solo quando la pipeline torna fully-active;
+`handle_exit_pipeline_msg` toglie il documento e cancella i task (run no-op) ma non li rimuove, quindi
+il `Trusted` non viene mai rilasciato. task_queue.rs è invariato dall'import pristino (bug upstream).
+Non è un proprietario nativo legittimo: il task non può più eseguire. Piano unico (prossimo incarico):
+`TaskQueue::discard_tasks_for_pipeline` (rimuove inactive+throttled della pipeline e scarta gli arrivi
+successivi) chiamato in `handle_exit_pipeline_msg` dopo `clear_js_runtime`; test unitario TaskQueue con
+Drop osservabile più negativo su altra pipeline; verifica CI con snapshot frame-retention e query0345.
+Non chiude da solo la retention: restano RootSet[5][6][7]. Limiti: inferenza da ordine archi + ricerca
+sorgente, tipo di voce non provato. Log `target/task-0346/RESULTS.txt`.
+
 ### Codex0345 revisionata — radici reali identificate; confronto discardChrome
 
 Artefatto corrente mostra Persistent→RootSet→celle26/28/30/96→oggetti dei realm figli:
