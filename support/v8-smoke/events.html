@@ -26,6 +26,23 @@ check("microtasks run before timer and frame callbacks, in either order", () => 
   queueMicrotask(() => order.push("queueMicrotask"));
   order.push("sync");
 }));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTML has one microtask queue: promise jobs and queueMicrotask callbacks run in the order they
+// were queued, nested ones included (Chrome 155: "p1,q,p2", then "q1,p1,p2,q2"). An engine that
+// runs every promise job before the next queueMicrotask callback gives "p1,p2,q".
+check("promise jobs and queueMicrotask callbacks share one FIFO microtask queue", () => new Promise(resolve => {
+  const first = [], second = [];
+  Promise.resolve().then(() => { first.push("p1"); Promise.resolve().then(() => first.push("p2")); });
+  queueMicrotask(() => first.push("q"));
+  setTimeout(() => {
+    queueMicrotask(() => { second.push("q1"); Promise.resolve().then(() => second.push("p2")); queueMicrotask(() => second.push("q2")); });
+    Promise.resolve().then(() => second.push("p1"));
+    setTimeout(() => {
+      const seen = `${first.join()} ${second.join()}`;
+      resolve(seen === "p1,q,p2 q1,p1,p2,q2" || seen);
+    }, 0);
+  }, 0);
+}));
 check("nested timers keep their order", () => new Promise(resolve => {
   const order = [];
   setTimeout(() => { order.push(1); setTimeout(() => { order.push(3); resolve(order.join() === "1,2,3" || order.join()); }, 0); }, 0);

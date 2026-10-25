@@ -19,7 +19,10 @@ WASM_SKIPS = {
 }
 # Checks a page must report: a page that drops one still reports a consistent total.
 REQUIRED_CHECKS = {
-    "events.html": ("an iframe keeps its WindowProxy across origin changes and back",),
+    "events.html": (
+        "an iframe keeps its WindowProxy across origin changes and back",
+        "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
+    ),
 }
 TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
 

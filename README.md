@@ -111,8 +111,8 @@ two successive sandboxed opaque origins, same-origin again, twice); see the shel
 WindowProxy wrapper per browsing context across those changes (same `contentWindow` and
 message source), without retaining the replaced windows; each new page still gets its own
 cross-origin members.
-Nested Promise/`queueMicrotask` interleaving remains under migration audit; the pending fix
-is not part of this checkpoint (see the shell wiki page).
+Nested Promise and `queueMicrotask` callbacks now share V8's FIFO queue; browser confirmation
+for Roves comes from the V8 CI smoke (see the shell wiki page).
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
 Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`
@@ -621,6 +621,8 @@ do, and callbacks run by the engine no longer see the script that registered the
 crashing the page's script thread.
 An object reachable only through a `WeakRef` can now be collected once the current task and its
 microtasks finish, as in browsers, even if no promise ran in between (see the shell wiki page).
+Promise and `queueMicrotask` callbacks now run in the order they were queued, as in browsers,
+instead of all pending promise callbacks first (see the shell wiki page).
 `postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
 `DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
 

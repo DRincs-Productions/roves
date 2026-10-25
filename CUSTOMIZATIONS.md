@@ -1,3 +1,47 @@
+## 2026-10-25 - One FIFO for promise jobs and HTML microtasks (0329)
+
+**Files:** `components/roves-js/src/{runtime_impl.rs,realm_impl.rs,wrappers2.in.rs,tests.rs}`,
+`components/script/{microtask.rs,script_runtime.rs}`, `support/roves_js/gen_wrappers2.py`,
+`support/v8-smoke/{events.html,check_results.py,test_runner.py}`, patch
+`0329-microtask-fifo-v8-queue.patch`.
+
+V8 keeps promise jobs in its own microtask queue. roves-js used to put one "drain" job in
+Servo's `MicrotaskQueue` per batch (from its promise hook), and that job ran V8's whole queue,
+nested jobs included, so `queueMicrotask` callbacks and mutation-observer/custom-element
+microtasks queued in between ran after all of them: `p1, p2, q` instead of HTML's `p1, q, p2`
+(reproduced natively with the old path, `target/task-0329/negative-old.log`). Now V8's queue is
+the single FIFO. `MicrotaskQueue::enqueue` still calls `JobQueueMayNotBeEmpty`, which roves-js
+implements with rusty_v8's public `Isolate::enqueue_microtask`: it queues a native function of
+the runtime's initial realm, whose turn calls the job queue's `runJobs` trap; Servo's
+`run_jobs` now runs just the oldest queued microtask (`MicrotaskQueue::run_next`, rooted,
+through the unchanged `MicrotaskRunnable` handlers, so the WebIDL callback invocation, realm
+entry, exception reporting and user-interaction state are the same for Window and workers).
+The turn is queued with the initial realm entered: V8 gives a microtask the *current* context
+and skips it once that context is shut down (a replaced window's detached global), which would
+otherwise leave a queued HTML microtask without a turn. `checkpoint`'s step 3 is a loop: the new
+`PerformMicrotaskCheckpoint` wrapper (a roves-js entry in `gen_wrappers2.py`), then, only if
+HTML microtasks remain because V8 emptied its queue on a termination, one of them, until both
+queues are empty. V8's queue is empty then (it runs only inside this guarded checkpoint), so no
+stale turn can later run a newer microtask early, and the promise jobs and microtasks the
+fallback queues run in the same checkpoint; the first draft ran all leftovers after V8 and left
+those in V8's queue. The queue is a `VecDeque`. The drain machinery (promise-hook enqueue,
+`drain_pending`, per-realm drain function) is gone; the promise hook only clears import
+metadata. Servo's `enqueue_promise_job` trap and `EnqueuedPromiseCallback` are no longer called
+by roves-js (left in place, removal is a follow-up). V8's own kept-objects clear now happens at
+the end of V8's queue; step 6's `ClearKeptObjects` (0327) stays. Not claimed to change the
+removed-frame retention or WeakRef semantics beyond that.
+Tests: native tests with a host queue that mirrors Servo's checkpoint (guard, loop, fallback)
+over the production bridges, its callbacks traced through `JS_AddExtraGCRootsTracer`:
+Chrome-ordered cases (`p1,q,p2`, `q1,p1,p2,q2`, `p1,q,p2`); turns queued in a realm that is
+only left; promise jobs alone; a terminated microtask whose leftovers rejoin the FIFO (`a,b,pb,c`,
+then `e,d` with no stale turn); a throwing microtask (reported once) followed by more work, with
+a nested checkpoint doing nothing; a runtime abandoned with a pending turn and promise job, then
+a new runtime on the same thread; a navigated-away (detached) window whose promise job V8 skips
+while its HTML microtasks keep their turns, across a GC. Normal and JITless; on fresh copies the
+first draft's loop fails the termination test and queueing in the current realm fails the
+shutdown test. `events.html` gets a required check with both Chrome cases, and the checkpoint
+contract checks step 3's loop shape (plus mutations for the draft's fallback forms).
+
 ## 2026-10-24 - Park incomplete FIFO microtask implementation after weekly quota
 
 0329 reproduces a real ordering gap (nested Promise vs queueMicrotask), but the common V8
@@ -5,6 +49,7 @@ FIFO implementation still needs termination/fallback and runtime-lifecycle revie
 a weekly quota. Saved the full draft and a code-only patch under ignored target/task-0329/;
 restored all publishable sources/wiki and replay scratch to completed0328. No0329 production
 patch shipped, no quota bypass or five-hour retry scheduled. See current V8_MIGRATION handoff.
+
 
 ## 2026-10-24 - wrappers2 generator keeps roves-js's own entries (0328)
 

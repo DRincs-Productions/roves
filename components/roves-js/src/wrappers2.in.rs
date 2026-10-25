@@ -67,6 +67,7 @@ wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
 wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
 wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
 wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));
+wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));
 wrap!(jsapi: pub fn NewPromiseObject(cx: &mut JSContext, executor: HandleObject) -> *mut JSObject);
 wrap!(jsapi: pub fn IsPromiseObject(obj: HandleObject) -> bool);
 wrap!(jsapi: pub fn GetPromiseState(promise: HandleObject) -> PromiseState);

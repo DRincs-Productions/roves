@@ -1,0 +1,1032 @@
+diff --git a/components/roves-js/src/realm_impl.rs b/components/roves-js/src/realm_impl.rs
+index f2141fa28e2..5b889f853ac 100644
+--- a/components/roves-js/src/realm_impl.rs
++++ b/components/roves-js/src/realm_impl.rs
+@@ -51,8 +51,8 @@ pub(crate) struct RealmData {
+     pub(crate) global: Cell<*mut JSObject>,
+     /// The realm's window proxy (`SetWindowProxy`), for a Window global.
+     pub(crate) window_proxy: Cell<*mut JSObject>,
+-    /// The realm's promise-job drain function (see `runtime_impl`).
+-    pub(crate) drain_function: Cell<*mut JSObject>,
++    /// The initial realm's embedder microtask function (see `runtime_impl`), else null.
++    pub(crate) microtask_function: Cell<*mut JSObject>,
+     principals: PrincipalsSlot,
+ }
+ 
+@@ -85,7 +85,7 @@ unsafe impl GarbageCollected for RealmData {
+         visitor.trace(&self.context);
+         crate::cell::trace_cell(self.global.get() as *mut c_void, visitor);
+         crate::cell::trace_cell(self.window_proxy.get() as *mut c_void, visitor);
+-        crate::cell::trace_cell(self.drain_function.get() as *mut c_void, visitor);
++        crate::cell::trace_cell(self.microtask_function.get() as *mut c_void, visitor);
+     }
+ 
+     fn get_name(&self) -> &'static std::ffi::CStr {
+@@ -148,7 +148,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context:
+         context: context_reference,
+         global: Cell::new(std::ptr::null_mut()),
+         window_proxy: Cell::new(std::ptr::null_mut()),
+-        drain_function: Cell::new(std::ptr::null_mut()),
++        microtask_function: Cell::new(std::ptr::null_mut()),
+         principals: Rc::new(Cell::new(std::ptr::null_mut())),
+     };
+     // SAFETY: wrapped right away: no allocation runs before the holder owns it.
+diff --git a/components/roves-js/src/runtime_impl.rs b/components/roves-js/src/runtime_impl.rs
+index 299b1f8b250..a24b95cbbbe 100644
+--- a/components/roves-js/src/runtime_impl.rs
++++ b/components/roves-js/src/runtime_impl.rs
+@@ -5,14 +5,14 @@
+ //! Runtime hooks and settings of the JSAPI (interrupts, extra GC roots, the job queue,
+ //! promise rejection tracking, GC and JIT settings) on V8.
+ //!
+-//! **Promise jobs.** SpiderMonkey hands every promise job to the embedder's job queue
+-//! (`JobQueueTraps::enqueuePromiseJob`), and the embedder runs it at its microtask
+-//! checkpoint. V8 keeps promise jobs in its own microtask queue (explicit policy here: V8
+-//! never runs them by itself). When V8 may have queued jobs (its promise hook reports a promise
+-//! created or resolved), roves-js enqueues one job in the embedder's queue, a native "drain"
+-//! function of the current realm, which performs V8's microtask checkpoint when the embedder
+-//! runs it. Promise jobs thus run at the embedder's checkpoints, in its order, as with
+-//! SpiderMonkey. Without an embedder job queue, [`RunJobs`] performs a checkpoint.
++//! **Microtasks.** V8's microtask queue (explicit policy here: V8 never runs it by itself)
++//! holds the promise jobs and a turn for each microtask the embedder queues in its own job
++//! queue (`queueMicrotask`, mutation observers): [`JobQueueMayNotBeEmpty`] queues a native
++//! function that, on its turn, makes the job queue's `runJobs` trap run the embedder's oldest
++//! microtask. The embedder's checkpoint runs V8's queue ([`PerformMicrotaskCheckpoint`]), so
++//! both kinds run in their common FIFO order, as HTML requires; SpiderMonkey's
++//! `enqueuePromiseJob` trap is unused. Without an embedder job queue, [`RunJobs`] performs a
++//! checkpoint.
+ //!
+ //! **Foreground tasks.** V8 posts some work to run on the isolate's thread: finishing an
+ //! asynchronous WebAssembly compilation, `FinalizationRegistry` cleanup, `Atomics.waitAsync`
+@@ -54,8 +54,6 @@ pub(crate) struct RuntimeHooks {
+     preserve_wrapper: Cell<(PreserveWrapperCallback, HasReleasedWrapperCallback)>,
+     read_principals: Cell<JSReadPrincipalsOp>,
+     job_queue: Cell<*mut JobQueue>,
+-    /// A drain is queued for this runtime, never for a later runtime on the same thread.
+-    drain_pending: Cell<bool>,
+     promise_rejection_tracker: Cell<(PromiseRejectionTrackerCallback, *mut c_void)>,
+     foreground: std::sync::Arc<Foreground>,
+     consume_stream: Cell<(ConsumeStreamCallback, ReportStreamErrorCallback)>,
+@@ -85,7 +83,6 @@ impl Default for RuntimeHooks {
+             preserve_wrapper: Cell::new((None, None)),
+             read_principals: Cell::new(None),
+             job_queue: Cell::new(std::ptr::null_mut()),
+-            drain_pending: Cell::new(false),
+             promise_rejection_tracker: Cell::new((None, std::ptr::null_mut())),
+             foreground: Default::default(),
+             consume_stream: Cell::new((None, None)),
+@@ -487,119 +484,90 @@ pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
+ 
+ pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
+ 
+-/// V8's promise hook: a promise created or resolved may have queued promise jobs.
++/// V8's promise hook. V8's private property API executes no user code. A pending import's
++/// metadata must not remain rooted by an already-resolved promise.
+ unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
+-    if matches!(kind, v8::PromiseHookType::Init | v8::PromiseHookType::Resolve) {
+-        // V8's private property API executes no user code. A pending import's
+-        // metadata must not remain rooted by an already-resolved promise.
+-        if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
+-            v8::callback_scope!(unsafe scope, promise);
+-            let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
+-            promise.delete_private(scope, key);
+-        }
+-        let Some(cx) = crate::rust::Runtime::get() else { return };
+-        if hooks(cx.as_ptr()).drain_pending.get() {
+-            return;
+-        }
++    if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
+         // SAFETY: V8 calls the hook on the isolate's thread, inside a handle scope.
+         v8::callback_scope!(unsafe scope, promise);
+-        let realm = promise.get_creation_context(scope).map(crate::realm_impl::realm_of_context);
+-        request_drain(realm.unwrap_or(std::ptr::null_mut()));
++        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
++        promise.delete_private(scope, key);
+     }
+ }
+ 
+-/// Whether `realm` has an embedder global (a class object, such as a DOM global), unlike the
+-/// runtime's initial realm.
+-fn has_embedder_global(realm: *mut crate::jsapi::Realm) -> bool {
+-    // SAFETY: realms come from `register_realm`.
+-    let global = unsafe { crate::realm_impl::GetRealmGlobalOrNull(realm) };
+-    crate::object::class_box(global).is_some()
+-}
+-
+-/// Enqueues a drain job in the embedder's job queue (once until it runs). The job belongs to
+-/// `promise_realm` (the realm of the promise that queued V8 jobs) or else to the current realm:
+-/// the embedder attributes it to the current realm's global, which must be an embedder global
+-/// (a foreground task, for example, runs with no realm entered). Failing both, another realm
+-/// with an embedder global takes it (a drain runs every pending job of the isolate), and only
+-/// without any such realm the current one.
+-fn request_drain(promise_realm: *mut crate::jsapi::Realm) {
+-    let Some(cx) = crate::rust::Runtime::get() else { return };
+-    let cx = cx.as_ptr();
+-    if hooks(cx).drain_pending.get() {
++/// The embedder queued a microtask: queues its turn in V8's microtask queue, after the promise
++/// jobs and embedder microtasks already there. On that turn the job queue's `runJobs` trap runs
++/// the embedder's oldest microtask.
++pub unsafe fn JobQueueMayNotBeEmpty(cx: *mut JSContext) {
++    if hooks(cx).job_queue.get().is_null() {
+         return;
+     }
+-    let queue = hooks(cx).job_queue.get();
+-    if queue.is_null() {
+-        return;
+-    }
+-    // SAFETY: embedder job queues come from `CreateJobQueue`.
+-    let queue = unsafe { &*(queue as *const RustJobQueue) };
+-    let Some(enqueue) = queue._traps.enqueuePromiseJob else { return };
+     // SAFETY: the runtime's live context.
+     let raw = unsafe { &*cx };
+-    let current = crate::realm_impl::get_context_realm(cx);
+-    // A live realm from the weak registry; entered below before anything allocates.
+-    let embedder_realm = || crate::realm_impl::find_live_realm(raw, has_embedder_global);
+-    let realm = [promise_realm, current]
+-        .into_iter()
+-        .find(|realm| !realm.is_null() && has_embedder_global(*realm))
+-        .or_else(embedder_realm)
+-        .unwrap_or(current);
+-    if realm.is_null() {
+-        return;
+-    }
+-    let switch = raw.switch_realm(realm);
+-    let enqueued = (|| {
+-        let drain = drain_function(cx)?;
+-        hooks(cx).drain_pending.set(true);
+-        crate::rooted!(in(cx) let drain = drain);
+-        crate::rooted!(in(cx) let none = std::ptr::null_mut::<crate::jsapi::JSObject>());
+-        // SAFETY: SpiderMonkey's enqueue contract (no promise, allocation site or host data).
+-        let ok = unsafe {
+-            enqueue(queue._queue, cx, none.handle().into(), drain.handle().into(), none.handle().into(), none.handle().into())
+-        };
+-        Some(ok)
+-    })();
+-    drop(switch);
+-    if enqueued != Some(true) {
+-        hooks(cx).drain_pending.set(false);
+-    }
++    // V8 gives the turn the current context and skips it once that context is shut down (a
++    // replaced window's): like its function, the turn belongs to the initial realm.
++    let initial = initial_realm(raw);
++    let _switch = raw.switch_realm(initial);
++    let Some(function) = microtask_function(cx, initial) else { return };
++    raw.with_scope(|scope| {
++        // SAFETY: the initial realm keeps the function.
++        let function = unsafe { crate::jsval::to_v8(scope, crate::jsval::ObjectValue(function)) };
++        if let Ok(function) = v8::Local::<v8::Function>::try_from(function) {
++            scope.enqueue_microtask(function);
++        }
++    });
++}
++
++/// The runtime's initial realm, which lives as long as the runtime.
++fn initial_realm(raw: &JSContext) -> *mut crate::jsapi::Realm {
++    raw.with_scope(|scope| crate::realm_impl::realm_of_context(v8::Local::new(scope, &*raw.context.borrow())))
+ }
+ 
+-/// The current realm's drain function (made once per realm, kept by the realm).
+-fn drain_function(cx: *mut JSContext) -> Option<*mut crate::jsapi::JSObject> {
+-    let realm = crate::realm_impl::get_context_realm(cx);
+-    let data = crate::realm_impl::realm_data(realm)?;
+-    if data.drain_function.get().is_null() {
++/// The function V8 calls on an embedder microtask's turn, made once in the runtime's initial
++/// realm (entered by the caller) and kept by it.
++fn microtask_function(cx: *mut JSContext, initial: *mut crate::jsapi::Realm) -> Option<*mut crate::jsapi::JSObject> {
++    let data = crate::realm_impl::realm_data(initial)?;
++    if data.microtask_function.get().is_null() {
+         // SAFETY: a live context; the function is stored in (and traced by) the realm.
+-        let function = unsafe { crate::jsapi_impl::JS_NewFunction(cx, Some(drain_microtasks), 0, 0, c"runPromiseJobs".as_ptr()) };
++        let function = unsafe { crate::jsapi_impl::JS_NewFunction(cx, Some(run_embedder_microtask), 0, 0, c"runMicrotask".as_ptr()) };
+         if function.is_null() {
+             return None;
+         }
+-        data.drain_function.set(function as *mut crate::jsapi::JSObject);
++        data.microtask_function.set(function as *mut crate::jsapi::JSObject);
+     }
+-    Some(data.drain_function.get())
++    Some(data.microtask_function.get())
+ }
+ 
+-/// The drain job: runs V8's pending promise jobs (at the embedder's checkpoint).
+-unsafe extern "C" fn drain_microtasks(cx: *mut JSContext, _argc: u32, vp: *mut crate::jsval::JSVal) -> bool {
+-    hooks(cx).drain_pending.set(false);
+-    isolate(cx).perform_microtask_checkpoint();
++/// An embedder microtask's turn: the job queue's `runJobs` trap runs its oldest microtask.
++unsafe extern "C" fn run_embedder_microtask(cx: *mut JSContext, _argc: u32, vp: *mut crate::jsval::JSVal) -> bool {
++    let queue = hooks(cx).job_queue.get();
++    if !queue.is_null() {
++        // SAFETY: embedder job queues come from `CreateJobQueue`.
++        let queue = unsafe { &*(queue as *const RustJobQueue) };
++        if let Some(run) = queue._traps.runJobs {
++            // SAFETY: the trap's contract (the embedder's queue, this thread's context).
++            unsafe { run(queue._queue, cx) };
++        }
++    }
+     // SAFETY: the JSNative contract.
+     unsafe { *vp = crate::jsval::UndefinedValue() };
+     true
+ }
+ 
+-pub unsafe fn JobQueueMayNotBeEmpty(_cx: *mut JSContext) {}
++/// Runs V8's microtask queue until it is empty: promise jobs and the embedder's microtasks, in
++/// their common FIFO order (the HTML microtask checkpoint's step 3). Does nothing while V8
++/// already runs microtasks. V8 then clears its kept objects.
++pub unsafe fn PerformMicrotaskCheckpoint(cx: *mut JSContext) {
++    isolate(cx).perform_microtask_checkpoint();
++}
+ 
+ /// Releases the WeakRef targets kept alive since the last clear (the HTML microtask
+-/// checkpoint's step 6). V8 clears them itself only after `perform_microtask_checkpoint`,
+-/// which runs just when promise jobs were queued (`drain_microtasks`).
++/// checkpoint's step 6). V8 clears them itself only at the end of
++/// [`PerformMicrotaskCheckpoint`], before the embedder's later checkpoint steps.
+ pub unsafe fn ClearKeptObjects(cx: *mut JSContext) {
+     isolate(cx).clear_kept_objects();
+ }
+ 
+-/// Runs the pending promise jobs (a V8 microtask checkpoint).
+ /// Runs the waiting foreground tasks and promise jobs (embedders without a job queue).
+ pub unsafe fn RunJobs(cx: *mut JSContext) {
+     loop {
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8ddfba391c0..19affa361ea 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -5674,7 +5674,8 @@ mod callable_classes {
+ }
+ 
+ mod embedder_job_queue {
+-    use std::cell::RefCell;
++    use std::cell::{Cell, RefCell};
++    use std::collections::VecDeque;
+     use std::ffi::c_void;
+ 
+     use super::eval;
+@@ -5684,88 +5685,177 @@ mod embedder_job_queue {
+     use crate::rust::{JSEngineHandle, Runtime};
+ 
+     thread_local! {
+-        static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+-    }
+-
+-    #[test]
+-    fn an_abandoned_drain_does_not_suppress_the_next_runtime_on_the_same_thread() {
+-        for _ in 0..2 {
+-            JOBS.with(|jobs| jobs.borrow_mut().clear());
+-            let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+-            traps.enqueuePromiseJob = Some(enqueue);
+-            let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+-            let enqueued = {
+-                let runtime = Runtime::new(JSEngineHandle::for_tests());
+-                unsafe { SetJobQueue(runtime.raw_cx(), queue) };
+-                eval(&runtime, "Promise.resolve().then(() => 42); 0");
+-                // Deliberately abandon this runtime with its drain still pending. The
+-                // embedder discards that job at shutdown; it must not affect another VM.
+-                JOBS.with(|jobs| jobs.borrow().len())
+-            };
+-            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+-            // Never inspect the old runtime's unrooted job pointers.
+-            JOBS.with(|jobs| jobs.borrow_mut().clear());
+-            assert_eq!(enqueued, 1, "each runtime must enqueue its own initial drain");
+-        }
+-    }
+-
++        /// The embedder's microtask queue (Servo's `MicrotaskQueue`): JS callbacks, traced as
++        /// roots (`trace_host`), as Servo traces its queue.
++        static HOST: RefCell<VecDeque<*mut JSObject>> = const { RefCell::new(VecDeque::new()) };
++        static PROMISE_JOBS_ENQUEUED: Cell<usize> = const { Cell::new(0) };
++        /// The checkpoint's re-entrancy flag (HTML's "performing a microtask checkpoint").
++        static PERFORMING: Cell<bool> = const { Cell::new(false) };
++        /// Turns V8 gave the embedder (`runJobs` calls) and exceptions the embedder reported.
++        static TURNS: Cell<usize> = const { Cell::new(0) };
++        static REPORTED: Cell<usize> = const { Cell::new(0) };
++    }
++
++    /// SpiderMonkey's promise-job trap: V8 keeps its promise jobs, so it is never called.
+     unsafe extern "C" fn enqueue(
+         _queue: *const c_void,
+         _cx: *mut JSContext,
+         _promise: HandleObject,
+-        job: HandleObject,
++        _job: HandleObject,
+         _site: HandleObject,
+         _data: HandleObject,
+     ) -> bool {
+-        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
++        PROMISE_JOBS_ENQUEUED.with(|count| count.set(count.get() + 1));
+         true
+     }
+ 
+-    #[test]
+-    fn promise_jobs_run_at_the_embedders_checkpoint() {
+-        let runtime = Runtime::new(JSEngineHandle::for_tests());
+-        let cx = runtime.raw_cx();
+-        // SAFETY: an all-`None` trap table, plus the enqueue trap.
+-        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+-        traps.enqueuePromiseJob = Some(enqueue);
+-        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+-        unsafe { SetJobQueue(cx, queue) };
+-
+-        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v));");
+-        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
+-        let jobs = JOBS.with(|jobs| jobs.borrow_mut().split_off(0));
+-        assert_eq!(jobs.len(), 1, "one drain job per checkpoint");
++    /// Servo's `run_jobs`: runs the oldest embedder microtask on its turn.
++    unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
++        TURNS.with(|turns| turns.set(turns.get() + 1));
++        run_next(cx);
++    }
+ 
+-        // The embedder's checkpoint runs the job: V8's pending reactions run, in order.
+-        rooted!(in(cx) let job = ObjectValue(jobs[0] as *mut JSObject));
++    /// Servo's `MicrotaskQueue::run_next`: its callback wrapper reports a thrown exception (a
++    /// terminated callback leaves none).
++    fn run_next(cx: *mut JSContext) {
++        let Some(job) = HOST.with(|host| host.borrow_mut().pop_front()) else { return };
++        rooted!(in(cx) let job = ObjectValue(job));
+         rooted!(in(cx) let this = UndefinedValue());
+         rooted!(in(cx) let mut rval = UndefinedValue());
+         let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
+-        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
+-        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
+-        // Later promises request a new drain job.
+-        eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
+-        assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
++        if !unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) } &&
++            unsafe { JS_IsExceptionPending(cx) }
++        {
++            unsafe { JS_ClearPendingException(cx) };
++            REPORTED.with(|reported| reported.set(reported.get() + 1));
++        }
+     }
+ 
+-    thread_local! {
+-        static ENQUEUE_GLOBALS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
++    /// An uncatchable failure (a native returning `false` without an exception), as when an
++    /// interrupt stops the script: V8 terminates execution.
++    unsafe extern "C" fn terminate(_cx: *mut JSContext, _argc: u32, _vp: *mut JSVal) -> bool {
++        false
+     }
+ 
+-    unsafe extern "C" fn enqueue_recording_global(
+-        _queue: *const c_void,
+-        cx: *mut JSContext,
+-        _promise: HandleObject,
+-        job: HandleObject,
+-        _site: HandleObject,
+-        _data: HandleObject,
+-    ) -> bool {
+-        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
+-        // Servo attributes the job to the current realm's global.
+-        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().push(unsafe { CurrentGlobalOrNull(cx) } as usize));
++    unsafe extern "C" fn host_checkpoint(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        checkpoint(cx);
++        unsafe { CallArgs::from_vp(vp, argc) }.rval().set(UndefinedValue());
+         true
+     }
+ 
++    /// Servo's `queueMicrotask`: the callback goes to the embedder's queue, which tells the
++    /// runtime through the production bridge.
++    unsafe extern "C" fn queue_microtask(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++        let args = unsafe { CallArgs::from_vp(vp, argc) };
++        HOST.with(|host| host.borrow_mut().push_back(args.get(0).get().to_object()));
++        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        unsafe { crate::rust::wrappers2::JobQueueMayNotBeEmpty(&safe) };
++        args.rval().set(UndefinedValue());
++        true
++    }
++
++    unsafe extern "C" fn trace_host(trc: *mut JSTracer, _data: *mut c_void) {
++        HOST.with(|host| {
++            for job in host.borrow_mut().iter_mut() {
++                unsafe { crate::glue::CallObjectRootTracer(trc, job, c"microtask".as_ptr()) };
++            }
++        });
++    }
++
++    /// Resets the host, then defines it on the current global.
++    fn install_host(runtime: &Runtime) {
++        HOST.with(|host| host.borrow_mut().clear());
++        PROMISE_JOBS_ENQUEUED.with(|count| count.set(0));
++        TURNS.with(|turns| turns.set(0));
++        REPORTED.with(|reported| reported.set(0));
++        define_host(runtime);
++    }
++
++    /// Defines the host's natives and `queueMicrotask` on the current global.
++    fn define_host(runtime: &Runtime) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
++        let natives: [(JSNative, &std::ffi::CStr); 3] = [
++            (Some(queue_microtask), c"hostQueueMicrotask"),
++            (Some(terminate), c"terminate"),
++            (Some(host_checkpoint), c"hostCheckpoint"),
++        ];
++        for (native, name) in natives {
++            let function = unsafe { JS_NewFunction(cx, native, 1, 0, name.as_ptr()) };
++            rooted!(in(cx) let function = ObjectValue(function.cast()));
++            assert!(unsafe { JS_SetProperty(cx, global.handle().into(), name.as_ptr(), function.handle().into()) });
++        }
++        eval(runtime, "globalThis.queueMicrotask = hostQueueMicrotask; 0");
++    }
++
++    /// Servo's `MicrotaskQueue::checkpoint` (steps 1 to 3 and 7).
++    fn checkpoint(cx: *mut JSContext) {
++        if PERFORMING.with(|performing| performing.replace(true)) {
++            return;
++        }
++        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        loop {
++            unsafe { crate::rust::wrappers2::PerformMicrotaskCheckpoint(&mut safe) };
++            if HOST.with(|host| host.borrow().is_empty()) {
++                break;
++            }
++            run_next(cx);
++        }
++        PERFORMING.with(|performing| performing.set(false));
++    }
++
++    fn log(runtime: &Runtime) -> std::string::String {
++        super::describe(runtime, eval(runtime, "log.splice(0).join()"))
++    }
++
++    fn new_runtime_with_job_queue() -> (Runtime, *mut JobQueue) {
++        let runtime = Runtime::new(JSEngineHandle::for_tests());
++        // SAFETY: an all-`None` trap table, plus the traps Servo installs.
++        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
++        traps.enqueuePromiseJob = Some(enqueue);
++        traps.runJobs = Some(run_jobs);
++        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
++        unsafe { SetJobQueue(runtime.raw_cx(), queue) };
++        assert!(unsafe { JS_AddExtraGCRootsTracer(runtime.raw_cx(), Some(trace_host), std::ptr::null_mut()) });
++        install_host(&runtime);
++        (runtime, queue)
++    }
++
++    /// The orders Chrome 155 shows for these cases (task 0329's Chrome DevTools reference
++    /// covers the first two).
++    const CASES: [(&str, &str); 3] = [
++        (
++            "Promise.resolve().then(() => { log.push('p1'); Promise.resolve().then(() => log.push('p2')) }); \
++             queueMicrotask(() => log.push('q'))",
++            "p1,q,p2",
++        ),
++        (
++            "queueMicrotask(() => { log.push('q1'); Promise.resolve().then(() => log.push('p2')); \
++             queueMicrotask(() => log.push('q2')) }); Promise.resolve().then(() => log.push('p1'))",
++            "q1,p1,p2,q2",
++        ),
++        (
++            "Promise.resolve().then(() => log.push('p1')); queueMicrotask(() => log.push('q')); \
++             Promise.resolve().then(() => log.push('p2'))",
++            "p1,q,p2",
++        ),
++    ];
++
++    #[test]
++    fn promise_jobs_and_embedder_microtasks_share_one_fifo() {
++        let (runtime, queue) = new_runtime_with_job_queue();
++        for (source, expected) in CASES {
++            eval(&runtime, &format!("globalThis.log = []; {source}; 0"));
++            assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 runs no microtask by itself: {source}");
++            checkpoint(runtime.raw_cx());
++            assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), expected, "{source}");
++            assert!(HOST.with(|host| host.borrow().is_empty()), "every embedder microtask had its turn");
++        }
++        assert_eq!(PROMISE_JOBS_ENQUEUED.with(Cell::get), 0, "promise jobs stay in V8's queue");
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++    }
++
+     static WINDOW_LIKE: JSClass = JSClass {
+         name: c"WindowLike".as_ptr(),
+         flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+@@ -5775,48 +5865,147 @@ mod embedder_job_queue {
+         oOps: std::ptr::null(),
+     };
+ 
+-    fn run_job(runtime: &Runtime, job: usize) {
+-        let cx = runtime.raw_cx();
+-        rooted!(in(cx) let job = ObjectValue(job as *mut JSObject));
+-        rooted!(in(cx) let this = UndefinedValue());
+-        rooted!(in(cx) let mut rval = UndefinedValue());
+-        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
+-        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
+-    }
+-
+     #[test]
+-    fn drain_jobs_belong_to_an_embedder_global_outside_any_realm() {
+-        let runtime = Runtime::new(JSEngineHandle::for_tests());
++    fn embedder_microtasks_of_a_realm_keep_their_turn_after_it_is_left() {
++        let (runtime, queue) = new_runtime_with_job_queue();
+         let cx = runtime.raw_cx();
+-        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+-        traps.enqueuePromiseJob = Some(enqueue_recording_global);
+-        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+-        unsafe { SetJobQueue(cx, queue) };
+         rooted!(in(cx) let global = unsafe {
+             JS_NewGlobalObject(cx, &WINDOW_LIKE, std::ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, std::ptr::null())
+         });
+         let old = unsafe { EnterRealm(cx, global.get()) };
+-        rooted!(in(cx) let resolve = eval(&runtime, "globalThis.log = []; new Promise(r => globalThis.resolveIt = r).then(v => log.push(v)); resolveIt"));
+-        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
+-            run_job(&runtime, job);
+-        }
++        install_host(&runtime);
++        eval(&runtime, &format!("globalThis.log = []; {}; 0", CASES[0].0));
+         unsafe { LeaveRealm(cx, old) };
+-        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().clear());
+-        // Like a foreground task: the promise resolves while the runtime's initial realm is
+-        // current. The drain job is still attributed to the promise's (embedder) global.
+-        rooted!(in(cx) let this = UndefinedValue());
+-        let arguments = [Int32Value(5)];
+-        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
+-        rooted!(in(cx) let mut rval = UndefinedValue());
+-        assert!(unsafe { Call(cx, this.handle().into_handle(), resolve.handle().into_handle(), &array, rval.handle_mut().into_handle()) });
+-        assert_eq!(ENQUEUE_GLOBALS.with(|globals| globals.borrow().clone()), vec![global.get() as usize]);
+-        assert!(unsafe { CurrentGlobalOrNull(cx) } != global.get(), "the current realm is restored");
+-        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
+-            run_job(&runtime, job);
+-        }
++        // The checkpoint runs outside the realm (as after a task); the turns belong to the
++        // runtime's initial realm.
++        checkpoint(runtime.raw_cx());
+         let old = unsafe { EnterRealm(cx, global.get()) };
+-        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "5");
++        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), CASES[0].1);
+         unsafe { LeaveRealm(cx, old) };
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++    }
++
++    #[test]
++    fn promise_jobs_without_embedder_microtasks_wait_for_the_checkpoint() {
++        let (runtime, queue) = new_runtime_with_job_queue();
++        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v)); 0");
++        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
++        checkpoint(runtime.raw_cx());
++        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
++        checkpoint(runtime.raw_cx());
++        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2", "a checkpoint runs each job once");
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++    }
++
++    /// V8 empties its queue when a microtask's execution is terminated, so the embedder runs
++    /// the microtasks whose turn it dropped. The promise jobs and microtasks those queue rejoin
++    /// V8's queue within the same checkpoint, and no turn is left to run a later microtask early.
++    #[test]
++    fn microtasks_after_a_termination_rejoin_the_fifo_in_the_same_checkpoint() {
++        let (runtime, queue) = new_runtime_with_job_queue();
++        let cx = runtime.raw_cx();
++        eval(&runtime, "globalThis.log = []; \
++            queueMicrotask(() => { log.push('a'); terminate(); log.push('unreachable') }); \
++            queueMicrotask(() => { log.push('b'); Promise.resolve().then(() => log.push('pb')); queueMicrotask(() => log.push('c')) }); \
++            Promise.resolve().then(() => log.push('dropped')); 0");
++        checkpoint(cx);
++        let isolate = unsafe { &*(*cx).isolate };
++        assert!(!isolate.is_execution_terminating(), "the termination ended with the stack");
++        assert_eq!(log(&runtime), "a,b,pb,c", "V8 dropped the promise job queued before the termination");
++        assert!(HOST.with(|host| host.borrow().is_empty()));
++        // Nothing is left in V8's queue: neither a promise job nor a turn.
++        let turns = TURNS.with(Cell::get);
++        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
++        unsafe { crate::rust::wrappers2::PerformMicrotaskCheckpoint(&mut safe) };
++        assert_eq!((log(&runtime), TURNS.with(Cell::get)), (std::string::String::new(), turns));
++        // A later task keeps the FIFO order: no stale turn runs its microtask first.
++        eval(&runtime, "Promise.resolve().then(() => log.push('e')); queueMicrotask(() => log.push('d')); 0");
++        checkpoint(cx);
++        assert_eq!(log(&runtime), "e,d");
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++    }
++
++    #[test]
++    fn a_throwing_microtask_does_not_stop_later_work_and_nested_checkpoints_do_nothing() {
++        let (runtime, queue) = new_runtime_with_job_queue();
++        let cx = runtime.raw_cx();
++        eval(&runtime, "globalThis.log = []; \
++            queueMicrotask(() => { log.push('t'); Promise.resolve().then(() => log.push('pt')); throw new Error('reported') }); \
++            Promise.resolve().then(() => { log.push('p'); throw new Error('rejects its promise') }); \
++            queueMicrotask(() => { hostCheckpoint(); log.push('n') }); \
++            queueMicrotask(() => log.push('q')); 0");
++        checkpoint(cx);
++        assert_eq!(log(&runtime), "t,p,n,q,pt", "the nested checkpoint ran nothing out of order");
++        assert_eq!(REPORTED.with(Cell::get), 1, "the embedder reported the thrown exception");
++        assert!(!unsafe { JS_IsExceptionPending(cx) });
++        eval(&runtime, "queueMicrotask(() => log.push('later')); 0");
++        checkpoint(cx);
++        assert_eq!(log(&runtime), "later");
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++    }
++
++    /// Servo's `Runtime::drop` clears its microtask queue and deletes the job queue before the
++    /// runtime; the turns and promise jobs still in the old isolate's queue die with it.
++    #[test]
++    fn an_abandoned_runtimes_turns_never_reach_the_next_runtime_on_the_thread() {
++        for round in 0..2 {
++            let (runtime, queue) = new_runtime_with_job_queue();
++            eval(&runtime, "globalThis.log = []; queueMicrotask(() => log.push('turn')); Promise.resolve().then(() => log.push('job')); 0");
++            if round == 1 {
++                // The previous runtime's turn never ran: this one runs only its own.
++                checkpoint(runtime.raw_cx());
++                assert_eq!((log(&runtime), TURNS.with(Cell::get)), ("turn,job".into(), 1));
++            }
++            HOST.with(|host| host.borrow_mut().clear());
++            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
++            drop(runtime);
++        }
++    }
++
++    static WINDOW: JSClass = JSClass {
++        name: c"Window".as_ptr(),
++        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
++        cOps: std::ptr::null(),
++        spec: std::ptr::null(),
++        ext: std::ptr::null(),
++        oOps: std::ptr::null(),
++    };
++
++    /// A navigation shuts the old Window's context down (V8 detaches its global): V8 skips its
++    /// promise jobs, but the turns of its embedder microtasks belong to the initial realm, so
++    /// none is lost and the embedder still decides about each queued callback.
++    #[test]
++    fn a_shut_down_realms_microtasks_keep_their_turns() {
++        let (mut runtime, queue) = new_runtime_with_job_queue();
++        let cx = runtime.raw_cx();
++        let new_window = || unsafe { JS_NewGlobalObject(cx, &WINDOW, std::ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, std::ptr::null()) };
++        rooted!(in(cx) let first = new_window());
++        let old = unsafe { EnterRealm(cx, first.get()) };
++        install_host(&runtime);
++        rooted!(in(cx) let first_log = eval(&runtime, "globalThis.log = []; \
++            queueMicrotask(() => log.push('q1')); Promise.resolve().then(() => log.push('p1')); \
++            queueMicrotask(() => log.push('q2')); log"));
++        unsafe { LeaveRealm(cx, old) };
++        unsafe { RovesReuseWindowProxyForNextGlobal(cx, first.get()) };
++        rooted!(in(cx) let second = new_window());
++        let old = unsafe { EnterRealm(cx, second.get()) };
++        define_host(&runtime);
++        eval(&runtime, "globalThis.log = []; Promise.resolve().then(() => log.push('p3')); queueMicrotask(() => log.push('q3')); 0");
++        unsafe { LeaveRealm(cx, old) };
++        runtime.gc_for_testing();
++        checkpoint(cx);
++        assert_eq!(TURNS.with(Cell::get), 3, "every embedder microtask had its turn");
++        assert!(HOST.with(|host| host.borrow().is_empty()));
++        assert_eq!(super::describe(&runtime, first_log.get()), "q1,q2", "the old context's promise job was skipped");
++        let old = unsafe { EnterRealm(cx, second.get()) };
++        assert_eq!(log(&runtime), "p3,q3");
++        unsafe { LeaveRealm(cx, old) };
++        drop(runtime);
++        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+     }
+ }
+ 
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 3157350b4a7..89bed4e0285 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -67,6 +67,7 @@ wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
+ wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
+ wrap!(jsapi: pub fn JobQueueIsEmpty(cx: &JSContext));
+ wrap!(jsapi: pub fn JobQueueMayNotBeEmpty(cx: &JSContext));
++wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));
+ wrap!(jsapi: pub fn NewPromiseObject(cx: &mut JSContext, executor: HandleObject) -> *mut JSObject);
+ wrap!(jsapi: pub fn IsPromiseObject(obj: HandleObject) -> bool);
+ wrap!(jsapi: pub fn GetPromiseState(promise: HandleObject) -> PromiseState);
+diff --git a/components/script/microtask.rs b/components/script/microtask.rs
+index 7254f3b7245..430e8b52844 100644
+--- a/components/script/microtask.rs
++++ b/components/script/microtask.rs
+@@ -7,11 +7,11 @@
+ //! perform checkpoints at appropriate times, as well as enqueue microtasks as required.
+ 
+ use std::cell::Cell;
+-use std::mem;
++use std::collections::VecDeque;
+ use std::rc::Rc;
+ 
+ use js::context::JSContext;
+-use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty};
++use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty, PerformMicrotaskCheckpoint};
+ use malloc_size_of::MallocSizeOf;
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::root::Dom;
+@@ -30,7 +30,7 @@ use crate::script_thread::ScriptThread;
+ #[derive(Default, JSTraceable, MallocSizeOf)]
+ pub(crate) struct MicrotaskQueue {
+     /// The list of enqueued microtasks that will be invoked at the next microtask checkpoint.
+-    microtask_queue: DomRefCell<Vec<Box<dyn MicrotaskRunnable>>>,
++    microtask_queue: DomRefCell<VecDeque<Box<dyn MicrotaskRunnable>>>,
+     /// <https://html.spec.whatwg.org/multipage/#performing-a-microtask-checkpoint>
+     performing_a_microtask_checkpoint: Cell<bool>,
+ }
+@@ -113,13 +113,22 @@ impl MicrotaskRunnable for UserMicrotask {
+ 
+ impl MicrotaskQueue {
+     /// Add a new microtask to this queue. It will be invoked as part of the next
+-    /// microtask checkpoint.
++    /// microtask checkpoint. V8's microtask queue gets its turn after the promise jobs
++    /// and microtasks already queued, so both run in one FIFO order.
+     #[expect(unsafe_code)]
+     pub(crate) fn enqueue(&self, cx: &JSContext, task: Box<dyn MicrotaskRunnable>) {
+-        self.microtask_queue.borrow_mut().push(task);
++        self.microtask_queue.borrow_mut().push_back(task);
+         unsafe { JobQueueMayNotBeEmpty(cx) };
+     }
+ 
++    /// Runs the oldest queued microtask, on its turn in V8's microtask queue.
++    pub(crate) fn run_next(&self, cx: &mut JSContext) {
++        rooted_vec!(let job <- self.microtask_queue.borrow_mut().pop_front().into_iter());
++        for job in job.iter() {
++            job.handler(cx);
++        }
++    }
++
+     /// <https://html.spec.whatwg.org/multipage/#perform-a-microtask-checkpoint>
+     /// Perform a microtask checkpoint, executing all queued microtasks until the queue is empty.
+     #[expect(unsafe_code)]
+@@ -135,17 +144,18 @@ impl MicrotaskQueue {
+         debug!("Now performing a microtask checkpoint");
+ 
+         // Step 3. While the event loop's microtask queue is not empty:
+-        while !self.microtask_queue.borrow().is_empty() {
+-            rooted_vec!(let mut pending_queue);
+-            mem::swap(&mut *pending_queue, &mut *self.microtask_queue.borrow_mut());
+-
+-            for (idx, job) in pending_queue.iter().enumerate() {
+-                if idx == pending_queue.len() - 1 && self.microtask_queue.borrow().is_empty() {
+-                    unsafe { js::rust::wrappers2::JobQueueIsEmpty(cx) };
+-                }
+-
+-                job.handler(cx);
++        // V8's queue holds the promise jobs and each microtask's turn (see `run_next`).
++        loop {
++            unsafe { PerformMicrotaskCheckpoint(cx) };
++            if self.microtask_queue.borrow().is_empty() {
++                break;
+             }
++            // V8 empties its queue when a microtask's execution is terminated, dropping the
++            // turns of the microtasks still here. V8 runs its queue only here (step 1 keeps
++            // this from nesting), so no turn is left: running one microtask here cannot let a
++            // stale turn run a later one early. The promise jobs and microtasks it queues run,
++            // in order, at the next iteration.
++            self.run_next(cx);
+         }
+ 
+         // Step 4. For each environment settings object settingsObject whose responsible
+diff --git a/components/script/script_runtime.rs b/components/script/script_runtime.rs
+index 7bb45d8d656..17e512f7742 100644
+--- a/components/script/script_runtime.rs
++++ b/components/script/script_runtime.rs
+@@ -309,6 +309,8 @@ unsafe extern "C" fn get_host_defined_data(
+     true
+ }
+ 
++/// Runs the oldest queued microtask: roves-js calls this on its turn in V8's microtask
++/// queue, which also holds the promise jobs (see `MicrotaskQueue::enqueue`).
+ #[expect(unsafe_code)]
+ unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSContext) {
+     let mut cx = unsafe {
+@@ -317,9 +319,7 @@ unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSCont
+     };
+     wrap_panic(&mut || {
+         let microtask_queue = unsafe { &*(microtask_queue as *const MicrotaskQueue) };
+-        // TODO: run Promise- and User-variant Microtasks, and do #notify-about-rejected-promises.
+-        // Those will require real `globalscopes` values.
+-        microtask_queue.checkpoint(&mut cx, vec![]);
++        microtask_queue.run_next(&mut cx);
+     });
+ }
+ 
+diff --git a/support/roves_js/gen_wrappers2.py b/support/roves_js/gen_wrappers2.py
+index 6166cc91c4a..525e3b3ff83 100644
+--- a/support/roves_js/gen_wrappers2.py
++++ b/support/roves_js/gen_wrappers2.py
+@@ -78,6 +78,9 @@ ROVES_ENTRIES = {
+     "JS_NewEnumerateStandardClasses": [
+         "wrap!(jsapi: pub fn JS_InitGlobalInterfaceProperties(cx: &mut JSContext, obj: HandleObject) -> bool);",
+     ],
++    "JobQueueMayNotBeEmpty": [
++        "wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));",
++    ],
+     "NewWindowProxy": [
+         "wrap!(glue: pub fn GetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: MutableHandleObject) -> bool);",
+         "wrap!(glue: pub fn SetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: HandleObject) -> bool);",
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index eec967a95de..b45f2cc6355 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -19,7 +19,10 @@ WASM_SKIPS = {
+ }
+ # Checks a page must report: a page that drops one still reports a consistent total.
+ REQUIRED_CHECKS = {
+-    "events.html": ("an iframe keeps its WindowProxy across origin changes and back",),
++    "events.html": (
++        "an iframe keeps its WindowProxy across origin changes and back",
++        "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
++    ),
+ }
+ TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
+ 
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index a3de46efb66..13a371167be 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -26,6 +26,23 @@ check("microtasks run before timer and frame callbacks, in either order", () =>
+   queueMicrotask(() => order.push("queueMicrotask"));
+   order.push("sync");
+ }));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// HTML has one microtask queue: promise jobs and queueMicrotask callbacks run in the order they
++// were queued, nested ones included (Chrome 155: "p1,q,p2", then "q1,p1,p2,q2"). An engine that
++// runs every promise job before the next queueMicrotask callback gives "p1,p2,q".
++check("promise jobs and queueMicrotask callbacks share one FIFO microtask queue", () => new Promise(resolve => {
++  const first = [], second = [];
++  Promise.resolve().then(() => { first.push("p1"); Promise.resolve().then(() => first.push("p2")); });
++  queueMicrotask(() => first.push("q"));
++  setTimeout(() => {
++    queueMicrotask(() => { second.push("q1"); Promise.resolve().then(() => second.push("p2")); queueMicrotask(() => second.push("q2")); });
++    Promise.resolve().then(() => second.push("p1"));
++    setTimeout(() => {
++      const seen = `${first.join()} ${second.join()}`;
++      resolve(seen === "p1,q,p2 q1,p1,p2,q2" || seen);
++    }, 0);
++  }, 0);
++}));
+ check("nested timers keep their order", () => new Promise(resolve => {
+   const order = [];
+   setTimeout(() => { order.push(1); setTimeout(() => { order.push(3); resolve(order.join() === "1,2,3" || order.join()); }, 0); }, 0);
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index ae0a2c84a1d..c0986622237 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -55,10 +55,16 @@ class ResultsTests(unittest.TestCase):
+ 
+     def test_required_checks(self):
+         # A page that drops a required check still reports a consistent total: reject it.
+-        name = REQUIRED_CHECKS['events.html'][0]
+-        self.assertEqual([f'missing required check: {name}'],
++        names = REQUIRED_CHECKS['events.html']
++        name = names[0]
++        self.assertEqual([f'missing required check: {name}' for name in names],
+                          validate('events.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+-        self.assertEqual([], validate('events.html', f'SUITE PASS example\nSUITE PASS {name}\nSUITE TOTAL 2/2\n'))
++        passes = ''.join(f'SUITE PASS {name}\n' for name in names)
++        self.assertEqual([], validate('events.html', f'SUITE PASS example\n{passes}SUITE TOTAL {len(names) + 1}/{len(names) + 1}\n'))
++        for dropped in names:
++            kept = ''.join(f'SUITE PASS {name}\n' for name in names if name != dropped)
++            self.assertEqual([f'missing required check: {dropped}'],
++                             validate('events.html', f'SUITE PASS example\n{kept}SUITE TOTAL {len(names)}/{len(names)}\n'))
+         self.assertTrue(validate('events.html', f'SUITE FAIL {name} :: final: contentWindow changed\nSUITE TOTAL 0/1\n'))
+         self.assertTrue(validate('events.html', f'SUITE SKIP {name}\nSUITE TOTAL 0/0 (1 skipped)\n'))
+         self.assertEqual([], validate('suite.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
+@@ -91,6 +97,7 @@ class EventsPageTests(unittest.TestCase):
+ 
+ 
+ SCHEDULER_CHECK = 'microtasks run before timer and frame callbacks, in either order'
++FIFO_CHECK = REQUIRED_CHECKS['events.html'][1]
+ # The check events.html used before 0319: it resolved at the frame callback and required the
+ # 0 ms timer to have run first, rejecting the valid frame-first order Chrome shows.
+ OLD_SCHEDULER_CHECK = r'''check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
+@@ -187,6 +194,16 @@ class SchedulerCheckTests(unittest.TestCase):
+                 self.assertEqual([f'SUITE FAIL {SCHEDULER_CHECK} :: timeout', 'SUITE TOTAL 0/1', f'pending frames {pending}'], lines)
+                 self.assertTrue(validate('scheduler.html', '\n'.join(lines)))
+ 
++    def test_microtask_fifo_check(self):
++        # Two 0 ms timers: the second case runs one task after the first.
++        check = registered_check('events.html', FIFO_CHECK)
++        self.assertEqual([f'SUITE PASS {FIFO_CHECK}', 'SUITE TOTAL 1/1', 'pending frames 0'],
++                         self.run_check(('timer', 'timer'), check))
++        # queueMicrotask callbacks after the promise jobs, like the batched drain before 0329.
++        lines = self.run_check(('timer', 'timer'), check, late_microtasks=True)
++        self.assertEqual([f'SUITE FAIL {FIFO_CHECK} :: p1,p2,q p1,q1,p2', 'SUITE TOTAL 0/1', 'pending frames 0'], lines)
++        self.assertTrue(validate('events.html', '\n'.join(lines)))
++
+     def test_old_check_rejected_frame_first(self):
+         old = 'microtasks run before timers, timers before the next frame callback'
+         self.assertEqual([f'SUITE PASS {old}', 'SUITE TOTAL 1/1', 'pending frames 0'],
+@@ -334,7 +351,8 @@ class OriginCheckTests(unittest.TestCase):
+             with self.subTest(strategy=strategy):
+                 lines = self.run_check(strategy=strategy)
+                 self.assertEqual([f'SUITE PASS {ORIGIN_CHECK}', 'SUITE TOTAL 1/1', self.NAVIGATIONS] + self.CLEANUP, lines)
+-                self.assertEqual([], validate('events.html', '\n'.join(lines)))
++                # This check alone (events.html also requires the microtask FIFO check).
++                self.assertEqual([], validate('origin-check.html', '\n'.join(lines)))
+ 
+     def test_engine_faults_fail_and_clean_up(self):
+         # Every fault starts at the second opaque document (opaque-b-0) and is reported there.
+@@ -677,6 +695,39 @@ def checkpoint_problems(microtask, runtime, wrappers):
+         problems.append("the bridge must call V8's clear_kept_objects, not run microtasks")
+     if 'wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));' not in wrappers:
+         problems.append('wrappers2 does not export ClearKeptObjects')
++    return problems + fifo_problems(code, body, runtime, wrappers)
++
++
++# Step 3 (0329): V8's queue (promise jobs and a turn per HTML microtask), then one HTML
++# microtask whose turn a termination dropped, until both queues are empty.
++STEP3_LOOP = re.compile(r'loop \{\s*unsafe \{ PerformMicrotaskCheckpoint\(cx\) \};\s*'
++                        r'if self\.microtask_queue\.borrow\(\)\.is_empty\(\) \{\s*break;\s*\}\s*'
++                        r'self\.run_next\(cx\);\s*\}')
++
++
++def fifo_problems(code, body, runtime, wrappers):
++    """Whether step 3 runs V8's microtask queue, which holds the promise jobs and a turn for each
++    queued HTML microtask (0329): unconditionally, before the rejected-promise step, running an
++    HTML microtask itself only once V8's queue is empty, until both are."""
++    problems = []
++    if not re.search(r'use js::rust::wrappers2::\{[^}]*\bPerformMicrotaskCheckpoint\b', code):
++        problems.append('microtask.rs does not import the PerformMicrotaskCheckpoint wrapper')
++    statement = STEP3_LOOP.search(body)
++    single = len(re.findall(r'\bPerformMicrotaskCheckpoint\(', body)) == 1 and len(re.findall(r'\brun_next\(', body)) == 1
++    if not single or statement is None:
++        return problems + ['step 3 is not the loop of V8\'s checkpoint and one dropped microtask']
++    call = statement.start()
++    if body.find('if self.performing_a_microtask_checkpoint.get()') > call or call > body.find('notify_about_rejected_promises('):
++        problems.append('step 3 runs outside the guard or after the rejected-promise step')
++    if body[:call].count('{') != body[:call].count('}'):
++        problems.append('step 3 is conditional or nested in another block')
++    bridges = [('PerformMicrotaskCheckpoint', 'perform_microtask_checkpoint()'), ('JobQueueMayNotBeEmpty', 'enqueue_microtask(')]
++    for name, call in bridges:
++        marker = f'pub unsafe fn {name}('
++        if marker not in runtime or call not in braced_body(runtime, marker):
++            problems.append(f'the {name} bridge does not call V8\'s {call}')
++    if 'wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));' not in wrappers:
++        problems.append('wrappers2 does not export PerformMicrotaskCheckpoint')
+     return problems
+ 
+ 
+@@ -703,8 +754,26 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
+             'before IndexedDB': without.replace('        for global in globalscopes.iter() {', call + '        for global in globalscopes.iter() {'),
+             'after reset': without.replace('        // TODO: Step 8.', call + '        // TODO: Step 8.'),
+             'only when jobs ran': without.replace('        // Step 7.', '        if !globalscopes.is_empty() {\n    ' + call + '        }\n        // Step 7.'),
+-            'inside the loop': without.replace('                job.handler(cx);\n', '                job.handler(cx);\n        ' + call),
++            'inside the loop': without.replace('            self.run_next(cx);\n', '            self.run_next(cx);\n    ' + call),
+         }
++        step3 = '            unsafe { PerformMicrotaskCheckpoint(cx) };\n'
++        loop = '        loop {\n'
++        fallback = '            self.run_next(cx);\n'
++        for part in (step3, loop, fallback):
++            self.assertEqual(1, microtask.count(part))
++        cases.update({
++            'step 3 missing': microtask.replace(step3, ''),
++            'step 3 after the rejected-promise step': microtask.replace(step3, '').replace(
++                '        // Step 5.', step3 + '        // Step 5.'),
++            'step 3 conditional': microtask.replace(loop, '        if !globalscopes.is_empty() {\n' + loop).replace(
++                '        // Step 4.', '        }\n        // Step 4.'),
++            # The first 0329 draft: dropped microtasks ran without returning to V8's queue.
++            'fallback after the loop': microtask.replace(fallback, '').replace(
++                '        // Step 4.', '        while !self.microtask_queue.borrow().is_empty() {\n    ' + fallback + '        }\n        // Step 4.'),
++            'fallback before V8': microtask.replace(fallback, '').replace(loop, loop + fallback),
++            'fallback drains the queue': microtask.replace(
++                fallback, '            while !self.microtask_queue.borrow().is_empty() {\n    ' + fallback + '            }\n'),
++        })
+         for name, mutated in cases.items():
+             with self.subTest(name):
+                 self.assertNotEqual(microtask, mutated)
+@@ -714,6 +783,13 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
+         self.assertNotEqual([], checkpoint_problems(microtask, run_jobs, wrappers))
+         unexported = wrappers.replace('wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));\n', '')
+         self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
++        # 0329: HTML microtasks get no turn in V8's queue (the batched order: p1,p2,q).
++        no_turn = runtime.replace('scope.enqueue_microtask(function);', '')
++        self.assertNotEqual(runtime, no_turn)
++        self.assertNotEqual([], checkpoint_problems(microtask, no_turn, wrappers))
++        unexported = wrappers.replace('wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));\n', '')
++        self.assertNotEqual(wrappers, unexported)
++        self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
+ 
+ 
+ @unittest.skipUnless(os.name == 'posix' and shutil.which('bash'), 'shell integration needs POSIX bash')
+@@ -907,14 +983,14 @@ elif page == 'nav1.html':
+     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
+ else:
+     if page == 'events.html':
+-        # The required origin-change check; the scenario drops it with a consistent total.
++        # The required checks; the scenario drops the origin-change one with a consistent total.
++        names = os.environ['SMOKE_TEST_EVENTS_CHECK'].split('\\n')
+         if scenario == 'events-origin-missing':
+-            print('SUITE PASS example')
+-            print('SUITE TOTAL 1/1')
+-        else:
+-            print('SUITE PASS example')
+-            print('SUITE PASS ' + os.environ['SMOKE_TEST_EVENTS_CHECK'])
+-            print('SUITE TOTAL 2/2')
++            names = names[1:]
++        print('SUITE PASS example')
++        for name in names:
++            print('SUITE PASS ' + name)
++        print(f'SUITE TOTAL {len(names) + 1}/{len(names) + 1}')
+     elif page == 'suite.html' and scenario == 'assertion':
+         print('SUITE FAIL example :: intentionally false')
+         print('SUITE TOTAL 0/1')
+@@ -938,7 +1014,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
+                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
+                        SMOKE_TEST_REAL_PYTHON=python,
+-                       SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
++                       SMOKE_TEST_EVENTS_CHECK='\n'.join(REQUIRED_CHECKS['events.html']))
+             env.pop('GITHUB_STEP_SUMMARY', None)
+             env.pop('V8_SMOKE_HEAP_SNAPSHOT', None)
+             if snapshot == 'relative':

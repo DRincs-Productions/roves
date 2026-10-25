@@ -55,10 +55,16 @@ class ResultsTests(unittest.TestCase):
 
     def test_required_checks(self):
         # A page that drops a required check still reports a consistent total: reject it.
-        name = REQUIRED_CHECKS['events.html'][0]
-        self.assertEqual([f'missing required check: {name}'],
+        names = REQUIRED_CHECKS['events.html']
+        name = names[0]
+        self.assertEqual([f'missing required check: {name}' for name in names],
                          validate('events.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
-        self.assertEqual([], validate('events.html', f'SUITE PASS example\nSUITE PASS {name}\nSUITE TOTAL 2/2\n'))
+        passes = ''.join(f'SUITE PASS {name}\n' for name in names)
+        self.assertEqual([], validate('events.html', f'SUITE PASS example\n{passes}SUITE TOTAL {len(names) + 1}/{len(names) + 1}\n'))
+        for dropped in names:
+            kept = ''.join(f'SUITE PASS {name}\n' for name in names if name != dropped)
+            self.assertEqual([f'missing required check: {dropped}'],
+                             validate('events.html', f'SUITE PASS example\n{kept}SUITE TOTAL {len(names)}/{len(names)}\n'))
         self.assertTrue(validate('events.html', f'SUITE FAIL {name} :: final: contentWindow changed\nSUITE TOTAL 0/1\n'))
         self.assertTrue(validate('events.html', f'SUITE SKIP {name}\nSUITE TOTAL 0/0 (1 skipped)\n'))
         self.assertEqual([], validate('suite.html', 'SUITE PASS example\nSUITE TOTAL 1/1\n'))
@@ -91,6 +97,7 @@ class EventsPageTests(unittest.TestCase):
 
 
 SCHEDULER_CHECK = 'microtasks run before timer and frame callbacks, in either order'
+FIFO_CHECK = REQUIRED_CHECKS['events.html'][1]
 # The check events.html used before 0319: it resolved at the frame callback and required the
 # 0 ms timer to have run first, rejecting the valid frame-first order Chrome shows.
 OLD_SCHEDULER_CHECK = r'''check("microtasks run before timers, timers before the next frame callback", () => new Promise(resolve => {
@@ -186,6 +193,16 @@ class SchedulerCheckTests(unittest.TestCase):
                 lines = self.run_check(steps)
                 self.assertEqual([f'SUITE FAIL {SCHEDULER_CHECK} :: timeout', 'SUITE TOTAL 0/1', f'pending frames {pending}'], lines)
                 self.assertTrue(validate('scheduler.html', '\n'.join(lines)))
+
+    def test_microtask_fifo_check(self):
+        # Two 0 ms timers: the second case runs one task after the first.
+        check = registered_check('events.html', FIFO_CHECK)
+        self.assertEqual([f'SUITE PASS {FIFO_CHECK}', 'SUITE TOTAL 1/1', 'pending frames 0'],
+                         self.run_check(('timer', 'timer'), check))
+        # queueMicrotask callbacks after the promise jobs, like the batched drain before 0329.
+        lines = self.run_check(('timer', 'timer'), check, late_microtasks=True)
+        self.assertEqual([f'SUITE FAIL {FIFO_CHECK} :: p1,p2,q p1,q1,p2', 'SUITE TOTAL 0/1', 'pending frames 0'], lines)
+        self.assertTrue(validate('events.html', '\n'.join(lines)))
 
     def test_old_check_rejected_frame_first(self):
         old = 'microtasks run before timers, timers before the next frame callback'
@@ -334,7 +351,8 @@ class OriginCheckTests(unittest.TestCase):
             with self.subTest(strategy=strategy):
                 lines = self.run_check(strategy=strategy)
                 self.assertEqual([f'SUITE PASS {ORIGIN_CHECK}', 'SUITE TOTAL 1/1', self.NAVIGATIONS] + self.CLEANUP, lines)
-                self.assertEqual([], validate('events.html', '\n'.join(lines)))
+                # This check alone (events.html also requires the microtask FIFO check).
+                self.assertEqual([], validate('origin-check.html', '\n'.join(lines)))
 
     def test_engine_faults_fail_and_clean_up(self):
         # Every fault starts at the second opaque document (opaque-b-0) and is reported there.
@@ -677,6 +695,39 @@ def checkpoint_problems(microtask, runtime, wrappers):
         problems.append("the bridge must call V8's clear_kept_objects, not run microtasks")
     if 'wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));' not in wrappers:
         problems.append('wrappers2 does not export ClearKeptObjects')
+    return problems + fifo_problems(code, body, runtime, wrappers)
+
+
+# Step 3 (0329): V8's queue (promise jobs and a turn per HTML microtask), then one HTML
+# microtask whose turn a termination dropped, until both queues are empty.
+STEP3_LOOP = re.compile(r'loop \{\s*unsafe \{ PerformMicrotaskCheckpoint\(cx\) \};\s*'
+                        r'if self\.microtask_queue\.borrow\(\)\.is_empty\(\) \{\s*break;\s*\}\s*'
+                        r'self\.run_next\(cx\);\s*\}')
+
+
+def fifo_problems(code, body, runtime, wrappers):
+    """Whether step 3 runs V8's microtask queue, which holds the promise jobs and a turn for each
+    queued HTML microtask (0329): unconditionally, before the rejected-promise step, running an
+    HTML microtask itself only once V8's queue is empty, until both are."""
+    problems = []
+    if not re.search(r'use js::rust::wrappers2::\{[^}]*\bPerformMicrotaskCheckpoint\b', code):
+        problems.append('microtask.rs does not import the PerformMicrotaskCheckpoint wrapper')
+    statement = STEP3_LOOP.search(body)
+    single = len(re.findall(r'\bPerformMicrotaskCheckpoint\(', body)) == 1 and len(re.findall(r'\brun_next\(', body)) == 1
+    if not single or statement is None:
+        return problems + ['step 3 is not the loop of V8\'s checkpoint and one dropped microtask']
+    call = statement.start()
+    if body.find('if self.performing_a_microtask_checkpoint.get()') > call or call > body.find('notify_about_rejected_promises('):
+        problems.append('step 3 runs outside the guard or after the rejected-promise step')
+    if body[:call].count('{') != body[:call].count('}'):
+        problems.append('step 3 is conditional or nested in another block')
+    bridges = [('PerformMicrotaskCheckpoint', 'perform_microtask_checkpoint()'), ('JobQueueMayNotBeEmpty', 'enqueue_microtask(')]
+    for name, call in bridges:
+        marker = f'pub unsafe fn {name}('
+        if marker not in runtime or call not in braced_body(runtime, marker):
+            problems.append(f'the {name} bridge does not call V8\'s {call}')
+    if 'wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));' not in wrappers:
+        problems.append('wrappers2 does not export PerformMicrotaskCheckpoint')
     return problems
 
 
@@ -703,8 +754,26 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
             'before IndexedDB': without.replace('        for global in globalscopes.iter() {', call + '        for global in globalscopes.iter() {'),
             'after reset': without.replace('        // TODO: Step 8.', call + '        // TODO: Step 8.'),
             'only when jobs ran': without.replace('        // Step 7.', '        if !globalscopes.is_empty() {\n    ' + call + '        }\n        // Step 7.'),
-            'inside the loop': without.replace('                job.handler(cx);\n', '                job.handler(cx);\n        ' + call),
+            'inside the loop': without.replace('            self.run_next(cx);\n', '            self.run_next(cx);\n    ' + call),
         }
+        step3 = '            unsafe { PerformMicrotaskCheckpoint(cx) };\n'
+        loop = '        loop {\n'
+        fallback = '            self.run_next(cx);\n'
+        for part in (step3, loop, fallback):
+            self.assertEqual(1, microtask.count(part))
+        cases.update({
+            'step 3 missing': microtask.replace(step3, ''),
+            'step 3 after the rejected-promise step': microtask.replace(step3, '').replace(
+                '        // Step 5.', step3 + '        // Step 5.'),
+            'step 3 conditional': microtask.replace(loop, '        if !globalscopes.is_empty() {\n' + loop).replace(
+                '        // Step 4.', '        }\n        // Step 4.'),
+            # The first 0329 draft: dropped microtasks ran without returning to V8's queue.
+            'fallback after the loop': microtask.replace(fallback, '').replace(
+                '        // Step 4.', '        while !self.microtask_queue.borrow().is_empty() {\n    ' + fallback + '        }\n        // Step 4.'),
+            'fallback before V8': microtask.replace(fallback, '').replace(loop, loop + fallback),
+            'fallback drains the queue': microtask.replace(
+                fallback, '            while !self.microtask_queue.borrow().is_empty() {\n    ' + fallback + '            }\n'),
+        })
         for name, mutated in cases.items():
             with self.subTest(name):
                 self.assertNotEqual(microtask, mutated)
@@ -713,6 +782,13 @@ class MicrotaskCheckpointContractTests(unittest.TestCase):
         self.assertNotEqual(runtime, run_jobs)
         self.assertNotEqual([], checkpoint_problems(microtask, run_jobs, wrappers))
         unexported = wrappers.replace('wrap!(jsapi: pub fn ClearKeptObjects(cx: &JSContext));\n', '')
+        self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
+        # 0329: HTML microtasks get no turn in V8's queue (the batched order: p1,p2,q).
+        no_turn = runtime.replace('scope.enqueue_microtask(function);', '')
+        self.assertNotEqual(runtime, no_turn)
+        self.assertNotEqual([], checkpoint_problems(microtask, no_turn, wrappers))
+        unexported = wrappers.replace('wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));\n', '')
+        self.assertNotEqual(wrappers, unexported)
         self.assertNotEqual([], checkpoint_problems(microtask, runtime, unexported))
 
 
@@ -907,14 +983,14 @@ elif page == 'nav1.html':
     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
 else:
     if page == 'events.html':
-        # The required origin-change check; the scenario drops it with a consistent total.
+        # The required checks; the scenario drops the origin-change one with a consistent total.
+        names = os.environ['SMOKE_TEST_EVENTS_CHECK'].split('\\n')
         if scenario == 'events-origin-missing':
-            print('SUITE PASS example')
-            print('SUITE TOTAL 1/1')
-        else:
-            print('SUITE PASS example')
-            print('SUITE PASS ' + os.environ['SMOKE_TEST_EVENTS_CHECK'])
-            print('SUITE TOTAL 2/2')
+            names = names[1:]
+        print('SUITE PASS example')
+        for name in names:
+            print('SUITE PASS ' + name)
+        print(f'SUITE TOTAL {len(names) + 1}/{len(names) + 1}')
     elif page == 'suite.html' and scenario == 'assertion':
         print('SUITE FAIL example :: intentionally false')
         print('SUITE TOTAL 0/1')
@@ -938,7 +1014,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
                        SMOKE_TEST_REAL_PYTHON=python,
-                       SMOKE_TEST_EVENTS_CHECK=REQUIRED_CHECKS['events.html'][0])
+                       SMOKE_TEST_EVENTS_CHECK='\n'.join(REQUIRED_CHECKS['events.html']))
             env.pop('GITHUB_STEP_SUMMARY', None)
             env.pop('V8_SMOKE_HEAP_SNAPSHOT', None)
             if snapshot == 'relative':

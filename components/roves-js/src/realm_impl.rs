@@ -51,8 +51,8 @@ pub(crate) struct RealmData {
     pub(crate) global: Cell<*mut JSObject>,
     /// The realm's window proxy (`SetWindowProxy`), for a Window global.
     pub(crate) window_proxy: Cell<*mut JSObject>,
-    /// The realm's promise-job drain function (see `runtime_impl`).
-    pub(crate) drain_function: Cell<*mut JSObject>,
+    /// The initial realm's embedder microtask function (see `runtime_impl`), else null.
+    pub(crate) microtask_function: Cell<*mut JSObject>,
     principals: PrincipalsSlot,
 }
 
@@ -85,7 +85,7 @@ unsafe impl GarbageCollected for RealmData {
         visitor.trace(&self.context);
         crate::cell::trace_cell(self.global.get() as *mut c_void, visitor);
         crate::cell::trace_cell(self.window_proxy.get() as *mut c_void, visitor);
-        crate::cell::trace_cell(self.drain_function.get() as *mut c_void, visitor);
+        crate::cell::trace_cell(self.microtask_function.get() as *mut c_void, visitor);
     }
 
     fn get_name(&self) -> &'static std::ffi::CStr {
@@ -148,7 +148,7 @@ pub(crate) fn register_realm(cx: &JSContext, scope: &mut v8::PinScope, context: 
         context: context_reference,
         global: Cell::new(std::ptr::null_mut()),
         window_proxy: Cell::new(std::ptr::null_mut()),
-        drain_function: Cell::new(std::ptr::null_mut()),
+        microtask_function: Cell::new(std::ptr::null_mut()),
         principals: Rc::new(Cell::new(std::ptr::null_mut())),
     };
     // SAFETY: wrapped right away: no allocation runs before the holder owns it.

@@ -5674,7 +5674,8 @@ mod callable_classes {
 }
 
 mod embedder_job_queue {
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
+    use std::collections::VecDeque;
     use std::ffi::c_void;
 
     use super::eval;
@@ -5684,86 +5685,175 @@ mod embedder_job_queue {
     use crate::rust::{JSEngineHandle, Runtime};
 
     thread_local! {
-        static JOBS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+        /// The embedder's microtask queue (Servo's `MicrotaskQueue`): JS callbacks, traced as
+        /// roots (`trace_host`), as Servo traces its queue.
+        static HOST: RefCell<VecDeque<*mut JSObject>> = const { RefCell::new(VecDeque::new()) };
+        static PROMISE_JOBS_ENQUEUED: Cell<usize> = const { Cell::new(0) };
+        /// The checkpoint's re-entrancy flag (HTML's "performing a microtask checkpoint").
+        static PERFORMING: Cell<bool> = const { Cell::new(false) };
+        /// Turns V8 gave the embedder (`runJobs` calls) and exceptions the embedder reported.
+        static TURNS: Cell<usize> = const { Cell::new(0) };
+        static REPORTED: Cell<usize> = const { Cell::new(0) };
     }
 
-    #[test]
-    fn an_abandoned_drain_does_not_suppress_the_next_runtime_on_the_same_thread() {
-        for _ in 0..2 {
-            JOBS.with(|jobs| jobs.borrow_mut().clear());
-            let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
-            traps.enqueuePromiseJob = Some(enqueue);
-            let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
-            let enqueued = {
-                let runtime = Runtime::new(JSEngineHandle::for_tests());
-                unsafe { SetJobQueue(runtime.raw_cx(), queue) };
-                eval(&runtime, "Promise.resolve().then(() => 42); 0");
-                // Deliberately abandon this runtime with its drain still pending. The
-                // embedder discards that job at shutdown; it must not affect another VM.
-                JOBS.with(|jobs| jobs.borrow().len())
-            };
-            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
-            // Never inspect the old runtime's unrooted job pointers.
-            JOBS.with(|jobs| jobs.borrow_mut().clear());
-            assert_eq!(enqueued, 1, "each runtime must enqueue its own initial drain");
-        }
-    }
-
+    /// SpiderMonkey's promise-job trap: V8 keeps its promise jobs, so it is never called.
     unsafe extern "C" fn enqueue(
         _queue: *const c_void,
         _cx: *mut JSContext,
         _promise: HandleObject,
-        job: HandleObject,
+        _job: HandleObject,
         _site: HandleObject,
         _data: HandleObject,
     ) -> bool {
-        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
+        PROMISE_JOBS_ENQUEUED.with(|count| count.set(count.get() + 1));
         true
     }
 
-    #[test]
-    fn promise_jobs_run_at_the_embedders_checkpoint() {
-        let runtime = Runtime::new(JSEngineHandle::for_tests());
-        let cx = runtime.raw_cx();
-        // SAFETY: an all-`None` trap table, plus the enqueue trap.
-        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
-        traps.enqueuePromiseJob = Some(enqueue);
-        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
-        unsafe { SetJobQueue(cx, queue) };
+    /// Servo's `run_jobs`: runs the oldest embedder microtask on its turn.
+    unsafe extern "C" fn run_jobs(_queue: *const c_void, cx: *mut JSContext) {
+        TURNS.with(|turns| turns.set(turns.get() + 1));
+        run_next(cx);
+    }
 
-        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v));");
-        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
-        let jobs = JOBS.with(|jobs| jobs.borrow_mut().split_off(0));
-        assert_eq!(jobs.len(), 1, "one drain job per checkpoint");
-
-        // The embedder's checkpoint runs the job: V8's pending reactions run, in order.
-        rooted!(in(cx) let job = ObjectValue(jobs[0] as *mut JSObject));
+    /// Servo's `MicrotaskQueue::run_next`: its callback wrapper reports a thrown exception (a
+    /// terminated callback leaves none).
+    fn run_next(cx: *mut JSContext) {
+        let Some(job) = HOST.with(|host| host.borrow_mut().pop_front()) else { return };
+        rooted!(in(cx) let job = ObjectValue(job));
         rooted!(in(cx) let this = UndefinedValue());
         rooted!(in(cx) let mut rval = UndefinedValue());
         let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
-        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
-        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
-        // Later promises request a new drain job.
-        eval(&runtime, "Promise.resolve(3).then(v => log.push(v))");
-        assert_eq!(JOBS.with(|jobs| jobs.borrow().len()), 1);
+        if !unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) } &&
+            unsafe { JS_IsExceptionPending(cx) }
+        {
+            unsafe { JS_ClearPendingException(cx) };
+            REPORTED.with(|reported| reported.set(reported.get() + 1));
+        }
     }
 
-    thread_local! {
-        static ENQUEUE_GLOBALS: RefCell<Vec<usize>> = const { RefCell::new(Vec::new()) };
+    /// An uncatchable failure (a native returning `false` without an exception), as when an
+    /// interrupt stops the script: V8 terminates execution.
+    unsafe extern "C" fn terminate(_cx: *mut JSContext, _argc: u32, _vp: *mut JSVal) -> bool {
+        false
     }
 
-    unsafe extern "C" fn enqueue_recording_global(
-        _queue: *const c_void,
-        cx: *mut JSContext,
-        _promise: HandleObject,
-        job: HandleObject,
-        _site: HandleObject,
-        _data: HandleObject,
-    ) -> bool {
-        JOBS.with(|jobs| jobs.borrow_mut().push(job.get() as usize));
-        // Servo attributes the job to the current realm's global.
-        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().push(unsafe { CurrentGlobalOrNull(cx) } as usize));
+    unsafe extern "C" fn host_checkpoint(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        checkpoint(cx);
+        unsafe { CallArgs::from_vp(vp, argc) }.rval().set(UndefinedValue());
         true
+    }
+
+    /// Servo's `queueMicrotask`: the callback goes to the embedder's queue, which tells the
+    /// runtime through the production bridge.
+    unsafe extern "C" fn queue_microtask(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+        let args = unsafe { CallArgs::from_vp(vp, argc) };
+        HOST.with(|host| host.borrow_mut().push_back(args.get(0).get().to_object()));
+        let safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        unsafe { crate::rust::wrappers2::JobQueueMayNotBeEmpty(&safe) };
+        args.rval().set(UndefinedValue());
+        true
+    }
+
+    unsafe extern "C" fn trace_host(trc: *mut JSTracer, _data: *mut c_void) {
+        HOST.with(|host| {
+            for job in host.borrow_mut().iter_mut() {
+                unsafe { crate::glue::CallObjectRootTracer(trc, job, c"microtask".as_ptr()) };
+            }
+        });
+    }
+
+    /// Resets the host, then defines it on the current global.
+    fn install_host(runtime: &Runtime) {
+        HOST.with(|host| host.borrow_mut().clear());
+        PROMISE_JOBS_ENQUEUED.with(|count| count.set(0));
+        TURNS.with(|turns| turns.set(0));
+        REPORTED.with(|reported| reported.set(0));
+        define_host(runtime);
+    }
+
+    /// Defines the host's natives and `queueMicrotask` on the current global.
+    fn define_host(runtime: &Runtime) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = unsafe { CurrentGlobalOrNull(cx) });
+        let natives: [(JSNative, &std::ffi::CStr); 3] = [
+            (Some(queue_microtask), c"hostQueueMicrotask"),
+            (Some(terminate), c"terminate"),
+            (Some(host_checkpoint), c"hostCheckpoint"),
+        ];
+        for (native, name) in natives {
+            let function = unsafe { JS_NewFunction(cx, native, 1, 0, name.as_ptr()) };
+            rooted!(in(cx) let function = ObjectValue(function.cast()));
+            assert!(unsafe { JS_SetProperty(cx, global.handle().into(), name.as_ptr(), function.handle().into()) });
+        }
+        eval(runtime, "globalThis.queueMicrotask = hostQueueMicrotask; 0");
+    }
+
+    /// Servo's `MicrotaskQueue::checkpoint` (steps 1 to 3 and 7).
+    fn checkpoint(cx: *mut JSContext) {
+        if PERFORMING.with(|performing| performing.replace(true)) {
+            return;
+        }
+        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        loop {
+            unsafe { crate::rust::wrappers2::PerformMicrotaskCheckpoint(&mut safe) };
+            if HOST.with(|host| host.borrow().is_empty()) {
+                break;
+            }
+            run_next(cx);
+        }
+        PERFORMING.with(|performing| performing.set(false));
+    }
+
+    fn log(runtime: &Runtime) -> std::string::String {
+        super::describe(runtime, eval(runtime, "log.splice(0).join()"))
+    }
+
+    fn new_runtime_with_job_queue() -> (Runtime, *mut JobQueue) {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        // SAFETY: an all-`None` trap table, plus the traps Servo installs.
+        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
+        traps.enqueuePromiseJob = Some(enqueue);
+        traps.runJobs = Some(run_jobs);
+        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
+        unsafe { SetJobQueue(runtime.raw_cx(), queue) };
+        assert!(unsafe { JS_AddExtraGCRootsTracer(runtime.raw_cx(), Some(trace_host), std::ptr::null_mut()) });
+        install_host(&runtime);
+        (runtime, queue)
+    }
+
+    /// The orders Chrome 155 shows for these cases (task 0329's Chrome DevTools reference
+    /// covers the first two).
+    const CASES: [(&str, &str); 3] = [
+        (
+            "Promise.resolve().then(() => { log.push('p1'); Promise.resolve().then(() => log.push('p2')) }); \
+             queueMicrotask(() => log.push('q'))",
+            "p1,q,p2",
+        ),
+        (
+            "queueMicrotask(() => { log.push('q1'); Promise.resolve().then(() => log.push('p2')); \
+             queueMicrotask(() => log.push('q2')) }); Promise.resolve().then(() => log.push('p1'))",
+            "q1,p1,p2,q2",
+        ),
+        (
+            "Promise.resolve().then(() => log.push('p1')); queueMicrotask(() => log.push('q')); \
+             Promise.resolve().then(() => log.push('p2'))",
+            "p1,q,p2",
+        ),
+    ];
+
+    #[test]
+    fn promise_jobs_and_embedder_microtasks_share_one_fifo() {
+        let (runtime, queue) = new_runtime_with_job_queue();
+        for (source, expected) in CASES {
+            eval(&runtime, &format!("globalThis.log = []; {source}; 0"));
+            assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 runs no microtask by itself: {source}");
+            checkpoint(runtime.raw_cx());
+            assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), expected, "{source}");
+            assert!(HOST.with(|host| host.borrow().is_empty()), "every embedder microtask had its turn");
+        }
+        assert_eq!(PROMISE_JOBS_ENQUEUED.with(Cell::get), 0, "promise jobs stay in V8's queue");
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
     }
 
     static WINDOW_LIKE: JSClass = JSClass {
@@ -5775,48 +5865,147 @@ mod embedder_job_queue {
         oOps: std::ptr::null(),
     };
 
-    fn run_job(runtime: &Runtime, job: usize) {
-        let cx = runtime.raw_cx();
-        rooted!(in(cx) let job = ObjectValue(job as *mut JSObject));
-        rooted!(in(cx) let this = UndefinedValue());
-        rooted!(in(cx) let mut rval = UndefinedValue());
-        let no_args = HandleValueArray { length_: 0, elements_: std::ptr::null() };
-        assert!(unsafe { Call(cx, this.handle().into_handle(), job.handle().into_handle(), &no_args, rval.handle_mut().into_handle()) });
-    }
-
     #[test]
-    fn drain_jobs_belong_to_an_embedder_global_outside_any_realm() {
-        let runtime = Runtime::new(JSEngineHandle::for_tests());
+    fn embedder_microtasks_of_a_realm_keep_their_turn_after_it_is_left() {
+        let (runtime, queue) = new_runtime_with_job_queue();
         let cx = runtime.raw_cx();
-        let mut traps: JobQueueTraps = unsafe { std::mem::zeroed() };
-        traps.enqueuePromiseJob = Some(enqueue_recording_global);
-        let queue = unsafe { CreateJobQueue(&traps, std::ptr::null(), std::ptr::null_mut()) };
-        unsafe { SetJobQueue(cx, queue) };
         rooted!(in(cx) let global = unsafe {
             JS_NewGlobalObject(cx, &WINDOW_LIKE, std::ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, std::ptr::null())
         });
         let old = unsafe { EnterRealm(cx, global.get()) };
-        rooted!(in(cx) let resolve = eval(&runtime, "globalThis.log = []; new Promise(r => globalThis.resolveIt = r).then(v => log.push(v)); resolveIt"));
-        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
-            run_job(&runtime, job);
-        }
+        install_host(&runtime);
+        eval(&runtime, &format!("globalThis.log = []; {}; 0", CASES[0].0));
         unsafe { LeaveRealm(cx, old) };
-        ENQUEUE_GLOBALS.with(|globals| globals.borrow_mut().clear());
-        // Like a foreground task: the promise resolves while the runtime's initial realm is
-        // current. The drain job is still attributed to the promise's (embedder) global.
-        rooted!(in(cx) let this = UndefinedValue());
-        let arguments = [Int32Value(5)];
-        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
-        rooted!(in(cx) let mut rval = UndefinedValue());
-        assert!(unsafe { Call(cx, this.handle().into_handle(), resolve.handle().into_handle(), &array, rval.handle_mut().into_handle()) });
-        assert_eq!(ENQUEUE_GLOBALS.with(|globals| globals.borrow().clone()), vec![global.get() as usize]);
-        assert!(unsafe { CurrentGlobalOrNull(cx) } != global.get(), "the current realm is restored");
-        for job in JOBS.with(|jobs| jobs.borrow_mut().split_off(0)) {
-            run_job(&runtime, job);
-        }
+        // The checkpoint runs outside the realm (as after a task); the turns belong to the
+        // runtime's initial realm.
+        checkpoint(runtime.raw_cx());
         let old = unsafe { EnterRealm(cx, global.get()) };
-        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "5");
+        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), CASES[0].1);
         unsafe { LeaveRealm(cx, old) };
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+    }
+
+    #[test]
+    fn promise_jobs_without_embedder_microtasks_wait_for_the_checkpoint() {
+        let (runtime, queue) = new_runtime_with_job_queue();
+        eval(&runtime, "globalThis.log = []; Promise.resolve(1).then(v => log.push(v)); Promise.resolve(2).then(v => log.push(v)); 0");
+        assert_eq!(eval(&runtime, "log.length").to_int32(), 0, "V8 does not run promise jobs by itself");
+        checkpoint(runtime.raw_cx());
+        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2");
+        checkpoint(runtime.raw_cx());
+        assert_eq!(super::describe(&runtime, eval(&runtime, "log.join()")), "1,2", "a checkpoint runs each job once");
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+    }
+
+    /// V8 empties its queue when a microtask's execution is terminated, so the embedder runs
+    /// the microtasks whose turn it dropped. The promise jobs and microtasks those queue rejoin
+    /// V8's queue within the same checkpoint, and no turn is left to run a later microtask early.
+    #[test]
+    fn microtasks_after_a_termination_rejoin_the_fifo_in_the_same_checkpoint() {
+        let (runtime, queue) = new_runtime_with_job_queue();
+        let cx = runtime.raw_cx();
+        eval(&runtime, "globalThis.log = []; \
+            queueMicrotask(() => { log.push('a'); terminate(); log.push('unreachable') }); \
+            queueMicrotask(() => { log.push('b'); Promise.resolve().then(() => log.push('pb')); queueMicrotask(() => log.push('c')) }); \
+            Promise.resolve().then(() => log.push('dropped')); 0");
+        checkpoint(cx);
+        let isolate = unsafe { &*(*cx).isolate };
+        assert!(!isolate.is_execution_terminating(), "the termination ended with the stack");
+        assert_eq!(log(&runtime), "a,b,pb,c", "V8 dropped the promise job queued before the termination");
+        assert!(HOST.with(|host| host.borrow().is_empty()));
+        // Nothing is left in V8's queue: neither a promise job nor a turn.
+        let turns = TURNS.with(Cell::get);
+        let mut safe = unsafe { crate::context::JSContext::from_ptr(std::ptr::NonNull::new(cx).unwrap()) };
+        unsafe { crate::rust::wrappers2::PerformMicrotaskCheckpoint(&mut safe) };
+        assert_eq!((log(&runtime), TURNS.with(Cell::get)), (std::string::String::new(), turns));
+        // A later task keeps the FIFO order: no stale turn runs its microtask first.
+        eval(&runtime, "Promise.resolve().then(() => log.push('e')); queueMicrotask(() => log.push('d')); 0");
+        checkpoint(cx);
+        assert_eq!(log(&runtime), "e,d");
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+    }
+
+    #[test]
+    fn a_throwing_microtask_does_not_stop_later_work_and_nested_checkpoints_do_nothing() {
+        let (runtime, queue) = new_runtime_with_job_queue();
+        let cx = runtime.raw_cx();
+        eval(&runtime, "globalThis.log = []; \
+            queueMicrotask(() => { log.push('t'); Promise.resolve().then(() => log.push('pt')); throw new Error('reported') }); \
+            Promise.resolve().then(() => { log.push('p'); throw new Error('rejects its promise') }); \
+            queueMicrotask(() => { hostCheckpoint(); log.push('n') }); \
+            queueMicrotask(() => log.push('q')); 0");
+        checkpoint(cx);
+        assert_eq!(log(&runtime), "t,p,n,q,pt", "the nested checkpoint ran nothing out of order");
+        assert_eq!(REPORTED.with(Cell::get), 1, "the embedder reported the thrown exception");
+        assert!(!unsafe { JS_IsExceptionPending(cx) });
+        eval(&runtime, "queueMicrotask(() => log.push('later')); 0");
+        checkpoint(cx);
+        assert_eq!(log(&runtime), "later");
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+    }
+
+    /// Servo's `Runtime::drop` clears its microtask queue and deletes the job queue before the
+    /// runtime; the turns and promise jobs still in the old isolate's queue die with it.
+    #[test]
+    fn an_abandoned_runtimes_turns_never_reach_the_next_runtime_on_the_thread() {
+        for round in 0..2 {
+            let (runtime, queue) = new_runtime_with_job_queue();
+            eval(&runtime, "globalThis.log = []; queueMicrotask(() => log.push('turn')); Promise.resolve().then(() => log.push('job')); 0");
+            if round == 1 {
+                // The previous runtime's turn never ran: this one runs only its own.
+                checkpoint(runtime.raw_cx());
+                assert_eq!((log(&runtime), TURNS.with(Cell::get)), ("turn,job".into(), 1));
+            }
+            HOST.with(|host| host.borrow_mut().clear());
+            unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
+            drop(runtime);
+        }
+    }
+
+    static WINDOW: JSClass = JSClass {
+        name: c"Window".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: std::ptr::null(),
+        spec: std::ptr::null(),
+        ext: std::ptr::null(),
+        oOps: std::ptr::null(),
+    };
+
+    /// A navigation shuts the old Window's context down (V8 detaches its global): V8 skips its
+    /// promise jobs, but the turns of its embedder microtasks belong to the initial realm, so
+    /// none is lost and the embedder still decides about each queued callback.
+    #[test]
+    fn a_shut_down_realms_microtasks_keep_their_turns() {
+        let (mut runtime, queue) = new_runtime_with_job_queue();
+        let cx = runtime.raw_cx();
+        let new_window = || unsafe { JS_NewGlobalObject(cx, &WINDOW, std::ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, std::ptr::null()) };
+        rooted!(in(cx) let first = new_window());
+        let old = unsafe { EnterRealm(cx, first.get()) };
+        install_host(&runtime);
+        rooted!(in(cx) let first_log = eval(&runtime, "globalThis.log = []; \
+            queueMicrotask(() => log.push('q1')); Promise.resolve().then(() => log.push('p1')); \
+            queueMicrotask(() => log.push('q2')); log"));
+        unsafe { LeaveRealm(cx, old) };
+        unsafe { RovesReuseWindowProxyForNextGlobal(cx, first.get()) };
+        rooted!(in(cx) let second = new_window());
+        let old = unsafe { EnterRealm(cx, second.get()) };
+        define_host(&runtime);
+        eval(&runtime, "globalThis.log = []; Promise.resolve().then(() => log.push('p3')); queueMicrotask(() => log.push('q3')); 0");
+        unsafe { LeaveRealm(cx, old) };
+        runtime.gc_for_testing();
+        checkpoint(cx);
+        assert_eq!(TURNS.with(Cell::get), 3, "every embedder microtask had its turn");
+        assert!(HOST.with(|host| host.borrow().is_empty()));
+        assert_eq!(super::describe(&runtime, first_log.get()), "q1,q2", "the old context's promise job was skipped");
+        let old = unsafe { EnterRealm(cx, second.get()) };
+        assert_eq!(log(&runtime), "p3,q3");
+        unsafe { LeaveRealm(cx, old) };
+        drop(runtime);
+        unsafe { crate::runtime_impl::DeleteJobQueue(queue) };
     }
 }
 

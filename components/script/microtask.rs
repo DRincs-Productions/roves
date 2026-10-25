@@ -7,11 +7,11 @@
 //! perform checkpoints at appropriate times, as well as enqueue microtasks as required.
 
 use std::cell::Cell;
-use std::mem;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use js::context::JSContext;
-use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty};
+use js::rust::wrappers2::{ClearKeptObjects, JobQueueMayNotBeEmpty, PerformMicrotaskCheckpoint};
 use malloc_size_of::MallocSizeOf;
 use script_bindings::cell::DomRefCell;
 use script_bindings::root::Dom;
@@ -30,7 +30,7 @@ use crate::script_thread::ScriptThread;
 #[derive(Default, JSTraceable, MallocSizeOf)]
 pub(crate) struct MicrotaskQueue {
     /// The list of enqueued microtasks that will be invoked at the next microtask checkpoint.
-    microtask_queue: DomRefCell<Vec<Box<dyn MicrotaskRunnable>>>,
+    microtask_queue: DomRefCell<VecDeque<Box<dyn MicrotaskRunnable>>>,
     /// <https://html.spec.whatwg.org/multipage/#performing-a-microtask-checkpoint>
     performing_a_microtask_checkpoint: Cell<bool>,
 }
@@ -113,11 +113,20 @@ impl MicrotaskRunnable for UserMicrotask {
 
 impl MicrotaskQueue {
     /// Add a new microtask to this queue. It will be invoked as part of the next
-    /// microtask checkpoint.
+    /// microtask checkpoint. V8's microtask queue gets its turn after the promise jobs
+    /// and microtasks already queued, so both run in one FIFO order.
     #[expect(unsafe_code)]
     pub(crate) fn enqueue(&self, cx: &JSContext, task: Box<dyn MicrotaskRunnable>) {
-        self.microtask_queue.borrow_mut().push(task);
+        self.microtask_queue.borrow_mut().push_back(task);
         unsafe { JobQueueMayNotBeEmpty(cx) };
+    }
+
+    /// Runs the oldest queued microtask, on its turn in V8's microtask queue.
+    pub(crate) fn run_next(&self, cx: &mut JSContext) {
+        rooted_vec!(let job <- self.microtask_queue.borrow_mut().pop_front().into_iter());
+        for job in job.iter() {
+            job.handler(cx);
+        }
     }
 
     /// <https://html.spec.whatwg.org/multipage/#perform-a-microtask-checkpoint>
@@ -135,17 +144,18 @@ impl MicrotaskQueue {
         debug!("Now performing a microtask checkpoint");
 
         // Step 3. While the event loop's microtask queue is not empty:
-        while !self.microtask_queue.borrow().is_empty() {
-            rooted_vec!(let mut pending_queue);
-            mem::swap(&mut *pending_queue, &mut *self.microtask_queue.borrow_mut());
-
-            for (idx, job) in pending_queue.iter().enumerate() {
-                if idx == pending_queue.len() - 1 && self.microtask_queue.borrow().is_empty() {
-                    unsafe { js::rust::wrappers2::JobQueueIsEmpty(cx) };
-                }
-
-                job.handler(cx);
+        // V8's queue holds the promise jobs and each microtask's turn (see `run_next`).
+        loop {
+            unsafe { PerformMicrotaskCheckpoint(cx) };
+            if self.microtask_queue.borrow().is_empty() {
+                break;
             }
+            // V8 empties its queue when a microtask's execution is terminated, dropping the
+            // turns of the microtasks still here. V8 runs its queue only here (step 1 keeps
+            // this from nesting), so no turn is left: running one microtask here cannot let a
+            // stale turn run a later one early. The promise jobs and microtasks it queues run,
+            // in order, at the next iteration.
+            self.run_next(cx);
         }
 
         // Step 4. For each environment settings object settingsObject whose responsible

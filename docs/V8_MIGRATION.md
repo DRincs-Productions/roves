@@ -10,9 +10,40 @@ Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuov
 concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
 Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
-## Stato corrente — 24 ottobre 2026, revisione Codex dopo il lavoro Claude
+## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### STOP quota settimanale —24ottobre11:23 Europe/Rome
+### Ripresa 25 ottobre —0329 completa e revisionata, pronta alla pubblicazione
+
+Codex ha revisionato diff, negativi e corrispondenza dei sorgenti testati/replay. Batch
+226b7c0cec7 TUTTO VERDE: V840081979370 10/10, generale40081979510 13/13,
+Android40081979357 e iOS40081979379 verdi. La pagina events della0329 è byte-identica
+a quella verificata da Chrome MCP155 Windows visibile (18/18 il24ottobre). Non ripetuta.
+Il nuovo checkpoint deve ancora essere compilato/verificato nel browser Roves dalla CI.
+
+Il singolo ricontrollo autorizzato del 25 ottobre ha trovato Claude disponibile: la quota
+settimanale del 24 ottobre (sotto) è un evento storico concluso, non uno stop attuale.
+Applicato solo `0329-incomplete-code-only.patch` (SHA verificato) su0971c273da6, poi la
+revisione di Codex:
+- Fallback dopo terminazione: il difetto è riprodotto. La bozza eseguiva i microtask HTML
+  rimasti dopo un solo checkpoint V8, lasciando in V8 le Promise e i turni che questi
+  accodavano (`a,b,c` invece di `a,b,pb,c`); i turni obsoleti avrebbero poi eseguito in
+  anticipo un microtask successivo. Ora il passo 3 è un loop: checkpoint V8, poi un solo
+  microtask HTML solo se ne restano, fino a code vuote. Guardia di rientro invariata.
+- Secondo difetto trovato: V8 assegna al turno il contesto *corrente* e lo salta quando quel
+  contesto è chiuso (global staccato da una navigazione). `JobQueueMayNotBeEmpty` ora entra nel
+  realm iniziale prima di accodare. Lasciare un realm ≠ chiuderlo: entrambi i casi sono testati.
+- Test nativi con mock fedele a Servo (guardia, loop, fallback, coda tracciata come radice):
+  terminazione, eccezione + lavoro successivo + checkpoint annidato, runtime abbandonato e nuovo
+  runtime sullo stesso thread, finestra navigata con GC. 124 normal / 123 JITless (2/3 ignorati),
+  copie testate identiche. Negativi su copie fresche: loop della bozza e accodamento nel realm
+  corrente falliscono ciascuno il proprio test. Runner 38 OK / 8 skip; contratto statico
+  aggiornato alla forma a loop. Replay sullo scratch 0328: 469/472, le stesse 3 eccezioni.
+- Log: `target/task-0329/resume-2026-10-25/`. Patch `0329-microtask-fifo-v8-queue.patch`,
+  CUSTOMIZATIONS, README e wiki `shell.mdx` aggiornati (wiki non committato). I file parcheggiati
+  restano come evidenza. Codice morto `enqueue_promise_job` lasciato per lavoro separato.
+  Nessuna build Servo locale: la compilazione del crate script la verifica la CI.
+
+### Storico STOP quota settimanale —24ottobre11:23 (superato il25ottobre)
 
 **Pubblicato checkpoint completo `226b7c0cec7` / wiki `2e77a2f`:** include0327/0328,
 esclude0329. Nuovo batch V8 **40081979370**, generale **40081979510**, Android
@@ -451,9 +482,9 @@ scratch: 469/472 identici + 3 eccezioni note. Log: `target/task-0328/`.
 
 ### Prossimi punti
 
-1. Priorità allo STOP settimanale in cima:0327/0328 complete,0329 parcheggiata.
-   Dopo quota riprendere0329 dal code-only patch e completare la revisione, senza altri retry
-   automatici. Batch e80e tutto verde; nuovo batch del checkpoint0328 da registrare.
+1.0329 completa e revisionata, pubblicare dopo il batch226b7c0cec7 confermato tutto verde.
+   Identificare il nuovo batch dopo push e verificare compilazione script/smoke normal/JITless.
+   Nel frattempo eliminare il codice morto del vecchio enqueue Promise in un incarico separato.
    Snapshot nominato artifact12553680992 analizzato in0326: nessun arco forte esterno visibile.
    Chrome MCP155 ha già confermato17/17; nessuna build Servo pesante locale.
 2. Leggere i risultati reali della diagnostica frame dopo il fix; studiare radici residue di

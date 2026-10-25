@@ -78,6 +78,9 @@ ROVES_ENTRIES = {
     "JS_NewEnumerateStandardClasses": [
         "wrap!(jsapi: pub fn JS_InitGlobalInterfaceProperties(cx: &mut JSContext, obj: HandleObject) -> bool);",
     ],
+    "JobQueueMayNotBeEmpty": [
+        "wrap!(jsapi: pub fn PerformMicrotaskCheckpoint(cx: &mut JSContext));",
+    ],
     "NewWindowProxy": [
         "wrap!(glue: pub fn GetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: MutableHandleObject) -> bool);",
         "wrap!(glue: pub fn SetCrossOriginPropertyHolder(cx: &mut JSContext, proxy: HandleObject, holder: HandleObject) -> bool);",

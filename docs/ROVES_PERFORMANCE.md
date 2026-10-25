@@ -1,3 +1,12 @@
+## 25 ottobre — ripresa0329, confronto correttezza già acquisito
+
+La pagina events.html della0329 revisionata è byte-identica alla bozza verificata il24ottobre
+con Chrome DevTools MCP155 Windows, visibile, HTTP127.0.0.1:19029:18/18 check. Non ripetuto
+il confronto identico; non è una misura prestazionale. Le correzioni native della ripresa
+riguardano fallback dopo terminazione e turno nel realm iniziale. Native124normal/123JITless,
+negativi distinti riproducono entrambi i difetti. La nuova build browser Roves resta alla CI.
+Il batch precedente226b7c0cec7 è tutto verde. Retention frame ancora irrisolta.
+
 ## 24 ottobre — snapshot nominato0326 e limiti MemLab
 
 Artifact12553680992/run40075199667 (4911213byte,

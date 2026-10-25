@@ -309,6 +309,8 @@ unsafe extern "C" fn get_host_defined_data(
     true
 }
 
+/// Runs the oldest queued microtask: roves-js calls this on its turn in V8's microtask
+/// queue, which also holds the promise jobs (see `MicrotaskQueue::enqueue`).
 #[expect(unsafe_code)]
 unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSContext) {
     let mut cx = unsafe {
@@ -317,9 +319,7 @@ unsafe extern "C" fn run_jobs(microtask_queue: *const c_void, cx: *mut RawJSCont
     };
     wrap_panic(&mut || {
         let microtask_queue = unsafe { &*(microtask_queue as *const MicrotaskQueue) };
-        // TODO: run Promise- and User-variant Microtasks, and do #notify-about-rejected-promises.
-        // Those will require real `globalscopes` values.
-        microtask_queue.checkpoint(&mut cx, vec![]);
+        microtask_queue.run_next(&mut cx);
     });
 }
 
