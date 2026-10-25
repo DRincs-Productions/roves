@@ -1158,10 +1158,11 @@ elif page == 'nav1.html':
     print('ROVES-V8 nav2 loaded nav2.html true second page')
     if scenario != 'navigation': print('ROVES-V8 nav1 pageshow persisted=false')
 else:
-    if page == 'events.html':
-        # The required checks; the scenario drops the origin-change one with a consistent total.
-        names = os.environ['SMOKE_TEST_EVENTS_CHECK'].split('\\n')
-        if scenario == 'events-origin-missing':
+    required = json.loads(os.environ['SMOKE_TEST_REQUIRED_CHECKS'])
+    if page in required:
+        # Every required check of the page; the scenario drops the first one with a consistent total.
+        names = required[page]
+        if scenario == 'missing:' + page:
             names = names[1:]
         print('SUITE PASS example')
         for name in names:
@@ -1190,7 +1191,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                        SMOKE_TEST_SCENARIO=scenario, SMOKE_TEST_WRAPPED=str(int(wrapped)), V8_SMOKE_MODE='normal',
                        V8_SMOKE_ALLOW_MISSING_DEVICES='0', PYTHON3=str(python_stub),
                        SMOKE_TEST_REAL_PYTHON=python,
-                       SMOKE_TEST_EVENTS_CHECK='\n'.join(REQUIRED_CHECKS['events.html']))
+                       SMOKE_TEST_REQUIRED_CHECKS=json.dumps(REQUIRED_CHECKS))
             env.pop('GITHUB_STEP_SUMMARY', None)
             env.pop('V8_SMOKE_HEAP_SNAPSHOT', None)
             if snapshot == 'relative':
@@ -1279,6 +1280,10 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                         self.assertIn(f'::notice::gc-lifecycle.html: ROVES-V8 gc diagnostic removed frames released '
                                       f'{group} elements 0/2 documents 0/2 globals 0/2', result.stdout)
                     self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
+                    # Each page with required checks reports all of them plus its example check.
+                    totals = re.search(r'::notice title=V8 smoke suites::(.*)', result.stdout).group(1).split('%0A')
+                    for page, names in REQUIRED_CHECKS.items():
+                        self.assertIn(f'{page} {len(names) + 1}/{len(names) + 1}', totals)
 
     def test_gc_lifecycle_failures(self):
         cases = (
@@ -1334,7 +1339,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', 'events-origin-missing'):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -1349,8 +1354,11 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
                 if scenario == 'constructor-graph':
                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
-                if scenario == 'events-origin-missing':
-                    self.assertIn('::error::events.html: missing required check: ' + REQUIRED_CHECKS['events.html'][0], result.stdout)
+                if scenario.startswith('missing:'):
+                    # Only the dropped check fails: the page's other required checks are reported.
+                    page = scenario.partition(':')[2]
+                    errors = [line for line in result.stdout.splitlines() if 'missing required check' in line]
+                    self.assertEqual([f'::error::{page}: missing required check: {REQUIRED_CHECKS[page][0]}'], errors)
                 if scenario == 'testutils-default':
                     self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
 

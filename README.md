@@ -630,6 +630,8 @@ instead of all pending promise callbacks first (see the shell wiki page); dedica
 the same order, now covered by an automated browser check.
 The unused Servo Promise-enqueue callback and its internal WebIDL adapter have been removed;
 V8 owns Promise jobs directly (see the shell wiki page).
+The CI runner fixtures also enforce mandatory browser checks on POSIX; missing worker checks
+remain failures (see the shell wiki page).
 `postMessage`/`structuredClone` of a `SharedArrayBuffer` or `WebAssembly.Module` fails with a
 `DataCloneError` on V8, as it did on SpiderMonkey, instead of failing silently or with a generic error.
 

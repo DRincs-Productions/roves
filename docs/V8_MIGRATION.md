@@ -12,7 +12,20 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
-### Priorità CI0332 — fixture POSIX senza il nuovo marker worker
+### Checkpoint0333/0334 revisionato, batch precedente concluso
+
+Batcha4e78c2e543 concluso: generale4018148512013/13, Android40181485099 e iOS40181485090
+verdi. V840181485105 rosso solo nei4runtime POSIX per fixture worker mancante (8errori ciascuno).
+0334 corregge la fixture, non il validatore: lista REQUIRED_CHECKS condivisa per tutte le pagine,
+totali coerenti e negativi missing:<pagina>. WSLUbuntu Node24/Python3.10/bash:42/42 senza
+skip, negativo vecchiafixture8/8 falliscono con lo stessoerroreCI. Replay Codex su baselineHEAD
+fresco e scratch completo: file identico; logtarget/task-0334/replay-reviewed.log.
+0333 commitc34be052a5f/wiki85606e6 revisionato;0334 pronta: pubblicare insieme ora che tutte
+le run precedenti sono terminate. NuovaCI dovrà confermare soluzione POSIX e quiescenza task.
+Nessuna modifica incompleta; task senza handler rimangono conservativi e retentionframe aperta.
+
+
+### CI0332 corretta localmente —0334 completa/revisionata, pubblicazione
 
 Batcha4e78c2e543 V840181485105:6/10 verdi,4runtime POSIX rossi (Linux/macOS normal/JITless).
 Cause lette nei job121133301534 e121133301527:8fallimenti del runner simulato, tutti
@@ -21,6 +34,15 @@ Il validatore è corretto; è incompleta la fixture fake_browser usata solo nei 
 NON indebolire requiredcheck o saltaretest. Correzione0334 da delegare con verificaWSL reale.
 I4servoshell browser e i2runtime Windows passano; generale40181485120 ancora11/13 verdi,
 Linuxportable121133781156 e WindowsMSI121133781161 attivi. Non fare push durante le run.
+**Claude0334 (da revisionare, non committato):** il fake browser di `RunnerTests` riceve
+`REQUIRED_CHECKS` in JSON e stampa per ogni pagina elencata example+tutti i required con totale
+coerente; il test di successo verifica nel notice dei totali `<pagina> n+1/n+1` per ogni pagina,
+i failure path `missing:<pagina>` attendono esattamente l'errore del check rimosso. Validatore
+e required invariati. WSL Ubuntu (Node24.12, Python3.10, bash5.1): suite completa 42/42 ok,
+0skip, 8RunnerTests inclusi. Negativo fixture HEAD: 8/8 RunnerTests falliti con il solo errore
+CI `stress.html: missing required check: dedicated worker...`. Patch
+`0334-posix-fixture-required-checks.patch` dry-run+apply sullo scratch0333, file identico.
+Log `target/task-0334/`. Risoluzione CI da confermare con il prossimo batch dopo il push.
 0333 revisione Codex completata: quiescenza consegne già accettate, nessun registry/timerlock
 in attesa, nessun auto-unregister nell’handler (non avviene in produzione).8engine testsnormal/
 JITless,30ripetizioni race,124/123runtime, negativi deterministici e replay470/473. Commitlocale.

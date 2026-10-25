@@ -1,3 +1,18 @@
+## 2026-10-25 - POSIX runner fixture reports every required check (0334)
+
+**Files:** `support/v8-smoke/test_runner.py`, patch `0334-posix-fixture-required-checks.patch`.
+Test-only; no production, runtime or build-surface change.
+
+0332 added a required `stress.html` check, but `RunnerTests`' fake browser only emitted the
+`events.html` required checks (passed as a newline list), so every POSIX success scenario failed
+`check_results.py` with `stress.html: missing required check: dedicated worker: ...` (8 tests on
+Linux/macOS CI; Windows skips these shell tests). The fake browser now receives
+`check_results.REQUIRED_CHECKS` as JSON and reports, for every listed page, an example check plus
+all its required checks with a consistent total. The success test asserts the runner's totals
+notice shows `<page> n+1/n+1` for each `REQUIRED_CHECKS` page, and the failure paths drop the
+first required check of each page in turn (`missing:<page>`) and expect exactly that one
+`missing required check` error. The validator and the required checks are unchanged.
+
 ## 2026-10-25 - V8 foreground handler removal waits for accepted deliveries (0333)
 
 **Files:** `components/roves-v8/src/foreground.rs`, `components/roves-js/src/runtime_impl.rs`
