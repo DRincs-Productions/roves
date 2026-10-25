@@ -12,6 +12,32 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0344 revisionata — snapshot cambia il repro, nuovo artefatto browser acquisito
+
+Stessobinario0343: senza hook secondaWindow viva, con hook raccolta dalla GC dello snapshot
+(normal6/6 vs3/3, JITless2/2 vs1/1). Grafo rappresenta stackcppgc verso realm/celle realmente
+radicati; non calibra la radice stantia del repro che non sopravvive. Nessuna prova sulla causa
+DOM, nessun fix o testflaky pubblicato. Evitare ulteriore rilettura0326 senza nuovo motivo:
+acquisito artefatto corrente12604704563/run40208620536 suaa028313991,4876611byte,
+SHA256ce5d4263c2b3aad9f960c18a82466b7caa055bb134829aa31c1a2e0e0371fe26,
+filetarget/task-0345/frame-12604704563.heapsnapshot. Prossimo confronto diretto radici/cluster
+con gli stessi helper MemLab calibrati, senza nostroparser/BFS né dichiarazioni di assenza leak.
+
+### Claude0344 — calibrazione snapshot del repro0343 (da revisionare, nessun codice)
+
+Base271713ce906; CI non controllata; nessuna modifica a sorgenti/patch/wiki. Stesso test0343
+invariato, solo `task_0343_production_1`, stesso binario con e senza hook snapshot (GC1),
+un processo per esecuzione. Senza env: seconda Window viva (normale6/6, JITless2/2). Con
+snapshot: entrambe raccolte (normale3/3, JITless1/1); il grafo (letto con MemLab, helper
+esistenti + `census.js` a un livello) contiene solo il contesto di default del runtime e
+`other_realm`, nessuna Window del cluster. Calibrazione: lo snapshot emette archi
+`C++ native stack roots` verso oggetti cppgc sullo stack al momento del proprio scan
+(realm di default, cella di `other_realm`), ma la propria GC raccoglie la Window trattenuta,
+quindi non mostra né esclude la parola stantia della GC precedente. Per0326: lo snapshot
+descrive lo stack della propria GC, non delle GC di produzione precedenti; prova singola,
+non conclusiva. Prossimo passo: stesse query sullo snapshot browser0326 verso il cluster del
+frame trattenuto. Log `target/task-0344/RESULTS.txt`. Frame retention aperta.
+
 ### Codex0343 revisionata — retention nativa sensibile ai frame
 
 Solo diagnosi parcheggiata target/task-0343, nessun test flaky pubblicato. ProduzioneJS_GC
