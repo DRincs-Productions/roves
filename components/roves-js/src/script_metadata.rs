@@ -9,7 +9,8 @@
 //! embedder's trace hook (see `ScriptPrivateTraceHook`). A source module's metadata also
 //! keeps the module's record (see `modules_impl`), so the record lives exactly as long as
 //! something reaches the source's token or the record itself. JSON module privates reuse the
-//! same holder and data, kept by the module record instead of a token.
+//! same holder and data, kept by the module record instead of a token; a linked JSON module's
+//! namespace keeps its record through the same WeakMap (see `keep_record`).
 
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
@@ -29,7 +30,8 @@ const SWEEP_MIN: usize = 256;
 /// privates, whose holder lives on the record's placeholder (see `modules_impl`).
 pub(crate) struct PrivateData {
     private: Cell<HostPrivate>,
-    /// A source module's record (cell), fixed at creation; null otherwise.
+    /// A source module's record (cell), or the JSON record a namespace keeps, fixed at
+    /// creation; null otherwise.
     module: *mut c_void,
 }
 
@@ -146,14 +148,46 @@ impl ScriptMetadata {
 
     /// The private of the source whose host token is `token` (`None`: the token has no
     /// metadata). One lookup in the captured WeakMap, whose holder wraps the metadata.
-    pub(crate) fn token_private(&self, scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> Option<JSVal> {
+    pub(crate) fn token_private<'s>(&self, scope: &mut v8::PinScope<'s, '_>, token: v8::Local<'s, v8::Symbol>) -> Option<JSVal> {
+        let data = self.data_under(scope, token.into())?;
+        // SAFETY: `data_under`'s holder was a local of this scope, keeping the data alive.
+        Some(unsafe { &*data }.value())
+    }
+
+    /// Calls the captured WeakMap method at `method` (1: set, 2: get) on the captured map.
+    fn call_map<'s>(&self, scope: &mut v8::PinScope<'s, '_>, method: u32, args: &[v8::Local<'s, v8::Value>]) -> Option<v8::Local<'s, v8::Value>> {
         let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
         let map = cache.get_index(scope, 0)?;
-        let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
-        let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
-        let data = holder_data(scope, holder)?;
-        // SAFETY: the holder (a local) keeps the data alive.
-        Some(unsafe { &*data }.value())
+        let method = v8::Local::<v8::Function>::try_from(cache.get_index(scope, method)?).ok()?;
+        method.call(scope, map, args)
+    }
+
+    /// The data of the holder the captured WeakMap keeps under `key`, valid while this scope
+    /// lives (its local holder keeps it).
+    fn data_under<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>) -> Option<*const PrivateData> {
+        let holder = v8::Local::<v8::Object>::try_from(self.call_map(scope, 2, &[key])?).ok()?;
+        holder_data(scope, holder)
+    }
+
+    /// The record the captured WeakMap keeps under `key` (see `keep_record`), if any.
+    pub(crate) fn kept_record<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>) -> Option<*mut c_void> {
+        let data = self.data_under(scope, key)?;
+        // SAFETY: as in `token_private`.
+        Some(unsafe { &*data }.module).filter(|record| !record.is_null())
+    }
+
+    /// Makes the captured WeakMap keep `record` (alive: rooted or kept by the caller) while
+    /// `key` is reachable, through a holder of new data with no private; `None` stops keeping
+    /// the record kept so far. Nothing changes when `key` already keeps `record`.
+    pub(crate) fn keep_record<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>, record: Option<*mut c_void>) -> Option<()> {
+        if self.kept_record(scope, key) == record {
+            return Some(());
+        }
+        let value = match record {
+            Some(record) => self.new_holder_of(scope, record)?.0.into(),
+            None => v8::undefined(scope).into(),
+        };
+        self.call_map(scope, 1, &[key, value]).map(drop)
     }
 
     /// A new holder object owning new, empty private data (not a source module's), and a
@@ -193,10 +227,7 @@ impl ScriptMetadata {
     fn create(&self, scope: &mut v8::PinScope, id: i32, module: *mut c_void) -> Option<*const PrivateData> {
         let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
         let (holder, data) = self.new_holder_of(scope, module)?;
-        let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
-        let map = cache.get_index(scope, 0)?;
-        let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
-        set.call(scope, map, &[token.into(), holder.into()])?;
+        self.call_map(scope, 1, &[token.into(), holder.into()])?;
         let pointer = data.get()? as *const PrivateData;
         self.entries.borrow_mut().get_mut(&id)?.data = Some(data);
         Some(pointer)

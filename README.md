@@ -138,7 +138,7 @@ and browser GC stress remain open.
 Shared agent instructions live in [AGENTS.md](./AGENTS.md). The
 [agent workflow audit](./docs/AGENT_WORKFLOW.md) records the development process.
 Escaped `import.meta.resolve` retains its module metadata across garbage collections.
-Inside the V8 backend, unreachable source modules, evaluated or unlinked JSON modules,
+Inside the V8 backend, unreachable source modules, JSON modules (evaluated, unlinked, or linked in an abandoned graph),
 native functions and immutable prototypes can be collected with their owners. Realm contexts
 now use a weak registry and traced ownership too; current realms, saved nested entries,
 rooted objects/functions and queued jobs keep their contexts alive. Realm principals are
@@ -146,8 +146,8 @@ released once at collection or shutdown. Promise-job drain scheduling is isolate
 so restarting a runtime on the same thread does not inherit an abandoned pending drain. Delayed V8 tasks also keep their original
 registration, so an isolate address reused by a later runtime does not retarget old work. Tasks handed to the
 embedder also carry a weak runtime owner and cannot execute in a replacement runtime. Accepted
-dispatched work is reclaimed before isolate disposal, leaving late event-loop payloads empty. The initial context stays alive, and JSON modules
-linked but never evaluated remain retained. Local lifetime tests pass; full browser validation
+dispatched work is reclaimed before isolate disposal, leaving late event-loop payloads empty. The initial context stays alive; a linked JSON module awaiting evaluation
+is kept only while its module graph is reachable. Local lifetime tests pass; full browser validation
 runs in CI. Servo still roots page globals and loaded module maps: page collection and memory
 or performance improvements have not been demonstrated.
 

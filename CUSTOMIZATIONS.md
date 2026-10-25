@@ -1,3 +1,45 @@
+## 2026-10-25 - Linked JSON module records live as long as their module graph (0337)
+
+**Files:** `components/roves-js/src/modules_impl.rs`, `components/roves-js/src/script_metadata.rs`,
+`components/roves-js/src/script_impl.rs`, `components/roves-js/src/tests.rs`, patch
+`0337-json-records-kept-by-their-namespace.patch`.
+
+A JSON module's evaluation steps read its parsed value from its record, so from linking
+until the steps run the record must outlive anything that can still evaluate the module. The
+previous code made the record's entry strong at the end of `ModuleLink` and weak again when
+the steps ran: a JSON module linked but never evaluated (an abandoned graph, an importer
+whose evaluation threw before reaching it, a dependency V8 left linked after a failed link,
+or a JSON module linked as the root) kept its record, parsed value and private until the
+runtime ended. The new native test demonstrates this on the old code (`(5, 5)` live/held
+records after collection instead of `(1, 1)`, in both normal and JIT-less builds).
+
+The installed V8 API cannot attach host data to a synthetic module, but a linked module has
+a namespace object that V8 caches on the module (`Module::GetModuleNamespaceCell` stores it in
+the module's `module_namespace` cell, `JSModuleNamespace::module` points back) and only
+resets while a link is still in progress (`Module::Reset`, PreLinking/Linking only; checked
+in the pinned V8 152.2 sources). `LinkSegment::drop` now gets the namespace of each JSON
+module V8 left linked and stores, in the source metadata's captured `WeakMap` (an
+ephemeron, captured before user code runs), a holder of new `PrivateData` whose existing
+`module` edge traces the record. The record therefore lives while anything reaches the module
+(an importer, a namespace, a deferred namespace, its own record), and an abandoned graph
+(record -> module -> namespace -> holder -> record) collects as a cycle. The steps read the
+parsed value, then replace the WeakMap value with `undefined`, so the record goes back to its
+own reachability as before. The entry stays weak after compilation; `strengthen` is removed.
+Creating the namespace at link time is spec-visible only as an earlier allocation: export
+bindings and TDZ are unchanged (no `set_synthetic_module_export` before the steps). Anchoring
+can only fail on termination; the steps then report the missing value instead of reading a
+collected record.
+
+`ScriptMetadata` gains `keep_record`/`kept_record` and a shared `call_map` helper (used by
+`token_private` and `create` too). Tests: a new test abandons four linked-but-unevaluated
+graphs (source importer, JSON root, errored importer, partially failed link) with native
+privates, checks they collect and each private is released and finalized once, and that a
+held graph (only its importer rooted) survives collection and evaluates later with its value;
+the evaluation-failure test now keeps the errored importer rooted, since an unreachable
+graph is no longer retained. The `UNANCHORED_JSON_FOR_TESTING` negative fixture (formerly
+`UNSTRENGTHENED`) still loses the value. This addresses only JSON module record retention;
+the separately observed frame/no-module retention is unchanged.
+
 ## 2026-10-25 - Native proxy descriptor results ignore a polluted Object.prototype (0336)
 
 **Files:** `components/roves-js/src/jsapi_impl.rs`, `components/roves-js/src/proxy.rs`,

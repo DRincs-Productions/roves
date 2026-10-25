@@ -12,6 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0337 revisionata — commit locale durante CI0335/0336
+
+0337 elimina la radice forte dei JSON collegati mai valutati: namespace V8 come chiave
+nell’ephemeron WeakMap già esistente, holder cppgc con edge al record. Nessuna ABI privata,
+nessun export anticipato; contratto namespace verificato nei sorgenti del crate fissato.
+Negativo vecchio codice normal/JITless trattiene5/5 contro1/1; positivi127normal/126JITless,
+quattro grafi abbandonati finalizzati una sola volta e quello vivo valuta dopoGC correttamente.
+Replay470/473,3eccezioni note, nessun drift nuovo. Revisione diff/log completata senza duplicaretest.
+Batch2fc8a3f73f6: Android40204634068 e iOS40204634081 verdi; V8402046340667/10 verdi,
+3browser attivi; generale402046341028/13 verdi,5build attive. Nessun rosso. NON pushare.
+Continuare prossimo incarico circoscritto durante CI; retention frame/no-module ancora aperta.
+
+### Claude0337 — record JSON collegati tenuti dal namespace (da revisionare, non committato)
+
+Base 2fc8a3f73f6; CI non controllata da Claude. Difetto dimostrato con test nativo nuovo sul
+codice vecchio (normal e JITless): quattro grafi collegati mai valutati (importer sorgente,
+JSON radice, importer in errore, link parzialmente fallito) restano vivi dopo la GC, `(5,5)`
+invece di `(1,1)`, con i private trattenuti fino allo spegnimento. Verificato nei sorgenti V8
+152.2 del crate: il namespace è cachato nella cella `module_namespace` del modulo, punta al
+modulo e viene azzerato solo durante PreLinking/Linking. Fix: a fine `ModuleLink` il namespace
+di ogni JSON rimasto collegato diventa chiave nella WeakMap catturata dei metadata, con holder
+`PrivateData` il cui campo `module` traccia il record; gli step leggono il valore e poi
+sostituiscono il valore con `undefined`. Rimosso `strengthen`; nessun export anticipato, TDZ
+invariata; fallimento solo per terminazione (TypeError "missing value", nessun UAF). Test
+evaluation-failure aggiornato (importer in errore radicato). roves-js normal127/2ign,
+JITless126/3ign; patch `0337-json-records-kept-by-their-namespace.patch`, replay470/473 con
+3eccezioni note. Log `target/task-0337/`. Retention frame/no-module resta aperta e separata.
+
 ### Checkpoint Codex0336 revisionato — pubblicazione0335/0336
 
 Batch bce416e50da concluso tutto verde: V840184060372 (10/10), generale40184060391

@@ -3310,8 +3310,8 @@ mod traced_privates {
         crate::modules_impl::linking_len_for_testing()
     }
 
-    fn strong(record: *mut JSObject) -> bool {
-        crate::modules_impl::strong_record_for_testing(record)
+    fn held(record: *mut JSObject) -> bool {
+        crate::modules_impl::held_record_for_testing(record)
     }
 
     fn check(runtime: &Runtime, source: &str) {
@@ -3578,16 +3578,17 @@ mod traced_privates {
     fn json_evaluation_failure_before_the_steps_keeps_the_record_linked() {
         let mut runtime = source_runtime(false);
         let cx = runtime.raw_cx();
+        rooted!(in(cx) let main = compile_source(&runtime, "throw-main.js",
+            "import 'throw.js';\nimport data from 'data.json' with { type: 'json' };"));
         {
             rooted!(in(cx) let data = compile_json(&runtime, "data.json", r#"{"n": 8}"#));
             rooted!(in(cx) let thrower = compile_source(&runtime, "throw.js", "throw new Error('boom');"));
-            rooted!(in(cx) let main = compile_source(&runtime, "throw-main.js",
-                "import 'throw.js';\nimport data from 'data.json' with { type: 'json' };"));
             assert!(link(&runtime, main.get()));
             assert_eq!(evaluate(&runtime, main.get(), c"throwNs"), Err("Error: boom".to_owned()));
             assert!(!data.get().is_null() && !thrower.get().is_null());
         }
-        // Unrooted from here: the weak registry hands `data.json` out only while it lives.
+        // Only the errored importer reaches `data.json` from here: the weak registry hands
+        // it out only while it lives.
         unregister("throw.js");
         collect(&mut runtime);
         assert_eq!(json_records(), (1, 1), "the unevaluated record is still held for its steps");
@@ -3598,6 +3599,92 @@ mod traced_privates {
         unregister("data.json");
         collect(&mut runtime);
         assert_eq!(json_records(), (0, 0));
+        assert!(!main.get().is_null());
+    }
+
+    #[test]
+    fn abandoned_linked_json_graphs_collect_and_held_ones_evaluate_later() {
+        fn give(runtime: &Runtime, record: *mut JSObject, id: i32) -> Weak<NativeOwner> {
+            let owner = new_owner(runtime, id, None);
+            unsafe { SetModulePrivate(record, &PrivateValue(Rc::as_ptr(&owner).cast())) };
+            Rc::downgrade(&owner)
+        }
+        let mut runtime = source_runtime(true);
+        let cx = runtime.raw_cx();
+        // Each graph links but never runs the JSON steps; nothing reaches it once its block
+        // ends and the resolve hook forgets its names.
+        let linked = {
+            rooted!(in(cx) let data = compile_json(&runtime, "linked.json", r#"{"id": 1}"#));
+            let owner = give(&runtime, data.get(), 1);
+            rooted!(in(cx) let main = compile_source(&runtime, "linked-main.js", "import data from 'linked.json' with { type: 'json' };\nexport default data;"));
+            assert!(link(&runtime, main.get()));
+            owner
+        };
+        let root = {
+            rooted!(in(cx) let data = compile_json(&runtime, "root.json", r#"{"id": 2}"#));
+            let owner = give(&runtime, data.get(), 2);
+            assert!(link(&runtime, data.get()), "a JSON module linked as the root");
+            owner
+        };
+        let errored = {
+            rooted!(in(cx) let data = compile_json(&runtime, "errored.json", r#"{"id": 3}"#));
+            let owner = give(&runtime, data.get(), 3);
+            rooted!(in(cx) let thrower = compile_source(&runtime, "errored-throw.js", "throw new Error('boom');"));
+            rooted!(in(cx) let main = compile_source(&runtime, "errored-main.js",
+                "import 'errored-throw.js';\nimport data from 'errored.json' with { type: 'json' };"));
+            assert!(link(&runtime, main.get()));
+            assert_eq!(evaluate(&runtime, main.get(), c"erroredNs"), Err("Error: boom".to_owned()));
+            assert!(!thrower.get().is_null());
+            owner
+        };
+        let partial = {
+            // `partial-b.js` completes its component (with `partial.json`) before
+            // `partial-bad.js` fails: V8 leaves both linked.
+            rooted!(in(cx) let data = compile_json(&runtime, "partial.json", r#"{"id": 4}"#));
+            let owner = give(&runtime, data.get(), 4);
+            rooted!(in(cx) let b = compile_source(&runtime, "partial-b.js", "import data from 'partial.json' with { type: 'json' };\nexport const value = data;"));
+            rooted!(in(cx) let bad = compile_source(&runtime, "partial-bad.js", "import { nope } from 'partial.json' with { type: 'json' };"));
+            rooted!(in(cx) let main = compile_source(&runtime, "partial-main.js", "import 'partial-b.js';\nimport 'partial-bad.js';"));
+            assert!(!link(&runtime, main.get()), "a missing export fails the link");
+            assert!(!b.get().is_null() && !bad.get().is_null());
+            owner
+        };
+        // A held graph: only its rooted importer reaches the JSON module.
+        rooted!(in(cx) let held_main = compile_source(&runtime, "held-main.js",
+            "import data from 'held.json' with { type: 'json' };\nexport default data;\nexport function again() { return data; }"));
+        let held = {
+            rooted!(in(cx) let data = compile_json(&runtime, "held.json", r#"{"id": 5}"#));
+            let owner = give(&runtime, data.get(), 5);
+            assert!(link(&runtime, held_main.get()));
+            owner
+        };
+        for name in ["linked.json", "linked-main.js", "root.json", "errored.json", "errored-throw.js", "errored-main.js", "partial.json",
+            "partial-b.js", "partial-bad.js", "partial-main.js", "held.json"]
+        {
+            unregister(name);
+        }
+        collect(&mut runtime);
+        assert_eq!(json_records(), (1, 1), "abandoned linked JSON records collect, the held one survives for its steps");
+        for owner in [&linked, &root, &errored, &partial] {
+            assert!(owner.upgrade().is_none(), "an abandoned record released its private");
+        }
+        let mut finalized = owners_finalized();
+        finalized.sort();
+        assert_eq!((finalized, count(&RELEASES)), (vec![1, 2, 3, 4], 4), "each abandoned owner once");
+        assert_eq!(marker(&runtime, &held), "owner 5");
+        // The held graph evaluates later with its value, read from the surviving record.
+        assert_eq!(evaluate(&runtime, held_main.get(), c"heldNs"), Ok(()));
+        check(&runtime, "heldNs.default.id === 5 && heldNs.again() === heldNs.default");
+        eval(&runtime, "globalThis.heldValue = heldNs.default; delete globalThis.heldNs; 0");
+        drop(held_main);
+        collect(&mut runtime);
+        assert_eq!(json_records(), (0, 0), "the evaluated record collects with its graph");
+        assert!(held.upgrade().is_none());
+        check(&runtime, "heldValue.id === 5");
+        assert_eq!((owners_finalized().len(), count(&RELEASES)), (5, 5));
+        drop(runtime);
+        assert_eq!((count(&RETAINS), count(&RELEASES)), (5, 5), "every private released once, none at shutdown");
+        assert!(!STALE_TRACE.with(Cell::get) && !RELEASE_WITHOUT_RUNTIME.with(Cell::get));
     }
 
     /// An unrooted JSON record whose private's owner traces the record: a cycle through
@@ -3652,11 +3739,11 @@ mod traced_privates {
         assert!(shared >= 2);
         rooted!(in(cx) let importer = compile_source(&runtime, "collide.js", "import second from 'second.json' with { type: 'json' };\nexport default second;"));
         assert!(link(&runtime, importer.get()));
-        assert!(strong(second.get()) && !strong(first.get()), "linking holds only the linked record");
+        assert!(held(second.get()) && !held(first.get()), "linking holds only the linked record");
         collect(&mut runtime);
         assert_eq!(evaluate(&runtime, importer.get(), c"collideNs"), Ok(()));
         check(&runtime, "collideNs.default.second === true");
-        assert!(!strong(second.get()) && !strong(first.get()));
+        assert!(!held(second.get()) && !held(first.get()));
         assert_eq!(json_records(), (2, 0));
         rooted!(in(cx) let value = crate::modules_impl::json_value_for_testing(first.get()));
         rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
@@ -3667,8 +3754,8 @@ mod traced_privates {
     #[test]
     fn negative_fixtures_detect_missing_json_roots_and_native_privates() {
         use crate::modules_impl::{
-            NATIVE_JSON_PRIVATES_FOR_TESTING as NATIVE, STRONG_JSON_FOR_TESTING as STRONG, UNROOTED_LINKING_FOR_TESTING as UNROOTED,
-            UNSTRENGTHENED_JSON_FOR_TESTING as UNSTRENGTHENED,
+            NATIVE_JSON_PRIVATES_FOR_TESTING as NATIVE, STRONG_JSON_FOR_TESTING as STRONG, UNANCHORED_JSON_FOR_TESTING as UNANCHORED,
+            UNROOTED_LINKING_FOR_TESTING as UNROOTED,
         };
         let with = |flag: &'static std::thread::LocalKey<Cell<bool>>, f: &mut dyn FnMut()| {
             flag.with(|flag| flag.set(true));
@@ -3689,8 +3776,8 @@ mod traced_privates {
             assert!(dropped.upgrade().is_none());
             assert_eq!(count(&RETAINS), count(&RELEASES));
         });
-        // Without holding linked records their value is lost before the steps run.
-        with(&UNSTRENGTHENED, &mut || {
+        // Without their namespaces keeping linked records their value is lost before the steps.
+        with(&UNANCHORED, &mut || {
             let mut runtime = source_runtime(false);
             let (linked, evaluated) = linked_lifetime(&mut runtime);
             assert_eq!(linked, (0, 0), "nothing held the linked record");

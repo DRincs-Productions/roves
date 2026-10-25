@@ -13,15 +13,17 @@
 //!   namespace, or a pending import), so token -> metadata -> record -> token collects as a
 //!   cycle once nothing else reaches it. Dead entries are swept as insertions amortize.
 //! - A JSON module has no V8 source to anchor it, and the installed V8 API cannot attach
-//!   host data to a synthetic module: its record lives by its own reachability, plus its
-//!   entry only while V8 may still run its evaluation steps without anyone else holding the
-//!   record. Before linking, V8 reaches the module only through the record (the resolve hook
-//!   hands out records): the entry is weak. A record a running `ModuleLink` resolved is
-//!   rooted until that link returns; one V8 left linked is then held strongly until its
-//!   steps run, since they read its parsed value from the record. Once its steps ran (or
-//!   failed: V8 never runs them again) the value lives in V8's export cell, the record is no
-//!   V8 referrer, and the entry is weak again. A module linked but never evaluated keeps its
-//!   record until the runtime ends.
+//!   host data to a synthetic module: its entry is weak, and its record lives by its own
+//!   reachability plus, while V8 may still run its evaluation steps (which read its parsed
+//!   value from the record), by the module's. Before linking, V8 reaches the module only
+//!   through the record (the resolve hook hands out records). A record a running
+//!   `ModuleLink` resolved is rooted until that link returns; one V8 left linked is then
+//!   kept by the module's namespace, through the source metadata's WeakMap (an ephemeron):
+//!   V8 caches the namespace on the module and resets it only while a link is in progress,
+//!   so whatever can still evaluate the module keeps its record, and an abandoned graph
+//!   (record -> module -> namespace -> record) collects as a cycle. Once its steps ran (or
+//!   failed: V8 never runs them again) the value lives in V8's export cell and the
+//!   namespace stops keeping the record.
 //! - A source module's private is source metadata, as a classic script's (see
 //!   `script_metadata`): kept by the script id recorded at compilation and by the source's
 //!   host token. The placeholder pins the token too: the V8 API no longer reports an errored
@@ -56,7 +58,7 @@ struct ModuleEntry {
 
 enum EntryCell {
     /// Source modules until their metadata keeps them; JSON modules while they are being
-    /// compiled, and from linking until their evaluation steps run.
+    /// compiled.
     Strong(*mut c_void),
     Weak(crate::cell::WeakCell),
 }
@@ -78,10 +80,11 @@ thread_local! {
     /// Negative fixtures: keep source records strong, or skip their metadata's record edge.
     pub(crate) static STRONG_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static UNANCHORED_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    /// Negative fixtures for JSON records: keep them strong, never hold a linked one, never
-    /// root the ones a link resolves, or keep their privates natively (traced as roots).
+    /// Negative fixtures for JSON records: keep them strong, never let a linked one's namespace
+    /// keep it, never root the ones a link resolves, or keep their privates natively (traced
+    /// as roots).
     pub(crate) static STRONG_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    pub(crate) static UNSTRENGTHENED_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    pub(crate) static UNANCHORED_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static UNROOTED_LINKING_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     pub(crate) static NATIVE_JSON_PRIVATES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
@@ -116,8 +119,8 @@ pub(crate) struct Modules {
 }
 
 /// Keeps source modules not yet anchored to their metadata (see `CompileModule1`), JSON
-/// modules being compiled or linked and not yet evaluated, and the JSON records running links
-/// resolved. Everything else a record owns (parsed value, private) hangs off its placeholder.
+/// modules being compiled, and the JSON records running links resolved. Everything else a
+/// record owns (parsed value, private) hangs off its placeholder.
 pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
     // Neither list is borrowed across an allocation.
     if let Ok(entries) = cx.modules.entries.try_borrow() {
@@ -187,7 +190,7 @@ fn anchor_record(scope: &mut v8::PinScope, record: *mut JSObject, script_id: i32
 }
 
 /// Stops the entry of `record` (alive: its strong entry keeps it) from keeping it: an
-/// anchored source record, or a JSON record nothing V8 runs needs anymore.
+/// anchored source record, or a compiled JSON record.
 fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
     let hash = module.get_identity_hash().get();
     let mut entries = JSContext::current().modules.entries.borrow_mut();
@@ -208,20 +211,19 @@ fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
     }
 }
 
-/// Makes the entry of `record` (alive: a caller roots it) keep it.
-fn strengthen(module: v8::Local<v8::Module>, record: *mut c_void) {
+/// Makes the namespace of the linked JSON `module` keep its `record` (alive: rooted by the
+/// caller or kept so far), or with `None` stop keeping it. A failure (only termination: the
+/// WeakMap methods are captured intrinsics) leaves the record to its own reachability; the
+/// steps then report the missing value instead of reading a collected record.
+fn keep_json(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, record: Option<*mut c_void>) {
     #[cfg(test)]
-    if UNSTRENGTHENED_JSON_FOR_TESTING.with(std::cell::Cell::get) {
+    if record.is_some() && UNANCHORED_JSON_FOR_TESTING.with(std::cell::Cell::get) {
         return;
     }
-    let hash = module.get_identity_hash().get();
-    let mut entries = JSContext::current().modules.entries.borrow_mut();
-    let entry = entries
-        .get_mut(&hash)
-        .and_then(|bucket| bucket.iter_mut().find(|entry| matches!(&entry.cell, EntryCell::Weak(cell) if cell.get() == Some(record))));
-    if let Some(entry) = entry {
-        entry.cell = EntryCell::Strong(record);
-    }
+    v8::tc_scope!(let scope, scope);
+    // Status at least linked (V8's API check): the namespace exists for good from here.
+    let namespace = module.get_module_namespace();
+    let _ = crate::script_impl::keep_module_record(scope, namespace, record);
 }
 
 /// Drops the strong entry of a new record that could not be completed: nothing else keeps it.
@@ -244,21 +246,39 @@ pub(crate) fn source_records_for_testing() -> (usize, usize) {
     (live, entries.values().map(Vec::len).sum())
 }
 
-/// Test-only: (live JSON records, JSON entries holding their record strongly).
+/// Test-only: (live JSON records, those held for their steps: by a strong entry or by their
+/// module's namespace).
 #[cfg(test)]
 pub(crate) fn json_records_for_testing() -> (usize, usize) {
-    let entries = JSContext::current().modules.entries.borrow();
-    let json = || entries.values().flatten().filter(|entry| matches!(entry.kind, ModuleKind::Json { .. }));
-    (json().filter(|entry| entry.cell().is_some()).count(), json().filter(|entry| matches!(entry.cell, EntryCell::Strong(_))).count())
+    let records: Vec<_> = JSContext::current().modules.entries.borrow().values().flatten()
+        .filter(|entry| matches!(entry.kind, ModuleKind::Json { .. }))
+        .filter_map(|entry| entry.cell().map(|cell| (cell, matches!(entry.cell, EntryCell::Strong(_)))))
+        .collect();
+    // Rooted (as a link's records are) while their namespaces are read, which can allocate.
+    let linking = &JSContext::current().modules.linking;
+    let base = linking.borrow().len();
+    linking.borrow_mut().extend(records.iter().map(|(record, _)| *record));
+    let held = records.iter().filter(|(record, strong)| *strong || held_record_for_testing(*record as *mut JSObject)).count();
+    linking.borrow_mut().truncate(base);
+    (records.len(), held)
 }
 
-/// Test-only: whether the entry of the live `record` holds it strongly (found by record, in
-/// any bucket).
+/// Test-only: whether the live, rooted JSON `record` is held for its steps (found by record,
+/// in any bucket). Reading a linked module's namespace may create it: it keeps nothing itself.
 #[cfg(test)]
-pub(crate) fn strong_record_for_testing(record: *mut JSObject) -> bool {
-    let entries = JSContext::current().modules.entries.borrow();
-    let entry = entries.values().flatten().find(|entry| entry.cell() == Some(record as *mut c_void)).expect("a live registered record");
-    matches!(entry.cell, EntryCell::Strong(_))
+pub(crate) fn held_record_for_testing(record: *mut JSObject) -> bool {
+    let strong = JSContext::current().modules.entries.borrow().values().flatten()
+        .find(|entry| entry.cell() == Some(record as *mut c_void))
+        .map(|entry| matches!(entry.cell, EntryCell::Strong(_)))
+        .expect("a live registered record");
+    strong || JSContext::current().with_scope(|scope| {
+        let module = module_of(scope, record).expect("a module record");
+        if matches!(module.get_status(), v8::ModuleStatus::Uninstantiated | v8::ModuleStatus::Instantiating) {
+            return false;
+        }
+        let namespace = module.get_module_namespace();
+        crate::script_impl::kept_module_record(scope, namespace) == Some(record as *mut c_void)
+    })
 }
 
 /// Test-only: registers the live JSON `record` (weakly) under `name`, or unregisters `name`.
@@ -377,23 +397,23 @@ fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<
         ModuleKind::Source { .. } => None,
     })
     .flatten();
-    let exported = json_module_export(scope, module, record);
+    // The record is alive: the namespace of the running module keeps it until `keep_json`.
+    let json = record.and_then(|record| json_value(scope, record));
     // V8 runs the steps once: success evaluates the module, failure (exception or termination)
     // errors it for good (`SyntheticModule::Evaluate`, `Module::RecordError`). Either way its
-    // value is no longer read from the record. The record is still alive: its entry is strong
-    // until this call.
-    if let Some(record) = record {
-        weaken(module, record);
+    // value is no longer read from the record (the local holds it from here).
+    if record.is_some() {
+        keep_json(scope, module, None);
     }
-    exported
+    json_module_export(scope, module, json)
 }
 
 fn json_module_export<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     module: v8::Local<'s, v8::Module>,
-    record: Option<*mut c_void>,
+    json: Option<v8::Local<'s, v8::Value>>,
 ) -> Option<v8::Local<'s, v8::Value>> {
-    let Some(json) = record.and_then(|record| json_value(scope, record)) else {
+    let Some(json) = json else {
         let message = v8::String::new(scope, "JSON module without its parsed value")?;
         let error = v8::Exception::type_error(scope, message);
         scope.throw_exception(error);
@@ -760,9 +780,10 @@ impl LinkSegment {
 }
 
 impl Drop for LinkSegment {
-    /// Holds the JSON records V8 left linked (even when the link failed: a dependency of a
-    /// strongly connected component that completed stays linked) until their steps run. V8
-    /// reset the others to unlinked: only their records reach them again.
+    /// Lets the namespaces of the JSON modules V8 left linked (even when the link failed: a
+    /// dependency of a strongly connected component that completed stays linked) keep their
+    /// records until their steps run. V8 reset the others to unlinked: only their records
+    /// reach them again.
     fn drop(&mut self) {
         let cx = JSContext::current();
         // Copied out: the segment stays rooted, and unborrowed, during the V8 calls below.
@@ -773,7 +794,7 @@ impl Drop for LinkSegment {
                     // SAFETY: the segment's records are rooted by `linking`, the root by its caller.
                     let Some(module) = (unsafe { crate::cell::cell_module(scope, record) }) else { continue };
                     if module.is_synthetic_module() && matches!(module.get_status(), v8::ModuleStatus::Instantiated) {
-                        strengthen(module, record);
+                        keep_json(scope, module, Some(record));
                     }
                 }
             });

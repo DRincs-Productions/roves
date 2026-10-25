@@ -1,0 +1,496 @@
+diff --git a/components/roves-js/src/modules_impl.rs b/components/roves-js/src/modules_impl.rs
+index 0b1e518c476..1cee3011f7d 100644
+--- a/components/roves-js/src/modules_impl.rs
++++ b/components/roves-js/src/modules_impl.rs
+@@ -13,15 +13,17 @@
+ //!   namespace, or a pending import), so token -> metadata -> record -> token collects as a
+ //!   cycle once nothing else reaches it. Dead entries are swept as insertions amortize.
+ //! - A JSON module has no V8 source to anchor it, and the installed V8 API cannot attach
+-//!   host data to a synthetic module: its record lives by its own reachability, plus its
+-//!   entry only while V8 may still run its evaluation steps without anyone else holding the
+-//!   record. Before linking, V8 reaches the module only through the record (the resolve hook
+-//!   hands out records): the entry is weak. A record a running `ModuleLink` resolved is
+-//!   rooted until that link returns; one V8 left linked is then held strongly until its
+-//!   steps run, since they read its parsed value from the record. Once its steps ran (or
+-//!   failed: V8 never runs them again) the value lives in V8's export cell, the record is no
+-//!   V8 referrer, and the entry is weak again. A module linked but never evaluated keeps its
+-//!   record until the runtime ends.
++//!   host data to a synthetic module: its entry is weak, and its record lives by its own
++//!   reachability plus, while V8 may still run its evaluation steps (which read its parsed
++//!   value from the record), by the module's. Before linking, V8 reaches the module only
++//!   through the record (the resolve hook hands out records). A record a running
++//!   `ModuleLink` resolved is rooted until that link returns; one V8 left linked is then
++//!   kept by the module's namespace, through the source metadata's WeakMap (an ephemeron):
++//!   V8 caches the namespace on the module and resets it only while a link is in progress,
++//!   so whatever can still evaluate the module keeps its record, and an abandoned graph
++//!   (record -> module -> namespace -> record) collects as a cycle. Once its steps ran (or
++//!   failed: V8 never runs them again) the value lives in V8's export cell and the
++//!   namespace stops keeping the record.
+ //! - A source module's private is source metadata, as a classic script's (see
+ //!   `script_metadata`): kept by the script id recorded at compilation and by the source's
+ //!   host token. The placeholder pins the token too: the V8 API no longer reports an errored
+@@ -56,7 +58,7 @@ struct ModuleEntry {
+ 
+ enum EntryCell {
+     /// Source modules until their metadata keeps them; JSON modules while they are being
+-    /// compiled, and from linking until their evaluation steps run.
++    /// compiled.
+     Strong(*mut c_void),
+     Weak(crate::cell::WeakCell),
+ }
+@@ -78,10 +80,11 @@ thread_local! {
+     /// Negative fixtures: keep source records strong, or skip their metadata's record edge.
+     pub(crate) static STRONG_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+     pub(crate) static UNANCHORED_SOURCES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+-    /// Negative fixtures for JSON records: keep them strong, never hold a linked one, never
+-    /// root the ones a link resolves, or keep their privates natively (traced as roots).
++    /// Negative fixtures for JSON records: keep them strong, never let a linked one's namespace
++    /// keep it, never root the ones a link resolves, or keep their privates natively (traced
++    /// as roots).
+     pub(crate) static STRONG_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+-    pub(crate) static UNSTRENGTHENED_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++    pub(crate) static UNANCHORED_JSON_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+     pub(crate) static UNROOTED_LINKING_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+     pub(crate) static NATIVE_JSON_PRIVATES_FOR_TESTING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+ }
+@@ -116,8 +119,8 @@ pub(crate) struct Modules {
+ }
+ 
+ /// Keeps source modules not yet anchored to their metadata (see `CompileModule1`), JSON
+-/// modules being compiled or linked and not yet evaluated, and the JSON records running links
+-/// resolved. Everything else a record owns (parsed value, private) hangs off its placeholder.
++/// modules being compiled, and the JSON records running links resolved. Everything else a
++/// record owns (parsed value, private) hangs off its placeholder.
+ pub(crate) fn trace_modules(cx: &JSContext, visitor: &mut v8::cppgc::Visitor) {
+     // Neither list is borrowed across an allocation.
+     if let Ok(entries) = cx.modules.entries.try_borrow() {
+@@ -187,7 +190,7 @@ fn anchor_record(scope: &mut v8::PinScope, record: *mut JSObject, script_id: i32
+ }
+ 
+ /// Stops the entry of `record` (alive: its strong entry keeps it) from keeping it: an
+-/// anchored source record, or a JSON record nothing V8 runs needs anymore.
++/// anchored source record, or a compiled JSON record.
+ fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
+     let hash = module.get_identity_hash().get();
+     let mut entries = JSContext::current().modules.entries.borrow_mut();
+@@ -208,20 +211,19 @@ fn weaken(module: v8::Local<v8::Module>, record: *mut c_void) {
+     }
+ }
+ 
+-/// Makes the entry of `record` (alive: a caller roots it) keep it.
+-fn strengthen(module: v8::Local<v8::Module>, record: *mut c_void) {
++/// Makes the namespace of the linked JSON `module` keep its `record` (alive: rooted by the
++/// caller or kept so far), or with `None` stop keeping it. A failure (only termination: the
++/// WeakMap methods are captured intrinsics) leaves the record to its own reachability; the
++/// steps then report the missing value instead of reading a collected record.
++fn keep_json(scope: &mut v8::PinScope, module: v8::Local<v8::Module>, record: Option<*mut c_void>) {
+     #[cfg(test)]
+-    if UNSTRENGTHENED_JSON_FOR_TESTING.with(std::cell::Cell::get) {
++    if record.is_some() && UNANCHORED_JSON_FOR_TESTING.with(std::cell::Cell::get) {
+         return;
+     }
+-    let hash = module.get_identity_hash().get();
+-    let mut entries = JSContext::current().modules.entries.borrow_mut();
+-    let entry = entries
+-        .get_mut(&hash)
+-        .and_then(|bucket| bucket.iter_mut().find(|entry| matches!(&entry.cell, EntryCell::Weak(cell) if cell.get() == Some(record))));
+-    if let Some(entry) = entry {
+-        entry.cell = EntryCell::Strong(record);
+-    }
++    v8::tc_scope!(let scope, scope);
++    // Status at least linked (V8's API check): the namespace exists for good from here.
++    let namespace = module.get_module_namespace();
++    let _ = crate::script_impl::keep_module_record(scope, namespace, record);
+ }
+ 
+ /// Drops the strong entry of a new record that could not be completed: nothing else keeps it.
+@@ -244,21 +246,39 @@ pub(crate) fn source_records_for_testing() -> (usize, usize) {
+     (live, entries.values().map(Vec::len).sum())
+ }
+ 
+-/// Test-only: (live JSON records, JSON entries holding their record strongly).
++/// Test-only: (live JSON records, those held for their steps: by a strong entry or by their
++/// module's namespace).
+ #[cfg(test)]
+ pub(crate) fn json_records_for_testing() -> (usize, usize) {
+-    let entries = JSContext::current().modules.entries.borrow();
+-    let json = || entries.values().flatten().filter(|entry| matches!(entry.kind, ModuleKind::Json { .. }));
+-    (json().filter(|entry| entry.cell().is_some()).count(), json().filter(|entry| matches!(entry.cell, EntryCell::Strong(_))).count())
++    let records: Vec<_> = JSContext::current().modules.entries.borrow().values().flatten()
++        .filter(|entry| matches!(entry.kind, ModuleKind::Json { .. }))
++        .filter_map(|entry| entry.cell().map(|cell| (cell, matches!(entry.cell, EntryCell::Strong(_)))))
++        .collect();
++    // Rooted (as a link's records are) while their namespaces are read, which can allocate.
++    let linking = &JSContext::current().modules.linking;
++    let base = linking.borrow().len();
++    linking.borrow_mut().extend(records.iter().map(|(record, _)| *record));
++    let held = records.iter().filter(|(record, strong)| *strong || held_record_for_testing(*record as *mut JSObject)).count();
++    linking.borrow_mut().truncate(base);
++    (records.len(), held)
+ }
+ 
+-/// Test-only: whether the entry of the live `record` holds it strongly (found by record, in
+-/// any bucket).
++/// Test-only: whether the live, rooted JSON `record` is held for its steps (found by record,
++/// in any bucket). Reading a linked module's namespace may create it: it keeps nothing itself.
+ #[cfg(test)]
+-pub(crate) fn strong_record_for_testing(record: *mut JSObject) -> bool {
+-    let entries = JSContext::current().modules.entries.borrow();
+-    let entry = entries.values().flatten().find(|entry| entry.cell() == Some(record as *mut c_void)).expect("a live registered record");
+-    matches!(entry.cell, EntryCell::Strong(_))
++pub(crate) fn held_record_for_testing(record: *mut JSObject) -> bool {
++    let strong = JSContext::current().modules.entries.borrow().values().flatten()
++        .find(|entry| entry.cell() == Some(record as *mut c_void))
++        .map(|entry| matches!(entry.cell, EntryCell::Strong(_)))
++        .expect("a live registered record");
++    strong || JSContext::current().with_scope(|scope| {
++        let module = module_of(scope, record).expect("a module record");
++        if matches!(module.get_status(), v8::ModuleStatus::Uninstantiated | v8::ModuleStatus::Instantiating) {
++            return false;
++        }
++        let namespace = module.get_module_namespace();
++        crate::script_impl::kept_module_record(scope, namespace) == Some(record as *mut c_void)
++    })
+ }
+ 
+ /// Test-only: registers the live JSON `record` (weakly) under `name`, or unregisters `name`.
+@@ -377,23 +397,23 @@ fn json_module_steps<'s>(context: v8::Local<'s, v8::Context>, module: v8::Local<
+         ModuleKind::Source { .. } => None,
+     })
+     .flatten();
+-    let exported = json_module_export(scope, module, record);
++    // The record is alive: the namespace of the running module keeps it until `keep_json`.
++    let json = record.and_then(|record| json_value(scope, record));
+     // V8 runs the steps once: success evaluates the module, failure (exception or termination)
+     // errors it for good (`SyntheticModule::Evaluate`, `Module::RecordError`). Either way its
+-    // value is no longer read from the record. The record is still alive: its entry is strong
+-    // until this call.
+-    if let Some(record) = record {
+-        weaken(module, record);
++    // value is no longer read from the record (the local holds it from here).
++    if record.is_some() {
++        keep_json(scope, module, None);
+     }
+-    exported
++    json_module_export(scope, module, json)
+ }
+ 
+ fn json_module_export<'s>(
+     scope: &mut v8::PinScope<'s, '_>,
+     module: v8::Local<'s, v8::Module>,
+-    record: Option<*mut c_void>,
++    json: Option<v8::Local<'s, v8::Value>>,
+ ) -> Option<v8::Local<'s, v8::Value>> {
+-    let Some(json) = record.and_then(|record| json_value(scope, record)) else {
++    let Some(json) = json else {
+         let message = v8::String::new(scope, "JSON module without its parsed value")?;
+         let error = v8::Exception::type_error(scope, message);
+         scope.throw_exception(error);
+@@ -760,9 +780,10 @@ impl LinkSegment {
+ }
+ 
+ impl Drop for LinkSegment {
+-    /// Holds the JSON records V8 left linked (even when the link failed: a dependency of a
+-    /// strongly connected component that completed stays linked) until their steps run. V8
+-    /// reset the others to unlinked: only their records reach them again.
++    /// Lets the namespaces of the JSON modules V8 left linked (even when the link failed: a
++    /// dependency of a strongly connected component that completed stays linked) keep their
++    /// records until their steps run. V8 reset the others to unlinked: only their records
++    /// reach them again.
+     fn drop(&mut self) {
+         let cx = JSContext::current();
+         // Copied out: the segment stays rooted, and unborrowed, during the V8 calls below.
+@@ -773,7 +794,7 @@ impl Drop for LinkSegment {
+                     // SAFETY: the segment's records are rooted by `linking`, the root by its caller.
+                     let Some(module) = (unsafe { crate::cell::cell_module(scope, record) }) else { continue };
+                     if module.is_synthetic_module() && matches!(module.get_status(), v8::ModuleStatus::Instantiated) {
+-                        strengthen(module, record);
++                        keep_json(scope, module, Some(record));
+                     }
+                 }
+             });
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index d7072fcdcd5..3a8e811d215 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -126,6 +126,17 @@ pub(crate) fn anchor_source_module(scope: &mut v8::PinScope, script_id: i32, rec
+     JSContext::current().scripts.metadata.anchor_module(scope, script_id, record)
+ }
+ 
++/// Makes `namespace` keep a JSON module's `record`, or stop keeping it (see `modules_impl`).
++pub(crate) fn keep_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>, record: Option<*mut std::ffi::c_void>) -> Option<()> {
++    JSContext::current().scripts.metadata.keep_record(scope, namespace, record)
++}
++
++/// Test-only: the JSON module record `namespace` keeps, if any.
++#[cfg(test)]
++pub(crate) fn kept_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>) -> Option<*mut std::ffi::c_void> {
++    JSContext::current().scripts.metadata.kept_record(scope, namespace)
++}
++
+ /// The host token in a source's host options (none for sources compiled without one).
+ pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
+     if !options.is_fixed_array() {
+@@ -148,7 +159,7 @@ pub(crate) fn new_private_holder<'s>(
+ }
+ 
+ /// The private of the source whose host token is `token`; undefined if it has none.
+-pub(crate) fn token_private(scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> JSVal {
++pub(crate) fn token_private<'s>(scope: &mut v8::PinScope<'s, '_>, token: v8::Local<'s, v8::Symbol>) -> JSVal {
+     JSContext::current().scripts.metadata.token_private(scope, token).unwrap_or(UndefinedValue())
+ }
+ 
+diff --git a/components/roves-js/src/script_metadata.rs b/components/roves-js/src/script_metadata.rs
+index 25cc1e503a6..25e89806018 100644
+--- a/components/roves-js/src/script_metadata.rs
++++ b/components/roves-js/src/script_metadata.rs
+@@ -9,7 +9,8 @@
+ //! embedder's trace hook (see `ScriptPrivateTraceHook`). A source module's metadata also
+ //! keeps the module's record (see `modules_impl`), so the record lives exactly as long as
+ //! something reaches the source's token or the record itself. JSON module privates reuse the
+-//! same holder and data, kept by the module record instead of a token.
++//! same holder and data, kept by the module record instead of a token; a linked JSON module's
++//! namespace keeps its record through the same WeakMap (see `keep_record`).
+ 
+ use std::cell::{Cell, RefCell};
+ use std::collections::HashMap;
+@@ -29,7 +30,8 @@ const SWEEP_MIN: usize = 256;
+ /// privates, whose holder lives on the record's placeholder (see `modules_impl`).
+ pub(crate) struct PrivateData {
+     private: Cell<HostPrivate>,
+-    /// A source module's record (cell), fixed at creation; null otherwise.
++    /// A source module's record (cell), or the JSON record a namespace keeps, fixed at
++    /// creation; null otherwise.
+     module: *mut c_void,
+ }
+ 
+@@ -146,14 +148,46 @@ impl ScriptMetadata {
+ 
+     /// The private of the source whose host token is `token` (`None`: the token has no
+     /// metadata). One lookup in the captured WeakMap, whose holder wraps the metadata.
+-    pub(crate) fn token_private(&self, scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> Option<JSVal> {
++    pub(crate) fn token_private<'s>(&self, scope: &mut v8::PinScope<'s, '_>, token: v8::Local<'s, v8::Symbol>) -> Option<JSVal> {
++        let data = self.data_under(scope, token.into())?;
++        // SAFETY: `data_under`'s holder was a local of this scope, keeping the data alive.
++        Some(unsafe { &*data }.value())
++    }
++
++    /// Calls the captured WeakMap method at `method` (1: set, 2: get) on the captured map.
++    fn call_map<'s>(&self, scope: &mut v8::PinScope<'s, '_>, method: u32, args: &[v8::Local<'s, v8::Value>]) -> Option<v8::Local<'s, v8::Value>> {
+         let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
+         let map = cache.get_index(scope, 0)?;
+-        let get = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 2)?).ok()?;
+-        let holder = v8::Local::<v8::Object>::try_from(get.call(scope, map, &[token.into()])?).ok()?;
+-        let data = holder_data(scope, holder)?;
+-        // SAFETY: the holder (a local) keeps the data alive.
+-        Some(unsafe { &*data }.value())
++        let method = v8::Local::<v8::Function>::try_from(cache.get_index(scope, method)?).ok()?;
++        method.call(scope, map, args)
++    }
++
++    /// The data of the holder the captured WeakMap keeps under `key`, valid while this scope
++    /// lives (its local holder keeps it).
++    fn data_under<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>) -> Option<*const PrivateData> {
++        let holder = v8::Local::<v8::Object>::try_from(self.call_map(scope, 2, &[key])?).ok()?;
++        holder_data(scope, holder)
++    }
++
++    /// The record the captured WeakMap keeps under `key` (see `keep_record`), if any.
++    pub(crate) fn kept_record<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>) -> Option<*mut c_void> {
++        let data = self.data_under(scope, key)?;
++        // SAFETY: as in `token_private`.
++        Some(unsafe { &*data }.module).filter(|record| !record.is_null())
++    }
++
++    /// Makes the captured WeakMap keep `record` (alive: rooted or kept by the caller) while
++    /// `key` is reachable, through a holder of new data with no private; `None` stops keeping
++    /// the record kept so far. Nothing changes when `key` already keeps `record`.
++    pub(crate) fn keep_record<'s>(&self, scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Value>, record: Option<*mut c_void>) -> Option<()> {
++        if self.kept_record(scope, key) == record {
++            return Some(());
++        }
++        let value = match record {
++            Some(record) => self.new_holder_of(scope, record)?.0.into(),
++            None => v8::undefined(scope).into(),
++        };
++        self.call_map(scope, 1, &[key, value]).map(drop)
+     }
+ 
+     /// A new holder object owning new, empty private data (not a source module's), and a
+@@ -193,10 +227,7 @@ impl ScriptMetadata {
+     fn create(&self, scope: &mut v8::PinScope, id: i32, module: *mut c_void) -> Option<*const PrivateData> {
+         let token = self.entries.borrow().get(&id)?.token.to_local(scope)?;
+         let (holder, data) = self.new_holder_of(scope, module)?;
+-        let cache = v8::Local::new(scope, self.cache.borrow().as_ref()?);
+-        let map = cache.get_index(scope, 0)?;
+-        let set = v8::Local::<v8::Function>::try_from(cache.get_index(scope, 1)?).ok()?;
+-        set.call(scope, map, &[token.into(), holder.into()])?;
++        self.call_map(scope, 1, &[token.into(), holder.into()])?;
+         let pointer = data.get()? as *const PrivateData;
+         self.entries.borrow_mut().get_mut(&id)?.data = Some(data);
+         Some(pointer)
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index f60ebffc3fd..39924167800 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -3310,8 +3310,8 @@ mod traced_privates {
+         crate::modules_impl::linking_len_for_testing()
+     }
+ 
+-    fn strong(record: *mut JSObject) -> bool {
+-        crate::modules_impl::strong_record_for_testing(record)
++    fn held(record: *mut JSObject) -> bool {
++        crate::modules_impl::held_record_for_testing(record)
+     }
+ 
+     fn check(runtime: &Runtime, source: &str) {
+@@ -3578,16 +3578,17 @@ mod traced_privates {
+     fn json_evaluation_failure_before_the_steps_keeps_the_record_linked() {
+         let mut runtime = source_runtime(false);
+         let cx = runtime.raw_cx();
++        rooted!(in(cx) let main = compile_source(&runtime, "throw-main.js",
++            "import 'throw.js';\nimport data from 'data.json' with { type: 'json' };"));
+         {
+             rooted!(in(cx) let data = compile_json(&runtime, "data.json", r#"{"n": 8}"#));
+             rooted!(in(cx) let thrower = compile_source(&runtime, "throw.js", "throw new Error('boom');"));
+-            rooted!(in(cx) let main = compile_source(&runtime, "throw-main.js",
+-                "import 'throw.js';\nimport data from 'data.json' with { type: 'json' };"));
+             assert!(link(&runtime, main.get()));
+             assert_eq!(evaluate(&runtime, main.get(), c"throwNs"), Err("Error: boom".to_owned()));
+             assert!(!data.get().is_null() && !thrower.get().is_null());
+         }
+-        // Unrooted from here: the weak registry hands `data.json` out only while it lives.
++        // Only the errored importer reaches `data.json` from here: the weak registry hands
++        // it out only while it lives.
+         unregister("throw.js");
+         collect(&mut runtime);
+         assert_eq!(json_records(), (1, 1), "the unevaluated record is still held for its steps");
+@@ -3598,6 +3599,92 @@ mod traced_privates {
+         unregister("data.json");
+         collect(&mut runtime);
+         assert_eq!(json_records(), (0, 0));
++        assert!(!main.get().is_null());
++    }
++
++    #[test]
++    fn abandoned_linked_json_graphs_collect_and_held_ones_evaluate_later() {
++        fn give(runtime: &Runtime, record: *mut JSObject, id: i32) -> Weak<NativeOwner> {
++            let owner = new_owner(runtime, id, None);
++            unsafe { SetModulePrivate(record, &PrivateValue(Rc::as_ptr(&owner).cast())) };
++            Rc::downgrade(&owner)
++        }
++        let mut runtime = source_runtime(true);
++        let cx = runtime.raw_cx();
++        // Each graph links but never runs the JSON steps; nothing reaches it once its block
++        // ends and the resolve hook forgets its names.
++        let linked = {
++            rooted!(in(cx) let data = compile_json(&runtime, "linked.json", r#"{"id": 1}"#));
++            let owner = give(&runtime, data.get(), 1);
++            rooted!(in(cx) let main = compile_source(&runtime, "linked-main.js", "import data from 'linked.json' with { type: 'json' };\nexport default data;"));
++            assert!(link(&runtime, main.get()));
++            owner
++        };
++        let root = {
++            rooted!(in(cx) let data = compile_json(&runtime, "root.json", r#"{"id": 2}"#));
++            let owner = give(&runtime, data.get(), 2);
++            assert!(link(&runtime, data.get()), "a JSON module linked as the root");
++            owner
++        };
++        let errored = {
++            rooted!(in(cx) let data = compile_json(&runtime, "errored.json", r#"{"id": 3}"#));
++            let owner = give(&runtime, data.get(), 3);
++            rooted!(in(cx) let thrower = compile_source(&runtime, "errored-throw.js", "throw new Error('boom');"));
++            rooted!(in(cx) let main = compile_source(&runtime, "errored-main.js",
++                "import 'errored-throw.js';\nimport data from 'errored.json' with { type: 'json' };"));
++            assert!(link(&runtime, main.get()));
++            assert_eq!(evaluate(&runtime, main.get(), c"erroredNs"), Err("Error: boom".to_owned()));
++            assert!(!thrower.get().is_null());
++            owner
++        };
++        let partial = {
++            // `partial-b.js` completes its component (with `partial.json`) before
++            // `partial-bad.js` fails: V8 leaves both linked.
++            rooted!(in(cx) let data = compile_json(&runtime, "partial.json", r#"{"id": 4}"#));
++            let owner = give(&runtime, data.get(), 4);
++            rooted!(in(cx) let b = compile_source(&runtime, "partial-b.js", "import data from 'partial.json' with { type: 'json' };\nexport const value = data;"));
++            rooted!(in(cx) let bad = compile_source(&runtime, "partial-bad.js", "import { nope } from 'partial.json' with { type: 'json' };"));
++            rooted!(in(cx) let main = compile_source(&runtime, "partial-main.js", "import 'partial-b.js';\nimport 'partial-bad.js';"));
++            assert!(!link(&runtime, main.get()), "a missing export fails the link");
++            assert!(!b.get().is_null() && !bad.get().is_null());
++            owner
++        };
++        // A held graph: only its rooted importer reaches the JSON module.
++        rooted!(in(cx) let held_main = compile_source(&runtime, "held-main.js",
++            "import data from 'held.json' with { type: 'json' };\nexport default data;\nexport function again() { return data; }"));
++        let held = {
++            rooted!(in(cx) let data = compile_json(&runtime, "held.json", r#"{"id": 5}"#));
++            let owner = give(&runtime, data.get(), 5);
++            assert!(link(&runtime, held_main.get()));
++            owner
++        };
++        for name in ["linked.json", "linked-main.js", "root.json", "errored.json", "errored-throw.js", "errored-main.js", "partial.json",
++            "partial-b.js", "partial-bad.js", "partial-main.js", "held.json"]
++        {
++            unregister(name);
++        }
++        collect(&mut runtime);
++        assert_eq!(json_records(), (1, 1), "abandoned linked JSON records collect, the held one survives for its steps");
++        for owner in [&linked, &root, &errored, &partial] {
++            assert!(owner.upgrade().is_none(), "an abandoned record released its private");
++        }
++        let mut finalized = owners_finalized();
++        finalized.sort();
++        assert_eq!((finalized, count(&RELEASES)), (vec![1, 2, 3, 4], 4), "each abandoned owner once");
++        assert_eq!(marker(&runtime, &held), "owner 5");
++        // The held graph evaluates later with its value, read from the surviving record.
++        assert_eq!(evaluate(&runtime, held_main.get(), c"heldNs"), Ok(()));
++        check(&runtime, "heldNs.default.id === 5 && heldNs.again() === heldNs.default");
++        eval(&runtime, "globalThis.heldValue = heldNs.default; delete globalThis.heldNs; 0");
++        drop(held_main);
++        collect(&mut runtime);
++        assert_eq!(json_records(), (0, 0), "the evaluated record collects with its graph");
++        assert!(held.upgrade().is_none());
++        check(&runtime, "heldValue.id === 5");
++        assert_eq!((owners_finalized().len(), count(&RELEASES)), (5, 5));
++        drop(runtime);
++        assert_eq!((count(&RETAINS), count(&RELEASES)), (5, 5), "every private released once, none at shutdown");
++        assert!(!STALE_TRACE.with(Cell::get) && !RELEASE_WITHOUT_RUNTIME.with(Cell::get));
+     }
+ 
+     /// An unrooted JSON record whose private's owner traces the record: a cycle through
+@@ -3652,11 +3739,11 @@ mod traced_privates {
+         assert!(shared >= 2);
+         rooted!(in(cx) let importer = compile_source(&runtime, "collide.js", "import second from 'second.json' with { type: 'json' };\nexport default second;"));
+         assert!(link(&runtime, importer.get()));
+-        assert!(strong(second.get()) && !strong(first.get()), "linking holds only the linked record");
++        assert!(held(second.get()) && !held(first.get()), "linking holds only the linked record");
+         collect(&mut runtime);
+         assert_eq!(evaluate(&runtime, importer.get(), c"collideNs"), Ok(()));
+         check(&runtime, "collideNs.default.second === true");
+-        assert!(!strong(second.get()) && !strong(first.get()));
++        assert!(!held(second.get()) && !held(first.get()));
+         assert_eq!(json_records(), (2, 0));
+         rooted!(in(cx) let value = crate::modules_impl::json_value_for_testing(first.get()));
+         rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+@@ -3667,8 +3754,8 @@ mod traced_privates {
+     #[test]
+     fn negative_fixtures_detect_missing_json_roots_and_native_privates() {
+         use crate::modules_impl::{
+-            NATIVE_JSON_PRIVATES_FOR_TESTING as NATIVE, STRONG_JSON_FOR_TESTING as STRONG, UNROOTED_LINKING_FOR_TESTING as UNROOTED,
+-            UNSTRENGTHENED_JSON_FOR_TESTING as UNSTRENGTHENED,
++            NATIVE_JSON_PRIVATES_FOR_TESTING as NATIVE, STRONG_JSON_FOR_TESTING as STRONG, UNANCHORED_JSON_FOR_TESTING as UNANCHORED,
++            UNROOTED_LINKING_FOR_TESTING as UNROOTED,
+         };
+         let with = |flag: &'static std::thread::LocalKey<Cell<bool>>, f: &mut dyn FnMut()| {
+             flag.with(|flag| flag.set(true));
+@@ -3689,8 +3776,8 @@ mod traced_privates {
+             assert!(dropped.upgrade().is_none());
+             assert_eq!(count(&RETAINS), count(&RELEASES));
+         });
+-        // Without holding linked records their value is lost before the steps run.
+-        with(&UNSTRENGTHENED, &mut || {
++        // Without their namespaces keeping linked records their value is lost before the steps.
++        with(&UNANCHORED, &mut || {
+             let mut runtime = source_runtime(false);
+             let (linked, evaluated) = linked_lifetime(&mut runtime);
+             assert_eq!(linked, (0, 0), "nothing held the linked record");

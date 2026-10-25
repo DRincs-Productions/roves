@@ -126,6 +126,17 @@ pub(crate) fn anchor_source_module(scope: &mut v8::PinScope, script_id: i32, rec
     JSContext::current().scripts.metadata.anchor_module(scope, script_id, record)
 }
 
+/// Makes `namespace` keep a JSON module's `record`, or stop keeping it (see `modules_impl`).
+pub(crate) fn keep_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>, record: Option<*mut std::ffi::c_void>) -> Option<()> {
+    JSContext::current().scripts.metadata.keep_record(scope, namespace, record)
+}
+
+/// Test-only: the JSON module record `namespace` keeps, if any.
+#[cfg(test)]
+pub(crate) fn kept_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>) -> Option<*mut std::ffi::c_void> {
+    JSContext::current().scripts.metadata.kept_record(scope, namespace)
+}
+
 /// The host token in a source's host options (none for sources compiled without one).
 pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
     if !options.is_fixed_array() {
@@ -148,7 +159,7 @@ pub(crate) fn new_private_holder<'s>(
 }
 
 /// The private of the source whose host token is `token`; undefined if it has none.
-pub(crate) fn token_private(scope: &mut v8::PinScope, token: v8::Local<v8::Symbol>) -> JSVal {
+pub(crate) fn token_private<'s>(scope: &mut v8::PinScope<'s, '_>, token: v8::Local<'s, v8::Symbol>) -> JSVal {
     JSContext::current().scripts.metadata.token_private(scope, token).unwrap_or(UndefinedValue())
 }
 
