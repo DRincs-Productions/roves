@@ -38,6 +38,21 @@ thread_local! {
     static VP_POOL: std::cell::RefCell<Vec<Vec<JSVal>>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
+/// The realm of the code calling into a callback: V8's incumbent context, i.e. the innermost
+/// JS frame (the immediate JS caller, also in a promise reaction, where the JSAPI current
+/// realm may be stale). Embedder JS helpers are JS frames of the realm that ran them, which
+/// proxy traps enter for their accessing code. Without a JS frame newer than a hidden-caller
+/// scope, the caller is embedder code: the context it entered (or the running microtask's).
+pub(crate) fn caller_realm(cx: &JSContext, scope: &mut v8::PinScope) -> *mut crate::jsapi::Realm {
+    let incumbent = roves_v8::incumbent::incumbent_context(scope);
+    let context = if crate::runtime_impl::is_hidden_incumbent(cx, scope, incumbent) {
+        scope.get_entered_or_microtask_context()
+    } else {
+        incumbent
+    };
+    crate::realm_impl::realm_of_context(context)
+}
+
 /// Calls `native` for a V8 call of `callee` with `args`, writing its result to `retval`.
 pub(crate) fn call_native(
     scope: &mut v8::PinScope,
@@ -74,7 +89,24 @@ pub(crate) fn call_native(
     // SAFETY: the rooted vector is not resized during the call.
     let vp_pointer = unsafe { (*rooted_vp.as_ptr()).as_mut_ptr() };
     // SAFETY: SpiderMonkey's JSNative contract: `vp` holds callee, this and `argc` arguments.
-    let ok = unsafe { native(raw_cx, argc, vp_pointer) };
+    let mut ok = unsafe { native(raw_cx, argc, vp_pointer) };
+    // SAFETY: a rooted object result.
+    if ok && rooted_vp[0].is_object() && unsafe { crate::proxy::IsWindowProxy(rooted_vp[0].to_object()) } {
+        // SpiderMonkey wraps a value leaving the callee's realm. Window proxies are the only
+        // per-realm objects here: a remote window's native converts its proxy for its own
+        // realm, so the caller would see another identity than its own wrapper.
+        let caller = caller_realm(cx, scope);
+        if caller != realm && !caller.is_null() {
+            let _caller = cx.switch_realm(caller);
+            // SAFETY: the result is rooted in `vp`; the callee's realm stays alive meanwhile.
+            let wrapped = unsafe { crate::proxy::wrap_window_for_realm(raw_cx, rooted_vp[0].to_object()) };
+            if wrapped.is_null() {
+                ok = false;
+            } else {
+                rooted_vp[0] = crate::jsval::ObjectValue(wrapped);
+            }
+        }
+    }
     if ok {
         // SAFETY: the return value is rooted in `vp`.
         let result = unsafe { to_v8(scope, rooted_vp[0]) };

@@ -260,22 +260,31 @@ fn new_handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const Prox
 }
 
 /// What every trap callback needs: the handler, the proxy (its cell, rooted by the caller)
-/// and the target.
+/// and the target. The trap runs in the realm of the code performing the access, until the
+/// context drops.
 struct TrapContext<'s, 'h> {
     handler: &'h ProxyHandler,
     proxy: *mut JSObject,
     target: v8::Local<'s, v8::Object>,
     cx: *mut JSContext,
+    _realm: crate::jsapi::RealmSwitch<'static>,
 }
 
-fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
+fn trap_context<'s, 'h>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
     let target = v8::Local::<v8::Object>::try_from(args.get(0)).ok()?;
     let class_box = crate::object::class_box_of_v8(target)?;
     // The proxy's current handler (a transplant may have replaced the one the V8 handler
     // object was made for). SAFETY: handlers live for the whole process.
     let handler = handler_of(class_box.cell.get() as *mut JSObject)?;
-    let cx = JSContext::current() as *const JSContext as *mut JSContext;
-    Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
+    let raw: &'static JSContext = JSContext::current();
+    // SpiderMonkey runs a proxy's hooks in the accessing code's realm. V8 calls the trap in
+    // the handler object's context and the JSAPI current realm may be stale (a promise job
+    // outside any embedder realm), so take the accessing JS frame's realm, as native entry
+    // does for its caller. Origin checks then use that code's own principals.
+    let realm = crate::native::caller_realm(raw, scope);
+    let _realm = raw.switch_realm(realm);
+    let cx = raw as *const JSContext as *mut JSContext;
+    Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx, _realm })
 }
 
 const FORWARD_TRAP: &str = "(function (name, target, a, b, c) { return Reflect[name](target, a, b, c); })";
@@ -340,7 +349,7 @@ fn own_descriptor(context: &TrapContext, id: jsid) -> Result<Option<PropertyDesc
 }
 
 fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.getOwnPropertyDescriptor.is_none() && forward(scope, &context, "getOwnPropertyDescriptor", &args, &mut retval) {
         if let (Ok(key), Some(descriptor)) = (v8::Local::<v8::Name>::try_from(args.get(1)), v8::Local::<v8::Object>::try_from(retval.get(scope)).ok()) {
             let mut converted = PropertyDescriptor::default();
@@ -375,7 +384,7 @@ fn result_to_bool(ok: bool, result: &ObjectOpResult, retval: &mut v8::ReturnValu
 }
 
 fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.defineProperty.is_none() && forward(scope, &context, "defineProperty", &args, &mut retval) {
         return;
     }
@@ -409,7 +418,7 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
 }
 
 fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.ownPropertyKeys.is_none() && forward(scope, &context, "ownKeys", &args, &mut retval) {
         return;
     }
@@ -430,7 +439,7 @@ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbac
 }
 
 fn trap_delete_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.delete_.is_none() && forward(scope, &context, "deleteProperty", &args, &mut retval) {
         return;
     }
@@ -483,7 +492,7 @@ fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>
 }
 
 fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.getPrototype.is_none() && forward(scope, &context, "getPrototypeOf", &args, &mut retval) {
         return;
     }
@@ -494,7 +503,7 @@ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
 }
 
 fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.setPrototype.is_none() && forward(scope, &context, "setPrototypeOf", &args, &mut retval) {
         return;
     }
@@ -550,7 +559,7 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
 }
 
 fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     // V8 requires the answer to match the target's; SpiderMonkey's DOM proxies are always
     // extensible, as is the target unless `preventExtensions` succeeded.
     if let Some(extensible) = reflect(scope, "isExtensible", &[context.target.into()]) {
@@ -560,7 +569,7 @@ fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCa
 }
 
 fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.preventExtensions.is_none() && forward(scope, &context, "preventExtensions", &args, &mut retval) {
         return;
     }
@@ -586,7 +595,7 @@ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Funct
 }
 
 fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.has.is_none() && forward(scope, &context, "has", &args, &mut retval) {
         return;
     }
@@ -623,7 +632,7 @@ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
 }
 
 fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.get.is_none() && forward(scope, &context, "get", &args, &mut retval) {
         return;
     }
@@ -696,7 +705,7 @@ fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'
 }
 
 fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
-    let Some(context) = trap_context(&args) else { return };
+    let Some(context) = trap_context(scope, &args) else { return };
     if context.handler.traps.set.is_none() && forward(scope, &context, "set", &args, &mut retval) {
         return;
     }

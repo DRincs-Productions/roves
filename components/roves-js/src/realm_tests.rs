@@ -2,8 +2,10 @@
 
 use std::ptr;
 
+use crate::glue::ProxyTraps;
 use crate::jsapi::*;
 use crate::jsval::*;
+use crate::proxy::{CreateWrapperProxyHandler, GetProxyPrivate, NewWindowProxy};
 use crate::realm_impl::testing::*;
 use crate::rust::{JSEngineHandle, Runtime};
 use crate::tests::eval;
@@ -238,6 +240,105 @@ fn native_callbacks_restore_a_foreign_caller_after_success_and_throw() {
     assert_eq!(saved_depth(unsafe { &*cx }), 1);
     unsafe { LeaveRealm(cx, old) };
     assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
+    assert_eq!(saved_depth(unsafe { &*cx }), 0);
+}
+
+thread_local! {
+    static REMOTE_GETTER_REALMS: std::cell::RefCell<Vec<*mut Realm>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// A remote window's `window` getter as Servo generates it: unwraps `this` to the window and
+/// converts its window proxy for the current realm.
+unsafe extern "C" fn remote_window_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
+    REMOTE_GETTER_REALMS.with(|realms| realms.borrow_mut().push(unsafe { GetCurrentRealmOrNull(cx) }));
+    let window = unsafe { UnwrapObjectDynamic((*vp.add(1)).to_object(), cx, false) };
+    crate::rooted!(in(cx) let mut proxy = ObjectValue(unsafe { ToWindowProxyIfWindowSlow(window) }));
+    if !unsafe { JS_WrapValue(cx, proxy.handle_mut().into()) } {
+        return false;
+    }
+    unsafe { *vp = proxy.get() };
+    true
+}
+
+/// The same-origin branch of Servo's window proxy `get`: forwards to the window's property.
+unsafe extern "C" fn forward_window_get(cx: *mut JSContext, proxy: HandleObject, receiver: HandleValue, id: HandleId, vp: MutableHandleValue) -> bool {
+    let mut window = UndefinedValue();
+    unsafe { GetProxyPrivate(proxy.get(), &mut window) };
+    crate::rooted!(in(cx) let window = window.to_object());
+    unsafe { JS_ForwardGetPropertyTo(cx, window.handle().into(), id, receiver, vp) }
+}
+
+/// Servo's DissimilarOriginWindow clones its parent's origin, so the parent's window proxy
+/// `get` forwards to the remote window's own getter, a native of the remote window's realm.
+/// It runs there, but the proxy it returns must be the immediate JS caller's wrapper, also
+/// from a promise job without a JSAPI realm and from a nested frame of a third realm.
+#[test]
+fn natives_of_a_remote_window_realm_return_the_callers_window_wrapper() {
+    let runtime = Runtime::new(JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
+    let initial = unsafe { GetCurrentRealmOrNull(cx) };
+    crate::rooted!(in(cx) let page = new_global(cx, ptr::null_mut()));
+    crate::rooted!(in(cx) let remote = new_global(cx, ptr::null_mut()));
+    let remote_realm = unsafe { GetObjectRealmOrNull(remote.get()) };
+    let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
+    traps.get = Some(forward_window_get);
+    let handler = unsafe { CreateWrapperProxyHandler(&traps) };
+    let old = unsafe { EnterRealm(cx, remote.get()) };
+    crate::rooted!(in(cx) let getter = ObjectValue(unsafe {
+        JS_NewFunction(cx, Some(remote_window_getter), 0, 0, c"get window".as_ptr())
+    }.cast()));
+    assert!(unsafe { JS_SetProperty(cx, remote.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
+    eval(&runtime, "Object.defineProperty(globalThis, 'window', { get: remoteGetter, configurable: true }); 0");
+    crate::rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, remote.handle().into(), handler) });
+    unsafe { SetWindowProxy(cx, remote.handle().into(), proxy.handle().into()) };
+    unsafe { LeaveRealm(cx, old) };
+
+    let old = unsafe { EnterRealm(cx, page.get()) };
+    crate::rooted!(in(cx) let mut held = ObjectValue(proxy.get()));
+    assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
+    assert_ne!(held.get().to_object(), proxy.get(), "the page holds its own wrapper");
+    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"held".as_ptr(), held.handle().into()) });
+    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
+    assert!(eval(&runtime, "held.window === held").to_boolean(), "the forwarded getter returned the remote realm's wrapper");
+    assert!(eval(&runtime, "remoteGetter.call(held) === held").to_boolean(), "a direct call returned the remote realm's wrapper");
+    eval(&runtime, "globalThis.asyncSame = false; globalThis.asyncTrap = false; (async () => { await Promise.race([Promise.resolve(0)]); asyncSame = remoteGetter.call(held) === held; asyncTrap = held.window === held; })(); 0");
+    unsafe { LeaveRealm(cx, old) };
+    // As in Servo's job checkpoint, no explicit EnterRealm surrounds this reaction: the trap's
+    // embedder code then runs in the stale initial realm, but the JS caller is the page.
+    unsafe { &mut *(*cx).isolate }.perform_microtask_checkpoint();
+    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
+    assert_eq!(saved_depth(unsafe { &*cx }), 0);
+    let old = unsafe { EnterRealm(cx, page.get()) };
+    assert!(eval(&runtime, "asyncSame").to_boolean(), "a promise job got a wrapper of another realm");
+    assert!(eval(&runtime, "asyncTrap").to_boolean(), "a trap in a promise job got a wrapper of another realm");
+    unsafe { LeaveRealm(cx, old) };
+
+    // Nested JS frames: the page (the entered realm) calls a function of a third realm, which
+    // calls the getter. The immediate JS caller is that realm, so it gets its own wrapper.
+    crate::rooted!(in(cx) let frame = new_global(cx, ptr::null_mut()));
+    let old = unsafe { EnterRealm(cx, frame.get()) };
+    crate::rooted!(in(cx) let mut frame_held = ObjectValue(proxy.get()));
+    assert!(unsafe { JS_WrapValue(cx, frame_held.handle_mut().into()) });
+    assert_ne!(frame_held.get().to_object(), held.get().to_object(), "each realm has its own wrapper");
+    assert!(unsafe { JS_SetProperty(cx, frame.handle().into(), c"held".as_ptr(), frame_held.handle().into()) });
+    assert!(unsafe { JS_SetProperty(cx, frame.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
+    eval(&runtime, "globalThis.viaFrame = () => remoteGetter.call(held) === held; 0");
+    unsafe { LeaveRealm(cx, old) };
+    let old = unsafe { EnterRealm(cx, page.get()) };
+    crate::rooted!(in(cx) let frame_value = ObjectValue(frame.get()));
+    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"frameGlobal".as_ptr(), frame_value.handle().into()) });
+    assert!(eval(&runtime, "frameGlobal.viaFrame()").to_boolean(), "a nested caller got the entered realm's wrapper");
+    unsafe { LeaveRealm(cx, old) };
+    let realms = REMOTE_GETTER_REALMS.with(|realms| std::mem::take(&mut *realms.borrow_mut()));
+    assert_eq!(realms, vec![remote_realm; 5], "the getter keeps running in its own realm");
+    // The remote realm itself still gets its own wrapper back (no caller conversion there).
+    let old = unsafe { EnterRealm(cx, remote.get()) };
+    crate::rooted!(in(cx) let mut own = ObjectValue(proxy.get()));
+    assert!(unsafe { JS_WrapValue(cx, own.handle_mut().into()) });
+    assert!(unsafe { JS_SetProperty(cx, remote.handle().into(), c"ownProxy".as_ptr(), own.handle().into()) });
+    assert!(eval(&runtime, "remoteGetter.call(ownProxy) === ownProxy").to_boolean());
+    unsafe { LeaveRealm(cx, old) };
+    REMOTE_GETTER_REALMS.with(|realms| realms.borrow_mut().clear());
     assert_eq!(saved_depth(unsafe { &*cx }), 0);
 }
 

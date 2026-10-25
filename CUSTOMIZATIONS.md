@@ -1,3 +1,78 @@
+## 2026-10-25 - Convert window proxies returned across realms by native calls (0351)
+
+Files: `components/roves-js/src/native.rs`, `components/roves-js/src/proxy.rs`,
+`components/roves-js/src/realm_tests.rs`.
+Patch: `0351-wrap-cross-realm-native-window-results.patch`.
+
+After 0349, both Linux browser smoke jobs of run 40234323634 (normal 121292529003, JITless
+121292529029) failed events.html: "an iframe keeps its WindowProxy across origin changes and
+back :: opaque-a-0: cross-origin allowlist unusable". The same page passed in the 0348 run
+(events.html runs before gc-lifecycle.html, which was that run's only failure), and 0349 only
+changed native entry, so the realm switch is the cause.
+
+Mechanism: the sandboxed opaque srcdoc document is represented in the parent's script thread
+by a DissimilarOriginWindow. That placeholder global clones the parent's origin, so the
+window proxy `get` hook takes its same-origin branch and forwards `window`/`parent`/`top`/...
+to the DissimilarOriginWindow's own accessors, natives of the placeholder's realm. Since 0349
+they run in that realm (correct for principals, as in SpiderMonkey), and their
+`JS_WrapValue` therefore converts the returned proxy for the placeholder realm: the page got
+a different wrapper than `held` (and not its own `window` for `parent`). SpiderMonkey's
+cross-compartment wrappers convert such results back to the caller; roves-js only keeps
+per-realm wrappers for window proxies.
+
+`call_native` now converts a window-proxy result back to the caller's realm when it differs
+from the callee's, reusing the existing `wrap_window_for_realm` cache and `RealmSwitch`. The
+caller realm is V8's incumbent context (existing `roves_v8::incumbent`, already used by
+`GetScriptedCallerGlobal`): the innermost JS frame, i.e. the immediate JS caller, also when
+it reached the native through a proxy trap's embedder code or from a promise reaction where
+JSAPI's current realm is stale, and also for a function of another realm nested under the
+entered context. Only when the hidden-caller sentinel is the incumbent (embedder code with no
+newer JS frame) does it use V8's `get_entered_or_microtask_context`. The callee still runs in
+its own realm with its principals; no origin check, fixture or principal is changed or
+bypassed. Non-window results take only the existing `IsWindowProxy` box check.
+
+Proxy traps now enter the same caller realm for their duration (`TrapContext` holds a
+`RealmSwitch`), as SpiderMonkey runs proxy hooks in the accessing code's realm. Review found
+why: in a promise job the trap's embedder code ran in the stale JSAPI realm, and roves-js's
+embedder helpers (here `Reflect.get` in `JS_ForwardGetPropertyTo`) are TurboFan builtins with
+JS linkage, which V8 counts as JS frames for the incumbent, so the forwarded getter saw that
+stale realm as its caller. V8 calls a trap in the handler object's context, never used here:
+a Location or window proxy of another realm is still checked against the accessing code's
+principals, so no origin check is relaxed. This also removes the stale-realm principal lookup
+from traps reached in promise jobs outside an embedder realm. Remaining
+scope: embedder code calling a native inside another native (no newer JS frame, no hidden
+scope) converts for the outer JS caller; Servo keeps window proxies as DOM roots and converts
+again on each later return, so no stored per-realm identity results from it.
+
+The regression forwards a page wrapper's `get` to a remote global's native getter (like
+Servo), calls the getter directly, calls both from a promise job drained without a JSAPI realm,
+and calls it from a function of a third realm invoked by the page; each caller gets its own
+wrapper while the getter always runs in the remote realm.
+Reviewer validation:137 normal tests pass (2 ignored),136 JITless pass (3 ignored).
+The coherent 0349 native+proxy pair compiles and fails the new regression in both modes.
+The exact production diff replays cleanly and matches all three source files after LF
+normalization. See `target/task-0351-ci/RESULTS.md`; browser confirmation remains in CI.
+
+## 2026-10-25 - Make the autonomous implementation loop explicit
+
+AGENTS.md now spells out assignment, implementation, review, verification/documentation,
+local commit, CI inspection and permitted publication as a repeating procedure. Continue
+useful authorized work during CI without pushing; resolve failures before the next batch.
+Existing user stops, actual quotas, unresolved blockers and no-work conditions still apply.
+Workflow, migration handoff, README and wiki are aligned. Existing tools are reused;
+no dependency, runtime or build interface change. The process delta is included in
+`0350-quota-reset-process.patch` alongside the pending quota-rule update.
+
+## 2026-10-25 - Schedule Claude session retries from the reported quota reset
+
+Files: `AGENTS.md`, `docs/AGENT_WORKFLOW.md`, `docs/V8_MIGRATION.md`.
+Use the existing Claude CLI `/usage` command after quota exhaustion. Schedule the single
+session-limit retry at its reported reset plus two minutes, replacing the fixed five-hour
+wait from the block message. Preserve timezone/date, no polling or chained retries, and
+no automatic weekly/monthly quota retry. Missing reset data must not be guessed.
+Documentation/process only; no runtime, dependency or build surface change.
+Patch: `0350-quota-reset-process.patch` (complete AGENTS file addition, absent upstream).
+
 ## 2026-10-25 - Cover native calls between distinct principal realms (0350, tests only)
 
 File: `components/roves-js/src/realm_tests.rs`.

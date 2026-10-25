@@ -88,7 +88,9 @@ native captures on the script thread. FontFaceSet now traces its cached ready pr
 only for native use. Callback roots remain under investigation; no overall frame-retention
 fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
-throwing native calls between realms with distinct principals.
+throwing native calls between realms with distinct principals. A window proxy returned by a native of another
+realm (such as a remote cross-origin window's `window`/`parent` getters) is converted back to the caller's realm,
+so a held cross-origin `WindowProxy` keeps its identity.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe
@@ -665,5 +667,6 @@ The Linux GC smoke's missing entry point (after the removed-frame diagnostic cha
 locally with a lightweight entry-sequence regression; browser confirmation is pending CI.
 Removed-frame collection remains diagnostic, not a completed page-retention guarantee.
 
-The agent workflow documents a single deferred retry after a Claude five-hour session limit;
+The agent workflow runs a continuous implementation/review/CI loop, keeping commits local while the preceding CI batch is active.
+It checks Claude `/usage` after a session limit and schedules one retry at the reported reset plus two minutes;
 see [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).

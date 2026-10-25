@@ -1,12 +1,25 @@
-## Ripresa dopo limite Claude di5ore — autorizzazione23ottobre
+## Loop operativo autonomo
 
-Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
-un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
-Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
-prevale: il tentativo del23ottobre alle18:45 Europe/Rome è concluso ed eliminato.
-Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
-concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
-Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
+La procedura in AGENTS.md è ciclica: definire un incarico, implementare e verificare,
+revisionare fino al completamento, aggiornare MD/patch e committare localmente, controllare
+il batch CI e pubblicare solo quando consentito. Dopo ogni incarico o push si passa al
+prossimo lavoro utile senza conferme ordinarie. Con CI attiva si sviluppa e si committa,
+ma non si pusha; eventuali fallimenti vanno corretti nel prossimo batch. Restano validi
+stop utente, quote effettive, blocchi non risolvibili e assenza di lavoro utile; nessun
+polling continuo. I dettagli e la divisione Codex/Claude sono in AGENTS.md.
+
+## Ripresa dopo limite Claude — regola aggiornata il 25 ottobre 2026
+
+Quando Claude segnala una quota esaurita, salvare l'incarico e verificare la quota con
+`/usage` nella CLI, senza richieste al modello. Per il limite della sessione di 5 ore,
+pianificare un solo tentativo all'orario di reset indicato più 2 minuti, rispettando data
+e fuso orario della CLI. Questa regola sostituisce le 5 ore dal messaggio di blocco;
+le vecchie scadenze riportate nello storico non sono istruzioni correnti.
+Se il reset è assente o ambiguo, non inventare una scadenza. Nessun polling intermedio
+o duplicato: aggiornare il ricontrollo esistente. Un orario esplicito dell'utente prevale.
+Disattivare dopo il tentativo; se lo stesso limite persiste, fermarsi senza retry concatenati.
+Restano esclusi retry automatici per quote settimanali/mensili, stop utente e cambi modello.
+Restano in vigore revisione, verifiche e vincoli CI di AGENTS.md.
 
 ## Prosecuzione durante la CI
 

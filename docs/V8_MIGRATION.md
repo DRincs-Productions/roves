@@ -1,16 +1,59 @@
 # Completamento dell’integrazione V8 in Roves
 
-## Ripresa dopo limite Claude di5ore — autorizzazione23ottobre
+## Ripresa dopo limite Claude — regola aggiornata il 25 ottobre 2026
 
-Quando Claude segnala il limite della sessione di5ore: salvare l'incarico e pianificare
-un unico tentativo5ore dopo il messaggio, nella stessa chat, usando lo scheduler dell'app.
-Nessun polling intermedio o duplicato; riusare il ricontrollo esistente. Un orario esplicito
-prevale: il tentativo del23ottobre alle18:45 è già concluso ed eliminato; non riusarlo.
-Disattivare dopo l'esecuzione. Se lo stesso limite persiste, fermarsi senza nuovi retry
-concatenati; una sessione successiva effettivamente consumata è un nuovo evento.
-Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
+Quando Claude segnala una quota esaurita, salvare l'incarico e verificare la quota con
+`/usage` nella CLI, senza richieste al modello. Per il limite della sessione di 5 ore,
+pianificare un solo tentativo all'orario di reset indicato più 2 minuti, rispettando data
+e fuso orario della CLI. Questa regola sostituisce le 5 ore dal messaggio di blocco;
+le vecchie scadenze riportate nello storico non sono istruzioni correnti.
+Se il reset è assente o ambiguo, non inventare una scadenza. Nessun polling intermedio
+o duplicato: aggiornare il ricontrollo esistente. Un orario esplicito dell'utente prevale.
+Disattivare dopo il tentativo; se lo stesso limite persiste, fermarsi senza retry concatenati.
+Restano esclusi retry automatici per quote settimanali/mensili, stop utente e cambi modello.
+Restano in vigore revisione, verifiche e vincoli CI di AGENTS.md.
+
+La prosecuzione segue il loop autonomo esplicito in AGENTS.md e docs/AGENT_WORKFLOW.md:
+incarico completo, revisione, verifiche/documentazione, commit locale, controllo CI,
+push quando consentito e prossimo incarico. Le CI attive consentono sviluppo e commit,
+non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
+
+### Claude0351-CI — WindowProxy cross-origin dopo0349 (revisionata e verificata localmente, browser in attesa CI)
+
+Run V8 40234323634: browser Linux normal121292529003/JITless121292529029 rossi su events.html
+"opaque-a-0: cross-origin allowlist unusable". Nella run0348 events.html (eseguita prima di
+gc-lifecycle, unico rosso) era verde; 0349 cambia solo l'ingresso native: causa = realm switch.
+Meccanismo: il documento opaco sandbox è un DissimilarOriginWindow nel thread del genitore, con
+origine clonata dal genitore; il trap `get` segue il ramo same-origin e inoltra a
+`window`/`parent`/`top`, accessor nativi del realm segnaposto. Dopo0349 girano lì (principal
+corretti) e `JS_WrapValue` restituisce il wrapper di quel realm, non `held`/`window` del genitore.
+Fix in `call_native`: se il risultato è una WindowProxy e il realm del chiamante differisce
+dal callee, si riconverte con `wrap_window_for_realm` + RealmSwitch esistenti. Chiamante =
+contesto incumbent V8 (`roves_v8::incumbent`, frame JS più interno: copre trap, job Promise con
+realm JSAPI stale e funzioni di un terzo realm annidate); solo col sentinel hidden-caller si
+usa `get_entered_or_microtask_context`. Callee e controlli d'origine invariati; nessuna fixture
+indebolita, nessuna dipendenza. Ambito residuo: native chiamato da codice embedder dentro un
+altro native converte per il chiamante JS esterno (Servo riconverte a ogni ritorno).
+Regressione `natives_of_a_remote_window_realm_return_the_callers_window_wrapper` (trap inoltrato,
+chiamata diretta, entrambi in job Promise senza realm JSAPI, caller annidato di terzo realm;
+getter sempre nel realm remoto). Revisione Codex: primo compile con4 E0425 (import test),
+corretti; poi asyncTrap falliva (realm_tests313): nel job Promise il trap girava nel realm
+JSAPI stale e l'helper `Reflect.get` (builtin TurboFan con linkage JS, frame JS per l'incumbent)
+diventava il chiamante. Fix: `trap_context` entra nel realm `caller_realm` per tutto il trap
+(RealmSwitch), come SpiderMonkey; niente contesto dell'handler, controlli d'origine coi principal
+del codice che accede. Toglie anche il lookup stale nei trap in job Promise (osservazione sopra). Verifiche Codex finali:137 test normali verdi/2 ignorati,136 JITless verdi/3 ignorati.
+Negativo con coppia native.rs+proxy.rs di HEAD0349 compila e fallisce sul getter inoltrato
+in entrambe le modalità (non un errore compilazione). La prima fixture con solo native.rs
+non compilava perché proxy.rs nuovo dipende da caller_realm: sostituita con coppia coerente.
+Patch0351 rigenerata dal diff reale, dry-run/apply riusciti; i3 sorgenti sono LF-identici
+allo scratch. Anche patch processo0350 applicata come nuovo AGENTS.md, assente nell'upstream.
+Nessun buildServo locale. Batch e351 concluso: generale13/13, mobile verdi; V8 8/10 con
+soli2 errori WindowProxy sopra. Prossimo push include0350, processo e fix0351; conferma browser
+solo nella nuova CI. Scheduler precedente disattivato: quota verificata/ripristinata e incarico
+ripreso manualmente. Non dichiarare retention frame complessiva risolta.
+Patch0351, CUSTOMIZATIONS/README/wiki aggiornati; dettagli `target/task-0351-ci/RESULTS.md`.
 
 ### Pubblicato0349 — e351c546261;0350 completa in locale durante CI
 
@@ -26,7 +69,7 @@ pre0349 fallisce inentrambimodi. Nessuncambio produzione o fullsuiteimmutata rip
 Patch0350 dryrun/apply,480/483 identiciLF con3eccezioninote; scratchora0350.
 Logtarget/task-0350/. Commitlocale completo consentito, pubblicazionevietatafinchébatchattivo.
 
-Prossimo0351: [ownership listenerDOM](handoff/0351-traced-event-listener-ownership.md),
+Prossimo incarico dopo fix0351: [ownership listenerDOM](handoff/0351-traced-event-listener-ownership.md),
 piano soltanto. Punti giàstudiati: factoryCallbackContainer nelcodegen devepreservare incumbent
 originale, storageAbortSignal possiede un’ulterioreRc; proteggeremetadata durante ricostruzione/
 dispatch. Niente conteggiRcmanuali, collettoriRustpropri o rimozioneindiscriminataroot.

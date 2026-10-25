@@ -1,0 +1,312 @@
+diff --git a/components/roves-js/src/native.rs b/components/roves-js/src/native.rs
+index 718a42c58f1..82aed87e652 100644
+--- a/components/roves-js/src/native.rs
++++ b/components/roves-js/src/native.rs
+@@ -38,6 +38,21 @@ thread_local! {
+     static VP_POOL: std::cell::RefCell<Vec<Vec<JSVal>>> = const { std::cell::RefCell::new(Vec::new()) };
+ }
+ 
++/// The realm of the code calling into a callback: V8's incumbent context, i.e. the innermost
++/// JS frame (the immediate JS caller, also in a promise reaction, where the JSAPI current
++/// realm may be stale). Embedder JS helpers are JS frames of the realm that ran them, which
++/// proxy traps enter for their accessing code. Without a JS frame newer than a hidden-caller
++/// scope, the caller is embedder code: the context it entered (or the running microtask's).
++pub(crate) fn caller_realm(cx: &JSContext, scope: &mut v8::PinScope) -> *mut crate::jsapi::Realm {
++    let incumbent = roves_v8::incumbent::incumbent_context(scope);
++    let context = if crate::runtime_impl::is_hidden_incumbent(cx, scope, incumbent) {
++        scope.get_entered_or_microtask_context()
++    } else {
++        incumbent
++    };
++    crate::realm_impl::realm_of_context(context)
++}
++
+ /// Calls `native` for a V8 call of `callee` with `args`, writing its result to `retval`.
+ pub(crate) fn call_native(
+     scope: &mut v8::PinScope,
+@@ -74,7 +89,24 @@ pub(crate) fn call_native(
+     // SAFETY: the rooted vector is not resized during the call.
+     let vp_pointer = unsafe { (*rooted_vp.as_ptr()).as_mut_ptr() };
+     // SAFETY: SpiderMonkey's JSNative contract: `vp` holds callee, this and `argc` arguments.
+-    let ok = unsafe { native(raw_cx, argc, vp_pointer) };
++    let mut ok = unsafe { native(raw_cx, argc, vp_pointer) };
++    // SAFETY: a rooted object result.
++    if ok && rooted_vp[0].is_object() && unsafe { crate::proxy::IsWindowProxy(rooted_vp[0].to_object()) } {
++        // SpiderMonkey wraps a value leaving the callee's realm. Window proxies are the only
++        // per-realm objects here: a remote window's native converts its proxy for its own
++        // realm, so the caller would see another identity than its own wrapper.
++        let caller = caller_realm(cx, scope);
++        if caller != realm && !caller.is_null() {
++            let _caller = cx.switch_realm(caller);
++            // SAFETY: the result is rooted in `vp`; the callee's realm stays alive meanwhile.
++            let wrapped = unsafe { crate::proxy::wrap_window_for_realm(raw_cx, rooted_vp[0].to_object()) };
++            if wrapped.is_null() {
++                ok = false;
++            } else {
++                rooted_vp[0] = crate::jsval::ObjectValue(wrapped);
++            }
++        }
++    }
+     if ok {
+         // SAFETY: the return value is rooted in `vp`.
+         let result = unsafe { to_v8(scope, rooted_vp[0]) };
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 14a66601883..5b7c981d835 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -260,22 +260,31 @@ fn new_handler_object<'s>(scope: &mut v8::PinScope<'s, '_>, handler: *const Prox
+ }
+ 
+ /// What every trap callback needs: the handler, the proxy (its cell, rooted by the caller)
+-/// and the target.
++/// and the target. The trap runs in the realm of the code performing the access, until the
++/// context drops.
+ struct TrapContext<'s, 'h> {
+     handler: &'h ProxyHandler,
+     proxy: *mut JSObject,
+     target: v8::Local<'s, v8::Object>,
+     cx: *mut JSContext,
++    _realm: crate::jsapi::RealmSwitch<'static>,
+ }
+ 
+-fn trap_context<'s, 'h>(args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
++fn trap_context<'s, 'h>(scope: &mut v8::PinScope<'s, '_>, args: &v8::FunctionCallbackArguments<'s>) -> Option<TrapContext<'s, 'h>> {
+     let target = v8::Local::<v8::Object>::try_from(args.get(0)).ok()?;
+     let class_box = crate::object::class_box_of_v8(target)?;
+     // The proxy's current handler (a transplant may have replaced the one the V8 handler
+     // object was made for). SAFETY: handlers live for the whole process.
+     let handler = handler_of(class_box.cell.get() as *mut JSObject)?;
+-    let cx = JSContext::current() as *const JSContext as *mut JSContext;
+-    Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx })
++    let raw: &'static JSContext = JSContext::current();
++    // SpiderMonkey runs a proxy's hooks in the accessing code's realm. V8 calls the trap in
++    // the handler object's context and the JSAPI current realm may be stale (a promise job
++    // outside any embedder realm), so take the accessing JS frame's realm, as native entry
++    // does for its caller. Origin checks then use that code's own principals.
++    let realm = crate::native::caller_realm(raw, scope);
++    let _realm = raw.switch_realm(realm);
++    let cx = raw as *const JSContext as *mut JSContext;
++    Some(TrapContext { handler, proxy: class_box.cell.get() as *mut JSObject, target, cx, _realm })
+ }
+ 
+ const FORWARD_TRAP: &str = "(function (name, target, a, b, c) { return Reflect[name](target, a, b, c); })";
+@@ -340,7 +349,7 @@ fn own_descriptor(context: &TrapContext, id: jsid) -> Result<Option<PropertyDesc
+ }
+ 
+ fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.getOwnPropertyDescriptor.is_none() && forward(scope, &context, "getOwnPropertyDescriptor", &args, &mut retval) {
+         if let (Ok(key), Some(descriptor)) = (v8::Local::<v8::Name>::try_from(args.get(1)), v8::Local::<v8::Object>::try_from(retval.get(scope)).ok()) {
+             let mut converted = PropertyDescriptor::default();
+@@ -375,7 +384,7 @@ fn result_to_bool(ok: bool, result: &ObjectOpResult, retval: &mut v8::ReturnValu
+ }
+ 
+ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.defineProperty.is_none() && forward(scope, &context, "defineProperty", &args, &mut retval) {
+         return;
+     }
+@@ -409,7 +418,7 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
+ }
+ 
+ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.ownPropertyKeys.is_none() && forward(scope, &context, "ownKeys", &args, &mut retval) {
+         return;
+     }
+@@ -430,7 +439,7 @@ fn trap_own_keys<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbac
+ }
+ 
+ fn trap_delete_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.delete_.is_none() && forward(scope, &context, "deleteProperty", &args, &mut retval) {
+         return;
+     }
+@@ -483,7 +492,7 @@ fn prototype<'s>(scope: &mut v8::PinScope<'s, '_>, context: &TrapContext<'s, '_>
+ }
+ 
+ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.getPrototype.is_none() && forward(scope, &context, "getPrototypeOf", &args, &mut retval) {
+         return;
+     }
+@@ -494,7 +503,7 @@ fn trap_get_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+ }
+ 
+ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.setPrototype.is_none() && forward(scope, &context, "setPrototypeOf", &args, &mut retval) {
+         return;
+     }
+@@ -550,7 +559,7 @@ fn trap_set_prototype_of<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Functio
+ }
+ 
+ fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     // V8 requires the answer to match the target's; SpiderMonkey's DOM proxies are always
+     // extensible, as is the target unless `preventExtensions` succeeded.
+     if let Some(extensible) = reflect(scope, "isExtensible", &[context.target.into()]) {
+@@ -560,7 +569,7 @@ fn trap_is_extensible<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCa
+ }
+ 
+ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.preventExtensions.is_none() && forward(scope, &context, "preventExtensions", &args, &mut retval) {
+         return;
+     }
+@@ -586,7 +595,7 @@ fn trap_prevent_extensions<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Funct
+ }
+ 
+ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.has.is_none() && forward(scope, &context, "has", &args, &mut retval) {
+         return;
+     }
+@@ -623,7 +632,7 @@ fn trap_has<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArgu
+ }
+ 
+ fn trap_get<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.get.is_none() && forward(scope, &context, "get", &args, &mut retval) {
+         return;
+     }
+@@ -696,7 +705,7 @@ fn reflect<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, args: &[v8::Local<'
+ }
+ 
+ fn trap_set<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::FunctionCallbackArguments<'s>, mut retval: v8::ReturnValue<'s>) {
+-    let Some(context) = trap_context(&args) else { return };
++    let Some(context) = trap_context(scope, &args) else { return };
+     if context.handler.traps.set.is_none() && forward(scope, &context, "set", &args, &mut retval) {
+         return;
+     }
+diff --git a/components/roves-js/src/realm_tests.rs b/components/roves-js/src/realm_tests.rs
+index f01d9fc54a9..d4bb7d6278f 100644
+--- a/components/roves-js/src/realm_tests.rs
++++ b/components/roves-js/src/realm_tests.rs
+@@ -2,8 +2,10 @@
+ 
+ use std::ptr;
+ 
++use crate::glue::ProxyTraps;
+ use crate::jsapi::*;
+ use crate::jsval::*;
++use crate::proxy::{CreateWrapperProxyHandler, GetProxyPrivate, NewWindowProxy};
+ use crate::realm_impl::testing::*;
+ use crate::rust::{JSEngineHandle, Runtime};
+ use crate::tests::eval;
+@@ -241,6 +243,105 @@ fn native_callbacks_restore_a_foreign_caller_after_success_and_throw() {
+     assert_eq!(saved_depth(unsafe { &*cx }), 0);
+ }
+ 
++thread_local! {
++    static REMOTE_GETTER_REALMS: std::cell::RefCell<Vec<*mut Realm>> = const { std::cell::RefCell::new(Vec::new()) };
++}
++
++/// A remote window's `window` getter as Servo generates it: unwraps `this` to the window and
++/// converts its window proxy for the current realm.
++unsafe extern "C" fn remote_window_getter(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++    REMOTE_GETTER_REALMS.with(|realms| realms.borrow_mut().push(unsafe { GetCurrentRealmOrNull(cx) }));
++    let window = unsafe { UnwrapObjectDynamic((*vp.add(1)).to_object(), cx, false) };
++    crate::rooted!(in(cx) let mut proxy = ObjectValue(unsafe { ToWindowProxyIfWindowSlow(window) }));
++    if !unsafe { JS_WrapValue(cx, proxy.handle_mut().into()) } {
++        return false;
++    }
++    unsafe { *vp = proxy.get() };
++    true
++}
++
++/// The same-origin branch of Servo's window proxy `get`: forwards to the window's property.
++unsafe extern "C" fn forward_window_get(cx: *mut JSContext, proxy: HandleObject, receiver: HandleValue, id: HandleId, vp: MutableHandleValue) -> bool {
++    let mut window = UndefinedValue();
++    unsafe { GetProxyPrivate(proxy.get(), &mut window) };
++    crate::rooted!(in(cx) let window = window.to_object());
++    unsafe { JS_ForwardGetPropertyTo(cx, window.handle().into(), id, receiver, vp) }
++}
++
++/// Servo's DissimilarOriginWindow clones its parent's origin, so the parent's window proxy
++/// `get` forwards to the remote window's own getter, a native of the remote window's realm.
++/// It runs there, but the proxy it returns must be the immediate JS caller's wrapper, also
++/// from a promise job without a JSAPI realm and from a nested frame of a third realm.
++#[test]
++fn natives_of_a_remote_window_realm_return_the_callers_window_wrapper() {
++    let runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let initial = unsafe { GetCurrentRealmOrNull(cx) };
++    crate::rooted!(in(cx) let page = new_global(cx, ptr::null_mut()));
++    crate::rooted!(in(cx) let remote = new_global(cx, ptr::null_mut()));
++    let remote_realm = unsafe { GetObjectRealmOrNull(remote.get()) };
++    let mut traps: ProxyTraps = unsafe { std::mem::zeroed() };
++    traps.get = Some(forward_window_get);
++    let handler = unsafe { CreateWrapperProxyHandler(&traps) };
++    let old = unsafe { EnterRealm(cx, remote.get()) };
++    crate::rooted!(in(cx) let getter = ObjectValue(unsafe {
++        JS_NewFunction(cx, Some(remote_window_getter), 0, 0, c"get window".as_ptr())
++    }.cast()));
++    assert!(unsafe { JS_SetProperty(cx, remote.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
++    eval(&runtime, "Object.defineProperty(globalThis, 'window', { get: remoteGetter, configurable: true }); 0");
++    crate::rooted!(in(cx) let proxy = unsafe { NewWindowProxy(cx, remote.handle().into(), handler) });
++    unsafe { SetWindowProxy(cx, remote.handle().into(), proxy.handle().into()) };
++    unsafe { LeaveRealm(cx, old) };
++
++    let old = unsafe { EnterRealm(cx, page.get()) };
++    crate::rooted!(in(cx) let mut held = ObjectValue(proxy.get()));
++    assert!(unsafe { JS_WrapValue(cx, held.handle_mut().into()) });
++    assert_ne!(held.get().to_object(), proxy.get(), "the page holds its own wrapper");
++    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"held".as_ptr(), held.handle().into()) });
++    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
++    assert!(eval(&runtime, "held.window === held").to_boolean(), "the forwarded getter returned the remote realm's wrapper");
++    assert!(eval(&runtime, "remoteGetter.call(held) === held").to_boolean(), "a direct call returned the remote realm's wrapper");
++    eval(&runtime, "globalThis.asyncSame = false; globalThis.asyncTrap = false; (async () => { await Promise.race([Promise.resolve(0)]); asyncSame = remoteGetter.call(held) === held; asyncTrap = held.window === held; })(); 0");
++    unsafe { LeaveRealm(cx, old) };
++    // As in Servo's job checkpoint, no explicit EnterRealm surrounds this reaction: the trap's
++    // embedder code then runs in the stale initial realm, but the JS caller is the page.
++    unsafe { &mut *(*cx).isolate }.perform_microtask_checkpoint();
++    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++    let old = unsafe { EnterRealm(cx, page.get()) };
++    assert!(eval(&runtime, "asyncSame").to_boolean(), "a promise job got a wrapper of another realm");
++    assert!(eval(&runtime, "asyncTrap").to_boolean(), "a trap in a promise job got a wrapper of another realm");
++    unsafe { LeaveRealm(cx, old) };
++
++    // Nested JS frames: the page (the entered realm) calls a function of a third realm, which
++    // calls the getter. The immediate JS caller is that realm, so it gets its own wrapper.
++    crate::rooted!(in(cx) let frame = new_global(cx, ptr::null_mut()));
++    let old = unsafe { EnterRealm(cx, frame.get()) };
++    crate::rooted!(in(cx) let mut frame_held = ObjectValue(proxy.get()));
++    assert!(unsafe { JS_WrapValue(cx, frame_held.handle_mut().into()) });
++    assert_ne!(frame_held.get().to_object(), held.get().to_object(), "each realm has its own wrapper");
++    assert!(unsafe { JS_SetProperty(cx, frame.handle().into(), c"held".as_ptr(), frame_held.handle().into()) });
++    assert!(unsafe { JS_SetProperty(cx, frame.handle().into(), c"remoteGetter".as_ptr(), getter.handle().into()) });
++    eval(&runtime, "globalThis.viaFrame = () => remoteGetter.call(held) === held; 0");
++    unsafe { LeaveRealm(cx, old) };
++    let old = unsafe { EnterRealm(cx, page.get()) };
++    crate::rooted!(in(cx) let frame_value = ObjectValue(frame.get()));
++    assert!(unsafe { JS_SetProperty(cx, page.handle().into(), c"frameGlobal".as_ptr(), frame_value.handle().into()) });
++    assert!(eval(&runtime, "frameGlobal.viaFrame()").to_boolean(), "a nested caller got the entered realm's wrapper");
++    unsafe { LeaveRealm(cx, old) };
++    let realms = REMOTE_GETTER_REALMS.with(|realms| std::mem::take(&mut *realms.borrow_mut()));
++    assert_eq!(realms, vec![remote_realm; 5], "the getter keeps running in its own realm");
++    // The remote realm itself still gets its own wrapper back (no caller conversion there).
++    let old = unsafe { EnterRealm(cx, remote.get()) };
++    crate::rooted!(in(cx) let mut own = ObjectValue(proxy.get()));
++    assert!(unsafe { JS_WrapValue(cx, own.handle_mut().into()) });
++    assert!(unsafe { JS_SetProperty(cx, remote.handle().into(), c"ownProxy".as_ptr(), own.handle().into()) });
++    assert!(eval(&runtime, "remoteGetter.call(ownProxy) === ownProxy").to_boolean());
++    unsafe { LeaveRealm(cx, old) };
++    REMOTE_GETTER_REALMS.with(|realms| realms.borrow_mut().clear());
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++}
++
+ #[test]
+ fn escaped_native_function_keeps_its_realm_without_a_registry_root() {
+     let mut runtime = Runtime::new(JSEngineHandle::for_tests());

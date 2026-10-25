@@ -36,8 +36,8 @@ approval at each completed task, and resolve recoverable technical blocks autono
 The user removed per-assignment tool-call ceilings and routine consumption/residual-work
 accounting. Continue useful authorized work autonomously; actual subscription quotas remain
 a stop condition. Historical bounded-task counts are retained only as historical evidence.
-No periodic automation is authorized. A single retry five hours after a confirmed Claude
-five-hour session limit is authorized as specified below; no intermediate polling.
+No periodic automation is authorized. A single retry at the reset time reported by Claude `/usage`, plus two minutes,
+is authorized for a confirmed five-hour session limit as specified below; no intermediate polling.
 
 Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
 sections only for a concrete issue. Consumption evidence and the first bounded comparison
@@ -60,6 +60,32 @@ gestisce commit e push e analizza la CI. Eventuali correzioni vengono delegate a
 un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incarico lasciato
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
+
+### Procedura di implementazione: loop autonomo
+
+La procedura è un **loop**, non un singolo incarico seguito da un'attesa o da una richiesta
+ordinaria di conferma. Ripetere questi passi finché resta lavoro utile e autorizzato:
+
+1. Codex individua il prossimo problema concreto, valuta il riuso di librerie mantenute e
+   prepara un incarico circoscritto con criteri di completamento.
+2. Claude implementa e verifica l'incarico, poi consegna e si ferma senza commit o push.
+   Codex revisiona diff ed evidenze; se il risultato è incompleto o errato, delega la
+   correzione e ripete questa fase fino a ottenere una modifica completa.
+3. Aggiornare documentazione e patch applicabili, completare le verifiche necessarie e
+   creare il commit locale. Controllare insieme le run del precedente push.
+4. Se una run è rossa, analizzarla e completare le correzioni da includere nel prossimo
+   push; attendere anche la conclusione delle altre run. Se nessuna è rossa ma alcune
+   sono ancora attive, conservare i commit locali e tornare al passo 1 senza push.
+5. Quando il batch precedente è interamente verde, pubblicare il lavoro completo e
+   revisionato, identificare le nuove run con un controllo aggregato e tornare subito
+   al passo 1 mentre la CI procede.
+
+Non fermarsi al termine di un incarico, di un commit o di un push se esiste altro lavoro
+utile autorizzato. Il loop non autorizza polling continuo, push durante run precedenti
+attive o pubblicazione di WIP. Fermarsi per stop esplicito dell'utente, quota effettiva,
+blocco non risolvibile autonomamente o assenza di altro lavoro utile; lasciare un handoff
+accurato. Per quota e ripresa applicare la regola `/usage` e reset più 2 minuti sotto.
+Le eventuali eccezioni esplicite dell'utente alla delega restano valide nel loro ambito.
 
 ### Budget e separazione dei ruoli
 
@@ -99,9 +125,12 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
 - Al raggiungimento di una quota effettiva, salvare il punto di ripresa e sospendere il
-  lavoro. Per il limite della sessione Claude di5ore, l'utente autorizza un singolo tentativo
-  pianificato5ore dopo il messaggio di limite, nella stessa chat, tramite lo scheduler
-  dell'app. Usare un unico ricontrollo con scadenza; riusare quello esistente, senza duplicati
+  lavoro. Quando Claude segnala una quota esaurita, aprire la CLI e usare `/usage` per
+  verificare quota e prossimo reset, senza inviare richieste al modello. Per il limite
+  della sessione di 5 ore, pianificare un unico tentativo all'orario di reset riportato
+  da `/usage` più 2 minuti, nella stessa chat tramite lo scheduler dell'app. Interpretare
+  data e fuso orario mostrati dalla CLI; non calcolare 5 ore dal messaggio di blocco.
+  Se il reset non è disponibile o è ambiguo, salvare il blocco senza inventare un orario. Usare un unico ricontrollo con scadenza; riusare quello esistente, senza duplicati
   o controlli intermedi. Un orario esplicito dell'utente prevale; il tentativo23ottobre18:45 è già concluso,
   non riutilizzare quell'orario per nuovi eventi di quota.
   Al risveglio riprendere l'incarico salvato se Claude è disponibile, mantenendo revisione,
