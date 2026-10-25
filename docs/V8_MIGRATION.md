@@ -12,6 +12,47 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Priorità CI0332 — fixture POSIX senza il nuovo marker worker
+
+Batcha4e78c2e543 V840181485105:6/10 verdi,4runtime POSIX rossi (Linux/macOS normal/JITless).
+Cause lette nei job121133301534 e121133301527:8fallimenti del runner simulato, tutti
+`stress.html: missing required check: dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue`.
+Il validatore è corretto; è incompleta la fixture fake_browser usata solo nei test POSIX.
+NON indebolire requiredcheck o saltaretest. Correzione0334 da delegare con verificaWSL reale.
+I4servoshell browser e i2runtime Windows passano; generale40181485120 ancora11/13 verdi,
+Linuxportable121133781156 e WindowsMSI121133781161 attivi. Non fare push durante le run.
+0333 revisione Codex completata: quiescenza consegne già accettate, nessun registry/timerlock
+in attesa, nessun auto-unregister nell’handler (non avviene in produzione).8engine testsnormal/
+JITless,30ripetizioni race,124/123runtime, negativi deterministici e replay470/473. Commitlocale.
+Restano conservativi task senza registrazione e delayed di registrazioni sostituite.
+
+
+### Claude0333 — rimozione handler foreground (revisionata, commit locale)
+
+Base bc49109d4ff. API rusty_v8152.2: `PlatformImpl` riceve ogni task e non lo inoltra al runner
+di default avvolto (`CustomTaskRunner::wrapped_` serve solo alle capability);
+`Platform::notify_isolate_shutdown` è `pub(crate)` e non intercettato; `pump_message_loop`
+sarebbe polling di un runner vuoto. Nessuna API pubblica sostituisce registro/timer: fix locale.
+Corsa reale: `Registration::post` controllava `active` e chiamava l'handler senza lock, quindi
+una consegna da thread V8/timer poteva attraversare close/`set_handler(None)`/retire e finire nel
+ramo `retired` di `Foreground::post` (leak); il timer poteva anche estrarre un task scaduto
+appena prima della rimozione. Ora ogni registrazione conta le consegne (`Mutex`+`Condvar`):
+`post` accetta sotto il lock del registro, il timer sotto il proprio; la rimozione disattiva
+sotto entrambi e, senza lock registro/timer, attende le consegne accettate prima di rilasciare
+callback e task ritardati. Ogni task accettato arriva in `pending` (chiuso) prima di `retire`, che
+lo distrugge sul thread dell'isolate prima della dismissione; il ramo `retired` resta difensivo,
+irraggiungibile via handler. Restano conservativi (leak, mai drop su altro thread): task senza
+registrazione (post dopo la rimozione, durante dismissione o indirizzo riusato) e ritardati di
+una registrazione sostituita. Test reale: task timeout `Atomics.waitAsync` ripostato da altro
+thread in un handler bloccato; la rimozione attende, l'handler può rientrare nel registro, task
+distrutto una volta sul thread dell'isolate prima del drop. Negativi: senza attesa → assert
+"removal returned..."; attesa sotto lock registro → assert rientro (1s, nessuno stallo). La
+finestra pop del timer non ha test deterministico (chiusa dall'ordine dei lock). roves-v8 8/8
+normal e JITless, ripetizione foreground30/30; roves-js normal124/2ign, JITless123/3ign.
+rustfmt: file già non formattato (13→18 differenze, stile del file). Patch
+`0333-foreground-removal-drains-deliveries.patch`: replay470/473, stesse3 eccezioni.
+README, CUSTOMIZATIONS, wiki `shell.mdx`. Log `target/task-0333/`. Non risolve retention frame/DOM.
+
 ### Pubblicazione0330–0332 completata —25ottobre
 
 Il batch0329 è terminato TUTTO VERDE: V84017869110010/10, generale4017869087513/13,

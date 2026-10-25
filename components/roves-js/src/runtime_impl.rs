@@ -150,7 +150,8 @@ pub(crate) struct Foreground {
     pending: std::sync::Mutex<Vec<v8::Task>>,
     closed: std::sync::atomic::AtomicBool,
     /// Set once the isolate's handler is gone and the last tasks were destroyed: from then on
-    /// the isolate may be disposed, so a late task can only be leaked.
+    /// the isolate may be disposed, so a late task could only be leaked (none can arrive
+    /// through the removed handler).
     retired: std::sync::atomic::AtomicBool,
     /// Runtime ownership lasts until execution or shutdown; opaque event-loop payloads
     /// must not be the last owners of native tasks after isolate disposal.
@@ -191,6 +192,8 @@ impl Foreground {
         // shutdown clear. Never hold this lock while calling the embedder.
         let mut pending = self.pending.lock().unwrap();
         if self.retired.load(std::sync::atomic::Ordering::Acquire) {
+            // Unreachable through the isolate's handler: its removal returns only after the
+            // deliveries it accepted (`roves_v8::foreground::set_handler`), before `retire`.
             std::mem::forget(task);
             return;
         }
@@ -268,6 +271,8 @@ pub(crate) fn register_foreground(cx: &JSContext, isolate: &v8::Isolate) {
 /// is disposed).
 pub(crate) fn unregister_foreground(cx: &JSContext, isolate: &v8::Isolate) {
     cx.hooks.foreground.close();
+    // Returns once the deliveries already accepted for the isolate have reached `post`, which
+    // keeps them after close: `retire` destroys them here, on the isolate's thread.
     roves_v8::foreground::set_handler(roves_v8::foreground::isolate_key(isolate), None);
     cx.hooks.foreground.retire();
 }

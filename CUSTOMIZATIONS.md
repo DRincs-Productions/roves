@@ -1,3 +1,32 @@
+## 2026-10-25 - V8 foreground handler removal waits for accepted deliveries (0333)
+
+**Files:** `components/roves-v8/src/foreground.rs`, `components/roves-js/src/runtime_impl.rs`
+(comments only), patch `0333-foreground-removal-drains-deliveries.patch`.
+
+rusty_v8 152.2's `PlatformImpl` hands every foreground task to Rust and never forwards it to
+the wrapped default task runner; `Platform::notify_isolate_shutdown` is crate-private and not
+intercepted by its `CustomPlatform`; `pump_message_loop` would mean polling a runner that holds
+nothing. No public API can take over routing or shutdown, so the registry stays and gets a
+small fix. Before, `Registration::post` checked `active`, cloned the handler and called it with
+no lock: a delivery from a V8 or timer thread could cross `unregister_foreground`'s
+`close` / `set_handler(None)` / `retire`, reach `Foreground::post` after `retire` and be leaked
+(the timer could also pop a due task just before removal took the delayed queue). Each
+registration now counts running deliveries in a `Mutex` + `Condvar`: `post` accepts one under
+the registry lock, the timer under the timer lock, and removal deactivates the registration
+under both, then, with no registry or timer lock held, waits until the accepted deliveries
+return before dropping the callback and reclaimed delayed tasks. So every task accepted while
+registered reaches `Foreground::post` before `retire`, lands in the closed runtime's queue and
+is destroyed on the isolate's thread before disposal; `Foreground::post`'s retired branch is no
+longer reachable through the handler (kept as a defensive leak). A delivery may reenter the
+registry while a removal waits; a handler must not remove its own registration. Unchanged
+policies: a task for an isolate with no registration (posted after removal, possibly during
+disposal or for a reused address) and a delayed task of a replaced registration are still
+leaked, never run or dropped on another thread. A new test re-posts a real `Atomics.waitAsync`
+timeout task from another thread into a blocked handler; removal must wait, the handler must be
+able to take the registry lock, and the task is destroyed once, on the isolate's thread, before
+the isolate is dropped. Mutations without the wait, or waiting under the registry lock, fail it.
+The timer-pop window has no deterministic test (it is closed by lock order).
+
 ## 2026-10-25 - Worker microtask FIFO browser check (0332)
 
 **Files:** `support/v8-smoke/{stress.html,check_results.py,test_runner.py}`, patch
