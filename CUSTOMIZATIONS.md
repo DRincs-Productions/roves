@@ -1,3 +1,19 @@
+## 2026-10-25 - Cover native calls between distinct principal realms (0350, tests only)
+
+File: `components/roves-js/src/realm_tests.rs`.
+Patch: `0350-cross-principal-native-call-regression.patch`.
+
+The 0349 regression starts from a null-principal initial realm. The additional case uses
+two live realms with different nonnull principal pointers: a callback must see its actual
+callee realm, not merely any realm with principals. Both successful and throwing calls
+must restore the foreign caller's exact realm/principal, propagate the original exception,
+and balance the saved-realm stack. All assertions run outside extern-C callbacks.
+
+Existing test helpers and JSAPI calls are reused, no new dependency or production behavior.
+Focused normal/JITless tests pass; the old native entry fails the case in both modes.
+No unchanged full-suite rerun: 0349's production code already passed135/134 suites.
+README/wiki/handoff describe the extra regression, not a claim of browser CI success.
+
 ## 2026-10-25 - Synchronize JSAPI native entry with V8's executing realm (0349)
 
 Files: `components/roves-js/src/native.rs`, `components/roves-js/src/realm_tests.rs`.

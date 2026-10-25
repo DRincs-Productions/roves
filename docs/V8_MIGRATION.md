@@ -12,6 +12,26 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Pubblicato0349 — e351c546261;0350 completa in locale durante CI
+
+Fix0349 pubblicato, wiki deea588. Batchattivo: V8402343236346/10 verdi4attivi,
+generale402343236966/13 verdi7attivi; Android40234323757 e iOS40234323636 verdi.
+Nessunrosso alcontrollo dopo0350. NON pushare durante queste run. Prossimopush deve
+includereeventuali nuove correzioni che emergono; non considerare checkpointancoraverificato.
+
+0350 aggiunge regressione distinta con due realm/principalnonnull diversi: chiamataNative
+corretta ed errore devonoeseguire nelcallee, ripristinare esattamenterealm/principaldelchiamante,
+propagare eccezione7 e bilanciaresavedstack. Positivi mirati1normal/1JITless; negativoNative
+pre0349 fallisce inentrambimodi. Nessuncambio produzione o fullsuiteimmutata ripetuta.
+Patch0350 dryrun/apply,480/483 identiciLF con3eccezioninote; scratchora0350.
+Logtarget/task-0350/. Commitlocale completo consentito, pubblicazionevietatafinchébatchattivo.
+
+Prossimo0351: [ownership listenerDOM](handoff/0351-traced-event-listener-ownership.md),
+piano soltanto. Punti giàstudiati: factoryCallbackContainer nelcodegen devepreservare incumbent
+originale, storageAbortSignal possiede un’ulterioreRc; proteggeremetadata durante ricostruzione/
+dispatch. Niente conteggiRcmanuali, collettoriRustpropri o rimozioneindiscriminataroot.
+Scheduler22:42 riprendeGit/handoffcorrenti, nonripetere0347–0350 né analisi senza nuova domanda.
+
 ### Codex0349 — CI0348 corretta localmente, pronta alla pubblicazione
 
 Batch9c6e1334a07 concluso: generale4022899502013/13, mobile40228995069/40228995041

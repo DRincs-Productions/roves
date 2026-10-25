@@ -202,6 +202,46 @@ fn native_callbacks_use_the_executing_realm_after_promise_jobs() {
 }
 
 #[test]
+fn native_callbacks_restore_a_foreign_caller_after_success_and_throw() {
+    let runtime = Runtime::new(JSEngineHandle::for_tests());
+    let cx = runtime.raw_cx();
+    let initial = unsafe { GetCurrentRealmOrNull(cx) };
+    unsafe { JS_InitDestroyPrincipalsCallback(cx, Some(destroy_principals)) };
+    let owner_principals = unsafe { CreateRustJSPrincipals(ptr::null(), ptr::null_mut()) };
+    let caller_principals = unsafe { CreateRustJSPrincipals(ptr::null(), ptr::null_mut()) };
+    assert_ne!(owner_principals, caller_principals);
+    crate::rooted!(in(cx) let owner = new_global(cx, owner_principals));
+    crate::rooted!(in(cx) let caller = new_global(cx, caller_principals));
+    let old = unsafe { EnterRealm(cx, owner.get()) };
+    crate::rooted!(in(cx) let native = ObjectValue(unsafe {
+        JS_NewFunction(cx, Some(native_has_calling_principals), 0, 0, c"checkOwner".as_ptr())
+    }.cast()));
+    crate::rooted!(in(cx) let throwing = ObjectValue(unsafe {
+        JS_NewFunction(cx, Some(native_throws_in_calling_realm), 0, 0, c"throwInOwner".as_ptr())
+    }.cast()));
+    unsafe { LeaveRealm(cx, old) };
+    let old = unsafe { EnterRealm(cx, caller.get()) };
+    let caller_realm = unsafe { GetCurrentRealmOrNull(cx) };
+    crate::rooted!(in(cx) let this = UndefinedValue());
+    crate::rooted!(in(cx) let mut result = UndefinedValue());
+    let args = HandleValueArray { length_: 0, elements_: ptr::null() };
+    assert!(unsafe { Call(cx, this.handle().into(), native.handle().into(), &args, result.handle_mut().into()) });
+    assert!(result.get().to_boolean(), "nonnull caller principals must not substitute for the callee's realm");
+    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
+    assert_eq!(unsafe { GetRealmPrincipals(caller_realm) }, caller_principals);
+    assert!(!unsafe { Call(cx, this.handle().into(), throwing.handle().into(), &args, result.handle_mut().into()) });
+    assert!(unsafe { crate::api::JS_GetPendingException(cx, result.handle_mut()) });
+    assert_eq!(result.get().to_int32(), 7);
+    unsafe { crate::api::JS_ClearPendingException(cx) };
+    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, caller_realm);
+    assert_eq!(unsafe { GetRealmPrincipals(caller_realm) }, caller_principals);
+    assert_eq!(saved_depth(unsafe { &*cx }), 1);
+    unsafe { LeaveRealm(cx, old) };
+    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
+    assert_eq!(saved_depth(unsafe { &*cx }), 0);
+}
+
+#[test]
 fn escaped_native_function_keeps_its_realm_without_a_registry_root() {
     let mut runtime = Runtime::new(JSEngineHandle::for_tests());
     let cx = runtime.raw_cx();
