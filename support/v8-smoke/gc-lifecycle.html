@@ -23,7 +23,9 @@ const failures = [];
 const report = (...parts) => console.log("ROVES-V8 gc " + parts.join(" "));
 const fail = reason => { failures.push(reason); report("failure", reason); };
 const check = (name, ok, detail) => { report(name, ok ? "true" : "false " + detail); if (!ok) fail(name); };
-addEventListener("error", event => fail("error " + event.message));
+// The synthetic ErrorEvent of checkInlineHandlerOwnership carries this value: not a failure.
+const INLINE_PROBE = { probe: "inline window.onerror" };
+addEventListener("error", event => { if (event.error !== INLINE_PROBE) fail("error " + event.message); });
 addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
 const consoleError = console.error.bind(console);
 console.error = (...args) => { fail("console.error " + args.join(" ")); consoleError(...args); };
@@ -322,6 +324,72 @@ async function checkListenerOwnership() {
     JSON.stringify(calls));
 }
 
+// Inline event handlers are traced through their EventTarget like additive listeners: detached
+// nodes whose handler is a self-capturing closure, or a content attribute compiled by reading
+// the IDL attribute (its scope chain holds the element), must be collectable. Nodes with a
+// never-compiled attribute only check the fixture itself. Returns WeakRefs per kind.
+function dropInlineHandlerNodes(size) {
+  const refs = { closure: [], compiled: [], uncompiled: [] };
+  for (let i = 0; i < size; i++) {
+    const closure = document.createElement("div");
+    closure.onclick = () => { closure.rovesHits = (closure.rovesHits || 0) + 1; };
+    refs.closure.push(new WeakRef(closure));
+    const compiled = document.createElement("div");
+    compiled.setAttribute("onclick", "this.rovesHits = 1");
+    if (typeof compiled.onclick !== "function") fail("inline handler attribute did not compile");
+    refs.compiled.push(new WeakRef(compiled));
+    const uncompiled = document.createElement("div");
+    uncompiled.setAttribute("onclick", "this.rovesHits = 1");
+    refs.uncompiled.push(new WeakRef(uncompiled));
+  }
+  return refs;
+}
+
+// Control: handlers referenced only by a kept node (an IDL closure and a compiled attribute)
+// and the window's onerror/onbeforeunload closures survive collections and keep their
+// behavior; the compiled function is the same object, neither recompiled nor collected.
+async function checkInlineHandlerOwnership() {
+  const kept = document.createElement("div");
+  kept.rovesCalls = { click: 0, focus: 0 };
+  const onclick = () => { kept.rovesCalls.click++; };
+  kept.onclick = onclick;
+  kept.setAttribute("onfocus", "this.rovesCalls.focus++");
+  const compiledRef = new WeakRef(kept.onfocus);
+  const savedError = window.onerror, savedUnload = window.onbeforeunload;
+  const global = { error: null, unload: 0 };
+  window.onerror = (message, source, line, column, error) => {
+    global.error = [message, source, line, column, error === INLINE_PROBE];
+    return true;
+  };
+  window.onbeforeunload = () => { global.unload++; return "msg"; };
+  try {
+    const refs = dropInlineHandlerNodes(10);
+    await expectCollected("self-capturing inline handler nodes",
+      [...refs.closure, ...refs.compiled, ...refs.uncompiled]);
+    report("diagnostic inline handler nodes alive", `closure ${aliveCount(refs.closure)}`,
+      `compiled ${aliveCount(refs.compiled)}`, `uncompiled ${aliveCount(refs.uncompiled)}`);
+    await collectOnce();
+    await collectOnce();
+    const sameCompiled = compiledRef.deref() === kept.onfocus;
+    kept.dispatchEvent(new MouseEvent("click"));
+    kept.dispatchEvent(new FocusEvent("focus"));
+    check("inline handler control after collection",
+      sameCompiled && kept.onclick === onclick && kept.rovesCalls.click === 1 && kept.rovesCalls.focus === 1,
+      `same=${sameCompiled} identity=${kept.onclick === onclick} ${JSON.stringify(kept.rovesCalls)}`);
+    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: INLINE_PROBE });
+    dispatchEvent(error);
+    const unload = new Event("beforeunload", { cancelable: true });
+    dispatchEvent(unload);
+    check("window inline handlers after collection",
+      JSON.stringify(global.error) === '["probe","probe.js",2,3,true]' && error.defaultPrevented &&
+        global.unload === 1 && !unload.defaultPrevented,
+      `${JSON.stringify(global)} error=${error.defaultPrevented} unload=${unload.defaultPrevented}`);
+  } finally {
+    window.onerror = savedError;
+    window.onbeforeunload = savedUnload;
+  }
+}
+
 // Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
 // so CI shows the current behavior before it becomes a requirement. Frame pipelines close
 // asynchronously, so collections are spaced out.
@@ -367,6 +435,7 @@ async function main() {
   await checkModuleOwners();
   await checkPlainFrames();
   await checkListenerOwnership();
+  await checkInlineHandlerOwnership();
   checkKept("retained nodes final");
 }
 

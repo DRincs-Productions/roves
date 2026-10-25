@@ -1,3 +1,74 @@
+## 2026-10-25 - Validate the inline-handler implementation (0355)
+
+Reviewer checks:42 runner tests (34 pass,8 POSIX skips), both page scripts parse in Node,
+and the modified Rust file parses. The actual required inline semantic fixture returns true
+on visible Chrome155/Windows/about:blank via DevTools MCP; no forced Chrome GC or profiling.
+The exact six-path0355 patch dry-runs and applies cleanly, reproducing all six files after
+LF normalization. Real Servo types and GC remain pending in the next CI; pre-fix retention
+failure is an expectation, not a locally executed Servo negative. The preceding0351 batch
+is entirely green (V8 10/10, general13/13, mobile green), allowing publication of0353+0355.
+
+## 2026-10-25 - Trace inline event handlers from their DOM owners (0355)
+
+Files: `components/script/dom/event/eventtarget.rs`, `support/v8-smoke/{events.html,
+gc-lifecycle.html,run.sh,check_results.py,test_runner.py}`.
+Patch: `0355-trace-inline-event-handlers-from-their-dom-owners.patch` (to be generated from the
+exact diff of these paths).
+
+Implements the reviewed 0354 design. `InlineEventListener::Compiled` held a
+`CommonEventHandler`, i.e. an `Rc` of a generated handler type whose `CallbackObject` is a
+permanent root for as long as the handler is set: `node.onclick = () => node.x++` and, worse,
+every compiled `on*` content attribute (its scope chain holds document, form owner and element)
+kept a detached node alive. The 0353 record is generalized instead of duplicated:
+`TracedEventListener` becomes the module-private `TracedCallback` (same traced callback heap and
+`Option<Dom<GlobalScope>>` incumbent) with generic `new`/`to_rooted` over the existing public
+`CallbackContainer` trait (`callback()`, `incumbent()`, `new_with_incumbent`); additive listeners
+use it unchanged. Inline handlers store `TracedInlineHandler` = `InlineHandlerKind`
+(`Event`/`Error`/`BeforeUnload`, pointer-free tag) + `TracedCallback`; `CommonEventHandler`
+remains the transient rooted value rebuilt per getter call and per dispatch, so
+`call_or_handle_event` (window `onerror` five arguments and `return true`, `onbeforeunload`
+returnValue/preventDefault and its "Otherwise" branch, `return false`) and
+`associated_global` are untouched. `InlineEventListener` loses `Clone`/`PartialEq` (no other
+user in `components/script`).
+
+`get_compiled_handler` rebuilds a compiled handler without moving it out of the traced entry,
+and moves only the uncompiled source out: the slot stays `Null` while compiling, so a compile
+error reported to the same window `error` handler cannot recurse (as before); a failed compile
+leaves `Null`. The three setters store the record built from the binding's `Rc` (callback and
+its callback context, the same values the recreated `Rc` had), with no inline incumbent
+recapture; `get_compiled_event_handler` still creates its `Rc` with `new`, whose incumbent the
+record copies. Setter/getter signatures (the unused `cx` is kept as `_cx` for the macros and
+`messageport.rs`), getter JS identity (the callback pointer), replacement position and
+`removed` flags are unchanged. External native `Rc`s keep their permanent roots; no dependency,
+collector, refcount policy or global root change. The 0353 rooted `invoke` snapshot already
+traces inline entries during a dispatch.
+
+Checks: events.html adds the REQUIRED_CHECK "inline event handlers keep identity, position and
+return semantics" with the Chrome 155 values collected by Codex through DevTools MCP (visible
+window, about:blank, no GC): getter identity and null clear, `h2,L` after replacement and
+`L,h3` after null plus reinsertion, `L,h2` when a listener replaces the handler during the
+dispatch, cached compiled attribute whose `return false` cancels and which `removeAttribute`
+clears, window.onerror arguments `["probe","probe.js",2,3,7]` with `return true` cancelling,
+`BeforeUnloadEvent` from `createEvent` cancelled with returnValue `msg`, and a plain
+`Event("beforeunload")` not cancelled. gc-lifecycle.html adds one collection group (at most 8
+more collections plus 2; 40 s page limit unchanged): detached nodes with a self-capturing IDL
+closure, a compiled attribute, or a never-compiled attribute (fixture control) must be
+collected, with a per-kind diagnostic line; a kept node's closure and compiled attribute (same
+function object after collections) and window onerror/onbeforeunload closures keep working.
+The page's global error listener ignores the probe ErrorEvent. run.sh requires three new
+markers; the fake runner gains a `gc-inline` failure case. Without this change the new GC group
+is expected to fail (permanent roots): an expectation, not an executed Servo result. Compilation
+and Servo smoke/GC results come from CI only. The frame retention diagnostic stays open; no RAM
+or performance claim.
+
+## 2026-10-25 - Traced inline event handler storage design (0354, documentation only)
+
+Design-only handoff `docs/handoff/0354-inline-handler-ownership.md`: store compiled inline
+handlers as a kind tag plus the 0353 traced callback/incumbent record (generalized to
+`TracedCallback`) instead of rooted `CommonEventHandler` `Rc`s, rebuilding the rooted handler
+per getter/dispatch through `CallbackContainer::new_with_incumbent`. No source changed, no
+patch needed; retention not claimed fixed.
+
 ## 2026-10-25 - Review and replay the traced listener implementation (0353)
 
 The exact 0353 diff includes v8.yml as well as the five production files and smoke fixtures.

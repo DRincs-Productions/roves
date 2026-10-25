@@ -24,6 +24,7 @@ REQUIRED_CHECKS = {
         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
         "an event listener keeps the callback context of its registration",
         "event listener list keeps its identity, once and mutation semantics",
+        "inline event handlers keep identity, position and return semantics",
     ),
     "stress.html": (
         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",

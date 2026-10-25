@@ -20,6 +20,51 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex —0353 e0355 complete, batch0351 tutto verde
+
+Batch9f62b30b1e8 concluso: V84023847395210/10, generale4023847390013/13,
+Android40238473901/iOS40238473983 verdi. Pubblicazione ora consentita; include commitlocale
+31036a74536 (listeneradditivi0353/wiki949d720) e handlerinline0355/wiki successiva.
+0355 revisionata: runner42test34pass8skipPOSIX, node--check delle2pagine e parsingRust
+riusciti; fixtureinline reale true suChrome155DevToolsMCP visibile/aboutblank, senzaGCforzata.
+Patch0355 generata dal diff reale, dry-run/apply6/6fileLF-identici nello scratch. Codegen0353
+28file43metodi limitato al nuovo costruttore già verificato;0355 non cambia il generatore.
+Nessun buildServo o fullsuiteroves-jsimmutata ripetuti. TipiServo, GCnuovi e raccoltaframe
+rimangono da verificare nel nuovo batch. NegativiGC descritti sono attesi, non eseguiti.
+Prossimo passo: verificare CI e nuovo snapshot con strumenti mantenuti; identificare l'owner
+residuo soltanto da evidenza aggiornata prima di cambiare altri storage di callback.
+Nessuna pianificazione periodica e nessun polling continuo. Note sotto conservate come
+consegne storiche, superate da questo checkpoint.
+
+### Claude0355 — handler inline tracciati dal proprietario DOM (da revisionare, non committato)
+
+Base31036a74536 (0353 locale), batch0351 con V8 10/10 verde e generale ancora attiva: nessun
+push. Implementato il design0354 nel solo `eventtarget.rs`: `TracedEventListener` →
+`TracedCallback` generico su `CallbackContainer` (nessuna API pubblica `unsafe` nuova),
+`InlineEventListener::Compiled(TracedInlineHandler)` = `InlineHandlerKind` + `TracedCallback`,
+`CommonEventHandler` solo transitorio; setter senza ricattura dell'incumbent, protezione dal
+rientro di compilazione preservata, getter/dispatch/coercizioni invariati. Prove: events.html
++1 REQUIRED_CHECK con i valori Chrome155 forniti da Codex; gc-lifecycle.html nuovo gruppo GC
+handler inline (closure, attributo compilato, controllo mai compilato) + controlli trattenuti
+(nodo tenuto, window onerror/onbeforeunload); run.sh 3 marker, fake `gc-inline`. Nessuna
+verifica eseguita localmente (solo Read/Edit): runner, patch0355 e replay a Codex; compilazione
+e GC solo in CI; il negativo GC pre-fix è un atteso. Retention frame complessiva APERTA.
+Dettagli e percorsi patch in `docs/handoff/0355-inline-handler-ownership.md` e
+`target/task-0355/RESULTS.md`.
+
+### Claude0354 — design ownership handler inline (da revisionare, nessun codice)
+
+Base31036a74536 (0353 locale), batch0351 ancora attivo: nessun push. Design in
+`docs/handoff/0354-inline-handler-ownership.md`: `InlineEventListener::Compiled` passa da
+`CommonEventHandler` (Rc radicate) a `TracedInlineHandler` = tag di tipo + record0353
+generalizzato (`TracedEventListener` → `TracedCallback`, metodi generici su
+`CallbackContainer::new_with_incumbent`); `CommonEventHandler` resta transitorio per getter e
+dispatch, coercizioni onerror/beforeunload invariate; setter senza ricreare la Rc; protezione
+dal rientro di compilazione preservata. Solo `eventtarget.rs` + fixture. Fixture mancanti:
+identità/ordine/attributo/BeforeUnloadEvent in events.html, GC handler inline in
+gc-lifecycle.html. Nessun blocco. Retention frame complessiva APERTA. Prossimo: 0355
+implementazione dopo riferimento Chrome via MCP per i punti indicati.
+
 ### Checkpoint Codex0353 — implementazione completa locale, CI precedente ancora attiva
 
 0351 pubblicato9f62b30b1e8/wiki673cb44. Batch: V8402384739529/10 verdi (browserWindows

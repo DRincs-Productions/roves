@@ -88,7 +88,9 @@ native captures on the script thread. FontFaceSet now traces its cached ready pr
 only for native use. Listeners added with `addEventListener` (and their `AbortSignal` removal
 steps) are now traced from their DOM owner instead of permanently rooted, so a detached node
 whose listener captures it can be collected; the registration-time callback context is kept.
-Inline `on*` handlers and other callback roots remain under investigation; no overall
+Inline `on*` handlers (set from script or compiled from an attribute) are traced the same way,
+keeping their identity, position and return value semantics. Other callback roots remain under
+investigation; no overall
 frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
 throwing native calls between realms with distinct principals. A window proxy returned by a native of another

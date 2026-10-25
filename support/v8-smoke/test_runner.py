@@ -1067,6 +1067,10 @@ if page == 'gc-lifecycle.html':
                      'signal listener nodes collected true',
                      'aborted signal listener nodes collected true',
                      'listener control after collection true',
+                     'self-capturing inline handler nodes collected true',
+                     'diagnostic inline handler nodes alive closure 0 compiled 0 uncompiled 0',
+                     'inline handler control after collection true',
+                     'window inline handlers after collection true',
                      'retained nodes final true true true',
                      'cleanup callback entry settings true',
                      # Retained frames, as in CI so far: diagnostic, not a failure.
@@ -1107,6 +1111,14 @@ if page == 'gc-lifecycle.html':
                 line = 'self-capturing listener nodes collected false 20/20 alive after 8 collections'
             if scenario == 'gc-listener' and line == 'result pass':
                 line = 'result fail self-capturing listener nodes collected'
+            # Inline handlers permanently rooted (expected before task 0355): closures and
+            # compiled attributes keep their nodes, never-compiled attributes do not.
+            if scenario == 'gc-inline' and line == 'self-capturing inline handler nodes collected true':
+                line = 'self-capturing inline handler nodes collected false 20/30 alive after 8 collections'
+            if scenario == 'gc-inline' and line.startswith('diagnostic inline handler'):
+                line = 'diagnostic inline handler nodes alive closure 10 compiled 10 uncompiled 0'
+            if scenario == 'gc-inline' and line == 'result pass':
+                line = 'result fail self-capturing inline handler nodes collected'
             print('ROVES-V8 gc ' + line)
 elif page == 'frame-retention.html':
     # Like a debug servoshell: the snapshot is written at the requested explicit collection.
@@ -1310,6 +1322,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
             ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
             ('gc-listener', None, "missing 'ROVES-V8 gc self-capturing listener nodes collected true' (ROVES-V8 gc api true"),
+            ('gc-inline', None, "missing 'ROVES-V8 gc self-capturing inline handler nodes collected true' (ROVES-V8 gc api true"),
             ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
             ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),

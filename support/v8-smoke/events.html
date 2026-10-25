@@ -223,6 +223,86 @@ check("event listener list keeps its identity, once and mutation semantics", () 
   const seen = order.join();
   return seen === "counted,once,new handleEvent,mutator,|,counted,new handleEvent,late,change" || seen;
 });
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Event handler IDL and content attributes (HTML): the getter returns the set function, null
+// clears it, a replaced handler keeps its list position while null plus a new handler moves it
+// to the end, a compiled attribute is cached and `return false` cancels, window.onerror gets the
+// five ErrorEvent arguments (`return true` cancels), and onbeforeunload's returned string
+// cancels only a real BeforeUnloadEvent. Expected values from Chrome 155 (DevTools MCP).
+check("inline event handlers keep identity, position and return semantics", () => {
+  const target = document.createElement("div");
+  target.id = "inline-target";
+  const order = [];
+  const click = () => {
+    const event = new MouseEvent("click", { cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  const f = () => order.push("f");
+  target.onclick = f;
+  if (target.onclick !== f) return "getter identity";
+  target.onclick = null;
+  click();
+  if (target.onclick !== null || order.length) return `null clear: ${target.onclick} ${order}`;
+  const listener = () => order.push("L");
+  target.onclick = () => order.push("h1");
+  target.addEventListener("click", listener);
+  target.onclick = () => order.push("h2");
+  click();
+  if (order.join() !== "h2,L") return `replaced position: ${order}`;
+  order.length = 0;
+  target.onclick = null;
+  target.onclick = () => order.push("h3");
+  click();
+  if (order.join() !== "L,h3") return `reinserted position: ${order}`;
+  // A listener before the handler replaces it during the dispatch: the new handler runs.
+  const host = document.createElement("div");
+  const seen = [];
+  host.addEventListener("click", () => { seen.push("L"); host.onclick = () => seen.push("h2"); });
+  host.onclick = () => seen.push("h1");
+  host.dispatchEvent(new MouseEvent("click"));
+  if (seen.join() !== "L,h2") return `replaced during dispatch: ${seen}`;
+  target.removeEventListener("click", listener);
+  target.onclick = null;
+  target.setAttribute("onclick", "event.rovesSeen = this.id; return false");
+  if (typeof target.onclick !== "function") return `attribute compile: ${typeof target.onclick}`;
+  if (target.onclick !== target.onclick) return "compiled attribute not cached";
+  const cancelled = click();
+  if (!cancelled.defaultPrevented || cancelled.rovesSeen !== "inline-target") {
+    return `attribute return false: ${cancelled.defaultPrevented} ${cancelled.rovesSeen}`;
+  }
+  target.removeAttribute("onclick");
+  if (target.onclick !== null) return "removeAttribute keeps the handler";
+  const savedError = window.onerror, savedUnload = window.onbeforeunload;
+  try {
+    let args = null;
+    window.onerror = (message, source, line, column, error) => {
+      args = [message, source, line, column, error];
+      return true;
+    };
+    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: 7 });
+    window.dispatchEvent(error);
+    if (JSON.stringify(args) !== '["probe","probe.js",2,3,7]' || !error.defaultPrevented) {
+      return `window.onerror: ${JSON.stringify(args)} ${error.defaultPrevented}`;
+    }
+    window.onerror = null;
+    if (window.onerror !== null) return "window.onerror null";
+    window.onbeforeunload = () => "msg";
+    const unload = document.createEvent("BeforeUnloadEvent");
+    unload.initEvent("beforeunload", false, true);
+    window.dispatchEvent(unload);
+    if (!unload.defaultPrevented || unload.returnValue !== "msg") {
+      return `BeforeUnloadEvent: ${unload.defaultPrevented} ${unload.returnValue}`;
+    }
+    const plain = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(plain);
+    if (plain.defaultPrevented) return "plain beforeunload Event cancelled";
+  } finally {
+    window.onerror = savedError;
+    window.onbeforeunload = savedUnload;
+  }
+  return true;
+});
 check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
   // As in browsers, a reference to a browsing context's window outlives its document: after
   // the iframe navigates, the same object reaches the new document.

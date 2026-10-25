@@ -121,10 +121,10 @@ struct InternalRawUncompiledHandler {
 }
 
 /// A representation of an event handler, either compiled or uncompiled raw source, or null.
-#[derive(Clone, JSTraceable, MallocSizeOf, PartialEq)]
+#[derive(JSTraceable, MallocSizeOf)]
 enum InlineEventListener {
     Uncompiled(InternalRawUncompiledHandler),
-    Compiled(CommonEventHandler),
+    Compiled(TracedInlineHandler),
     Null,
 }
 
@@ -137,40 +137,44 @@ fn get_compiled_handler(
     owner: &EventTarget,
     ty: &Atom,
 ) -> Option<CommonEventHandler> {
-    let listener = mem::replace(
-        &mut *inline_listener.borrow_mut(),
-        InlineEventListener::Null,
-    );
-    let compiled = match listener {
-        InlineEventListener::Null => None,
-        InlineEventListener::Uncompiled(handler) => {
-            owner.get_compiled_event_handler(cx, handler, ty)
-        },
-        InlineEventListener::Compiled(handler) => Some(handler),
+    match &*inline_listener.borrow() {
+        InlineEventListener::Null => return None,
+        InlineEventListener::Compiled(handler) => return Some(handler.to_rooted(cx)),
+        InlineEventListener::Uncompiled(_) => {},
+    }
+    // Only the uncompiled source is moved out: the slot stays Null while compiling, so a
+    // compile error reported to the same window `error` handler cannot recurse.
+    let InlineEventListener::Uncompiled(handler) =
+        mem::replace(&mut *inline_listener.borrow_mut(), InlineEventListener::Null)
+    else {
+        unreachable!("inline event handler changed between borrows");
     };
+    let compiled = owner.get_compiled_event_handler(cx, handler, ty);
     if let Some(ref compiled) = compiled {
-        *inline_listener.borrow_mut() = InlineEventListener::Compiled(compiled.clone());
+        *inline_listener.borrow_mut() =
+            InlineEventListener::Compiled(TracedInlineHandler::from_compiled(compiled));
     }
     compiled
 }
 
-/// Registration-time state of an additive listener. It is traced through its EventTarget (or
-/// a rooted dispatch snapshot); unlike `Rc<EventListener>` it is not a permanent root, so a
-/// listener that captures its own target does not keep that target alive.
+/// Registration-time state of a callback stored by an EventTarget (additive listener or inline
+/// handler). It is traced through its EventTarget (or a rooted dispatch snapshot); unlike the
+/// `Rc` callback containers it is not a permanent root, so a callback that captures its own
+/// target does not keep that target alive.
 #[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
-struct TracedEventListener {
+struct TracedCallback {
     #[ignore_malloc_size_of = "measured by mozjs"]
     callback: Box<Heap<*mut JSObject>>,
-    /// The callback context captured when the listener was registered.
+    /// The callback context captured when the callback was stored.
     incumbent: Option<Dom<GlobalScope>>,
 }
 
-impl TracedEventListener {
-    fn new(listener: &EventListener) -> Self {
+impl TracedCallback {
+    fn new<T: CallbackContainer<crate::DomTypeHolder>>(callback: &T) -> Self {
         Self {
-            callback: Heap::boxed(listener.callback()),
-            incumbent: listener.incumbent().map(Dom::from_ref),
+            callback: Heap::boxed(callback.callback()),
+            incumbent: callback.incumbent().map(Dom::from_ref),
         }
     }
 
@@ -178,19 +182,76 @@ impl TracedEventListener {
         self.callback.get() == callback
     }
 
-    /// Recreates a rooted listener with the registration-time callback context.
+    /// Recreates a rooted callback container with the stored callback context.
     /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
     #[expect(unsafe_code)]
-    fn to_rooted(&self, cx: &JSContext) -> Rc<EventListener> {
-        unsafe {
-            EventListener::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref())
+    fn to_rooted<T: CallbackContainer<crate::DomTypeHolder>>(&self, cx: &JSContext) -> Rc<T> {
+        unsafe { T::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref()) }
+    }
+}
+
+/// Which generated callback type an inline handler is called through; it decides the
+/// argument list and the return value conversion in `call_or_handle_event`.
+#[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
+enum InlineHandlerKind {
+    Event,
+    Error,
+    BeforeUnload,
+}
+
+/// A set or compiled inline event handler, traced like an additive listener. The rooted
+/// `CommonEventHandler` only exists transiently, in getters and during dispatch.
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct TracedInlineHandler {
+    kind: InlineHandlerKind,
+    callback: TracedCallback,
+}
+
+impl TracedInlineHandler {
+    fn new<T: CallbackContainer<crate::DomTypeHolder>>(
+        kind: InlineHandlerKind,
+        callback: &T,
+    ) -> Self {
+        Self {
+            kind,
+            callback: TracedCallback::new(callback),
+        }
+    }
+
+    fn from_compiled(handler: &CommonEventHandler) -> Self {
+        match handler {
+            CommonEventHandler::EventHandler(handler) => {
+                Self::new(InlineHandlerKind::Event, &**handler)
+            },
+            CommonEventHandler::ErrorEventHandler(handler) => {
+                Self::new(InlineHandlerKind::Error, &**handler)
+            },
+            CommonEventHandler::BeforeUnloadEventHandler(handler) => {
+                Self::new(InlineHandlerKind::BeforeUnload, &**handler)
+            },
+        }
+    }
+
+    /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
+    fn to_rooted(&self, cx: &JSContext) -> CommonEventHandler {
+        match self.kind {
+            InlineHandlerKind::Event => {
+                CommonEventHandler::EventHandler(self.callback.to_rooted(cx))
+            },
+            InlineHandlerKind::Error => {
+                CommonEventHandler::ErrorEventHandler(self.callback.to_rooted(cx))
+            },
+            InlineHandlerKind::BeforeUnload => {
+                CommonEventHandler::BeforeUnloadEventHandler(self.callback.to_rooted(cx))
+            },
         }
     }
 }
 
 #[derive(JSTraceable, MallocSizeOf)]
 enum EventListenerType {
-    Additive(TracedEventListener),
+    Additive(TracedCallback),
     Inline(RefCell<InlineEventListener>),
 }
 
@@ -206,7 +267,9 @@ impl EventListenerType {
                 get_compiled_handler(cx, inline, owner, ty).map(CompiledEventListener::Handler)
             },
             EventListenerType::Additive(ref listener) => {
-                Some(CompiledEventListener::Listener(listener.to_rooted(cx)))
+                Some(CompiledEventListener::Listener(
+                    listener.to_rooted::<EventListener>(cx),
+                ))
             },
         }
     }
@@ -780,47 +843,49 @@ impl EventTarget {
         }
     }
 
-    #[expect(unsafe_code)]
+    /// The entry stores a traced record with the callback context of `listener`, not the
+    /// permanently rooted `listener` itself, which is dropped at the end of this call.
     pub(crate) fn set_event_handler_common<T: CallbackContainer<crate::DomTypeHolder>>(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         ty: &str,
         listener: Option<Rc<T>>,
     ) {
         let event_listener = listener.map(|listener| {
-            InlineEventListener::Compiled(CommonEventHandler::EventHandler(unsafe {
-                EventHandlerNonNull::new(cx, listener.callback())
-            }))
+            InlineEventListener::Compiled(TracedInlineHandler::new(
+                InlineHandlerKind::Event,
+                &*listener,
+            ))
         });
         self.set_inline_event_listener(Atom::from(ty), event_listener);
     }
 
-    #[expect(unsafe_code)]
     pub(crate) fn set_error_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         ty: &str,
         listener: Option<Rc<T>>,
     ) {
         let event_listener = listener.map(|listener| {
-            InlineEventListener::Compiled(CommonEventHandler::ErrorEventHandler(unsafe {
-                OnErrorEventHandlerNonNull::new(cx, listener.callback())
-            }))
+            InlineEventListener::Compiled(TracedInlineHandler::new(
+                InlineHandlerKind::Error,
+                &*listener,
+            ))
         });
         self.set_inline_event_listener(Atom::from(ty), event_listener);
     }
 
-    #[expect(unsafe_code)]
     pub(crate) fn set_beforeunload_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
         &self,
-        cx: &mut JSContext,
+        _cx: &mut JSContext,
         ty: &str,
         listener: Option<Rc<T>>,
     ) {
         let event_listener = listener.map(|listener| {
-            InlineEventListener::Compiled(CommonEventHandler::BeforeUnloadEventHandler(unsafe {
-                OnBeforeUnloadEventHandlerNonNull::new(cx, listener.callback())
-            }))
+            InlineEventListener::Compiled(TracedInlineHandler::new(
+                InlineHandlerKind::BeforeUnload,
+                &*listener,
+            ))
         });
         self.set_inline_event_listener(Atom::from(ty), event_listener);
     }
@@ -963,7 +1028,7 @@ impl EventTarget {
         // dropped at the end of this call.
         entries.push(Rc::new(RefCell::new(EventListenerEntry {
             phase,
-            listener: EventListenerType::Additive(TracedEventListener::new(&listener)),
+            listener: EventListenerType::Additive(TracedCallback::new(&*listener)),
             once: options.once,
             passive: options.passive.unwrap_or(self.default_passive_value(&ty)),
             removed: false,

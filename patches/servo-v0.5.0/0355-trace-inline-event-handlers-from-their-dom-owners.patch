@@ -1,0 +1,504 @@
+diff --git a/components/script/dom/event/eventtarget.rs b/components/script/dom/event/eventtarget.rs
+index 65613e47680..7b00a944bd0 100644
+--- a/components/script/dom/event/eventtarget.rs
++++ b/components/script/dom/event/eventtarget.rs
+@@ -121,10 +121,10 @@ struct InternalRawUncompiledHandler {
+ }
+ 
+ /// A representation of an event handler, either compiled or uncompiled raw source, or null.
+-#[derive(Clone, JSTraceable, MallocSizeOf, PartialEq)]
++#[derive(JSTraceable, MallocSizeOf)]
+ enum InlineEventListener {
+     Uncompiled(InternalRawUncompiledHandler),
+-    Compiled(CommonEventHandler),
++    Compiled(TracedInlineHandler),
+     Null,
+ }
+ 
+@@ -137,40 +137,44 @@ fn get_compiled_handler(
+     owner: &EventTarget,
+     ty: &Atom,
+ ) -> Option<CommonEventHandler> {
+-    let listener = mem::replace(
+-        &mut *inline_listener.borrow_mut(),
+-        InlineEventListener::Null,
+-    );
+-    let compiled = match listener {
+-        InlineEventListener::Null => None,
+-        InlineEventListener::Uncompiled(handler) => {
+-            owner.get_compiled_event_handler(cx, handler, ty)
+-        },
+-        InlineEventListener::Compiled(handler) => Some(handler),
++    match &*inline_listener.borrow() {
++        InlineEventListener::Null => return None,
++        InlineEventListener::Compiled(handler) => return Some(handler.to_rooted(cx)),
++        InlineEventListener::Uncompiled(_) => {},
++    }
++    // Only the uncompiled source is moved out: the slot stays Null while compiling, so a
++    // compile error reported to the same window `error` handler cannot recurse.
++    let InlineEventListener::Uncompiled(handler) =
++        mem::replace(&mut *inline_listener.borrow_mut(), InlineEventListener::Null)
++    else {
++        unreachable!("inline event handler changed between borrows");
+     };
++    let compiled = owner.get_compiled_event_handler(cx, handler, ty);
+     if let Some(ref compiled) = compiled {
+-        *inline_listener.borrow_mut() = InlineEventListener::Compiled(compiled.clone());
++        *inline_listener.borrow_mut() =
++            InlineEventListener::Compiled(TracedInlineHandler::from_compiled(compiled));
+     }
+     compiled
+ }
+ 
+-/// Registration-time state of an additive listener. It is traced through its EventTarget (or
+-/// a rooted dispatch snapshot); unlike `Rc<EventListener>` it is not a permanent root, so a
+-/// listener that captures its own target does not keep that target alive.
++/// Registration-time state of a callback stored by an EventTarget (additive listener or inline
++/// handler). It is traced through its EventTarget (or a rooted dispatch snapshot); unlike the
++/// `Rc` callback containers it is not a permanent root, so a callback that captures its own
++/// target does not keep that target alive.
+ #[derive(JSTraceable, MallocSizeOf)]
+ #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+-struct TracedEventListener {
++struct TracedCallback {
+     #[ignore_malloc_size_of = "measured by mozjs"]
+     callback: Box<Heap<*mut JSObject>>,
+-    /// The callback context captured when the listener was registered.
++    /// The callback context captured when the callback was stored.
+     incumbent: Option<Dom<GlobalScope>>,
+ }
+ 
+-impl TracedEventListener {
+-    fn new(listener: &EventListener) -> Self {
++impl TracedCallback {
++    fn new<T: CallbackContainer<crate::DomTypeHolder>>(callback: &T) -> Self {
+         Self {
+-            callback: Heap::boxed(listener.callback()),
+-            incumbent: listener.incumbent().map(Dom::from_ref),
++            callback: Heap::boxed(callback.callback()),
++            incumbent: callback.incumbent().map(Dom::from_ref),
+         }
+     }
+ 
+@@ -178,19 +182,76 @@ impl TracedEventListener {
+         self.callback.get() == callback
+     }
+ 
+-    /// Recreates a rooted listener with the registration-time callback context.
++    /// Recreates a rooted callback container with the stored callback context.
+     /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
+     #[expect(unsafe_code)]
+-    fn to_rooted(&self, cx: &JSContext) -> Rc<EventListener> {
+-        unsafe {
+-            EventListener::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref())
++    fn to_rooted<T: CallbackContainer<crate::DomTypeHolder>>(&self, cx: &JSContext) -> Rc<T> {
++        unsafe { T::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref()) }
++    }
++}
++
++/// Which generated callback type an inline handler is called through; it decides the
++/// argument list and the return value conversion in `call_or_handle_event`.
++#[derive(Clone, Copy, JSTraceable, MallocSizeOf)]
++enum InlineHandlerKind {
++    Event,
++    Error,
++    BeforeUnload,
++}
++
++/// A set or compiled inline event handler, traced like an additive listener. The rooted
++/// `CommonEventHandler` only exists transiently, in getters and during dispatch.
++#[derive(JSTraceable, MallocSizeOf)]
++#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
++struct TracedInlineHandler {
++    kind: InlineHandlerKind,
++    callback: TracedCallback,
++}
++
++impl TracedInlineHandler {
++    fn new<T: CallbackContainer<crate::DomTypeHolder>>(
++        kind: InlineHandlerKind,
++        callback: &T,
++    ) -> Self {
++        Self {
++            kind,
++            callback: TracedCallback::new(callback),
++        }
++    }
++
++    fn from_compiled(handler: &CommonEventHandler) -> Self {
++        match handler {
++            CommonEventHandler::EventHandler(handler) => {
++                Self::new(InlineHandlerKind::Event, &**handler)
++            },
++            CommonEventHandler::ErrorEventHandler(handler) => {
++                Self::new(InlineHandlerKind::Error, &**handler)
++            },
++            CommonEventHandler::BeforeUnloadEventHandler(handler) => {
++                Self::new(InlineHandlerKind::BeforeUnload, &**handler)
++            },
++        }
++    }
++
++    /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
++    fn to_rooted(&self, cx: &JSContext) -> CommonEventHandler {
++        match self.kind {
++            InlineHandlerKind::Event => {
++                CommonEventHandler::EventHandler(self.callback.to_rooted(cx))
++            },
++            InlineHandlerKind::Error => {
++                CommonEventHandler::ErrorEventHandler(self.callback.to_rooted(cx))
++            },
++            InlineHandlerKind::BeforeUnload => {
++                CommonEventHandler::BeforeUnloadEventHandler(self.callback.to_rooted(cx))
++            },
+         }
+     }
+ }
+ 
+ #[derive(JSTraceable, MallocSizeOf)]
+ enum EventListenerType {
+-    Additive(TracedEventListener),
++    Additive(TracedCallback),
+     Inline(RefCell<InlineEventListener>),
+ }
+ 
+@@ -206,7 +267,9 @@ impl EventListenerType {
+                 get_compiled_handler(cx, inline, owner, ty).map(CompiledEventListener::Handler)
+             },
+             EventListenerType::Additive(ref listener) => {
+-                Some(CompiledEventListener::Listener(listener.to_rooted(cx)))
++                Some(CompiledEventListener::Listener(
++                    listener.to_rooted::<EventListener>(cx),
++                ))
+             },
+         }
+     }
+@@ -780,47 +843,49 @@ impl EventTarget {
+         }
+     }
+ 
+-    #[expect(unsafe_code)]
++    /// The entry stores a traced record with the callback context of `listener`, not the
++    /// permanently rooted `listener` itself, which is dropped at the end of this call.
+     pub(crate) fn set_event_handler_common<T: CallbackContainer<crate::DomTypeHolder>>(
+         &self,
+-        cx: &mut JSContext,
++        _cx: &mut JSContext,
+         ty: &str,
+         listener: Option<Rc<T>>,
+     ) {
+         let event_listener = listener.map(|listener| {
+-            InlineEventListener::Compiled(CommonEventHandler::EventHandler(unsafe {
+-                EventHandlerNonNull::new(cx, listener.callback())
+-            }))
++            InlineEventListener::Compiled(TracedInlineHandler::new(
++                InlineHandlerKind::Event,
++                &*listener,
++            ))
+         });
+         self.set_inline_event_listener(Atom::from(ty), event_listener);
+     }
+ 
+-    #[expect(unsafe_code)]
+     pub(crate) fn set_error_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
+         &self,
+-        cx: &mut JSContext,
++        _cx: &mut JSContext,
+         ty: &str,
+         listener: Option<Rc<T>>,
+     ) {
+         let event_listener = listener.map(|listener| {
+-            InlineEventListener::Compiled(CommonEventHandler::ErrorEventHandler(unsafe {
+-                OnErrorEventHandlerNonNull::new(cx, listener.callback())
+-            }))
++            InlineEventListener::Compiled(TracedInlineHandler::new(
++                InlineHandlerKind::Error,
++                &*listener,
++            ))
+         });
+         self.set_inline_event_listener(Atom::from(ty), event_listener);
+     }
+ 
+-    #[expect(unsafe_code)]
+     pub(crate) fn set_beforeunload_event_handler<T: CallbackContainer<crate::DomTypeHolder>>(
+         &self,
+-        cx: &mut JSContext,
++        _cx: &mut JSContext,
+         ty: &str,
+         listener: Option<Rc<T>>,
+     ) {
+         let event_listener = listener.map(|listener| {
+-            InlineEventListener::Compiled(CommonEventHandler::BeforeUnloadEventHandler(unsafe {
+-                OnBeforeUnloadEventHandlerNonNull::new(cx, listener.callback())
+-            }))
++            InlineEventListener::Compiled(TracedInlineHandler::new(
++                InlineHandlerKind::BeforeUnload,
++                &*listener,
++            ))
+         });
+         self.set_inline_event_listener(Atom::from(ty), event_listener);
+     }
+@@ -963,7 +1028,7 @@ impl EventTarget {
+         // dropped at the end of this call.
+         entries.push(Rc::new(RefCell::new(EventListenerEntry {
+             phase,
+-            listener: EventListenerType::Additive(TracedEventListener::new(&listener)),
++            listener: EventListenerType::Additive(TracedCallback::new(&*listener)),
+             once: options.once,
+             passive: options.passive.unwrap_or(self.default_passive_value(&ty)),
+             removed: false,
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 0e25aa6e846..5c2adc5f991 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -24,6 +24,7 @@ REQUIRED_CHECKS = {
+         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
+         "an event listener keeps the callback context of its registration",
+         "event listener list keeps its identity, once and mutation semantics",
++        "inline event handlers keep identity, position and return semantics",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index d9eab50e620..4780f1a4da0 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -223,6 +223,86 @@ check("event listener list keeps its identity, once and mutation semantics", ()
+   const seen = order.join();
+   return seen === "counted,once,new handleEvent,mutator,|,counted,new handleEvent,late,change" || seen;
+ });
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Event handler IDL and content attributes (HTML): the getter returns the set function, null
++// clears it, a replaced handler keeps its list position while null plus a new handler moves it
++// to the end, a compiled attribute is cached and `return false` cancels, window.onerror gets the
++// five ErrorEvent arguments (`return true` cancels), and onbeforeunload's returned string
++// cancels only a real BeforeUnloadEvent. Expected values from Chrome 155 (DevTools MCP).
++check("inline event handlers keep identity, position and return semantics", () => {
++  const target = document.createElement("div");
++  target.id = "inline-target";
++  const order = [];
++  const click = () => {
++    const event = new MouseEvent("click", { cancelable: true });
++    target.dispatchEvent(event);
++    return event;
++  };
++  const f = () => order.push("f");
++  target.onclick = f;
++  if (target.onclick !== f) return "getter identity";
++  target.onclick = null;
++  click();
++  if (target.onclick !== null || order.length) return `null clear: ${target.onclick} ${order}`;
++  const listener = () => order.push("L");
++  target.onclick = () => order.push("h1");
++  target.addEventListener("click", listener);
++  target.onclick = () => order.push("h2");
++  click();
++  if (order.join() !== "h2,L") return `replaced position: ${order}`;
++  order.length = 0;
++  target.onclick = null;
++  target.onclick = () => order.push("h3");
++  click();
++  if (order.join() !== "L,h3") return `reinserted position: ${order}`;
++  // A listener before the handler replaces it during the dispatch: the new handler runs.
++  const host = document.createElement("div");
++  const seen = [];
++  host.addEventListener("click", () => { seen.push("L"); host.onclick = () => seen.push("h2"); });
++  host.onclick = () => seen.push("h1");
++  host.dispatchEvent(new MouseEvent("click"));
++  if (seen.join() !== "L,h2") return `replaced during dispatch: ${seen}`;
++  target.removeEventListener("click", listener);
++  target.onclick = null;
++  target.setAttribute("onclick", "event.rovesSeen = this.id; return false");
++  if (typeof target.onclick !== "function") return `attribute compile: ${typeof target.onclick}`;
++  if (target.onclick !== target.onclick) return "compiled attribute not cached";
++  const cancelled = click();
++  if (!cancelled.defaultPrevented || cancelled.rovesSeen !== "inline-target") {
++    return `attribute return false: ${cancelled.defaultPrevented} ${cancelled.rovesSeen}`;
++  }
++  target.removeAttribute("onclick");
++  if (target.onclick !== null) return "removeAttribute keeps the handler";
++  const savedError = window.onerror, savedUnload = window.onbeforeunload;
++  try {
++    let args = null;
++    window.onerror = (message, source, line, column, error) => {
++      args = [message, source, line, column, error];
++      return true;
++    };
++    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: 7 });
++    window.dispatchEvent(error);
++    if (JSON.stringify(args) !== '["probe","probe.js",2,3,7]' || !error.defaultPrevented) {
++      return `window.onerror: ${JSON.stringify(args)} ${error.defaultPrevented}`;
++    }
++    window.onerror = null;
++    if (window.onerror !== null) return "window.onerror null";
++    window.onbeforeunload = () => "msg";
++    const unload = document.createEvent("BeforeUnloadEvent");
++    unload.initEvent("beforeunload", false, true);
++    window.dispatchEvent(unload);
++    if (!unload.defaultPrevented || unload.returnValue !== "msg") {
++      return `BeforeUnloadEvent: ${unload.defaultPrevented} ${unload.returnValue}`;
++    }
++    const plain = new Event("beforeunload", { cancelable: true });
++    window.dispatchEvent(plain);
++    if (plain.defaultPrevented) return "plain beforeunload Event cancelled";
++  } finally {
++    window.onerror = savedError;
++    window.onbeforeunload = savedUnload;
++  }
++  return true;
++});
+ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
+   // As in browsers, a reference to a browsing context's window outlives its document: after
+   // the iframe navigates, the same object reaches the new document.
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 7393064ca13..da6f8a541dd 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -23,7 +23,9 @@ const failures = [];
+ const report = (...parts) => console.log("ROVES-V8 gc " + parts.join(" "));
+ const fail = reason => { failures.push(reason); report("failure", reason); };
+ const check = (name, ok, detail) => { report(name, ok ? "true" : "false " + detail); if (!ok) fail(name); };
+-addEventListener("error", event => fail("error " + event.message));
++// The synthetic ErrorEvent of checkInlineHandlerOwnership carries this value: not a failure.
++const INLINE_PROBE = { probe: "inline window.onerror" };
++addEventListener("error", event => { if (event.error !== INLINE_PROBE) fail("error " + event.message); });
+ addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+ const consoleError = console.error.bind(console);
+ console.error = (...args) => { fail("console.error " + args.join(" ")); consoleError(...args); };
+@@ -322,6 +324,72 @@ async function checkListenerOwnership() {
+     JSON.stringify(calls));
+ }
+ 
++// Inline event handlers are traced through their EventTarget like additive listeners: detached
++// nodes whose handler is a self-capturing closure, or a content attribute compiled by reading
++// the IDL attribute (its scope chain holds the element), must be collectable. Nodes with a
++// never-compiled attribute only check the fixture itself. Returns WeakRefs per kind.
++function dropInlineHandlerNodes(size) {
++  const refs = { closure: [], compiled: [], uncompiled: [] };
++  for (let i = 0; i < size; i++) {
++    const closure = document.createElement("div");
++    closure.onclick = () => { closure.rovesHits = (closure.rovesHits || 0) + 1; };
++    refs.closure.push(new WeakRef(closure));
++    const compiled = document.createElement("div");
++    compiled.setAttribute("onclick", "this.rovesHits = 1");
++    if (typeof compiled.onclick !== "function") fail("inline handler attribute did not compile");
++    refs.compiled.push(new WeakRef(compiled));
++    const uncompiled = document.createElement("div");
++    uncompiled.setAttribute("onclick", "this.rovesHits = 1");
++    refs.uncompiled.push(new WeakRef(uncompiled));
++  }
++  return refs;
++}
++
++// Control: handlers referenced only by a kept node (an IDL closure and a compiled attribute)
++// and the window's onerror/onbeforeunload closures survive collections and keep their
++// behavior; the compiled function is the same object, neither recompiled nor collected.
++async function checkInlineHandlerOwnership() {
++  const kept = document.createElement("div");
++  kept.rovesCalls = { click: 0, focus: 0 };
++  const onclick = () => { kept.rovesCalls.click++; };
++  kept.onclick = onclick;
++  kept.setAttribute("onfocus", "this.rovesCalls.focus++");
++  const compiledRef = new WeakRef(kept.onfocus);
++  const savedError = window.onerror, savedUnload = window.onbeforeunload;
++  const global = { error: null, unload: 0 };
++  window.onerror = (message, source, line, column, error) => {
++    global.error = [message, source, line, column, error === INLINE_PROBE];
++    return true;
++  };
++  window.onbeforeunload = () => { global.unload++; return "msg"; };
++  try {
++    const refs = dropInlineHandlerNodes(10);
++    await expectCollected("self-capturing inline handler nodes",
++      [...refs.closure, ...refs.compiled, ...refs.uncompiled]);
++    report("diagnostic inline handler nodes alive", `closure ${aliveCount(refs.closure)}`,
++      `compiled ${aliveCount(refs.compiled)}`, `uncompiled ${aliveCount(refs.uncompiled)}`);
++    await collectOnce();
++    await collectOnce();
++    const sameCompiled = compiledRef.deref() === kept.onfocus;
++    kept.dispatchEvent(new MouseEvent("click"));
++    kept.dispatchEvent(new FocusEvent("focus"));
++    check("inline handler control after collection",
++      sameCompiled && kept.onclick === onclick && kept.rovesCalls.click === 1 && kept.rovesCalls.focus === 1,
++      `same=${sameCompiled} identity=${kept.onclick === onclick} ${JSON.stringify(kept.rovesCalls)}`);
++    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: INLINE_PROBE });
++    dispatchEvent(error);
++    const unload = new Event("beforeunload", { cancelable: true });
++    dispatchEvent(unload);
++    check("window inline handlers after collection",
++      JSON.stringify(global.error) === '["probe","probe.js",2,3,true]' && error.defaultPrevented &&
++        global.unload === 1 && !unload.defaultPrevented,
++      `${JSON.stringify(global)} error=${error.defaultPrevented} unload=${unload.defaultPrevented}`);
++  } finally {
++    window.onerror = savedError;
++    window.onbeforeunload = savedUnload;
++  }
++}
++
+ // Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
+ // so CI shows the current behavior before it becomes a requirement. Frame pipelines close
+ // asynchronously, so collections are spaced out.
+@@ -367,6 +435,7 @@ async function main() {
+   await checkModuleOwners();
+   await checkPlainFrames();
+   await checkListenerOwnership();
++  await checkInlineHandlerOwnership();
+   checkKept("retained nodes final");
+ }
+ 
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 6286a76d940..b1dee5c5ede 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -179,9 +179,11 @@ fi
+ # its same-origin frames import the same module URL, each owning its own dynamic imports,
+ # including those of direct eval code in that module. Two more frames never use modules; both
+ # frame groups must be recorded and removed. Detached nodes whose listeners capture them must be
+-# collected (also with an AbortSignal), while a kept node's listeners keep working.
++# collected (also with an AbortSignal), while a kept node's listeners keep working; the same for
++# inline event handlers (IDL closures and compiled content attributes) and window's
++# onerror/onbeforeunload.
+ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ # Whether removed frames are released is diagnostic only (not required yet), but each group
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index d5dec00edd3..7f3d037fab1 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1067,6 +1067,10 @@ if page == 'gc-lifecycle.html':
+                      'signal listener nodes collected true',
+                      'aborted signal listener nodes collected true',
+                      'listener control after collection true',
++                     'self-capturing inline handler nodes collected true',
++                     'diagnostic inline handler nodes alive closure 0 compiled 0 uncompiled 0',
++                     'inline handler control after collection true',
++                     'window inline handlers after collection true',
+                      'retained nodes final true true true',
+                      'cleanup callback entry settings true',
+                      # Retained frames, as in CI so far: diagnostic, not a failure.
+@@ -1107,6 +1111,14 @@ if page == 'gc-lifecycle.html':
+                 line = 'self-capturing listener nodes collected false 20/20 alive after 8 collections'
+             if scenario == 'gc-listener' and line == 'result pass':
+                 line = 'result fail self-capturing listener nodes collected'
++            # Inline handlers permanently rooted (expected before task 0355): closures and
++            # compiled attributes keep their nodes, never-compiled attributes do not.
++            if scenario == 'gc-inline' and line == 'self-capturing inline handler nodes collected true':
++                line = 'self-capturing inline handler nodes collected false 20/30 alive after 8 collections'
++            if scenario == 'gc-inline' and line.startswith('diagnostic inline handler'):
++                line = 'diagnostic inline handler nodes alive closure 10 compiled 10 uncompiled 0'
++            if scenario == 'gc-inline' and line == 'result pass':
++                line = 'result fail self-capturing inline handler nodes collected'
+             print('ROVES-V8 gc ' + line)
+ elif page == 'frame-retention.html':
+     # Like a debug servoshell: the snapshot is written at the requested explicit collection.
+@@ -1310,6 +1322,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
+             ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
+             ('gc-listener', None, "missing 'ROVES-V8 gc self-capturing listener nodes collected true' (ROVES-V8 gc api true"),
++            ('gc-inline', None, "missing 'ROVES-V8 gc self-capturing inline handler nodes collected true' (ROVES-V8 gc api true"),
+             ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
+             ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
