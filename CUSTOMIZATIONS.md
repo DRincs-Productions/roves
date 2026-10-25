@@ -16,7 +16,8 @@ including the existing late page-header guard: no duplicate ever-growing set is 
 Reuse: existing crossbeam, standard VecDeque/iterator partition, and rustc-hash; no new
 production dependency or scheduler. VecDeque.extract_if is still unstable in Rust1.95,
 so extraction uses stable partition and transient storage only during pipeline discard.
-The standalone harness compiles the real queue source with lightweight surrounding types.
+The standalone harness compiles the real queue source with lightweight surrounding types;
+its local target/ build outputs are ignored.
 Four positive contracts pass; the old queue plus a no-op discard entry point fails three,
 while the unrelated-pipeline/worker control passes. Tests verify destruction exactly once,
 script-thread destruction and destructor reentry. CI runs the harness on three desktop OSes

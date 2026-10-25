@@ -821,3 +821,10 @@ index 00000000000..d59247ea6be
 +        assert_eq!(tags(&log), [1, 99]);
 +    }
 +}
+diff --git a/support/task-queue-tests/.gitignore b/support/task-queue-tests/.gitignore
+new file mode 100644
+index 00000000000..b83d22266ac
+--- /dev/null
++++ b/support/task-queue-tests/.gitignore
+@@ -0,0 +1 @@
++/target/

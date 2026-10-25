@@ -12,6 +12,24 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Pubblicato0347 — 4366f3a09c8; rifinitura locale durante CI
+
+Commit4366f3a09c8 pubblicato, wiki be79aaf. Nuovo batchV840223728881,
+generale40223728854, Android40223728914, iOS40223728915: controllare esiti prima di
+qualsiasi ulteriorepush. Aggiunto localmente ignoretarget/ al crate di test e alla patch0347,
+nessun nuovo cambio logica o test da duplicare; replay479/482 con3eccezioni note.
+
+Analisi successiva0348: NON svuotare indiscriminatamente listener/promise solo per far
+sparire lo snapshot. HTML destroy-a-document rimuove task ma consente accesso JS successivo
+al Document; non prescrive qui cancellazione listener. ConfrontoChrome precedente (callback
+non invocati) non prova da solo che i listener siano rimossi, perché può dipendere dal realm.
+Sorgenti hanno già remove_all_listeners per document.open, non per destroy. FontFaceSet ha
+Rc<Promise> autoradicata; candidato più preciso per prossimo incarico: conservarne il JS
+reflector tramite edge Heap tracciato dal DOM e creare/tenere Rc radicate solo per usi nativi,
+riusando Promise::new_with_js_promise. Verificare tutti i chiamanti e stabilità di fonts.ready
+prima di implementare. Nessun cambiamento0348 avviato o lasciato a metà. RiferimentoHTML:
+https://html.spec.whatwg.org/multipage/document-lifecycle.html#destroy-a-document
+
 ### Codex0347 completa — sviluppo diretto autorizzato dall’utente durante quotaClaude
 
 L’utente ha chiesto esplicitamente di implementare direttamente nel frattempo: eccezione
@@ -23,7 +41,7 @@ inScriptThread, anche per guardiaheaders tardivi, senza raddoppiare memoria dei 
 4/4 contratti Windows passano compilando sorgente reale con tipi contorno leggeri;
 negativo vecchiocodice+entrypointnoop:3falliscono, controlloaltrapipeline/worker passa.
 Logtarget/task-0347/queue-tests.log e negative-old-queue.log. Nessuna buildServo locale.
-Patch0347 dryrun/apply scratch:478/481 identiciLF, sole3eccezioni note. Scratch ora0347.
+Patch0347 dryrun/apply scratch:479/482 identiciLF, sole3eccezioni note. Scratch ora0347.
 WorkflowV8 esteso ai duefilelifecycle e harness; test su3OS normal (logicaindipendenteJIT),
 servoshell normal/JITless e snapshot allaCI. test.yml/buildflags invariati, actionnonrichiedesync.
 Ultimobatchpubblicatoc650f8a19ad: mobile40213022469/40213022395 verdi, sorgenti identici

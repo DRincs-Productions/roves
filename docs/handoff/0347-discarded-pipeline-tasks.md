@@ -1,7 +1,7 @@
 # Incarico0347 — completato localmente da Codex su autorizzazione utente
 
 Stato25ottobre2026 aggiornato: Codex ha completato la0347 durante quotaClaude, dopo
-autorizzazione esplicita dell’utente.4test positivi,3negativi vecchiocodice, replay478/481.
+autorizzazione esplicita dell’utente.4test positivi,3negativi vecchiocodice, replay479/482.
 Il prompt sottostante è storico: NON reimplementarlo senza controllare lo stato corrente. Leggere il corrente docs/V8_MIGRATION.md
 per Git/CI/scheduler aggiornati. Seguono istruzioni operative salvate prima del limite.
 
