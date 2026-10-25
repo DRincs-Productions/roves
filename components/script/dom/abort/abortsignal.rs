@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use dom_struct::dom_struct;
 use indexmap::IndexSet;
 use js::context::JSContext;
-use js::jsapi::{ExceptionStackBehavior, Heap};
+use js::jsapi::{ExceptionStackBehavior, Heap, JSObject};
 use js::jsval::{JSVal, UndefinedValue};
 use js::realm::CurrentRealm;
 use js::rust::wrappers2::JS_SetPendingException;
@@ -20,7 +20,6 @@ use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto
 use script_bindings::weakref::WeakRef;
 
 use crate::dom::bindings::codegen::Bindings::AbortSignalBinding::AbortSignalMethods;
-use crate::dom::bindings::codegen::Bindings::EventListenerBinding::EventListener;
 use crate::dom::bindings::codegen::Bindings::EventTargetBinding::EventListenerOptions;
 use crate::dom::bindings::error::{Error, ErrorToJsval, Fallible};
 use crate::dom::bindings::refcounted::Trusted;
@@ -55,14 +54,27 @@ pub(crate) enum AbortAlgorithm {
     FetchLater(#[no_trace] DeferredFetchRecordId),
 }
 
-#[derive(Clone, JSTraceable, MallocSizeOf)]
+#[derive(JSTraceable, MallocSizeOf)]
 #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
 pub(crate) struct RemovableDomEventListener {
     pub(crate) event_target: Dom<EventTarget>,
     pub(crate) ty: DOMString,
-    #[conditional_malloc_size_of]
-    pub(crate) listener: Option<Rc<EventListener>>,
+    /// Identity of the listener's callback, traced through this signal instead of being kept
+    /// alive by a permanently rooted `Rc<EventListener>`.
+    #[ignore_malloc_size_of = "measured by mozjs"]
+    pub(crate) listener: Option<Box<Heap<*mut JSObject>>>,
     pub(crate) options: EventListenerOptions,
+}
+
+impl Clone for RemovableDomEventListener {
+    fn clone(&self) -> Self {
+        Self {
+            event_target: self.event_target.clone(),
+            ty: self.ty.clone(),
+            listener: self.listener.as_ref().map(|heap| Heap::boxed(heap.get())),
+            options: self.options.clone(),
+        }
+    }
 }
 
 /// <https://dom.spec.whatwg.org/#abortsignal>
@@ -203,11 +215,15 @@ impl AbortSignal {
                     .abort();
             },
             AbortAlgorithm::DomEventListener(removable_listener) => {
-                removable_listener.event_target.remove_event_listener(
-                    removable_listener.ty.clone(),
-                    &removable_listener.listener,
-                    &removable_listener.options,
-                );
+                if let Some(callback) = &removable_listener.listener {
+                    removable_listener
+                        .event_target
+                        .remove_event_listener_by_callback(
+                            removable_listener.ty.clone(),
+                            callback.get(),
+                            &removable_listener.options,
+                        );
+                }
             },
         }
     }

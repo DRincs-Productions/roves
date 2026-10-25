@@ -1063,6 +1063,10 @@ if page == 'gc-lifecycle.html':
                      'removed frame group module elements 2 documents 2 globals 2',
                      'no-module frames loaded true',
                      'removed frame group no-module elements 2 documents 2 globals 2',
+                     'self-capturing listener nodes collected true',
+                     'signal listener nodes collected true',
+                     'aborted signal listener nodes collected true',
+                     'listener control after collection true',
                      'retained nodes final true true true',
                      'cleanup callback entry settings true',
                      # Retained frames, as in CI so far: diagnostic, not a failure.
@@ -1098,6 +1102,11 @@ if page == 'gc-lifecycle.html':
                 line = line.replace('true', 'false realms true http://127.0.0.1/missing-base/gc-owner.js')
             if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
                 continue
+            # Listener callbacks permanently rooted: nodes captured by their listeners survive.
+            if scenario == 'gc-listener' and line == 'self-capturing listener nodes collected true':
+                line = 'self-capturing listener nodes collected false 20/20 alive after 8 collections'
+            if scenario == 'gc-listener' and line == 'result pass':
+                line = 'result fail self-capturing listener nodes collected'
             print('ROVES-V8 gc ' + line)
 elif page == 'frame-retention.html':
     # Like a debug servoshell: the snapshot is written at the requested explicit collection.
@@ -1300,6 +1309,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
             ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
+            ('gc-listener', None, "missing 'ROVES-V8 gc self-capturing listener nodes collected true' (ROVES-V8 gc api true"),
             ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
             ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),

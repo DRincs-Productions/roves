@@ -20,6 +20,64 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0353 — implementazione completa locale, CI precedente ancora attiva
+
+0351 pubblicato9f62b30b1e8/wiki673cb44. Batch: V8402384739529/10 verdi (browserWindows
+attivo), generale40238473900 ancora attiva senza rossi, Android40238473901/iOS40238473983 verdi.
+Linuxbrowser normal/JITless e macOS confermano il fix WindowProxy0351. NESSUN PUSH di0353
+finché batch non termina; committare localmente consentito. Replay0353 dry-run/apply riusciti,
+11/11 file modificati LF-identici, incluso v8.yml (non escluso dalla patch). Codegen/runner/
+Chrome come sotto. Non considerare verificati tipiServo o GCnuovi prima della loro CI.
+Il negativo incumbent descritto è un atteso della fixture, non un testServo già eseguito.
+0352 revisionato e implementato da0353. Prossimo: studiare ownership handler inline nello
+stesso modello mantenendo Rc native e callbackcontext, senza duplicare0353.
+
+### Claude0353 — listener additivi tracciati dal proprietario DOM (revisionato, non committato)
+
+Base9f62b30b1e8, CI del push in corso: nessun push. Implementato il design0352 nei5 file:
+`CallbackObject/CallbackFunction/CallbackInterface::new_with_incumbent`, metodo di trait
+`CallbackContainer::new_with_incumbent` generato da `CGCallbackFunctionImpl` (forma identica al
+`new` generato); `EventListenerType::Additive(TracedEventListener)` con callback
+`Box<Heap<*mut JSObject>>` e incumbent `Dom` della registrazione; `RemovableDomEventListener`
+conserva solo l'identità del callback (Clone manuale) e l'abort usa
+`remove_event_listener_by_callback`; snapshot di `invoke` in `RootedTraceableBox`.
+`remove_listener` (once) confronta con `Rc::ptr_eq`. Firme pubbliche e Rc native esterne invariate.
+Prove: events.html +2 REQUIRED_CHECKS (incumbent A/B/C con atteso Chrome155 = B, negativo
+ricattura → c/parent; semantica lista + MediaQueryList); gc-lifecycle.html: nodi detached con
+listener auto-catturante raccolti (anche signal irraggiungibile non abortito e abortito con
+controller vivo) + controllo nodo tenuto (closure/handleEvent/once/signal dopo GC); run.sh e
+test fake aggiornati (scenario `gc-listener`). Limiti: handler inline e altri storage di callback
+restano Rc; nessuna GC forzabile dentro un dispatch (TestUtils.gc asincrona), snapshot radicato
+verificato solo per revisione. Validazione revisione Codex: i 2 nuovi check events.html
+risultano entrambi true in Chrome155 via DevTools MCP (finestra visibile, pagina about:blank;
+nessuna GC forzata in Chrome: solo riferimento dei valori attesi, nessun esito GC Servo
+dichiarato); test_runner.py 42 test, 34 pass, 8 skip POSIX; codegen reale con
+PYTHONHASHSEED=0 riuscito, rispetto al generatore HEAD 28 file Bindings e 43 metodi cambiano,
+solo `new_with_incumbent`. roves-js invariato: suite nativa non rieseguita. Rust modificato
+analizzabile; rustfmt sull'intero file riformatta let-chain upstream preesistenti, quindi
+nessuna dichiarazione di formato pulito rispetto alla base. Limite pagina GC: 40 s invariati
+(caso peggiore +3×8+2 collezioni, raggiunto solo con nodi trattenuti, che già falliscono;
+un timeout fallisce comunque per marker `result` mancante). v8.yml ora parte anche su
+`components/script/dom/event/**` e `components/script/dom/abort/**`; nessun flag mach né
+test.yml cambiato, mirror roves-action non toccato. Compilazione e smoke browser Servo: solo
+CI. Patch0353 rigenerata dal diff esatto e applicata allo scratch;11/11 file LF-identici. Retention frame complessiva APERTA.
+Dettagli in `target/task-0353/RESULTS.md`.
+
+### Claude0352 — design storage tracciato dei listener DOM (da revisionare, nessun codice)
+
+Base pubblicata9f62b30b1e8 (0351); CI del push in corso, gestita da Codex. Design in
+`docs/handoff/0352-event-listener-design.md`: `EventListenerType::Additive` e
+`RemovableDomEventListener` passano da `Rc<EventListener>` (radice permanente
+`CallbackObject::root`) a record tracciati `Box<Heap<*mut JSObject>>` (+ incumbent `Dom` per
+il target); al dispatch la `Rc` radicata è ricostruita con il nuovo
+`CallbackContainer::new_with_incumbent` generato da `CGCallbackFunctionImpl`, che conserva
+l'incumbent della registrazione; lo snapshot di `invoke` diventa `RootedTraceableBox` per
+coprire `once`/rimozioni durante il dispatch. Rc native esterne e firme IDL invariate.
+Nessun blocco trovato; residuo: handler inline e altri storage di callback. Nessuna
+retention dichiarata risolta. Prossima azione: Codex revisiona e delega l'implementazione
+(callback.rs, codegen.py, eventtarget.rs, event.rs, abortsignal.rs + patch/CUSTOMIZATIONS)
+con le prove 1-4 del documento; prova incumbent dopo riferimento Chrome via MCP.
+
 ### Claude0351-CI — WindowProxy cross-origin dopo0349 (revisionata e verificata localmente, browser in attesa CI)
 
 Run V8 40234323634: browser Linux normal121292529003/JITless121292529029 rossi su events.html

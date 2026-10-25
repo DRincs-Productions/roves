@@ -14,16 +14,16 @@ use std::sync::LazyLock;
 use deny_public_fields::DenyPublicFields;
 use dom_struct::dom_struct;
 use js::context::JSContext;
-use js::jsapi::{JS_GetFunctionObject, SupportUnscopables};
+use js::jsapi::{Heap, JSObject, JS_GetFunctionObject, SupportUnscopables};
 use js::jsval::JSVal;
 use js::rust::wrappers2::CompileFunction;
-use js::rust::{CompileOptionsWrapper, HandleObject, transform_u16_to_source_text};
+use js::rust::{transform_u16_to_source_text, CompileOptionsWrapper, HandleObject};
 use libc::c_char;
 use rustc_hash::{FxBuildHasher, FxHashSet};
 use script_bindings::callback::OwnerWindow;
 use script_bindings::cell::DomRefCell;
 use script_bindings::cformat;
-use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
+use script_bindings::reflector::{reflect_dom_object_with_proto, DomObject, Reflector};
 use servo_constellation_traits::ConstellationInterest;
 use servo_url::ServoUrl;
 use style::str::HTML_SPACE_CHARACTERS;
@@ -51,7 +51,7 @@ use crate::dom::bindings::codegen::GenericBindings::DocumentBinding::Document_Bi
 use crate::dom::bindings::codegen::UnionTypes::{
     AddEventListenerOptionsOrBoolean, EventListenerOptionsOrBoolean, EventOrString,
 };
-use crate::dom::bindings::error::{Error, Fallible, report_pending_exception};
+use crate::dom::bindings::error::{report_pending_exception, Error, Fallible};
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot};
@@ -154,9 +154,43 @@ fn get_compiled_handler(
     compiled
 }
 
-#[derive(Clone, JSTraceable, MallocSizeOf, PartialEq)]
+/// Registration-time state of an additive listener. It is traced through its EventTarget (or
+/// a rooted dispatch snapshot); unlike `Rc<EventListener>` it is not a permanent root, so a
+/// listener that captures its own target does not keep that target alive.
+#[derive(JSTraceable, MallocSizeOf)]
+#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+struct TracedEventListener {
+    #[ignore_malloc_size_of = "measured by mozjs"]
+    callback: Box<Heap<*mut JSObject>>,
+    /// The callback context captured when the listener was registered.
+    incumbent: Option<Dom<GlobalScope>>,
+}
+
+impl TracedEventListener {
+    fn new(listener: &EventListener) -> Self {
+        Self {
+            callback: Heap::boxed(listener.callback()),
+            incumbent: listener.incumbent().map(Dom::from_ref),
+        }
+    }
+
+    fn has_callback(&self, callback: *mut JSObject) -> bool {
+        self.callback.get() == callback
+    }
+
+    /// Recreates a rooted listener with the registration-time callback context.
+    /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
+    #[expect(unsafe_code)]
+    fn to_rooted(&self, cx: &JSContext) -> Rc<EventListener> {
+        unsafe {
+            EventListener::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref())
+        }
+    }
+}
+
+#[derive(JSTraceable, MallocSizeOf)]
 enum EventListenerType {
-    Additive(#[conditional_malloc_size_of] Rc<EventListener>),
+    Additive(TracedEventListener),
     Inline(RefCell<InlineEventListener>),
 }
 
@@ -172,9 +206,13 @@ impl EventListenerType {
                 get_compiled_handler(cx, inline, owner, ty).map(CompiledEventListener::Handler)
             },
             EventListenerType::Additive(ref listener) => {
-                Some(CompiledEventListener::Listener(listener.clone()))
+                Some(CompiledEventListener::Listener(listener.to_rooted(cx)))
             },
         }
+    }
+
+    fn is_additive(&self, callback: *mut JSObject) -> bool {
+        matches!(self, EventListenerType::Additive(listener) if listener.has_callback(callback))
     }
 }
 
@@ -323,7 +361,7 @@ impl CompiledEventListener {
 
 // https://dom.spec.whatwg.org/#concept-event-listener
 // (as distinct from https://dom.spec.whatwg.org/#callbackdef-eventlistener)
-#[derive(Clone, DenyPublicFields, JSTraceable, MallocSizeOf)]
+#[derive(DenyPublicFields, JSTraceable, MallocSizeOf)]
 /// A listener in a collection of event listeners.
 pub(crate) struct EventListenerEntry {
     phase: ListenerPhase,
@@ -355,11 +393,10 @@ impl EventListenerEntry {
     ) -> Option<CompiledEventListener> {
         self.listener.get_compiled_listener(cx, owner, ty)
     }
-}
 
-impl std::cmp::PartialEq for EventListenerEntry {
-    fn eq(&self, other: &Self) -> bool {
-        self.phase == other.phase && self.listener == other.listener
+    /// Whether this is the additive listener with the given callback and phase.
+    fn matches(&self, phase: ListenerPhase, callback: *mut JSObject) -> bool {
+        self.phase == phase && self.listener.is_additive(callback)
     }
 }
 
@@ -558,8 +595,8 @@ impl EventTarget {
     pub(crate) fn remove_listener(&self, ty: &Atom, entry: &Rc<RefCell<EventListenerEntry>>) {
         let mut handlers = self.handlers.borrow_mut();
 
-        if let Some(entries) = handlers.get_mut(ty) &&
-            let Some(position) = entries.iter().position(|e| *e == *entry)
+        if let Some(entries) = handlers.get_mut(ty)
+            && let Some(position) = entries.iter().position(|e| Rc::ptr_eq(e, entry))
         {
             entries.remove(position).borrow_mut().removed = true;
             self.notify_listener_removed(ty);
@@ -890,7 +927,7 @@ impl EventTarget {
                 RemovableDomEventListener {
                     event_target: Dom::from_ref(self),
                     ty: ty.clone(),
-                    listener: listener.clone(),
+                    listener: listener.as_deref().map(|l| Heap::boxed(l.callback())),
                     options: options.parent.clone(),
                 },
             ));
@@ -912,22 +949,26 @@ impl EventTarget {
         } else {
             ListenerPhase::Bubbling
         };
-        // Step 4. If listener’s passive is null, then set it to the default passive value given listener’s type and eventTarget.
-        let new_entry = Rc::new(RefCell::new(EventListenerEntry {
-            phase,
-            listener: EventListenerType::Additive(listener),
-            once: options.once,
-            passive: options.passive.unwrap_or(self.default_passive_value(&ty)),
-            removed: false,
-        }));
-
         // Step 5. If eventTarget’s event listener list does not contain
         // an event listener whose type is listener’s type, callback is listener’s callback,
         // and capture is listener’s capture, then append listener to eventTarget’s event listener list.
-        if !entries.contains(&new_entry) {
-            entries.push(new_entry);
-            self.notify_listener_added(&ty);
+        if entries
+            .iter()
+            .any(|entry| entry.borrow().matches(phase, listener.callback()))
+        {
+            return;
         }
+        // Step 4. If listener’s passive is null, then set it to the default passive value given listener’s type and eventTarget.
+        // The entry stores a traced record, not the permanently rooted `listener`, which is
+        // dropped at the end of this call.
+        entries.push(Rc::new(RefCell::new(EventListenerEntry {
+            phase,
+            listener: EventListenerType::Additive(TracedEventListener::new(&listener)),
+            once: options.once,
+            passive: options.passive.unwrap_or(self.default_passive_value(&ty)),
+            removed: false,
+        })));
+        self.notify_listener_added(&ty);
     }
 
     /// <https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>
@@ -941,6 +982,17 @@ impl EventTarget {
         let Some(listener) = listener else {
             return;
         };
+        self.remove_event_listener_by_callback(ty, listener.callback(), options);
+    }
+
+    /// <https://dom.spec.whatwg.org/#remove-an-event-listener>, matching the listener by
+    /// callback identity. Runs no script.
+    pub(crate) fn remove_event_listener_by_callback(
+        &self,
+        ty: DOMString,
+        callback: *mut JSObject,
+        options: &EventListenerOptions,
+    ) {
         let ty_atom = Atom::from(ty);
         let mut handlers = self.handlers.borrow_mut();
         if let Some(entries) = handlers.get_mut(&ty_atom) {
@@ -949,10 +1001,9 @@ impl EventTarget {
             } else {
                 ListenerPhase::Bubbling
             };
-            let listener_type = EventListenerType::Additive(listener.clone());
             if let Some(position) = entries
                 .iter()
-                .position(|e| e.borrow().listener == listener_type && e.borrow().phase == phase)
+                .position(|e| e.borrow().matches(phase, callback))
             {
                 // Step 2. Set listener’s removed to true and remove listener from eventTarget’s event listener list.
                 entries.remove(position).borrow_mut().removed = true;

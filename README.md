@@ -85,8 +85,11 @@ The current removed-frame diagnostic still retains its probe: native roots inclu
 FontFaceSet promises, an injected event listener and a Performance owner consistent with a
 parked task of a closed pipeline. Exited pipelines now discard their parked and ready tasks and reject late tasks, releasing
 native captures on the script thread. FontFaceSet now traces its cached ready promise from the DOM owner, obtaining rooted wrappers
-only for native use. Callback roots remain under investigation; no overall frame-retention
-fix has been validated. Native DOM calls made after Promise reactions now use the actual
+only for native use. Listeners added with `addEventListener` (and their `AbortSignal` removal
+steps) are now traced from their DOM owner instead of permanently rooted, so a detached node
+whose listener captures it can be collected; the registration-time callback context is kept.
+Inline `on*` handlers and other callback roots remain under investigation; no overall
+frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
 throwing native calls between realms with distinct principals. A window proxy returned by a native of another
 realm (such as a remote cross-origin window's `window`/`parent` getters) is converted back to the caller's realm,

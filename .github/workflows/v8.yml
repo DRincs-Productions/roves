@@ -10,6 +10,8 @@ on:
       - 'components/script_bindings/**'
       - 'components/script/task_queue.rs'
       - 'components/script/dom/css/fontfaceset.rs'
+      - 'components/script/dom/event/**'
+      - 'components/script/dom/abort/**'
       - 'components/script/script_thread.rs'
       - 'support/task-queue-tests/**'
       - 'support/v8_cutover_check.py'

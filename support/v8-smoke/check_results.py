@@ -22,6 +22,8 @@ REQUIRED_CHECKS = {
     "events.html": (
         "an iframe keeps its WindowProxy across origin changes and back",
         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
+        "an event listener keeps the callback context of its registration",
+        "event listener list keeps its identity, once and mutation semantics",
     ),
     "stress.html": (
         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",

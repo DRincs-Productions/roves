@@ -21,7 +21,7 @@ use crate::realms::enter_auto_realm;
 use crate::reflector::DomObject;
 use crate::root::Dom;
 use crate::settings_stack::{run_a_callback, run_a_script};
-use crate::{DomTypes, cformat};
+use crate::{cformat, DomTypes};
 
 pub trait ThisReflector {
     fn jsobject(&self) -> *mut JSObject;
@@ -90,10 +90,16 @@ impl<D: DomTypes> CallbackObject<D> {
     // These are used by the bindings and do not need `default()` functions.
     #[allow(clippy::new_without_default)]
     fn new() -> Self {
+        Self::new_with_incumbent(D::GlobalScope::incumbent().as_deref())
+    }
+
+    /// Uses a callback context captured by the owner at registration time instead of the
+    /// incumbent of the current stack.
+    fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
         Self {
             callback: Heap::default(),
             permanent_js_root: Heap::default(),
-            incumbent: D::GlobalScope::incumbent().map(|i| Dom::from_ref(&*i)),
+            incumbent: incumbent.map(Dom::from_ref),
         }
     }
 
@@ -140,6 +146,16 @@ pub trait CallbackContainer<D: DomTypes> {
     /// # Safety
     /// `callback` must point to a valid, non-null JSObject.
     unsafe fn new(cx: &JSContext, callback: *mut JSObject) -> Rc<Self>;
+    /// Recreate a rooted container for `callback` whose callback context is `incumbent`,
+    /// instead of the incumbent of the current stack.
+    ///
+    /// # Safety
+    /// `callback` must point to a valid, non-null JSObject.
+    unsafe fn new_with_incumbent(
+        cx: &JSContext,
+        callback: *mut JSObject,
+        incumbent: Option<&D::GlobalScope>,
+    ) -> Rc<Self>;
     /// Returns the underlying `CallbackObject`.
     fn callback_holder(&self) -> &CallbackObject<D>;
     /// Returns the underlying `JSObject`.
@@ -172,6 +188,13 @@ impl<D: DomTypes> CallbackFunction<D> {
         }
     }
 
+    /// Create a new `CallbackFunction` whose callback context is `incumbent`.
+    pub fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
+        Self {
+            object: CallbackObject::new_with_incumbent(incumbent),
+        }
+    }
+
     /// Returns the underlying `CallbackObject`.
     pub fn callback_holder(&self) -> &CallbackObject<D> {
         &self.object
@@ -201,6 +224,13 @@ impl<D: DomTypes> CallbackInterface<D> {
     pub fn new() -> Self {
         Self {
             object: CallbackObject::new(),
+        }
+    }
+
+    /// Create a new `CallbackInterface` whose callback context is `incumbent`.
+    pub fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
+        Self {
+            object: CallbackObject::new_with_incumbent(incumbent),
         }
     }
 

@@ -8630,10 +8630,27 @@ class CGCallbackFunction(CGCallback):
 class CGCallbackFunctionImpl(CGGeneric):
     def __init__(self, callback: IDLCallback | IDLInterface) -> None:
         type = f"{callback.identifier.name}<D>"
+        base = "CallbackFunction" if isinstance(callback, IDLCallback) else "CallbackInterface"
         impl = (f"""
 impl<D: DomTypes> CallbackContainer<D> for {type} {{
     unsafe fn new(cx: &JSContext, callback: *mut JSObject) -> Rc<{type}> {{
         {type.replace('<D>', '')}::new(cx, callback)
+    }}
+
+    unsafe fn new_with_incumbent(
+        cx: &JSContext,
+        callback: *mut JSObject,
+        incumbent: Option<&D::GlobalScope>,
+    ) -> Rc<{type}> {{
+        let mut ret = Rc::new({type.replace('<D>', '')} {{
+            parent: {base}::new_with_incumbent(incumbent),
+        }});
+        // Note: callback cannot be moved after calling init.
+        match Rc::get_mut(&mut ret) {{
+            Some(ref mut callback_obj) => unsafe {{ callback_obj.parent.init(cx, callback) }},
+            None => unreachable!(),
+        }};
+        ret
     }}
 
     fn callback_holder(&self) -> &CallbackObject<D> {{

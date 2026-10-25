@@ -151,6 +151,78 @@ check("postMessage source is the incumbent: the innermost frame's window", () =>
   frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
   document.body.append(frame);
 }));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// A listener's callback context is captured by addEventListener and reused at every dispatch.
+// The callback is frame A's postMessage, bound with an empty transfer list (otherwise the Event
+// argument is read as one), so no script frame of its own runs and the posted message's source
+// is the callback context. It is registered by frame B's code and dispatched by frame C's code,
+// then by this page: Chrome 155 reports B as the source. Recapturing the context at dispatch
+// would report C, then this window.
+check("an event listener keeps the callback context of its registration", () => new Promise(resolve => {
+  const frames = [0, 1, 2].map(() => document.createElement("iframe"));
+  let loaded = 0;
+  for (const frame of frames) {
+    frame.onload = () => { if (++loaded === frames.length) run(); };
+    frame.srcdoc = "<p>listener realm</p>";
+    document.body.append(frame);
+  }
+  function run() {
+    const [a, b, c] = frames.map(frame => frame.contentWindow);
+    const sources = [];
+    a.addEventListener("message", function listener(event) {
+      if (event.data !== "listener-callback-context") return;
+      sources.push(event.source === b ? "b" : event.source === c ? "c" : event.source === window ? "parent" : event.source === a ? "a" : String(event.source));
+      if (sources.length < 2) return;
+      a.removeEventListener("message", listener);
+      frames.forEach(frame => frame.remove());
+      resolve(sources.join() === "b,b" || sources.join());
+    });
+    const target = new EventTarget();
+    const callback = a.postMessage.bind(a, "listener-callback-context", "*", []);
+    new b.Function("target", "callback", "target.addEventListener('probe', callback);")(target, callback);
+    new c.Function("target", "target.dispatchEvent(new Event('probe'));")(target);
+    target.dispatchEvent(new Event("probe"));
+  }
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Listener list semantics (DOM): one entry per callback and capture flag, removal by callback and
+// capture, once, handleEvent looked up at each dispatch, a listener removed during a dispatch is
+// not called and one added during it waits for the next dispatch.
+check("event listener list keeps its identity, once and mutation semantics", () => {
+  const target = new EventTarget();
+  const order = [];
+  const counted = () => order.push("counted");
+  target.addEventListener("x", counted);
+  target.addEventListener("x", counted);
+  target.addEventListener("x", counted, true);
+  target.removeEventListener("x", counted, { capture: false });
+  target.removeEventListener("x", counted, { capture: false });
+  target.addEventListener("x", () => order.push("once"), { once: true });
+  const object = { handleEvent() { order.push("old handleEvent"); } };
+  target.addEventListener("x", object);
+  object.handleEvent = () => order.push("new handleEvent");
+  const late = () => order.push("late");
+  const removed = () => order.push("removed");
+  target.addEventListener("x", () => {
+    order.push("mutator");
+    target.removeEventListener("x", removed);
+    target.addEventListener("x", late);
+  }, { once: true });
+  target.addEventListener("x", removed);
+  target.dispatchEvent(new Event("x"));
+  order.push("|");
+  target.dispatchEvent(new Event("x"));
+  // MediaQueryList's legacy addListener/removeListener share the same list.
+  const media = matchMedia("(min-width: 1px)");
+  const change = () => order.push("change");
+  media.addListener(change);
+  media.addListener(change);
+  media.dispatchEvent(new Event("change"));
+  media.removeListener(change);
+  media.dispatchEvent(new Event("change"));
+  const seen = order.join();
+  return seen === "counted,once,new handleEvent,mutator,|,counted,new handleEvent,late,change" || seen;
+});
 check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
   // As in browsers, a reference to a browsing context's window outlives its document: after
   // the iframe navigates, the same object reaches the new document.

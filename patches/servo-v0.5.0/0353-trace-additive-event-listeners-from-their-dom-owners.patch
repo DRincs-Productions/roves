@@ -1,0 +1,651 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index 3b15f3275c6..59dafe4203b 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -10,6 +10,8 @@ on:
+       - 'components/script_bindings/**'
+       - 'components/script/task_queue.rs'
+       - 'components/script/dom/css/fontfaceset.rs'
++      - 'components/script/dom/event/**'
++      - 'components/script/dom/abort/**'
+       - 'components/script/script_thread.rs'
+       - 'support/task-queue-tests/**'
+       - 'support/v8_cutover_check.py'
+diff --git a/components/script/dom/abort/abortsignal.rs b/components/script/dom/abort/abortsignal.rs
+index 32f6931882f..d091d187541 100644
+--- a/components/script/dom/abort/abortsignal.rs
++++ b/components/script/dom/abort/abortsignal.rs
+@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
+ use dom_struct::dom_struct;
+ use indexmap::IndexSet;
+ use js::context::JSContext;
+-use js::jsapi::{ExceptionStackBehavior, Heap};
++use js::jsapi::{ExceptionStackBehavior, Heap, JSObject};
+ use js::jsval::{JSVal, UndefinedValue};
+ use js::realm::CurrentRealm;
+ use js::rust::wrappers2::JS_SetPendingException;
+@@ -20,7 +20,6 @@ use script_bindings::reflector::reflect_weak_referenceable_dom_object_with_proto
+ use script_bindings::weakref::WeakRef;
+ 
+ use crate::dom::bindings::codegen::Bindings::AbortSignalBinding::AbortSignalMethods;
+-use crate::dom::bindings::codegen::Bindings::EventListenerBinding::EventListener;
+ use crate::dom::bindings::codegen::Bindings::EventTargetBinding::EventListenerOptions;
+ use crate::dom::bindings::error::{Error, ErrorToJsval, Fallible};
+ use crate::dom::bindings::refcounted::Trusted;
+@@ -55,16 +54,29 @@ pub(crate) enum AbortAlgorithm {
+     FetchLater(#[no_trace] DeferredFetchRecordId),
+ }
+ 
+-#[derive(Clone, JSTraceable, MallocSizeOf)]
++#[derive(JSTraceable, MallocSizeOf)]
+ #[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
+ pub(crate) struct RemovableDomEventListener {
+     pub(crate) event_target: Dom<EventTarget>,
+     pub(crate) ty: DOMString,
+-    #[conditional_malloc_size_of]
+-    pub(crate) listener: Option<Rc<EventListener>>,
++    /// Identity of the listener's callback, traced through this signal instead of being kept
++    /// alive by a permanently rooted `Rc<EventListener>`.
++    #[ignore_malloc_size_of = "measured by mozjs"]
++    pub(crate) listener: Option<Box<Heap<*mut JSObject>>>,
+     pub(crate) options: EventListenerOptions,
+ }
+ 
++impl Clone for RemovableDomEventListener {
++    fn clone(&self) -> Self {
++        Self {
++            event_target: self.event_target.clone(),
++            ty: self.ty.clone(),
++            listener: self.listener.as_ref().map(|heap| Heap::boxed(heap.get())),
++            options: self.options.clone(),
++        }
++    }
++}
++
+ /// <https://dom.spec.whatwg.org/#abortsignal>
+ #[dom_struct]
+ pub(crate) struct AbortSignal {
+@@ -203,11 +215,15 @@ impl AbortSignal {
+                     .abort();
+             },
+             AbortAlgorithm::DomEventListener(removable_listener) => {
+-                removable_listener.event_target.remove_event_listener(
+-                    removable_listener.ty.clone(),
+-                    &removable_listener.listener,
+-                    &removable_listener.options,
+-                );
++                if let Some(callback) = &removable_listener.listener {
++                    removable_listener
++                        .event_target
++                        .remove_event_listener_by_callback(
++                            removable_listener.ty.clone(),
++                            callback.get(),
++                            &removable_listener.options,
++                        );
++                }
+             },
+         }
+     }
+diff --git a/components/script/dom/event/event.rs b/components/script/dom/event/event.rs
+index 05cc60d8bf5..7042dcc64c5 100644
+--- a/components/script/dom/event/event.rs
++++ b/components/script/dom/event/event.rs
+@@ -14,7 +14,7 @@ use keyboard_types::{Key, NamedKey};
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::codegen::GenericBindings::PointerEventBinding::PointerEventMethods;
+ use script_bindings::match_domstring_ascii;
+-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
++use script_bindings::reflector::{reflect_dom_object_with_proto_and_cx, Reflector};
+ use servo_base::cross_process_instant::CrossProcessInstant;
+ use stylo_atoms::Atom;
+ 
+@@ -34,6 +34,7 @@ use crate::dom::bindings::refcounted::Trusted;
+ use crate::dom::bindings::reflector::DomGlobal;
+ use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
+ use crate::dom::bindings::str::DOMString;
++use crate::dom::bindings::trace::RootedTraceableBox;
+ use crate::dom::element::Element;
+ use crate::dom::eventtarget::{EventListeners, EventTarget, ListenerPhase};
+ use crate::dom::globalscope::GlobalScope;
+@@ -1271,7 +1272,11 @@ fn invoke(
+     event.current_target.set(Some(&segment.invocation_target));
+ 
+     // Step 6. Let listeners be a clone of event’s currentTarget attribute value’s event listener list.
+-    let listeners = segment.invocation_target.get_listeners_for(&event.type_());
++    // Listener entries hold traced, unrooted callbacks: root the whole snapshot, because a
++    // `once` listener or a removal during dispatch detaches entries from the target before
++    // they are invoked.
++    let listeners =
++        RootedTraceableBox::new(segment.invocation_target.get_listeners_for(&event.type_()));
+ 
+     // Step 7. Let invocationTargetInShadowTree be struct’s invocation-target-in-shadow-tree.
+     let invocation_target_in_shadow_tree = segment.invocation_target_in_shadow_tree;
+diff --git a/components/script/dom/event/eventtarget.rs b/components/script/dom/event/eventtarget.rs
+index d4dde30fe25..65613e47680 100644
+--- a/components/script/dom/event/eventtarget.rs
++++ b/components/script/dom/event/eventtarget.rs
+@@ -14,16 +14,16 @@ use std::sync::LazyLock;
+ use deny_public_fields::DenyPublicFields;
+ use dom_struct::dom_struct;
+ use js::context::JSContext;
+-use js::jsapi::{JS_GetFunctionObject, SupportUnscopables};
++use js::jsapi::{Heap, JSObject, JS_GetFunctionObject, SupportUnscopables};
+ use js::jsval::JSVal;
+ use js::rust::wrappers2::CompileFunction;
+-use js::rust::{CompileOptionsWrapper, HandleObject, transform_u16_to_source_text};
++use js::rust::{transform_u16_to_source_text, CompileOptionsWrapper, HandleObject};
+ use libc::c_char;
+ use rustc_hash::{FxBuildHasher, FxHashSet};
+ use script_bindings::callback::OwnerWindow;
+ use script_bindings::cell::DomRefCell;
+ use script_bindings::cformat;
+-use script_bindings::reflector::{DomObject, Reflector, reflect_dom_object_with_proto};
++use script_bindings::reflector::{reflect_dom_object_with_proto, DomObject, Reflector};
+ use servo_constellation_traits::ConstellationInterest;
+ use servo_url::ServoUrl;
+ use style::str::HTML_SPACE_CHARACTERS;
+@@ -51,7 +51,7 @@ use crate::dom::bindings::codegen::GenericBindings::DocumentBinding::Document_Bi
+ use crate::dom::bindings::codegen::UnionTypes::{
+     AddEventListenerOptionsOrBoolean, EventListenerOptionsOrBoolean, EventOrString,
+ };
+-use crate::dom::bindings::error::{Error, Fallible, report_pending_exception};
++use crate::dom::bindings::error::{report_pending_exception, Error, Fallible};
+ use crate::dom::bindings::inheritance::Castable;
+ use crate::dom::bindings::reflector::DomGlobal;
+ use crate::dom::bindings::root::{Dom, DomRoot};
+@@ -154,9 +154,43 @@ fn get_compiled_handler(
+     compiled
+ }
+ 
+-#[derive(Clone, JSTraceable, MallocSizeOf, PartialEq)]
++/// Registration-time state of an additive listener. It is traced through its EventTarget (or
++/// a rooted dispatch snapshot); unlike `Rc<EventListener>` it is not a permanent root, so a
++/// listener that captures its own target does not keep that target alive.
++#[derive(JSTraceable, MallocSizeOf)]
++#[cfg_attr(crown, crown::unrooted_must_root_lint::must_root)]
++struct TracedEventListener {
++    #[ignore_malloc_size_of = "measured by mozjs"]
++    callback: Box<Heap<*mut JSObject>>,
++    /// The callback context captured when the listener was registered.
++    incumbent: Option<Dom<GlobalScope>>,
++}
++
++impl TracedEventListener {
++    fn new(listener: &EventListener) -> Self {
++        Self {
++            callback: Heap::boxed(listener.callback()),
++            incumbent: listener.incumbent().map(Dom::from_ref),
++        }
++    }
++
++    fn has_callback(&self, callback: *mut JSObject) -> bool {
++        self.callback.get() == callback
++    }
++
++    /// Recreates a rooted listener with the registration-time callback context.
++    /// The caller keeps `self` traced (EventTarget or rooted snapshot) during the call.
++    #[expect(unsafe_code)]
++    fn to_rooted(&self, cx: &JSContext) -> Rc<EventListener> {
++        unsafe {
++            EventListener::new_with_incumbent(cx, self.callback.get(), self.incumbent.as_deref())
++        }
++    }
++}
++
++#[derive(JSTraceable, MallocSizeOf)]
+ enum EventListenerType {
+-    Additive(#[conditional_malloc_size_of] Rc<EventListener>),
++    Additive(TracedEventListener),
+     Inline(RefCell<InlineEventListener>),
+ }
+ 
+@@ -172,10 +206,14 @@ impl EventListenerType {
+                 get_compiled_handler(cx, inline, owner, ty).map(CompiledEventListener::Handler)
+             },
+             EventListenerType::Additive(ref listener) => {
+-                Some(CompiledEventListener::Listener(listener.clone()))
++                Some(CompiledEventListener::Listener(listener.to_rooted(cx)))
+             },
+         }
+     }
++
++    fn is_additive(&self, callback: *mut JSObject) -> bool {
++        matches!(self, EventListenerType::Additive(listener) if listener.has_callback(callback))
++    }
+ }
+ 
+ /// A representation of an EventListener/EventHandler object that has previously
+@@ -323,7 +361,7 @@ impl CompiledEventListener {
+ 
+ // https://dom.spec.whatwg.org/#concept-event-listener
+ // (as distinct from https://dom.spec.whatwg.org/#callbackdef-eventlistener)
+-#[derive(Clone, DenyPublicFields, JSTraceable, MallocSizeOf)]
++#[derive(DenyPublicFields, JSTraceable, MallocSizeOf)]
+ /// A listener in a collection of event listeners.
+ pub(crate) struct EventListenerEntry {
+     phase: ListenerPhase,
+@@ -355,11 +393,10 @@ impl EventListenerEntry {
+     ) -> Option<CompiledEventListener> {
+         self.listener.get_compiled_listener(cx, owner, ty)
+     }
+-}
+ 
+-impl std::cmp::PartialEq for EventListenerEntry {
+-    fn eq(&self, other: &Self) -> bool {
+-        self.phase == other.phase && self.listener == other.listener
++    /// Whether this is the additive listener with the given callback and phase.
++    fn matches(&self, phase: ListenerPhase, callback: *mut JSObject) -> bool {
++        self.phase == phase && self.listener.is_additive(callback)
+     }
+ }
+ 
+@@ -558,8 +595,8 @@ impl EventTarget {
+     pub(crate) fn remove_listener(&self, ty: &Atom, entry: &Rc<RefCell<EventListenerEntry>>) {
+         let mut handlers = self.handlers.borrow_mut();
+ 
+-        if let Some(entries) = handlers.get_mut(ty) &&
+-            let Some(position) = entries.iter().position(|e| *e == *entry)
++        if let Some(entries) = handlers.get_mut(ty)
++            && let Some(position) = entries.iter().position(|e| Rc::ptr_eq(e, entry))
+         {
+             entries.remove(position).borrow_mut().removed = true;
+             self.notify_listener_removed(ty);
+@@ -890,7 +927,7 @@ impl EventTarget {
+                 RemovableDomEventListener {
+                     event_target: Dom::from_ref(self),
+                     ty: ty.clone(),
+-                    listener: listener.clone(),
++                    listener: listener.as_deref().map(|l| Heap::boxed(l.callback())),
+                     options: options.parent.clone(),
+                 },
+             ));
+@@ -912,22 +949,26 @@ impl EventTarget {
+         } else {
+             ListenerPhase::Bubbling
+         };
++        // Step 5. If eventTarget’s event listener list does not contain
++        // an event listener whose type is listener’s type, callback is listener’s callback,
++        // and capture is listener’s capture, then append listener to eventTarget’s event listener list.
++        if entries
++            .iter()
++            .any(|entry| entry.borrow().matches(phase, listener.callback()))
++        {
++            return;
++        }
+         // Step 4. If listener’s passive is null, then set it to the default passive value given listener’s type and eventTarget.
+-        let new_entry = Rc::new(RefCell::new(EventListenerEntry {
++        // The entry stores a traced record, not the permanently rooted `listener`, which is
++        // dropped at the end of this call.
++        entries.push(Rc::new(RefCell::new(EventListenerEntry {
+             phase,
+-            listener: EventListenerType::Additive(listener),
++            listener: EventListenerType::Additive(TracedEventListener::new(&listener)),
+             once: options.once,
+             passive: options.passive.unwrap_or(self.default_passive_value(&ty)),
+             removed: false,
+-        }));
+-
+-        // Step 5. If eventTarget’s event listener list does not contain
+-        // an event listener whose type is listener’s type, callback is listener’s callback,
+-        // and capture is listener’s capture, then append listener to eventTarget’s event listener list.
+-        if !entries.contains(&new_entry) {
+-            entries.push(new_entry);
+-            self.notify_listener_added(&ty);
+-        }
++        })));
++        self.notify_listener_added(&ty);
+     }
+ 
+     /// <https://dom.spec.whatwg.org/#dom-eventtarget-removeeventlistener>
+@@ -941,6 +982,17 @@ impl EventTarget {
+         let Some(listener) = listener else {
+             return;
+         };
++        self.remove_event_listener_by_callback(ty, listener.callback(), options);
++    }
++
++    /// <https://dom.spec.whatwg.org/#remove-an-event-listener>, matching the listener by
++    /// callback identity. Runs no script.
++    pub(crate) fn remove_event_listener_by_callback(
++        &self,
++        ty: DOMString,
++        callback: *mut JSObject,
++        options: &EventListenerOptions,
++    ) {
+         let ty_atom = Atom::from(ty);
+         let mut handlers = self.handlers.borrow_mut();
+         if let Some(entries) = handlers.get_mut(&ty_atom) {
+@@ -949,10 +1001,9 @@ impl EventTarget {
+             } else {
+                 ListenerPhase::Bubbling
+             };
+-            let listener_type = EventListenerType::Additive(listener.clone());
+             if let Some(position) = entries
+                 .iter()
+-                .position(|e| e.borrow().listener == listener_type && e.borrow().phase == phase)
++                .position(|e| e.borrow().matches(phase, callback))
+             {
+                 // Step 2. Set listener’s removed to true and remove listener from eventTarget’s event listener list.
+                 entries.remove(position).borrow_mut().removed = true;
+diff --git a/components/script_bindings/callback.rs b/components/script_bindings/callback.rs
+index 5147fc01ae6..b76660904e9 100644
+--- a/components/script_bindings/callback.rs
++++ b/components/script_bindings/callback.rs
+@@ -21,7 +21,7 @@ use crate::realms::enter_auto_realm;
+ use crate::reflector::DomObject;
+ use crate::root::Dom;
+ use crate::settings_stack::{run_a_callback, run_a_script};
+-use crate::{DomTypes, cformat};
++use crate::{cformat, DomTypes};
+ 
+ pub trait ThisReflector {
+     fn jsobject(&self) -> *mut JSObject;
+@@ -90,10 +90,16 @@ impl<D: DomTypes> CallbackObject<D> {
+     // These are used by the bindings and do not need `default()` functions.
+     #[allow(clippy::new_without_default)]
+     fn new() -> Self {
++        Self::new_with_incumbent(D::GlobalScope::incumbent().as_deref())
++    }
++
++    /// Uses a callback context captured by the owner at registration time instead of the
++    /// incumbent of the current stack.
++    fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
+         Self {
+             callback: Heap::default(),
+             permanent_js_root: Heap::default(),
+-            incumbent: D::GlobalScope::incumbent().map(|i| Dom::from_ref(&*i)),
++            incumbent: incumbent.map(Dom::from_ref),
+         }
+     }
+ 
+@@ -140,6 +146,16 @@ pub trait CallbackContainer<D: DomTypes> {
+     /// # Safety
+     /// `callback` must point to a valid, non-null JSObject.
+     unsafe fn new(cx: &JSContext, callback: *mut JSObject) -> Rc<Self>;
++    /// Recreate a rooted container for `callback` whose callback context is `incumbent`,
++    /// instead of the incumbent of the current stack.
++    ///
++    /// # Safety
++    /// `callback` must point to a valid, non-null JSObject.
++    unsafe fn new_with_incumbent(
++        cx: &JSContext,
++        callback: *mut JSObject,
++        incumbent: Option<&D::GlobalScope>,
++    ) -> Rc<Self>;
+     /// Returns the underlying `CallbackObject`.
+     fn callback_holder(&self) -> &CallbackObject<D>;
+     /// Returns the underlying `JSObject`.
+@@ -172,6 +188,13 @@ impl<D: DomTypes> CallbackFunction<D> {
+         }
+     }
+ 
++    /// Create a new `CallbackFunction` whose callback context is `incumbent`.
++    pub fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
++        Self {
++            object: CallbackObject::new_with_incumbent(incumbent),
++        }
++    }
++
+     /// Returns the underlying `CallbackObject`.
+     pub fn callback_holder(&self) -> &CallbackObject<D> {
+         &self.object
+@@ -204,6 +227,13 @@ impl<D: DomTypes> CallbackInterface<D> {
+         }
+     }
+ 
++    /// Create a new `CallbackInterface` whose callback context is `incumbent`.
++    pub fn new_with_incumbent(incumbent: Option<&D::GlobalScope>) -> Self {
++        Self {
++            object: CallbackObject::new_with_incumbent(incumbent),
++        }
++    }
++
+     /// Returns the underlying `CallbackObject`.
+     pub fn callback_holder(&self) -> &CallbackObject<D> {
+         &self.object
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 493e6c7230a..43f394062e5 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -8630,12 +8630,29 @@ class CGCallbackFunction(CGCallback):
+ class CGCallbackFunctionImpl(CGGeneric):
+     def __init__(self, callback: IDLCallback | IDLInterface) -> None:
+         type = f"{callback.identifier.name}<D>"
++        base = "CallbackFunction" if isinstance(callback, IDLCallback) else "CallbackInterface"
+         impl = (f"""
+ impl<D: DomTypes> CallbackContainer<D> for {type} {{
+     unsafe fn new(cx: &JSContext, callback: *mut JSObject) -> Rc<{type}> {{
+         {type.replace('<D>', '')}::new(cx, callback)
+     }}
+ 
++    unsafe fn new_with_incumbent(
++        cx: &JSContext,
++        callback: *mut JSObject,
++        incumbent: Option<&D::GlobalScope>,
++    ) -> Rc<{type}> {{
++        let mut ret = Rc::new({type.replace('<D>', '')} {{
++            parent: {base}::new_with_incumbent(incumbent),
++        }});
++        // Note: callback cannot be moved after calling init.
++        match Rc::get_mut(&mut ret) {{
++            Some(ref mut callback_obj) => unsafe {{ callback_obj.parent.init(cx, callback) }},
++            None => unreachable!(),
++        }};
++        ret
++    }}
++
+     fn callback_holder(&self) -> &CallbackObject<D> {{
+         self.parent.callback_holder()
+     }}
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index cecb9c2ed67..0e25aa6e846 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -22,6 +22,8 @@ REQUIRED_CHECKS = {
+     "events.html": (
+         "an iframe keeps its WindowProxy across origin changes and back",
+         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
++        "an event listener keeps the callback context of its registration",
++        "event listener list keeps its identity, once and mutation semantics",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 13a371167be..d9eab50e620 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -151,6 +151,78 @@ check("postMessage source is the incumbent: the innermost frame's window", () =>
+   frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
+   document.body.append(frame);
+ }));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// A listener's callback context is captured by addEventListener and reused at every dispatch.
++// The callback is frame A's postMessage, bound with an empty transfer list (otherwise the Event
++// argument is read as one), so no script frame of its own runs and the posted message's source
++// is the callback context. It is registered by frame B's code and dispatched by frame C's code,
++// then by this page: Chrome 155 reports B as the source. Recapturing the context at dispatch
++// would report C, then this window.
++check("an event listener keeps the callback context of its registration", () => new Promise(resolve => {
++  const frames = [0, 1, 2].map(() => document.createElement("iframe"));
++  let loaded = 0;
++  for (const frame of frames) {
++    frame.onload = () => { if (++loaded === frames.length) run(); };
++    frame.srcdoc = "<p>listener realm</p>";
++    document.body.append(frame);
++  }
++  function run() {
++    const [a, b, c] = frames.map(frame => frame.contentWindow);
++    const sources = [];
++    a.addEventListener("message", function listener(event) {
++      if (event.data !== "listener-callback-context") return;
++      sources.push(event.source === b ? "b" : event.source === c ? "c" : event.source === window ? "parent" : event.source === a ? "a" : String(event.source));
++      if (sources.length < 2) return;
++      a.removeEventListener("message", listener);
++      frames.forEach(frame => frame.remove());
++      resolve(sources.join() === "b,b" || sources.join());
++    });
++    const target = new EventTarget();
++    const callback = a.postMessage.bind(a, "listener-callback-context", "*", []);
++    new b.Function("target", "callback", "target.addEventListener('probe', callback);")(target, callback);
++    new c.Function("target", "target.dispatchEvent(new Event('probe'));")(target);
++    target.dispatchEvent(new Event("probe"));
++  }
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Listener list semantics (DOM): one entry per callback and capture flag, removal by callback and
++// capture, once, handleEvent looked up at each dispatch, a listener removed during a dispatch is
++// not called and one added during it waits for the next dispatch.
++check("event listener list keeps its identity, once and mutation semantics", () => {
++  const target = new EventTarget();
++  const order = [];
++  const counted = () => order.push("counted");
++  target.addEventListener("x", counted);
++  target.addEventListener("x", counted);
++  target.addEventListener("x", counted, true);
++  target.removeEventListener("x", counted, { capture: false });
++  target.removeEventListener("x", counted, { capture: false });
++  target.addEventListener("x", () => order.push("once"), { once: true });
++  const object = { handleEvent() { order.push("old handleEvent"); } };
++  target.addEventListener("x", object);
++  object.handleEvent = () => order.push("new handleEvent");
++  const late = () => order.push("late");
++  const removed = () => order.push("removed");
++  target.addEventListener("x", () => {
++    order.push("mutator");
++    target.removeEventListener("x", removed);
++    target.addEventListener("x", late);
++  }, { once: true });
++  target.addEventListener("x", removed);
++  target.dispatchEvent(new Event("x"));
++  order.push("|");
++  target.dispatchEvent(new Event("x"));
++  // MediaQueryList's legacy addListener/removeListener share the same list.
++  const media = matchMedia("(min-width: 1px)");
++  const change = () => order.push("change");
++  media.addListener(change);
++  media.addListener(change);
++  media.dispatchEvent(new Event("change"));
++  media.removeListener(change);
++  media.dispatchEvent(new Event("change"));
++  const seen = order.join();
++  return seen === "counted,once,new handleEvent,mutator,|,counted,new handleEvent,late,change" || seen;
++});
+ check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
+   // As in browsers, a reference to a browsing context's window outlives its document: after
+   // the iframe navigates, the same object reaches the new document.
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 3e186e35cce..7393064ca13 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -277,6 +277,51 @@ async function checkPlainFrames() {
+   }
+ }
+ 
++// Additive listeners are traced through their EventTarget (and AbortSignal), not rooted: a
++// detached node whose listener captures the node must be collectable, with an unreachable
++// unaborted signal too, and after an abort while the controller stays alive. Returns WeakRefs.
++function dropListenerNodes(size, signalFor) {
++  const refs = [];
++  for (let i = 0; i < size; i++) {
++    const node = document.createElement("div");
++    const options = signalFor ? { signal: signalFor() } : {};
++    node.addEventListener("roves-listener", () => { node.rovesHits = (node.rovesHits || 0) + 1; }, options);
++    refs.push(new WeakRef(node));
++  }
++  return refs;
++}
++
++// Control: listeners referenced only by a kept node (a closure, a handleEvent object, a once
++// listener and one with a live signal) survive collections and keep their behavior.
++function keepListenerNode() {
++  const node = document.createElement("div");
++  node.rovesCalls = { closure: 0, object: 0, once: 0, signal: 0 };
++  node.addEventListener("roves-listener", () => { node.rovesCalls.closure++; });
++  node.addEventListener("roves-listener", { handleEvent() { node.rovesCalls.object++; } });
++  node.addEventListener("roves-listener", () => { node.rovesCalls.once++; }, { once: true });
++  node.rovesController = new AbortController();
++  node.addEventListener("roves-listener", () => { node.rovesCalls.signal++; }, { signal: node.rovesController.signal });
++  return node;
++}
++
++async function checkListenerOwnership() {
++  const kept = keepListenerNode();
++  await expectCollected("self-capturing listener nodes", dropListenerNodes(20));
++  await expectCollected("signal listener nodes", dropListenerNodes(20, () => new AbortController().signal));
++  const controller = new AbortController();
++  const aborted = dropListenerNodes(20, () => controller.signal);
++  controller.abort();
++  await expectCollected("aborted signal listener nodes", aborted);
++  kept.dispatchEvent(new Event("roves-listener"));
++  await collectOnce();
++  await collectOnce();
++  kept.dispatchEvent(new Event("roves-listener"));
++  const calls = kept.rovesCalls;
++  check("listener control after collection",
++    calls.closure === 2 && calls.object === 2 && calls.once === 1 && calls.signal === 2 && controller.signal.aborted,
++    JSON.stringify(calls));
++}
++
+ // Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
+ // so CI shows the current behavior before it becomes a requirement. Frame pipelines close
+ // asynchronously, so collections are spaced out.
+@@ -321,6 +366,7 @@ async function main() {
+   await expectCollected("dropped importer", dropImporter());
+   await checkModuleOwners();
+   await checkPlainFrames();
++  await checkListenerOwnership();
+   checkKept("retained nodes final");
+ }
+ 
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 66b605110cc..6286a76d940 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -178,9 +178,10 @@ fi
+ # hidden in test.html), so it gets its own process. HTTP lets the page import a module and
+ # its same-origin frames import the same module URL, each owning its own dynamic imports,
+ # including those of direct eval code in that module. Two more frames never use modules; both
+-# frame groups must be recorded and removed.
++# frame groups must be recorded and removed. Detached nodes whose listeners capture them must be
++# collected (also with an AbortSignal), while a kept node's listeners keep working.
+ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+ done
+ # Whether removed frames are released is diagnostic only (not required yet), but each group
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 6e3a72cdd2b..d5dec00edd3 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1063,6 +1063,10 @@ if page == 'gc-lifecycle.html':
+                      'removed frame group module elements 2 documents 2 globals 2',
+                      'no-module frames loaded true',
+                      'removed frame group no-module elements 2 documents 2 globals 2',
++                     'self-capturing listener nodes collected true',
++                     'signal listener nodes collected true',
++                     'aborted signal listener nodes collected true',
++                     'listener control after collection true',
+                      'retained nodes final true true true',
+                      'cleanup callback entry settings true',
+                      # Retained frames, as in CI so far: diagnostic, not a failure.
+@@ -1098,6 +1102,11 @@ if page == 'gc-lifecycle.html':
+                 line = line.replace('true', 'false realms true http://127.0.0.1/missing-base/gc-owner.js')
+             if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
+                 continue
++            # Listener callbacks permanently rooted: nodes captured by their listeners survive.
++            if scenario == 'gc-listener' and line == 'self-capturing listener nodes collected true':
++                line = 'self-capturing listener nodes collected false 20/20 alive after 8 collections'
++            if scenario == 'gc-listener' and line == 'result pass':
++                line = 'result fail self-capturing listener nodes collected'
+             print('ROVES-V8 gc ' + line)
+ elif page == 'frame-retention.html':
+     # Like a debug servoshell: the snapshot is written at the requested explicit collection.
+@@ -1300,6 +1309,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
+             ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
+             ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
++            ('gc-listener', None, "missing 'ROVES-V8 gc self-capturing listener nodes collected true' (ROVES-V8 gc api true"),
+             ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
+             ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),

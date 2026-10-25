@@ -14,7 +14,7 @@ use keyboard_types::{Key, NamedKey};
 use script_bindings::cell::DomRefCell;
 use script_bindings::codegen::GenericBindings::PointerEventBinding::PointerEventMethods;
 use script_bindings::match_domstring_ascii;
-use script_bindings::reflector::{Reflector, reflect_dom_object_with_proto_and_cx};
+use script_bindings::reflector::{reflect_dom_object_with_proto_and_cx, Reflector};
 use servo_base::cross_process_instant::CrossProcessInstant;
 use stylo_atoms::Atom;
 
@@ -34,6 +34,7 @@ use crate::dom::bindings::refcounted::Trusted;
 use crate::dom::bindings::reflector::DomGlobal;
 use crate::dom::bindings::root::{Dom, DomRoot, MutNullableDom};
 use crate::dom::bindings::str::DOMString;
+use crate::dom::bindings::trace::RootedTraceableBox;
 use crate::dom::element::Element;
 use crate::dom::eventtarget::{EventListeners, EventTarget, ListenerPhase};
 use crate::dom::globalscope::GlobalScope;
@@ -1271,7 +1272,11 @@ fn invoke(
     event.current_target.set(Some(&segment.invocation_target));
 
     // Step 6. Let listeners be a clone of event’s currentTarget attribute value’s event listener list.
-    let listeners = segment.invocation_target.get_listeners_for(&event.type_());
+    // Listener entries hold traced, unrooted callbacks: root the whole snapshot, because a
+    // `once` listener or a removal during dispatch detaches entries from the target before
+    // they are invoked.
+    let listeners =
+        RootedTraceableBox::new(segment.invocation_target.get_listeners_for(&event.type_()));
 
     // Step 7. Let invocationTargetInShadowTree be struct’s invocation-target-in-shadow-tree.
     let invocation_target_in_shadow_tree = segment.invocation_target_in_shadow_tree;

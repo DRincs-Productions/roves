@@ -277,6 +277,51 @@ async function checkPlainFrames() {
   }
 }
 
+// Additive listeners are traced through their EventTarget (and AbortSignal), not rooted: a
+// detached node whose listener captures the node must be collectable, with an unreachable
+// unaborted signal too, and after an abort while the controller stays alive. Returns WeakRefs.
+function dropListenerNodes(size, signalFor) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const node = document.createElement("div");
+    const options = signalFor ? { signal: signalFor() } : {};
+    node.addEventListener("roves-listener", () => { node.rovesHits = (node.rovesHits || 0) + 1; }, options);
+    refs.push(new WeakRef(node));
+  }
+  return refs;
+}
+
+// Control: listeners referenced only by a kept node (a closure, a handleEvent object, a once
+// listener and one with a live signal) survive collections and keep their behavior.
+function keepListenerNode() {
+  const node = document.createElement("div");
+  node.rovesCalls = { closure: 0, object: 0, once: 0, signal: 0 };
+  node.addEventListener("roves-listener", () => { node.rovesCalls.closure++; });
+  node.addEventListener("roves-listener", { handleEvent() { node.rovesCalls.object++; } });
+  node.addEventListener("roves-listener", () => { node.rovesCalls.once++; }, { once: true });
+  node.rovesController = new AbortController();
+  node.addEventListener("roves-listener", () => { node.rovesCalls.signal++; }, { signal: node.rovesController.signal });
+  return node;
+}
+
+async function checkListenerOwnership() {
+  const kept = keepListenerNode();
+  await expectCollected("self-capturing listener nodes", dropListenerNodes(20));
+  await expectCollected("signal listener nodes", dropListenerNodes(20, () => new AbortController().signal));
+  const controller = new AbortController();
+  const aborted = dropListenerNodes(20, () => controller.signal);
+  controller.abort();
+  await expectCollected("aborted signal listener nodes", aborted);
+  kept.dispatchEvent(new Event("roves-listener"));
+  await collectOnce();
+  await collectOnce();
+  kept.dispatchEvent(new Event("roves-listener"));
+  const calls = kept.rovesCalls;
+  check("listener control after collection",
+    calls.closure === 2 && calls.object === 2 && calls.once === 1 && calls.signal === 2 && controller.signal.aborted,
+    JSON.stringify(calls));
+}
+
 // Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
 // so CI shows the current behavior before it becomes a requirement. Frame pipelines close
 // asynchronously, so collections are spaced out.
@@ -321,6 +366,7 @@ async function main() {
   await expectCollected("dropped importer", dropImporter());
   await checkModuleOwners();
   await checkPlainFrames();
+  await checkListenerOwnership();
   checkKept("retained nodes final");
 }
 
