@@ -1,3 +1,49 @@
+## 2026-10-25 - Native proxy descriptor results ignore a polluted Object.prototype (0336)
+
+**Files:** `components/roves-js/src/jsapi_impl.rs`, `components/roves-js/src/proxy.rs`,
+`components/roves-js/src/tests.rs`, `support/v8-smoke/suite.html`, patch
+`0336-null-prototype-proxy-descriptor-results.patch`.
+
+The V8 `getOwnPropertyDescriptor` trap of native (SpiderMonkey-style) proxies returned a
+descriptor object built with `v8::Object::new`, so it inherited `Object.prototype`. V8 runs
+`ToPropertyDescriptor` on a trap result, which observes inherited fields: with page code that
+adds `get`/`set` (or accessors for any descriptor field) to `Object.prototype`, reading a DOM
+proxy property descriptor ran those accessors and failed with "Invalid property descriptor"
+(`Object.getOwnPropertyDescriptor(collection, 0)`, `Object.keys(dataset)`, ...). WebIDL's
+legacy platform object `[[GetOwnProperty]]` builds the descriptor record directly, so no
+`Object.prototype` field may be observed. The trap result is engine-internal (script
+never sees it; V8 returns a fresh standard descriptor object), so it is now built by the new
+`jsapi_impl::descriptor_object`: `v8::Object::with_prototype_and_properties` with a null
+prototype and only the fields the SpiderMonkey descriptor has (inline `SmallVec`, at most six
+fields, no extra heap allocation). The partial-descriptor path of `define_property` (0335)
+uses the same helper instead of its own builder. Every SpiderMonkey trap result is complete
+(`SetDataPropertyDescriptor` or a read-back descriptor), so dropping the old defaults for
+absent fields changes nothing: V8 completes a descriptor the same way. User `Proxy` trap
+results and user-supplied descriptors keep ordinary ECMAScript inheritance. The wrapper-family
+forward path (`Reflect.getOwnPropertyDescriptor` on the wrapped object) is unchanged; Servo's
+WindowProxy handlers define their own `getOwnPropertyDescriptor` trap. The native test reads
+trap-named, data, accessor, explicit-`undefined` getter, Symbol, index getter-only and
+non-configurable (mirrored) properties of an expando proxy with every descriptor field poisoned
+as an accessor on `Object.prototype`, checking no accessor runs, field sets and
+`Object.prototype` of returned descriptors, `Object.keys` and the unchanged mirror; it also
+checks that a user Proxy trap result still sees inherited fields. `suite.html` adds a
+non-required check on a real `HTMLCollection` and `DOMStringMap`.
+
+Known Chrome divergence (externally supplied evidence, Codex, Chrome 155 visible, the actual
+`suite.html` check on the copied host): Chrome fails this check with "threw TypeError: Invalid
+property descriptor. Cannot both specify accessors and a value or writable attribute,
+#<Object> calls get,set". The same message and the same `get,set` accessor calls are
+reproduced without a browser (Node 23.3.0, V8 12.9, `target/task-0336/chrome-analysis/`) by
+running `ToPropertyDescriptor` on an ordinary descriptor object (a user `Proxy` trap returning
+`{ value, writable, enumerable, configurable }`, or `Object.defineProperty` with such a
+literal); a null-prototype trap result and an ordinary own property are unaffected. Blink
+interceptor-backed indexed/named properties return an ordinary descriptor object to V8, which
+converts it, so Chrome most likely shares the defect this patch fixes (inferred, Blink source
+not inspected); a single `get,set` pair means the loop aborted on the first converted key,
+presumably `HTMLCollection` index `"0"` (not confirmed per key in Chrome). Expando keys there are ordinary own properties in Chrome and would not fail. The check
+follows WebIDL and is kept; it is not in `REQUIRED_CHECKS`, so a Chrome reference run reports
+it as an expected failure.
+
 ## 2026-10-25 - Partial property descriptors keep absent fields on native proxies (0335)
 
 **Files:** `components/roves-js/src/jsapi_impl.rs`, `components/roves-js/src/proxy.rs`,

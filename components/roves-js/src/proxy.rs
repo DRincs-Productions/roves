@@ -315,35 +315,6 @@ fn fail(scope: &mut v8::PinScope) {
     crate::native::rethrow_pending(scope, JSContext::current());
 }
 
-/// A descriptor object (`{ value, writable, get, set, enumerable, configurable }`).
-fn descriptor_object<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: &PropertyDescriptor) -> Option<v8::Local<'s, v8::Object>> {
-    let object = v8::Object::new(scope);
-    let mut put = |scope: &mut v8::PinScope<'s, '_>, name: &str, value: v8::Local<'s, v8::Value>| -> Option<()> {
-        let key = v8::String::new(scope, name)?;
-        object.create_data_property(scope, key.into(), value)?;
-        Some(())
-    };
-    if descriptor.hasGetter_() || descriptor.hasSetter_() {
-        let getter: v8::Local<v8::Value> =
-            if descriptor.getter_.is_null() { v8::undefined(scope).into() } else { unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.getter_)) } };
-        let setter: v8::Local<v8::Value> =
-            if descriptor.setter_.is_null() { v8::undefined(scope).into() } else { unsafe { to_v8(scope, crate::jsval::ObjectValue(descriptor.setter_)) } };
-        put(scope, "get", getter)?;
-        put(scope, "set", setter)?;
-    } else {
-        // SAFETY: descriptor values are rooted by the caller.
-        let value = unsafe { to_v8(scope, descriptor.value_) };
-        put(scope, "value", value)?;
-        let writable = v8::Boolean::new(scope, descriptor.writable_());
-        put(scope, "writable", writable.into())?;
-    }
-    let enumerable = v8::Boolean::new(scope, descriptor.enumerable_());
-    put(scope, "enumerable", enumerable.into())?;
-    let configurable = v8::Boolean::new(scope, descriptor.configurable_());
-    put(scope, "configurable", configurable.into())?;
-    Some(object)
-}
-
 /// Mirrors a non-configurable property onto the target (V8's proxy invariants).
 fn mirror_non_configurable<'s>(scope: &mut v8::PinScope<'s, '_>, target: v8::Local<'s, v8::Object>, key: v8::Local<'s, v8::Name>, descriptor: &PropertyDescriptor) {
     if descriptor.configurable_() {
@@ -385,7 +356,10 @@ fn trap_get_own_property_descriptor<'s>(scope: &mut v8::PinScope<'s, '_>, args: 
         Ok(None) => retval.set_undefined(),
         Ok(Some(descriptor)) => {
             mirror_non_configurable(scope, context.target, key, &descriptor);
-            if let Some(object) = descriptor_object(scope, &descriptor) {
+            // V8 reads the trap result with ToPropertyDescriptor: a null-prototype object,
+            // so a polluted Object.prototype is not observed (native DOM descriptors aren't).
+            // SpiderMonkey trap results are complete; absent fields stay absent either way.
+            if let Some(object) = crate::jsapi_impl::descriptor_object(scope, &descriptor) {
                 retval.set(object.into());
             }
         },

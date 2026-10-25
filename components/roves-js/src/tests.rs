@@ -1477,6 +1477,85 @@ mod proxies {
         unsafe { JS_ClearPendingException(cx) };
         eval(&runtime, "delete globalThis.q; delete globalThis.existing; delete globalThis.k");
     }
+
+    #[test]
+    fn dom_proxy_descriptor_results_ignore_polluted_object_prototype() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps = traps();
+        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
+        rooted!(in(cx) let proto = eval(&runtime, "({})").to_object());
+        rooted!(in(cx) let private = UndefinedValue());
+        rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"r".as_ptr(), value.handle().into_handle()) });
+        // V8 runs ToPropertyDescriptor on the native getOwnPropertyDescriptor trap's result,
+        // which observes inherited fields. The engine-made result must not see accessors on a
+        // polluted Object.prototype; descriptors returned to script keep Object.prototype.
+        let checks = r#"(() => { try { return (() => {
+          const failed = [];
+          const check = (name, ok) => { if (!ok) failed.push(name); };
+          const g1 = () => 1, s1 = function (v) {}, sym = Symbol("k");
+          Object.defineProperty(r, "d", { value: 1, writable: true, enumerable: true, configurable: true });
+          Object.defineProperty(r, "a", { get: g1, set: s1, enumerable: false, configurable: true });
+          Object.defineProperty(r, "u", { get: undefined, set: s1, configurable: true });
+          Object.defineProperty(r, sym, { value: 2, writable: false, configurable: true });
+          Object.defineProperty(r, 0, { get: g1, configurable: true });
+          Object.defineProperty(r, "nc", { value: 5, writable: false, enumerable: true, configurable: false });
+          const keys = ["foo", "d", "a", "u", sym, "0", "nc"];
+          const calls = [];
+          const poison = { value: 666, writable: true, enumerable: true, configurable: true, get: () => 666, set: function (v) {} };
+          const results = new Map();
+          let listed, failure = "";
+          try {
+            // Null-prototype descriptors: user descriptors do observe inherited fields.
+            for (const name of Object.keys(poison)) {
+              Object.defineProperty(Object.prototype, name, {
+                __proto__: null,
+                get() { calls.push("get " + name); return poison[name]; },
+                set(v) { calls.push("set " + name); },
+                configurable: true,
+              });
+            }
+            for (const key of keys) results.set(key, Object.getOwnPropertyDescriptor(r, key));
+            listed = Object.keys(r).join();
+          } catch (e) {
+            failure = String(e);
+          } finally {
+            for (const name of Object.keys(poison)) delete Object.prototype[name];
+          }
+          check("threw: " + failure, failure === "");
+          check("Object.prototype accessors invoked: " + calls.join(), calls.length === 0);
+          if (failure) return failed.join();
+          const shape = (key, names) => {
+            const d = results.get(key);
+            return d !== undefined && Object.getPrototypeOf(d) === Object.prototype && Object.getOwnPropertyNames(d).join() === names;
+          };
+          const data = "value,writable,enumerable,configurable", accessor = "get,set,enumerable,configurable";
+          const d = k => results.get(k);
+          check("named trap property", shape("foo", data) && d("foo").value === "named-foo" && !d("foo").writable && d("foo").enumerable && d("foo").configurable);
+          check("data", shape("d", data) && d("d").value === 1 && d("d").writable && d("d").enumerable && d("d").configurable);
+          check("accessor", shape("a", accessor) && d("a").get === g1 && d("a").set === s1 && !d("a").enumerable && d("a").configurable);
+          check("explicit undefined getter", shape("u", accessor) && d("u").get === undefined && d("u").set === s1);
+          check("symbol", shape(sym, data) && d(sym).value === 2 && !d(sym).writable && !d(sym).enumerable);
+          check("index getter-only", shape("0", accessor) && d("0").get === g1 && d("0").set === undefined);
+          check("non-configurable", shape("nc", data) && d("nc").value === 5 && !d("nc").writable && !d("nc").configurable);
+          check("keys: " + listed, listed === "foo,d,nc");
+          // The non-configurable mirror is unchanged by the reads.
+          check("mirror", Reflect.defineProperty(r, "nc", { value: 5 }) && !Reflect.defineProperty(r, "nc", { value: 6 }));
+          return failed.join();
+        })(); } catch (e) { return "uncaught: " + e; } })()"#;
+        assert_eq!(describe(&runtime, eval(&runtime, checks)), "");
+        // A user Proxy's own trap result still goes through ordinary ToPropertyDescriptor.
+        let user = r#"(() => {
+          const p = new Proxy({}, { getOwnPropertyDescriptor: () => ({ value: 1, configurable: true }) });
+          Object.prototype.writable = true;
+          try { return Object.getOwnPropertyDescriptor(p, "x").writable === true; } finally { delete Object.prototype.writable; }
+        })()"#;
+        assert!(eval(&runtime, user).to_boolean(), "user trap results keep inherited fields");
+        eval(&runtime, "delete globalThis.r");
+    }
 }
 
 mod typed_arrays {

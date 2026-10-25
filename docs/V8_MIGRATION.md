@@ -12,6 +12,42 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0336 revisionato — pubblicazione0335/0336
+
+Batch bce416e50da concluso tutto verde: V840184060372 (10/10), generale40184060391
+(13/13), Android40184060445, iOS40184060368. Via libera al push dei commit completi.
+0336 revisionata: Rust e fixture invariati dopo le prove, nessuna verifica duplicata.
+Chrome DevTools MCP155 Windows visibile, HTTP19036: il check reale fallisce sugli indici
+HTMLCollection; isolamento successivo conferma indice/nome/dataset falliscono, expando
+dati/accessor passano. È una divergenza DOM Chrome, non un motivo per cambiare le normali
+regole ECMAScript dei Proxy utente; nessuna affermazione sul codice Blink non ispezionato.
+Native126normal/125JITless e replay470/473 confermati dai log; browser Roves da verificare
+nella prossima CI. Tab/server chiusi. Prossimo incarico: lifetime dei moduli JSON collegati
+ma mai valutati, prima prove e API pubbliche mantenute, nessuna promessa sulla retention frame.
+
+### Claude0336 — risultato trap getOwnPropertyDescriptor a prototipo null (da revisionare, non committato)
+
+Base f7ba878ae52 (0335 inclusa); CI non controllata da Claude. Difetto dimostrato sul percorso
+nativo proxy Servo-style (trap V8 → trap nativo → expando, test 0335 riusati): `descriptor_object`
+usava `v8::Object::new`; con accessor `get`/`set` su `Object.prototype`, leggere il descrittore
+dati (anche il nome dal trap) eseguiva i getter (`get get,get set`) e dava TypeError "Invalid
+property descriptor". Fix: helper unico `jsapi_impl::descriptor_object` (null-proto,
+`with_prototype_and_properties`, solo campi presenti, `SmallVec` inline ≤6) usato dal trap e dal
+ramo parziale di `define_property` (rimosso il builder duplicato). Risultati SpiderMonkey sempre
+completi: nessun cambiamento dopo il completamento V8. Proxy utente/descrittori utente invariati
+(test). Non toccato: ramo `forward` dei wrapper (Reflect sull'oggetto avvolto; WindowProxy ha il
+proprio trap). roves-js normal126/2ign, JITless125/3ign; negativi codice vecchio normal/JITless.
+Check non obbligatorio `suite.html` (HTMLCollection+dataset), node --check; REQUIRED_CHECKS
+invariati, runner Windows42ok/8skip, niente WSL. Patch `0336-null-prototype-proxy-descriptor-results.patch`:
+dry-run+apply scratch identici, replay470/473 con3eccezioni note. Log `target/task-0336/`.
+Revisione: Chrome155 visibile (evidenza esterna Codex) fallisce il check con lo stesso TypeError
+e `calls get,set`; riprodotto in Node23.3/V8 12.9 come `ToPropertyDescriptor` su descrittore
+ordinario (trap Proxy utente o defineProperty), non su prototipo null né proprietà propria
+(`target/task-0336/chrome-analysis/`). Divergenza Chrome probabile dagli interceptor Blink
+(inferenza; chiave per chiave non verificata, presumibilmente indice "0"). Fixture conforme a
+WebIDL, mantenuta invariata; patch e runner non rigenerati perché nessun file sorgente cambiato.
+Retention frame resta aperta.
+
 ### Codex0335 revisionata, commit locale durante CI0333/0334
 
 0335 riproduce e corregge descrittori parziali sul percorso nativoDOMProxy→expando→JSAPI:

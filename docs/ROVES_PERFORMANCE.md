@@ -1,3 +1,13 @@
+## 25 ottobre — divergenza Chrome sui descrittori DOM0336
+
+Chrome155 Windows visibile, Chrome DevTools MCP, HTTP127.0.0.1:19036.
+Il check reale isolato di suite.html non passa in Chrome: HTMLCollection (indice e nome)
+e dataset osservano get/set ereditati da Object.prototype e lanciano Invalid property
+descriptor; gli expando dati/accessor della stessa collection passano senza getter esterni.
+Questa è una divergenza del percorso DOM nativo Chrome, non una prova del risultato Roves.
+Roves native126normal/125JITless passano; il browser Roves resta da verificare in CI.
+Nessun altro check della suite eseguito e nessun benchmark; tab/server chiusi.
+
 ## 25 ottobre — riferimento descrittori parziali0335
 
 Chrome155 Windows visibile, Chrome DevTools MCP: NodeList reale in about:blank conferma

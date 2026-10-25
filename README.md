@@ -621,6 +621,9 @@ silently after shutdown.
 `Object.defineProperty` with a partial descriptor (such as `{ writable: false }` or only a
 getter) on DOM objects with named properties and on `window` now changes only the given
 fields, as in other browsers, instead of ignoring `writable` or clearing the other accessor.
+Reading property descriptors of such DOM objects (`Object.getOwnPropertyDescriptor`,
+`Object.keys`) also keeps working when page code adds `get`, `set` or other descriptor fields to
+`Object.prototype`, instead of throwing "Invalid property descriptor".
 
 Code that calls into another same-origin window (for example a parent page calling a function
 defined in an iframe) now reports the window whose code is running as its caller, as browsers

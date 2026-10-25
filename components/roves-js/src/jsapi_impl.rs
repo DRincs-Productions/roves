@@ -10,6 +10,8 @@
 
 use std::ffi::{CStr, c_char, c_void};
 
+use smallvec::SmallVec;
+
 use crate::jsapi::{
     Handle, HandleId, HandleObject, HandleValue, HandleValueArray, JSClass, JSContext, JSFunction,
     JSLinearString, JSNative, JSONWriteCallback, JSObject, JSString, MutableHandle,
@@ -187,6 +189,48 @@ pub(crate) fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescr
     result
 }
 
+/// An engine-made descriptor object for V8's `ToPropertyDescriptor`: null prototype (so a
+/// polluted `Object.prototype` adds no fields and runs no accessors) holding only the fields
+/// `descriptor` has. At most six fields, kept inline.
+pub(crate) fn descriptor_object<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: &PropertyDescriptor) -> Option<v8::Local<'s, v8::Object>> {
+    fn accessor<'s>(scope: &mut v8::PinScope<'s, '_>, function: *mut JSObject) -> v8::Local<'s, v8::Value> {
+        if function.is_null() { v8::undefined(scope).into() } else { value(scope, ObjectValue(function)) }
+    }
+    let mut names: SmallVec<[v8::Local<'s, v8::Name>; 6]> = SmallVec::new();
+    let mut values: SmallVec<[v8::Local<'s, v8::Value>; 6]> = SmallVec::new();
+    let mut field = |scope: &mut v8::PinScope<'s, '_>, name: &str, field: v8::Local<'s, v8::Value>| -> Option<()> {
+        names.push(v8::String::new(scope, name)?.into());
+        values.push(field);
+        Some(())
+    };
+    if descriptor.hasConfigurable_() {
+        let configurable = v8::Boolean::new(scope, descriptor.configurable_());
+        field(scope, "configurable", configurable.into())?;
+    }
+    if descriptor.hasEnumerable_() {
+        let enumerable = v8::Boolean::new(scope, descriptor.enumerable_());
+        field(scope, "enumerable", enumerable.into())?;
+    }
+    if descriptor.hasWritable_() {
+        let writable = v8::Boolean::new(scope, descriptor.writable_());
+        field(scope, "writable", writable.into())?;
+    }
+    if descriptor.hasValue_() {
+        let data = value(scope, descriptor.value_);
+        field(scope, "value", data)?;
+    }
+    if descriptor.hasGetter_() {
+        let getter = accessor(scope, descriptor.getter_);
+        field(scope, "get", getter)?;
+    }
+    if descriptor.hasSetter_() {
+        let setter = accessor(scope, descriptor.setter_);
+        field(scope, "set", setter)?;
+    }
+    let null = v8::null(scope).into();
+    Some(v8::Object::with_prototype_and_properties(scope, null, &names, &values))
+}
+
 /// `[[DefineOwnProperty]]` with a SpiderMonkey descriptor: `Some(false)` on rejection, `None`
 /// with an exception pending. V8's native descriptors cannot hold `writable` without `value`,
 /// or one accessor without the other (a missing one would become `undefined`); those go
@@ -203,35 +247,7 @@ pub(crate) fn define_property<'s>(
         let descriptor = v8_descriptor(scope, descriptor);
         return target.define_property(scope, key, &descriptor);
     }
-    fn accessor<'s>(scope: &mut v8::PinScope<'s, '_>, function: *mut JSObject) -> v8::Local<'s, v8::Value> {
-        if function.is_null() { v8::undefined(scope).into() } else { value(scope, ObjectValue(function)) }
-    }
-    let mut fields: Vec<(&str, v8::Local<'s, v8::Value>)> = Vec::new();
-    if descriptor.hasConfigurable_() {
-        fields.push(("configurable", v8::Boolean::new(scope, descriptor.configurable_()).into()));
-    }
-    if descriptor.hasEnumerable_() {
-        fields.push(("enumerable", v8::Boolean::new(scope, descriptor.enumerable_()).into()));
-    }
-    if descriptor.hasWritable_() {
-        fields.push(("writable", v8::Boolean::new(scope, descriptor.writable_()).into()));
-    }
-    if descriptor.hasValue_() {
-        fields.push(("value", value(scope, descriptor.value_)));
-    }
-    if descriptor.hasGetter_() {
-        fields.push(("get", accessor(scope, descriptor.getter_)));
-    }
-    if descriptor.hasSetter_() {
-        fields.push(("set", accessor(scope, descriptor.setter_)));
-    }
-    let mut names = Vec::with_capacity(fields.len());
-    for (name, _) in &fields {
-        names.push(v8::String::new(scope, name)?.into());
-    }
-    let values: Vec<_> = fields.iter().map(|(_, field)| *field).collect();
-    let null = v8::null(scope).into();
-    let object = v8::Object::with_prototype_and_properties(scope, null, &names, &values);
+    let object = descriptor_object(scope, descriptor)?;
     let define = crate::values_impl::helper(scope, "ReflectDefineProperty", "(Reflect.defineProperty)")?;
     let undefined = v8::undefined(scope).into();
     let defined = define.call(scope, undefined, &[target.into(), key.into(), object.into()])?;
