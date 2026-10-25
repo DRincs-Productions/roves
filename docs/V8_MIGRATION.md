@@ -12,6 +12,23 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Pubblicazione0330–0332 completata —25ottobre
+
+Il batch0329 è terminato TUTTO VERDE: V84017869110010/10, generale4017869087513/13,
+Android40178690892 e iOS40178690851 verdi. Pubblicati i commit0330/0331/0332 e handoff
+nel checkpoint root **a4e78c2e543**, wiki **0f7b9da**. Nessun sorgente WIP in checkout.
+Nuovo batch identificato dopo push: V8 **40181485105**, generale **40181485120**,
+Android **40181485099**, iOS **40181485090**, tutti in coda al controllo iniziale.
+Il nuovo check worker FIFO ha conferma Chrome/Node, manca conferma Roves da questo batch.
+Questo aggiornamento degli ID è committato solo localmente durante la CI, senza altro push.
+
+Resta da chiudere la retention dei frame (0/2 reali), i casi WindowProxy tra thread e
+ document.domain, l’audit API approssimate non banali e task worker tardivi, poi WPT selettivi,
+stress lifecycle/GC, scenari PixiJS/Three.js, confronti memoria/prestazioni e release/pin consumer.
+Non presentare questa lista come difetti tutti già dimostrati: distinguere problemi riprodotti
+(retention) da casi ancora da verificare. Nessuna percentuale di completamento dedotta.
+
+
 ### Checkpoint Codex —0330/0331/0332 committate locali, ultimo job0329 pendente
 
 0330 commit96b6c7b0862,0331 commit82cfd790a60,0332 commit2495225b863 complete e
