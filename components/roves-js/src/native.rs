@@ -52,6 +52,11 @@ pub(crate) fn call_native(
         return;
     };
     let cx = JSContext::current();
+    // V8 enters a function's context for native calls, including promise reactions
+    // drained without a Servo AutoRealm. Keep the JSAPI realm (and its principals)
+    // in sync, restoring the embedder's previous realm on every exit.
+    let realm = crate::realm_impl::realm_of_context(scope.get_current_context());
+    let _realm = cx.switch_realm(realm);
     let raw_cx = cx as *const JSContext as *mut JSContext;
     let argc = args.length().max(0) as u32;
     let mut vp: Vec<JSVal> = VP_POOL.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();

@@ -1,3 +1,30 @@
+## 2026-10-25 - Synchronize JSAPI native entry with V8's executing realm (0349)
+
+Files: `components/roves-js/src/native.rs`, `components/roves-js/src/realm_tests.rs`.
+Patch: `0349-sync-native-callback-realm-with-v8.patch`.
+
+CI40228995092 failed only the Linux browser smoke in normal/JITless. The new live
+FontFaceSet ready test completed its first two checks, then a native Window operation after
+an awaited Promise hit ServoJSPrincipalsRef::from_raw_unchecked with a null principal
+(principals.rs:110, proxyhandler.rs:1019). This is a runtime realm mismatch, not a reason
+to remove the GC test or relax origin checks. All other eight V8 jobs and the general/mobile
+workflows finished green.
+
+V8 enters the native function's context, but call_native left JSContext.current_realm at
+the embedder's outer realm when V8 drained Promise jobs without a Servo AutoRealm. Native
+entry now takes the context from public V8 get_current_context and reuses the existing
+RealmSwitch guard. The current and saved realms stay traced, and every return restores the
+outer realm. No principal substitution, null-origin bypass, new dependency or public API.
+
+The regression awaits Promise.race in a page realm with principals, drains the checkpoint
+from the runtime's initial realm, then checks exact callee-realm identity and nonnull
+principals inside JSNative without panicking across FFI. It also checks direct cross-realm
+native calls, deliberately throwing native callbacks, outer-realm restoration and empty
+saved-realm stack. Old code fails normal
+and JITless; full corrected roves-js suites pass135normal/134JITless (2/3ignored). No local
+heavy browser build or unchanged smoke-runner repetition. Real normal/JITless browser
+validation remains in CI. README/wiki and migration handoff updated; frame retention open.
+
 ## 2026-10-25 - Trace FontFaceSet.ready as a DOM edge instead of a permanent root (0348)
 
 Files: `components/script/dom/css/fontfaceset.rs`, `support/v8-smoke/gc-lifecycle.html`,

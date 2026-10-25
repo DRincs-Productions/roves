@@ -1,0 +1,81 @@
+diff --git a/components/roves-js/src/native.rs b/components/roves-js/src/native.rs
+index 0254fd3dbaa..718a42c58f1 100644
+--- a/components/roves-js/src/native.rs
++++ b/components/roves-js/src/native.rs
+@@ -52,6 +52,11 @@ pub(crate) fn call_native(
+         return;
+     };
+     let cx = JSContext::current();
++    // V8 enters a function's context for native calls, including promise reactions
++    // drained without a Servo AutoRealm. Keep the JSAPI realm (and its principals)
++    // in sync, restoring the embedder's previous realm on every exit.
++    let realm = crate::realm_impl::realm_of_context(scope.get_current_context());
++    let _realm = cx.switch_realm(realm);
+     let raw_cx = cx as *const JSContext as *mut JSContext;
+     let argc = args.length().max(0) as u32;
+     let mut vp: Vec<JSVal> = VP_POOL.with(|pool| pool.borrow_mut().pop()).unwrap_or_default();
+diff --git a/components/roves-js/src/realm_tests.rs b/components/roves-js/src/realm_tests.rs
+index 9e70e653eac..d2039999659 100644
+--- a/components/roves-js/src/realm_tests.rs
++++ b/components/roves-js/src/realm_tests.rs
+@@ -147,6 +147,60 @@ unsafe extern "C" fn native_answer(_cx: *mut JSContext, _argc: u32, vp: *mut JSV
+     true
+ }
+ 
++unsafe extern "C" fn native_has_calling_principals(cx: *mut JSContext, _argc: u32, vp: *mut JSVal) -> bool {
++    // Return a result instead of asserting inside an extern-C callback.
++    let realm = unsafe { GetCurrentRealmOrNull(cx) };
++    let callee_realm = unsafe { GetObjectRealmOrNull((*vp).to_object()) };
++    let has_principals = realm == callee_realm && !realm.is_null()
++        && !unsafe { GetRealmPrincipals(realm) }.is_null();
++    unsafe { *vp = BooleanValue(has_principals) };
++    true
++}
++
++unsafe extern "C" fn native_throws_in_calling_realm(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
++    unsafe { native_has_calling_principals(cx, argc, vp) };
++    let correct = unsafe { (*vp).to_boolean() };
++    crate::rooted!(in(cx) let error = Int32Value(if correct { 7 } else { 9 }));
++    unsafe { crate::api::JS_SetPendingException(cx, error.handle(), crate::api::ExceptionStackBehavior::Capture) };
++    false
++}
++
++#[test]
++fn native_callbacks_use_the_executing_realm_after_promise_jobs() {
++    let runtime = Runtime::new(JSEngineHandle::for_tests());
++    let cx = runtime.raw_cx();
++    let initial = unsafe { GetCurrentRealmOrNull(cx) };
++    unsafe { JS_InitDestroyPrincipalsCallback(cx, Some(destroy_principals)) };
++    let principals = unsafe { CreateRustJSPrincipals(ptr::null(), ptr::null_mut()) };
++    crate::rooted!(in(cx) let global = new_global(cx, principals));
++    let old = unsafe { EnterRealm(cx, global.get()) };
++    crate::rooted!(in(cx) let native = ObjectValue(unsafe {
++        JS_NewFunction(cx, Some(native_has_calling_principals), 0, 0, c"hasCallingPrincipals".as_ptr())
++    }.cast()));
++    assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"hasCallingPrincipals".as_ptr(), native.handle().into()) });
++    crate::rooted!(in(cx) let throwing = ObjectValue(unsafe {
++        JS_NewFunction(cx, Some(native_throws_in_calling_realm), 0, 0, c"throwInCallingRealm".as_ptr())
++    }.cast()));
++    assert!(unsafe { JS_SetProperty(cx, global.handle().into(), c"throwInCallingRealm".as_ptr(), throwing.handle().into()) });
++    eval(&runtime, "globalThis.checked = false; globalThis.errorChecked = false; (async () => { await Promise.race([Promise.resolve(1)]); checked = hasCallingPrincipals(); try { throwInCallingRealm(); } catch (e) { errorChecked = e === 7; } checked = checked && hasCallingPrincipals(); })(); 0");
++    unsafe { LeaveRealm(cx, old) };
++    // As in Servo's job checkpoint, no explicit EnterRealm surrounds this reaction.
++    unsafe { &mut *(*cx).isolate }.perform_microtask_checkpoint();
++    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial, "native entry restores the caller's realm");
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++    let old = unsafe { EnterRealm(cx, global.get()) };
++    assert!(eval(&runtime, "checked").to_boolean(), "native callback lost the page's principals");
++    assert!(eval(&runtime, "errorChecked").to_boolean(), "a throwing native callback preserves the realm too");
++    unsafe { LeaveRealm(cx, old) };
++    crate::rooted!(in(cx) let this = UndefinedValue());
++    crate::rooted!(in(cx) let mut result = UndefinedValue());
++    let args = HandleValueArray { length_: 0, elements_: ptr::null() };
++    assert!(unsafe { Call(cx, this.handle().into(), native.handle().into(), &args, result.handle_mut().into()) });
++    assert!(result.get().to_boolean(), "direct cross-realm native entry uses the callee realm too");
++    assert_eq!(unsafe { GetCurrentRealmOrNull(cx) }, initial);
++    assert_eq!(saved_depth(unsafe { &*cx }), 0);
++}
++
+ #[test]
+ fn escaped_native_function_keeps_its_realm_without_a_registry_root() {
+     let mut runtime = Runtime::new(JSEngineHandle::for_tests());

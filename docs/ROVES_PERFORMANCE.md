@@ -1,3 +1,14 @@
+## 25 ottobre — batch0348 e conferma circoscritta delle radiciFontFaceSet
+
+V840228995092:8/10 verdi; entrambi smokeLinux siinterrompono suprincipalnull dopo
+prime2prove fonts.ready. Native0349 riproduceerroreRealm dopoPromisejob e locorregge;
+normal135/JITless134 passano. Correzionebrowser ancora da verificare, testGCmantenuto.
+Snapshotframe-retention indipendente prodotto:artifact12612439502,3818217byte,
+SHA2566899885815ed9b3a3b0411c35de38f4459e5f8b008dc63066241bb6ab7c5d639.
+MemLab2.0.5 census direttoRootSet/valori:44archi,1Promise (duplicata nella tabellaroot),
+non più le vecchie rootFontFaceSet né Performance. Probe/Document/frame ancora vivi:
+restano callback. Bytesnapshot nonsono RAMrisparmiata, nessun benchmark dedotto.
+
 ## 25 ottobre — riferimento contratto fonts.ready0348
 
 Chrome DevTools MCP155 Windows visibile, HTTP127.0.0.1:19048/harness.js: eseguito solo

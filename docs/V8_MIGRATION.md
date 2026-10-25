@@ -12,6 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0349 — CI0348 corretta localmente, pronta alla pubblicazione
+
+Batch9c6e1334a07 concluso: generale4022899502013/13, mobile40228995069/40228995041
+verdi. V8402289950928/10: soli browserLinux normal121276470664 e JITless121276470684 rossi.
+Non timeoutfont/errorecompilazione: helper0348 supera identità+valore, poi abortisce per
+principalnull inprincipals.rs110 da is_platform_object_same_origin/proxyhandler.rs1019.
+Cause isolata: V8 esegueNative callback nelcontesto pagina maJSContext.current_realm resta
+inizialeruntime dopoPromisejob non circondato daAutoRealmServo. Nessun rollback0348 o
+indebolimento checkorigini. Nativeentry ora riusa realm_of_context(scope.get_current_context())
+e RealmSwitch conripristinoRAII, radicando realmattuale/salvati comegiàprevisto.
+
+Regressione nuova: Promise.race/await nelrealmpaginaconprincipal, checkpointfuori dalrealm,
+callbackcontrolla identitàesatta delrealmcalleeeprincipalnonnull; chiamatadiretta crossrealm,
+callbackcheritornafalseconeccezione, ripristinorealm e savedstackvuoto. NessunpanicoltreFFI.
+VecchioNativeCode fallisce normal/JITless; finali135pass2ign normal/134pass3ign JITless.
+Logtarget/task-0349/negative-*.log e runtime-*.log; nessunbuildServo locale.
+Patch0349 dryrun/apply scratch:480/483 identiciLF,3eccezioninote. Scratchora0349.
+Controllo browservero riprenderàconlaCI delprossimopush; tuttiibatchprecedentiterminali.
+
+Artefatto0348 pre0349:12612439502,3818217byte,
+SHA2566899885815ed9b3a3b0411c35de38f4459e5f8b008dc63066241bb6ab7c5d639.
+MemLab2.0.5 censusdirettoRootSet:44archi, solo1Promise duplicatasultracerpromise,
+nessunadelleprecedentiradiciFontFaceSet/performance. ConfermacircoscrittarootFontReady0348,
+nonrisoluzioneframe (probeancoravivo, callbackrootsrestano). Non dedurreRAMdai bytesnapshot.
+Prossimo0350: ownershipCallbackObject nei listenerDOM mantenendoRcesterni e incumbentsettings;
+prima valutare contenitoretracciatoesistente/codegen, nessuncollettoreRustmanuale o taglio globale
+root. Scheduler22:42 riprendedal correntehandoff, nonreimplementare0347/0348/0349.
+
 ### Codex0348 completa localmente — FontFaceSet.ready tracciata dal DOM
 
 Sviluppo diretto ancora autorizzato dall’utente; nessun tentativoClaude aggiuntivo. FontFaceSet
