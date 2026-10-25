@@ -1,3 +1,9 @@
+## 2026-10-25 - Record the published listener ownership checkpoint
+
+Published0353+0355 at36abe9363db, wiki e76e098. Migration handoff records the four new
+pending CI runs and requires fresh GC/snapshot evidence before changing another callback
+owner. No runtime change; this checkpoint documentation remains local while that batch runs.
+
 ## 2026-10-25 - Validate the inline-handler implementation (0355)
 
 Reviewer checks:42 runner tests (34 pass,8 POSIX skips), both page scripts parse in Node,

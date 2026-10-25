@@ -20,6 +20,16 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Pubblicato0353+0355 —36abe9363db; nuovo batch pendente
+
+Rootpubblicato36abe9363dbae986926d2a59af2ae74b69d25aa8, wiki e76e098. Nuove run:
+V840241738477 inprogress, generale40241738475/Android40241738569/iOS40241738470 queued
+alla lettura aggregata dopo push. Nessun nuovo push finché questo batch non lo consente.
+Precedente9f62 tuttoverde. Prossimo lavoro utile richiede l'esito tipi/GC e lo snapshot di
+questo batch: controllare i marker nuovi normal/JITless e il censusRootSet conMemLab;
+solo un owner residuo dimostrato giustifica un'altra modifica di ownership. Nessun polling
+continuo o automazione periodica. Questo aggiornamento checkpoint resta commitlocale.
+
 ### Checkpoint Codex —0353 e0355 complete, batch0351 tutto verde
 
 Batch9f62b30b1e8 concluso: V84023847395210/10, generale4023847390013/13,
