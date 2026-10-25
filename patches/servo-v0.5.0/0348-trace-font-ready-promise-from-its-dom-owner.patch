@@ -1,0 +1,174 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index 1cba0bfc01a..3b15f3275c6 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -9,6 +9,7 @@ on:
+       - 'components/roves-js/**'
+       - 'components/script_bindings/**'
+       - 'components/script/task_queue.rs'
++      - 'components/script/dom/css/fontfaceset.rs'
+       - 'components/script/script_thread.rs'
+       - 'support/task-queue-tests/**'
+       - 'support/v8_cutover_check.py'
+diff --git a/components/script/dom/css/fontfaceset.rs b/components/script/dom/css/fontfaceset.rs
+index f7f55dbe8b2..c1bea5e279e 100644
+--- a/components/script/dom/css/fontfaceset.rs
++++ b/components/script/dom/css/fontfaceset.rs
+@@ -2,14 +2,13 @@
+  * License, v. 2.0. If a copy of the MPL was not distributed with this
+  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
+ 
+-use std::cell::RefCell;
+ use std::rc::Rc;
+ 
+ use dom_struct::dom_struct;
+ use fonts::FontFaceRuleWithOrigin;
+ use js::context::JSContext;
+ use js::gc::Handle;
+-use js::jsapi::Value;
++use js::jsapi::{GetPromiseState, Heap, JSObject, PromiseState, Value};
+ use js::realm::CurrentRealm;
+ use js::rust::HandleObject;
+ use layout_api::{QueryMsg, ReflowGoal};
+@@ -42,17 +41,19 @@ pub(crate) struct FontFaceSet {
+     target: EventTarget,
+ 
+     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-readypromise-slot>
+-    #[conditional_malloc_size_of]
+-    promise: RefCell<Rc<Promise>>,
++    // A DOM-owned edge, not an Rc<Promise>'s permanent JS root. A fulfilled ready
++    // promise resolves to this set: rooting it here would make that cycle immortal.
++    #[ignore_malloc_size_of = "Defined in mozjs"]
++    promise: Heap<*mut JSObject>,
+ 
+     set_entries: DomRefCell<Vec<Dom<FontFace>>>,
+ }
+ 
+ impl FontFaceSet {
+-    fn new_inherited(promise: Rc<Promise>) -> Self {
++    fn new_inherited() -> Self {
+         FontFaceSet {
+             target: EventTarget::new_inherited(),
+-            promise: promise.into(),
++            promise: Heap::default(),
+             set_entries: Default::default(),
+         }
+     }
+@@ -63,12 +64,20 @@ impl FontFaceSet {
+         proto: Option<HandleObject>,
+     ) -> DomRoot<Self> {
+         let promise = Promise::new(cx, global);
+-        reflect_dom_object_with_proto(
++        let set = reflect_dom_object_with_proto(
+             cx,
+-            Box::new(FontFaceSet::new_inherited(promise)),
++            Box::new(FontFaceSet::new_inherited()),
+             global,
+             proto,
+-        )
++        );
++        set.promise.set(promise.promise_obj().get());
++        set
++    }
++
++    /// Native callers get their own rooted wrapper; the DOM keeps only the traced edge.
++    fn ready_promise(&self, cx: &mut JSContext) -> Rc<Promise> {
++        rooted!(&in(cx) let promise = self.promise.get());
++        Promise::new_with_js_promise(cx, promise.handle())
+     }
+ 
+     pub(super) fn handle_font_face_status_changed(&self, cx: &mut JSContext, font_face: &FontFace) {
+@@ -95,7 +104,7 @@ impl FontFaceSet {
+ 
+     /// Fulfill the font ready promise, returning true if it was not already fulfilled beforehand.
+     pub(crate) fn fulfill_ready_promise_if_needed(&self, cx: &mut JSContext) -> bool {
+-        let promise = self.promise.borrow().clone();
++        let promise = self.ready_promise(cx);
+         if promise.is_fulfilled() {
+             return false;
+         }
+@@ -103,8 +112,14 @@ impl FontFaceSet {
+         true
+     }
+ 
++    #[expect(unsafe_code)]
+     pub(crate) fn waiting_to_fullfill_promise(&self) -> bool {
+-        !self.promise.borrow().is_fulfilled()
++        // The caller roots this FontFaceSet, which traces the promise. This query
++        // does not allocate or run user code, and needs no temporary Rc wrapper.
++        matches!(
++            unsafe { GetPromiseState(self.promise.handle()) },
++            PromiseState::Pending
++        )
+     }
+ 
+     fn contains_face(&self, target: &FontFace) -> bool {
+@@ -134,8 +149,9 @@ impl FontFaceSet {
+ 
+         // Step 3. If font face set’s [[ReadyPromise]] slot currently holds a fulfilled
+         // promise, replace it with a fresh pending promise.
+-        if self.promise.borrow().is_fulfilled() {
+-            *self.promise.borrow_mut() = Promise::new(cx, &self.global());
++        if !self.waiting_to_fullfill_promise() {
++            let promise = Promise::new(cx, &self.global());
++            self.promise.set(promise.promise_obj().get());
+         }
+ 
+         // Step 4. Queue a task to fire a font load event named loading at font face set.
+@@ -188,12 +204,12 @@ impl FontFaceSet {
+ impl FontFaceSetMethods<crate::DomTypeHolder> for FontFaceSet {
+     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-ready>
+     fn Ready(&self, cx: &mut JSContext) -> Rc<Promise> {
+-        if self.promise.borrow().is_fulfilled() {
++        if !self.waiting_to_fullfill_promise() {
+             // There may be pending style changes that cause new web fonts to start loading,
+             // re-initializing document.fonts.ready.
+             self.flush_author_font_set(cx);
+         }
+-        self.promise.borrow().clone()
++        self.ready_promise(cx)
+     }
+ 
+     /// <https://drafts.csswg.org/css-font-loading/#dom-fontfaceset-add>
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 06530d77925..3e186e35cce 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -36,6 +36,29 @@ async function collectOnce() {
+   await new Promise(resolve => setTimeout(resolve, 0));
+ }
+ 
++// FONT_READY_CONTRACT_BEGIN: also executed in isolation for the Chrome reference.
++async function checkFontReady(collect) {
++  const fonts = document.fonts;
++  let ready = fonts.ready;
++  check("font ready promise identity", ready === fonts.ready, "changed before settlement");
++  let timer;
++  try {
++    const result = await Promise.race([ready, new Promise((_, reject) => {
++      timer = setTimeout(() => reject(new Error("font ready timed out")), 5000);
++    })]);
++    check("font ready resolves to its set", result === fonts, "wrong fulfillment value");
++  } finally { clearTimeout(timer); }
++  const weakReady = new WeakRef(ready);
++  ready = null; // The DOM must trace the cached promise without a native permanent root.
++  await collect();
++  const after = fonts.ready;
++  check("font ready DOM edge survives collection", weakReady.deref() === after,
++        "cached promise was lost or replaced");
++  check("font ready retained result survives collection", await after === fonts,
++        "fulfillment changed");
++}
++// FONT_READY_CONTRACT_END
++
+ // deref() keeps a live target for the current job only; no target is stored.
+ function aliveCount(refs) {
+   let alive = 0;
+@@ -276,6 +299,7 @@ async function main() {
+     fail("TestUtils.gc unavailable");
+     return;
+   }
++  await checkFontReady(collectOnce);
+   keepNodes();
+   const nodeRefs = [];
+   const cycleRefs = [];

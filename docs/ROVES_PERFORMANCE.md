@@ -1,3 +1,11 @@
+## 25 ottobre — riferimento contratto fonts.ready0348
+
+Chrome DevTools MCP155 Windows visibile, HTTP127.0.0.1:19048/harness.js: eseguito solo
+helpercheckFontReady estratto da gc-lifecycle.html.4/4 controlli (identità, valore, identità
+successiva, valore successivo) passano con confine task e SENZA GC forzata Chrome. InRoves
+lo stesso helper usa TestUtils.gc; esito allaCI. Tab/serverchiusi. Nessun benchmark o
+riduzioneRAM dedotta; permanenza dei frame non dichiarata risolta.
+
 ## 25 ottobre — checkpointaa028313991, retention frame ancora presente
 
 CI V840208620536/job121214852263 Linuxnormal: modulo e no-module ancora0/2 per
@@ -1303,3 +1311,12 @@ versionato. `HideScriptedCaller` + `UnhideScriptedCaller` (eseguiti da Servo per
 eventi, timer, requestAnimationFrame): ~106 ns per coppia. `GetScriptedCallerGlobal` senza frame
 JS: ~78 ns. Trascurabile rispetto al costo di una callback; nessuna misura in pagina né confronto
 Chrome (MCP non disponibile in questo ambiente).
+
+## 25 ottobre — controllo circoscritto artefatto0347
+
+Run40223728881/artifact12610891565, snapshot4873823byte,
+SHA256fbb20b76fc1460847a10eec5f59888f47a94ad419319f984d35d790185c0a062.
+MemLab2.0.5 suWSLNode24, queryRootSet e valori diretti delle suecelle:47archi e nessun
+valoreoggettoPerformance radicato. Le stringheatomiche chiamatePerformance non sono
+oggettiPerformance. È conferma circoscritta dell’eliminazione della radice osservata0345,
+non prova di rilascioframe né misuraRAM/CPU. FontFaceSet/callback restano per0348/0349.

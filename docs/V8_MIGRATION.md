@@ -12,6 +12,34 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0348 completa localmente — FontFaceSet.ready tracciata dal DOM
+
+Sviluppo diretto ancora autorizzato dall’utente; nessun tentativoClaude aggiuntivo. FontFaceSet
+ora conserva Heap<JSObject> invece diRc<Promise>: riuso del pattern PromiseRejectionEvent e di
+Promise::new_with_js_promise per wrapper nativi temporanei radicati. NativeRc esterne restano
+protette; nessuna modifica globale aPromise o teardownDocument. IdentitàJS conservata, constructor
+mantienePromise radicata fino all’installazioneHeap, getter rilegge dopo flushstili e nuovo loading
+sostituisceHeap con nuovaPromise. Query stato senza allocazioni tramiteGetPromiseState. Getters
+possonoallocare wrapperRust temporanei, nessun beneficioCPU/RAM dichiarato senza misure.
+
+Nuovo helpergc-lifecycle4contratti: identità, valoreFontFaceSet, sopravvivenzaedgeDOM e risultato
+attraversoTestUtils.gc. ChromeMCP155 Windowsvisibile HTTP19048: helperreale4/4 con SOLIconfini
+task, SENZA GCforzata; altri checknon eseguiti. node--check e parsingRust passano; runner42totali
+(34pass,8POSIXskip), REQUIRED_CHECKSinvariati. No buildServo locale o duplicatiJITless nativi
+immutati. TipiServo reali, GC e rimozione delle specifiche radici allaCI. Patch0348 dryrun/apply:
+480/483 identiciLF,3eccezioninote; scratchora0348. Logtarget/task-0348/.
+
+Batch4366f3a09c8 TUTTO VERDE: V84022372888110/10, generale4022372885413/13, mobileverdi.
+Artefatto0347 corrente12610891565,4873823byte,
+SHA256fbb20b76fc1460847a10eec5f59888f47a94ad419319f984d35d790185c0a062:
+MemLab2.0.5 censusdirettoRootSet47archi, nessun valorecella di tipo oggettoPerformance
+(prima c’era). Conferma circoscritta0347 su questoscenario, non risoluzione retentionframe.
+Promise/callback radici restano nell’artefattopre0348, come atteso. Non rianalizzarlo per0348!
+Pubblicare0348+rifinitura553494daf82 dopoquestobatchverde; prossimo0349: cicloCallbackObject
+in listenerDOM. Richiede pianoownership che preservi Rc native/incumbent settings; NON cancellare
+listener solo perchéChrome non invoca callback di frameusciti. Scheduler22:42 leggehandofcorrente,
+NON ripetere0347/0348. Retentioncomplessiva ancoraaperta.
+
 ### Pubblicato0347 — 4366f3a09c8; rifinitura locale durante CI
 
 Commit4366f3a09c8 pubblicato, wiki be79aaf. Nuovo batchV840223728881,

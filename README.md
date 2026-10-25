@@ -84,8 +84,9 @@ module tables still keep pages and modules alive, so this saves no memory yet (n
 The current removed-frame diagnostic still retains its probe: native roots include
 FontFaceSet promises, an injected event listener and a Performance owner consistent with a
 parked task of a closed pipeline. Exited pipelines now discard their parked and ready tasks and reject late tasks, releasing
-native captures on the script thread. FontFaceSet/callback cleanup is still under
-investigation; no overall frame-retention fix has been validated.
+native captures on the script thread. FontFaceSet now traces its cached ready promise from the DOM owner, obtaining rooted wrappers
+only for native use. Callback roots remain under investigation; no overall frame-retention
+fix has been validated.
 Its main Window fixture and cross-origin iframe use
 temporary loopback HTTP servers on different ports, so Servo exercises an HTTP origin and the
 iframe has a distinct origin. Failed smoke runs retain bounded browser logs and report iframe

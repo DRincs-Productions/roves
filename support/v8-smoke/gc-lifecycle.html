@@ -36,6 +36,29 @@ async function collectOnce() {
   await new Promise(resolve => setTimeout(resolve, 0));
 }
 
+// FONT_READY_CONTRACT_BEGIN: also executed in isolation for the Chrome reference.
+async function checkFontReady(collect) {
+  const fonts = document.fonts;
+  let ready = fonts.ready;
+  check("font ready promise identity", ready === fonts.ready, "changed before settlement");
+  let timer;
+  try {
+    const result = await Promise.race([ready, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("font ready timed out")), 5000);
+    })]);
+    check("font ready resolves to its set", result === fonts, "wrong fulfillment value");
+  } finally { clearTimeout(timer); }
+  const weakReady = new WeakRef(ready);
+  ready = null; // The DOM must trace the cached promise without a native permanent root.
+  await collect();
+  const after = fonts.ready;
+  check("font ready DOM edge survives collection", weakReady.deref() === after,
+        "cached promise was lost or replaced");
+  check("font ready retained result survives collection", await after === fonts,
+        "fulfillment changed");
+}
+// FONT_READY_CONTRACT_END
+
 // deref() keeps a live target for the current job only; no target is stored.
 function aliveCount(refs) {
   let alive = 0;
@@ -276,6 +299,7 @@ async function main() {
     fail("TestUtils.gc unavailable");
     return;
   }
+  await checkFontReady(collectOnce);
   keepNodes();
   const nodeRefs = [];
   const cycleRefs = [];

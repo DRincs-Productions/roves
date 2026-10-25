@@ -1,3 +1,34 @@
+## 2026-10-25 - Trace FontFaceSet.ready as a DOM edge instead of a permanent root (0348)
+
+Files: `components/script/dom/css/fontfaceset.rs`, `support/v8-smoke/gc-lifecycle.html`,
+`.github/workflows/v8.yml`. Patch: `0348-trace-font-ready-promise-from-its-dom-owner.patch`.
+
+The current removed-frame snapshot (artifact12604704563) shows permanent Promise::root
+entries for the frame documents' FontFaceSet.ready promises. A fulfilled ready promise
+resolves to its FontFaceSet: storing an Rc<Promise> on the DOM set roots the very cycle
+that must collect. Pending promises also retain their realm through that permanent root.
+
+FontFaceSet now stores the JS reflector in an existing traced Heap<JSObject>, as other DOM
+objects such as PromiseRejectionEvent already do. Native operations obtain a rooted wrapper
+through existing Promise::new_with_js_promise; independent native users retain normal Rc
+protection. Constructor and loading replacement keep their native wrapper until the new
+heap edge is installed. No global Promise rooting, destruction behavior or public API changes.
+Ready still rereads the cached promise after a potentially reentrant style flush. Status
+queries use the existing nonallocating GetPromiseState, preserving settled/rejected semantics.
+
+No new dependency, WeakMap, teardown policy or promise implementation. A getter may allocate
+a temporary native wrapper instead of cloning a persistent Rc; status checks on rendering
+paths do not. No CPU/RAM benefit is claimed without measurements. The new live-DOM smoke
+checks identity, fulfillment value, survival of the DOM-owned edge and retained result over
+TestUtils.gc. REQUIRED_CHECKS is unchanged; the Windows runner reports42tests (34passed,8POSIX skips).
+Chrome DevTools MCP155 Windows visible, HTTP19048, executes the actual isolated helper:
+4/4 checks pass with a task boundary ONLY (no forced Chrome GC), no other page tests run.
+node --check and Rust parsing pass. Real Servo typing, native GC and removal of the specific
+raw roots require CI; the prior snapshot is the negative retention evidence, not a local
+browser A/B run. Existing frame diagnostics stay enabled and callback roots remain open.
+Workflow now includes FontFaceSet-only source edits in its trigger. No test.yml or build/
+bundle interface change, hence no roves-action mirror adjustment. README/wiki/handoff updated.
+
 ## 2026-10-25 - Drop queued tasks of permanently exited pipelines (0347)
 
 Files: `components/script/task_queue.rs`, `components/script/script_thread.rs`,
