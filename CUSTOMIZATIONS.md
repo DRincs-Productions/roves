@@ -1,3 +1,35 @@
+## 2026-10-25 - Partial property descriptors keep absent fields on native proxies (0335)
+
+**Files:** `components/roves-js/src/jsapi_impl.rs`, `components/roves-js/src/proxy.rs`,
+`components/roves-js/src/values_impl.rs`, `components/roves-js/src/tests.rs`,
+`support/v8-smoke/suite.html`, patch `0335-partial-property-descriptors.patch`.
+
+`JS_DefinePropertyById` (DOM proxy expandos through `proxyhandler::define_property`, and the
+WindowProxy's `define_property` onto the Window) converted the SpiderMonkey descriptor with
+`v8_descriptor`, but rusty_v8 152.2's `PropertyDescriptor` has only `new()`, `(value)`,
+`(value, writable)` and `(get, set)` constructors: `{ writable: false }` became an empty generic
+descriptor (writable silently unchanged), and `{ get }` / `{ set }` alone set the other accessor
+to `undefined`. The new `jsapi_impl::define_property` keeps the native path for every
+representable descriptor and sends only those two shapes through the realm's original
+`Reflect.defineProperty` (new `ReflectDefineProperty` entry of the intrinsics captured before
+any script runs), with a null-prototype descriptor holding only the present fields, so a
+polluted `Object.prototype` or replaced global `Reflect` cannot supply or change anything.
+Absent fields are not merged by reading the old descriptor first; rejection still returns an
+`ObjectOpResult` failure and an exception (e.g. a throwing user Proxy trap) stays pending.
+The native proxy `defineProperty` trap also mirrored a non-configurable property onto the V8
+proxy target only when the descriptor had `configurable`, and mirrored the partial descriptor
+itself: `{ writable: false }` on a non-configurable expando failed V8's target invariant
+check, and `{ get, configurable: false }` gave the target `set: undefined`, breaking later
+`getOwnPropertyDescriptor` invariants. Now it also mirrors when the target already holds the
+(always non-configurable) mirror, and mirrors the property as defined, read back through the
+handler's own `getOwnPropertyDescriptor` trap (falling back to the passed descriptor without
+that trap). The new native test drives a Servo-style expando proxy (writable-only, value-only,
+getter-only/setter-only, explicit `undefined`, new getter-only defaults, non-configurable
+allowed/rejected changes and `Object.defineProperty` throwing, Symbol and integer keys) and
+direct JSAPI calls (non-extensible target, global target, false and throwing proxy traps).
+`suite.html` adds a non-required check on a real `HTMLCollection` and `window`.
+`JS_InitializePropertiesFromCompatibleNativeObject` (complete descriptors only) is unchanged.
+
 ## 2026-10-25 - POSIX runner fixture reports every required check (0334)
 
 **Files:** `support/v8-smoke/test_runner.py`, patch `0334-posix-fixture-required-checks.patch`.

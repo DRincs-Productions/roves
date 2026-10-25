@@ -618,6 +618,10 @@ Unregistering also waits for engine tasks already being handed to the runtime fr
 threads, so they are destroyed before the isolate goes away too instead of being dropped
 silently after shutdown.
 
+`Object.defineProperty` with a partial descriptor (such as `{ writable: false }` or only a
+getter) on DOM objects with named properties and on `window` now changes only the given
+fields, as in other browsers, instead of ignoring `writable` or clearing the other accessor.
+
 Code that calls into another same-origin window (for example a parent page calling a function
 defined in an iframe) now reports the window whose code is running as its caller, as browsers
 do, and callbacks run by the engine no longer see the script that registered them as the caller.

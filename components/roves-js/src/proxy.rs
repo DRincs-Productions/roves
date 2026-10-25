@@ -345,12 +345,11 @@ fn descriptor_object<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: &Property
 }
 
 /// Mirrors a non-configurable property onto the target (V8's proxy invariants).
-fn mirror_non_configurable(scope: &mut v8::PinScope, target: v8::Local<v8::Object>, key: v8::Local<v8::Name>, descriptor: &PropertyDescriptor) {
+fn mirror_non_configurable<'s>(scope: &mut v8::PinScope<'s, '_>, target: v8::Local<'s, v8::Object>, key: v8::Local<'s, v8::Name>, descriptor: &PropertyDescriptor) {
     if descriptor.configurable_() {
         return;
     }
-    let mirrored = crate::jsapi_impl::v8_descriptor(scope, descriptor);
-    let _ = target.define_property(scope, key, &mirrored);
+    let _ = crate::jsapi_impl::define_property(scope, target, key, descriptor);
 }
 
 /// The own descriptor of `id` through the handler (`None` when absent, `Err` on failure).
@@ -421,8 +420,16 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
     let mut result = ObjectOpResult { code_: 0 };
     // SAFETY: SpiderMonkey's trap contract.
     let ok = unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), rooted_descriptor.handle().into_handle(), &mut result) };
-    if ok && result.ok() && descriptor.hasConfigurable_() {
-        mirror_non_configurable(scope, context.target, key, &descriptor);
+    // A target property is always a non-configurable mirror: keep it in step with partial
+    // changes too (e.g. `{ writable: false }`), as V8 checks the target after the trap. The
+    // mirror is the property as now defined, since a partial descriptor alone would give
+    // the target defaults for its absent fields.
+    if ok && result.ok() && (descriptor.hasConfigurable_() || context.target.has_own_property(scope, key).unwrap_or(false)) {
+        match own_descriptor(&context, id.get()) {
+            Err(()) => return fail(scope),
+            Ok(Some(defined)) => mirror_non_configurable(scope, context.target, key, &defined),
+            Ok(None) => mirror_non_configurable(scope, context.target, key, &descriptor),
+        }
     }
     result_to_bool(ok, &result, &mut retval, scope);
 }

@@ -12,6 +12,45 @@ Restano fermi quote diverse, stop utente, nessun cambio modello e regole CI.
 
 ## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Codex0335 revisionata, commit locale durante CI0333/0334
+
+0335 riproduce e corregge descrittori parziali sul percorso nativoDOMProxy→expando→JSAPI:
+writable-only perso, un solo accessor azzerava l’altro; corretto anche il mirror non-configurabile.
+API V8 dirette restano per descrittori rappresentabili; casi mancanti usano l’intrinseco
+Reflect.defineProperty catturato prima degli script e descrittore null-prototype. Nessun
+merge leggendo il target prima della definizione. Native125normal/124JITless, negativi vecchio
+helper/mirror/Reflectmutabile/prototipo inquinato, replay470/473 con3eccezioni note.
+Chrome DevTools MCP155 Windows visibile HTTP127.0.0.1:19035: CHECK REALE0335 di suite.html
+(HTMLCollection+window) passa; non eseguite le altre prove della suite. Pagina/server chiusi.
+Batchbce416e50da: V840184060372TUTTO VERDE10/10, conferma correzione POSIX0334;
+generale401840603919/13 verdi,4build ancora attive al controllo0335, nessun rosso.
+Non fare push. Prossimo incarico circoscritto: verificare il candidato descriptor_object
+(proxy getOwnPropertyDescriptor) con Object.prototype inquinato, prima di proporre un fix.
+
+
+### Claude0335 — descrittori parziali nel bridge DOM/JSAPI (da revisionare, non committato)
+
+Base bce416e50da; CI del push (V840184060372, generale40184060391, Android40184060445,
+iOS40184060368) non controllata da Claude. API: rusty_v8152.2 `PropertyDescriptor` ha solo
+`new`/`(value)`/`(value,writable)`/`(get,set)`, nessun writable-only né accessor singolo.
+Difetto dimostrato sul percorso di produzione (trap proxy V8 → `defineProperty` nativo →
+`JS_DefinePropertyById` sull'expando, come `proxyhandler::define_property` e WindowProxy):
+`{writable:false}` ignorato, `{get}`/`{set}` azzerava l'altro accessor. Secondo difetto nel
+mirror del target proxy: solo con `configurable` presente e con il descrittore parziale, quindi
+TypeError d'invariante V8. Fix: `jsapi_impl::define_property` lascia il percorso nativo per i
+descrittori rappresentabili e usa per gli altri `ReflectDefineProperty` (intrinseco catturato
+prima degli script) con descrittore a prototipo null e soli campi presenti; nessuna lettura
+preventiva. Il trap rispecchia anche quando il target ha già il mirror, rileggendo il descrittore
+risultante con la trap nativa `getOwnPropertyDescriptor`. Test nativo nuovo + check non
+obbligatorio `suite.html` (HTMLCollection, window); REQUIRED_CHECKS invariati, niente WSL.
+roves-js normal125/2ign, JITless124/3ign. Negativi deterministici: codice vecchio normal/JITless
+(9controlli), solo `proxy.rs` vecchio (mirror), helper da `Reflect` globale mutabile, descrittore
+con `Object.prototype`. Runner Windows42ok/8skip. Patch `0335-partial-property-descriptors.patch`:
+replay470/473, stesse3eccezioni. Log `target/task-0335/`. Fuori ambito, non dimostrato:
+`descriptor_object` (risultato trap `getOwnPropertyDescriptor`) usa `Object.prototype`, quindi un
+`Object.prototype.get` inquinato potrebbe invalidare descrittori dati di proxy DOM; candidato
+per incarico separato. Retention frame resta aperta.
+
 ### Checkpoint0333/0334 revisionato, batch precedente concluso
 
 Batcha4e78c2e543 concluso: generale4018148512013/13, Android40181485099 e iOS40181485090

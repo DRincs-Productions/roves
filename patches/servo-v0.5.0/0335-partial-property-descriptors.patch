@@ -1,0 +1,280 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 6ed55bf3c71..1485bbaaf0e 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -187,6 +187,57 @@ pub(crate) fn v8_descriptor(scope: &mut v8::PinScope, descriptor: &PropertyDescr
+     result
+ }
+ 
++/// `[[DefineOwnProperty]]` with a SpiderMonkey descriptor: `Some(false)` on rejection, `None`
++/// with an exception pending. V8's native descriptors cannot hold `writable` without `value`,
++/// or one accessor without the other (a missing one would become `undefined`); those go
++/// through the realm's original `Reflect.defineProperty` with a null-prototype descriptor
++/// holding only the present fields.
++pub(crate) fn define_property<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    target: v8::Local<'s, v8::Object>,
++    key: v8::Local<'s, v8::Name>,
++    descriptor: &PropertyDescriptor,
++) -> Option<bool> {
++    let partial = (descriptor.hasWritable_() && !descriptor.hasValue_()) || descriptor.hasGetter_() != descriptor.hasSetter_();
++    if !partial {
++        let descriptor = v8_descriptor(scope, descriptor);
++        return target.define_property(scope, key, &descriptor);
++    }
++    fn accessor<'s>(scope: &mut v8::PinScope<'s, '_>, function: *mut JSObject) -> v8::Local<'s, v8::Value> {
++        if function.is_null() { v8::undefined(scope).into() } else { value(scope, ObjectValue(function)) }
++    }
++    let mut fields: Vec<(&str, v8::Local<'s, v8::Value>)> = Vec::new();
++    if descriptor.hasConfigurable_() {
++        fields.push(("configurable", v8::Boolean::new(scope, descriptor.configurable_()).into()));
++    }
++    if descriptor.hasEnumerable_() {
++        fields.push(("enumerable", v8::Boolean::new(scope, descriptor.enumerable_()).into()));
++    }
++    if descriptor.hasWritable_() {
++        fields.push(("writable", v8::Boolean::new(scope, descriptor.writable_()).into()));
++    }
++    if descriptor.hasValue_() {
++        fields.push(("value", value(scope, descriptor.value_)));
++    }
++    if descriptor.hasGetter_() {
++        fields.push(("get", accessor(scope, descriptor.getter_)));
++    }
++    if descriptor.hasSetter_() {
++        fields.push(("set", accessor(scope, descriptor.setter_)));
++    }
++    let mut names = Vec::with_capacity(fields.len());
++    for (name, _) in &fields {
++        names.push(v8::String::new(scope, name)?.into());
++    }
++    let values: Vec<_> = fields.iter().map(|(_, field)| *field).collect();
++    let null = v8::null(scope).into();
++    let object = v8::Object::with_prototype_and_properties(scope, null, &names, &values);
++    let define = crate::values_impl::helper(scope, "ReflectDefineProperty", "(Reflect.defineProperty)")?;
++    let undefined = v8::undefined(scope).into();
++    let defined = define.call(scope, undefined, &[target.into(), key.into(), object.into()])?;
++    Some(defined.is_true())
++}
++
+ fn define(cx: &JSContext, obj: *mut JSObject, key: impl for<'s, 'i> FnOnce(&mut v8::PinScope<'s, 'i>) -> Option<v8::Local<'s, v8::Name>>, value_of: JSVal, attrs: u32) -> bool {
+     cx.catching(|scope| {
+         let target = object(scope, obj)?;
+@@ -550,8 +601,7 @@ pub unsafe fn JS_DefinePropertyById(cx: *mut JSContext, obj: HandleObject, id: H
+     let defined = raw(cx).catching(|scope| {
+         let target = object(scope, obj.get())?;
+         let key = id_key(scope, id.get())?;
+-        let descriptor = v8_descriptor(scope, descriptor);
+-        target.define_property(scope, key, &descriptor)
++        define_property(scope, target, key, descriptor)
+     });
+     match defined {
+         Some(defined) => {
+diff --git a/components/roves-js/src/proxy.rs b/components/roves-js/src/proxy.rs
+index 09c6e4e4c81..ec74d2edc30 100644
+--- a/components/roves-js/src/proxy.rs
++++ b/components/roves-js/src/proxy.rs
+@@ -345,12 +345,11 @@ fn descriptor_object<'s>(scope: &mut v8::PinScope<'s, '_>, descriptor: &Property
+ }
+ 
+ /// Mirrors a non-configurable property onto the target (V8's proxy invariants).
+-fn mirror_non_configurable(scope: &mut v8::PinScope, target: v8::Local<v8::Object>, key: v8::Local<v8::Name>, descriptor: &PropertyDescriptor) {
++fn mirror_non_configurable<'s>(scope: &mut v8::PinScope<'s, '_>, target: v8::Local<'s, v8::Object>, key: v8::Local<'s, v8::Name>, descriptor: &PropertyDescriptor) {
+     if descriptor.configurable_() {
+         return;
+     }
+-    let mirrored = crate::jsapi_impl::v8_descriptor(scope, descriptor);
+-    let _ = target.define_property(scope, key, &mirrored);
++    let _ = crate::jsapi_impl::define_property(scope, target, key, descriptor);
+ }
+ 
+ /// The own descriptor of `id` through the handler (`None` when absent, `Err` on failure).
+@@ -421,8 +420,16 @@ fn trap_define_property<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::Function
+     let mut result = ObjectOpResult { code_: 0 };
+     // SAFETY: SpiderMonkey's trap contract.
+     let ok = unsafe { trap(cx, proxy.handle().into_handle(), id.handle().into_handle(), rooted_descriptor.handle().into_handle(), &mut result) };
+-    if ok && result.ok() && descriptor.hasConfigurable_() {
+-        mirror_non_configurable(scope, context.target, key, &descriptor);
++    // A target property is always a non-configurable mirror: keep it in step with partial
++    // changes too (e.g. `{ writable: false }`), as V8 checks the target after the trap. The
++    // mirror is the property as now defined, since a partial descriptor alone would give
++    // the target defaults for its absent fields.
++    if ok && result.ok() && (descriptor.hasConfigurable_() || context.target.has_own_property(scope, key).unwrap_or(false)) {
++        match own_descriptor(&context, id.get()) {
++            Err(()) => return fail(scope),
++            Ok(Some(defined)) => mirror_non_configurable(scope, context.target, key, &defined),
++            Ok(None) => mirror_non_configurable(scope, context.target, key, &descriptor),
++        }
+     }
+     result_to_bool(ok, &result, &mut retval, scope);
+ }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 19affa361ea..2d431784dda 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1342,6 +1342,141 @@ mod proxies {
+         runtime.gc_for_testing();
+         assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
+     }
++
++    #[test]
++    fn partial_descriptors_through_dom_proxies_keep_absent_fields() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let traps = traps();
++        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
++        rooted!(in(cx) let proto = eval(&runtime, "({})").to_object());
++        rooted!(in(cx) let private = UndefinedValue());
++        rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = ObjectValue(proxy.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"q".as_ptr(), value.handle().into_handle()) });
++        // Each check goes through V8's proxy trap, the native defineProperty trap and
++        // `JS_DefinePropertyById` on the expando, as Servo's DOM proxies do.
++        let checks = r#"(() => {
++          const failed = [];
++          const check = (name, ok) => { if (!ok) failed.push(name); };
++          const own = key => Object.getOwnPropertyDescriptor(q, key);
++          const g1 = () => 1, g2 = () => 2, s1 = function (v) {}, s2 = function (v) {};
++          // Absent fields must not come from a polluted Object.prototype or a replaced Reflect,
++          // so each definition runs polluted with a null-prototype descriptor of its own.
++          const reflectDefine = Reflect.defineProperty, defineProperty = Object.defineProperty;
++          const polluted = (operation, key, descriptor) => {
++            const own = Object.assign(Object.create(null), descriptor);
++            Object.prototype.get = g2; Object.prototype.set = s2; Object.prototype.value = 9; Object.prototype.writable = true;
++            Reflect.defineProperty = () => { throw new Error("replaced Reflect.defineProperty used"); };
++            try {
++              return operation(q, key, own);
++            } finally {
++              delete Object.prototype.get; delete Object.prototype.set; delete Object.prototype.value; delete Object.prototype.writable;
++              Reflect.defineProperty = reflectDefine;
++            }
++          };
++          const def = (key, descriptor) => polluted(defineProperty, key, descriptor);
++          const reflect = (key, descriptor) => polluted(reflectDefine, key, descriptor);
++          const attempt = (name, steps) => { try { steps(); } catch (e) { failed.push(name + ": " + e); } };
++          attempt("writable-only", () => {
++            def("w", { value: 1, writable: true, enumerable: true, configurable: true });
++            def("w", { writable: false });
++            const d = own("w");
++            check("writable-only", d.value === 1 && d.writable === false && d.enumerable === true && d.configurable === true);
++          });
++          attempt("value-only", () => {
++            def("v", { value: 1, writable: false, enumerable: false, configurable: true });
++            def("v", { value: 2 });
++            const d = own("v");
++            check("value-only", d.value === 2 && d.writable === false && d.enumerable === false && d.configurable === true);
++          });
++          attempt("accessors", () => {
++            def("a", { get: g1, set: s1, enumerable: true, configurable: true });
++            def("a", { get: g2 });
++            let d = own("a");
++            check("getter-only", d.get === g2 && d.set === s1 && d.enumerable === true && d.configurable === true);
++            def("a", { set: s2 });
++            d = own("a");
++            check("setter-only", d.get === g2 && d.set === s2);
++            def("a", { set: undefined });
++            d = own("a");
++            check("explicit undefined setter", d.get === g2 && d.set === undefined && q.a === 2);
++            def("a", { get: undefined, set: s1 });
++            d = own("a");
++            check("explicit undefined getter", d.get === undefined && d.set === s1);
++            def("n", { get: g1 });
++            d = own("n");
++            check("new getter-only", d.get === g1 && d.set === undefined && d.enumerable === false && d.configurable === false);
++          });
++          // A partial update that makes an accessor non-configurable mirrors it whole.
++          attempt("non-configurable mirror", () => {
++            def("m", { get: g1, set: s1, configurable: true });
++            def("m", { get: g1, configurable: false });
++            const d = own("m");
++            check("non-configurable mirror", d.get === g1 && d.set === s1 && d.configurable === false);
++          });
++          // Non-configurable properties: allowed and rejected partial changes.
++          attempt("non-configurable data", () => {
++            def("f", { value: 1, writable: true, configurable: false });
++            check("non-configurable writable-only allowed", reflect("f", { writable: false }) === true && own("f").writable === false);
++            check("non-configurable writable-only rejected", reflect("f", { writable: true }) === false && own("f").writable === false);
++            let threw = false;
++            try { def("f", { writable: true }); } catch (e) { threw = e instanceof TypeError; }
++            check("Object.defineProperty throws on rejection", threw);
++          });
++          attempt("non-configurable accessor", () => {
++            check("non-configurable getter-only rejected", reflect("m", { get: g2 }) === false && own("m").get === g1);
++            check("non-configurable setter-only same", reflect("m", { set: s1 }) === true && own("m").set === s1);
++          });
++          attempt("keys", () => {
++            const sym = Symbol("k");
++            def(sym, { value: 1, writable: true, configurable: true });
++            def(sym, { writable: false });
++            let d = own(sym);
++            check("symbol writable-only", d.value === 1 && d.writable === false);
++            def(0, { get: g1, set: s1, configurable: true });
++            def(0, { set: s2 });
++            d = own(0);
++            check("integer setter-only", d.get === g1 && d.set === s2);
++          });
++          return failed.join();
++        })()"#;
++        assert_eq!(describe(&runtime, eval(&runtime, checks)), "");
++
++        // Direct JSAPI calls: rejection is an `ObjectOpResult`, an exception stays pending.
++        let key = unsafe { JS_AtomizeAndPinString(cx, c"k".as_ptr()) };
++        rooted!(in(cx) let mut id = crate::jsid::VoidId());
++        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, key, id.handle_mut().into_handle()) };
++        let mut writable_only = PropertyDescriptor::default();
++        writable_only.set_hasWritable_(true);
++        writable_only.set_writable_(false);
++        rooted!(in(cx) let descriptor = writable_only);
++        let define = |target: *mut JSObject, result: &mut ObjectOpResult| {
++            rooted!(in(cx) let target = target);
++            unsafe { JS_DefinePropertyById(cx, target.handle().into_handle(), id.handle().into_handle(), descriptor.handle().into_handle(), result) }
++        };
++        let mut result = ObjectOpResult { code_: 0 };
++        assert!(define(eval(&runtime, "Object.preventExtensions({})").to_object(), &mut result));
++        assert!(!result.ok(), "a non-extensible target rejects a new key");
++        let mut result = ObjectOpResult { code_: 0 };
++        rooted!(in(cx) let existing = eval(&runtime, "globalThis.existing = Object.preventExtensions({ k: 1 })").to_object());
++        assert!(define(existing.get(), &mut result));
++        assert!(result.ok());
++        assert!(eval(&runtime, "const d = Object.getOwnPropertyDescriptor(existing, 'k'); d.value === 1 && !d.writable && d.enumerable && d.configurable").to_boolean());
++        let mut result = ObjectOpResult { code_: 0 };
++        eval(&runtime, "globalThis.k = 1");
++        assert!(define(global.get(), &mut result));
++        assert!(result.ok() && eval(&runtime, "const g = Object.getOwnPropertyDescriptor(globalThis, 'k'); g.value === 1 && !g.writable").to_boolean(), "a global target");
++        let mut result = ObjectOpResult { code_: 0 };
++        assert!(define(eval(&runtime, "new Proxy({}, { defineProperty() { return false; } })").to_object(), &mut result));
++        assert!(!result.ok(), "a false trap result is a rejection");
++        let mut result = ObjectOpResult { code_: 0 };
++        assert!(!define(eval(&runtime, "new Proxy({}, { defineProperty() { throw new RangeError('trap'); } })").to_object(), &mut result));
++        assert!(unsafe { JS_IsExceptionPending(cx) }, "a throwing trap leaves its exception pending");
++        unsafe { JS_ClearPendingException(cx) };
++        eval(&runtime, "delete globalThis.q; delete globalThis.existing; delete globalThis.k");
++    }
+ }
+ 
+ mod typed_arrays {
+diff --git a/components/roves-js/src/values_impl.rs b/components/roves-js/src/values_impl.rs
+index 11c95b20280..88e60e8e3f7 100644
+--- a/components/roves-js/src/values_impl.rs
++++ b/components/roves-js/src/values_impl.rs
+@@ -94,6 +94,7 @@ const INTRINSICS: &str = r#"(function () {
+     GetPrototypeOf: Object.getPrototypeOf,
+     ReflectGet: reflect.get,
+     ReflectSet: reflect.set,
++    ReflectDefineProperty: reflect.defineProperty,
+     ReflectCall: function (name, ...args) { return apply(reflect[name], undefined, args); },
+     ForwardTrap: function (name, target, a, b, c) { return apply(reflect[name], undefined, [target, a, b, c]); },
+     MapEntries: function (m) { return apply(mapEntries, m, []); },
+diff --git a/support/v8-smoke/suite.html b/support/v8-smoke/suite.html
+index 74a12bb514f..9e970f9ea2b 100644
+--- a/support/v8-smoke/suite.html
++++ b/support/v8-smoke/suite.html
+@@ -22,6 +22,7 @@ check("dataset proxy", () => host.dataset.fooBar === "baz" && (host.dataset.x =
+ check("classList", () => { const p = host.querySelector("p"); p.classList.add("c"); p.classList.toggle("a"); return p.className === "b c" && p.classList.contains("c") && [...p.classList].join() === "b,c"; });
+ check("NodeList iteration", () => { const ps = document.querySelectorAll("p"); let n = 0; ps.forEach(() => n++); return n === 2 && [...ps].length === 2 && [...ps.keys()].join() === "0,1" && ps[1].textContent === "two"; });
+ check("HTMLCollection named", () => document.getElementsByTagName("p").namedItem("second").textContent === "two" && document.forms.f.i.value === "v");
++check("partial descriptors on DOM proxy expandos and window", () => { const c = document.getElementsByTagName("p"), g1 = () => 1, g2 = () => 2, s = function (v) {}; Object.defineProperty(c, "pd", { value: 1, writable: true, configurable: true }); Object.defineProperty(c, "pd", { writable: false }); let d = Object.getOwnPropertyDescriptor(c, "pd"); const data = d.value === 1 && !d.writable && d.configurable; Object.defineProperty(c, "pa", { get: g1, set: s, configurable: true }); Object.defineProperty(c, "pa", { get: g2 }); d = Object.getOwnPropertyDescriptor(c, "pa"); const accessor = d.get === g2 && d.set === s; Object.defineProperty(c, "pf", { value: 1, writable: true, configurable: false }); Object.defineProperty(c, "pf", { writable: false }); const fixed = !Object.getOwnPropertyDescriptor(c, "pf").writable && !Reflect.defineProperty(c, "pf", { writable: true }); Object.defineProperty(window, "rovesPartial", { value: 1, writable: true, configurable: true }); Object.defineProperty(window, "rovesPartial", { writable: false }); d = Object.getOwnPropertyDescriptor(window, "rovesPartial"); const win = d.value === 1 && !d.writable; delete window.rovesPartial; return (data && accessor && fixed && win) || `data ${data} accessor ${accessor} fixed ${fixed} window ${win}`; });
+ check("localStorage proxy", () => { localStorage.clear(); localStorage.k = "v"; localStorage.setItem("n", 1); return localStorage.getItem("k") === "v" && localStorage.n === "1" && localStorage.length === 2 && ("k" in localStorage); });
+ check("Event dispatch + bubbling", () => { let order = []; host.addEventListener("x", e => order.push("host:" + e.eventPhase)); const p = host.querySelector("p"); p.addEventListener("x", e => order.push("p")); p.dispatchEvent(new Event("x", { bubbles: true })); return order.join() === "p,host:3"; });
+ check("CustomEvent detail", () => { let d; document.addEventListener("ce", e => d = e.detail); document.dispatchEvent(new CustomEvent("ce", { detail: { a: 1 } })); return d.a === 1; });

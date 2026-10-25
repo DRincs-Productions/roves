@@ -1342,6 +1342,141 @@ mod proxies {
         runtime.gc_for_testing();
         assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
     }
+
+    #[test]
+    fn partial_descriptors_through_dom_proxies_keep_absent_fields() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps = traps();
+        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
+        rooted!(in(cx) let proto = eval(&runtime, "({})").to_object());
+        rooted!(in(cx) let private = UndefinedValue());
+        rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"q".as_ptr(), value.handle().into_handle()) });
+        // Each check goes through V8's proxy trap, the native defineProperty trap and
+        // `JS_DefinePropertyById` on the expando, as Servo's DOM proxies do.
+        let checks = r#"(() => {
+          const failed = [];
+          const check = (name, ok) => { if (!ok) failed.push(name); };
+          const own = key => Object.getOwnPropertyDescriptor(q, key);
+          const g1 = () => 1, g2 = () => 2, s1 = function (v) {}, s2 = function (v) {};
+          // Absent fields must not come from a polluted Object.prototype or a replaced Reflect,
+          // so each definition runs polluted with a null-prototype descriptor of its own.
+          const reflectDefine = Reflect.defineProperty, defineProperty = Object.defineProperty;
+          const polluted = (operation, key, descriptor) => {
+            const own = Object.assign(Object.create(null), descriptor);
+            Object.prototype.get = g2; Object.prototype.set = s2; Object.prototype.value = 9; Object.prototype.writable = true;
+            Reflect.defineProperty = () => { throw new Error("replaced Reflect.defineProperty used"); };
+            try {
+              return operation(q, key, own);
+            } finally {
+              delete Object.prototype.get; delete Object.prototype.set; delete Object.prototype.value; delete Object.prototype.writable;
+              Reflect.defineProperty = reflectDefine;
+            }
+          };
+          const def = (key, descriptor) => polluted(defineProperty, key, descriptor);
+          const reflect = (key, descriptor) => polluted(reflectDefine, key, descriptor);
+          const attempt = (name, steps) => { try { steps(); } catch (e) { failed.push(name + ": " + e); } };
+          attempt("writable-only", () => {
+            def("w", { value: 1, writable: true, enumerable: true, configurable: true });
+            def("w", { writable: false });
+            const d = own("w");
+            check("writable-only", d.value === 1 && d.writable === false && d.enumerable === true && d.configurable === true);
+          });
+          attempt("value-only", () => {
+            def("v", { value: 1, writable: false, enumerable: false, configurable: true });
+            def("v", { value: 2 });
+            const d = own("v");
+            check("value-only", d.value === 2 && d.writable === false && d.enumerable === false && d.configurable === true);
+          });
+          attempt("accessors", () => {
+            def("a", { get: g1, set: s1, enumerable: true, configurable: true });
+            def("a", { get: g2 });
+            let d = own("a");
+            check("getter-only", d.get === g2 && d.set === s1 && d.enumerable === true && d.configurable === true);
+            def("a", { set: s2 });
+            d = own("a");
+            check("setter-only", d.get === g2 && d.set === s2);
+            def("a", { set: undefined });
+            d = own("a");
+            check("explicit undefined setter", d.get === g2 && d.set === undefined && q.a === 2);
+            def("a", { get: undefined, set: s1 });
+            d = own("a");
+            check("explicit undefined getter", d.get === undefined && d.set === s1);
+            def("n", { get: g1 });
+            d = own("n");
+            check("new getter-only", d.get === g1 && d.set === undefined && d.enumerable === false && d.configurable === false);
+          });
+          // A partial update that makes an accessor non-configurable mirrors it whole.
+          attempt("non-configurable mirror", () => {
+            def("m", { get: g1, set: s1, configurable: true });
+            def("m", { get: g1, configurable: false });
+            const d = own("m");
+            check("non-configurable mirror", d.get === g1 && d.set === s1 && d.configurable === false);
+          });
+          // Non-configurable properties: allowed and rejected partial changes.
+          attempt("non-configurable data", () => {
+            def("f", { value: 1, writable: true, configurable: false });
+            check("non-configurable writable-only allowed", reflect("f", { writable: false }) === true && own("f").writable === false);
+            check("non-configurable writable-only rejected", reflect("f", { writable: true }) === false && own("f").writable === false);
+            let threw = false;
+            try { def("f", { writable: true }); } catch (e) { threw = e instanceof TypeError; }
+            check("Object.defineProperty throws on rejection", threw);
+          });
+          attempt("non-configurable accessor", () => {
+            check("non-configurable getter-only rejected", reflect("m", { get: g2 }) === false && own("m").get === g1);
+            check("non-configurable setter-only same", reflect("m", { set: s1 }) === true && own("m").set === s1);
+          });
+          attempt("keys", () => {
+            const sym = Symbol("k");
+            def(sym, { value: 1, writable: true, configurable: true });
+            def(sym, { writable: false });
+            let d = own(sym);
+            check("symbol writable-only", d.value === 1 && d.writable === false);
+            def(0, { get: g1, set: s1, configurable: true });
+            def(0, { set: s2 });
+            d = own(0);
+            check("integer setter-only", d.get === g1 && d.set === s2);
+          });
+          return failed.join();
+        })()"#;
+        assert_eq!(describe(&runtime, eval(&runtime, checks)), "");
+
+        // Direct JSAPI calls: rejection is an `ObjectOpResult`, an exception stays pending.
+        let key = unsafe { JS_AtomizeAndPinString(cx, c"k".as_ptr()) };
+        rooted!(in(cx) let mut id = crate::jsid::VoidId());
+        unsafe { RUST_INTERNED_STRING_TO_JSID(cx, key, id.handle_mut().into_handle()) };
+        let mut writable_only = PropertyDescriptor::default();
+        writable_only.set_hasWritable_(true);
+        writable_only.set_writable_(false);
+        rooted!(in(cx) let descriptor = writable_only);
+        let define = |target: *mut JSObject, result: &mut ObjectOpResult| {
+            rooted!(in(cx) let target = target);
+            unsafe { JS_DefinePropertyById(cx, target.handle().into_handle(), id.handle().into_handle(), descriptor.handle().into_handle(), result) }
+        };
+        let mut result = ObjectOpResult { code_: 0 };
+        assert!(define(eval(&runtime, "Object.preventExtensions({})").to_object(), &mut result));
+        assert!(!result.ok(), "a non-extensible target rejects a new key");
+        let mut result = ObjectOpResult { code_: 0 };
+        rooted!(in(cx) let existing = eval(&runtime, "globalThis.existing = Object.preventExtensions({ k: 1 })").to_object());
+        assert!(define(existing.get(), &mut result));
+        assert!(result.ok());
+        assert!(eval(&runtime, "const d = Object.getOwnPropertyDescriptor(existing, 'k'); d.value === 1 && !d.writable && d.enumerable && d.configurable").to_boolean());
+        let mut result = ObjectOpResult { code_: 0 };
+        eval(&runtime, "globalThis.k = 1");
+        assert!(define(global.get(), &mut result));
+        assert!(result.ok() && eval(&runtime, "const g = Object.getOwnPropertyDescriptor(globalThis, 'k'); g.value === 1 && !g.writable").to_boolean(), "a global target");
+        let mut result = ObjectOpResult { code_: 0 };
+        assert!(define(eval(&runtime, "new Proxy({}, { defineProperty() { return false; } })").to_object(), &mut result));
+        assert!(!result.ok(), "a false trap result is a rejection");
+        let mut result = ObjectOpResult { code_: 0 };
+        assert!(!define(eval(&runtime, "new Proxy({}, { defineProperty() { throw new RangeError('trap'); } })").to_object(), &mut result));
+        assert!(unsafe { JS_IsExceptionPending(cx) }, "a throwing trap leaves its exception pending");
+        unsafe { JS_ClearPendingException(cx) };
+        eval(&runtime, "delete globalThis.q; delete globalThis.existing; delete globalThis.k");
+    }
 }
 
 mod typed_arrays {

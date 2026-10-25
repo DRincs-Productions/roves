@@ -1,3 +1,11 @@
+## 25 ottobre — riferimento descrittori parziali0335
+
+Chrome155 Windows visibile, Chrome DevTools MCP: NodeList reale in about:blank conferma
+writable-only preserva valore/attributi, getter-only preserva setter, set:undefined esplicito
+lo cancella. Poi il check reale della0335 in suite.html (HTMLCollection ewindow), isolato su
+HTTP127.0.0.1:19035, restituisce true. Altri test della suite non eseguiti; nessun benchmark.
+Tab e server chiusi. Roves0335 resta da confermare nella CI successiva alla pubblicazione.
+
 ## 25 ottobre — riferimento worker FIFO0332 via Chrome MCP
 
 Chrome155 Windows, visibile. Prima prova: worker Blob classico in about:blank, messaggi

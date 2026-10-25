@@ -94,6 +94,7 @@ const INTRINSICS: &str = r#"(function () {
     GetPrototypeOf: Object.getPrototypeOf,
     ReflectGet: reflect.get,
     ReflectSet: reflect.set,
+    ReflectDefineProperty: reflect.defineProperty,
     ReflectCall: function (name, ...args) { return apply(reflect[name], undefined, args); },
     ForwardTrap: function (name, target, a, b, c) { return apply(reflect[name], undefined, [target, a, b, c]); },
     MapEntries: function (m) { return apply(mapEntries, m, []); },
