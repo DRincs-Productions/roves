@@ -20,6 +20,22 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Handoff finale26ottobre — retryinfra in corso, sorgenti puliti, pubblicazione sospesa
+
+Pubblicato37815319987/wiki1fa4cad. Locali: d4bce0a8648(colonne0357),4c230254c05(CSP0358),
+06c271cc5c9(checkpoint). Wiki locale84ae0ce include954fe44. NessunWIP. Tuttiitestleggeri,
+negativi motore0357 e replay riportati sotto; nessunnuovopush mentre batch incompleto.
+Retrygeneral40366152303: macOSprobe121734699395 inprogress alla conferma. RetryV8
+40366152633: macOSbrowser121735908007, runtime121735908725/121735908738 queued. Nessunjob
+riuscito ripetuto. AncheiOS40366152391 è terminata con2cancelled peridentica capacitàARM64:
+121724386920 e121724809162 nonacquisiti, annotazioni confermate; avviato UNrerun-failed-jobs
+iOS viaGitHubApp. Nessunretryconcatenato se capacitàpersiste. Android40366152179verde.
+Prossimo stepnecessario: raccogliere esiti retry; correggere eventuali difetti veri e ripetere
+verifichemancanti prima di pubblicare0357/0358. Nonsegnarecancelled/skippedverdi. La ricerca
+su nuovi owner non è giustificata dallascena frame attuale, raccolta; proseguire solo con
+un difetto concreto o regressione necessaria, senza auditillimitati durante l'attesa.
+NessunClaudeattivo, nessunserverlocale/tabtest rimasti. Nessunpolling/automazioneperiodica.
+
 ### Evidenza CI0356 aggiornata —26ottobre, retrymacOS mirati, NO PUSH
 
 Batch378153: Linuxbrowsernormal121724285356 eJITless121724285389 VERDI. Entrambi: selfcapturing

@@ -1,3 +1,11 @@
+## 2026-10-26 - Save the queued macOS/iOS verification handoff
+
+General retry now has macOS probe121734699395 running; V8 retry queues only its three missing
+macOS jobs. iOS also finished with two unacquired macOS ARM64 jobs, verified by annotations;
+one failed-jobs retry was requested for run40366152391. No successful job was rerun, no new
+push and no repeated capacity retry loop.0357/0358 stay local; migration handoff records the
+exact jobs and publication gate. No runtime change.
+
 ## 2026-10-26 - Record successful Linux inline GC and targeted macOS retries
 
 Both Linux0356 browser jobs pass every inline-handler GC control and the final GC result;
