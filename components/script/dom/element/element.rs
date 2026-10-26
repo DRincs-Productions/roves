@@ -4586,6 +4586,7 @@ impl VirtualMethods for Element {
                         let source_line = 1; // TODO(#9604) get current JS execution line
                         evtarget.set_event_handler_uncompiled(
                             cx,
+                            self,
                             self.owner_window().get_url(),
                             source_line,
                             event_name,

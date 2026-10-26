@@ -1173,6 +1173,10 @@ elif page == 'csp.html':
     if scenario != 'trusted-function-matrix': print('ROVES-V8 csp trusted function matrix true true true')
     if scenario != 'constructor-graph': print('ROVES-V8 csp constructor graph true true true')
     print('ROVES-V8 csp ordinary eval unchanged true')
+    if scenario != 'csp-attribute-allowed': print('ROVES-V8 csp attribute allowed true true')
+elif page == 'csp-attr.html':
+    # A forwarded <body> handler that skips the CSP check reports its third value as false.
+    print('ROVES-V8 csp attribute blocked true true ' + ('false' if scenario == 'csp-attribute' else 'true'))
 elif page == 'wasm-csp.html':
     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
 elif page == 'nav1.html':
@@ -1201,7 +1205,7 @@ else:
         print('SUITE PASS example')
         print('SUITE TOTAL 1/1')
 # Browsers may stay open after reporting all results; that timeout is acceptable.
-if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'wasm-csp.html', 'nav1.html'):
+if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'wasm-csp.html', 'nav1.html'):
     sys.stdout.flush()
     import time
     time.sleep(120)
@@ -1362,7 +1366,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -1377,6 +1381,10 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
                 if scenario == 'constructor-graph':
                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
+                if scenario == 'csp-attribute':
+                    self.assertIn("csp-attr.html: missing 'ROVES-V8 csp attribute blocked true true true' (ROVES-V8 csp attribute blocked true true false", result.stdout)
+                if scenario == 'csp-attribute-allowed':
+                    self.assertIn("missing 'ROVES-V8 csp attribute allowed true true'", result.stdout)
                 if scenario.startswith('missing:'):
                     # Only the dropped check fails: the page's other required checks are reported.
                     page = scenario.partition(':')[2]

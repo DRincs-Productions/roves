@@ -191,6 +191,7 @@ impl VirtualMethods for HTMLBodyElement {
                             let source_line = 1; // TODO(#9604) obtain current JS execution line
                             evtarget.set_event_handler_uncompiled(
                                 cx,
+                                self.upcast::<Element>(),
                                 window.get_url(),
                                 source_line,
                                 &name[2..],

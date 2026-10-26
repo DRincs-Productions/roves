@@ -1,0 +1,23 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'; script-src-attr 'none'">
+<title>roves-js content-attribute CSP smoke page</title></head>
+<body>
+<button id="parsed" onclick="window.rovesParsedRan = true">parsed</button>
+<script>
+// script-src-attr 'none' blocks every event handler content attribute while inline <script>
+// elements stay allowed: parsed markup, setAttribute, and a <body> handler forwarded to Window.
+const parsed = document.getElementById("parsed");
+parsed.click();
+const scripted = document.createElement("button");
+scripted.setAttribute("onclick", "window.rovesScriptedRan = true");
+document.body.appendChild(scripted);
+scripted.click();
+document.body.setAttribute("onpopstate", "window.rovesBodyRan = true");
+dispatchEvent(new Event("popstate"));
+console.log("ROVES-V8 csp attribute blocked",
+  parsed.onclick === null && window.rovesParsedRan === undefined,
+  scripted.onclick === null && window.rovesScriptedRan === undefined,
+  window.onpopstate === null && window.rovesBodyRan === undefined);
+</script>
+</body></html>

@@ -1,3 +1,49 @@
+## 2026-10-26 - Review CSP fixtures and record macOS runner capacity failures (0358)
+
+Chrome155/Windows visible HTTP loopback reference confirms blocked parsed/assigned/body
+attributes (three true) and the TrustedScript allowed control (two true). Runner42 tests
+passes34 with8 POSIX skips; both page scripts and the three Rust files parse. Exact patch
+0358 dry-runs/applies and reproduces all seven files after LF normalization. Real Servo
+CSP behavior remains for CI; unchanged native runtime suites were not repeated.
+
+The preceding0356 batch has cancelled macOS jobs that never acquired a hosted runner,
+confirmed by check annotations reporting macOS ARM64 capacity constraints. General job
+121724284612 received one justified retry via the connected GitHub app. Other previous
+runs remain active: keep0357/0358 commits local, do not treat cancellations/skips as green.
+
+## 2026-10-26 - Check CSP for `<body>` attribute handlers forwarded to Window (0358)
+
+Files: `components/script/dom/event/eventtarget.rs`, `components/script/dom/element/element.rs`,
+`components/script/dom/html/htmlbodyelement.rs`,
+`support/v8-smoke/{csp.html,csp-attr.html,run.sh,test_runner.py}`, `README.md`,
+`roves-wiki/content/docs/shell.mdx`. Patch: `0358-csp-forwarded-body-attribute-handlers.patch`
+(generated from the exact diff of the three Servo sources and the four smoke files, with
+`csp-attr.html` as a new file; README and wiki are not replayed).
+
+Audit after 0356 made attribute handlers compile on V8. Per HTML's event handler content
+attribute change steps (step 1.3), the CSP check runs when the attribute is set, not when the
+handler is compiled: `EventTarget::set_event_handler_uncompiled` calls the existing
+`CspList::should_elements_inline_type_behavior_be_blocked` helper (`content-security-policy`
+crate, `ScriptAttribute` check, so `script-src-attr` with `script-src` fallback,
+`'unsafe-inline'`, `'unsafe-hashes'` + hash and violation reports come from the crate) and
+returns without storing the handler when blocked; `get_compiled_event_handler` therefore never
+sees blocked source and needs no check of its own. The gap, inherited from upstream Servo: the
+check ran only when the event target downcast to `Element`. `<body>` forwards window handlers
+(`onpopstate`, `onresize`, ...) by calling the method on its `Window`, so those attributes were
+stored and compiled without any CSP check. The method now takes the attribute's element
+explicitly (`self` from `Element::attribute_mutated`, the `<body>` element from
+`HTMLBodyElement::attribute_mutated`) and always runs the check on it, as the spec requires.
+`element.onclick = "string"` is not a compile path (the IDL conversion yields `null`).
+`<frameset>` does not forward content attributes in this tree, so it has no such path.
+
+Browser regression: new `csp-attr.html` (`script-src 'unsafe-inline'; script-src-attr 'none'`)
+prints `ROVES-V8 csp attribute blocked true true true` (parsed `onclick`, `setAttribute`
+`onclick` and the forwarded `<body onpopstate>`: getter `null`, body not run); the old code
+is expected to report the third value `false` (not executed locally on Servo). `csp.html` (fallback `script-src 'unsafe-inline'`, Trusted
+Types) adds the allowed control `ROVES-V8 csp attribute allowed true true` with `TrustedScript`
+values. Both markers are required by `run.sh`; runner negatives `csp-attribute` and
+`csp-attribute-allowed` check the errors. No new dependency, parser or hash code.
+
 ## 2026-10-26 - Keep first-line source columns of scoped attribute handlers (0357)
 
 Files: `components/roves-js/src/{script_impl.rs,tests.rs}`, `README.md`,

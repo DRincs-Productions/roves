@@ -81,5 +81,17 @@ try {
 console.log("ROVES-V8 csp constructor graph", graphParents, graphLinks, graphSubclasses);
 const ordinary = { toString() { return "40 + 2"; } };
 console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
+// Content-attribute handlers fall back to script-src 'unsafe-inline' here; csp-attr.html is
+// the strict half. Trusted Types still require TrustedScript values for these attributes.
+const attributeButton = document.createElement("button");
+attributeButton.setAttribute("onclick", smokePolicy.createScript("window.rovesAttributeRan = true"));
+document.body.appendChild(attributeButton);
+attributeButton.click();
+// <body> forwards this handler to its Window.
+document.body.setAttribute("onpopstate", smokePolicy.createScript("window.rovesBodyRan = true"));
+dispatchEvent(new Event("popstate"));
+console.log("ROVES-V8 csp attribute allowed",
+  window.rovesAttributeRan === true && typeof attributeButton.onclick === "function",
+  window.rovesBodyRan === true && typeof window.onpopstate === "function");
 </script>
 </body></html>

@@ -1,0 +1,208 @@
+diff --git a/components/script/dom/element/element.rs b/components/script/dom/element/element.rs
+index b28a4034f9b..61ed2b8da3b 100644
+--- a/components/script/dom/element/element.rs
++++ b/components/script/dom/element/element.rs
+@@ -4586,6 +4586,7 @@ impl VirtualMethods for Element {
+                         let source_line = 1; // TODO(#9604) get current JS execution line
+                         evtarget.set_event_handler_uncompiled(
+                             cx,
++                            self,
+                             self.owner_window().get_url(),
+                             source_line,
+                             event_name,
+diff --git a/components/script/dom/event/eventtarget.rs b/components/script/dom/event/eventtarget.rs
+index 7b00a944bd0..7e7cf8e6bb4 100644
+--- a/components/script/dom/event/eventtarget.rs
++++ b/components/script/dom/event/eventtarget.rs
+@@ -690,32 +690,33 @@ impl EventTarget {
+     }
+ 
+     /// Store the raw uncompiled event handler for on-demand compilation later.
++    /// `element` is the element carrying the content attribute: `self` for ordinary
++    /// handlers, the `<body>` element for handlers it forwards to its `Window`.
+     /// <https://html.spec.whatwg.org/multipage/#event-handler-attributes:event-handler-content-attributes-3>
+     pub(crate) fn set_event_handler_uncompiled(
+         &self,
+         cx: &mut JSContext,
++        element: &Element,
+         url: ServoUrl,
+         line: usize,
+         ty: &str,
+         source: &str,
+     ) {
+-        if let Some(element) = self.downcast::<Element>() {
+-            let doc = element.owner_document();
+-            let global = &doc.global();
+-            if global
+-                .get_csp_list()
+-                .should_elements_inline_type_behavior_be_blocked(
+-                    cx,
+-                    global,
+-                    element.upcast(),
+-                    InlineCheckType::ScriptAttribute,
+-                    source,
+-                    line as u32,
+-                )
+-            {
+-                return;
+-            }
+-        };
++        // Step 1.3: the CSP check runs on the attribute's element, including forwarded handlers.
++        let global = &element.owner_document().global();
++        if global
++            .get_csp_list()
++            .should_elements_inline_type_behavior_be_blocked(
++                cx,
++                global,
++                element,
++                InlineCheckType::ScriptAttribute,
++                source,
++                line as u32,
++            )
++        {
++            return;
++        }
+ 
+         let handler = InternalRawUncompiledHandler {
+             source: DOMString::from(source),
+diff --git a/components/script/dom/html/htmlbodyelement.rs b/components/script/dom/html/htmlbodyelement.rs
+index 74c7cb8edd6..eda9a1e437e 100644
+--- a/components/script/dom/html/htmlbodyelement.rs
++++ b/components/script/dom/html/htmlbodyelement.rs
+@@ -191,6 +191,7 @@ impl VirtualMethods for HTMLBodyElement {
+                             let source_line = 1; // TODO(#9604) obtain current JS execution line
+                             evtarget.set_event_handler_uncompiled(
+                                 cx,
++                                self.upcast::<Element>(),
+                                 window.get_url(),
+                                 source_line,
+                                 &name[2..],
+diff --git a/support/v8-smoke/csp.html b/support/v8-smoke/csp.html
+index bbba71d52df..546403f1411 100644
+--- a/support/v8-smoke/csp.html
++++ b/support/v8-smoke/csp.html
+@@ -81,5 +81,17 @@ try {
+ console.log("ROVES-V8 csp constructor graph", graphParents, graphLinks, graphSubclasses);
+ const ordinary = { toString() { return "40 + 2"; } };
+ console.log("ROVES-V8 csp ordinary eval unchanged", eval(ordinary) === ordinary);
++// Content-attribute handlers fall back to script-src 'unsafe-inline' here; csp-attr.html is
++// the strict half. Trusted Types still require TrustedScript values for these attributes.
++const attributeButton = document.createElement("button");
++attributeButton.setAttribute("onclick", smokePolicy.createScript("window.rovesAttributeRan = true"));
++document.body.appendChild(attributeButton);
++attributeButton.click();
++// <body> forwards this handler to its Window.
++document.body.setAttribute("onpopstate", smokePolicy.createScript("window.rovesBodyRan = true"));
++dispatchEvent(new Event("popstate"));
++console.log("ROVES-V8 csp attribute allowed",
++  window.rovesAttributeRan === true && typeof attributeButton.onclick === "function",
++  window.rovesBodyRan === true && typeof window.onpopstate === "function");
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index b1dee5c5ede..ac1e6584dcd 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -136,11 +136,19 @@ if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error
+ if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
+ 
+ run_page csp.html 30 csp.log
+-for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp constructor graph true true true" "ROVES-V8 csp ordinary eval unchanged true"; do
++for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp constructor graph true true true" "ROVES-V8 csp ordinary eval unchanged true" "ROVES-V8 csp attribute allowed true true"; do
+   if grep -aFxq "$expected" csp.log; then echo "::notice::csp.html: $expected"; else STATUS=1; echo "::error::csp.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' csp.log | tr '
+ ' ' '))"; fi
+ done
+ 
++run_page csp-attr.html 30 csp-attr.log
++if grep -aFxq 'ROVES-V8 csp attribute blocked true true true' csp-attr.log; then
++  echo "::notice::csp-attr.html: script-src-attr 'none' blocks parsed, scripted and forwarded handlers"
++else
++  STATUS=1; echo "::error::csp-attr.html: missing 'ROVES-V8 csp attribute blocked true true true' ($(grep -a 'ROVES-V8 csp' csp-attr.log | tr '
++' ' '))"
++fi
++
+ run_page wasm-csp.html 30 wasm-csp.log
+ if [ "$MODE" = normal ]; then
+   if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
+@@ -238,7 +246,7 @@ fi
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+-  for page_log in test.log csp.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
++  for page_log in test.log csp.log csp-attr.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+     echo "V8 smoke diagnostics: $page_log"
+     tail -80 "$page_log"
+   done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 7f3d037fab1..150e7e29694 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1173,6 +1173,10 @@ elif page == 'csp.html':
+     if scenario != 'trusted-function-matrix': print('ROVES-V8 csp trusted function matrix true true true')
+     if scenario != 'constructor-graph': print('ROVES-V8 csp constructor graph true true true')
+     print('ROVES-V8 csp ordinary eval unchanged true')
++    if scenario != 'csp-attribute-allowed': print('ROVES-V8 csp attribute allowed true true')
++elif page == 'csp-attr.html':
++    # A forwarded <body> handler that skips the CSP check reports its third value as false.
++    print('ROVES-V8 csp attribute blocked true true ' + ('false' if scenario == 'csp-attribute' else 'true'))
+ elif page == 'wasm-csp.html':
+     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
+ elif page == 'nav1.html':
+@@ -1201,7 +1205,7 @@ else:
+         print('SUITE PASS example')
+         print('SUITE TOTAL 1/1')
+ # Browsers may stay open after reporting all results; that timeout is acceptable.
+-if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'wasm-csp.html', 'nav1.html'):
++if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'wasm-csp.html', 'nav1.html'):
+     sys.stdout.flush()
+     import time
+     time.sleep(120)
+@@ -1362,7 +1366,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+@@ -1377,6 +1381,10 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
+                 if scenario == 'constructor-graph':
+                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
++                if scenario == 'csp-attribute':
++                    self.assertIn("csp-attr.html: missing 'ROVES-V8 csp attribute blocked true true true' (ROVES-V8 csp attribute blocked true true false", result.stdout)
++                if scenario == 'csp-attribute-allowed':
++                    self.assertIn("missing 'ROVES-V8 csp attribute allowed true true'", result.stdout)
+                 if scenario.startswith('missing:'):
+                     # Only the dropped check fails: the page's other required checks are reported.
+                     page = scenario.partition(':')[2]
+diff --git a/support/v8-smoke/csp-attr.html b/support/v8-smoke/csp-attr.html
+new file mode 100644
+index 00000000000..3d32f84cedf
+--- /dev/null
++++ b/support/v8-smoke/csp-attr.html
+@@ -0,0 +1,23 @@
++<!doctype html>
++<html><head><meta charset="utf-8">
++<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline'; script-src-attr 'none'">
++<title>roves-js content-attribute CSP smoke page</title></head>
++<body>
++<button id="parsed" onclick="window.rovesParsedRan = true">parsed</button>
++<script>
++// script-src-attr 'none' blocks every event handler content attribute while inline <script>
++// elements stay allowed: parsed markup, setAttribute, and a <body> handler forwarded to Window.
++const parsed = document.getElementById("parsed");
++parsed.click();
++const scripted = document.createElement("button");
++scripted.setAttribute("onclick", "window.rovesScriptedRan = true");
++document.body.appendChild(scripted);
++scripted.click();
++document.body.setAttribute("onpopstate", "window.rovesBodyRan = true");
++dispatchEvent(new Event("popstate"));
++console.log("ROVES-V8 csp attribute blocked",
++  parsed.onclick === null && window.rovesParsedRan === undefined,
++  scripted.onclick === null && window.rovesScriptedRan === undefined,
++  window.onpopstate === null && window.rovesBodyRan === undefined);
++</script>
++</body></html>

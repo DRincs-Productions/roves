@@ -20,6 +20,46 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0358 — fixCSP completo locale, batch0356 bloccato da capacitàmacOS
+
+0357 locale d4bce0a8648/wiki954fe44 (nonpubblicati).0358 controlla sempre l'elemento cheporta
+l'attributo, anche per i targetWindow da body; riusa l'helperCSP/crate esistente. FixtureHTTP
+Chrome155Windows visibile:3bloccati true,2consentiti true conTrustedScript. Runner42test34pass
+8skipPOSIX; sintassiJS e parsing3Rust riusciti. Patch0358dryrun/apply7/7fileLF-identici;
+negativoServo precedente è ATTESO, non eseguito. Dati/logtarget/task-0358/. Nessunbuildpesante.
+
+Batch37815319987: generale40366152303 failure per macOS121724284612 CANCELLED(primaavvio),
+steam/buildsaltati; V840366152633 ancoraattiva conMac121724285268 e121724285503cancelled,
+Macnormalruntime ancoraqueued. AnnotazioniAPI: 'The job was not acquired by Runner of type
+hosted even after multiple attempts'; vincolocapacitàmacOSARM64, runner_namevuoto e nessunlog.
+Codex ha avviato UNretry deljobgenerale121724284612 tramiteGitHubApp(write), nessunPATinfile.
+Non cambiarepiattaformasilenziosamente, nonritentareinloop lo stessobloccocapacità. AltermineV8
+valutare unretrymirato deicancellati per completare le verifichemancanti, non unnuovopush.
+Nessunpush di0357/0358 finché tutte leprecedentirun nonsono terminali e lemancanti verificate.
+Prossimo: esitoLinux0356 attributi/GC e recupero jobmacOS. Niente automazioneperiodica/polling.
+
+### Claude0358 — audit CSP degli handler da attributo (da revisionare, non committato)
+
+Il controllo CSP non sta nel compilatore: per HTML (attribute change steps, passo 1.3) avviene
+all'impostazione dell'attributo in `EventTarget::set_event_handler_uncompiled`, con l'helper
+esistente `should_elements_inline_type_behavior_be_blocked` (crate `content-security-policy`,
+`ScriptAttribute`: `script-src-attr` con fallback `script-src`, unsafe-inline/hash/report). Se
+bloccato l'handler non viene salvato, quindi `get_compiled_event_handler` non vede mai sorgente
+bloccata. Lacuna reale (ereditata da upstream): il controllo partiva solo se il target era un
+`Element`; gli attributi di `<body>` inoltrati a `Window` (`onpopstate`, `onresize`, …) lo
+saltavano. Fix minimo: il metodo riceve l'elemento dell'attributo (`element.rs` passa `self`,
+`htmlbodyelement.rs` il body). `element.onclick = "stringa"` non compila (IDL → `null`).
+Regressione: nuovo `support/v8-smoke/csp-attr.html` (`script-src-attr 'none'`) richiede
+`ROVES-V8 csp attribute blocked true true true` (markup, setAttribute, body inoltrato; il codice
+vecchio dà il terzo `false`); `csp.html` aggiunge il controllo consentito
+`ROVES-V8 csp attribute allowed true true` (TrustedScript). Negativi runner `csp-attribute` e
+`csp-attribute-allowed`. Nessuna verifica eseguita da Claude (solo Read/Edit). Ripresa Codex:
+generare `0358-csp-forwarded-body-attribute-handlers.patch` (3 sorgenti + 4 file smoke, nuovo
+file incluso), runner/sintassi, riferimento Chrome MCP di `csp-attr.html`/`csp.html`; build e
+browser in CI. Memoria invariata: frame normale036abe elemento/documento/probe rilasciati,
+GC additivo4 marker in entrambi imodi, GC inline attende la CI0356. Dettagli
+`target/task-0358/RESULTS.md`.
+
 ### Checkpoint Codex0357 — colonne e scope verificati, commit locale durante CI0356
 
 0356 pubblicato3781531998742f435352c4dd4e5bcb5fe37ad0d2/wiki1fa4cad. Nuovo batch:

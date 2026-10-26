@@ -690,32 +690,33 @@ impl EventTarget {
     }
 
     /// Store the raw uncompiled event handler for on-demand compilation later.
+    /// `element` is the element carrying the content attribute: `self` for ordinary
+    /// handlers, the `<body>` element for handlers it forwards to its `Window`.
     /// <https://html.spec.whatwg.org/multipage/#event-handler-attributes:event-handler-content-attributes-3>
     pub(crate) fn set_event_handler_uncompiled(
         &self,
         cx: &mut JSContext,
+        element: &Element,
         url: ServoUrl,
         line: usize,
         ty: &str,
         source: &str,
     ) {
-        if let Some(element) = self.downcast::<Element>() {
-            let doc = element.owner_document();
-            let global = &doc.global();
-            if global
-                .get_csp_list()
-                .should_elements_inline_type_behavior_be_blocked(
-                    cx,
-                    global,
-                    element.upcast(),
-                    InlineCheckType::ScriptAttribute,
-                    source,
-                    line as u32,
-                )
-            {
-                return;
-            }
-        };
+        // Step 1.3: the CSP check runs on the attribute's element, including forwarded handlers.
+        let global = &element.owner_document().global();
+        if global
+            .get_csp_list()
+            .should_elements_inline_type_behavior_be_blocked(
+                cx,
+                global,
+                element,
+                InlineCheckType::ScriptAttribute,
+                source,
+                line as u32,
+            )
+        {
+            return;
+        }
 
         let handler = InternalRawUncompiledHandler {
             source: DOMString::from(source),
