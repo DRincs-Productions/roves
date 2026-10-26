@@ -26,6 +26,14 @@ nell'API pubblica V8 per funzioni wrapped con lookup attraverso proxy; eventuale
 con interceptor va provata prima per lookup, scritture, receiver, unscopables e durata GC.
 Solo con prova mantenuta e regressioni0356/0357 intatte aprire un fix di produzione.
 
+## Esito0363 — facade con interceptor
+
+La via facade è stata scritta come prova nativa (vedi la sezione Claude0363 in
+`docs/V8_MIGRATION.md`; esecuzione Codex pendente). Lookup, scritture, delete, receiver degli
+accessor, unscopables e sourceText sono attesi corretti; la chiamata nuda di un metodo dello
+scope riceve però la facade come `this`, quindi la facade NON è una correzione di produzione.
+Resta solo la via dei reflector come oggetti API V8 con interceptor al posto dei Proxy JS.
+
 ## Blocco risorse
 
 C: ha raggiunto0byte liberi. Sono stati rimossi solo9 artefatti exe/pdb generati in questa

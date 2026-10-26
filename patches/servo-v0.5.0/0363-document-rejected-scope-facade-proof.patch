@@ -1,0 +1,299 @@
+diff --git a/docs/handoff/0361-source-text-gap.md b/docs/handoff/0361-source-text-gap.md
+index 494a1b45615..278055f1e94 100644
+--- a/docs/handoff/0361-source-text-gap.md
++++ b/docs/handoff/0361-source-text-gap.md
+@@ -26,6 +26,14 @@ nell'API pubblica V8 per funzioni wrapped con lookup attraverso proxy; eventuale
+ con interceptor va provata prima per lookup, scritture, receiver, unscopables e durata GC.
+ Solo con prova mantenuta e regressioni0356/0357 intatte aprire un fix di produzione.
+ 
++## Esito0363 — facade con interceptor
++
++La via facade è stata scritta come prova nativa (vedi la sezione Claude0363 in
++`docs/V8_MIGRATION.md`; esecuzione Codex pendente). Lookup, scritture, delete, receiver degli
++accessor, unscopables e sourceText sono attesi corretti; la chiamata nuda di un metodo dello
++scope riceve però la facade come `this`, quindi la facade NON è una correzione di produzione.
++Resta solo la via dei reflector come oggetti API V8 con interceptor al posto dei Proxy JS.
++
+ ## Blocco risorse
+ 
+ C: ha raggiunto0byte liberi. Sono stati rimossi solo9 artefatti exe/pdb generati in questa
+diff --git a/docs/handoff/0363-scope-facade-proof.md b/docs/handoff/0363-scope-facade-proof.md
+new file mode 100644
+index 00000000000..232fc932f06
+--- /dev/null
++++ b/docs/handoff/0363-scope-facade-proof.md
+@@ -0,0 +1,38 @@
++# 0363 — prova V8 della facade per scope (candidato respinto)
++
++Nessuna modifica di produzione e nessun helper sperimentale nel runtime pubblicabile.
++La prova riproducibile è nel diff `0363-scope-facade-proof.patch` di questa cartella:
++applicarlo solo in una copia isolata, eseguire il test
++`scope_facades_match_source_text_and_lookups_but_rebind_bare_call_receivers`, poi ripristinare
++la copia. Non è una patch di produzione da applicare alla serie Servo.
++
++## Esiti reali
++
++V8/rusty_v8 152, Windows: test mirato normale e JITless verdi; log in target/task-0363/.
++Il primo compile ha individuato la firma setter ReturnValue<Boolean>, corretta e ritestata.
++ObjectTemplate con named getter/query/setter/deleter è accettato come context extension.
++V8 traccia il Proxy nei dati degli interceptor. Test: sourceText uguale al compilatore V8
++senza scope e a Chrome155, lookup/scritture/delete/accessor ereditati, ordine scope,
++unscopables, typeof mancante, corpo strict/sloppy, sequenza trap equivalente e vita dopo GC.
++
++Controprova determinante: una chiamata `who()` trovata nello scope riceve come this la facade,
++non il Proxy reale. Nel compilatore attuale `who() === rovesDocument` è vero, nella facade
++falso. Quindi i metodi DOM non qualificati potrebbero ricevere il receiver sbagliato.
++Il test asserisce questo risultato per dimostrare il rifiuto del candidato: non promuoverlo
++come regressione di produzione che fissi per sempre un comportamento errato.
++
++## Conseguenza e prossimo passo
++
++Facade NON adottata. Nessun binding dei metodi automatico: cambierebbe identità delle
++funzioni, chiamate con call/apply e assegnazioni. Restano esclusi override globale di
++toString, layout privati V8 e nomi interpolati nella sintassi senza semantica corretta.
++Lacuna sourceText0361 ancora aperta.
++
++Studiare un perimetro minimo di reflector DOM reali (Document/form) come API object V8
++con interceptor, invece di una facade diversa dall'oggetto visibile a JS. Riusare gli hook
++ProxyHandler esistenti senza duplicare un motore di proprietà; WindowProxy e proxy con
++getPrototypeOf dinamico restano fuori. Prima un design preciso e prove di receiver,
++identità, descrittori, GC e conformità, senza modifiche ampie non dimostrate.
++
++Le verifiche usano i workspace isolati esistenti con cwd corretto; circa0.86GiB liberi
++su C dopo la prova. Niente build pesanti locali o nuove copie di cache.
+diff --git a/docs/handoff/0363-scope-facade-proof.patch b/docs/handoff/0363-scope-facade-proof.patch
+new file mode 100644
+index 00000000000..e0a1d8b3eab
+--- /dev/null
++++ b/docs/handoff/0363-scope-facade-proof.patch
+@@ -0,0 +1,230 @@
++diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
++index 8df4bc779a0..54a0879247a 100644
++--- a/components/roves-js/src/tests.rs
+++++ b/components/roves-js/src/tests.rs
++@@ -3113,6 +3113,225 @@ mod scripts {
++         runtime.gc_for_testing();
++         assert_eq!(call_handler(&mut runtime, handler.get() as *mut JSFunction), Ok("9".into()));
++     }
+++
+++    // --- Task 0363: interceptor scope facades (proof, not production) ---------------------
+++
+++    /// The proxy a scope facade forwards to: its handler data, which V8 itself keeps alive.
+++    fn facade_target<'s>(args: &v8::PropertyCallbackArguments<'s>) -> v8::Local<'s, v8::Object> {
+++        v8::Local::<v8::Object>::try_from(args.data()).unwrap()
+++    }
+++
+++    /// `get` on the target passes the target itself as the receiver.
+++    fn facade_getter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Value>,
+++    ) -> v8::Intercepted {
+++        if let Some(value) = facade_target(&args).get(scope, key.into()) {
+++            retval.set(value);
+++        }
+++        v8::Intercepted::kYes
+++    }
+++
+++    fn facade_query<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Integer>,
+++    ) -> v8::Intercepted {
+++        match facade_target(&args).has(scope, key.into()) {
+++            Some(false) => v8::Intercepted::kNo,
+++            Some(true) => {
+++                retval.set_int32(0);
+++                v8::Intercepted::kYes
+++            },
+++            // The trap threw: V8 rethrows it.
+++            None => v8::Intercepted::kYes,
+++        }
+++    }
+++
+++    fn facade_setter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, value: v8::Local<'s, v8::Value>,
+++        args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Boolean>,
+++    ) -> v8::Intercepted {
+++        // `None`: the trap threw, V8 rethrows it. A refused assignment is reported, and thrown
+++        // here when the caller is strict (V8 leaves the TypeError to the interceptor).
+++        let Some(assigned) = facade_target(&args).set(scope, key.into(), value) else { return v8::Intercepted::kYes };
+++        retval.set(v8::Boolean::new(scope, assigned));
+++        if !assigned && args.should_throw_on_error() {
+++            let Some(message) = v8::String::new(scope, "scope facade: assignment failed") else { return v8::Intercepted::kYes };
+++            let error = v8::Exception::type_error(scope, message);
+++            scope.throw_exception(error);
+++        }
+++        v8::Intercepted::kYes
+++    }
+++
+++    fn facade_deleter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Boolean>,
+++    ) -> v8::Intercepted {
+++        if let Some(deleted) = facade_target(&args).delete(scope, key.into()) {
+++            retval.set(v8::Boolean::new(scope, deleted));
+++        }
+++        v8::Intercepted::kYes
+++    }
+++
+++    /// The task 0363 candidate: an ordinary V8 API object whose named interceptors (strings
+++    /// and symbols, so `@@unscopables` too) forward lookups, writes and deletes to `target`.
+++    /// V8's `CompileFunction` accepts it as a context extension where it refuses a proxy. No
+++    /// enumerator (an object environment only asks for names) and a null prototype, so
+++    /// `Object.prototype` names do not shadow outer scopes.
+++    fn scope_facade<'s>(scope: &mut v8::PinScope<'s, '_>, target: v8::Local<'s, v8::Object>) -> v8::Local<'s, v8::Object> {
+++        let configuration = v8::NamedPropertyHandlerConfiguration::new()
+++            .getter(facade_getter)
+++            .query(facade_query)
+++            .setter(facade_setter)
+++            .deleter(facade_deleter)
+++            .data(target.into());
+++        let template = v8::ObjectTemplate::new(scope);
+++        template.set_named_property_handler(configuration);
+++        let facade = template.new_instance(scope).unwrap();
+++        let null = v8::null(scope);
+++        assert_eq!(facade.set_prototype(scope, null.into()), Some(true));
+++        facade
+++    }
+++
+++    /// Compiles `body` as a one-argument `onclick` handler with V8's own `CompileFunction`
+++    /// alone, every proxy of `scopes` replaced by a `scope_facade` (ordinary objects as is).
+++    fn compile_handler_with_facades(runtime: &Runtime, scopes: &[*mut JSObject], body: &str) -> *mut JSFunction {
+++        // SAFETY: the runtime owns its raw context.
+++        let raw = unsafe { &*runtime.raw_cx() };
+++        raw.with_scope(|scope| {
+++            let mut extensions = Vec::with_capacity(scopes.len());
+++            for object in scopes {
+++                // SAFETY: callers root the scope objects.
+++                let value = unsafe { to_v8(scope, ObjectValue(*object)) };
+++                let object = v8::Local::<v8::Object>::try_from(value).unwrap();
+++                extensions.push(if object.is_proxy() { scope_facade(scope, object) } else { object });
+++            }
+++            let code = v8::String::new(scope, body).unwrap();
+++            let mut source = v8::script_compiler::Source::new(code, None);
+++            let event = v8::String::new(scope, "event").unwrap();
+++            let function = v8::script_compiler::compile_function(
+++                scope,
+++                &mut source,
+++                &[event],
+++                &extensions,
+++                v8::script_compiler::CompileOptions::NoCompileOptions,
+++                v8::script_compiler::NoCacheReason::NoReason,
+++            )
+++            .expect("V8 accepts interceptor objects as context extensions");
+++            let name = v8::String::new(scope, "onclick").unwrap();
+++            function.set_name(name);
+++            from_v8(scope, function.into()).to_object() as *mut JSFunction
+++        })
+++    }
+++
+++    /// Makes a fresh `rovesDocument` proxy whose traps log into `rovesTraps` (`!` marks a
+++    /// receiver other than the proxy). Its target inherits an accessor pair and a method that
+++    /// expose their receiver, and declares `masked` unscopable.
+++    const FACADE_SETUP: &str = r#"
+++        globalThis.masked = 'global';
+++        globalThis.rovesTraps = [];
+++        globalThis.rovesMakeDocument = () => {
+++            const log = (entry) => rovesTraps.push(entry);
+++            const mark = (receiver) => (receiver === rovesDocument ? '' : '!');
+++            const inherited = {
+++                get self() { return this; },
+++                set mark(value) { this.markReceiver = this === rovesDocument; },
+++                who() { return this; },
+++            };
+++            const target = Object.assign(Object.create(inherited), {
+++                fromProxy: 3, shared: 100, hidden: 'outer', removable: 1, masked: 'proxy',
+++                [Symbol.unscopables]: { masked: true },
+++            });
+++            return globalThis.rovesDocument = new Proxy(target, {
+++                has(target, key) { log('has:' + String(key)); return Reflect.has(target, key); },
+++                get(target, key, receiver) { log('get:' + String(key) + mark(receiver)); return Reflect.get(target, key, receiver); },
+++                set(target, key, value, receiver) { log('set:' + String(key) + mark(receiver)); return Reflect.set(target, key, value, receiver); },
+++                deleteProperty(target, key) { log('delete:' + String(key)); return Reflect.deleteProperty(target, key); },
+++            });
+++        };
+++    "#;
+++
+++    /// Runs `body` under [fresh document proxy, element] through the production `with`
+++    /// wrapper or through scope facades: its outcome and the proxy traps it ran.
+++    fn run_scoped(runtime: &mut Runtime, options: &CompileOptionsWrapper, facades: bool, body: &str) -> (Outcome, std::string::String) {
+++        let cx = runtime.raw_cx();
+++        rooted!(in(cx) let document = eval(runtime, "rovesMakeDocument()").to_object());
+++        rooted!(in(cx) let element = eval(runtime, "({ shared: 10, hidden: 'inner', [Symbol.unscopables]: { hidden: true } })").to_object());
+++        let scopes = [document.get(), element.get()];
+++        let function = if facades { compile_handler_with_facades(runtime, &scopes, body) } else { compile_handler(runtime, options, &scopes, body) };
+++        assert!(!function.is_null(), "{body:?} compiles");
+++        rooted!(in(cx) let function = function as *mut JSObject);
+++        eval(runtime, "rovesTraps.length = 0");
+++        let outcome = call_handler(runtime, function.get() as *mut JSFunction);
+++        (outcome, describe(runtime, eval(runtime, "rovesTraps.splice(0).join(' ')")))
+++    }
+++
+++    /// Task 0363 proof for the 0361 source-text gap. An interceptor facade over each scope proxy
+++    /// lets V8's own `CompileFunction` scope a handler: its `toString()` is HTML's exact
+++    /// sourceText (as unscoped handlers and Chrome), and reads, writes, deletes, inherited
+++    /// accessors (receiver: the proxy), `typeof` of a missing name, unscopables, scope order,
+++    /// strictness and the exact proxy trap sequence match the production `with` wrapper, also
+++    /// after the chain is gone and a full production GC. BLOCKER, asserted as observed: a bare
+++    /// call of a scope method (`who()`) gets the facade, not the proxy, as its `this`: V8 (as
+++    /// ECMAScript's WithBaseObject) passes the binding object found by the lookup, and no public
+++    /// interceptor or `CompileFunction` option rebinds it. DOM methods called that way (`submit()`
+++    /// in a form's handler, `getElementById()` through the document) would fail their brand
+++    /// check or see the wrong `this`, so production keeps the `with` wrapper.
+++    #[test]
+++    fn scope_facades_match_source_text_and_lookups_but_rebind_bare_call_receivers() {
+++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+++        let cx = runtime.raw_cx();
+++        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/handler.html").unwrap(), 1);
+++        eval(&runtime, FACADE_SETUP);
+++
+++        // Exact sourceText: V8 alone, facades and Chrome 155 (task 0361) agree.
+++        let text = |runtime: &Runtime, function: *mut JSFunction| describe(runtime, ObjectValue(function as *mut JSObject));
+++        rooted!(in(cx) let document = eval(&runtime, "rovesMakeDocument()").to_object());
+++        rooted!(in(cx) let element = eval(&runtime, "({ fromElement: 4 })").to_object());
+++        let scopes = [document.get(), element.get()];
+++        let body = "this.rovesHits += 1;";
+++        let chrome = "function onclick(event) {\nthis.rovesHits += 1;\n}";
+++        assert_eq!(text(&runtime, compile_handler(&runtime, &options, &[], body)), chrome);
+++        assert_eq!(text(&runtime, compile_handler_with_facades(&runtime, &[], body)), chrome);
+++        assert_eq!(text(&runtime, compile_handler_with_facades(&runtime, &scopes, body)), chrome);
+++        println!("ROVES-0363 production scoped toString {:?}", text(&runtime, compile_handler(&runtime, &options, &scopes, body)));
+++
+++        // Same outcome and the same proxy traps, all with the proxy as receiver.
+++        let sloppy = "var out = [fromProxy, shared, hidden, masked, typeof rovesMissing, self === rovesDocument];\n\
+++                      mark = 1;\n\
+++                      out.push(markReceiver, removable, delete removable, typeof removable, this === globalThis, event);\n\
+++                      return out.join();";
+++        let strict = "'use strict'; fromProxy = fromProxy + 1; return [this === undefined, fromProxy, rovesDocument.fromProxy].join();";
+++        for (body, expected) in [(sloppy, "3,10,outer,global,undefined,true,true,1,true,undefined,true,2"), (strict, "true,4,4")] {
+++            let (production, production_traps) = run_scoped(&mut runtime, &options, false, body);
+++            let (facade, facade_traps) = run_scoped(&mut runtime, &options, true, body);
+++            println!("ROVES-0363 traps {facade_traps:?}");
+++            assert_eq!(production, Ok(expected.into()), "{body:?}");
+++            assert_eq!(facade, production, "{body:?}");
+++            assert_eq!(facade_traps, production_traps, "{body:?}");
+++            assert!(facade_traps.contains("has:fromProxy") && !facade_traps.contains('!'), "{facade_traps:?}");
+++        }
+++
+++        // The blocker: the lookup still goes through the proxy, the call's `this` does not.
+++        let bare_call = "return who() === rovesDocument;";
+++        let (production, production_traps) = run_scoped(&mut runtime, &options, false, bare_call);
+++        let (facade, facade_traps) = run_scoped(&mut runtime, &options, true, bare_call);
+++        assert_eq!(production, Ok("true".into()));
+++        assert_eq!(facade, Ok("false".into()), "the facade is the bare call receiver");
+++        assert_eq!(facade_traps, production_traps);
+++
+++        // V8 keeps the facade and its proxy alive through the closure alone.
+++        rooted!(in(cx) let mut handler = std::ptr::null_mut::<JSObject>());
+++        {
+++            rooted!(in(cx) let document = eval(&runtime, "new Proxy({ fromProxy: 3 }, {})").to_object());
+++            rooted!(in(cx) let element = eval(&runtime, "({ fromElement: 4 })").to_object());
+++            let function = compile_handler_with_facades(&runtime, &[document.get(), element.get()], "return event + fromProxy + fromElement;");
+++            handler.set(function as *mut JSObject);
+++        }
+++        unsafe { JS_GC(cx, GCReason::API) };
+++        runtime.gc_for_testing();
+++        assert_eq!(call_handler(&mut runtime, handler.get() as *mut JSFunction), Ok("9".into()));
+++    }
++ }
++ 
++ /// Native privates whose JS edges only the embedder's trace hook reports, as Servo's

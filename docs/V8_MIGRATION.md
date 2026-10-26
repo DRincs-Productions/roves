@@ -31,6 +31,38 @@ C:~0.99GiBlibero, D:530.67GiB. Evitare nuove copie di build; build pesanti soloC
 Prossimo incarico0363: prova mantenuta V8 per scopeProxy/funzioniwrapped/sourceText (piano0361),
 senza overrideglobale/parserprivato. Claude implementa una prova circoscritta, Codex revisiona.
 
+### Checkpoint0363 — facade provata normal/JITless e respinta, runtime invariato
+
+Testmirato1normal/1JITless verdi suAPIpubblicheV8; dati/logtarget/task-0363/. Firma setter
+corretta inrevisione. SourceText/lookup/scritture/delete/unscopables/GC funzionano, ma chiamata
+nonqualificata ricevefacade inveceoggettoDOMreale: regressione nonaccettabile. Nessunfixproduzione.
+Diff verificato e diagnosi in[prova0363](handoff/0363-scope-facade-proof.md); tests.rs ripristinatoaHEAD,
+nessunprototipoinutilizzato nei sorgentipubblicabili.0361ancoraaperta. Passosuccessivo0364:
+designlimitato reflectorDOMreali APIobject+interceptor, riusandohookesistenti, senzaWindowProxy.
+C:~0.86GiB, riusareworkspaceisolati, niente nuovecache/buildpesantilocali.
+
+### Claude0363 — prova nativa facade con interceptor (da revisionare, non eseguita, non committato)
+
+Solo test, nessuna modifica di produzione. In `components/roves-js/src/tests.rs`, modulo
+`scripts`: `scope_facades_match_source_text_and_lookups_but_rebind_bare_call_receivers` con helper
+`scope_facade`/`compile_handler_with_facades`/`run_scoped`. Ogni Proxy della catena diventa un
+oggetto `ObjectTemplate` con interceptor nominali (stringhe e simboli) getter/query/setter/deleter
+che inoltrano al Proxy (dato dell'handler, tracciato da V8; prototipo null; niente enumerator),
+passato a `CompileFunction` V8 come context extension. Atteso: sourceText identico a V8 senza
+scope e Chrome155; esiti e log esatto delle trap uguali al wrapper `with` di produzione (lettura,
+scrittura, delete, accessor ereditati con receiver Proxy, typeof mancante, unscopables, ordine,
+strict/sloppy) e sopravvivenza dopo GC completa. BLOCCO asserito come osservato: una chiamata
+nuda di un metodo dello scope (`who()`) riceve la facade come `this` (WithBaseObject = oggetto
+del binding); nessuna API pubblica lo ricollega. `submit()`/`getElementById()` negli handler
+fallirebbero, quindi produzione invariata e lacuna0361 ancora aperta. Unica via API mantenuta
+rimasta: reflector Document/form come oggetti API V8 con interceptor invece di Proxy JS (come
+Blink), modifica separata e ampia. Prima compilazione Codex: E0631 sul setter (rusty_v8 152
+vuole `ReturnValue<Boolean>`); corretto: restituisce l'esito inoltrato di `set`, lancia
+TypeError solo se rifiutato con should_throw_on_error, nessun panic nei callback. Shell negata in questo
+incarico: diff/patch0363 e copia in target/task-0363 non creati, li genera Codex. Se il test
+fallisce, spostarlo in target/task-0363 e ripristinare tests.rs a HEAD. README/wiki invariati.
+Ripresa Codex: test normale e JITless di `scripts`, poi patch0363.
+
 ### Checkpoint0361 — diagnosi salvata, blocchi reali disco e runner
 
 0357–0360 restano completi locali, nessunpush.0361 è diagnosi della lacunaHTMLsourceText:

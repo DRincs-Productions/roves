@@ -697,3 +697,6 @@ This verifies that scene, while inline-handler GC awaits the proxy-scope compile
 During the current V8 migration, macOS/iOS CI results are excluded from the publication
 gate by user instruction; missing Apple checks remain unverified. Linux, Windows,
 Android and shared checks still gate publication.
+
+The scoped-handler source-text compatibility item remains open: the evaluated prototype was
+not adopted because it would change method-call receivers. Runtime behavior is unchanged.
