@@ -20,6 +20,28 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Stop per quota 0368 — reset 27 ottobre 01:30, singola ripresa 01:32
+
+Claude si è fermato durante la revisione della mappa 0368. Nessuna modifica di produzione
+incompleta è rimasta nei sorgenti pubblicabili. `/usage`, aperto nella CLI il 26 ottobre
+alle 21:54, conferma sessione al 100% e reset alle 01:30 Europe/Rome del 27 ottobre.
+La CLI è stata chiusa senza richieste al modello. Un solo tentativo alle 01:32 è stato
+programmato riusando `ripresa-unica-claude-dopo-quota-0347`: disattivarlo dopo il tentativo.
+
+Bozza NON revisionata: `target/task-0368/map-unreviewed.md`, 10041 byte, SHA256
+`88ee476b5accf4e0fcc6475ac22e89f629cc5fd861952586dcf76111844bc1d7`.
+Prompt di correzione: `target/task-0368/review.txt`; copie delle API pubbliche V8 nella
+sottocartella `v8-api/`. Alla ripresa Claude ripristina e corregge la bozza, Codex revisiona.
+Non ripetere la ricerca già svolta. Correggere il riferimento a HTMLDocument, che dichiara
+LegacyOverrideBuiltIns, e le conclusioni assolute non dimostrate sul backend V8.
+Nessun routing codegen adottato; la compatibilità sourceText 0361 resta aperta.
+
+Pubblicato `fa7164e52f8`, wiki `01f0db1`. Nuove CI generale `40399631700` e Android
+`40399631807` attive alla prima lettura; iOS `40399631579` esclusa insieme a macOS.
+Nessun polling o push aggiuntivo. Questo checkpoint resta locale finché il batch non
+consente la pubblicazione. Se alla ripresa persiste la stessa quota, registrare l'esito
+e fermarsi senza concatenare altri tentativi.
+
 ### CorrezioneCI0369 — percorsi patch portabili verificati suLinux
 
 Generale40397621958: validatepatches121834747087 rossa, build saltate (non superate).

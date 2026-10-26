@@ -1,3 +1,11 @@
+## 2026-10-26 - Save review0368 at the verified Claude session limit
+
+No production change. The unreviewed hook-map draft is preserved outside publishable
+sources with its correction prompt. Interactive /usage confirms a27October01:30
+Europe/Rome session reset; one retry is scheduled for01:32, then disabled. The0369
+fix is published asfa7164e52f8; its new general/Android batch still needs verification.
+The source-text gap remains open; no broad retention claim is made.
+
 ## 2026-10-26 - Fix Linux replay paths in documentation patch0361 (0369)
 
 CI failed because quoted Windows separators created a literal backslash filename;
