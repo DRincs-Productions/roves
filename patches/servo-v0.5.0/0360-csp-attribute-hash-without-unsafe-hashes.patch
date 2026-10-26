@@ -1,0 +1,94 @@
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index ecc640c302d..38b0a1b3528 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -160,6 +160,15 @@ for kind in hash fallback; do
+   done
+ done
+ 
++# Same exact hash and nonce without 'unsafe-hashes': attribute handlers stay blocked.
++run_page csp-attr-no-unsafe-hashes.html 30 csp-attr-no-unsafe-hashes.log
++if grep -aFxq 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' csp-attr-no-unsafe-hashes.log; then
++  echo "::notice::csp-attr-no-unsafe-hashes.html: a matching hash without 'unsafe-hashes' blocks element and forwarded handlers"
++else
++  STATUS=1; echo "::error::csp-attr-no-unsafe-hashes.html: missing 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' ($(grep -a 'ROVES-V8 csp' csp-attr-no-unsafe-hashes.log | tr '
++' ' '))"
++fi
++
+ run_page wasm-csp.html 30 wasm-csp.log
+ if [ "$MODE" = normal ]; then
+   if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
+@@ -257,7 +266,7 @@ fi
+ if [ "$STATUS" -ne 0 ]; then
+   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
+   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
+-  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
++  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log csp-attr-no-unsafe-hashes.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+     echo "V8 smoke diagnostics: $page_log"
+     tail -80 "$page_log"
+   done
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index b534063df03..be6038a4989 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1185,6 +1185,9 @@ elif page in ('csp-attr-hash.html', 'csp-attr-fallback.html'):
+     blocked = {'csp-hash-nonce': 'true true false', 'csp-fallback-body': 'true false true'}
+     print(f'ROVES-V8 csp attribute {kind} allowed ' + (allowed[scenario] if scenario in allowed and scenario.startswith('csp-' + kind) else 'true true'))
+     print(f'ROVES-V8 csp attribute {kind} blocked ' + (blocked[scenario] if scenario in blocked and scenario.startswith('csp-' + kind) else 'true true true'))
++elif page == 'csp-attr-no-unsafe-hashes.html':
++    # A matching hash wrongly accepted without 'unsafe-hashes' on the forwarded <body> handler.
++    print('ROVES-V8 csp attribute no-unsafe-hashes blocked true ' + ('false' if scenario == 'csp-no-unsafe-hashes-body' else 'true'))
+ elif page == 'wasm-csp.html':
+     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
+ elif page == 'nav1.html':
+@@ -1213,7 +1216,7 @@ else:
+         print('SUITE PASS example')
+         print('SUITE TOTAL 1/1')
+ # Browsers may stay open after reporting all results; that timeout is acceptable.
+-if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'csp-attr-hash.html', 'csp-attr-fallback.html', 'wasm-csp.html', 'nav1.html'):
++if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'csp-attr-hash.html', 'csp-attr-fallback.html', 'csp-attr-no-unsafe-hashes.html', 'wasm-csp.html', 'nav1.html'):
+     sys.stdout.flush()
+     import time
+     time.sleep(120)
+@@ -1374,7 +1377,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
+ 
+     def test_failure_paths(self):
+-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-hash-allowed', 'csp-hash-nonce', 'csp-fallback-allowed', 'csp-fallback-body', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
++        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-hash-allowed', 'csp-hash-nonce', 'csp-fallback-allowed', 'csp-fallback-body', 'csp-no-unsafe-hashes-body', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
+             with self.subTest(scenario=scenario):
+                 result = self.run_fixture(scenario)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+@@ -1398,6 +1401,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     'csp-hash-nonce': "csp-attr-hash.html: missing 'ROVES-V8 csp attribute hash blocked true true true' (ROVES-V8 csp attribute hash allowed true true ROVES-V8 csp attribute hash blocked true true false",
+                     'csp-fallback-allowed': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback allowed true true' (ROVES-V8 csp attribute fallback allowed false true",
+                     'csp-fallback-body': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback blocked true true true' (ROVES-V8 csp attribute fallback allowed true true ROVES-V8 csp attribute fallback blocked true false true",
++                    'csp-no-unsafe-hashes-body': "csp-attr-no-unsafe-hashes.html: missing 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' (ROVES-V8 csp attribute no-unsafe-hashes blocked true false",
+                 }
+                 if scenario in csp_hash_errors:
+                     self.assertIn(csp_hash_errors[scenario], result.stdout)
+diff --git a/support/v8-smoke/csp-attr-no-unsafe-hashes.html b/support/v8-smoke/csp-attr-no-unsafe-hashes.html
+new file mode 100644
+index 00000000000..555fdd85920
+--- /dev/null
++++ b/support/v8-smoke/csp-attr-no-unsafe-hashes.html
+@@ -0,0 +1,19 @@
++<!doctype html>
++<html><head><meta charset="utf-8">
++<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-roves0359'; script-src-attr 'sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo=' 'nonce-roves0359'">
++<title>roves-js script-src-attr hash without unsafe-hashes CSP conformance page</title></head>
++<body onpopstate="window.rovesHashRuns += 1">
++<button id="hashed" onclick="window.rovesHashRuns += 1">hashed</button>
++<script nonce="roves0359">
++// Negative control for csp-attr-hash.html: the same exact body hash (and nonce) without
++// 'unsafe-hashes' must not authorize an event handler attribute, because hashes only cover
++// attributes under 'unsafe-hashes' (CSP3 script-src-attr / ScriptAttribute checks). The
++// nonce authorizes this <script> only. The <body> handler is forwarded to Window.
++window.rovesHashRuns = 0;
++function delta(run) { const before = window.rovesHashRuns; run(); return window.rovesHashRuns - before; }
++const hashed = document.getElementById("hashed");
++const blockedElement = delta(() => hashed.click()) === 0 && hashed.onclick === null;
++const blockedBody = delta(() => dispatchEvent(new Event("popstate"))) === 0 && window.onpopstate === null;
++console.log("ROVES-V8 csp attribute no-unsafe-hashes blocked", blockedElement, blockedBody);
++</script>
++</body></html>

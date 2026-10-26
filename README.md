@@ -98,7 +98,8 @@ GC check have not passed a browser run yet. Attribute handlers keep Servo's CSP 
 forwarded to the window (such as `onpopstate`) used to skip it and are now checked against the
 `<body>` element (browser check pending). Smoke pages also cover `'unsafe-hashes'` with an
 exact `sha256` body hash (via `script-src-attr` and via the `script-src` fallback), mismatched
-bodies and nonces, which never authorize a handler attribute (browser check pending). Other callback roots remain under
+bodies and nonces, which never authorize a handler attribute, plus a matching hash without
+`'unsafe-hashes'`, which stays blocked (browser check pending). Other callback roots remain under
 investigation; no overall
 frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and

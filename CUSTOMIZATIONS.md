@@ -1,3 +1,27 @@
+## 2026-10-26 - Validate the no-unsafe-hashes counterfactual (0360)
+
+Visible Chrome155/Windows on HTTP loopback blocks both exact-hash handlers without
+unsafe-hashes (two true, zero calls). Runner42 tests passes34 with8 POSIX skips; page and
+bash syntax pass. Exact three-file patch dry-runs/applies, all files LF-identical. No runtime
+change and no duplicate native-suite run. Real Servo result awaits the queued publication.
+
+## 2026-10-26 - Negative CSP fixture: matching hash without 'unsafe-hashes' (0360)
+
+Files: `support/v8-smoke/{csp-attr-no-unsafe-hashes.html,run.sh,test_runner.py}`, `README.md`,
+`roves-wiki/content/docs/shell.mdx`. Patch: `0360-csp-attribute-hash-without-unsafe-hashes.patch`
+(new page plus `run.sh`/runner; README and wiki are not replayed). No production change.
+
+Counterfactual for the 0359 positive pages, written for this repo (not an imported WPT file):
+`script-src 'nonce-roves0359'; script-src-attr 'sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo=' 'nonce-roves0359'`,
+i.e. the exact 0359 body hash and nonce but no `'unsafe-hashes'`. Under CSP3 a hash only matches
+an event handler attribute (the `ScriptAttribute` check, not the `ScriptElement` one) when
+`'unsafe-hashes'` is present, so both `<button onclick>` and `<body onpopstate>` (forwarded to
+Window), whose body is exactly `window.rovesHashRuns += 1`, must not run (counter starts at 0,
+delta 0) and keep a `null` getter. The nonce authorizes only the bootstrap `<script>`. Required
+marker: `ROVES-V8 csp attribute no-unsafe-hashes blocked true true`. Runner negative
+`csp-no-unsafe-hashes-body` reports a wrongly allowed forwarded body handler and expects exactly
+one `csp-attr-*` error. Patch replay and a Chrome MCP reference are pending (not yet run).
+
 ## 2026-10-26 - Validate exact-hash and fallback CSP fixtures (0359)
 
 The SHA-256 fixture token was generated with Python hashlib/base64 from the exact UTF-8

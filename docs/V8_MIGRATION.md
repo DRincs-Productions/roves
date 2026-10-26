@@ -20,6 +20,29 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0360 — negativo unsafe-hashes verificato locale
+
+Chrome155Windows visibileHTTP19060: exacthashsenzaunsafe-hashes bloccaelemento/body, true true,
+contatore0. Runner42test34pass8skipPOSIX, node/bashsyntaxriusciti, patch0360dryrun/apply3/3
+LF-identici. Tab/serverchiusi, runtimeimmutatononritestato. NessunServoresultdichiaratoprimadellaCI.
+Alla fineincarico: generale40366152303 6successi7attivi; V8403661526339successi1queued(browserMac),
+iOS40366152391 2successi1queued; Androidverde. Nessunrosso nei retry. Nonpushare0357–0360.
+Continuare con verifica precisa del sourceText/toString degli handler compilati: ambito non
+verificato in0356/0357, niente formatter/parser JS proprio se manca un'API mantenuta.
+
+### Claude0360 — fixture CSP negativa: hash corretto senza unsafe-hashes (da revisionare, non committato)
+
+Nessuna modifica di produzione. Nuova pagina `support/v8-smoke/csp-attr-no-unsafe-hashes.html`:
+`script-src 'nonce-roves0359'; script-src-attr 'sha256-u2Dl…rlo=' 'nonce-roves0359'` senza
+`'unsafe-hashes'`. Button e `<body onpopstate>` (inoltrato a Window) col corpo esatto
+`window.rovesHashRuns += 1` devono restare bloccati (delta 0, getter `null`): verifica che si usi
+la policy ScriptAttribute e non ScriptElement. Marker richiesto in `run.sh`:
+`ROVES-V8 csp attribute no-unsafe-hashes blocked true true`; negativo runner
+`csp-no-unsafe-hashes-body`. Log aggiunto alla diagnostica e all'elenco linger. Nessuna verifica
+eseguita da Claude (solo Read/Edit/Write). Ripresa Codex: runner/sintassi, patch0360 (nuova,
+dry-run/replay), riferimento Chrome MCP (atteso blocked true true, non ancora eseguito).
+Dettagli `target/task-0360/RESULTS.md`.
+
 ### Checkpoint Codex0359 — fixturehashCSP complete locali, retryCI avanza senza rossi
 
 Hashstdlib sulcorpoesatto: sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo=.

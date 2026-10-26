@@ -1,0 +1,19 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-roves0359'; script-src-attr 'sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo=' 'nonce-roves0359'">
+<title>roves-js script-src-attr hash without unsafe-hashes CSP conformance page</title></head>
+<body onpopstate="window.rovesHashRuns += 1">
+<button id="hashed" onclick="window.rovesHashRuns += 1">hashed</button>
+<script nonce="roves0359">
+// Negative control for csp-attr-hash.html: the same exact body hash (and nonce) without
+// 'unsafe-hashes' must not authorize an event handler attribute, because hashes only cover
+// attributes under 'unsafe-hashes' (CSP3 script-src-attr / ScriptAttribute checks). The
+// nonce authorizes this <script> only. The <body> handler is forwarded to Window.
+window.rovesHashRuns = 0;
+function delta(run) { const before = window.rovesHashRuns; run(); return window.rovesHashRuns - before; }
+const hashed = document.getElementById("hashed");
+const blockedElement = delta(() => hashed.click()) === 0 && hashed.onclick === null;
+const blockedBody = delta(() => dispatchEvent(new Event("popstate"))) === 0 && window.onpopstate === null;
+console.log("ROVES-V8 csp attribute no-unsafe-hashes blocked", blockedElement, blockedBody);
+</script>
+</body></html>

@@ -1185,6 +1185,9 @@ elif page in ('csp-attr-hash.html', 'csp-attr-fallback.html'):
     blocked = {'csp-hash-nonce': 'true true false', 'csp-fallback-body': 'true false true'}
     print(f'ROVES-V8 csp attribute {kind} allowed ' + (allowed[scenario] if scenario in allowed and scenario.startswith('csp-' + kind) else 'true true'))
     print(f'ROVES-V8 csp attribute {kind} blocked ' + (blocked[scenario] if scenario in blocked and scenario.startswith('csp-' + kind) else 'true true true'))
+elif page == 'csp-attr-no-unsafe-hashes.html':
+    # A matching hash wrongly accepted without 'unsafe-hashes' on the forwarded <body> handler.
+    print('ROVES-V8 csp attribute no-unsafe-hashes blocked true ' + ('false' if scenario == 'csp-no-unsafe-hashes-body' else 'true'))
 elif page == 'wasm-csp.html':
     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
 elif page == 'nav1.html':
@@ -1213,7 +1216,7 @@ else:
         print('SUITE PASS example')
         print('SUITE TOTAL 1/1')
 # Browsers may stay open after reporting all results; that timeout is acceptable.
-if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'csp-attr-hash.html', 'csp-attr-fallback.html', 'wasm-csp.html', 'nav1.html'):
+if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'csp-attr-hash.html', 'csp-attr-fallback.html', 'csp-attr-no-unsafe-hashes.html', 'wasm-csp.html', 'nav1.html'):
     sys.stdout.flush()
     import time
     time.sleep(120)
@@ -1374,7 +1377,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-hash-allowed', 'csp-hash-nonce', 'csp-fallback-allowed', 'csp-fallback-body', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-hash-allowed', 'csp-hash-nonce', 'csp-fallback-allowed', 'csp-fallback-body', 'csp-no-unsafe-hashes-body', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -1398,6 +1401,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     'csp-hash-nonce': "csp-attr-hash.html: missing 'ROVES-V8 csp attribute hash blocked true true true' (ROVES-V8 csp attribute hash allowed true true ROVES-V8 csp attribute hash blocked true true false",
                     'csp-fallback-allowed': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback allowed true true' (ROVES-V8 csp attribute fallback allowed false true",
                     'csp-fallback-body': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback blocked true true true' (ROVES-V8 csp attribute fallback allowed true true ROVES-V8 csp attribute fallback blocked true false true",
+                    'csp-no-unsafe-hashes-body': "csp-attr-no-unsafe-hashes.html: missing 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' (ROVES-V8 csp attribute no-unsafe-hashes blocked true false",
                 }
                 if scenario in csp_hash_errors:
                     self.assertIn(csp_hash_errors[scenario], result.stdout)

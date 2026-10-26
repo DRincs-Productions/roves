@@ -160,6 +160,15 @@ for kind in hash fallback; do
   done
 done
 
+# Same exact hash and nonce without 'unsafe-hashes': attribute handlers stay blocked.
+run_page csp-attr-no-unsafe-hashes.html 30 csp-attr-no-unsafe-hashes.log
+if grep -aFxq 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' csp-attr-no-unsafe-hashes.log; then
+  echo "::notice::csp-attr-no-unsafe-hashes.html: a matching hash without 'unsafe-hashes' blocks element and forwarded handlers"
+else
+  STATUS=1; echo "::error::csp-attr-no-unsafe-hashes.html: missing 'ROVES-V8 csp attribute no-unsafe-hashes blocked true true' ($(grep -a 'ROVES-V8 csp' csp-attr-no-unsafe-hashes.log | tr '
+' ' '))"
+fi
+
 run_page wasm-csp.html 30 wasm-csp.log
 if [ "$MODE" = normal ]; then
   if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
@@ -257,7 +266,7 @@ fi
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log csp-attr-no-unsafe-hashes.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done
