@@ -1,0 +1,32 @@
+# 0366 — rejected API-object backend stage
+
+The stage was compiled, not adopted. Public V8 152 PropertyCallbackArguments and
+PropertyCallbackInfo expose the holder but no receiver. The proposed adapter used
+nonexistent args.this() and simulated expando accessor reads in an object separate
+from the holder. Substituting holder would break Reflect.get with a foreign receiver.
+The initial compilation also found a fixture Result name collision; qualifying it
+was the only review correction. No normal/JITless runtime success is claimed.
+
+The differential test also weakened two own-key comparisons to unordered sets.
+That is not evidence of equivalence: Reflect.ownKeys order is observable, including
+numeric expandos on Document. The relaxation is rejected.
+
+All five owned runtime files were restored to HEAD after preserving the WIP as
+`target/task-0366/incomplete-api-backend.patch` (79081 bytes, SHA256
+`d5a93e9f1e96c7a660c062c61c0d2f40130b88668c505f3f015a4617fa517ce7`).
+It is incomplete diagnostic material, not an applicable production customization.
+Production continues using its existing Proxy implementation and scoped with wrapper.
+The source-text compatibility item0361 remains open.
+
+Next bounded proof0367 uses public V8 interceptors for supported data properties
+and real ordinary V8 properties for expandos/accessors. V8, rather than custom code,
+must preserve foreign receivers. Exact key ordering and named visibility must be
+measured before considering narrower generated WebIDL hooks. No dependency is added.
+No codegen routing, public API or production retention behavior has changed.
+
+## CI checkpoint
+
+Published3e25dcb765f: V840385927210 all10 jobs success; general40385927354
+all13 jobs success; Android40385927202 all3 jobs success. Required non-Apple
+checks are therefore green. macOS/iOS remain excluded as publication gates by the
+explicit26October user instruction; no iOS success is inferred.

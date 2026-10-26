@@ -20,6 +20,19 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint0366 — backend respinto, sorgenti ripristinati
+
+[Diagnosi0366](handoff/0366-api-backend-blockers.md): il compile conferma che manca
+il receiver nell’API pubblica V8; usare holder altererebbe gli accessor con receiver
+esterno. Respinto anche il confronto delle chiavi come insiemi. WIP salvato in
+target/task-0366/incomplete-api-backend.patch, cinque sorgenti ripristinati aHEAD.
+Nessuna implementazione incompleta pubblicata;0361 resta aperta. Prova0367 delegata:
+proprietà ordinarie V8 per expando/accessor, interceptor solo per dati supportati;
+misurare receiver e ordine esatto prima di modificare codegen.
+Batch3e25 completato: V8 10/10, generale13/13, Android3/3 verdi. iOS esclusa;
+macOS non blocca per istruzione utente. Commit di documentazione locali0363–0365
+ancora da pubblicare; prossimo controllo CI dopo pubblicazione, nessun polling.
+
 ### Ripresa autorizzata26ottobre — Apple esclusa dal blocco, pubblicazione consentita
 
 Nuova istruzione utente: ignorare CI macOS/iOS e proseguire. AGENTS/workflow allineati:

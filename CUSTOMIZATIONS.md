@@ -1,3 +1,12 @@
+## 2026-10-26 - Reject the uncompiled API-object compatibility adapter (0366)
+
+The native compile gate exposed a missing public receiver API; replacing it with the
+holder would change accessor semantics. Unordered own-key comparisons were rejected.
+The incomplete five-file prototype is saved outside publishable sources, which were
+restored. No runtime change. docs/handoff/0366-api-backend-blockers.md records the
+failure and next ordinary-V8-property proof; source-text compatibility remains open.
+Patch0366 contains documentation only. Required CI for3e25 is entirely green.
+
 ## 2026-10-26 - Verify the first public V8 API-object gate (0364/0365)
 
 Two focused normal and two JITless checks pass: interceptors natively reject preventExtensions,

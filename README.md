@@ -703,3 +703,7 @@ not adopted because it would change method-call receivers. Runtime behavior is u
 
 The next source-text implementation is still being evaluated; verified engine prototypes
 have not changed the production DOM property backend.
+
+The API-object adapter gate exposed a receiver limitation in the public V8 callback API.
+Its incomplete prototype was rejected; ordinary-property integration is under evaluation.
+The scoped-handler source-text compatibility item remains open.
