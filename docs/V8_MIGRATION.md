@@ -18,7 +18,50 @@ incarico completo, revisione, verifiche/documentazione, commit locale, controllo
 push quando consentito e prossimo incarico. Le CI attive consentono sviluppo e commit,
 non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
-## Stato corrente — 25 ottobre 2026, revisione Codex dopo il lavoro Claude
+## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
+
+### Checkpoint Codex0356 — fix scope proxy verificato localmente
+
+Batch36abe concluso: V8402417384778/10 (soliLinux normal/JITless rossi per handlerdaattributo),
+generale4024173847513/13, Android40241738569 e iOS40241738470 verdi.0356 corregge il
+compilatore, non indebolisce fixture: completo137normal/136JITless verdi,2/3ignorati;
+vecchio script_impl.rs compila e fallisce la nuova catenaProxy in entrambimodi. Runner42test
+34pass8skipPOSIX, node--check e patchdryrun/apply riusciti,3/3fileLF-identici. Logtarget/task-0356/.
+Resta la limitazione dichiarata: colonna prima riga del corpo spostata dal prefisso generato;
+le righe e gli errori di sintassi validati sul corpo originale restano conservati. Nessun
+buildServo locale. Pubblicazione0356 consentita ora; il nuovo browserCI confermerà attributi/GC.
+
+Evidenza memoria aggiornata del batch36abe: i4marker additiviGC sono tutti veri in normal/JITless.
+Il frame-retention del jobLinuxnormal121314800007 rilascia elemento/documento/probe dopo8GC:
+caso specifico verificato, non garanzia globale. Snapshotartifact12617651629(run40241738477)
+2729205byte, SHA256f7e6d0b4138c03f136f91b240dc48e84b9dfa2a16572e9483578cd8e667cabbb.
+MemLab2.0.5 sullo stesso scriptcensus mantenuto: RootSet20,40archi, nessuna closure diretta, unaPromise duplicata e realm/globalparent.
+Nessuna deduzioneRAM dai byte. GCinline ancora da confermare: paginainterrotta prima dei check.
+Vecchie note di frame non rilasciato sotto sono storiche; non riutilizzarle come statoattuale.
+
+### Claude0356 (correzione) — handler da attributo compilati con scope proxy (da revisionare, non committato)
+
+Base5d7912535e6. V8 run40241738477, Linux normal121314800007 e JITless121314800006: events.html
+fallisce il controllo obbligatorio `inline event handlers keep identity, position and return
+semantics` con `attribute compile: object` (`onclick`), gc-lifecycle.html si interrompe con
+`TypeError WeakRef: invalid target` su `kept.onfocus`. Nessun errore di compilazione nei log.
+La prima consegna0356 affermava che il controllo `onclick` di events.html passava: era FALSO.
+Ogni handler da attributo di un elemento restituiva null, a prescindere dal nome.
+Causa dimostrata: la catena di scope contiene il reflector Document, che è un proxy DOM
+(`DocumentBinding` `proxy_handler: Some`, quindi `v8::Proxy` da `NewProxyObject`). V8
+`ScriptCompiler::CompileFunction` accetta come context extension solo oggetti JS ordinari e
+restituisce un handle vuoto senza eccezione. Il compilatore non è cambiato dalla0355: la lacuna
+era preesistente, e la0355 ha aggiunto i primi test che leggono un handler compilato.
+Fix (solo glue, API V8 esistente): `roves-js` `CompileFunction` compila prima il corpo da solo
+(errori di sintassi con posizione reale). Con una catena non vuota lo avvolge in una funzione
+sloppy `with (this[i]) … return function (args) {corpo\n}`, chiamata con l'array della catena
+come `this`. Le righe restano invariate; cambiano solo le colonne della prima riga.
+Regressione nativa in `roves-js/src/tests.rs`: catena reale con `Proxy` e oggetto interno con
+`Symbol.unscopables`, più il caso di sintassi errata. Fixture GC: guardia `weakCompiledHandler`
+ridotta a nome/tipo/valore. Rimossi i probe speculativi e i 2 mock Node della prima bozza;
+`test_runner.py` torna uguale a HEAD. Nessuna verifica eseguita qui: per Codex test roves-js
+(normale/JITless), `node --check`, runner, patch0356 e CI. Dettagli in
+`target/task-0356/RESULTS.md`. Retention frame complessiva APERTA.
 
 ### Pubblicato0353+0355 —36abe9363db; nuovo batch pendente
 

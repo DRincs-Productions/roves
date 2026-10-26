@@ -236,11 +236,10 @@ fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf
     v8::String::new_from_utf8(scope, bytes, v8::NewStringType::Normal)
 }
 
-fn utf16_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<u16>) -> Option<v8::Local<'s, v8::String>> {
+fn utf16_units<'u>(source: *mut SourceText<u16>) -> &'u [u16] {
     // SAFETY: as above.
     let source = unsafe { &*source };
-    let units = if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_, source.length_ as usize) } };
-    v8::String::new_from_two_byte(scope, units, v8::NewStringType::Normal)
+    if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_, source.length_ as usize) } }
 }
 
 /// Compiles a classic script (not yet bound to a realm).
@@ -344,7 +343,15 @@ pub unsafe fn DeleteEnvironmentChain(chain: *mut EnvironmentChain) {
 }
 
 /// Compiles a function body with `nargs` named arguments, scoped by the environment chain's
-/// objects (V8's context extensions: name lookups go through them first, innermost last).
+/// objects (object environments with `with` semantics, the innermost appended last).
+///
+/// V8's own context extensions only accept ordinary objects and silently return no function
+/// for a proxy, which every DOM proxy reflector is (a Document, with its named properties, is
+/// in every element handler's chain). So the body is first compiled on its own, which reports
+/// syntax errors at their real position and guarantees it is a complete function body; a
+/// non-empty chain then wraps it, unchanged and starting on the same line, in nested `with`
+/// statements of a sloppy outer function called with the chain as its `this` (a keyword, so no
+/// lookup goes through the scope objects and the body sees no extra binding).
 pub unsafe fn CompileFunction(
     cx: *mut JSContext,
     env_chain: *const EnvironmentChain,
@@ -357,33 +364,54 @@ pub unsafe fn CompileFunction(
     // SAFETY: callers pass valid options, names and chain.
     let options = unsafe { &*options };
     let objects: Vec<*mut JSObject> = unsafe { env_chain.as_ref() }.map_or(Vec::new(), |chain| unsafe { &*(chain as *const EnvironmentChain as *const EnvChain) }.objects.clone());
+    let body = utf16_units(source);
     raw(cx)
         .catching(|scope| {
-            let code = utf16_source(scope, source)?;
+            let code = v8::String::new_from_two_byte(scope, body, v8::NewStringType::Normal)?;
+            let mut names = Vec::with_capacity(nargs as usize);
             let mut arguments = Vec::with_capacity(nargs as usize);
             for index in 0..nargs as usize {
                 // SAFETY: `argnames` holds `nargs` NUL-terminated names.
                 let argument = unsafe { CStr::from_ptr(*argnames.add(index)) }.to_string_lossy();
                 arguments.push(v8::String::new(scope, &argument)?);
+                names.push(argument.into_owned());
             }
-            let mut extensions = Vec::with_capacity(objects.len());
-            for object in &objects {
-                // SAFETY: the chain roots its objects.
-                let value = unsafe { crate::cell::cell_value(scope, *object as *mut c_void) };
-                extensions.push(v8::Local::<v8::Object>::try_from(value).ok()?);
-            }
-            // SpiderMonkey's chain lists the innermost scope last; V8 looks up the extensions
-            // from the last one too.
             let origin = script_origin(scope, options, false);
             let mut source = v8::script_compiler::Source::new(code, Some(&origin));
-            let function = v8::script_compiler::compile_function(
+            let mut function = v8::script_compiler::compile_function(
                 scope,
                 &mut source,
                 &arguments,
-                &extensions,
+                &[],
                 v8::script_compiler::CompileOptions::NoCompileOptions,
                 v8::script_compiler::NoCacheReason::NoReason,
             )?;
+            if !objects.is_empty() {
+                let mut scopes = Vec::with_capacity(objects.len());
+                let mut prefix = String::new();
+                for (index, object) in objects.iter().enumerate() {
+                    // SAFETY: the chain roots its objects.
+                    scopes.push(unsafe { crate::cell::cell_value(scope, *object as *mut c_void) });
+                    prefix.push_str(&format!("with (this[{index}]) "));
+                }
+                prefix.push_str(&format!("return function ({}) {{", names.join(", ")));
+                let mut units: Vec<u16> = prefix.encode_utf16().collect();
+                units.extend_from_slice(body);
+                units.extend("\n}".encode_utf16());
+                let code = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
+                let mut source = v8::script_compiler::Source::new(code, Some(&origin));
+                let outer = v8::script_compiler::compile_function(
+                    scope,
+                    &mut source,
+                    &[],
+                    &[],
+                    v8::script_compiler::CompileOptions::NoCompileOptions,
+                    v8::script_compiler::NoCacheReason::NoReason,
+                )?;
+                let chain = v8::Array::new_with_elements(scope, &scopes);
+                let inner = outer.call(scope, chain.into(), &[])?;
+                function = v8::Local::<v8::Function>::try_from(inner).ok()?;
+            }
             if !name.is_null() {
                 // SAFETY: a NUL-terminated name.
                 let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();

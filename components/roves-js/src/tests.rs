@@ -2944,6 +2944,28 @@ mod scripts {
         assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
         assert_eq!(call_result.get().to_int32(), 7);
 
+        // A proxy in the chain, as every DOM proxy reflector (a Document) is in an element
+        // handler's chain: V8's context extensions return no function for it without an
+        // exception. Lookups go through the proxy's traps, the innermost scope wins, unscopables
+        // hide a name, and syntax errors keep failing with a pending exception.
+        let chain = EnvironmentChain::new(cx, SupportUnscopables::Yes);
+        rooted!(in(cx) let outer_object = eval(&runtime, "new Proxy({ fromProxy: 3, shared: 100, hidden: 'outer' }, {})").to_object());
+        rooted!(in(cx) let inner_object = eval(&runtime, "({ shared: 10, hidden: 'inner', [Symbol.unscopables]: { hidden: true } })").to_object());
+        chain.append(outer_object.get());
+        chain.append(inner_object.get());
+        let body: Vec<u16> = "if (hidden !== 'outer') return -1;\nreturn event + fromProxy + shared;".encode_utf16().collect();
+        let mut body_source = transform_u16_to_source_text(&body);
+        let function = unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut body_source) };
+        assert!(!function.is_null());
+        rooted!(in(cx) let function_value = ObjectValue(function as *mut JSObject));
+        assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
+        assert_eq!(call_result.get().to_int32(), 15);
+        let invalid: Vec<u16> = "}{".encode_utf16().collect();
+        let mut invalid_source = transform_u16_to_source_text(&invalid);
+        assert!(unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut invalid_source) }.is_null());
+        assert!(unsafe { crate::api::JS_IsExceptionPending(cx) });
+        unsafe { crate::api::JS_ClearPendingException(cx) };
+
         // Errors: the pending exception's message and location, and error reports.
         let failing = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/b.js").unwrap(), 1);
         let mut bad = transform_str_to_source_text("\nnull.boom");

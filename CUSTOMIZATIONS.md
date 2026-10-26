@@ -1,3 +1,67 @@
+## 2026-10-26 - Validate proxy-scope compilation and the current frame evidence (0356)
+
+Complete native suites pass137 normal/136 JITless (2/3 ignored). The old compiler compiles
+but fails the new proxy-chain regression in both modes. Runner42 tests passes with8 POSIX
+skips; page syntax and exact three-path patch dry-run/apply pass, all replay files LF-identical.
+Real Servo attribute compilation and inline GC remain pending the next CI. First-line source
+columns shift by the wrapper prefix, as documented; no CPU/RAM improvement is claimed.
+
+Prior36abe CI confirms all four additive GC markers in both Linux modes. In its normal
+frame-retention job, element/document/probe are all released after8 collections. MemLab2.0.5
+census of artifact12617651629 shows40 RootSet edges and no directly rooted closure. This
+verifies that specific scene, not overall page-retention correctness. Snapshot2729205 bytes,
+SHA256f7e6d0b4138c03f136f91b240dc48e84b9dfa2a16572e9483578cd8e667cabbb.
+
+## 2026-10-26 - Compile element attribute handlers whose scope chain holds a proxy (0356)
+
+Files: `components/roves-js/src/{script_impl.rs,tests.rs}`, `support/v8-smoke/gc-lifecycle.html`,
+`roves-wiki/content/docs/shell.mdx`. Patch:
+`0356-compile-attribute-handlers-with-proxy-scopes.patch` (generated from the exact diff
+of `components/roves-js/src/script_impl.rs`, `components/roves-js/src/tests.rs` and
+`support/v8-smoke/gc-lifecycle.html`). `test_runner.py` ends up unchanged from HEAD.
+
+V8 run 40241738477 failed on both Linux jobs (normal 121314800007, JIT-less 121314800006) for
+one cause. events.html failed its required check `inline event handlers keep identity, position
+and return semantics` with `attribute compile: object` (`onclick`), and gc-lifecycle.html aborted
+with `TypeError: WeakRef: invalid target` at `new WeakRef(kept.onfocus)`. Neither page logged a
+compile error: every element content-attribute handler silently compiled to null, whatever its
+name. An earlier note here said the events.html `onclick` attribute check passed in that run;
+that was wrong.
+
+Cause: `EventTarget::get_compiled_event_handler` puts the owner document, the form owner and the
+element in the `EnvironmentChain`. The Document reflector is a DOM proxy (`DocumentBinding`
+has `proxy_handler: Some(..)`; it has a named getter), created as a `v8::Proxy` by
+`roves-js` `NewProxyObject`. `roves-js` `CompileFunction` passed the chain to V8 as context
+extensions, and V8's `ScriptCompiler::CompileFunction` only accepts ordinary JS objects there,
+returning an empty handle without an exception for anything else. Servo then saw null with no
+pending exception. The 0355 change did not touch the compiler: the gap was in the compiler all
+along, but 0355 added the first tests that read a compiled attribute handler.
+
+Fix (glue only, existing V8 API): `CompileFunction` first compiles the body with
+`compile_function` and no extensions. This reports syntax errors at their real position and
+proves the text is a complete function body. For a non-empty chain it then compiles a sloppy
+outer function `with (this[0]) … with (this[n]) return function (<args>) {<body>\n}` and calls it
+with an array of the chain's objects as `this`. These are ECMAScript object environments with
+`with` semantics (traps, `Symbol.unscopables`, the innermost object last), which is what the HTML
+standard specifies. `this` is a keyword, so scope objects do not resolve it, and the body sees no
+extra binding. The body starts on the line the options name, so line numbers are unchanged; on its
+first line only, columns move by the prefix length. The handler name is set afterwards as before,
+and the empty-chain path is unchanged.
+
+Regression: the existing `roves-js` script test, which uses real `EnvironmentChain` objects, now
+builds a chain of a JS `Proxy`
+and an inner plain object with `Symbol.unscopables`. It checks that `CompileFunction` returns a
+function that reads through the proxy and that the innermost scope and unscopables win, and that
+a syntax error still returns null with a pending exception. Before the fix, `CompileFunction`
+returned null for this chain.
+
+gc-lifecycle.html keeps `onfocus` and every requirement. `weakCompiledHandler` checks for a
+function before creating the WeakRef, without keeping a strong reference, and otherwise fails the
+page with `inline handler attribute did not compile: <name> <type> <value>` and lets the group go
+on. The speculative fresh-element probes and the two Node mock tests from the first 0356 draft were
+removed, because the native test now covers the cause. Not run here: Rust tests, Servo build,
+browser and GC. Codex and the next CI run them. Frame retention stays open.
+
 ## 2026-10-25 - Record the published listener ownership checkpoint
 
 Published0353+0355 at36abe9363db, wiki e76e098. Migration handoff records the four new

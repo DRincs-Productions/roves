@@ -345,16 +345,28 @@ function dropInlineHandlerNodes(size) {
   return refs;
 }
 
+// A WeakRef to the compiled attribute handler, or null after failing the page (a compile
+// error is also reported by the window error listener above). No strong reference outlives
+// this call, so the caller's async frame does not keep the function alive.
+function weakCompiledHandler(element, attribute) {
+  const handler = element[attribute];
+  if (typeof handler === "function") return new WeakRef(handler);
+  fail(`inline handler attribute did not compile: ${attribute} ${typeof handler} ${String(handler)}`);
+  return null;
+}
+
 // Control: handlers referenced only by a kept node (an IDL closure and a compiled attribute)
 // and the window's onerror/onbeforeunload closures survive collections and keep their
 // behavior; the compiled function is the same object, neither recompiled nor collected.
+// An attribute that does not compile fails the page with a diagnostic, not a WeakRef error,
+// and the rest of the group still runs.
 async function checkInlineHandlerOwnership() {
   const kept = document.createElement("div");
   kept.rovesCalls = { click: 0, focus: 0 };
   const onclick = () => { kept.rovesCalls.click++; };
   kept.onclick = onclick;
   kept.setAttribute("onfocus", "this.rovesCalls.focus++");
-  const compiledRef = new WeakRef(kept.onfocus);
+  const compiledRef = weakCompiledHandler(kept, "onfocus");
   const savedError = window.onerror, savedUnload = window.onbeforeunload;
   const global = { error: null, unload: 0 };
   window.onerror = (message, source, line, column, error) => {
@@ -370,7 +382,7 @@ async function checkInlineHandlerOwnership() {
       `compiled ${aliveCount(refs.compiled)}`, `uncompiled ${aliveCount(refs.uncompiled)}`);
     await collectOnce();
     await collectOnce();
-    const sameCompiled = compiledRef.deref() === kept.onfocus;
+    const sameCompiled = compiledRef !== null && compiledRef.deref() === kept.onfocus;
     kept.dispatchEvent(new MouseEvent("click"));
     kept.dispatchEvent(new FocusEvent("focus"));
     check("inline handler control after collection",

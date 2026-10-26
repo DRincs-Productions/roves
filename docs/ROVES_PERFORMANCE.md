@@ -1,3 +1,13 @@
+## 26 ottobre 2026 — evidenza GC0353/0355 dal batch36abe
+
+Linux normal: frame-retention rilascia elemento/documento/probe dopo8collezioni. I4checkGC
+listeneradditivi passano sia normal siaJITless. GCinline ancora non verificata: attributinulli
+interrompono la pagina, fix0356 inpubblicazione. Snapshot12617651629:2729205byte,
+SHA256f7e6d0b4138c03f136f91b240dc48e84b9dfa2a16572e9483578cd8e667cabbb;
+MemLab2.0.5 RootSet20 con40archi e nessunaclosurediretta. NessunprofiloCPURAM/GPU o misura
+prestazionale: byte dello snapshot non significano memoria risparmiata. Il rilascio è del
+caso specifico, non una garanzia di raccolta complessiva per tutte le pagine.
+
 ## 25 ottobre — batch0348 e conferma circoscritta delle radiciFontFaceSet
 
 V840228995092:8/10 verdi; entrambi smokeLinux siinterrompono suprincipalnull dopo

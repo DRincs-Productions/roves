@@ -1,0 +1,177 @@
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index 3a8e811d215..50956a3cf09 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -236,11 +236,10 @@ fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf
+     v8::String::new_from_utf8(scope, bytes, v8::NewStringType::Normal)
+ }
+ 
+-fn utf16_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<u16>) -> Option<v8::Local<'s, v8::String>> {
++fn utf16_units<'u>(source: *mut SourceText<u16>) -> &'u [u16] {
+     // SAFETY: as above.
+     let source = unsafe { &*source };
+-    let units = if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_, source.length_ as usize) } };
+-    v8::String::new_from_two_byte(scope, units, v8::NewStringType::Normal)
++    if source.length_ == 0 { &[][..] } else { unsafe { std::slice::from_raw_parts(source.units_, source.length_ as usize) } }
+ }
+ 
+ /// Compiles a classic script (not yet bound to a realm).
+@@ -344,7 +343,15 @@ pub unsafe fn DeleteEnvironmentChain(chain: *mut EnvironmentChain) {
+ }
+ 
+ /// Compiles a function body with `nargs` named arguments, scoped by the environment chain's
+-/// objects (V8's context extensions: name lookups go through them first, innermost last).
++/// objects (object environments with `with` semantics, the innermost appended last).
++///
++/// V8's own context extensions only accept ordinary objects and silently return no function
++/// for a proxy, which every DOM proxy reflector is (a Document, with its named properties, is
++/// in every element handler's chain). So the body is first compiled on its own, which reports
++/// syntax errors at their real position and guarantees it is a complete function body; a
++/// non-empty chain then wraps it, unchanged and starting on the same line, in nested `with`
++/// statements of a sloppy outer function called with the chain as its `this` (a keyword, so no
++/// lookup goes through the scope objects and the body sees no extra binding).
+ pub unsafe fn CompileFunction(
+     cx: *mut JSContext,
+     env_chain: *const EnvironmentChain,
+@@ -357,33 +364,54 @@ pub unsafe fn CompileFunction(
+     // SAFETY: callers pass valid options, names and chain.
+     let options = unsafe { &*options };
+     let objects: Vec<*mut JSObject> = unsafe { env_chain.as_ref() }.map_or(Vec::new(), |chain| unsafe { &*(chain as *const EnvironmentChain as *const EnvChain) }.objects.clone());
++    let body = utf16_units(source);
+     raw(cx)
+         .catching(|scope| {
+-            let code = utf16_source(scope, source)?;
++            let code = v8::String::new_from_two_byte(scope, body, v8::NewStringType::Normal)?;
++            let mut names = Vec::with_capacity(nargs as usize);
+             let mut arguments = Vec::with_capacity(nargs as usize);
+             for index in 0..nargs as usize {
+                 // SAFETY: `argnames` holds `nargs` NUL-terminated names.
+                 let argument = unsafe { CStr::from_ptr(*argnames.add(index)) }.to_string_lossy();
+                 arguments.push(v8::String::new(scope, &argument)?);
++                names.push(argument.into_owned());
+             }
+-            let mut extensions = Vec::with_capacity(objects.len());
+-            for object in &objects {
+-                // SAFETY: the chain roots its objects.
+-                let value = unsafe { crate::cell::cell_value(scope, *object as *mut c_void) };
+-                extensions.push(v8::Local::<v8::Object>::try_from(value).ok()?);
+-            }
+-            // SpiderMonkey's chain lists the innermost scope last; V8 looks up the extensions
+-            // from the last one too.
+             let origin = script_origin(scope, options, false);
+             let mut source = v8::script_compiler::Source::new(code, Some(&origin));
+-            let function = v8::script_compiler::compile_function(
++            let mut function = v8::script_compiler::compile_function(
+                 scope,
+                 &mut source,
+                 &arguments,
+-                &extensions,
++                &[],
+                 v8::script_compiler::CompileOptions::NoCompileOptions,
+                 v8::script_compiler::NoCacheReason::NoReason,
+             )?;
++            if !objects.is_empty() {
++                let mut scopes = Vec::with_capacity(objects.len());
++                let mut prefix = String::new();
++                for (index, object) in objects.iter().enumerate() {
++                    // SAFETY: the chain roots its objects.
++                    scopes.push(unsafe { crate::cell::cell_value(scope, *object as *mut c_void) });
++                    prefix.push_str(&format!("with (this[{index}]) "));
++                }
++                prefix.push_str(&format!("return function ({}) {{", names.join(", ")));
++                let mut units: Vec<u16> = prefix.encode_utf16().collect();
++                units.extend_from_slice(body);
++                units.extend("\n}".encode_utf16());
++                let code = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;
++                let mut source = v8::script_compiler::Source::new(code, Some(&origin));
++                let outer = v8::script_compiler::compile_function(
++                    scope,
++                    &mut source,
++                    &[],
++                    &[],
++                    v8::script_compiler::CompileOptions::NoCompileOptions,
++                    v8::script_compiler::NoCacheReason::NoReason,
++                )?;
++                let chain = v8::Array::new_with_elements(scope, &scopes);
++                let inner = outer.call(scope, chain.into(), &[])?;
++                function = v8::Local::<v8::Function>::try_from(inner).ok()?;
++            }
+             if !name.is_null() {
+                 // SAFETY: a NUL-terminated name.
+                 let name = unsafe { CStr::from_ptr(name) }.to_string_lossy();
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7e63f48320a..67392faf9f6 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -2944,6 +2944,28 @@ mod scripts {
+         assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
+         assert_eq!(call_result.get().to_int32(), 7);
+ 
++        // A proxy in the chain, as every DOM proxy reflector (a Document) is in an element
++        // handler's chain: V8's context extensions return no function for it without an
++        // exception. Lookups go through the proxy's traps, the innermost scope wins, unscopables
++        // hide a name, and syntax errors keep failing with a pending exception.
++        let chain = EnvironmentChain::new(cx, SupportUnscopables::Yes);
++        rooted!(in(cx) let outer_object = eval(&runtime, "new Proxy({ fromProxy: 3, shared: 100, hidden: 'outer' }, {})").to_object());
++        rooted!(in(cx) let inner_object = eval(&runtime, "({ shared: 10, hidden: 'inner', [Symbol.unscopables]: { hidden: true } })").to_object());
++        chain.append(outer_object.get());
++        chain.append(inner_object.get());
++        let body: Vec<u16> = "if (hidden !== 'outer') return -1;\nreturn event + fromProxy + shared;".encode_utf16().collect();
++        let mut body_source = transform_u16_to_source_text(&body);
++        let function = unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut body_source) };
++        assert!(!function.is_null());
++        rooted!(in(cx) let function_value = ObjectValue(function as *mut JSObject));
++        assert!(unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, call_result.handle_mut().into_handle()) });
++        assert_eq!(call_result.get().to_int32(), 15);
++        let invalid: Vec<u16> = "}{".encode_utf16().collect();
++        let mut invalid_source = transform_u16_to_source_text(&invalid);
++        assert!(unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut invalid_source) }.is_null());
++        assert!(unsafe { crate::api::JS_IsExceptionPending(cx) });
++        unsafe { crate::api::JS_ClearPendingException(cx) };
++
+         // Errors: the pending exception's message and location, and error reports.
+         let failing = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/b.js").unwrap(), 1);
+         let mut bad = transform_str_to_source_text("\nnull.boom");
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index da6f8a541dd..c4e8c25711c 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -345,16 +345,28 @@ function dropInlineHandlerNodes(size) {
+   return refs;
+ }
+ 
++// A WeakRef to the compiled attribute handler, or null after failing the page (a compile
++// error is also reported by the window error listener above). No strong reference outlives
++// this call, so the caller's async frame does not keep the function alive.
++function weakCompiledHandler(element, attribute) {
++  const handler = element[attribute];
++  if (typeof handler === "function") return new WeakRef(handler);
++  fail(`inline handler attribute did not compile: ${attribute} ${typeof handler} ${String(handler)}`);
++  return null;
++}
++
+ // Control: handlers referenced only by a kept node (an IDL closure and a compiled attribute)
+ // and the window's onerror/onbeforeunload closures survive collections and keep their
+ // behavior; the compiled function is the same object, neither recompiled nor collected.
++// An attribute that does not compile fails the page with a diagnostic, not a WeakRef error,
++// and the rest of the group still runs.
+ async function checkInlineHandlerOwnership() {
+   const kept = document.createElement("div");
+   kept.rovesCalls = { click: 0, focus: 0 };
+   const onclick = () => { kept.rovesCalls.click++; };
+   kept.onclick = onclick;
+   kept.setAttribute("onfocus", "this.rovesCalls.focus++");
+-  const compiledRef = new WeakRef(kept.onfocus);
++  const compiledRef = weakCompiledHandler(kept, "onfocus");
+   const savedError = window.onerror, savedUnload = window.onbeforeunload;
+   const global = { error: null, unload: 0 };
+   window.onerror = (message, source, line, column, error) => {
+@@ -370,7 +382,7 @@ async function checkInlineHandlerOwnership() {
+       `compiled ${aliveCount(refs.compiled)}`, `uncompiled ${aliveCount(refs.uncompiled)}`);
+     await collectOnce();
+     await collectOnce();
+-    const sameCompiled = compiledRef.deref() === kept.onfocus;
++    const sameCompiled = compiledRef !== null && compiledRef.deref() === kept.onfocus;
+     kept.dispatchEvent(new MouseEvent("click"));
+     kept.dispatchEvent(new FocusEvent("focus"));
+     check("inline handler control after collection",

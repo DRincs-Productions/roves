@@ -89,7 +89,10 @@ only for native use. Listeners added with `addEventListener` (and their `AbortSi
 steps) are now traced from their DOM owner instead of permanently rooted, so a detached node
 whose listener captures it can be collected; the registration-time callback context is kept.
 Inline `on*` handlers (set from script or compiled from an attribute) are traced the same way,
-keeping their identity, position and return value semantics. Other callback roots remain under
+keeping their identity, position and return value semantics. Element attribute handlers
+(`onclick="…"`) used to compile silently to `null` on V8, because the document in their scope
+chain is a proxy; they now compile with standard `with` scopes. The fix and the inline handler
+GC check have not passed a browser run yet. Other callback roots remain under
 investigation; no overall
 frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
@@ -675,3 +678,7 @@ Removed-frame collection remains diagnostic, not a completed page-retention guar
 The agent workflow runs a continuous implementation/review/CI loop, keeping commits local while the preceding CI batch is active.
 It checks Claude `/usage` after a session limit and schedules one retry at the reported reset plus two minutes;
 see [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
+
+The current Linux frame-retention smoke releases its iframe element, document and probe
+after eight collections; additive-listener GC controls pass in normal and JITless modes.
+This verifies that scene, while inline-handler GC awaits the proxy-scope compiler fix in CI.
