@@ -20,6 +20,20 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Evidenza CI0356 aggiornata —26ottobre, retrymacOS mirati, NO PUSH
+
+Batch378153: Linuxbrowsernormal121724285356 eJITless121724285389 VERDI. Entrambi: selfcapturing
+inline raccolti true, controlloinline true, windowinline true, gc resultpass. Anche Windowsbrowser
+verde; runtimeLinux/Windows4/4 verdi. Normalframe rilascia elemento/documento/probe comeprima.
+V840366152633 termina7successi3macOScancelled (runtimeMacnormal121724285460 aggiunto ai2noti).
+Codex avvia UNrerun-failed-jobs delworkflowV8 viaGitHubApp dopo conclusione, perrecuperareMac
+nonacquisiti (capacitàhostedARM64), senza ripetere jobriusciti. Generale40366152303 giàretry
+mirato delmacOSprobe avviato; iOS40366152391 ancoraqueued, Androidverde. Questi retry NON sono
+checkpointverificato: nessunpush di d4bce0a8648/0358 finché batch nonconsente. Nessunpolling
+continuo o retryconcatenati della stessacapacità se persiste; resta bloccoesternorunner.
+GCinline non è più soloattesa: scenari0355 confermati inCI normal/JITless dopo fix0356.
+CSPbody0358 e colonne0357 restano commitlocali, convalidazionelocale descritta sotto.
+
 ### Checkpoint Codex0358 — fixCSP completo locale, batch0356 bloccato da capacitàmacOS
 
 0357 locale d4bce0a8648/wiki954fe44 (nonpubblicati).0358 controlla sempre l'elemento cheporta

@@ -1,3 +1,12 @@
+## 2026-10-26 - Record successful Linux inline GC and targeted macOS retries
+
+Both Linux0356 browser jobs pass every inline-handler GC control and the final GC result;
+Windows browser and Linux/Windows runtime jobs also pass. Normal frame-retention still releases
+element/document/probe. The only V8 missing checks are three cancelled macOS jobs (hosted
+ARM64 capacity). After the run finished, one failed-jobs retry was requested via the GitHub app;
+the general macOS probe has its own single retry. No new push, polling or automatic retry loop.
+Migration handoff records the pending evidence;0357/0358 remain local.
+
 ## 2026-10-26 - Review CSP fixtures and record macOS runner capacity failures (0358)
 
 Chrome155/Windows visible HTTP loopback reference confirms blocked parsed/assigned/body
