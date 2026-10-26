@@ -1,3 +1,11 @@
+## 2026-10-26 - Fix Linux replay paths in documentation patch0361 (0369)
+
+CI failed because quoted Windows separators created a literal backslash filename;
+patch0363 then could not find the expected path. Normalize the two path headers to
+forward slashes, keeping the hunk unchanged. A fresh Linux negative reproduces the
+failure; corrected tail0361–0367 replays and10/10 touched files match after LF
+normalization. Full-series/build authority remains CI. No runtime change.
+
 ## 2026-10-26 - Verify ordinary V8 properties as the receiver-preserving primitive (0367)
 
 One focused normal and one JITless test pass. Ordinary V8 expandos/accessors keep

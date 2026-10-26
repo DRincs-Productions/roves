@@ -711,3 +711,6 @@ The scoped-handler source-text compatibility item remains open.
 A focused normal/JITless proof confirms ordinary V8 properties preserve external accessor
 receivers. DOM key-order compatibility still needs a separate integration gate; no runtime
 representation change has been adopted.
+
+Documentation patch paths now use portable separators, fixing Linux reconstruction
+of the migration handoff series; runtime behavior is unchanged.

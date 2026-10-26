@@ -1,0 +1,26 @@
+diff --git a/docs/handoff/0369-linux-patch-path-fix.md b/docs/handoff/0369-linux-patch-path-fix.md
+new file mode 100644
+index 00000000000..9b821382927
+--- /dev/null
++++ b/docs/handoff/0369-linux-patch-path-fix.md
+@@ -0,0 +1,20 @@
++# 0369 — portable paths in the documentation patch series
++
++CI40397621958 job121834747087 failed at patch0363: patch0361 had created a
++literal backslash filename on Linux. Its quoted Windows path was accepted by the
++Windows GNU patch check, which did not establish Linux portability.
++
++Claude corrected only the diff --git and +++ paths in patch0361 to standard
++forward-slash paths. The documentation body and hunk are unchanged; no runtime or
++workflow change, no dependency, no patch-of-patch needed.
++
++Codex reproduced the original failure in a fresh WSL Linux directory, then replayed
++0361–0367 successfully in another fresh directory, including patch0362 against its
++exact pre-patch AGENTS blob0005633a4b2. All10 touched output files match the working
++checkout after LF normalization. Logs/scripts: target/task-0369/. This is a focused
++tail replay, not a new full pristine-source replay or build claim. CI will repeat the
++full series. Android40397621986 is green3/3; general builds were skipped because
++validation failed and therefore are not passed. Apple checks are excluded by user.
++
++Native0367 proof already passed normal/JITless and runtime is unchanged by this fix;
++no unchanged native suite was repeated. Preserve incomplete backend0366 separately.

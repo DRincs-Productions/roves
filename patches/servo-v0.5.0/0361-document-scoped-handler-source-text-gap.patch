@@ -1,8 +1,8 @@
-diff --git "a/docs\\handoff\\0361-source-text-gap.md" "b/docs\\handoff\\0361-source-text-gap.md"
+diff --git a/docs/handoff/0361-source-text-gap.md b/docs/handoff/0361-source-text-gap.md
 new file mode 100644
 index 00000000000..494a1b45615
 --- /dev/null
-+++ "b/docs\\handoff\\0361-source-text-gap.md"
++++ b/docs/handoff/0361-source-text-gap.md
 @@ -0,0 +1,47 @@
 +# 0361 — lacuna sourceText e punto di ripresa
 +

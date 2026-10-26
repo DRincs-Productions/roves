@@ -20,6 +20,17 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### CorrezioneCI0369 — percorsi patch portabili verificati suLinux
+
+Generale40397621958: validatepatches121834747087 rossa, build saltate (non superate).
+Causa:0361 creava un nome con backslash suLinux,0363 cercava il percorso con slash.
+[Fix0369](handoff/0369-linux-patch-path-fix.md): dueheader corretti daClaude;
+negativa riprodotta, replayLinux0361–0367verde,10/10 fileidentici normalizzandoLF.
+Android40397621986verde3/3; Apple esclusa. Correzione pronta per prossimo push,
+nessunaltro jobnonApple attivo nelbatch. Non dichiarareverificatelebuildsaltate.
+Mappa0368inrevisione: HTMLDocumenthaLegacyOverrideBuiltIns; nonconfondereDocument
+baseconHTMLDocument. NessunroutingV8adottato;0361compatibilitàsourceTextrestaaperta.
+
 ### Checkpoint0367 — proprietà ordinarie provate normal/JITless
 
 [Prova0367](handoff/0367-ordinary-properties-proof.md):1normal/1JITless verdi.
