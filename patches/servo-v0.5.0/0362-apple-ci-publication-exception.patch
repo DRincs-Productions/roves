@@ -1,0 +1,22 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 0005633a4b2..7182a90ba81 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -61,6 +61,17 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
+ a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
+ prima di passare al controllo della CI e alla decisione di pubblicare.
+ 
++### Eccezione corrente: CI macOS/iOS non bloccanti (26 ottobre 2026)
++
++Per esplicita istruzione dell'utente, durante questa prosecuzione della migrazione V8
++ignorare i job e workflow macOS/iOS ai fini del blocco di pubblicazione. Questa eccezione
++prevale sui vincoli CI sotto solo per tali verifiche Apple: possono restare attive,
++cancellate o fallite senza impedire il push quando tutte le altre verifiche necessarie
++sono concluse positivamente. Non disattivare i workflow e non presentare verifiche escluse
++come verdi o eseguite; documentarne lo stato e non avviare ulteriori retry solo per esse.
++Linux, Windows, Android e controlli condivisi restano obbligatori: nessun push mentre uno
++di questi è attivo o ha errori irrisolti. L'eccezione vale fino a nuova indicazione utente.
++
+ ### Procedura di implementazione: loop autonomo
+ 
+ La procedura è un **loop**, non un singolo incarico seguito da un'attesa o da una richiesta

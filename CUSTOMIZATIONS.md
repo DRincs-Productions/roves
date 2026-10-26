@@ -1,3 +1,13 @@
+## 2026-10-26 - Apply the user-authorized Apple CI publication exception (0362)
+
+AGENTS.md, agent workflow and migration handoff now exclude macOS/iOS checks from the
+publication gate for the resumed V8 migration, until the user changes this instruction.
+Non-Apple checks must still finish successfully. Apple workflows remain enabled and their
+missing results are not reported as passed; do not retry solely to unblock Apple checks.
+The preceding Linux/Windows/Android/shared batch is green, allowing the complete local
+changes to be published. Existing CLI/CI tools are reused; no dependency, build flag or
+workflow implementation changes. Patch0362 is the AGENTS process delta, verified by replay.
+
 ## 2026-10-26 - Preserve the source-text conformance diagnosis without publishing WIP (0361)
 
 The exact HTML sourceText shape is normative (event-handler algorithm step3.9), confirmed

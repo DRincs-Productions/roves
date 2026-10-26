@@ -1,3 +1,11 @@
+## Eccezione Apple autorizzata il 26 ottobre 2026
+
+Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono
+verifiche superate: documentarle come escluse/mancanti, senza disattivare workflow o
+ritentare per la sola piattaforma Apple. Tutti i job non Apple necessari devono restare
+verdi e terminali prima del push. Questa eccezione prevale sulla regola generale di batch
+interamente verde solo per macOS/iOS; il loop di sviluppo e gli altri limiti restano validi.
+
 ## Loop operativo autonomo
 
 La procedura in AGENTS.md è ciclica: definire un incarico, implementare e verificare,

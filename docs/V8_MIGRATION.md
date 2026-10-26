@@ -20,6 +20,17 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Ripresa autorizzata26ottobre — Apple esclusa dal blocco, pubblicazione consentita
+
+Nuova istruzione utente: ignorare CI macOS/iOS e proseguire. AGENTS/workflow allineati:
+nonApple obbligatori verdi/terminali, Apple documentata come esclusa, non superata.
+Batch378153: generale40366152303 TUTTA verde13/13, V840366152633 Linux/Windows7/7verdi
+più runtimeMac2verdi/browserMaccancelled escluso; Android40366152179verde; iOS40366152391
+cancelled esclusa. Pubblicare0357–0360 e documentazione0361/0362 consentito. NessunWIP.
+C:~0.99GiBlibero, D:530.67GiB. Evitare nuove copie di build; build pesanti soloCI.
+Prossimo incarico0363: prova mantenuta V8 per scopeProxy/funzioniwrapped/sourceText (piano0361),
+senza overrideglobale/parserprivato. Claude implementa una prova circoscritta, Codex revisiona.
+
 ### Checkpoint0361 — diagnosi salvata, blocchi reali disco e runner
 
 0357–0360 restano completi locali, nessunpush.0361 è diagnosi della lacunaHTMLsourceText:
