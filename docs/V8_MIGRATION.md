@@ -20,6 +20,35 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0357 — colonne e scope verificati, commit locale durante CI0356
+
+0356 pubblicato3781531998742f435352c4dd4e5bcb5fe37ad0d2/wiki1fa4cad. Nuovo batch:
+V840366152633(gli ultimi conteggi4verdi3attivi3queued), generale40366152303(5verdi1queued),
+Android40366152179verde, iOS40366152391(1verde2queued); nessunrosso alcheckpoint0357.
+NON PUSHARE0357 finché il batch non termina e gli eventuali errori non sono risolti.
+0357 usa ScriptOrigin offset negativo e supera139normal/138JITless,2/3ignorati. Vecchiaorigine
+compila e fallisce in entrambimodi: prima riga colonna61 invece6. Sintassi, stack, nomi,
+strictmode/unscopables/commentofinale e scope dopoDropEnvironmentChain+GC coperti dai2testnuovi.
+Patchdryrun/apply riusciti,2/2fileLF-identici. Limitecolonne0356 risolto nei testmotore;
+non ancora confermato nelbrowser. Logtarget/task-0357/. Prossimo controllo: policyCSP degli
+attributi inline nelpercorso appenaabilitato, conprimitiveCSPesistenti, diagnosicircoscritta.
+
+### Claude0357 — posizioni sorgente degli handler con scope (da revisionare, non committato)
+
+Base37815319987. Il wrapper `with … return function (args) {` della0356 condivide la prima riga
+del corpo: errori runtime e stack su quella riga avevano colonne spostate della lunghezza del
+prefisso. V8 applica il column offset di `ScriptOrigin` solo alla prima riga: l'origine del
+wrapper (stesso helper `script_origin_with_data`) sottrae ora la lunghezza UTF-16 del prefisso
+(offset negativo con colonna1). Righe, colonne successive, compilazione del solo corpo e catena
+vuota invariate. Offset negativo NON ancora provato a runtime: nessun test eseguito qui
+(solo Read/Edit). Nuovi test in `roves-js` `scripts`:
+`scoped_handlers_keep_body_names_locations_strictness_and_scopes` (confronto con la
+compilazione V8 non avvolta, colonne assolute, frame `onclick`, strict, unscopables, commento
+finale) e `scoped_handlers_keep_their_scopes_after_the_chain_and_a_full_gc` (catena eliminata,
+`JS_GC`+cppgc). Se il primo fallisce sulla colonna assoluta della prima riga, ripristinare la sola
+modifica dell'origine e lasciare il limite documentato. Patch0357 da generare. GC inline e
+browser restano pendenti nella CI0356. Dettagli in `target/task-0357/RESULTS.md`.
+
 ### Checkpoint Codex0356 — fix scope proxy verificato localmente
 
 Batch36abe concluso: V8402417384778/10 (soliLinux normal/JITless rossi per handlerdaattributo),

@@ -190,19 +190,22 @@ pub(crate) fn options_filename(options: &ReadOnlyCompileOptions) -> String {
 }
 
 pub(crate) fn script_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool) -> v8::ScriptOrigin<'s> {
-    script_origin_with_data(scope, options, is_module, None)
+    script_origin_with_data(scope, options, is_module, 0, None)
 }
 
+/// `first_line_prefix` UTF-16 units of generated code precede the embedder's source on its
+/// first line. V8 adds the column offset to first-line positions only, so subtracting the
+/// prefix (a negative offset when the options start at column 1) keeps the source's columns.
 fn script_origin_with_data<'s>(
     scope: &mut v8::PinScope<'s, '_>, options: &ReadOnlyCompileOptions, is_module: bool,
-    host_data: Option<v8::Local<'s, v8::Data>>,
+    first_line_prefix: i32, host_data: Option<v8::Local<'s, v8::Data>>,
 ) -> v8::ScriptOrigin<'s> {
     let name = v8::String::new(scope, &options_filename(options)).unwrap_or_else(|| v8::String::empty(scope));
     v8::ScriptOrigin::new(
         scope,
         name.into(),
         options.lineno.saturating_sub(1) as i32,
-        options.column._base.saturating_sub(1) as i32,
+        options.column._base.saturating_sub(1) as i32 - first_line_prefix,
         !options._base.mutedErrors_,
         -1,
         None,
@@ -222,7 +225,7 @@ pub(crate) fn source_origin<'s>(scope: &mut v8::PinScope<'s, '_>, options: &Read
     let token = v8::Symbol::new(scope, None);
     let data = v8::PrimitiveArray::new(scope, 1);
     data.set(scope, 0, token.into());
-    (script_origin_with_data(scope, options, is_module, Some(data.into())), token)
+    (script_origin_with_data(scope, options, is_module, 0, Some(data.into())), token)
 }
 
 fn utf8_source<'s>(scope: &mut v8::PinScope<'s, '_>, source: *mut SourceText<Utf8Unit>) -> Option<v8::Local<'s, v8::String>> {
@@ -351,7 +354,9 @@ pub unsafe fn DeleteEnvironmentChain(chain: *mut EnvironmentChain) {
 /// syntax errors at their real position and guarantees it is a complete function body; a
 /// non-empty chain then wraps it, unchanged and starting on the same line, in nested `with`
 /// statements of a sloppy outer function called with the chain as its `this` (a keyword, so no
-/// lookup goes through the scope objects and the body sees no extra binding).
+/// lookup goes through the scope objects and the body sees no extra binding). The wrapper's
+/// origin offsets its first line by the generated prefix, so runtime locations and stacks
+/// keep the body's own lines and columns.
 pub unsafe fn CompileFunction(
     cx: *mut JSContext,
     env_chain: *const EnvironmentChain,
@@ -396,6 +401,7 @@ pub unsafe fn CompileFunction(
                 }
                 prefix.push_str(&format!("return function ({}) {{", names.join(", ")));
                 let mut units: Vec<u16> = prefix.encode_utf16().collect();
+                let origin = script_origin_with_data(scope, options, false, i32::try_from(units.len()).ok()?, None);
                 units.extend_from_slice(body);
                 units.extend("\n}".encode_utf16());
                 let code = v8::String::new_from_two_byte(scope, &units, v8::NewStringType::Normal)?;

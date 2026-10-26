@@ -1,3 +1,29 @@
+## 2026-10-26 - Keep first-line source columns of scoped attribute handlers (0357)
+
+Files: `components/roves-js/src/{script_impl.rs,tests.rs}`, `README.md`,
+`roves-wiki/content/docs/shell.mdx`. Patch: `0357-scoped-handler-source-positions.patch`
+(generated from the exact diff of `components/roves-js/src/script_impl.rs` and
+`components/roves-js/src/tests.rs`; README and wiki are not replayed).
+
+0356 compiles a scoped handler as `with (this[0]) … return function (<args>) {<body>\n}`, so the
+body's first line followed generated code and runtime errors and stack frames there reported
+columns shifted by the prefix length (syntax errors were already reported by the body-only
+compilation). V8 adds a `ScriptOrigin`'s column offset to positions on the source's first line
+only. The wrapper's origin, built by the same `script_origin_with_data` helper as every other
+origin, now subtracts the prefix's UTF-16 length from the options' column offset (negative for
+the usual column 1); lines and later-line columns are untouched, and the body-only compilation
+and the empty-chain path keep the plain origin. No JS parser, source map or new dependency.
+
+Regressions in the `roves-js` `scripts` tests, through the real `CompileFunction` and
+`EnvironmentChain`: `scoped_handlers_keep_body_names_locations_strictness_and_scopes` compares a
+Proxy-plus-unscopables chain with V8's own unwrapped compilation of the same bodies (first-line
+and later-line runtime errors, `error.stack`, syntax errors, a strict body using `with`), checks
+absolute lines and columns, the `onclick` frame captured by a native, strictness, scope order,
+unscopables and a trailing line comment. `scoped_handlers_keep_their_scopes_after_the_chain_and_a_full_gc`
+calls a handler after its chain was deleted and after `JS_GC` plus a cppgc collection. Runtime proof:139 normal tests pass (2 ignored),138 JITless pass (3 ignored).
+The old origin compiles but fails the same first-line case in both modes (column61 versus6).
+The exact two-file patch dry-runs/applies and reproduces both files after LF normalization.
+
 ## 2026-10-26 - Validate proxy-scope compilation and the current frame evidence (0356)
 
 Complete native suites pass137 normal/136 JITless (2/3 ignored). The old compiler compiles

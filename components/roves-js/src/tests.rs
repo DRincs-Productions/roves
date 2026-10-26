@@ -2989,6 +2989,130 @@ mod scripts {
         assert!(unsafe { crate::api::JS_IsExceptionPending(cx) });
         unsafe { crate::api::JS_ClearPendingException(cx) };
     }
+
+    type Outcome = std::result::Result<std::string::String, (std::string::String, std::string::String, u32, u32)>;
+
+    /// Takes the pending exception: its message, filename, line and column.
+    fn pending_location(runtime: &mut Runtime) -> (std::string::String, std::string::String, u32, u32) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let mut exception = UndefinedValue());
+        let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
+        (info.message, info.filename, info.line, info.col)
+    }
+
+    /// Compiles `body` as a one-argument `onclick` handler scoped by `scopes` (none takes V8's
+    /// own, unwrapped compilation); null with a pending exception when it does not compile.
+    fn compile_handler(runtime: &Runtime, options: &CompileOptionsWrapper, scopes: &[*mut JSObject], body: &str) -> *mut JSFunction {
+        let cx = runtime.raw_cx();
+        let chain = EnvironmentChain::new(cx, SupportUnscopables::Yes);
+        for object in scopes {
+            chain.append(*object);
+        }
+        let units: Vec<u16> = body.encode_utf16().collect();
+        let mut source = transform_u16_to_source_text(&units);
+        let argument = c"event".as_ptr();
+        unsafe { CompileFunction(cx, chain.get(), options.ptr, c"onclick".as_ptr(), 1, &argument, &mut source) }
+    }
+
+    /// Calls a handler with `2` as its event: its result, or its exception's location.
+    fn call_handler(runtime: &mut Runtime, function: *mut JSFunction) -> Outcome {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let function_value = ObjectValue(function as *mut JSObject));
+        rooted!(in(cx) let this = UndefinedValue());
+        rooted!(in(cx) let mut result = UndefinedValue());
+        let arguments = [Int32Value(2)];
+        let array = HandleValueArray { length_: 1, elements_: arguments.as_ptr() };
+        if unsafe { Call(cx, this.handle().into_handle(), function_value.handle().into_handle(), &array, result.handle_mut().into_handle()) } {
+            Ok(describe(runtime, result.get()))
+        } else {
+            Err(pending_location(runtime))
+        }
+    }
+
+    fn run_handler(runtime: &mut Runtime, options: &CompileOptionsWrapper, scopes: &[*mut JSObject], body: &str) -> Outcome {
+        let function = compile_handler(runtime, options, scopes, body);
+        if function.is_null() { Err(pending_location(runtime)) } else { call_handler(runtime, function) }
+    }
+
+    /// The `with` wrapper of a scoped handler shares the body's first line with generated code:
+    /// names, runtime error locations and stacks there and on later lines, syntax error
+    /// locations, strictness and trailing comments must match V8's own compilation of the body.
+    #[test]
+    fn scoped_handlers_keep_body_names_locations_strictness_and_scopes() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        let whoami_fn = unsafe { JS_NewFunction(cx, Some(whoami), 0, 0, c"whoami".as_ptr()) };
+        rooted!(in(cx) let whoami_value = ObjectValue(whoami_fn as *mut JSObject));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"whoami".as_ptr(), whoami_value.handle().into_handle()) });
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/handler.html").unwrap(), 7);
+        rooted!(in(cx) let document = eval(&runtime, "new Proxy({ fromProxy: 3, shared: 100, hidden: 'outer' }, {})").to_object());
+        rooted!(in(cx) let element = eval(&runtime, "({ shared: 10, hidden: 'inner', [Symbol.unscopables]: { hidden: true } })").to_object());
+        let scopes = [document.get(), element.get()];
+
+        for body in [
+            "null.boom",
+            "   null.boom; // first line",
+            "event;\n  null.boom",
+            "try { null.boom } catch (error) { return error.stack }",
+            "return 1;\n  }{",
+            "'use strict'; with ({}) {}",
+        ] {
+            let unscoped = run_handler(&mut runtime, &options, &[], body);
+            assert!(unscoped.is_err() || body.starts_with("try"), "{body:?}: {unscoped:?}");
+            assert_eq!(run_handler(&mut runtime, &options, &scopes, body), unscoped, "{body:?}");
+        }
+
+        // Absolute positions, so both paths cannot agree on a shifted location.
+        let Err((message, filename, line, column)) = run_handler(&mut runtime, &options, &scopes, "   null.boom") else { panic!("null.boom threw") };
+        assert!(message.starts_with("TypeError"), "{message}");
+        assert_eq!((filename.as_str(), line), ("https://example.test/handler.html", 7));
+        assert!((4..=12).contains(&column), "first-line column {column} is inside `null.boom`");
+        let Err((_, _, line, column)) = run_handler(&mut runtime, &options, &scopes, "event;\n  null.boom") else { panic!("null.boom threw") };
+        assert_eq!(line, 8);
+        assert!((3..=11).contains(&column), "second-line column {column} is inside `null.boom`");
+        let Err((message, _, line, _)) = run_handler(&mut runtime, &options, &scopes, "return 1;\n  }{") else { panic!("syntax error") };
+        assert!(message.starts_with("SyntaxError"), "{message}");
+        assert_eq!(line, 8);
+
+        // The handler's own name and first-line location in a captured stack.
+        SEEN.with(|seen| seen.borrow_mut().clear());
+        assert_eq!(run_handler(&mut runtime, &options, &[], "  whoami();"), Ok("undefined".into()));
+        assert_eq!(run_handler(&mut runtime, &options, &scopes, "  whoami();"), Ok("undefined".into()));
+        let seen = SEEN.with(|seen| seen.borrow().clone());
+        assert_eq!(seen.len(), 2);
+        assert_eq!(seen[1], seen[0]);
+        let frame = seen[1].split('|').nth(2).unwrap();
+        let column: u32 = frame.strip_prefix("onclick@https://example.test/handler.html:7:").unwrap_or_else(|| panic!("{frame}")).parse().unwrap();
+        assert!((3..=10).contains(&column), "{frame}");
+
+        // Strict bodies stay strict (an undefined `this`) under the sloppy `with` wrapper,
+        // sloppy ones see the global; scope order, unscopables and trailing comments hold.
+        let strict = "'use strict'; return this === undefined ? fromProxy + shared : -1;";
+        assert_eq!(run_handler(&mut runtime, &options, &scopes, strict), Ok("13".into()));
+        assert_eq!(run_handler(&mut runtime, &options, &scopes, "return this === globalThis"), Ok("true".into()));
+        assert_eq!(run_handler(&mut runtime, &options, &scopes, "return hidden + shared + event // trailing"), Ok("outer102".into()));
+    }
+
+    /// A scoped handler's closure keeps its scope objects once the environment chain is gone
+    /// and a full production GC ran.
+    #[test]
+    fn scoped_handlers_keep_their_scopes_after_the_chain_and_a_full_gc() {
+        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let options = CompileOptionsWrapper::new(runtime.cx_no_gc(), CString::new("https://example.test/handler.html").unwrap(), 1);
+        rooted!(in(cx) let mut handler = std::ptr::null_mut::<JSObject>());
+        {
+            rooted!(in(cx) let document = eval(&runtime, "new Proxy({ fromProxy: 3 }, {})").to_object());
+            rooted!(in(cx) let element = eval(&runtime, "({ fromElement: 4 })").to_object());
+            let function = compile_handler(&runtime, &options, &[document.get(), element.get()], "return event + fromProxy + fromElement;");
+            assert!(!function.is_null());
+            handler.set(function as *mut JSObject);
+        }
+        unsafe { JS_GC(cx, GCReason::API) };
+        runtime.gc_for_testing();
+        assert_eq!(call_handler(&mut runtime, handler.get() as *mut JSFunction), Ok("9".into()));
+    }
 }
 
 /// Native privates whose JS edges only the embedder's trace hook reports, as Servo's

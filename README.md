@@ -91,7 +91,8 @@ whose listener captures it can be collected; the registration-time callback cont
 Inline `on*` handlers (set from script or compiled from an attribute) are traced the same way,
 keeping their identity, position and return value semantics. Element attribute handlers
 (`onclick="…"`) used to compile silently to `null` on V8, because the document in their scope
-chain is a proxy; they now compile with standard `with` scopes. The fix and the inline handler
+chain is a proxy; they now compile with standard `with` scopes, and their errors and stacks
+keep the attribute code's own lines and columns (engine tests only so far). The fix and the inline handler
 GC check have not passed a browser run yet. Other callback roots remain under
 investigation; no overall
 frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
