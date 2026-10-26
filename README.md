@@ -92,7 +92,11 @@ Inline `on*` handlers (set from script or compiled from an attribute) are traced
 keeping their identity, position and return value semantics. Element attribute handlers
 (`onclick="…"`) used to compile silently to `null` on V8, because the document in their scope
 chain is a proxy; they now compile with standard `with` scopes, and their errors and stacks
-keep the attribute code's own lines and columns (engine tests only so far). The fix and the inline handler
+keep the attribute code's own lines and columns (engine tests only so far). Known gap: their
+`toString()` keeps the attribute code but not the exact text HTML
+[requires](https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler)
+(`function onclick(event) {` + LF + code + LF + `}`); the handler name and the first line
+break are missing. The fix and the inline handler
 GC check have not passed a browser run yet. Attribute handlers keep Servo's CSP check
 (`script-src-attr`, falling back to `script-src`) when the attribute is set; `<body>` handlers
 forwarded to the window (such as `onpopstate`) used to skip it and are now checked against the

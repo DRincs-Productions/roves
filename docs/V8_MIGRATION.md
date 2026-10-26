@@ -20,6 +20,35 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint0361 — diagnosi salvata, blocchi reali disco e runner
+
+0357–0360 restano completi locali, nessunpush.0361 è diagnosi della lacunaHTMLsourceText:
+[handoffdurabile](handoff/0361-source-text-gap.md) con stringhe osservate/specprimaria e
+prossimopasso APIpubblicaV8. TestWIPsalvati intarget/task-0361/incomplete-source-text-tests.patch
+(SHA256167cf52d7c3a555c6a1f10b5bb7d143e0d33c1b58ffd027dbbae149f67e4ff86), tests.rs
+ripristinatoaHEAD. Nessuntestfallenteignorato nei sorgentipubblicabili. Patch0361 è SOLIdocumentazione.
+C: arrivato0liberi; recuperati500MiB da artefattigeneratidella sessione (soloexe/pdb), ora~81MiB.
+Normaleinizialeverde/JITlessfinaleverde, relinknormalefinaleLNK1201perrisorse: non dichiarare
+compilazionefinalenormaleverificata. Servespazioadeguatoprimadialtribuild, niente puliziecachesgeneriche.
+RetryV8termina9verdi1cancelled(Macbrowser121735908007); retryiOS2verdi1cancelled(ios121736581176).
+Annotazioniripetono mancataacquisizionehostedARM64; nessunretryconcatenato. Generaleultimo11verdi2attivi.
+Il loop si sospende perquestiblocchireali, nonperfineincarico/commit o solaCIincorso. Nessunpolling/
+automazioneperiodica. NessunClaude/server/tabtestattivo. Riprenderequando risorse/capacitàcambiano.
+
+### Claude0361 — sourceText degli handler con scope: diagnosi + regressione (da revisionare, non committato)
+
+Nessuna modifica di produzione. In `roves-js/src/tests.rs` (`scripts`) solo il test pubblicabile
+`scoped_handlers_keep_their_source_text_name_and_scopes` (catena vuota contro Proxy reale:
+`name` onclick, `length` 1, corpo presente, nessun `with (`/`this[0]`, `this` e scope; stampa
+le stringhe con `--nocapture`). NON copre il contratto completo. Normale verde (Codex). Il test
+di uguaglianza proposto, atteso fallire, è fuori dal sorgente in
+`target/task-0361/proposed-source-text.diff`. LACUNA HTML APERTA: il passo 3.9 di
+https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
+(verificato da Codex) rende normativo `function nome(parametri) {`+LF+corpo+LF+`}`; con scope il
+letterale interno perde nome e LF. Nessuna API V8 mantenuta: niente NFE con nome (binding
+locale che maschera proprietà), override globale, layout privato o parser. README/wiki/CUSTOM
+documentano la lacuna. Ripresa Codex: JITless, stringhe, patch0361. Dettagli RESULTS.
+
 ### Checkpoint Codex0360 — negativo unsafe-hashes verificato locale
 
 Chrome155Windows visibileHTTP19060: exacthashsenzaunsafe-hashes bloccaelemento/body, true true,

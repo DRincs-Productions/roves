@@ -1,0 +1,47 @@
+# 0361 — lacuna sourceText e punto di ripresa
+
+Nessuna modifica di produzione. I test sperimentali sono fuori dai sorgenti pubblicabili:
+`target/task-0361/incomplete-source-text-tests.patch`,4041byte,
+SHA256167cf52d7c3a555c6a1f10b5bb7d143e0d33c1b58ffd027dbbae149f67e4ff86.
+Proposta di uguaglianza separata in `target/task-0361/proposed-source-text.diff`.
+
+## Evidenza
+
+Chrome155 Windows visibile/about:blank: un attributo onclick col corpo `this.rovesHits += 1;`
+ha nome onclick, length1 e sourceText `function onclick(event) {\nthis.rovesHits += 1;\n}`.
+V8 con CompileFunction senza scope restituisce lo stesso testo. Con scopeProxy:
+`function (event) {this.rovesHits += 1;\n}`. Nome/lunghezza/body/this/scope sono corretti,
+nessun prefisso with esterno esposto. Test sperimentale normale iniziale e JITless passano;
+JITless finale dopo rimozione della proposta ignorata passa. Relink normale finale bloccato
+LNK1201/PDB dopo disco pieno, non interpretare come risultato del test. Sorgente tests.rs
+ripristinato esattamente a HEAD dopo salvataggio del diff: nessun WIP da pubblicare.
+
+HTML definisce il sourceText esatto, incluse le LF, nel passo3.9 di:
+https://html.spec.whatwg.org/multipage/webappapis.html#getting-the-current-value-of-the-event-handler
+Quindi la differenza è una lacuna di conformità APERTA, non un formato accettato.
+Non inserire semplicemente il nome nella function expression: creerebbe un binding locale
+che può nascondere proprietà dell'elemento/documento. Vietati override globale di toString,
+layout privato V8, parser/formatter JS ad hoc. Prossimo passo circoscritto: cercare una via
+nell'API pubblica V8 per funzioni wrapped con lookup attraverso proxy; eventuale facade
+con interceptor va provata prima per lookup, scritture, receiver, unscopables e durata GC.
+Solo con prova mantenuta e regressioni0356/0357 intatte aprire un fix di produzione.
+
+## Blocco risorse
+
+C: ha raggiunto0byte liberi. Sono stati rimossi solo9 artefatti exe/pdb generati in questa
+sessione (circa500MiB), più il PDB poi corrotto dal fallimento; nessun sorgente/log/dipendenza.
+Spazio rimasto circa81MiB: insufficiente per nuovi build, anche leggeri. Il tentativo Cargo
+con --manifest-path dalla root leggeva .cargo/config.toml (lld) e tentava un'altra cacheV8:
+NON ripeterlo. Eseguire dall'isolated workspace stesso con configurazione coerente; servono
+prima spazio adeguato e recupero del PDB normale. Non pulire cache generiche alla cieca.
+
+## CI e pubblicazione
+
+Pubblicato37815319987/wiki1fa4cad. Locali0357–0360 completi e revisionati, non pushare.
+V8retry40366152633:9successi, browserMac121735908007 cancellato ancora senza runner;
+iOSretry40366152391:2successi, ios121736581176 cancellato ancora senza runner. Annotazioni
+confermano capacità hostedmacOSARM64, nessun runner acquisito. NON concatenare altro retry
+identico. Generale40366152303 all'ultimo checkpoint11successi2attivi; Androidverde.
+Linuxnormal/JITless0356 verificano GCinline/additivo; normalframe rilasciaelemento/doc/probe.
+Completare verifiche Mac/iOS mancanti quando la capacità cambia; nessun nuovo push ora.
+Nessuna automazione periodica o polling. Nessun Claude attivo.
