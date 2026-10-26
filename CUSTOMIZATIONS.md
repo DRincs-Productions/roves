@@ -1,3 +1,11 @@
+## 2026-10-26 - Verify ordinary V8 properties as the receiver-preserving primitive (0367)
+
+One focused normal and one JITless test pass. Ordinary V8 expandos/accessors keep
+foreign receivers and avoid setter re-entry; exact key ordering still differs from
+Roves Proxy and the live Chrome Document reference. This is a standalone proof,
+not a production backend. Reproducible diff and MCP observations are in docs/handoff;
+tests.rs restored. Patch0367 adds only the proof documentation and experimental diff.
+
 ## 2026-10-26 - Reject the uncompiled API-object compatibility adapter (0366)
 
 The native compile gate exposed a missing public receiver API; replacing it with the

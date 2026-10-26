@@ -1,0 +1,218 @@
+diff --git a/docs/handoff/0367-ordinary-properties-proof.md b/docs/handoff/0367-ordinary-properties-proof.md
+new file mode 100644
+index 00000000000..a36474de3f0
+--- /dev/null
++++ b/docs/handoff/0367-ordinary-properties-proof.md
+@@ -0,0 +1,37 @@
++# 0367 — ordinary V8 properties preserve external receivers
++
++The standalone experimental diff beside this file adds one generic native test,
++not a production adapter. Apply only to an isolated checkout at5464c544278.
++No new dependency or custom property engine: existing maintained V8 intercepts a
++fixed read-only data name and delegates ordinary expandos/accessors to V8.
++
++Codex ran `api_object_interceptors` normal and JITless: one test passes in each.
++The first compile required the named setter ReturnValue<Boolean> signature, not
++ReturnValue<()>; assertions were unchanged. Logs: target/task-0367/{normal,jitless}.log.
++Actual public API observations in both modes:
++- foreign Reflect.get and inherited accessor reads preserve their receiver;
++- foreign Reflect.set invokes no setter interceptor and ordinary writes stay correct;
++- own writes invoke the setter once per key, with the holder itself;
++- a real own named property hides the supported name until deleted;
++- exact own-key order is `5,x,acc,Symbol(s),named`, not Roves' current Proxy order
++  `named,5,x,acc,Symbol(s)`. No unordered comparison is accepted.
++
++The proof's fixed generic enumerator is therefore NOT a compatible DOM replacement.
++No codegen routing or runtime source was kept; tests.rs restored after preservation.
++
++## Chrome DevTools MCP reference
++
++Chrome155.0.0.0, Windows, visible about:blank, attached same-origin iframe document.
++Created an img named roves0367named, form/input with that name, select/option with
++that id; then attempted numeric5, string x, Symbol(s), and accessor acc expandos.
++Document: keys `5,location,roves0367named,x,acc,Symbol(s)`; name is own/enumerable.
++Form: keys `0,x,acc,Symbol(s)`; supported name is own but non-enumerable and absent
++from ownKeys. Numeric5 assignment does not create an own property.
++Select: keys `0,x,acc,Symbol(s)`; the name is not an own property; assigning string
++at index5 throws TypeError. Accessor foreign receivers work on all three.
++An initial detached Document did not expose the named property, so it is not used
++as the live Document reference. All temporary MCP tabs were closed.
++These are focused semantic probes, not performance measurements or a conformance
++claim. The generic V8 test differs from the Chrome Document ordering. Next gate must
++map actual generated WebIDL hooks and public V8 descriptor/definer behavior before
++any representation change; source-text item0361 remains open.
+diff --git a/docs/handoff/0367-ordinary-properties-proof.patch b/docs/handoff/0367-ordinary-properties-proof.patch
+new file mode 100644
+index 00000000000..257ab61086d
+--- /dev/null
++++ b/docs/handoff/0367-ordinary-properties-proof.patch
+@@ -0,0 +1,169 @@
++diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
++index 8df4bc779a0..e939bebe743 100644
++--- a/components/roves-js/src/tests.rs
+++++ b/components/roves-js/src/tests.rs
++@@ -6787,3 +6787,164 @@ fn gc_callbacks_report_full_collections() {
++     assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
++ }
++ 
+++/// Plain rusty_v8 proof (task 0367): a generic API object whose named interceptor answers
+++/// only one supported data property and leaves everything else (expandos, accessors,
+++/// foreign receivers, key order) to V8's ordinary properties.
+++mod api_object_interceptors {
+++    use std::cell::RefCell;
+++
+++    use crate::rust::{JSEngineHandle, Runtime};
+++
+++    const NAMED: &str = "named";
+++
+++    thread_local! {
+++        /// Every named setter interceptor call: key and the holder V8 passed.
+++        static SETTER_CALLS: RefCell<Vec<(String, v8::Global<v8::Object>)>> = const { RefCell::new(Vec::new()) };
+++    }
+++
+++    /// WebIDL visibility: a real own property hides the supported name.
+++    fn supported(scope: &mut v8::PinScope, key: v8::Local<v8::Name>, holder: v8::Local<v8::Object>) -> bool {
+++        key.to_rust_string_lossy(scope) == NAMED && holder.has_real_named_property(scope, key) == Some(false)
+++    }
+++
+++    fn getter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>,
+++        args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Value>,
+++    ) -> v8::Intercepted {
+++        if !supported(scope, key, args.holder()) {
+++            return v8::Intercepted::kNo;
+++        }
+++        retval.set(v8::String::new(scope, "named-value").unwrap().into());
+++        v8::Intercepted::kYes
+++    }
+++
+++    fn query<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>,
+++        args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Integer>,
+++    ) -> v8::Intercepted {
+++        if !supported(scope, key, args.holder()) {
+++            return v8::Intercepted::kNo;
+++        }
+++        // Document-like: no named setter, so not writable; enumerable and configurable.
+++        retval.set_int32(v8::PropertyAttribute::READ_ONLY.as_u32() as i32);
+++        v8::Intercepted::kYes
+++    }
+++
+++    /// Records the call and never intercepts: writes stay ordinary.
+++    fn setter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, _value: v8::Local<'s, v8::Value>,
+++        args: v8::PropertyCallbackArguments<'s>, _retval: v8::ReturnValue<v8::Boolean>,
+++    ) -> v8::Intercepted {
+++        let call =(key.to_rust_string_lossy(scope), v8::Global::new(scope, args.holder()));
+++        SETTER_CALLS.with(|calls| calls.borrow_mut().push(call));
+++        v8::Intercepted::kNo
+++    }
+++
+++    fn enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Array>) {
+++        let key = v8::String::new(scope, NAMED).unwrap();
+++        let keys: Vec<v8::Local<v8::Value>> = if supported(scope, key.into(), args.holder()) { vec![key.into()] } else { vec![] };
+++        retval.set(v8::Array::new_with_elements(scope, &keys));
+++    }
+++
+++    /// Runs a probe; a thrown exception becomes its result text.
+++    fn run(scope: &mut v8::PinScope, phase: &str, source: &str) -> String {
+++        let source = format!("(() => {{ try {{ {source} }} catch (e) {{ return 'threw: ' + e; }} }})()");
+++        let code = v8::String::new(scope, &source).unwrap();
+++        let script = v8::Script::compile(scope, code, None).unwrap();
+++        let result = script.run(scope).unwrap().to_rust_string_lossy(scope);
+++        eprintln!("[0367] {phase}: {result}");
+++        result
+++    }
+++
+++    /// Drains the setter log, checking each recorded holder is `holder` itself.
+++    fn setter_keys(scope: &mut v8::PinScope, phase: &str, holder: v8::Local<v8::Object>) -> Vec<String> {
+++        let calls = SETTER_CALLS.with(|calls| calls.take());
+++        let keys = calls.into_iter().map(|(key, recorded)| {
+++            let recorded = v8::Local::new(scope, &recorded);
+++            assert!(recorded.strict_equals(holder.into()), "{phase}: setter holder for {key} is not the object");
+++            key
+++        }).collect::<Vec<_>>();
+++        eprintln!("[0367] {phase} setter calls: {keys:?}");
+++        keys
+++    }
+++
+++    fn has_real(scope: &mut v8::PinScope, object: v8::Local<v8::Object>, name: &str) -> Option<bool> {
+++        let key = v8::String::new(scope, name).unwrap();
+++        object.has_real_named_property(scope, key.into())
+++    }
+++
+++    #[test]
+++    fn named_interceptor_leaves_expandos_and_receivers_to_ordinary_properties() {
+++        let runtime = Runtime::new(JSEngineHandle::for_tests());
+++        // SAFETY: the runtime owns its raw context.
+++        let raw = unsafe { &*runtime.raw_cx() };
+++        raw.with_scope(|scope| {
+++            let template = v8::ObjectTemplate::new(scope);
+++            template.set_named_property_handler(v8::NamedPropertyHandlerConfiguration::new()
+++                .getter(getter).query(query).setter(setter).enumerator(enumerator)
+++                .flags(v8::PropertyHandlerFlags::ONLY_INTERCEPT_STRINGS));
+++            let global = scope.get_current_context().global(scope);
+++            let mut objects = Vec::new();
+++            for name in ["o", "p"] {
+++                let object = template.new_instance(scope).unwrap();
+++                assert!(!object.is_proxy());
+++                let key = v8::String::new(scope, name).unwrap();
+++                assert_eq!(global.set(scope, key.into(), object.into()), Some(true));
+++                objects.push(object);
+++            }
+++            let (o, p) = (objects[0], objects[1]);
+++
+++            // Real expandos: element 5, string x, a symbol, then an accessor defined by script.
+++            let order = run(scope, "order", "
+++                globalThis.other = {}; globalThis.seen = []; const sym = Symbol('s');
+++                o[5] = 'five'; o.x = 'ex'; o[sym] = 'sym';
+++                Object.defineProperty(o, 'acc', {
+++                    get() { return this; }, set(v) { seen.push([this, v]); }, enumerable: true, configurable: true,
+++                });
+++                return Reflect.ownKeys(o).map(String).join();");
+++            // V8 lists interceptor names after all real keys (Roves' proxy baseline puts
+++            // supported names before expandos: `named,5,x,acc,Symbol(s)`).
+++            assert_eq!(order, "5,x,acc,Symbol(s),named");
+++            let setup = setter_keys(scope, "setup", o);
+++            assert!(setup.iter().any(|key| key == "x"), "own-receiver write of x must reach the setter: {setup:?}");
+++            for (name, real) in [("x", true), ("acc", true), ("5", true), (NAMED, false), ("missing", false)] {
+++                assert_eq!(has_real(scope, o, name), Some(real), "has_real_named_property({name})");
+++            }
+++
+++            let named = run(scope, "named", "return [o.named, 'named' in o, Object.hasOwn(o, 'named'),
+++                JSON.stringify(Object.getOwnPropertyDescriptor(o, 'named')), o.missing, 'missing' in o].join('|');");
+++            assert_eq!(named, r#"named-value|true|true|{"value":"named-value","writable":false,"enumerable":true,"configurable":true}||false"#);
+++
+++            // Foreign receivers: accessors get the receiver, writes follow OrdinarySet.
+++            let foreign = run(scope, "foreign", "
+++                const child = Object.create(o); globalThis.child = child;
+++                return [Reflect.get(o, 'acc', other) === other, child.acc === child, Reflect.get(o, 'named', other),
+++                    Reflect.set(o, 'acc', 1, other), seen[0][0] === other && seen[0][1] === 1,
+++                    (child.acc = 2, seen[1][0] === child && seen[1][1] === 2),
+++                    Reflect.set(o, 'k', 3, other), other.k, Object.hasOwn(o, 'k'),
+++                    (child.k2 = 4, Object.hasOwn(child, 'k2')), Object.hasOwn(o, 'k2'),
+++                    Reflect.set(o, 'named', 9, other), Object.hasOwn(other, 'named'),
+++                    Reflect.set(o, 'x', 'y', other), other.x, o.x].join('|');");
+++            assert_eq!(foreign, "true|true|named-value|true|true|true|true|3|false|true|false|false|false|true|y|ex");
+++            assert_eq!(setter_keys(scope, "foreign", o), Vec::<String>::new(), "setter interceptor ran for a foreign receiver");
+++
+++            // Own receiver: the setter sees the holder, then V8 stores ordinarily.
+++            let own = run(scope, "own", "o.own = 5; o.acc = 7;
+++                return [Object.hasOwn(o, 'own'), o.own, seen.length, seen[2][0] === o && seen[2][1] === 7].join('|');");
+++            assert_eq!(own, "true|5|3|true");
+++            assert_eq!(setter_keys(scope, "own", o), ["own", "acc"], "a repeated key means V8 re-entered the setter");
+++            assert_eq!(has_real(scope, o, "own"), Some(true));
+++
+++            // Visibility: a real own `named` hides the supported one until deleted.
+++            let visibility = run(scope, "visibility", "
+++                const before = [p.named, Object.hasOwn(p, 'named')].join();
+++                Object.defineProperty(p, 'named', { value: 'own', writable: true, enumerable: true, configurable: true });
+++                const hidden = [p.named, JSON.stringify(Object.getOwnPropertyDescriptor(p, 'named')), Reflect.ownKeys(p).join()];
+++                return [before, ...hidden, delete p.named, p.named].join('|');");
+++            assert_eq!(visibility, r#"named-value,true|own|{"value":"own","writable":true,"enumerable":true,"configurable":true}|named|true|named-value"#);
+++            setter_keys(scope, "visibility", p);
+++            assert_eq!(has_real(scope, p, NAMED), Some(false));
+++        });
+++    }
+++}
+++

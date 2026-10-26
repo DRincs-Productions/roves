@@ -707,3 +707,7 @@ have not changed the production DOM property backend.
 The API-object adapter gate exposed a receiver limitation in the public V8 callback API.
 Its incomplete prototype was rejected; ordinary-property integration is under evaluation.
 The scoped-handler source-text compatibility item remains open.
+
+A focused normal/JITless proof confirms ordinary V8 properties preserve external accessor
+receivers. DOM key-order compatibility still needs a separate integration gate; no runtime
+representation change has been adopted.

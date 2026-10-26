@@ -20,6 +20,18 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint0367 — proprietà ordinarie provate normal/JITless
+
+[Prova0367](handoff/0367-ordinary-properties-proof.md):1normal/1JITless verdi.
+Accessor/receiver esterni sono corretti senza simulazione; ordine esatto generico
+`5,x,acc,Symbol(s),named` diverso dal Proxy attuale e dal riferimento DocumentChrome.
+ChromeDevToolsMCP155 visibile: misurate Document/form/select reali in iframe;
+nessuna adozione del backend generico. Diff sperimentale durabile, tests.rs ripristinato.
+Prossimo gate0368 delegato: mappare hookWebIDL reali e API mantenute descriptor/definer;
+nessunroutingcodegen prima di una mappa compatibile.0361 resta aperta.
+Pubblicato5464c544278/wiki dd08535; nuoveCI generale40397621958,
+Android40397621986, iOS40397621971 esclusa. V8non riavviata (nessuna modifica runtime).
+
 ### Checkpoint0366 — backend respinto, sorgenti ripristinati
 
 [Diagnosi0366](handoff/0366-api-backend-blockers.md): il compile conferma che manca
