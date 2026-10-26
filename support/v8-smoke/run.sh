@@ -149,6 +149,17 @@ else
 ' ' '))"
 fi
 
+# script-src-attr 'unsafe-hashes' + exact sha256, then the same rules through the script-src
+# fallback: the matching body runs on an element and on a <body> handler forwarded to Window;
+# a different body or a nonce never authorizes a handler attribute.
+for kind in hash fallback; do
+  run_page "csp-attr-$kind.html" 30 "csp-attr-$kind.log"
+  for expected in "ROVES-V8 csp attribute $kind allowed true true" "ROVES-V8 csp attribute $kind blocked true true true"; do
+    if grep -aFxq "$expected" "csp-attr-$kind.log"; then echo "::notice::csp-attr-$kind.html: $expected"; else STATUS=1; echo "::error::csp-attr-$kind.html: missing '$expected' ($(grep -a 'ROVES-V8 csp' "csp-attr-$kind.log" | tr '
+' ' '))"; fi
+  done
+done
+
 run_page wasm-csp.html 30 wasm-csp.log
 if [ "$MODE" = normal ]; then
   if grep -aFxq 'ROVES-V8 csp wasm blocked CompileError' wasm-csp.log; then
@@ -246,7 +257,7 @@ fi
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log csp-attr.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done

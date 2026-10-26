@@ -1,0 +1,26 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-roves0359' 'unsafe-hashes' 'sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo='">
+<title>roves-js script-src fallback attribute CSP conformance page</title></head>
+<body onpopstate="window.rovesHashRuns += 1" onhashchange="window.rovesHashRuns += 8">
+<button id="allowed" onclick="window.rovesHashRuns += 1">allowed</button>
+<button id="mismatch" onclick="window.rovesHashRuns += 2">mismatch</button>
+<button id="nonce" nonce="roves0359" onclick="window.rovesHashRuns += 4">nonce</button>
+<script nonce="roves0359">
+// Without script-src-attr, event handler attributes fall back to script-src: 'unsafe-hashes'
+// plus the exact body hash allows a handler, a different body or a nonce does not. The <body>
+// handlers are forwarded to Window and are checked against the <body> element.
+window.rovesHashRuns = 0;
+function delta(run) { const before = window.rovesHashRuns; run(); return window.rovesHashRuns - before; }
+const allowed = document.getElementById("allowed");
+const mismatch = document.getElementById("mismatch");
+const nonce = document.getElementById("nonce");
+const allowedElement = delta(() => allowed.click()) === 1 && typeof allowed.onclick === "function";
+const allowedBody = delta(() => dispatchEvent(new Event("popstate"))) === 1 && typeof window.onpopstate === "function";
+const blockedElement = delta(() => mismatch.click()) === 0 && mismatch.onclick === null;
+const blockedBody = delta(() => dispatchEvent(new Event("hashchange"))) === 0 && window.onhashchange === null;
+const blockedNonce = delta(() => nonce.click()) === 0 && nonce.onclick === null;
+console.log("ROVES-V8 csp attribute fallback allowed", allowedElement, allowedBody);
+console.log("ROVES-V8 csp attribute fallback blocked", blockedElement, blockedBody, blockedNonce);
+</script>
+</body></html>

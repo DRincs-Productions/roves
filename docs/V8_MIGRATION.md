@@ -20,6 +20,29 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Checkpoint Codex0359 — fixturehashCSP complete locali, retryCI avanza senza rossi
+
+Hashstdlib sulcorpoesatto: sha256-u2DlkGs1w7OVohm5ziC+x+MCMKVoP4mY+P4A8n5+rlo=.
+Chrome155Windows visibileHTTP19059: perentrambelepagine allowed true true eblocked true true true;
+nonce non autorizzaattributi. Runner42test34pass8skipPOSIX, node/bashsyntaxriusciti. Patch0359
+replay4/4LF-identici. Server/tabchiusi. Nessunruntimecambiato, suitesnativeimmutatenonripetute.
+Alla fineincarico: generale40366152303 6verdi5attivi2queued, V8403661526337verdi2attivi1queued,
+iOS403661523912queued1verde; Androidverde. Nessunrosso nei retry, macOScominciaaessereacquisito.
+NONPUSH0357/0358/0359 finoaconclusioneverde di tutte leprecedentirun. Continuareincarichicircoscritti.
+
+### Claude0359 — fixture CSP con hash per handler da attributo (da revisionare, non committato)
+
+Nessuna modifica di produzione. Nuove pagine `support/v8-smoke/csp-attr-hash.html`
+(`script-src-attr 'unsafe-hashes' 'sha256-…' 'nonce-roves0359'`) e `csp-attr-fallback.html`
+(solo `script-src`, fallback): corpo esatto consentito `window.rovesHashRuns += 1` su button e
+`<body onpopstate>` inoltrato a Window; bloccati `+= 2` (button), `+= 8` (`<body onhashchange>`)
+e button con `nonce` `+= 4`. Marker richiesti in `run.sh`: `ROVES-V8 csp attribute {hash,fallback}
+allowed true true` e `... blocked true true true`; negativi runner `csp-hash-allowed`,
+`csp-hash-nonce`, `csp-fallback-allowed`, `csp-fallback-body`. **Segnaposto da sostituire
+prima di tutto:** `ROVES_0359_SHA256` (2 file) con base64 SHA-256 hashlib del corpo esatto.
+Nessuna verifica eseguita da Claude (solo Read/Edit). Ripresa Codex: hash, runner/sintassi,
+patch0359, riferimento Chrome MCP. Dettagli `target/task-0359/RESULTS.md`.
+
 ### Handoff finale26ottobre — retryinfra in corso, sorgenti puliti, pubblicazione sospesa
 
 Pubblicato37815319987/wiki1fa4cad. Locali: d4bce0a8648(colonne0357),4c230254c05(CSP0358),

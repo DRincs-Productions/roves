@@ -1,3 +1,35 @@
+## 2026-10-26 - Validate exact-hash and fallback CSP fixtures (0359)
+
+The SHA-256 fixture token was generated with Python hashlib/base64 from the exact UTF-8
+handler body. Visible Chrome155/Windows over HTTP loopback confirms both allowed controls
+and all three blocked controls in each independent policy page (hash and fallback). No
+forced GC or profiling. Runner42 tests passes34 with8 POSIX skips; JS syntax and bash syntax
+pass. Exact four-file0359 patch dry-runs/applies and reproduces all files after LF normalization.
+Runtime unchanged: no duplicate native-suite run. Real Servo checks remain pending publication.
+
+## 2026-10-26 - Selected CSP conformance fixtures for hashed attribute handlers (0359)
+
+Files: `support/v8-smoke/{csp-attr-hash.html,csp-attr-fallback.html,run.sh,test_runner.py}`,
+`README.md`, `roves-wiki/content/docs/shell.mdx`. Patch:
+`0359-csp-hashed-attribute-handler-fixtures.patch` (two new pages plus `run.sh`/runner; README
+and wiki are not replayed). No production change: the existing `content-security-policy`
+crate check reached through `should_elements_inline_type_behavior_be_blocked` (0358) already
+receives the attribute's element and source; these pages prove it for hash-based policies.
+
+Selected CSP conformance fixtures, written for this repo (not imported WPT files). Each page
+has its own `<meta>` policy and a nonce-authorized bootstrap script. `csp-attr-hash.html`:
+`script-src 'nonce-roves0359'; script-src-attr 'unsafe-hashes' 'sha256-…' 'nonce-roves0359'`;
+`csp-attr-fallback.html`: `script-src 'nonce-roves0359' 'unsafe-hashes' 'sha256-…'` (no
+`script-src-attr`, so attributes use the `script-src` fallback). The hash is the base64 SHA-256
+of the exact UTF-8 body `window.rovesHashRuns += 1`, generated with Python `hashlib` (not
+hand-written). Both pages carry that body on a `<button onclick>` and on `<body onpopstate>`
+(forwarded to Window) and require it to run once with a function getter; bodies `+= 2`
+(button), `+= 8` (`<body onhashchange>`) and a `nonce="roves0359"` button with `+= 4` must not
+run and keep a `null` getter. Required markers: `ROVES-V8 csp attribute {hash,fallback} allowed
+true true` and `ROVES-V8 csp attribute {hash,fallback} blocked true true true`. Runner negatives
+`csp-hash-allowed`, `csp-hash-nonce`, `csp-fallback-allowed`, `csp-fallback-body` each break one
+value and expect exactly one `csp-attr-*` error.
+
 ## 2026-10-26 - Save the queued macOS/iOS verification handoff
 
 General retry now has macOS probe121734699395 running; V8 retry queues only its three missing

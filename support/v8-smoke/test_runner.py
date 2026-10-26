@@ -1177,6 +1177,14 @@ elif page == 'csp.html':
 elif page == 'csp-attr.html':
     # A forwarded <body> handler that skips the CSP check reports its third value as false.
     print('ROVES-V8 csp attribute blocked true true ' + ('false' if scenario == 'csp-attribute' else 'true'))
+elif page in ('csp-attr-hash.html', 'csp-attr-fallback.html'):
+    # Each scenario breaks one value: a matching hash rejected on the forwarded <body> handler or
+    # through the script-src fallback, a nonce accepted for a handler, a mismatched body that ran.
+    kind = page[len('csp-attr-'):-len('.html')]
+    allowed = {'csp-hash-allowed': 'true false', 'csp-fallback-allowed': 'false true'}
+    blocked = {'csp-hash-nonce': 'true true false', 'csp-fallback-body': 'true false true'}
+    print(f'ROVES-V8 csp attribute {kind} allowed ' + (allowed[scenario] if scenario in allowed and scenario.startswith('csp-' + kind) else 'true true'))
+    print(f'ROVES-V8 csp attribute {kind} blocked ' + (blocked[scenario] if scenario in blocked and scenario.startswith('csp-' + kind) else 'true true true'))
 elif page == 'wasm-csp.html':
     if scenario != 'csp-wasm': print('ROVES-V8 csp wasm blocked CompileError')
 elif page == 'nav1.html':
@@ -1205,7 +1213,7 @@ else:
         print('SUITE PASS example')
         print('SUITE TOTAL 1/1')
 # Browsers may stay open after reporting all results; that timeout is acceptable.
-if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'wasm-csp.html', 'nav1.html'):
+if scenario == 'linger' and page.endswith('.html') and page not in ('test.html', 'csp.html', 'csp-attr.html', 'csp-attr-hash.html', 'csp-attr-fallback.html', 'wasm-csp.html', 'nav1.html'):
     sys.stdout.flush()
     import time
     time.sleep(120)
@@ -1366,7 +1374,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertIn('V8 smoke diagnostics: pref-jitless.log', result.stdout)
 
     def test_failure_paths(self):
-        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
+        for scenario in ('assertion', 'incomplete', 'crash', 'window', 'immutable-prototype', 'window-prototype', 'cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout', 'csp', 'trusted-script', 'trusted-function', 'trusted-function-guards', 'trusted-function-matrix', 'constructor-graph', 'csp-attribute', 'csp-attribute-allowed', 'csp-hash-allowed', 'csp-hash-nonce', 'csp-fallback-allowed', 'csp-fallback-body', 'csp-wasm', 'navigation', 'skip', 'testutils-default', *('missing:' + page for page in REQUIRED_CHECKS)):
             with self.subTest(scenario=scenario):
                 result = self.run_fixture(scenario)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
@@ -1385,6 +1393,16 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                     self.assertIn("csp-attr.html: missing 'ROVES-V8 csp attribute blocked true true true' (ROVES-V8 csp attribute blocked true true false", result.stdout)
                 if scenario == 'csp-attribute-allowed':
                     self.assertIn("missing 'ROVES-V8 csp attribute allowed true true'", result.stdout)
+                csp_hash_errors = {
+                    'csp-hash-allowed': "csp-attr-hash.html: missing 'ROVES-V8 csp attribute hash allowed true true' (ROVES-V8 csp attribute hash allowed true false",
+                    'csp-hash-nonce': "csp-attr-hash.html: missing 'ROVES-V8 csp attribute hash blocked true true true' (ROVES-V8 csp attribute hash allowed true true ROVES-V8 csp attribute hash blocked true true false",
+                    'csp-fallback-allowed': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback allowed true true' (ROVES-V8 csp attribute fallback allowed false true",
+                    'csp-fallback-body': "csp-attr-fallback.html: missing 'ROVES-V8 csp attribute fallback blocked true true true' (ROVES-V8 csp attribute fallback allowed true true ROVES-V8 csp attribute fallback blocked true false true",
+                }
+                if scenario in csp_hash_errors:
+                    self.assertIn(csp_hash_errors[scenario], result.stdout)
+                    # Only the broken marker fails; the other page keeps passing.
+                    self.assertEqual(1, sum('::error::csp-attr-' in line for line in result.stdout.splitlines()))
                 if scenario.startswith('missing:'):
                     # Only the dropped check fails: the page's other required checks are reported.
                     page = scenario.partition(':')[2]

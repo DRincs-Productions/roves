@@ -96,7 +96,9 @@ keep the attribute code's own lines and columns (engine tests only so far). The 
 GC check have not passed a browser run yet. Attribute handlers keep Servo's CSP check
 (`script-src-attr`, falling back to `script-src`) when the attribute is set; `<body>` handlers
 forwarded to the window (such as `onpopstate`) used to skip it and are now checked against the
-`<body>` element (browser check pending). Other callback roots remain under
+`<body>` element (browser check pending). Smoke pages also cover `'unsafe-hashes'` with an
+exact `sha256` body hash (via `script-src-attr` and via the `script-src` fallback), mismatched
+bodies and nonces, which never authorize a handler attribute (browser check pending). Other callback roots remain under
 investigation; no overall
 frame-retention fix has been validated. Native DOM calls made after Promise reactions now use the actual
 executing realm for origin checks, preventing the initial-runtime realm from being used. Regressions also cover successful and
