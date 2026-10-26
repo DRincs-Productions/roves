@@ -1,0 +1,360 @@
+diff --git a/docs/handoff/0365-api-reflector-proof.md b/docs/handoff/0365-api-reflector-proof.md
+new file mode 100644
+index 00000000000..075a5ab3eb6
+--- /dev/null
++++ b/docs/handoff/0365-api-reflector-proof.md
+@@ -0,0 +1,40 @@
++# 0365 — primo gate API object/interceptor verificato
++
++Nessuna modifica di produzione. Il diff riproducibile in `0365-api-reflector-proof.patch`
++aggiunge un modulo temporaneo api_reflector_proof ai test. Applicarlo solo a una copia
++isolata, eseguire il filtro api_reflector_proof e poi ripristinare la copia. tests.rs nel
++runtime pubblicabile è stato ripristinato a HEAD: niente helper prototipo inutilizzato.
++
++## Risultati eseguiti
++
++V8/rusty_v8 152 Windows:2testnormali e2JITless verdi, logtarget/task-0365/normal-review.log
++ e jitless.log. Le firme indexed getter/query/enumerator compilano; nessun nuovo pacchetto.
++- Object normale e APIobject senza interceptor: Reflect.preventExtensions true, Object
++  restituisce l'oggetto, isExtensible false.
++- APIobject named-only e named+indexed: Reflect false, Object TypeError, extensible true.
++  V8 fornisce già il rifiuto senza un nostro hook. Dopo il tentativo le proprietà funzionano.
++- Estensioni scope con gli oggetti reali: baremethod this identifica document/form/element,
++  sourceText uguale a quello wrapped senza scope, strict/sloppy e durata dopo GC verificati.
++- Identità roves-js JSObject avanti/indietro verificata per APIobject generico senza ClassBox.
++
++Riferimento Chrome155 Windows visibile/about:blank: Document permette preventExtensions,
++form/select rifiutano. Il caso named-only con questi interceptor differisce quindi da Chrome
++Document; non dichiarare quel dettaglio conforme o risolto. La compatibilità con il trap
++attuale di Servo va valutata nel gate reale, senza decisioni su degradazioni ipotetiche.
++
++## Correzione della fixture durante la revisione
++
++La prima prova riservava1internalfield senza inizializzare il ClassBox, poi convertiva
++l'oggetto attraverso from_v8: il campoundefined era interpretato come puntatore e causava
++abort. La fixture generica corretta usa0campi interni. ClassBox/proxytraps reali restano
++esplicitamente FUORI da questo gate: niente modifica al bridge per mascherare un input
++nativo non valido e niente affermazione di prova dei reflector Servo effettivi.
++
++## Gate successivo
++
++Usare `docs/handoff/0364-real-dom-api-reflector-design.md` per una prova con gli hook DOM
++veri: ClassBox inizializzato prima dell'esposizione, tracing/private/reservedslots e finalize,
++get/query/set/delete/descriptor/definer/enumerator named+indexed, expando/readonly/chiavi,
++receiver e scope. Riusare gli hook esistenti come unica implementazione delle proprietà.
++WindowProxy e oggetti con prototipo dinamico o call/construct restano fuori. Nessun cambio
++codegen prima che il gate differenziale Proxy/APIobject reale dimostri i contratti necessari.
+diff --git a/docs/handoff/0365-api-reflector-proof.patch b/docs/handoff/0365-api-reflector-proof.patch
+new file mode 100644
+index 00000000000..da022594287
+--- /dev/null
++++ b/docs/handoff/0365-api-reflector-proof.patch
+@@ -0,0 +1,308 @@
++diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
++index 8df4bc779a0..95d382403d3 100644
++--- a/components/roves-js/src/tests.rs
+++++ b/components/roves-js/src/tests.rs
++@@ -6787,3 +6787,303 @@ fn gc_callbacks_report_full_collections() {
++     assert!(GC_EVENTS.with(|events| events.borrow().is_empty()));
++ }
++ 
+++/// Task 0365 native gate for the 0364 design (proof, not production). Plain V8 API objects
+++/// (`ObjectTemplate` instances) with generic named, or named and indexed, interceptors over a
+++/// JS store stand in for physical API-object reflectors: no `ClassBox`, no Servo handler, no
+++/// codegen. They answer what maintained V8 already does for such objects; the actual Servo
+++/// DOM reflectors are a later CI step.
+++mod api_reflector_proof {
+++    use super::{describe, eval};
+++    use crate::jsval::*;
+++    use crate::rust::{JSEngineHandle, Runtime};
+++
+++    fn named_store<'s>(args: &v8::PropertyCallbackArguments<'s>) -> Option<v8::Local<'s, v8::Object>> {
+++        v8::Local::<v8::Object>::try_from(args.data()).ok()
+++    }
+++
+++    fn indexed_store<'s>(args: &v8::PropertyCallbackArguments<'s>) -> Option<v8::Local<'s, v8::Array>> {
+++        v8::Local::<v8::Array>::try_from(args.data()).ok()
+++    }
+++
+++    // Callbacks never panic: a missing store or a thrown lookup steps aside or lets V8 rethrow.
+++
+++    fn named_getter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Value>,
+++    ) -> v8::Intercepted {
+++        let Some(store) = named_store(&args) else { return v8::Intercepted::kNo };
+++        match store.has_own_property(scope, key) {
+++            Some(false) => v8::Intercepted::kNo,
+++            Some(true) => {
+++                if let Some(value) = store.get(scope, key.into()) {
+++                    retval.set(value);
+++                }
+++                v8::Intercepted::kYes
+++            },
+++            None => v8::Intercepted::kYes,
+++        }
+++    }
+++
+++    fn named_query<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, key: v8::Local<'s, v8::Name>, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Integer>,
+++    ) -> v8::Intercepted {
+++        let Some(store) = named_store(&args) else { return v8::Intercepted::kNo };
+++        match store.has_own_property(scope, key) {
+++            Some(false) => v8::Intercepted::kNo,
+++            Some(true) => {
+++                retval.set_int32(v8::PropertyAttribute::NONE.as_u32() as i32);
+++                v8::Intercepted::kYes
+++            },
+++            None => v8::Intercepted::kYes,
+++        }
+++    }
+++
+++    fn named_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Array>) {
+++        let Some(store) = named_store(&args) else { return };
+++        let names = store.get_own_property_names(
+++            scope,
+++            v8::GetPropertyNamesArgs {
+++                mode: v8::KeyCollectionMode::OwnOnly,
+++                property_filter: v8::PropertyFilter::ALL_PROPERTIES,
+++                index_filter: v8::IndexFilter::IncludeIndices,
+++                key_conversion: v8::KeyConversionMode::KeepNumbers,
+++            },
+++        );
+++        if let Some(names) = names {
+++            retval.set(names);
+++        }
+++    }
+++
+++    // Gate 0: the indexed interceptor signatures below are not used elsewhere in the repository.
+++
+++    fn indexed_getter<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, index: u32, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Value>,
+++    ) -> v8::Intercepted {
+++        let Some(store) = indexed_store(&args) else { return v8::Intercepted::kNo };
+++        if index >= store.length() {
+++            return v8::Intercepted::kNo;
+++        }
+++        if let Some(value) = store.get_index(scope, index) {
+++            retval.set(value);
+++        }
+++        v8::Intercepted::kYes
+++    }
+++
+++    fn indexed_query<'s>(
+++        _scope: &mut v8::PinScope<'s, '_>, index: u32, args: v8::PropertyCallbackArguments<'s>,
+++        mut retval: v8::ReturnValue<v8::Integer>,
+++    ) -> v8::Intercepted {
+++        let Some(store) = indexed_store(&args) else { return v8::Intercepted::kNo };
+++        if index >= store.length() {
+++            return v8::Intercepted::kNo;
+++        }
+++        retval.set_int32(v8::PropertyAttribute::NONE.as_u32() as i32);
+++        v8::Intercepted::kYes
+++    }
+++
+++    fn indexed_enumerator<'s>(scope: &mut v8::PinScope<'s, '_>, args: v8::PropertyCallbackArguments<'s>, mut retval: v8::ReturnValue<v8::Array>) {
+++        let Some(store) = indexed_store(&args) else { return };
+++        let indices: Vec<v8::Local<v8::Value>> = (0..store.length()).map(|index| v8::Integer::new(scope, index as i32).into()).collect();
+++        let array = v8::Array::new_with_elements(scope, &indices);
+++        retval.set(array);
+++    }
+++
+++    /// A physical V8 API object inheriting from `prototype`, with string+symbol named
+++    /// interceptors over `named` and indexed ones over `indexed` when given: getter, query and
+++    /// enumerator, no setter/deleter/definer/descriptor. No internal field: field 0 is where the
+++    /// project's reflectors keep their `ClassBox`, which this generic gate deliberately lacks
+++    /// (an uninitialized field would be read as one), so the cell map sees a plain V8 object.
+++    fn api_object<'s>(
+++        scope: &mut v8::PinScope<'s, '_>, named: Option<v8::Local<'s, v8::Value>>, indexed: Option<v8::Local<'s, v8::Value>>,
+++        prototype: v8::Local<'s, v8::Value>,
+++    ) -> v8::Local<'s, v8::Object> {
+++        let template = v8::ObjectTemplate::new(scope);
+++        if let Some(store) = named {
+++            let configuration = v8::NamedPropertyHandlerConfiguration::new()
+++                .getter(named_getter)
+++                .query(named_query)
+++                .enumerator(named_enumerator)
+++                .data(store);
+++            template.set_named_property_handler(configuration);
+++        }
+++        if let Some(store) = indexed {
+++            let configuration = v8::IndexedPropertyHandlerConfiguration::new()
+++                .getter(indexed_getter)
+++                .query(indexed_query)
+++                .enumerator(indexed_enumerator)
+++                .data(store);
+++            template.set_indexed_property_handler(configuration);
+++        }
+++        let object = template.new_instance(scope).unwrap();
+++        assert_eq!(object.set_prototype(scope, prototype), Some(true));
+++        object
+++    }
+++
+++    fn js<'s>(scope: &mut v8::PinScope<'s, '_>, source: &str) -> v8::Local<'s, v8::Value> {
+++        let code = v8::String::new(scope, source).unwrap();
+++        v8::Script::compile(scope, code, None).unwrap().run(scope).unwrap()
+++    }
+++
+++    fn expose<'s>(scope: &mut v8::PinScope<'s, '_>, name: &str, value: v8::Local<'s, v8::Value>) {
+++        let global = scope.get_current_context().global(scope);
+++        let key = v8::String::new(scope, name).unwrap();
+++        assert_eq!(global.set(scope, key.into(), value), Some(true));
+++    }
+++
+++    /// V8's own `CompileFunction` of a one-argument `onclick` handler with `extensions` as its
+++    /// context extensions (the last one innermost), as in task 0363.
+++    fn compile<'s>(scope: &mut v8::PinScope<'s, '_>, extensions: &[v8::Local<'s, v8::Object>], body: &str) -> v8::Local<'s, v8::Function> {
+++        let code = v8::String::new(scope, body).unwrap();
+++        let mut source = v8::script_compiler::Source::new(code, None);
+++        let event = v8::String::new(scope, "event").unwrap();
+++        let function = v8::script_compiler::compile_function(
+++            scope,
+++            &mut source,
+++            &[event],
+++            extensions,
+++            v8::script_compiler::CompileOptions::NoCompileOptions,
+++            v8::script_compiler::NoCacheReason::NoReason,
+++        )
+++        .expect("V8 accepts API objects as context extensions");
+++        let name = v8::String::new(scope, "onclick").unwrap();
+++        function.set_name(name);
+++        function
+++    }
+++
+++    fn source_text<'s>(scope: &mut v8::PinScope<'s, '_>, function: v8::Local<'s, v8::Function>) -> std::string::String {
+++        function.to_string(scope).unwrap().to_rust_string_lossy(scope)
+++    }
+++
+++    /// `[Reflect.preventExtensions, Object.preventExtensions (or its error), Object.isExtensible
+++    /// afterwards]`, and the interceptors still answering (named, `in`, keys, index, prototype).
+++    const PROBES: &str = r#"
+++        globalThis.rovesProbe = (o) => {
+++            const reflect = Reflect.preventExtensions(o);
+++            let object;
+++            try { object = Object.preventExtensions(o) === o ? 'returned' : 'other'; } catch (e) { object = e.name + ': ' + e.message; }
+++            return [reflect, object, Object.isExtensible(o)].join(' | ');
+++        };
+++        globalThis.rovesLive = (o) => [o.fromNamed, 'fromNamed' in o, Object.keys(o).join('/'), o[1], 1 in o, o.who() === o].join();
+++    "#;
+++
+++    /// Gate for 0364 risk 1. Chrome 155 reference (Codex, Windows, visible about:blank): Document
+++    /// `true | returned | false`; form and select `false | TypeError | true`. Expected from V8
+++    /// itself: an ordinary control (plain object, API object without interceptors) becomes
+++    /// non-extensible; any named or indexed interceptor makes V8 refuse natively, both through
+++    /// `Reflect` (false) and `Object` (TypeError), and the object stays extensible and live. A
+++    /// named-only interceptor object therefore matches form/select, not Chrome's Document.
+++    #[test]
+++    fn api_object_interceptors_refuse_prevent_extensions_natively() {
+++        let runtime = Runtime::new(JSEngineHandle::for_tests());
+++        // SAFETY: the runtime owns its raw context.
+++        let raw = unsafe { &*runtime.raw_cx() };
+++        raw.with_scope(|scope| {
+++            let prototype = js(scope, "({ who() { return this; } })");
+++            let ordinary = api_object(scope, None, None, prototype);
+++            expose(scope, "rovesOrdinary", ordinary.into());
+++            let store = js(scope, "Object.assign(Object.create(null), { fromNamed: 1 })");
+++            let named = api_object(scope, Some(store), None, prototype);
+++            expose(scope, "rovesNamed", named.into());
+++            let store = js(scope, "Object.assign(Object.create(null), { fromNamed: 1 })");
+++            let items = js(scope, "[10, 20]");
+++            let both = api_object(scope, Some(store), Some(items), prototype);
+++            expose(scope, "rovesNamedIndexed", both.into());
+++        });
+++        eval(&runtime, PROBES);
+++        let run = |source: &str| describe(&runtime, eval(&runtime, source));
+++
+++        let live_named = "1,true,fromNamed,,false,true";
+++        let live_both = "1,true,0/1/fromNamed,20,true,true";
+++        let before = (run("rovesLive(rovesNamed)"), run("rovesLive(rovesNamedIndexed)"));
+++        println!("ROVES-0365 live before {before:?}");
+++
+++        let mut outcomes = Vec::new();
+++        for name in ["({})", "rovesOrdinary", "rovesNamed", "rovesNamedIndexed"] {
+++            let outcome = run(&format!("rovesProbe({name})"));
+++            println!("ROVES-0365 preventExtensions {name}: {outcome}");
+++            outcomes.push(outcome);
+++        }
+++        let after = (run("rovesLive(rovesNamed)"), run("rovesLive(rovesNamedIndexed)"));
+++        println!("ROVES-0365 live after {after:?}");
+++
+++        assert_eq!(outcomes[0], "true | returned | false");
+++        assert_eq!(outcomes[1], "true | returned | false", "an API object without interceptors is ordinary");
+++        for outcome in &outcomes[2..] {
+++            assert!(outcome.starts_with("false | TypeError: ") && outcome.ends_with(" | true"), "{outcome}");
+++        }
+++        assert_eq!(before, (live_named.into(), live_both.into()));
+++        assert_eq!(after, before);
+++    }
+++
+++    /// The 0363 counter-case on actual API objects: with the scope objects themselves as V8
+++    /// context extensions, bare calls of inherited methods get the very object JS sees
+++    /// (document and form with interceptors, element without), in sloppy and strict bodies;
+++    /// `toString()` is the unscoped compilation's text; identity round-trips through the cell
+++    /// map; the closure alone keeps an interceptor extension alive through a full GC.
+++    #[test]
+++    fn api_object_scope_extensions_keep_bare_call_receivers_and_source_text() {
+++        let mut runtime = Runtime::new(JSEngineHandle::for_tests());
+++        // SAFETY: the runtime owns its raw context.
+++        let raw = unsafe { &*runtime.raw_cx() };
+++        let sloppy = "return [who() === rovesDocument, submitLike() === rovesForm, click() === rovesElement, \
+++                      fromNamed, fromForm, form0, shared, event, typeof rovesMissing, this === globalThis].join();";
+++        let strict = "'use strict'; return [who() === rovesDocument, submitLike() === rovesForm, this === undefined, shared].join();";
+++        let texts = raw.with_scope(|scope| {
+++            let store = js(scope, "Object.assign(Object.create(null), { fromNamed: 3, shared: 100 })");
+++            let prototype = js(scope, "({ who() { return this; } })");
+++            let document = api_object(scope, Some(store), None, prototype);
+++            let store = js(scope, "Object.assign(Object.create(null), { fromForm: 5, shared: 50 })");
+++            let items = js(scope, "[7]");
+++            let prototype = js(scope, "({ submitLike() { return this; }, get form0() { return this[0]; } })");
+++            let form = api_object(scope, Some(store), Some(items), prototype);
+++            let prototype = js(scope, "({ click() { return this; }, shared: 10 })");
+++            let element = api_object(scope, None, None, prototype);
+++            expose(scope, "rovesDocument", document.into());
+++            expose(scope, "rovesForm", form.into());
+++            expose(scope, "rovesElement", element.into());
+++
+++            // Identity of a generic interceptor object (no `ClassBox` yet): the same JSObject
+++            // cell both ways.
+++            let first = from_v8(scope, document.into());
+++            let second = from_v8(scope, document.into());
+++            assert_eq!(first.to_object(), second.to_object());
+++            // SAFETY: `document` is live in this scope.
+++            let back = unsafe { to_v8(scope, first) };
+++            assert!(back.strict_equals(document.into()));
+++
+++            let extensions = [document, form, element];
+++            let mut texts = Vec::new();
+++            for (name, body) in [("rovesSloppy", sloppy), ("rovesStrict", strict)] {
+++                let scoped = compile(scope, &extensions, body);
+++                let unscoped = compile(scope, &[], body);
+++                expose(scope, name, scoped.into());
+++                texts.push((source_text(scope, scoped), source_text(scope, unscoped)));
+++            }
+++
+++            // GC control: only the closure references this extension.
+++            let store = js(scope, "Object.assign(Object.create(null), { fromNamed: 3 })");
+++            let prototype = js(scope, "({})");
+++            let kept = api_object(scope, Some(store), None, prototype);
+++            let element = v8::Local::<v8::Object>::try_from(js(scope, "({ fromElement: 4 })")).unwrap();
+++            let function = compile(scope, &[kept, element], "return event + fromNamed + fromElement;");
+++            expose(scope, "rovesKept", function.into());
+++            texts
+++        });
+++
+++        for ((scoped, unscoped), body) in texts.iter().zip([sloppy, strict]) {
+++            assert_eq!(scoped, unscoped);
+++            assert_eq!(*scoped, format!("function onclick(event) {{\n{body}\n}}"));
+++        }
+++        let run = |runtime: &Runtime, source: &str| describe(runtime, eval(runtime, source));
+++        let outcome = (run(&runtime, "rovesSloppy(2)"), run(&runtime, "rovesStrict(2)"));
+++        println!("ROVES-0365 scoped calls {outcome:?}");
+++        assert_eq!(outcome.0, "true,true,true,3,5,7,10,2,undefined,true");
+++        assert_eq!(outcome.1, "true,true,true,10");
+++
+++        runtime.gc_for_testing();
+++        assert_eq!(run(&runtime, "rovesKept(2)"), "9");
+++    }
+++}
+++

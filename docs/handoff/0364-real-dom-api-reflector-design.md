@@ -1,0 +1,233 @@
+# 0364 — design: reflector DOM reali come API object V8 con interceptor
+
+Solo design. Nessuna modifica di produzione, nessun test eseguito, nessuna build. Base locale
+`be77aa7dcc3`. Il design è pronto per una prima prova circoscritta (0365, sotto) ma **non** è
+dimostrato: ogni affermazione su API rusty_v8 non già usate nel repository è marcata come
+"da verificare" e diventa il primo gate della prova.
+
+## Problema (da 0361/0363, non rifatto)
+
+`CompileFunction` con scope (`components/roves-js/src/script_impl.rs:360`) avvolge il corpo
+in `with (this[i])` perché Document e form sono `v8::Proxy` e V8 rifiuta i Proxy come context
+extension. Il wrapper rompe il sourceText HTML (0361). La facade 0363 era accettata da V8 ma
+una chiamata nuda `who()` riceveva la facade come `this`. Serve quindi che l'oggetto nella
+catena **sia** il reflector DOM visibile a JS: `this === document` per costruzione, senza
+bind, override globali, layout privati o parser.
+
+Catena reale: `components/script/dom/event/eventtarget.rs:796-803` appende document, form
+owner (se presente) ed elemento. Sono tutti `Node`. Oggi sono `v8::Proxy` solo Document
+(`HTMLDocument.webidl` con named getter e `[LegacyOverrideBuiltIns]`), `HTMLFormElement`
+(indexed+named getter, `[LegacyUnenumerableNamedProperties]`) e `HTMLSelectElement`
+(indexed getter/setter). Gli altri elementi sono già API object con `ClassBox`, che V8 accetta
+come extension.
+
+## Idea
+
+Per i proxy DOM eleggibili, il valore V8 della cella diventa il **target** già esistente
+(istanza di `ObjectTemplate` con internal field e `ClassBox` wrappato) invece del `v8::Proxy`
+che lo avvolge. Il template riceve interceptor named+indexed che chiamano gli stessi trap
+`ProxyTraps` di oggi. Stesso modello di Blink per i legacy platform object (interceptor su un
+API object), ma con gli hook Servo già esistenti come unico motore delle proprietà.
+
+## Cosa resta invariato (compatibilità JSAPI)
+
+Tutto ciò che SpiderMonkey espone sui proxy legge già il `ClassBox` tramite la cella, non il
+`v8::Proxy`:
+
+- `IsProxyHandlerFamily`, `GetProxyHandler`, `GetProxyHandlerExtra`, `GetProxyPrivate`,
+  `SetProxyPrivate`, `Get/SetProxyReservedSlot` (`proxy.rs:96-134`) usano `proxy_box(obj)` →
+  `object::class_box(obj)` → `cell_class_box`. Il box resta quello del target, con
+  `proxy = handler`, `class = PROXY_CLASS` (`JSCLASS_IS_PROXY`), quindi anche
+  `script_bindings/conversions.rs:231` (flag classe + famiglia) non cambia.
+- Identità: `cell::new_cell` (`cell.rs:192-203`) mappa già ogni oggetto con `ClassBox` alla sua
+  cella unica; il ramo `v8::Proxy` (`cell.rs:204-211`) semplicemente non scatta più per questi.
+- Tracciamento/GC: `ClassBox::trace` (`object.rs:80-124`) chiama `handler.traps.trace` quando
+  `proxy` è impostato; `Drop` (`object.rs:164-185`) chiama `handler.traps.finalize`. Il box è
+  tenuto vivo da `Object::wrap` del target, il target dalla cella. Oggi la catena è
+  cella → Proxy → target → box; dopo è cella → target → box: un anello in meno, stessa
+  proprietà. Gli slot riservati (slot 0 = `PrivateValue` DOM, `wrap.rs:84`) e l'expando
+  (`proxyhandler::ensure_expando_object`, `wrap.rs:119`) restano nel box.
+- `jsapi_impl::prototype_of` (`jsapi_impl.rs:51`) e `GetBuiltinClass` (`values_impl.rs:617`)
+  già trattano `!is_proxy()` + `ClassBox` correttamente (prototipo reale; `ESClass::Other`).
+
+Nessuna API pubblica del prodotto cambia; nessun nome di classe confrontato nel motore;
+nessuna inversione di rappresentazione del global/WindowProxy.
+
+## Eleggibilità semantica
+
+Due livelli, entrambi senza stringhe di classe nel motore:
+
+1. **Motore (`roves-js`)**: rappresentazione API object ammessa solo se il handler è della
+   famiglia DOM (`HANDLER_FAMILY`), `lazy_proto == false`, `traps.getPrototype`,
+   `traps.setPrototype`, `traps.call`, `traps.construct` sono `None` e non c'è identità
+   Window. Escludono per costruzione WindowProxy, oggetti maybe-cross-origin (Location:
+   `lazy_proto=true` in `wrap.rs:63-71`), wrapper (`WRAPPER_FAMILY`), named-properties object
+   della Window (prototipo immutabile, handler proprio).
+2. **Routing (codegen)**: il handler viene creato con una seconda factory crate-interna
+   `CreateApiObjectProxyHandler(traps, extra)` (stessa `ProxyHandler`, stessa famiglia, campo
+   `representation` interno) al posto di `CreateProxyHandler` in
+   `script_bindings/codegen/codegen.py:4184` (`CGDOMJSProxyHandler`) quando il descrittore è
+   `proxy`, non `isMaybeCrossOriginObject()` e l'interfaccia eredita da `Node` (catena
+   `iface.parent` dell'IDL: solo i Node entrano nella catena di scope degli handler). Esporla in
+   `roves-js/src/glue.rs:45` e `script_bindings/import.rs:59`. `wrap.rs` e `WrapConfig` non
+   cambiano: `NewProxyObject` legge la rappresentazione dal handler. Nessun flag utente, nessuna
+   dipendenza nuova.
+
+Se il livello 1 rifiuta un handler marcato dal livello 2, si ricade sul `v8::Proxy` attuale
+(nessun panic).
+
+## File e funzioni (prima prova + passo di produzione)
+
+`components/roves-js/src/proxy.rs`
+
+- `ProxyHandler`: aggiungere `api_object: bool` (impostato solo dalla nuova factory).
+- `new_proxy_object` (`:158`): se eleggibile, usare un template dedicato (vedi `object.rs`),
+  impostare il prototipo sul target come oggi, **non** creare `handler_object`/`v8::Proxy`,
+  e creare la cella sul target (`new_cell_with_class(scope, target.into(), Some(member))`).
+- `trap_context` (`:273`): estrarre `trap_context_for(scope, target)` riusato sia dai trap
+  `FunctionCallback` del Proxy (target = `args.get(0)`) sia dagli interceptor
+  (target = `args.holder()`). Il realm del chiamante resta `native::caller_realm`.
+- Estrarre i corpi dei trap in operazioni condivise, senza duplicarli:
+  `own_descriptor` (esiste), `op_define(context, key, PropertyDescriptor) -> Result<bool>`,
+  `op_delete`, `op_own_keys -> Vec<jsid>`, `op_set(context, key, value, receiver)` (il ramo
+  attuale di `trap_set`, incluso `SetPropertyIgnoringNamedGetter`). Il path Proxy continua a
+  chiamare `mirror_non_configurable`; il path interceptor **non** lo chiama (il holder non deve
+  ricevere proprietà reali).
+- Nuovi adattatori interceptor (named e indexed), ognuno poche righe sopra le operazioni:
+  - `getter`: `own_descriptor`; `None` → `Intercepted::kNo` (V8 prosegue sul prototipo con il
+    receiver reale); dato → valore; accessor → `getter.call(receiver = args.this())`.
+    È il ramo "BaseProxyHandler::get" già presente in `trap_get` (`:659-680`): WebIDL
+    [[Get]] = OrdinaryGet su [[GetOwnProperty]], che per i legacy platform object include
+    l'algoritmo di visibilità e `[LegacyOverrideBuiltIns]` (codegen `getOwnPropertyDescriptor`).
+  - `query`: `own_descriptor` → attributi V8 (READ_ONLY/DONT_ENUM/DONT_DELETE), come
+    `resolved_attributes` in `object.rs:662`; `None` → `kNo`.
+  - `descriptor`: `jsapi_impl::descriptor_object` (già usato da
+    `trap_get_own_property_descriptor`), preservando l'ordine dei campi.
+  - `definer`: convertire il `v8::PropertyDescriptor` in `PropertyDescriptor` SpiderMonkey
+    (helper nuovo ~25 righe, analogo a `fill_descriptor`), `op_define`, TypeError solo se
+    rifiutato e `should_throw_on_error()`; sempre `kYes`.
+  - `setter`: sempre `kYes`, `op_set` con receiver `args.this()`; rifiuto → TypeError solo con
+    `should_throw_on_error()` (forma già provata in 0363).
+  - `deleter`: `op_delete`; sempre `kYes`.
+  - `enumerator` named e indexed: un solo `op_own_keys` partizionato in indici (indexed) e
+    stringhe/simboli nell'ordine del handler (named).
+- Il ramo `forward` (`WRAPPER_FAMILY`) resta solo nel path Proxy.
+
+`components/roves-js/src/object.rs`
+
+- `ClassTemplates`: un secondo template cache per i reflector API (chiave dedicata, non la
+  classe: tutti i proxy DOM condividono `PROXY_CLASS` passato come null in `wrap.rs:69,78`),
+  `internal_field_count(1)`, `set_named_property_handler` + `set_indexed_property_handler`
+  senza `ONLY_INTERCEPT_STRINGS` (servono i simboli per `@@unscopables`). Nessun `data`:
+  il handler si legge dal box (gestisce già un handler cambiato da transplant).
+
+`components/roves-js/src/script_impl.rs`
+
+- `CompileFunction` (`:360`): se **ogni** oggetto della catena è un `v8::Object` non
+  `is_proxy()`, passare gli oggetti come `context_extensions` a
+  `v8::script_compiler::compile_function` (forma provata in 0363), senza prefisso né offset di
+  origine; altrimenti il wrapper `with` attuale resta invariato. Criterio semantico (V8 rifiuta
+  i Proxy), nessun nome.
+
+`components/script_bindings/codegen/codegen.py` (+ `glue.rs`, `import.rs`): solo la factory
+del handler, passo 2.
+
+## Semantica da preservare e come
+
+| Requisito | Meccanismo | Rischio |
+|---|---|---|
+| `this` delle chiamate nude = reflector | l'extension è il reflector stesso | nessuno noto (motivo del design) |
+| `[LegacyOverrideBuiltIns]` (Document) | interceptor *masking* (default) consultato prima del prototipo; la visibilità la decide il trap codegen | se V8 consultasse il prototipo prima: verificare nel test |
+| Named non-override (form) | il trap Servo nasconde il named presente sul prototipo; l'interceptor restituisce `kNo` | come sopra |
+| Proprietà del prototipo / receiver dei getter | `kNo` → lookup V8 ordinario con receiver reale | — |
+| Readonly / non configurabile | attributi da `own_descriptor`; setter/definer/deleter delegati | TypeError solo strict: test sloppy/strict |
+| Ordine chiavi descriptor | `descriptor_object` attuale | da confrontare con il Proxy |
+| `ownKeys`: indici, named, expando stringhe, simboli | enumerator partizionato | V8 potrebbe riordinare/filtrare: test differenziale |
+| Expando (incl. `[LegacyUnforgeable]` in expando) | definer/setter sempre intercettati → `defineProperty` del handler | creazione via `Reflect.set` su receiver con interceptor: deve finire nel definer, da verificare |
+| `getPrototypeOf`/`setPrototypeOf`/`instanceof` | prototipo reale del target | uguale al Proxy non lazy |
+| `preventExtensions` | **nessun interceptor V8** | vedi rischio 1 |
+
+## Rischi aperti (nessuna affermazione di completezza)
+
+1. **[[PreventExtensions]]**: WebIDL lo fa fallire per i legacy platform object; oggi il trap
+   Servo `proxyhandler::prevent_extensions` lo rifiuta. Un API object non ha hook: V8 eseguirebbe
+   la propria `PreventExtensions`. Il riferimento Chrome non è stato raccolto: MCP Chrome
+   DevTools disponibile ma accesso negato in questa sessione; nessuna misura sostitutiva.
+   Se Chrome segue la spec e V8 non offre un hook mantenuto, è un blocco per questi oggetti
+   (accettabile solo con decisione esplicita, non in silenzio).
+2. **API rusty_v8 152.2.0 non usate localmente**: `IndexedPropertyHandlerConfiguration`,
+   callback `descriptor`/`definer` named, `PropertyCallbackArguments::this()`, accessori di
+   `v8::PropertyDescriptor`. Già usati nel repo: named `getter/query/setter/deleter/enumerator`,
+   `holder()`, `data()`, `should_throw_on_error()`, `compile_function` con extension (0363,
+   `object.rs:398`). Lettura del sorgente nel registry cargo e di docs.rs negata in questa
+   sessione: è il gate 0 della prova.
+3. **Creazione di expando via assegnazione**: dopo `kYes` dal setter, `op_set` arriva a
+   `Reflect.set(proto, k, v, receiver)` che crea la proprietà sul receiver; deve passare dal
+   definer e non dal setter (ricorsione) né creare una proprietà reale sul holder.
+4. **Due rappresentazioni** per i proxy DOM (Node API object, collezioni Proxy) finché non si
+   generalizza; i test devono coprire entrambe con lo stesso handler.
+5. **Prestazioni**: ogni accesso a `document.x` passa per Rust come oggi con il Proxy; nessuna
+   misura, nessuna affermazione di miglioramento. Da misurare solo in CI/scena reale.
+6. Elementi non proxy nella catena: già API object; 0363 li ha passati come extension, ma senza
+   test dedicato di `this` per un elemento ordinario con metodo chiamato a vuoto.
+
+## Crescita del codice vs refactor ampio
+
+- **Minimo (questo design)**: stimati +250/350 righe in `roves-js` (adattatori ~180,
+  conversione descriptor ~25, template/factory ~40, ramo `CompileFunction` ~20, estrazione delle
+  operazioni dei trap ~0 netto), +~10 in codegen, +~300 di test. Nessuna riduzione immediata:
+  il wrapper `with` resta come fallback. Diventa rimovibile solo se nessun chiamante di
+  `CompileFunction` passa più `v8::Proxy` (oggi l'unico è `eventtarget.rs:807`, da ricontrollare).
+- **Refactor ampio** (tutti i proxy DOM non lazy, ~30 interfacce: NodeList, Storage,
+  CSSStyleDeclaration, ...): eleggibilità solo al livello 1, nessun routing codegen; potrebbe
+  eliminare per la famiglia DOM `mirror_non_configurable` e l'oggetto handler V8 (stima
+  −100/150 righe nette), ma tocca ogni collezione e il path caldo di molti giochi senza prova.
+  Sconsigliato come passo successivo; diventa la generalizzazione naturale (rimuovere il filtro
+  `Node` in codegen) solo dopo matrice verde e decisione sul rischio 1.
+
+## Prossimo passo unico: 0365 — prova nativa circoscritta in `roves-js`
+
+Solo `components/roves-js/src/{proxy.rs,object.rs,script_impl.rs,glue.rs,tests.rs}`; niente
+codegen/Servo finché non è verde. Workspace isolato esistente con cwd corretto, test mirati
+normale e JITless, niente nuove cache (C: ~0.86 GiB).
+
+0. Gate di compilazione delle API del rischio 2. Se una manca: fermarsi, documentare il blocco
+   preciso, nessun aggiramento.
+1. Implementare factory, template, adattatori e ramo `CompileFunction` descritti sopra.
+2. Test differenziale nel modulo dei proxy di `tests.rs` (riusa `traps()` a `:1502`, esteso con
+   un named override-builtins, un named non-override nascosto dal prototipo e un indexed): lo
+   stesso script JS eseguito su un oggetto `NewProxyObject` con `CreateProxyHandler` e su uno
+   con la nuova factory deve dare output identici per:
+   - identità: round-trip cella, `GetProxyPrivate`, slot 0, `IsProxyHandlerFamily`,
+     `GetProxyHandler`, flag `JSCLASS_IS_PROXY`;
+   - get named/indexed/expando dato/expando accessor (receiver), metodo e accessor del
+     prototipo (receiver), assente;
+   - override-builtins vs visibilità non-override;
+   - `in`, `hasOwnProperty`, `propertyIsEnumerable`, `Object.keys`, `for-in`, `Reflect.ownKeys`
+     (ordine indici, named, expando, simboli);
+   - `Object.getOwnPropertyDescriptor` (campi e ordine delle chiavi);
+   - set: nuovo expando (deve finire nell'expando, nessuna proprietà reale sul holder),
+     readonly sloppy/strict, setter del prototipo, `Reflect.set` con receiver estraneo;
+   - `defineProperty` dato/accessor/non configurabile, ridefinizione rifiutata, descrittori
+     parziali; `delete` configurabile/non configurabile sloppy/strict;
+   - prototipo: `getPrototypeOf`, `setPrototypeOf`, `instanceof`;
+   - `preventExtensions`/`isExtensible`: **registrare** la differenza attesa, non nasconderla;
+   - GC: sopravvivenza con sola radice di cella, conteggio `trace`, `finalize` dopo rilascio,
+     expando conservato.
+3. Test `CompileFunction`: catena document/form/elemento con la nuova rappresentazione:
+   `who() === rovesDocument` (il controcaso 0363), sourceText uguale al compilatore V8 senza
+   scope, ordine degli scope, `@@unscopables`, `typeof` mancante, scrittura a variabile di scope
+   che diventa expando, strict/sloppy, posizioni riga/colonna come le regressioni 0356/0357.
+4. Esito: se tutto verde tranne il rischio 1, consegnare con il rischio 1 come decisione
+   esplicita; se qualcosa diverge, salvare diff e log in `target/task-0365/`, ripristinare i
+   sorgenti a HEAD e documentare il blocco. Il passo codegen e la CI browser vengono dopo, come
+   incarico separato.
+
+## Riferimento preventExtensions raccolto da Codex
+Chrome155 Windows visibile/about:blank, oggetti reali HTMLDocument/form/select, tabisolatachiusa.
+Document: Reflect.preventExtensions true, Object.preventExtensions riuscito, extensible false.
+Form e select: Reflect.preventExtensions false, Object.preventExtensions TypeError, extensible true.
+Non assumere una sola regola per tutti e tre. Prima di chiedere decisioni su degradazioni,
+provare gli API object V8 named-only e named+indexed: il motore potrebbe rifiutare nativamente
+la prevenzione delle estensioni quando necessaria. Nessun override globale o barriera aggirata.
+Questo è un riferimento Chrome, non una conclusione sul testo normativo WebIDL.

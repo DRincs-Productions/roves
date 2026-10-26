@@ -700,3 +700,6 @@ Android and shared checks still gate publication.
 
 The scoped-handler source-text compatibility item remains open: the evaluated prototype was
 not adopted because it would change method-call receivers. Runtime behavior is unchanged.
+
+The next source-text implementation is still being evaluated; verified engine prototypes
+have not changed the production DOM property backend.

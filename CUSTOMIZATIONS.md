@@ -1,3 +1,40 @@
+## 2026-10-26 - Verify the first public V8 API-object gate (0364/0365)
+
+Two focused normal and two JITless checks pass: interceptors natively reject preventExtensions,
+and real API objects used as context extensions preserve bare-call receivers, wrapped source
+text, identity and scope lifetime. No production route changes. A fixture initially reserved
+an uninitialized ClassBox field and aborted; the generic V8 fixture now has no internal fields,
+explicitly leaving actual ClassBox/ProxyTraps integration for the next gate. Verified proof and
+design are saved under docs/handoff, tests.rs restored to HEAD to avoid unused prototype code.
+The named-only extensibility behavior still differs from the Chrome Document reference.
+Patches0364/0365 replay documentation and the standalone experimental diff, not runtime code.
+
+## 2026-10-26 - Native gate: preventExtensions and scope receivers on V8 API objects (0365)
+
+First run: compiles (indexed interceptor signatures verified); the preventExtensions test
+passes (V8 natively refuses it on any interceptor object, as Chrome form/select, unlike
+Chrome's Document). The scope test aborted on a fixture bug (uninitialized internal field
+read as a ClassBox); the fixture now has no internal field, assertions unchanged, rerun
+pending. No real ClassBox reflector covered yet.
+
+Test only: `components/roves-js/src/tests.rs` module
+`api_reflector_proof` (generic named / named+indexed interceptors on plain `ObjectTemplate`
+instances, not Servo DOM). Checks whether V8 natively refuses `[[PreventExtensions]]` on
+interceptor objects (vs. ordinary controls and the Chrome 155 reference: Document succeeds,
+form/select refuse), and that `CompileFunction` with the API objects themselves as extensions
+keeps bare-call receivers, exact source text, cell identity and GC survival. Indexed
+interceptor signatures are an unverified compile gate. Expectations and risks:
+`target/task-0365/RESULTS.md`. No production change.
+
+## 2026-10-26 - Design: real DOM reflectors as V8 API objects with interceptors (0364)
+
+Design only, no code or test change. `docs/handoff/0364-real-dom-api-reflector-design.md`
+proposes keeping eligible DOM proxies' existing target (API object with ClassBox) as their V8
+value, with named/indexed interceptors delegating to the unchanged ProxyTraps, so scope-chain
+objects are the real reflectors. JSAPI proxy accessors already read the ClassBox and stay
+compatible. Open risks: no V8 hook for [[PreventExtensions]], unverified rusty_v8 interceptor
+APIs, expando creation path. Next step is a bounded roves-js proof (0365); no claim of a fix.
+
 ## 2026-10-26 - Reject the scope facade after native proof (0363)
 
 Normal and JITless focused tests pass on V8 152. An ordinary API object with named interceptors

@@ -31,6 +31,50 @@ C:~0.99GiBlibero, D:530.67GiB. Evitare nuove copie di build; build pesanti soloC
 Prossimo incarico0363: prova mantenuta V8 per scopeProxy/funzioniwrapped/sourceText (piano0361),
 senza overrideglobale/parserprivato. Claude implementa una prova circoscritta, Codex revisiona.
 
+### Checkpoint0364/0365 — design e primo gate verificati, runtime invariato
+
+[Design0364](handoff/0364-real-dom-api-reflector-design.md) pronto come mappa, non implementato.
+[Prova0365](handoff/0365-api-reflector-proof.md):2normal/2JITless verdi. V8rifiutagiàpreventExtensions
+coninterceptor; oggetti REALI comecatena(scope) preservanothis/sourceText/GC. DifferenzaChromeDoc
+named-onlyancoradistinta. Fixturecorretta dopoabort:0internalfields perchéClassBoxnoninizializzato
+fuori perimetro; nientecambioproduzionepernasconderlo. Logtarget/task-0365/. Prototiposalvatoin
+diffdurabile, tests.rs ripristinatoHEAD.0361aperta, prossimo0366 gateClassBox/ProxyTraps reale
+prima di routingcodegen. Mac/iOS nonbloccano pernuovaistruzione; altriCIrimangonoobbligatori.
+
+### Claude0365 — gate nativo API object (prima esecuzione Codex, correzione fixture)
+
+Esecuzione1: compilazione riuscita (firme indexed verificate). Test preventExtensions VERDE:
+normale/API senza interceptor diventano non estensibili; named e named+indexed false/TypeError
+e restano estensibili: V8 lo impone già, come form/select Chrome; diverso da Document Chrome.
+Test scope ABORTITO: il fixture aveva un internal field non inizializzato letto come ClassBox
+(`scope-backtrace.log`). Correzione solo fixture: zero internal field, asserzioni invariate,
+nessun ClassBox reale ancora coperto. In attesa della riesecuzione Codex.
+
+Sessione solo Read/Edit (shell, registry e git negati). In `tests.rs` nuovo modulo isolato
+`api_reflector_proof`: `api_object_interceptors_refuse_prevent_extensions_natively` e
+`api_object_scope_extensions_keep_bare_call_receivers_and_source_text`. API object generici
+(ObjectTemplate, 1 internal field) con interceptor named-only e named+indexed su store JS, non
+DOM Servo. Atteso: V8 rifiuta nativamente preventExtensions con interceptor (Reflect false,
+Object TypeError, resta estensibile) come form/select Chrome, ma diverso da Document Chrome
+(riesce): differenza di configurazione da decidere in un gate successivo. Atteso anche
+`who() === rovesDocument` con l'oggetto stesso come extension, sourceText esatto, identità e GC.
+Gate0: firme indexed non verificate. Ripresa Codex: compilare, test normale/JITless, esiti reali in
+`target/task-0365/RESULTS.md`; se diverge salvare diff/log e ripristinare tests.rs. README/wiki invariati.
+
+### Claude0364 — design reflector DOM come API object (da revisionare, nessun codice)
+
+Solo documentazione: [design0364](handoff/0364-real-dom-api-reflector-design.md). Per i proxy
+DOM eleggibili (famiglia DOM, prototipo non lazy, nessun trap prototype/call/construct; routing
+codegen per interfacce Node) il valore V8 diventa il target API object già esistente, con
+interceptor named/indexed che chiamano gli stessi ProxyTraps; `GetProxyHandler`/private/slot/
+trace/finalize leggono già il ClassBox. `CompileFunction` usa le extension V8 solo se nessun
+oggetto della catena è un `v8::Proxy`, altrimenti resta il `with`. Rischi aperti: nessun hook V8
+per [[PreventExtensions]] (riferimento Chrome non raccolto: MCP negato), API interceptor rusty_v8
+indexed/descriptor/definer/`this()` non verificate (registry e docs.rs negati), creazione expando
+via `Reflect.set`. Refactor ampio sconsigliato ora. Prossimo passo unico: 0365 prova nativa in
+roves-js con gate di compilazione e test differenziale Proxy vs API object. Patch doc0364 da
+generare (Codex). README/wiki invariati.
+
 ### Checkpoint0363 — facade provata normal/JITless e respinta, runtime invariato
 
 Testmirato1normal/1JITless verdi suAPIpubblicheV8; dati/logtarget/task-0363/. Firma setter
