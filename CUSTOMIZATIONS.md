@@ -1,3 +1,19 @@
+## 2026-10-27 - Add an isolated deno_core single-document CI experiment (0381)
+
+support/deno-core-probe is an independent locked workspace, not an engine dependency.
+Reuse maintained deno_core modules/async APIs; ten logical scenarios in two Rust tests
+cover imports/JSON/cycles/TLA, microtasks, mode verification, URL/type checks, context-level
+string compilation and bootstrap observations. All V8 scenarios share one test thread;
+normal/JITless run as separate processes with mode set before initialization. No fake DOM
+or History implementation. Corrected an unavailable V8 150 API before publication: public
+context switching is tested instead of claiming a per-source CSP callback.
+
+deno-core-probe.yml builds online on Linux/Windows in both modes, with isolated cache/target
+and failure logs; no browser build or root manifest/pin change. Metadata/syntax/workflow
+checks pass, compilation and runtime assertions await CI. Update README/wiki/library plan,
+current/durable handoff and roves-action README. No adoption, security/performance promise
+or navigation-policy implementation. Patch0384; heavy builds online only.
+
 ## 2026-10-27 - Record confirmed diagnostics, external-link and implementation-order choices
 
 Single-document policy clarification: discreet non-modal warnings in development, logs

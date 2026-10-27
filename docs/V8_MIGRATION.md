@@ -22,11 +22,20 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 Checkpoint pubblicato: `0eb67d506431377ec24cf47e288a5e8139ff0c6a`, wiki `9c037af`,
 roves-action `4ba4230`. Include0377 consolidata, decisione0378 e fixCI0379.
-Nuovo batch: V8 `40528119179`, generale `40528119248`, Android `40528119174`,
-iOS `40528119198` esclusa insieme a macOS. Alla lettura aggregata dopo il push:
-V8/generale in coda, Android in corso; nessun risultato conclusivo. Non fare altri push
-mentre le run obbligatorie sono attive. Verificare soprattutto packaging/Steam e nuove
-fixture0377; build pesanti online, nessun polling periodico. Il batch735a sotto è precedente.
+Batch0eb ora terminale verde per i richiesti: V8 `40528119179`7/7,
+generale `40528119248`10/10 (packagingWindows/Linux eSteam compresi), Android `40528119174`
+verde. iOS `40528119198` e macOS esclusi, non dichiarati verdi. Confermate le fixture0377
+e il disaccoppiamento del probeApple. Pubblicabili i commit completi accumulati; identificare
+nuove run dopo il push e non ripubblicare mentre i richiesti sono attivi. Nessun polling.
+
+0381 pronta localmente: [prova deno_core](handoff/0381-deno-single-document-probe.md),
+support/deno-core-probe e workflowisolatoLinux/Windows normal/JITless. Dieci scenari logici
+in due testRust; tutti gli scenariV8 sulla stessa thread, modeobbligatorioprimadiinit.
+Metadata/parse/contrattoYAML-lockverdi; compilazione e runtime NON eseguiti localmente,
+da confermare online. Nessun DOM/router simulato o adozione produttiva. La callback per
+singola stringa manca inV8150: la prova usa solo il flagcontesto pubblico eval/Function,
+non dimostra CSPcompleta. Prossimo incarico circoscritto: bootstrap/globaleDeno nascosto
+prima del gioco senza rompere moduli/async, usando solo API mantenute. Patch0384.
 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
@@ -66,15 +75,15 @@ verdi, ma build/packaging eSteam SALTATI perché il gate aggregato include il pr
 cancellato. Non considerarli verdi: manca copertura richiesta. iOS `40520566892` fallita
 e macOS esclusi per istruzione utente; non disattivare iworkflow né ritentare soloApple.
 Gate corretto e pubblicato0379, patch0381: probeApple separato ma abilitato, nomi invariati;
-PyYAML verifica matrice/dipendenze e build/Steam invariati. La nuova CI deve ancora confermare
+PyYAML verifica matrice/dipendenze e build/Steam invariati. Il batch0eb ha confermato
 packaging/Steam precedentemente saltati. Batch735a terminale, nessun difetto runtime nonApple
-mostrato da quel batch; nuovo batch attivo riportato sopra.
+mostrato da quel batch; batch0eb terminale riportato sopra.
 
 0377 implementata/revisionata e pubblicata: [handoff](handoff/0377-prototype-descriptor-visibility.md),
 patch0378. Il controllo prototipo riusa JS_GetPropertyDescriptorById, senza un nuovo walker.
 1native normal/1JITless verdi; runner42(8skipPOSIX), generatore14, parseRustverde.
 Negativa isolata della vecchia query HasProperty fallisce sulla trap sbagliata, sorgente
-isolato ripristinato. Nuove fixturebrowsernormali/JITless da verificare in CI. Lo skip dei
+isolato ripristinato. FixturebrowserLinuxnormal/JITless eWindows verificate nel batch0eb. Lo skip dei
 named-properties objects e il punto iniziale WindowProperties restano gap espliciti.
 
 ChromeMCP156.0.0.0Windowsvisibile, iframe text/html: nomi indipendenti Reflect/sloppy/strict
@@ -85,7 +94,7 @@ target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
 SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
 0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
 non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
-ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0378 e0379 consegnate e revisionate.
+ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0381 consegnata e revisionata, prossima prova bootstrap da avviare.
 [Esito0378 storico](handoff/0378-deno-core-feasibility.md): mancanoAPI realm/WindowProxy
 per il vecchio perimetro browser, non più requisiti del prodotto a documento unico;
 194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.

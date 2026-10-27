@@ -1,0 +1,71 @@
+name: deno_core single-document probe
+
+# Developer experiment only (docs/handoff/0380-single-document-runtime.md): builds the isolated
+# support/deno-core-probe crate and runs the same assertion suite once per V8 mode, each in
+# its own process. It does not build the engine, change any pin or gate a release.
+# Use workflow_dispatch to retry transient runner or V8-download failures.
+
+on:
+  push:
+    paths:
+      - 'support/deno-core-probe/**'
+      - '.github/workflows/deno-core-probe.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: deno-core-probe-${{ github.ref }}
+  # A cancelled run is not a verified one (AGENTS.md CI rules): queue instead of cancelling.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest]
+        mode: [normal, jitless]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      # The V8 mode is chosen at run time (V8_TEST_MODE), so both modes share one build: the
+      # prebuilt rusty_v8 archive and compiled dependencies are cached per OS, toolchain and
+      # lockfile, and saved by the normal job only.
+      - name: restore cargo and build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ${{ runner.temp }}/deno-core-probe-target
+          key: deno-core-probe-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/deno-core-probe/Cargo.lock') }}
+      - name: test (${{ matrix.mode }})
+        shell: bash
+        env:
+          V8_TEST_MODE: ${{ matrix.mode }}
+          CARGO_TARGET_DIR: ${{ runner.temp }}/deno-core-probe-target
+        run: |
+          cargo test --locked --manifest-path support/deno-core-probe/Cargo.toml -- --test-threads=1 \
+            2>&1 | tee "$RUNNER_TEMP/deno-core-probe-${{ matrix.mode }}.log"
+      - name: upload the test log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deno-core-probe-${{ matrix.os }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/deno-core-probe-${{ matrix.mode }}.log
+          retention-days: 7
+          if-no-files-found: warn
+      - name: save cargo and build cache
+        if: always() && matrix.mode == 'normal' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ${{ runner.temp }}/deno-core-probe-target
+          key: deno-core-probe-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/deno-core-probe/Cargo.lock') }}

@@ -739,7 +739,7 @@ retention remain under migration.
 
 Named-property visibility now reuses V8-backed descriptor traversal rather than a Proxy
 `has` query on prototypes. Accessor getters are not invoked by this presence check; native
-normal/JITless tests pass, with the new browser fixtures awaiting CI. This is a bounded
+normal/JITless tests and required browser fixtures passed in the0eb CI batch. This is a bounded
 correction, not complete WebIDL conformance.
 
 Roves keeps its Servo shell while evaluating maintained libraries to replace internal
@@ -767,3 +767,9 @@ replaced Servo services may be removed instead of kept alongside a second implem
 The macOS gamepad probe runs independently from the required Windows/Linux probe matrix,
 so its cancellation/failure no longer skips their packaging and Steam checks. Apple checks
 remain enabled and visible; required non-Apple failures still block dependent jobs.
+
+An isolated deno_core single-document experiment now has its own Linux/Windows normal and
+JITless CI workflow (`deno-core-probe.yml`). It tests module/async scenarios using maintained
+APIs, without integrating Servo DOM or changing the game runtime. Local metadata/syntax
+checks pass; compilation and runtime results await online CI. Navigation policy and warnings
+remain planned. Details: [probe README](support/deno-core-probe/README.md).

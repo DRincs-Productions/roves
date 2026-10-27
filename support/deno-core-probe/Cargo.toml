@@ -1,0 +1,26 @@
+# Isolated deno_core feasibility probe for the single-document runtime
+# (docs/handoff/0380-single-document-runtime.md). Not part of the Roves workspace and not a
+# production dependency: nothing in the engine depends on this crate.
+#
+# deno_core (MIT, maintained by the Deno authors) keeps its default features on purpose:
+# - "v8" selects the V8 backend of `deno_v8` (the alternative is QuickJS);
+# - "reactor-tokio" is required in practice: `runtime/jsrealm.rs` uses
+#   `crate::reactor::DefaultReactor` unconditionally and that alias only exists with this
+#   feature (`reactor.rs:67-68`);
+# - "v8_use_custom_libcxx" matches the prebuilt rusty_v8 static archives; turning it off
+#   means building V8 from source.
+# Cargo.lock is the one resolved for task 0378 (deno_v8 0.5.0 -> v8 150.4.0); keep the
+# dependency list below identical to it so `cargo test --locked` stays valid.
+[package]
+name = "roves-deno-core-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[dependencies]
+deno_core = "=0.413.0"
+# Already in deno_core's graph with "full"; only the current-thread runtime is used here.
+tokio = { version = "1.47.1", default-features = false, features = ["rt"] }
