@@ -11,6 +11,11 @@ Registrare test eseguiti separatamente dalle ipotesi; non promettere risparmi no
 Il loop Codex direzione/revisione e Claude implementazione, le quote e le regole CI restano
 invariati. Una prova negativa può concludere correttamente la valutazione senza adozione.
 
+Esito0378: deno_core0.413.0 NON adottato per mancanza di API pubbliche necessarie a
+realm aggiuntivi/WindowProxy. Risoluzione Cargo/metadata/parse verificati, nessuna esecuzione
+runtime o misura; prototipo locale non compilato, nessuna nuova dipendenza produttiva.
+Restano autorizzate sostituzioni future dimostrate; vedere handoff/0378-deno-core-feasibility.md.
+
 ## Eccezione Apple autorizzata il 26 ottobre 2026
 
 Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono

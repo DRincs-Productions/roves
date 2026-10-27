@@ -84,12 +84,33 @@ jobs:
 
   # Exercise SDL3's native virtual-gamepad API on each desktop platform. This
   # tests discovery and input without a physical controller or virtual-HID driver.
+  # Required gate: build-and-publish and the Steam smoke test need this job, so a
+  # failed or cancelled Windows/Linux probe still skips them.
   sdl3-gamepad-probe:
+    name: sdl3-gamepad-probe (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-24.04]
+        os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: compile isolated SDL3 probe
+        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
+      - name: probe SDL3 virtual gamepad with a 90-second runtime limit
+        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
+
+  # Same probe on macOS, kept as its own job so its result stays visible (a
+  # failure still marks the run red) without gating non-Apple jobs. A `needs:`
+  # on a matrix job waits for and aggregates every leg, so a cancelled macOS leg
+  # used to skip all Windows/Linux packaging and the Steam test. Not depending on
+  # this job is the project's authorized exception for macOS/iOS checks (see
+  # AGENTS.md); it does not extend to the Windows/Linux probe or shared checks.
+  sdl3-gamepad-probe-macos:
+    name: sdl3-gamepad-probe (macos-latest)
+    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4

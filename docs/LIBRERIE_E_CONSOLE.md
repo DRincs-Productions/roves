@@ -25,6 +25,18 @@ Nessuna installazione separata di Deno/Chromium, nessun cambiamento intenzionale
 JavaScript dei giochi. Valutare licenze, piattaforme, dipendenze transitive e costi reali di
 avvio/memoria. Non promettere percentuali di risparmio. Handoff corrente in V8_MIGRATION.md.
 
+### Esito0378: deno_core0.413.0 non adottato in produzione
+
+[Valutazione e limiti](handoff/0378-deno-core-feasibility.md): API pubblica mancante per
+creare/registrare realm aggiuntivi e riutilizzare WindowProxy. Adottarlo solo per il realm
+principale manterrebbe due servizi, contrario all'obiettivo. I servizi Servo restano
+sostituibili, ma per questa release si mantiene rusty_v8 diretto. Lock della prova isolata
+risolto (194pacchetti; v8 150.4.0 contro152.2.0Roves), metadata eparsevalidi. Nessun test
+runtime/benchmark eseguito o risultato CSP/frame/JITless dichiarato: il gate pubblico già
+fallisce, quindi non si compila un secondoV8 pesante per una prova che non cambia la
+decisione. Prototipo non compilato resta in target/task-0378, nessuna dipendenza produttiva.
+Rivalutare con API pubbliche concrete e rimozioni reali, non per aggiungere un nuovo strato.
+
 ## Prossimi passi, codice e librerie
 
 | Area | Oggi | Direzione |

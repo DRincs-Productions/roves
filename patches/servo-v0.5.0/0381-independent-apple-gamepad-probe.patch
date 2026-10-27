@@ -1,0 +1,1622 @@
+diff --git a/.github/workflows/test.yml b/.github/workflows/test.yml
+new file mode 100644
+index 00000000000..65b39e3aa80
+--- /dev/null
++++ b/.github/workflows/test.yml
+@@ -0,0 +1,1588 @@
++name: 'Build Servo Test Binaries (from source, with local patches)'
++
++# Note: this workflow only triggers on pushes touching the paths listed below, so an empty
++# commit does NOT retrigger it (unlike release.yml/android.yml/ios.yml) -- a real change
++# somewhere in patches/**, test-page/**, or this file itself is needed.
++# For transient runner/download failures, use the workflow_dispatch trigger below to retry
++# without manufacturing a source change.
++#
++# This workflow builds Servo *from source* — pristine upstream tag + our own patches/
++# applied on top — purely to smoke-test local customizations (see ../CUSTOMIZATIONS.md) on
++# real Windows/Linux/macOS machines, without needing to compile Servo (a very heavy,
++# hours-long build) on a dev machine. Every run overwrites the same "test" GitHub Release —
++# it is not versioned, not meant to be depended on, and is not the real distributable shell
++# (see release.yml for that).
++#
++# Why build from a fresh download instead of just using the working tree directly: most of
++# this repo's own pristine content (~1.3GB, almost entirely the WPT test suite) is itself
++# gitignored (see ../.gitignore) and so isn't guaranteed to exist wherever this workflow
++# runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our customizations;
++# this workflow downloads the pristine tag fresh on every run and applies them, so nothing
++# bulky needs to be committed anywhere.
++
++on:
++  push:
++    paths:
++      - 'patches/**'
++      - 'test-page/**'
++      - 'support/sdl3-gamepad-probe/**'
++      - 'support/xvfb_window_cycle_smoke.sh'
++      - 'support/check_sdl3_windowing_contracts.py'
++      - '.github/workflows/test.yml'
++  workflow_dispatch: {}
++
++# A new SDL3 checkpoint supersedes the previous one. Without this, every push keeps an entire
++# eight-job Servo matrix alive (including macOS smoke tests), wasting runner time and obscuring
++# which commit is authoritative.
++concurrency:
++  group: test-${{ github.workflow }}-${{ github.ref }}
++  cancel-in-progress: true
++
++env:
++  SERVO_TAG: '0.5.0'
++  TEST_RELEASE_TAG: 'test'
++
++jobs:
++  # Validate the full ordered patch series against a clean pinned Servo release.
++  validate-servo-patches:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: apply local patches to pristine Servo
++        shell: bash
++        run: |
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
++          unzip -q servo-src.zip -d servo-src-tmp
++          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
++          shopt -s nullglob
++          patches=(patches/servo-v${SERVO_TAG}/*.patch)
++          for p in "${patches[@]}"; do
++            # 0042 updates the locally tracked CI-only SDL probe, not the clean
++            # Servo archive. Its matching crate is already present after checkout.
++            case $(basename "$p") in
++              0042-sdl3-macos-gamepad-probe.patch)
++                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
++                continue
++                ;;
++            esac
++            echo "Applying $(basename "$p")..."
++            patch --batch --forward -p1 -d servo-src < "$p"
++          done
++          # Upstream paths Roves deleted (a patch can't cheaply carry whole-tree deletions).
++          # After the patches: 0185 still edits python/servo/try_parser.py.
++          grep -v '^#' "patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
++            if [ -n "$rp" ]; then rm -rf "servo-src/$rp"; fi
++          done
++
++  # Check SDL3 event and native virtual-gamepad contracts independently.
++  sdl3-windowing-contracts:
++    runs-on: ubuntu-latest
++    steps:
++      - uses: actions/checkout@v4
++      - name: validate SDL3 event and patch contracts
++        run: python3 support/check_sdl3_windowing_contracts.py
++
++  # Exercise SDL3's native virtual-gamepad API on each desktop platform. This
++  # tests discovery and input without a physical controller or virtual-HID driver.
++  # Required gate: build-and-publish and the Steam smoke test need this job, so a
++  # failed or cancelled Windows/Linux probe still skips them.
++  sdl3-gamepad-probe:
++    name: sdl3-gamepad-probe (${{ matrix.os }})
++    strategy:
++      fail-fast: false
++      matrix:
++        os: [windows-latest, ubuntu-24.04]
++    runs-on: ${{ matrix.os }}
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v4
++      - uses: dtolnay/rust-toolchain@1.95.0
++      - name: compile isolated SDL3 probe
++        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
++      - name: probe SDL3 virtual gamepad with a 90-second runtime limit
++        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
++
++  # Same probe on macOS, kept as its own job so its result stays visible (a
++  # failure still marks the run red) without gating non-Apple jobs. A `needs:`
++  # on a matrix job waits for and aggregates every leg, so a cancelled macOS leg
++  # used to skip all Windows/Linux packaging and the Steam test. Not depending on
++  # this job is the project's authorized exception for macOS/iOS checks (see
++  # AGENTS.md); it does not extend to the Windows/Linux probe or shared checks.
++  sdl3-gamepad-probe-macos:
++    name: sdl3-gamepad-probe (macos-latest)
++    runs-on: macos-latest
++    timeout-minutes: 15
++    steps:
++      - uses: actions/checkout@v4
++      - uses: dtolnay/rust-toolchain@1.95.0
++      - name: compile isolated SDL3 probe
++        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
++      - name: probe SDL3 virtual gamepad with a 90-second runtime limit
++        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
++
++  # ── Create the rolling "test" release exactly once before the matrix starts ────
++  ensure-test-release:
++    needs: [validate-servo-patches, sdl3-windowing-contracts]
++    runs-on: ubuntu-latest
++    permissions:
++      contents: write
++    steps:
++      - name: ensure release "test" exists
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          GH_REPO: ${{ github.repository }}
++        run: |
++          gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
++          gh release create "$TEST_RELEASE_TAG" \
++            --title "Servo customization test build" \
++            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/. Not a real release — see embedded.yml for that. Latest build: commit ${{ github.sha }}." \
++            --prerelease \
++            2>/dev/null || \
++          gh release view "$TEST_RELEASE_TAG" > /dev/null
++
++  # ── Build Servo from source (pristine tag + our patches) and upload per platform ─
++  build-and-publish:
++    needs: [ensure-test-release, sdl3-gamepad-probe]
++    permissions:
++      contents: write
++    strategy:
++      fail-fast: false
++      matrix:
++        # Every platform gets both its portable output and its installable
++        # one — `mach bundle`'s own --deb/--msi/--dmg (see CUSTOMIZATIONS.md
++        # and README.md's "Getting started" per-OS sections for what each
++        # produces). This workflow exists to smoke-test that mach bundle
++        # actually still works, so it exercises every mode mach bundle
++        # supports on each OS, not just the portable default.
++        include:
++          - platform: 'windows-latest'
++            os_name: 'windows'
++            package_mode: 'portable'
++          - platform: 'windows-latest'
++            os_name: 'windows'
++            package_mode: 'msi'
++          - platform: 'macos-latest'
++            os_name: 'macos'
++            package_mode: 'portable'
++          - platform: 'macos-latest'
++            os_name: 'macos'
++            package_mode: 'dmg'
++          - platform: 'ubuntu-24.04'
++            os_name: 'linux'
++            package_mode: 'portable'
++          - platform: 'ubuntu-24.04'
++            os_name: 'linux'
++            package_mode: 'deb'
++
++    runs-on: ${{ matrix.platform }}
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: setup python (gives a consistent `python3` across all 3 OSes)
++        uses: actions/setup-python@v5
++        with:
++          python-version: '3.x'
++
++      - name: setup uv (needed by ./mach, see servo/README.md)
++        uses: astral-sh/setup-uv@v5
++
++      # test-page/ (the diagnostic page assembled below) is its own small Vite +
++      # React app, unrelated to Servo's own Python/Rust toolchain.
++      - name: setup node (for test-page/)
++        uses: actions/setup-node@v4
++        with:
++          node-version: '22'
++
++      - name: build test-page
++        shell: bash
++        working-directory: test-page
++        run: |
++          npm install
++          npm run build
++
++      # rustup ships preinstalled on all 3 GitHub-hosted runner images. We don't
++      # install a toolchain explicitly: rustup auto-detects and fetches whatever
++      # `rust-toolchain.toml` in the downloaded Servo source pins, the first time
++      # cargo/mach runs inside that directory. This just forces that fetch early,
++      # with its own clear log output, instead of burying it inside the build step.
++      - name: prefetch pinned rust toolchain
++        shell: bash
++        run: |
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
++          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
++          cd /tmp/toolchain-probe && rustup show
++
++      # ── Download pristine upstream Servo source for the pinned tag, then apply
++      #    every patch under patches/servo-v${SERVO_TAG}/ on top, in order. This
++      #    reconstructs this same directory's tree (minus what ../.gitignore
++      #    excludes) plus our customizations — see ../CUSTOMIZATIONS.md for what
++      #    each patch does and why.
++      - name: download + patch Servo source
++        shell: bash
++        run: |
++          # --retry-all-errors: Windows runners' schannel curl intermittently fails with exit 35
++          # (CRYPT_E_REVOCATION_OFFLINE, the certificate revocation server unreachable), which
++          # plain --retry does not treat as transient. Seen on run 37231672272.
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
++          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
++          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
++          rm -rf servo-src-tmp servo-src.zip
++
++          shopt -s nullglob
++          patches=(patches/servo-v${SERVO_TAG}/*.patch)
++          if [ ${#patches[@]} -eq 0 ]; then
++            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
++            exit 1
++          fi
++          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
++          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
++          PATCH=patch
++          if [ "$(uname)" = "Darwin" ]; then
++            command -v gpatch >/dev/null || brew install gpatch
++            PATCH=gpatch
++          fi
++          cd servo-src
++          chmod +x mach
++          for p in "${patches[@]}"; do
++            # 0042 updates the locally tracked CI-only SDL probe, not the clean
++            # Servo archive. The probe crate is already present from checkout.
++            case $(basename "$p") in
++              0042-sdl3-macos-gamepad-probe.patch)
++                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
++                continue
++                ;;
++            esac
++            echo "Applying $(basename "$p")..."
++            "$PATCH" -p1 < "../$p"
++          done
++          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
++          # after the patches because 0185 still edits python/servo/try_parser.py.
++          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
++            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
++          done
++
++          # test-page/ isn't part of any patch (../CUSTOMIZATIONS.md: plain test
++          # fixtures, not derived from any upstream file, same reasoning as the
++          # icon.png/icon.ico entry there) — the patch-apply loop above never
++          # recreates it inside servo-src. Mirror it in ourselves so this tree
++          # actually matches this repo's real layout (test-page/ next to
++          # ports/servoshell/), which ports/servoshell/build.rs's game-icon
++          # fallback depends on: it reads test-page/public/icon.{png,ico} via a
++          # path relative to its own crate dir, same as a real in-place build,
++          # so that file has to genuinely be there — not just reachable one
++          # directory further up, the way the bundle step below can get away
++          # with. Only public/ (icons) and dist/ (built by the step above) are
++          # needed; node_modules is deliberately left out.
++          mkdir -p test-page
++          cp -r ../test-page/public test-page/public
++          cp -r ../test-page/dist test-page/dist
++
++          # Same reasoning, for resources/fonts/ (see CUSTOMIZATIONS.md's boot-splash
++          # wordmark entry): the bundled Metal Mania font is a new binary asset a text
++          # patch can't carry, but unlike test-page/'s fixtures, gui.rs's
++          # include_bytes!("../../../resources/fonts/MetalMania-Regular.ttf") needs it to
++          # genuinely exist on disk at that path for mach build to compile at all.
++          mkdir -p resources/fonts
++          cp -r ../resources/fonts/. resources/fonts/
++
++          # Same reasoning again, for the Roves-branded icon rasters (see
++          # CUSTOMIZATIONS.md's "boot splash still shows Servo's icon" entry): these are
++          # also new binary assets no text patch can carry, and without this copy step
++          # this tree still had *upstream Servo's own* resources/servo_64.png/servo.ico
++          # sitting at these exact paths (same filenames, real Servo ships its own icon
++          # there too) — gui.rs's include_bytes!/build.rs's icon embedding compiled fine
++          # either way, silently baking in the wrong (upstream) icon instead of failing
++          # loudly, which is exactly how this went unnoticed. `roves_wordmark.svg` isn't
++          # read by any Rust code (no build failure risk if it's missing), but is copied
++          # here anyway so this tree matches the real repo layout, same as everything
++          # else in this step.
++          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico \
++             ../resources/servo.icns ../resources/servo.svg ../resources/roves_wordmark.svg resources/
++
++      # Windows only: install the real GStreamer runtime+devel ourselves, to the exact path
++      # `./mach bootstrap`'s own installer would use (see python/servo/platform/windows.py's
++      # DEPENDENCIES_DIR — servo-src/target/dependencies here). GStreamer 1.28.7 no longer
++      # ships as an MSI (see CUSTOMIZATIONS.md) — its single Inno Setup installer's own
++      # `/CURRENTUSER` flag installs without requiring admin privileges, so this runs without
++      # any elevation prompt at all (unlike the old MSI `-verb runAs` install this replaces,
++      # which hung indefinitely on a non-interactive GH runner with no one to click through it
++      # — this used to be sidestepped entirely by building with `--media-stack dummy` instead,
++      # until this build started needing real audio/video too). Same approach release.yml
++      # already uses for its own real-GStreamer Windows build — see that workflow's own
++      # comment for the full reasoning. `--skip-platform` below then skips mach's own attempt
++      # to install it again; `is_gstreamer_installed()` still finds it at this path
++      # independently of that skip, since that check runs as part of the build step itself.
++      - name: install GStreamer (Windows, non-interactive)
++        if: matrix.os_name == 'windows'
++        shell: pwsh
++        working-directory: servo-src
++        run: |
++          $ErrorActionPreference = "Stop"
++          $version = "1.28.7"
++          $name = "gstreamer-1.0-msvc-x86_64-$version.exe"
++          $installer = Join-Path $env:RUNNER_TEMP $name
++          # Our own copy first (see gstreamer-mirror.yml); gstreamer.freedesktop.org cuts responses
++          # after ~1 MiB, so it is only the fallback, fetched by resuming until complete.
++          $mirror = "https://github.com/DRincs-Productions/roves/releases/download/deps-gstreamer-$version/$name"
++          $url = "https://gstreamer.freedesktop.org/data/pkg/windows/$version/msvc/$name"
++          try {
++            Invoke-WebRequest -Uri $mirror -OutFile $installer
++          } catch {
++            Write-Host "GStreamer mirror unavailable ($_), falling back to gstreamer.freedesktop.org"
++            $length = [int64](((curl.exe -sIL $url) -match '^content-length:' | Select-Object -Last 1) -replace '\D', '')
++            for ($request = 0; -not ((Test-Path $installer) -and (Get-Item $installer).Length -ge $length); $request++) {
++              if ($request -ge 4000) { throw "GStreamer download did not complete" }
++              curl.exe -sSL -C - -o $installer $url
++              if ($LASTEXITCODE -ne 0) { Start-Sleep -Seconds 5 }
++            }
++          }
++          $installDir = Join-Path (Get-Location) "target\dependencies\gstreamer\1.0\msvc_X86_64"
++          New-Item -ItemType Directory -Force -Path (Split-Path $installDir) | Out-Null
++          $proc = Start-Process -FilePath $installer -ArgumentList @(
++            "/CURRENTUSER", "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$installDir`""
++          ) -Wait -PassThru
++          if ($proc.ExitCode -ne 0) { throw "GStreamer installer failed with exit code $($proc.ExitCode)" }
++
++      # IMPORTANT: invoke `./mach`, never `python3 ./mach`. `mach` is a polyglot
++      # shell+python script (see its own top comment): run as a shell script, it
++      # re-execs itself via `uv run --frozen python ...` so the pyproject.toml/
++      # uv.lock-managed venv (which has `packaging` and everything else `mach`
++      # needs) is on sys.path. Feeding it to `python3` directly skips that re-exec
++      # entirely — Python parses the shell wrapper as an inert string literal —
++      # and runs against a bare interpreter with none of those deps installed,
++      # which is exactly the `ModuleNotFoundError: No module named 'packaging'`
++      # this comment is here to keep from silently regressing.
++      #
++      # Linux only: apt-daily-upgrade.service/apt-daily.service/unattended-upgrades (all
++      # background, unrelated to anything we ask for) can hold the dpkg lock for a while
++      # right after a fresh runner boots -- any apt-get issued into that window (ours below,
++      # but also mach bootstrap's own internal ones) just sits there waiting for the lock
++      # instead of failing, silently consuming the whole job. Confirmed by multiple real,
++      # reproduced hangs, on different matrix entries and different apt-get calls -- i.e. not
++      # specific to what *we* install, so this needs to run before mach bootstrap too, and
++      # actually wait for the lock to clear rather than assume stopping the services is
++      # instant.
++      - name: stop background apt processes and wait for the dpkg lock (Linux only)
++        if: matrix.os_name == 'linux'
++        shell: bash
++        run: |
++          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
++          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
++          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
++
++          for i in $(seq 1 60); do
++            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
++              echo "dpkg/apt lock free after ${i}s"
++              exit 0
++            fi
++            sleep 1
++          done
++          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway, holders:"
++          sudo fuser -v /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock 2>&1 || true
++
++      # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
++      # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
++      # apt-get keeps them in a runner-owned directory, restored and saved around the job.
++      - name: restore cached apt packages (Linux only)
++        if: matrix.os_name == 'linux'
++        uses: actions/cache/restore@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++          restore-keys: |
++            apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-
++            apt-${{ runner.os }}-
++      - name: point apt's package cache at the cached directory (Linux only)
++        if: matrix.os_name == 'linux'
++        shell: bash
++        run: |
++          mkdir -p "$HOME/apt-archives/partial"
++          sudo chmod -R a+rwX "$HOME/apt-archives"
++          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
++          # Fetch mach's apt packages in parallel first (see support/apt_prefetch.sh); mach
++          # bootstrap then finds them in the cache.
++          sudo apt-get update
++          available=$(apt-cache --generate pkgnames)
++          packages=$(grep -hv -e '^#' -e '^$' servo-src/python/servo/platform/linux_packages/apt/apt_*.txt | grep -Fxf <(echo "$available"))
++          # shellcheck disable=SC2086
++          bash support/apt_prefetch.sh $packages
++      # Windows: --skip-platform (see the GStreamer step above for why). Linux/macOS: no
++      # --skip-platform — their own bootstrap paths install GStreamer non-interactively
++      # already (apt packages on Linux, `sudo installer` on macOS, both already covered by
++      # `--yes` here), so nothing extra is needed there for the real media stack to work.
++      - name: mach bootstrap (installs build dependencies)
++        shell: bash
++        working-directory: servo-src
++        env:
++          DEBIAN_FRONTEND: noninteractive
++        # Backstop beyond the apt-timer fix above. Cold Linux runners can spend a long time
++        # downloading Servo's large native dependency set; keep enough room to finish that
++        # first install while still failing a genuine hang well before the job limit.
++        timeout-minutes: 90
++        run: |
++          # nextest is only needed on the one leg that actually runs `mach test-unit`
++          # below (see "run servoshell unit tests") -- skip installing it everywhere
++          # else to keep bootstrap fast on the other 5 matrix entries.
++          NEXTEST_FLAG=--skip-nextest
++          if [ "${{ matrix.os_name }}" = "linux" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
++            NEXTEST_FLAG=
++          fi
++          if [ "${{ matrix.os_name }}" = "windows" ]; then
++            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG --skip-platform
++          else
++            ./mach bootstrap --force --yes --skip-lints $NEXTEST_FLAG
++          fi
++          # dpkg-dev ships preinstalled on the ubuntu-24.04 runner image, but `mach bundle
++          # --deb` (see the assemble step below) hard-depends on dpkg-deb from it, so check
++          # explicitly rather than silently relying on what happens to already be there --
++          # skipping apt-get entirely in the (expected) common case avoids needing the lock
++          # at all. `timeout` on both calls: a real hang now fails fast and loud instead of
++          # silently consuming the job for hours, regardless of the exact cause.
++          if [ "${{ matrix.package_mode }}" = "deb" ] && ! command -v dpkg-deb >/dev/null; then
++            timeout 120 sudo apt-get update
++            timeout 120 sudo apt-get install -y --no-install-recommends dpkg-dev
++          fi
++
++      # Saved even when bootstrap fails or times out: the next run resumes the download.
++      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
++      - name: prepare apt packages for caching
++        if: always() && matrix.os_name == 'linux'
++        shell: bash
++        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
++      - name: save apt packages
++        if: always() && matrix.os_name == 'linux'
++        uses: actions/cache/save@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++      - name: verify surfman X11 feature is Linux-only
++        shell: bash
++        working-directory: servo-src
++        run: |
++          case "${{ matrix.os_name }}" in
++            linux) target=x86_64-unknown-linux-gnu; expects_x11=yes ;;
++            windows) target=x86_64-pc-windows-msvc; expects_x11=no ;;
++            macos) target=x86_64-apple-darwin; expects_x11=no ;;
++            *) echo "::error::unexpected target OS: ${{ matrix.os_name }}"; exit 1 ;;
++          esac
++          # No --locked: patches/ carries no Cargo.lock diff, so servo-src's lockfile is
++          # still pristine upstream's and `mach build` below re-resolves it anyway.
++          cargo tree -p servoshell --target "$target" -e features -i surfman > /tmp/surfman-features.txt
++          if [ "$expects_x11" = yes ]; then
++            grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt || {
++              echo "::error::Linux servoshell graph is missing surfman sm-x11"; exit 1;
++            }
++          else
++            if grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt; then
++              echo "::error::non-Linux servoshell graph enables surfman sm-x11"; exit 1
++            fi
++          fi
++
++      # windows-latest ships WiX Toolset v3 preinstalled (see
++      # actions/runner-images), with $WIX pointing at its install root — but
++      # its bin/ (candle.exe/light.exe, which `mach bundle --msi` shells out
++      # to, see post_build_commands.py's _wrap_windows_msi) isn't on PATH
++      # by default.
++      - name: add WiX Toolset to PATH (--msi only)
++        if: matrix.package_mode == 'msi'
++        shell: pwsh
++        run: echo "$env:WIX\bin" >> $env:GITHUB_PATH
++
++
++      # Debug build, not --release: this workflow exists to smoke-test behavior
++      # (e.g. "are the tabs really gone?"), not to ship an optimized binary. Debug
++      # compiles noticeably faster, which matters since this runs on every push.
++      #
++      # Real GStreamer media stack, no --media-stack dummy: this used to build with
++      # `dummy` (no GStreamer needed at all, on any platform) since this workflow only
++      # existed to check window chrome, not real playback — but that also meant a real
++      # audio/video regression (e.g. a broken bundled-DLL/dylib layout) could go
++      # completely unnoticed through an all-green run, since the dummy backend never
++      # touches that code path at all. The Windows GStreamer install itself is handled
++      # non-interactively above, specifically so this doesn't hang; Linux/macOS already
++      # got real GStreamer for free from a plain `mach bootstrap`. The smoke-test step
++      # below now also explicitly checks roves.log for a GStreamer init failure.
++      #
++      # --features steam: `steam` is opt-in (not in servoshell's default Cargo
++      # features, see ports/servoshell/Cargo.toml) and, until now, had never
++      # actually been compiled by CI — see CUSTOMIZATIONS.md's "steam:` protocol
++      # bridge" entry, which flagged exactly this as unverified. Building it here
++      # on all 3 platforms is that verification: it exercises steamworks-sys
++      # actually compiling/linking and build.rs's copy_steam_lib finding and
++      # copying the Steamworks redistributable (steam_api64.dll/libsteam_api.*)
++      # next to the binary, which the bundle step below then picks up.
++      - name: mach build (debug)
++        shell: bash
++        working-directory: servo-src
++        # Line tables only: with full debug info the servo-script rlib outgrows what rustc's
++        # archive writer handles on Windows (ICE in ar_archive_writer). Backtraces still work.
++        env:
++          CARGO_PROFILE_DEV_DEBUG: line-tables-only
++        run: ./mach build --features steam
++
++      # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
++      # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping, the adaptive
++      # gamepad polling cadence, immediate-vs-delayed egui repaint decisions, and the
++      # opt-in performance-counter parser/reset contract
++      # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
++      # in this workflow ever actually compiled or ran them -- `mach build` only builds
++      # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
++      # only checks source text, not real `cargo`/`rustc` behavior. Run them for real on
++      # one leg (Linux portable -- cheapest, and every leg already reuses the same
++      # patched source and dependency graph, so one is enough to catch a real
++      # regression). These tests don't create a window or touch SDL video (see the
++      # CUSTOMIZATIONS.md entries above), so they're safe to run headless here.
++      - name: run servoshell unit tests (SDL3 input and polling)
++        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
++        shell: bash
++        working-directory: servo-src
++        # Re-emit output as ::notice::/::error:: annotations (same reasoning as the
++        # smoke-test step below): raw step logs need repo-admin auth to fetch via the
++        # API, but annotations are readable anonymously -- see AGENTS.md's own note on
++        # diagnosing a CI failure without `gh`/a token on hand.
++        run: |
++          set +e
++          ./mach test-unit -p servoshell > /tmp/test-unit.log 2>&1
++          STATUS=$?
++          cat /tmp/test-unit.log
++          if [ $STATUS -ne 0 ]; then
++            echo "::error::mach test-unit -p servoshell failed (exit $STATUS)"
++            tail -c 20000 /tmp/test-unit.log | while IFS= read -r line; do echo "::notice::$line"; done
++            exit $STATUS
++          fi
++
++      # V8 migration Phase 1 (docs/V8_MIGRATION.md, CUSTOMIZATIONS.md's 2026-09-29 entry):
++      # components/roves-v8 is a standalone workspace crate, not wired into the production
++      # script engine, so it needs its own leg rather than piggybacking on servoshell's. Plain
++      # `cargo test`, not `./mach test-unit`: `mach test-unit -p <anything>`
++      # (python/servo/testing_commands.py's `test_unit`) unconditionally runs `support/crown`'s
++      # own lint test suite first regardless of `-p`, and returns early without ever reaching
++      # the requested package if that fails — crown is Servo's DOM-safety/rooting lint, entirely
++      # unrelated to this crate (no rooting exists here yet), so there's no reason to depend on
++      # it passing just to test roves-v8. One of roves-v8's 5 tests deliberately creates a
++      # second V8 isolate only after the first is dropped — holding two alive at once on one
++      # thread is invalid and crashes the whole process with an unrecoverable V8-internal error,
++      # not a catchable test failure (see that doc's Phase 1 status note) — if this step ever
++      # hangs or dies without a normal PASS/FAIL line, that's the first thing to suspect in
++      # whatever change triggered it.
++      - name: run roves-v8 unit tests (V8 migration Phase 1)
++        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
++        shell: bash
++        working-directory: servo-src
++        run: |
++          set +e
++          cargo test -p roves-v8 > /tmp/test-roves-v8.log 2>&1
++          STATUS=$?
++          cat /tmp/test-roves-v8.log
++          if [ $STATUS -ne 0 ]; then
++            echo "::error::cargo test -p roves-v8 failed (exit $STATUS)"
++            tail -c 20000 /tmp/test-roves-v8.log | while IFS= read -r line; do echo "::notice::$line"; done
++            exit $STATUS
++          fi
++
++      - name: run layout unit tests (ICU4X line breaking)
++        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
++        shell: bash
++        working-directory: servo-src
++        run: |
++          set +e
++          ./mach test-unit -p servo-layout > /tmp/test-layout.log 2>&1
++          STATUS=$?
++          cat /tmp/test-layout.log
++          if [ $STATUS -ne 0 ]; then
++            echo "::error::mach test-unit -p servo-layout failed (exit $STATUS)"
++            tail -c 20000 /tmp/test-layout.log | while IFS= read -r line; do echo "::notice::$line"; done
++            exit $STATUS
++          fi
++
++      # The only unit tests of the surfman-backed rendering contexts
++      # (components/shared/paint/rendering_context.rs: offscreen Framebuffer readback on a
++      # software GL context, SoftwareRenderingContext minimum-size error) never ran in any
++      # workflow. They are the baseline any future surfman replacement has to keep passing
++      # (docs/AUDIT_MIGRAZIONE_LIBRERIE.md). surfman's Linux connection needs an X display,
++      # so run them under Xvfb with Mesa's software GL.
++      - name: run paint-api unit tests (surfman rendering contexts)
++        if: matrix.os_name == 'linux' && matrix.package_mode == 'portable'
++        shell: bash
++        working-directory: servo-src
++        run: |
++          set +e
++          if ! command -v xvfb-run >/dev/null; then
++            timeout 180 sudo apt-get update
++            timeout 180 sudo apt-get install -y --no-install-recommends xvfb
++          fi
++          xvfb-run -a --server-args="-screen 0 1280x720x24" \
++            ./mach test-unit -p servo-paint-api > /tmp/test-paint-api.log 2>&1
++          STATUS=$?
++          cat /tmp/test-paint-api.log
++          if [ $STATUS -ne 0 ]; then
++            echo "::error::mach test-unit -p servo-paint-api failed (exit $STATUS)"
++            tail -c 20000 /tmp/test-paint-api.log | while IFS= read -r line; do echo "::notice::$line"; done
++            exit $STATUS
++          fi
++
++      # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
++      # single play.exe/play.app/play executable — this step's only job is
++      # to hand it the diagnostic page built above (test-page/dist, copied
++      # into servo-src by the "download + patch" step so this tree mirrors
++      # this repo's real layout — a real run would point --content-dir at
++      # the parent project's own `dist/` instead) and, for the linux-deb
++      # matrix entry, ask for --deb instead of the default self-contained
++      # `play` binary.
++      - name: assemble test bundle
++        shell: bash
++        working-directory: servo-src
++        run: |
++          BUNDLE_ARGS=(
++            --content-dir test-page/dist --output ../release
++            --package-name servoshell-test --package-version "${SERVO_TAG}"
++            --diagnostic-script
++          )
++          case "${{ matrix.package_mode }}" in
++            deb) BUNDLE_ARGS+=(--deb) ;;
++            msi) BUNDLE_ARGS+=(--msi) ;;
++            dmg) BUNDLE_ARGS+=(--dmg) ;;
++          esac
++          ./mach bundle "${BUNDLE_ARGS[@]}"
++
++          cat > ../release/NOTE.txt << 'EOF'
++          Debug test build, real GStreamer media stack. This build only
++          exists to smoke-test window chrome/behavior/audio-video on every
++          push — see the parent project's embedded.yml for the real release
++          build.
++          EOF
++          if [ "${{ matrix.os_name }}" = "macos" ] && [ "${{ matrix.package_mode }}" = "portable" ]; then
++            echo "Native arch of the macos-latest runner only (no universal binary, no x86_64 cross-build)." >> ../release/NOTE.txt
++          fi
++          case "${{ matrix.package_mode }}" in
++            deb) echo "Install with: sudo dpkg -i *.deb — then launch via your app menu, or /usr/bin/servoshell-test." >> ../release/NOTE.txt ;;
++            msi) echo "Run the .msi installer, then launch from the Start Menu or Program Files\\servoshell-test\\play.exe." >> ../release/NOTE.txt ;;
++            dmg) echo "Open the .dmg and drag play.app to Applications, as prompted." >> ../release/NOTE.txt ;;
++            portable) echo "Run play.exe (Windows) / play.app (macOS) / play (Linux) — the only executable here; no separate engine binary or extractor tool is included." >> ../release/NOTE.txt ;;
++          esac
++
++      # Every step above only ever confirmed `mach bundle` *succeeds* — never
++      # that the bundle it produces actually *launches*. That gap is exactly
++      # how the `--package-name`/`--package-version` launch-args leak (see
++      # CUSTOMIZATIONS.md's "Bundled launches no longer die on a broken
++      # launch.json" entry) went unnoticed through multiple green runs of
++      # this same workflow: every real double-click of the resulting
++      # play.exe crashed instantly, while CI stayed green throughout. These
++      # two steps actually run the binary mach just built — for real, for a
++      # few seconds — and fail the job if it doesn't come up cleanly, the
++      # same check a human tester would do by hand. Deliberately not a
++      # pixel-perfect check (no screenshot, no window-content assertion) —
++      # just "does the process still exist a few seconds after launch, past
++      # argument parsing and window/GL creation", which is exactly the class
++      # of failure this exists to catch (a crash or exit before a window
++      # ever appears) without needing a display-comparison harness.
++      - name: smoke test — launch the bundle and check it doesn't crash (Linux/macOS)
++        if: matrix.os_name != 'windows'
++        shell: bash
++        run: |
++          if [ "${{ matrix.os_name }}" = "linux" ]; then
++            sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb xdotool
++            chmod +x support/xvfb_window_cycle_smoke.sh
++            RUNNER=(support/xvfb_window_cycle_smoke.sh)
++            # Lets the script wait for test-page's InputPanel before sending synthetic input.
++            export ROVES_INPUT_READY_LOG="$PWD/smoke-stdout.log"
++            # SDL virtual gamepad, toggled by the shell itself: proves SDL -> Servo -> Web Gamepad API.
++            export ROVES_TEST_VIRTUAL_GAMEPAD=1
++            if [ "${{ matrix.package_mode }}" = "deb" ]; then
++              # A real .deb, unlike --msi/--dmg's "wrap the same portable output" — the
++              # binary only exists once actually installed (see post_build_commands.py's
++              # _bundle_linux_deb: /usr/lib/<package_name>/, /usr/bin/<package_name> symlink).
++              sudo dpkg -i release/*.deb
++              BIN="/usr/bin/servoshell-test"
++            else
++              BIN="release/play"
++            fi
++          else
++            RUNNER=()
++            if [ "${{ matrix.package_mode }}" = "dmg" ]; then
++              # --dmg wraps play.app into a real disk image and deletes the staged .app
++              # (see post_build_commands.py's bundle()) — has to be mounted to reach the
++              # same binary a player would get from dragging it to Applications.
++              DMG=$(ls release/*.dmg 2>/dev/null | head -1)
++              if [ -z "$DMG" ]; then
++                echo "::error::no .dmg found under release/ — contents:"
++                find release -maxdepth 3
++                exit 1
++              fi
++              MOUNT_DIR=$(mktemp -d)
++              hdiutil attach "$DMG" -nobrowse -mountpoint "$MOUNT_DIR"
++              BIN="$MOUNT_DIR/play.app/Contents/MacOS/play"
++            else
++              BIN="release/play.app/Contents/MacOS/play"
++            fi
++          fi
++
++          if [ ! -e "$BIN" ]; then
++            echo "::error::expected binary not found at $BIN — contents of release/:"
++            find release -maxdepth 3
++            exit 1
++          fi
++          chmod +x "$BIN" || true
++
++          SAVE_EXPORT_PATH="$RUNNER_TEMP/roves-save-export-autotest.txt"
++          rm -f "$SAVE_EXPORT_PATH"
++          export ROVES_SAVE_FILE_AUTOTEST_PATH="$SAVE_EXPORT_PATH"
++          export ROVES_PERF_LOG_INTERVAL_MS=1000
++          LOG_MARKER=$(mktemp)
++
++          # `set -e` (this shell's default) would otherwise abort the whole step the
++          # instant the launched process has already exited — right when this step most
++          # needs to print diagnostics instead of silently vanishing into a bare "Process
++          # completed with exit code N".
++          set +e
++          "${RUNNER[@]}" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
++          PID=$!
++          # Some runners need longer than 25s to load the diagnostic page. Wait for every
++          # page-level result this step asserts, rather than killing the process at a fixed
++          # time or stopping as soon as just one input check passes.
++          DEADLINE=$((SECONDS + 75))
++          LOG=""
++          while [ "$SECONDS" -lt "$DEADLINE" ]; do
++            SAVE_CHECK=false
++            grep -hq '\[roves-save-file-autotest\]' smoke-stdout.log && SAVE_CHECK=true
++            if [ -z "$LOG" ]; then
++              CACHE_ROOT="$HOME/.cache"
++              [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
++              LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$LOG_MARKER" 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++            fi
++            if [ "$SAVE_CHECK" = false ] && [ -n "$LOG" ]; then
++              grep -hq '\[roves-save-file-autotest\]' "$LOG" && SAVE_CHECK=true
++            fi
++            INPUT_CHECK=true
++            if [ "${{ matrix.os_name }}" = "linux" ]; then
++              grep -hq '\[roves-input\] kind=gamepadbuttondown ' smoke-stdout.log "$LOG" 2>/dev/null || INPUT_CHECK=false
++              # The virtual gamepad and save checks do not need the window: do not stop the
++              # Xvfb wrapper before its window/input/resize cycle has reported (it gives up
++              # by itself after 60 s, below this 75 s deadline).
++              grep -q '\[roves-xvfb-window-cycle\] ok' smoke-stdout.log || INPUT_CHECK=false
++            fi
++            if [ "$SAVE_CHECK" = true ] && [ "$INPUT_CHECK" = true ]; then break; fi
++            kill -0 "$PID" 2>/dev/null || break
++            sleep 0.5
++          done
++          if kill -0 "$PID" 2>/dev/null; then
++            STILL_RUNNING=true
++            kill "$PID"
++            # SDL3/Cocoa can keep the app alive while the main thread is inside the native event
++            # pump. Do not let wait pin a macOS runner indefinitely: allow a short graceful
++            # shutdown, then force-terminate the disposable smoke-test process.
++            for _ in 1 2 3 4 5; do
++              kill -0 "$PID" 2>/dev/null || break
++              sleep 1
++            done
++            kill -0 "$PID" 2>/dev/null && kill -9 "$PID"
++            wait "$PID" 2>/dev/null
++          else
++            STILL_RUNNING=false
++            wait "$PID"
++            EXIT_CODE=$?
++          fi
++
++          echo "still running after 10s: $STILL_RUNNING"
++          [ "$STILL_RUNNING" = false ] && echo "exit code: $EXIT_CODE"
++          echo "--- stdout ---"; cat smoke-stdout.log
++          echo "--- stderr ---"; cat smoke-stderr.log
++
++          if [ "${{ matrix.os_name }}" = "linux" ] &&
++             ! grep -q '\[roves-xvfb-window-cycle\] ok' smoke-stdout.log; then
++            echo "::error::SDL3 Xvfb window/input/resize cycle did not complete"
++            exit 1
++          fi
++
++          CACHE_ROOT="$HOME/.cache"
++          [ "${{ matrix.os_name }}" = "macos" ] && CACHE_ROOT="$HOME/Library/Caches"
++          LOG=$(find "$CACHE_ROOT" -iname roves.log -newer "$LOG_MARKER" 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++          if [ -n "$LOG" ]; then
++            echo "--- roves.log ($LOG) ---"; cat "$LOG"
++          else
++            echo "no roves.log found under $CACHE_ROOT"
++          fi
++
++          # The Xvfb cycle above proves SDL3 received the synthetic input; these lines (logged by
++          # test-page's InputPanel) prove it went all the way into the page as DOM events.
++          if [ "${{ matrix.os_name }}" = "linux" ]; then
++            INPUT_FILES=(smoke-stdout.log)
++            [ -n "$LOG" ] && INPUT_FILES+=("$LOG")
++            grep -h '\[roves-input\]' "${INPUT_FILES[@]}" | sort -u
++            for kind in keydown mousedown wheel gamepadbuttondown; do
++              if ! grep -hq "\[roves-input\] kind=$kind " "${INPUT_FILES[@]}"; then
++                echo "::error::synthetic $kind never reached the page as a DOM event (no [roves-input] kind=$kind line)"
++                grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\] probe\|gamepad.*error\|error.*gamepad' \
++                  "${INPUT_FILES[@]}" | sort -u | head -40 | while IFS= read -r line; do echo "::notice::$line"; done
++                exit 1
++              fi
++            done
++            for combo in 'key="c" code=KeyC mods=Ctrl' 'key="x" code=KeyX mods=Ctrl' 'key="v" code=KeyV mods=Ctrl'; do
++              if ! grep -hqF "[roves-input] kind=keydown $combo" "${INPUT_FILES[@]}"; then
++                echo "::error::page did not receive modified keydown: $combo"
++                exit 1
++              fi
++            done
++          fi
++
++          # Explicit GStreamer/audio check: media_platform::init (servo.rs) logs this exact
++          # line and exits before a window ever appears on a real init failure, so
++          # STILL_RUNNING=false already catches it — but calling it out by name here means
++          # a GStreamer regression reads as "GStreamer failed to initialize", not just a
++          # generic "bundle exited early", straight from the job summary/annotations.
++          if [ -n "$LOG" ] && grep -q "Error initializing GStreamer" "$LOG"; then
++            echo "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
++          fi
++
++          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
++          # 2026-09-15 desktop save export/import entry) — test-page's own auto-run effect
++          # (App.tsx) already logged its result via console.log, which reaches this same
++          # captured stdout/roves.log for free (see that effect's own comment). Only the
++          # parameter-validation path is checked here — the real "Save As" dialog needs a
++          # human, see the manual button in the same file.
++          FILES=(smoke-stdout.log)
++          [ -n "$LOG" ] && FILES+=("$LOG")
++          if ! grep -hE '\[roves-perf\].* direct_presents=[1-9][0-9]*([[:space:]]|$)' "${FILES[@]}"; then
++            echo "::error::direct presentation produced no interval with direct_presents > 0"
++            exit 1
++          fi
++          # Phase timings are printed for reference only; shared runners get no time thresholds.
++          if ! grep -hE '\[roves-perf-time\].* present_us=[0-9]+' "${FILES[@]}"; then
++            echo "::error::perf diagnostics emitted no [roves-perf-time] phase timing line"
++            exit 1
++          fi
++          SAVE_FILE_LINE=$(grep -h '\[roves-save-file-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
++          if [ -z "$SAVE_FILE_LINE" ]; then
++            echo "::error::no [roves-save-file-autotest] result line found — test-page's roves:save_file check never completed"
++            exit 1
++          elif echo "$SAVE_FILE_LINE" | grep -q '"ok":true'; then
++            echo "::error::roves:save_file with no params unexpectedly succeeded — parameter validation regressed: $SAVE_FILE_LINE"
++            exit 1
++          else
++            echo "roves:save_file parameter-validation check passed: $SAVE_FILE_LINE"
++          fi
++
++          if [ ! -f "$SAVE_EXPORT_PATH" ]; then
++            echo "::error::save export did not create $SAVE_EXPORT_PATH"
++            exit 1
++          elif [ "$(cat "$SAVE_EXPORT_PATH")" != "roves-save-export-autotest" ]; then
++            echo "::error::save export wrote unexpected bytes"
++            od -An -tx1 "$SAVE_EXPORT_PATH" || true
++            exit 1
++          else
++            echo "save export end-to-end check passed: $SAVE_EXPORT_PATH"
++          fi
++
++          [ -n "${MOUNT_DIR:-}" ] && hdiutil detach "$MOUNT_DIR" 2>/dev/null
++
++          if [ "$STILL_RUNNING" = false ]; then
++            # Also emitted as ::notice:: annotations, not just plain echo: annotations are
++            # readable from the public Checks API without a token (unlike step logs, which
++            # need repo-admin auth to download) — the only way to see this output at all
++            # without a GitHub token/gh CLI on hand. %25/%0D/%0A-escaped per the workflow
++            # command spec so embedded newlines don't break parsing.
++            gh_notice() {
++              local msg="$1"
++              msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
++              echo "::notice::${msg}"
++            }
++            gh_notice "exit code: $EXIT_CODE"
++            gh_notice "stdout: $(cat smoke-stdout.log)"
++            gh_notice "stderr: $(cat smoke-stderr.log)"
++            gh_notice "roves.log: $([ -n "$LOG" ] && cat "$LOG" || echo '(none found)')"
++            echo "::error::bundle exited on its own within 10s — treating as a launch failure"
++            exit 1
++          fi
++
++      # macOS keeps SDL gamepad support off by default (its init once hung the shell there), so
++      # the main smoke test above never exercises it. This second launch opts in at runtime with
++      # ROVES_MACOS_GAMEPAD=1 plus the shell's own virtual SDL gamepad, and proves (or disproves)
++      # init completing and SDL -> Servo -> Web Gamepad API delivery on a macOS runner. It also
++      # posts synthetic mouse/wheel/key CGEvents (support/macos_input_smoke.swift); those checks
++      # only warn for now, since posting HID events depends on the runner's TCC permissions.
++      # Neither replaces a physical controller on a real Mac (IOKit HID is not exercised).
++      #
++      # Informational only (continue-on-error): on 2026-09-28 this step reproduced the historical
++      # macOS stall intermittently (1 run in 4: the main thread stopped right after the first
++      # virtual button press, before the page loaded; see CUSTOMIZATIONS.md's 0053 entry). macOS
++      # gamepad support stays off by default, so its result must not gate the build. Read the
++      # step's annotations for the outcome.
++      #
++      # Repeats the launch 4 times in the same job (instead of relying on 4 separate pushes) so a
++      # single CI run produces a statistically useful sample of the intermittent stall — pushing 4
++      # times to gather the same evidence would burn 4x the CI minutes across all matrix legs for
++      # no reason, and this workflow only retriggers on a real patches/**/test-page/** change, not
++      # on an empty commit (see the note at the top of this file), so repeated pushes aren't a
++      # cheap way to resample this anyway.
++      - name: macOS opt-in gamepad and synthetic input (ROVES_MACOS_GAMEPAD=1)
++        if: matrix.os_name == 'macos' && matrix.package_mode == 'portable'
++        continue-on-error: true
++        shell: bash
++        run: |
++          BIN="release/play.app/Contents/MacOS/play"
++          export ROVES_MACOS_GAMEPAD=1
++          export ROVES_TEST_VIRTUAL_GAMEPAD=1
++          set +e
++
++          RUNS=4
++          PASS_COUNT=0
++          STALL_COUNT=0
++          for i in $(seq 1 "$RUNS"); do
++            echo "=== macOS gamepad sample $i/$RUNS ==="
++            OUT="mac-input-stdout-$i.log"
++            ERR="mac-input-stderr-$i.log"
++            SWIFT="mac-input-swift-$i.log"
++            "$BIN" > "$OUT" 2> "$ERR" &
++            PID=$!
++            STALLED_BEFORE_READY=true
++            for _ in $(seq 1 100); do
++              if grep -q '\[roves-input\] ready' "$OUT" 2>/dev/null; then
++                STALLED_BEFORE_READY=false
++                break
++              fi
++              kill -0 "$PID" 2>/dev/null || break
++              sleep 0.3
++            done
++            swift support/macos_input_smoke.swift "$PID" 2>&1 | tee "$SWIFT"
++            sleep 8
++            STILL_RUNNING=false
++            kill -0 "$PID" 2>/dev/null && STILL_RUNNING=true
++            kill "$PID" 2>/dev/null
++            for _ in 1 2 3 4 5; do kill -0 "$PID" 2>/dev/null || break; sleep 1; done
++            kill -9 "$PID" 2>/dev/null
++
++            LOG=$(find "$HOME/Library/Caches" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++            FILES=("$OUT")
++            [ -n "$LOG" ] && FILES+=("$LOG")
++            echo "--- stderr (sample $i) ---"; tail -n 50 "$ERR"
++            echo "--- gamepad/input lines (sample $i) ---"
++            grep -h -i '\[roves-gamepad\]\|\[roves-virtual-gamepad\]\|\[roves-input\]\|\[roves-macos-input\]\|error.*gamepad\|gamepad.*error' \
++              "${FILES[@]}" "$SWIFT" 2>/dev/null | sort -u | tee "mac-input-summary-$i.txt"
++            # Plain stdout only above (not `::notice::`/`::error::`): GitHub Actions caps
++            # annotations at 10 per step, and this loop's own log lines alone would blow past
++            # that across 4 samples, silently dropping later samples and the final tally below.
++            # Each sample gets exactly one compact verdict annotation instead; the full log
++            # lines are still in the step's plain output for anyone who opens it.
++
++            SAMPLE_VERDICT="clean"
++            if [ "$STILL_RUNNING" != true ] && [ "$STALLED_BEFORE_READY" = true ]; then
++              SAMPLE_VERDICT="stalled before [roves-input] ready (looks like the historical stall)"
++              STALL_COUNT=$((STALL_COUNT + 1))
++            elif [ "$STILL_RUNNING" != true ]; then
++              SAMPLE_VERDICT="play exited early with ROVES_MACOS_GAMEPAD=1"
++            elif ! grep -hq '\[roves-gamepad\] SDL gamepad subsystem ready' "${FILES[@]}"; then
++              SAMPLE_VERDICT="SDL gamepad init never completed (the historical hang?)"
++            elif ! grep -hq '\[roves-input\] kind=gamepadbuttondown ' "${FILES[@]}"; then
++              SAMPLE_VERDICT="virtual SDL gamepad never reached the page as a Gamepad API button press"
++            fi
++            MISSING_KINDS=""
++            for kind in mousedown wheel keydown; do
++              if ! grep -hq "\[roves-input\] kind=$kind " "${FILES[@]}"; then
++                MISSING_KINDS="$MISSING_KINDS $kind"
++              fi
++            done
++            if [ "$SAMPLE_VERDICT" = "clean" ]; then
++              PASS_COUNT=$((PASS_COUNT + 1))
++              if [ -n "$MISSING_KINDS" ]; then
++                echo "::warning::sample $i: clean gamepad delivery, but synthetic$MISSING_KINDS did not reach the page (see [roves-macos-input] preflight above)"
++              else
++                echo "::notice::sample $i: clean"
++              fi
++            else
++              echo "::error::sample $i: $SAMPLE_VERDICT"
++            fi
++          done
++
++          echo "::notice::macOS gamepad samples: $PASS_COUNT/$RUNS clean, $STALL_COUNT/$RUNS looked like the historical pre-ready stall"
++          exit $FAIL
++
++      - name: smoke test — launch the bundle and check it doesn't crash (Windows)
++        if: matrix.os_name == 'windows'
++        shell: pwsh
++        run: |
++          if ("${{ matrix.package_mode }}" -eq "msi") {
++            # --msi wraps the portable output into a real installer and deletes the
++            # staged play.exe (see post_build_commands.py's bundle()) — release/ only has
++            # the .msi itself here, so testing "does the bundle launch" means actually
++            # installing it first, the same way a player running the installer would.
++            $msi = Get-ChildItem -Path release -Filter *.msi -Recurse | Select-Object -First 1
++            if (-not $msi) {
++              Write-Error "no .msi found under release/ — contents:"
++              Get-ChildItem -Path release -Recurse
++              exit 1
++            }
++            $installDir = Join-Path $env:RUNNER_TEMP "roves-install"
++            $msiLog = Join-Path $env:RUNNER_TEMP "msiexec.log"
++            $msiProc = Start-Process msiexec.exe -ArgumentList @(
++              "/i", $msi.FullName, "/quiet", "/qn", "/norestart",
++              "INSTALLDIR=$installDir", "/l*v", $msiLog
++            ) -Wait -PassThru
++            if ($msiProc.ExitCode -ne 0) {
++              Write-Error "msiexec install failed with exit code $($msiProc.ExitCode)"
++              Get-Content $msiLog -Tail 60 -ErrorAction SilentlyContinue
++              exit 1
++            }
++            $exe = Get-ChildItem -Path $installDir -Filter play.exe -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
++            if (-not $exe) {
++              Write-Error "no play.exe found under $installDir after a successful-looking install — contents:"
++              Get-ChildItem -Path $installDir -Recurse -ErrorAction SilentlyContinue
++              exit 1
++            }
++          } else {
++            $exe = Get-ChildItem -Path release -Filter play.exe -Recurse | Select-Object -First 1
++            if (-not $exe) { Write-Error "no play.exe found under release/"; exit 1 }
++          }
++
++          $stdout = Join-Path $env:RUNNER_TEMP "smoke-stdout.log"
++          $stderr = Join-Path $env:RUNNER_TEMP "smoke-stderr.log"
++          $saveExportPath = Join-Path $env:RUNNER_TEMP "roves-save-export-autotest.txt"
++          Remove-Item $saveExportPath -Force -ErrorAction SilentlyContinue
++          $env:ROVES_SAVE_FILE_AUTOTEST_PATH = $saveExportPath
++          $env:ROVES_PERF_LOG_INTERVAL_MS = "1000"
++          # SDL virtual gamepad, toggled by the shell itself: proves SDL -> Servo -> Web Gamepad API.
++          $env:ROVES_TEST_VIRTUAL_GAMEPAD = "1"
++          $startedAt = Get-Date
++          $proc = Start-Process -FilePath $exe.FullName -WorkingDirectory $exe.DirectoryName -PassThru `
++            -RedirectStandardOutput $stdout -RedirectStandardError $stderr
++          # MSI startup can take ~25s before the bundled game page is ready on shared runners.
++          # Wait up to another 30s for the virtual SDL gamepad event, exiting early once the
++          # page records it. This tests the installed bundle without imposing a timing threshold.
++          $deadline = [DateTime]::UtcNow.AddSeconds(75)
++          $gamepadPattern = '\[roves-input\] kind=gamepadbuttondown '
++          $saveFilePattern = '\[roves-save-file-autotest\]'
++          $logPath = $null
++          do {
++            $observed = Select-String -Path $stdout -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue
++            $saveCheckObserved = Select-String -Path $stdout -Pattern $saveFilePattern -Quiet -ErrorAction SilentlyContinue
++            if ($logPath -and (Test-Path $logPath)) {
++              $observed = $observed -or (Select-String -Path $logPath -Pattern $gamepadPattern -Quiet -ErrorAction SilentlyContinue)
++              $saveCheckObserved = $saveCheckObserved -or (Select-String -Path $logPath -Pattern $saveFilePattern -Quiet -ErrorAction SilentlyContinue)
++            }
++            if (($observed -and $saveCheckObserved) -or $proc.HasExited -or [DateTime]::UtcNow -ge $deadline) { break }
++            Start-Sleep -Milliseconds 500
++            if (-not $logPath) {
++              $logPath = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
++                Where-Object { $_.LastWriteTime -ge $startedAt } |
++                Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
++            }
++          } while ($true)
++          $stillRunning = -not $proc.HasExited
++          if ($stillRunning) { Stop-Process -Id $proc.Id -Force }
++
++          Write-Host "still running after 10s: $stillRunning"
++          if (-not $stillRunning) { Write-Host "exit code: $($proc.ExitCode)" }
++          Write-Host "--- stdout ---"; Get-Content $stdout -ErrorAction SilentlyContinue
++          Write-Host "--- stderr ---"; Get-Content $stderr -ErrorAction SilentlyContinue
++
++          $log = Get-ChildItem -Path "$env:LOCALAPPDATA" -Filter roves.log -Recurse -ErrorAction SilentlyContinue |
++            Where-Object { $_.LastWriteTime -ge $startedAt } |
++            Sort-Object LastWriteTime -Descending | Select-Object -First 1
++          if ($log) {
++            Write-Host "--- roves.log ($($log.FullName)) ---"
++            Get-Content $log.FullName
++          } else {
++            Write-Host "no roves.log found under $env:LOCALAPPDATA"
++          }
++
++          # Explicit GStreamer/audio check: media_platform::init (servo.rs) logs this exact
++          # line and exits before a window ever appears on a real init failure, so
++          # $stillRunning=$false already catches it — but calling it out by name here means
++          # a GStreamer regression reads as "GStreamer failed to initialize", not just a
++          # generic "bundle exited early", straight from the job summary/annotations.
++          if ($log -and (Select-String -Path $log.FullName -Pattern "Error initializing GStreamer" -Quiet)) {
++            Write-Host "::error::GStreamer failed to initialize — see roves.log above for the plugin/DLL error"
++          }
++
++          # Regression check for the new `roves:save_file` command (see ../CUSTOMIZATIONS.md's
++          # 2026-09-15 desktop save export/import entry) -- same reasoning as the Linux/macOS
++          # smoke-test step's own equivalent check a few lines up in this file.
++          $saveFileFiles = @($stdout)
++          if ($log) { $saveFileFiles += $log.FullName }
++          $directPresentLines = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
++            Select-String -Pattern '\[roves-perf\].* direct_presents=[1-9][0-9]*(\s|$)'
++          if (-not $directPresentLines) {
++            Write-Host "::error::direct presentation produced no interval with direct_presents > 0"
++            exit 1
++          }
++          $directPresentLines | ForEach-Object { Write-Host $_.Line }
++          $gamepadLines = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
++            Select-String -Pattern '\[roves-input\] kind=gamepadbuttondown '
++          if (-not $gamepadLines) {
++            Write-Host "::error::the virtual SDL gamepad never reached the page as a Gamepad API button press"
++            Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
++              Select-String -Pattern '\[roves-gamepad\]|\[roves-virtual-gamepad\]|\[roves-input\] probe|gamepad.*error|error.*gamepad' |
++              Select-Object -First 40 | ForEach-Object { Write-Host "::notice::$($_.Line)" }
++            exit 1
++          }
++          $gamepadLines | Select-Object -First 3 | ForEach-Object { Write-Host $_.Line }
++          # Phase timings are printed for reference only; shared runners get no time thresholds.
++          $phaseTimeLines = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
++            Select-String -Pattern '\[roves-perf-time\].* present_us=[0-9]+'
++          if (-not $phaseTimeLines) {
++            Write-Host "::error::perf diagnostics emitted no [roves-perf-time] phase timing line"
++            exit 1
++          }
++          $phaseTimeLines | ForEach-Object { Write-Host $_.Line }
++          $saveFileLine = Get-Content $saveFileFiles -ErrorAction SilentlyContinue |
++            Select-String -Pattern '\[roves-save-file-autotest\]' | Select-Object -Last 1
++          if (-not $saveFileLine) {
++            Write-Host "::error::no [roves-save-file-autotest] result line found -- test-page's roves:save_file check never completed"
++            exit 1
++          } elseif ($saveFileLine.Line -match '"ok":true') {
++            Write-Host "::error::roves:save_file with no params unexpectedly succeeded -- parameter validation regressed: $($saveFileLine.Line)"
++            exit 1
++          } else {
++            Write-Host "roves:save_file parameter-validation check passed: $($saveFileLine.Line)"
++          }
++
++          if (-not (Test-Path $saveExportPath)) {
++            Write-Host "::error::save export did not create $saveExportPath"
++            exit 1
++          }
++          $saveExportContent = [System.IO.File]::ReadAllText($saveExportPath)
++          if ($saveExportContent -ne "roves-save-export-autotest`n") {
++            Write-Host "::error::save export wrote unexpected bytes: $([Convert]::ToHexString([System.IO.File]::ReadAllBytes($saveExportPath)))"
++            exit 1
++          }
++          Write-Host "save export end-to-end check passed: $saveExportPath"
++
++          if (-not $stillRunning) {
++            # Also emitted as ::notice:: annotations, not just plain Write-Host: annotations
++            # are readable from the public Checks API without a token (unlike step logs,
++            # which need repo-admin auth to download) — same reasoning, and same gap this
++            # closes, as the Linux/macOS smoke-test step's own gh_notice() a few steps up.
++            function gh_notice($msg) {
++              $escaped = $msg -replace '%', '%25' -replace "`r", '%0D' -replace "`n", '%0A'
++              Write-Host "::notice::$escaped"
++            }
++            gh_notice "exit code: $($proc.ExitCode)"
++            gh_notice "stdout: $(Get-Content $stdout -ErrorAction SilentlyContinue | Out-String)"
++            gh_notice "stderr: $(Get-Content $stderr -ErrorAction SilentlyContinue | Out-String)"
++            $logText = if ($log) { Get-Content $log.FullName -Raw } else { '(none found)' }
++            gh_notice "roves.log: $logText"
++            Write-Host "::error::bundle exited on its own within 10s — treating as a launch failure"
++            exit 1
++          }
++
++      # Renamed to a named subfolder (after the content being bundled — "test-page"
++      # here; a real bundle would use the actual game's name) before zipping, rather
++      # than zipping `release/`'s contents directly at the archive root: extracting
++      # otherwise dumps play.exe/play and 8+ loose DLLs/support files straight into
++      # whatever folder you extract into (e.g. Downloads), instead of one folder.
++      - name: zip bundle (Linux/macOS)
++        if: matrix.os_name != 'windows'
++        run: |
++          ZIP="servoshell-test_${{ matrix.os_name }}-${{ matrix.package_mode }}.zip"
++          mv release servo-test-page
++          zip -r "$ZIP" servo-test-page
++          echo "ZIP=$ZIP" >> "$GITHUB_ENV"
++
++      # Retries: the smoke test above just force-killed play.exe (a GUI process with dozens
++      # of loaded DLLs); Windows can take a moment to actually release its file handles on
++      # release/ afterward, so the very next Rename-Item can hit "the process cannot access
++      # the file because it is being used by another process" -- confirmed by a real run
++      # failing here right after a smoke test that otherwise passed cleanly.
++      - name: zip bundle (Windows)
++        if: matrix.os_name == 'windows'
++        shell: pwsh
++        run: |
++          $zip = "servoshell-test_windows-${{ matrix.package_mode }}.zip"
++          $maxAttempts = 5
++          for ($attempt = 1; $attempt -le $maxAttempts; $attempt++) {
++            try {
++              Rename-Item -Path release -NewName servo-test-page -ErrorAction Stop
++              break
++            } catch {
++              if ($attempt -eq $maxAttempts) { throw }
++              Write-Host "Rename-Item attempt $attempt failed ($($_.Exception.Message)), retrying in $($attempt * 2)s..."
++              Start-Sleep -Seconds ($attempt * 2)
++            }
++          }
++          Compress-Archive -Path servo-test-page -DestinationPath $zip
++          echo "ZIP=$zip" >> $env:GITHUB_ENV
++
++      # Retries: every matrix job uploads to the same "test" release concurrently, and
++      # `gh release upload --clobber` (delete-then-reupload) occasionally hits a transient
++      # conflict from another job's own delete/upload landing at the same moment -- confirmed
++      # by real roves-packmaster CI runs (same pattern, mirrored workflow) failing here on unrelated,
++      # upload-unrelated commits, always on a subset of platforms, never all of them, and
++      # never at the build step itself.
++      - name: upload to "test" release
++        shell: bash
++        env:
++          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
++          GH_REPO: ${{ github.repository }}
++        run: |
++          for attempt in 1 2 3; do
++            gh release upload "$TEST_RELEASE_TAG" "$ZIP" --clobber && exit 0
++            echo "upload attempt $attempt failed, retrying in $((attempt * 10))s..." >&2
++            sleep $((attempt * 10))
++          done
++          exit 1
++
++  # ── Steam: exercise the real steamworks round trip against a mocked backend ────
++  # `--features steam` has been built on every platform in build-and-publish above
++  # since steam.rs itself landed, but that only ever confirmed steamworks-sys
++  # compiles/links -- steamworks::Client::init() always failed silently in CI (no
++  # real Steam client on a runner), so the "unavailable" fallback in steam.rs was
++  # the only path ever exercised there, and @drincs/roves-api/steam's own round
++  # trip through the `steam:` protocol was never verified against a real (even if
++  # fake) Steamworks backend. See test-page/src/App.tsx's own comment on the
++  # auto-run effect for the JS side of this.
++  #
++  # Goldberg/GSE (github.com/Detanup01/gbe_fork, an actively maintained continuation
++  # of the long-standing Mr_Goldberg/goldberg_emulator) is a drop-in libsteam_api.so
++  # replacement that needs no running Steam client at all -- swap it in for the real
++  # redistributable `mach build`'s build.rs already copies next to the binary (see
++  # build.rs's copy_steam_lib) and steamworks-rs's dynamic load picks it up
++  # transparently. This is a local library + a steam_settings/ config folder, not a
++  # network service -- no Docker/container needed.
++  #
++  # steam_interfaces.txt (Goldberg's one hard requirement) has to be generated by
++  # its own generate_interfaces tool run against "the original" steam_api lib --
++  # here that's simply the real redistributable mach bundle just produced a couple
++  # steps above, before we overwrite it with Goldberg's -- so no Steamworks Partner
++  # account or extra download is needed for that part.
++  #
++  # Linux only for now (fastest runner, simplest lib swap, and the only platform
++  # this was validated against) -- extend to Windows/macOS once this first pass is
++  # proven out for real by a green run.
++  steam-emulator-smoke-test:
++    needs: [validate-servo-patches, sdl3-windowing-contracts, sdl3-gamepad-probe]
++    runs-on: ubuntu-24.04
++    steps:
++      - uses: actions/checkout@v4
++
++      - name: setup python (gives a consistent `python3` across all 3 OSes)
++        uses: actions/setup-python@v5
++        with:
++          python-version: '3.x'
++
++      - name: setup uv (needed by ./mach, see servo/README.md)
++        uses: astral-sh/setup-uv@v5
++        with:
++          enable-cache: true
++
++      - name: setup node (for test-page/)
++        uses: actions/setup-node@v4
++        with:
++          node-version: '22'
++
++      - name: build test-page
++        shell: bash
++        working-directory: test-page
++        run: |
++          npm install
++          npm run build
++
++      - name: prefetch pinned rust toolchain
++        shell: bash
++        run: |
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
++          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
++          cd /tmp/toolchain-probe && rustup show
++
++      # Same reconstruction as build-and-publish's own "download + patch Servo
++      # source" step above (see that step for the full reasoning) -- kept as its
++      # own copy rather than a shared step/action since the two jobs diverge right
++      # after this point (no matrix here, only one mach build/bundle instead of six).
++      - name: download + patch Servo source
++        shell: bash
++        run: |
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
++          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
++          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
++          rm -rf servo-src-tmp servo-src.zip
++
++          shopt -s nullglob
++          patches=(patches/servo-v${SERVO_TAG}/*.patch)
++          if [ ${#patches[@]} -eq 0 ]; then
++            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
++            exit 1
++          fi
++          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
++          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
++          PATCH=patch
++          if [ "$(uname)" = "Darwin" ]; then
++            command -v gpatch >/dev/null || brew install gpatch
++            PATCH=gpatch
++          fi
++          cd servo-src
++          chmod +x mach
++          for p in "${patches[@]}"; do
++            case $(basename "$p") in
++              0042-sdl3-macos-gamepad-probe.patch)
++                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
++                continue
++                ;;
++            esac
++            echo "Applying $(basename "$p")..."
++            "$PATCH" -p1 < "../$p"
++          done
++          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
++          # after the patches because 0185 still edits python/servo/try_parser.py.
++          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
++            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
++          done
++
++          mkdir -p test-page
++          cp -r ../test-page/public test-page/public
++          cp -r ../test-page/dist test-page/dist
++
++          mkdir -p resources/fonts
++          cp -r ../resources/fonts/. resources/fonts/
++
++      # Same dpkg-lock wait as build-and-publish's own Linux step above.
++      - name: stop background apt processes and wait for the dpkg lock
++        shell: bash
++        run: |
++          sudo systemctl stop apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
++          sudo systemctl kill --kill-who=all apt-daily.service apt-daily-upgrade.service unattended-upgrades.service 2>/dev/null || true
++          sudo pkill -9 -f unattended-upgrade 2>/dev/null || true
++          for i in $(seq 1 60); do
++            if ! sudo fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock /var/cache/apt/archives/lock >/dev/null 2>&1; then
++              exit 0
++            fi
++            sleep 1
++          done
++          echo "::warning::dpkg/apt lock still held after 60s -- proceeding anyway"
++
++      - name: use the Ubuntu mirror used by the successful Linux build jobs
++        shell: bash
++        run: |
++          sudo sed -i 's|archive.ubuntu.com|azure.archive.ubuntu.com|g' /etc/apt/sources.list.d/ubuntu.sources
++          grep -n '^URIs:' /etc/apt/sources.list.d/ubuntu.sources
++
++      # The runner's apt mirror has served Servo's ~300 MB of build packages at a few KB/s,
++      # timing bootstrap out. Keep apt's downloaded .deb files in an Actions cache instead:
++      # apt-get keeps them in a runner-owned directory, restored and saved around the job.
++      - name: restore cached apt packages
++        uses: actions/cache/restore@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++          restore-keys: |
++            apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-
++            apt-${{ runner.os }}-
++      - name: point apt's package cache at the cached directory
++        shell: bash
++        run: |
++          mkdir -p "$HOME/apt-archives/partial"
++          sudo chmod -R a+rwX "$HOME/apt-archives"
++          printf 'Dir::Cache::Archives "%s";\nAPT::Keep-Downloaded-Packages "true";\n' "$HOME/apt-archives" | sudo tee /etc/apt/apt.conf.d/99roves-apt-cache
++          # Fetch mach's apt packages in parallel first (see support/apt_prefetch.sh); mach
++          # bootstrap then finds them in the cache.
++          sudo apt-get update
++          available=$(apt-cache --generate pkgnames)
++          packages=$(grep -hv -e '^#' -e '^$' servo-src/python/servo/platform/linux_packages/apt/apt_*.txt | grep -Fxf <(echo "$available"))
++          # shellcheck disable=SC2086
++          bash support/apt_prefetch.sh $packages
++      - name: mach bootstrap (installs build dependencies, real GStreamer)
++        shell: bash
++        working-directory: servo-src
++        env:
++          DEBIAN_FRONTEND: noninteractive
++        timeout-minutes: 90
++        run: ./mach bootstrap --force --yes --skip-lints --skip-nextest
++
++      # Saved even when bootstrap fails or times out: the next run resumes the download.
++      # apt's lock and partial downloads are root-only: drop them so tar can read the rest.
++      - name: prepare apt packages for caching
++        if: always()
++        shell: bash
++        run: sudo rm -rf "$HOME/apt-archives/lock" "$HOME/apt-archives/partial" && sudo chmod -R a+rX "$HOME/apt-archives" || true
++      - name: save apt packages
++        if: always()
++        uses: actions/cache/save@v4
++        with:
++          path: |
++            ~/apt-archives
++            !~/apt-archives/lock
++            !~/apt-archives/partial
++          key: apt-${{ runner.os }}-${{ hashFiles('servo-src/python/servo/platform/linux_packages/apt/*.txt') }}-${{ github.run_id }}-${{ github.run_attempt }}
++      - name: mach build (debug, --features steam)
++        shell: bash
++        working-directory: servo-src
++        run: ./mach build --features steam
++
++      - name: mach bundle
++        shell: bash
++        working-directory: servo-src
++        run: |
++          ./mach bundle --content-dir test-page/dist --output ../release \
++            --package-name servoshell-test --package-version "${SERVO_TAG}"
++
++      # ── Swap in the Goldberg/GSE emulator ────────────────────────────────────
++      - name: generate steam_settings fixtures and swap in Goldberg/GSE
++        shell: bash
++        run: |
++          URL=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://api.github.com/repos/Detanup01/gbe_fork/releases/latest \
++            | jq -r '.assets[] | select(.name=="emu-linux-release.tar.bz2") | .browser_download_url')
++          if [ -z "$URL" ]; then
++            echo "::error::could not resolve emu-linux-release.tar.bz2 from Detanup01/gbe_fork's latest release"
++            exit 1
++          fi
++          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o gse.tar.bz2 "$URL"
++          mkdir -p gse
++          tar xjf gse.tar.bz2 -C gse
++
++          # Run generate_interfaces against the REAL redistributable libsteam_api.so
++          # mach bundle just placed in release/ (build.rs's copy_steam_lib) -- must
++          # happen before it gets overwritten below. Copied next to its target and
++          # run from there so wherever it writes the output (cwd, or beside the
++          # input), it lands in release/ either way.
++          cp gse/release/tools/generate_interfaces/generate_interfaces_x64 release/
++          chmod +x release/generate_interfaces_x64 release/libsteam_api.so
++          ( cd release && ./generate_interfaces_x64 libsteam_api.so )
++          rm release/generate_interfaces_x64
++
++          mkdir -p release/steam_settings
++          if [ -f release/steam_interfaces.txt ]; then
++            mv release/steam_interfaces.txt release/steam_settings/steam_interfaces.txt
++          elif [ -f steam_interfaces.txt ]; then
++            mv steam_interfaces.txt release/steam_settings/steam_interfaces.txt
++          else
++            echo "::error::generate_interfaces didn't produce steam_interfaces.txt -- contents of release/:"
++            find release -maxdepth 1
++            exit 1
++          fi
++
++          # Fake but well-known test App ID (Valve's own public "Spacewar" test
++          # app) -- Goldberg is fully offline/local, so any ID works, but this one
++          # avoids any ambiguity with a real DRincs-Productions title.
++          echo "480" > release/steam_settings/steam_appid.txt
++
++          # Matches STEAM_AUTOTEST_ACHIEVEMENT_ID in test-page/src/App.tsx.
++          cat > release/steam_settings/achievements.json << 'JSON'
++          [
++            {
++              "name": "ACH_TEST_1",
++              "displayName": "CI Test Achievement",
++              "description": "Unlocked by the steam-emulator-smoke-test CI job.",
++              "hidden": "0",
++              "icon": "",
++              "icongray": ""
++            }
++          ]
++          JSON
++
++          # Matches STEAM_AUTOTEST_STAT_NAME in test-page/src/App.tsx.
++          cat > release/steam_settings/stats.json << 'JSON'
++          [
++            {
++              "name": "test_stat",
++              "type": "int",
++              "default": "0",
++              "global": "0"
++            }
++          ]
++          JSON
++
++          # The actual swap: steamworks-rs dynamically loads whatever's at this
++          # path by name, so this is transparent to it -- same reasoning as
++          # build.rs's own copy_steam_lib comment on why this works at all.
++          cp gse/release/regular/x64/libsteam_api.so release/libsteam_api.so
++          chmod +x release/libsteam_api.so
++
++      # Launches the real bundle (same shape as build-and-publish's own Linux
++      # smoke-test step above) but goes further: instead of only checking the
++      # process survives, it waits for test-page's auto-run Steam check (see
++      # App.tsx) to report its result via console.log -- which servoshell's
++      # WebViewDelegate::show_console_message already forwards to stdout/
++      # roves.log (ports/servoshell/desktop/headed_window.rs), so no new
++      # Rust-side plumbing was needed to get this result out of a headless run --
++      # and asserts every field came back as a real, mocked Steamworks backend
++      # would produce, not steam.rs's "unavailable" fallback defaults.
++      - name: launch under Xvfb and verify the Steam round trip
++        shell: bash
++        run: |
++          sudo apt-get update && sudo apt-get install -y --no-install-recommends xvfb
++          BIN="release/play"
++          chmod +x "$BIN" || true
++
++          set +e
++          xvfb-run -a --server-args="-screen 0 1280x720x24" "$BIN" > smoke-stdout.log 2> smoke-stderr.log &
++          PID=$!
++          # xvfb-run itself can take most of 15s to create a display on a loaded runner,
++          # leaving the app almost no time to load the page. Poll for the page-side result
++          # instead, with a bounded 60-second allowance for display and bundle startup.
++          RESULT_LINE=""
++          LOG=""
++          FILES=(smoke-stdout.log)
++          for _ in $(seq 1 60); do
++            LOG=$(find "$HOME/.cache" -iname roves.log 2>/dev/null -exec ls -t {} + 2>/dev/null | head -1)
++            FILES=(smoke-stdout.log)
++            if [ -n "$LOG" ]; then FILES+=("$LOG"); fi
++            RESULT_LINE=$(grep -h '\[roves-steam-autotest\]' "${FILES[@]}" 2>/dev/null | tail -1)
++            [ -n "$RESULT_LINE" ] && break
++            kill -0 "$PID" 2>/dev/null || break
++            sleep 1
++          done
++          if kill -0 "$PID" 2>/dev/null; then
++            kill "$PID"
++            wait "$PID" 2>/dev/null
++          else
++            wait "$PID"
++          fi
++
++          echo "--- stdout ---"; cat smoke-stdout.log
++          echo "--- stderr ---"; cat smoke-stderr.log
++
++          if [ -n "$LOG" ]; then
++            echo "--- roves.log ($LOG) ---"; cat "$LOG"
++          fi
++
++          gh_notice() {
++            local msg="$1"
++            msg="${msg//%/%25}"; msg="${msg//$'\r'/%0D}"; msg="${msg//$'\n'/%0A}"
++            echo "::notice::${msg}"
++          }
++
++          if [ -z "$RESULT_LINE" ]; then
++            gh_notice "stdout: $(cat smoke-stdout.log)"
++            gh_notice "stderr: $(cat smoke-stderr.log)"
++            echo "::error::no [roves-steam-autotest] result line found -- either the bundle never launched, or test-page's auto-run Steam check never completed"
++            exit 1
++          fi
++
++          JSON="${RESULT_LINE#*\[roves-steam-autotest\] }"
++          echo "Steam autotest result: $JSON"
++
++          python3 - "$JSON" << 'PYEOF'
++          import json
++          import sys
++
++          result = json.loads(sys.argv[1])
++          expected = {
++              "isAvailable": True,
++              "appId": 480,
++              "unlockAchievement": True,
++              "isAchievementUnlocked": True,
++              "setStatInt": True,
++              "storeStats": True,
++              "getStatInt": 42,
++          }
++          failures = [
++              f"{key}: expected {value!r}, got {result.get(key)!r}"
++              for key, value in expected.items()
++              if result.get(key) != value
++          ]
++          if "error" in result:
++              failures.append(f"JS-side error: {result['error']}")
++          if failures:
++              print("::error::Steam round-trip check failed:\n" + "\n".join(failures))
++              sys.exit(1)
++          print(
++              "Steam round-trip through steamworks-rs + Goldberg/GSE emulator + "
++              "@drincs/roves-api/steam: all checks passed."
++          )
++          PYEOF
+diff --git a/docs/handoff/0379-ci-probe-dependency.md b/docs/handoff/0379-ci-probe-dependency.md
+new file mode 100644
+index 00000000000..a23760cd7b5
+--- /dev/null
++++ b/docs/handoff/0379-ci-probe-dependency.md
+@@ -0,0 +1,22 @@
++# 0379 — isolate the Apple gamepad probe dependency (patch 0381)
++
++The735a general run40520566879 skipped all packaging and Steam jobs because the required
++sdl3-gamepad-probe matrix aggregated a cancelled macOS leg. This did not demonstrate a
++Linux/Windows build failure, but required coverage was missing and was not called green.
++
++Keep Windows/Linux in the required matrix and run macOS in a separate enabled job with
++identical toolchain, steps and timeout. Preserve all three previous visible check names.
++build-and-publish and Steam needs/definitions are unchanged: required probe/shared failures
++still block them; the Apple probe no longer participates in their dependency aggregate.
++No continue-on-error, always() bypass, removed workflow, bundle flag, pin or artifact change.
++The user's Apple publication exception remains the only reason for this split.
++
++Parsed with maintained PyYAML installed only in target/task-0379/pydeps for validation:
++verified required matrix platforms, equal Apple/required steps and timeout, unchanged
++build/Steam definitions, stable check names and no dependent job on the Apple probe.
++No custom YAML parser or new product dependency. roves-action README mirrors the distinction;
++action.yml requires no input/behavior change. Logs and review in target/task-0379/.
++
++The next batch must confirm required packaging/Steam actually execute. The old skipped
++outputs have not been recovered or treated as passed. macOS/iOS remain visible and enabled,
++excluded from publication gating rather than described as green. Heavy builds stay online.

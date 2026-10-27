@@ -746,3 +746,12 @@ Roves keeps its Servo shell while evaluating maintained libraries to replace int
 services and remove duplicate implementation. rusty_v8 is already used; deno_core remains
 an isolated evaluation, not an adopted production runtime. DOM/layout/rendering stay in
 Servo initially. No separate Chromium or Deno installation is planned.
+
+The deno_core0.413.0 evaluation currently keeps rusty_v8 direct: public APIs needed for
+additional realms and navigation/global-proxy reuse are missing. No Deno production
+dependency was added and no runtime/performance benefit is claimed. Servo services remain
+replaceable when a maintained library can remove their implementation.
+
+The macOS gamepad probe runs independently from the required Windows/Linux probe matrix,
+so its cancellation/failure no longer skips their packaging and Steam checks. Apple checks
+remain enabled and visible; required non-Apple failures still block dependent jobs.

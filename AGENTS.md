@@ -22,6 +22,10 @@ o duplicazione permanente. DOM, layout e rendering restano inizialmente in Servo
 Non richiedere installazioni separate di Deno o Chromium e non esporre API Deno ai giochi.
 Documentare prove, costi e limiti reali: autorizzazione progettuale non significa integrazione
 già completata. Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+La valutazione0378 non adotta deno_core0.413.0: mancano hook pubblici necessari a realm
+aggiuntivi/WindowProxy; mantenere rusty_v8 diretto e non duplicare il servizio per il solo
+realm principale. Evidenza e limiti in docs/handoff/0378-deno-core-feasibility.md.
+
 
 ### Valutazione obbligatoria prima di ogni modifica
 

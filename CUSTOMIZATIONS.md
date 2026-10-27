@@ -1,3 +1,24 @@
+## 2026-10-27 - Evaluate deno_core without adding an unused production dependency (0378)
+
+Keep the Servo shell; user explicitly permits removing replaced Servo services. Align
+AGENTS, AGENT_WORKFLOW and LIBRERIE_E_CONSOLE. Published deno_core0.413.0 lacks public
+additional-realm/global-proxy lifecycle hooks needed by this browser; main-only adoption
+would keep duplicate services. Decision: keep rusty_v8 direct for now, no production
+dependency/fork. Isolated lock resolution194 packages, metadata and syntax pass; resolved
+v8 150.4.0 differs from Roves152.2.0. No runtime/benchmark results claimed. The uncompiled
+probe remains under target, not shipped; document public-source evidence and reassessment
+gate. Patch0379 records authorization, patch0380 records the evaluated decision.
+
+## 2026-10-27 - Separate the Apple probe from required build dependencies (0379)
+
+test.yml keeps the Windows/Linux gamepad matrix required, with an enabled separate macOS
+job preserving steps/timeouts/check names. Existing build-and-publish and Steam definitions
+remain unchanged; no always()/soft-fail bypass. Fixes missing non-Apple coverage caused by
+the cancelled Apple matrix leg, not a demonstrated runtime failure. PyYAML semantic checks
+pass; next CI must execute previously skipped packaging/Steam jobs. Mirror roves-action
+README; no bundle flag/default/input or pin changes. Apple checks remain excluded, enabled
+and not claimed green. Patch0381 and durable handoff.
+
 ## 2026-10-27 - Reuse descriptor traversal for named visibility (0377)
 
 script_bindings/utils.rs now uses the existing JS_GetPropertyDescriptorById traversal

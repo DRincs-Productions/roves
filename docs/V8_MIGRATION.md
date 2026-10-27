@@ -27,7 +27,7 @@ non rileggere i log o rilanciare gli incarichi conclusi senza un problema concre
 
 Conservare la shell Servo; l'utente autorizza a sostituire e rimuovere anche servizi
 interni Servo (moduli/gestione asincrona) quando una libreria mantenuta riduce il codice
-nostro. rusty_v8 è già usato; deno_core è in prova isolata0378, NON adottato in produzione.
+nostro. rusty_v8 è già usato; deno_core0378 valutato: NO-GO0.413.0, NON adottato in produzione.
 Nessun obbligo di preservare l'architettura interna, nessuna installazione separata di
 Deno/Chromium o API Deno per i giochi. DOM/layout/rendering rimangono inizialmente Servo.
 GO solo con API pubbliche mantenute, frame multipli, sicurezza web e JITless, rimuovendo
@@ -41,7 +41,9 @@ Android `40520566920` verde. Generale `40520566879`: patch/probeWindows/Linux/sh
 verdi, ma build/packaging eSteam SALTATI perché il gate aggregato include il probe macOS
 cancellato. Non considerarli verdi: manca copertura richiesta. iOS `40520566892` fallita
 e macOS esclusi per istruzione utente; non disattivare iworkflow né ritentare soloApple.
-Riparare l'accoppiamento del gate e includere la correzione prima della pubblicazione.
+Gate corretto localmente0379, patch0381: probeApple separato ma abilitato, nomi invariati;
+PyYAML verifica matrice/dipendenze e build/Steam invariati. Includere il fix nel push,
+poi verificare che la nuova CI esegua packaging/Steam precedentemente saltati.
 Nessuna run precedente attiva, nessun difetto runtime nonApple mostrato dal batch.
 
 0377 implementata/revisionata localmente: [handoff](handoff/0377-prototype-descriptor-visibility.md),
@@ -57,10 +59,15 @@ daDocument. Differenze rispetto agli obiettivi normativi, non parità. Riferimen
 target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
 
 SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
-Conservare WIP0377 solo fino a replay/doc completi; TODO.md contiene una modifica separata
+0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
 non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
-ELIMINATO; nessuna automazione periodica. Claude attivo solo su prova0378; Codex verifica0377,
-senza duplicare la ricerca delegata. Build pesanti soloCI. Workspaces leggeri da riusare:
+ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0378 e0379 consegnate e revisionate.
+[Esito0378](handoff/0378-deno-core-feasibility.md): mancanoAPI pubbliche realm/WindowProxy;
+194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.
+Prototipo non compilato locale in target/task-0378; nessuna dipendenza produttiva o
+beneficio prestazionale dichiarato. Non compilare altroV8 pesante per aggirare il gate
+API già fallito. Restano autorizzate sostituzioni di servizi con rimozione reale di codice.
+[FixCI0379](handoff/0379-ci-probe-dependency.md), mirrorREADMEroves-action aggiornato. Build pesanti soloCI. Workspaces leggeri da riusare:
 `C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js` e `...-00kx/roves-js`,
 CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.
 
