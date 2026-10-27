@@ -723,3 +723,7 @@ queries. This correction targets the actual Document reflector. Window.HTMLDocum
 standard alias of Document through existing WebIDL generation; the unused subclass is removed.
 Constructor/prototype identity and property attributes have required browser regressions;
 normal/JITless browser confirmation is pending CI.
+
+Indexed DOM collections keep array-index keys separate from numeric named keys, preventing
+duplicate native ownKeys results. Noncanonical numeric names and numeric names on Document
+remain available. Native normal/JITless regressions pass; real browser CI is pending.

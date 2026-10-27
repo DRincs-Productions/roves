@@ -46,7 +46,7 @@ use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
 use crate::principals::ServoJSPrincipalsRef;
 use crate::reflector::DomObject;
 use crate::str::DOMString;
-use crate::utils::has_property_on_prototype;
+use crate::utils::{get_array_index_from_id, has_property_on_prototype};
 
 /// Determine if this id shadows any existing properties for this proxy.
 ///
@@ -940,6 +940,15 @@ where
         // [LegacyOverrideBuiltIns], and an own expando or unforgeable property (both
         // live on the expando) hides it; that own key is listed once, with the
         // expando keys below.
+        // On an object with indexed properties an array-index key never reaches the named
+        // getter (LegacyPlatformObjectGetOwnProperty sets ignoreNamedProps, as the generated
+        // get/getOwnPropertyDescriptor/hasOwn do with `get_array_index_from_id`), so such
+        // names are not own keys: in range they would duplicate an index, which V8's proxy
+        // ownKeys rejects with a TypeError. Non-canonical numeric names ("00", "-1",
+        // "4294967295") are not array indices and stay listed; named-only interfaces
+        // (Document) keep every numeric name.
+        let skip_index_names = config.indexed_getter_and_length.is_some();
+
         if let Some(properties) = config.supported_named_properties {
             rooted!(&in(cx) let mut rooted_jsid: jsid);
             let mut names = properties(unwrapped_proxy, &mut cx);
@@ -959,6 +968,10 @@ where
                 for name in names {
                     if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
                         return false;
+                    }
+                    // Dropped before any prototype lookup: no script runs for it.
+                    if skip_index_names && get_array_index_from_id(rooted_jsid.handle()).is_some() {
+                        continue;
                     }
                     if expando.is_null() {
                         get_expando_object(proxy, expando.handle_mut());
@@ -992,6 +1005,10 @@ where
             for name in names {
                 if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
                     return false;
+                }
+                // Already dropped above unless [LegacyOverrideBuiltIns] skipped that pass.
+                if skip_index_names && get_array_index_from_id(rooted_jsid.handle()).is_some() {
+                    continue;
                 }
                 let mut has_own = false;
                 if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {

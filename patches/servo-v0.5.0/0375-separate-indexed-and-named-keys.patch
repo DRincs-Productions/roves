@@ -1,0 +1,244 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index c2a26bda93e..35bf38c41f6 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1500,6 +1500,8 @@ mod proxies {
+     thread_local! {
+         static PROXY_FINALIZED: Cell<u32> = const { Cell::new(0) };
+         static PROXY_TRACED: Cell<u32> = const { Cell::new(0) };
++        /// `own_property_keys` reports index 0 twice (an invalid native handler result).
++        static DUPLICATE_INDEX: Cell<bool> = const { Cell::new(false) };
+     }
+ 
+     /// The expando object (created on demand in the private slot, as Servo's DOM proxies do).
+@@ -1554,6 +1556,11 @@ mod proxies {
+         crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
+         unsafe { RUST_INTERNED_STRING_TO_JSID(cx, foo, id.handle_mut().into_handle()) };
+         unsafe { AppendToIdVector(props, id.handle().into_handle()) };
++        if DUPLICATE_INDEX.with(Cell::get) {
++            id.set(crate::jsid::IntId(0));
++            unsafe { AppendToIdVector(props, id.handle().into_handle()) };
++            unsafe { AppendToIdVector(props, id.handle().into_handle()) };
++        }
+         crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
+         unsafe { GetPropertyKeys(cx, expando.handle().into_handle(), JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS, props) }
+     }
+@@ -1651,6 +1658,29 @@ mod proxies {
+         assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
+     }
+ 
++    /// The ownKeys trap forwards native keys unchanged: duplicates from a handler (e.g. an
++    /// index also listed as a named property) stay a visible TypeError, not a silent dedup.
++    #[test]
++    fn native_own_keys_duplicates_raise_type_error() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        let traps = traps();
++        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
++        rooted!(in(cx) let proto = eval(&runtime, "({})").to_object());
++        rooted!(in(cx) let private = UndefinedValue());
++        rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let value = ObjectValue(proxy.get()));
++        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"dup".as_ptr(), value.handle().into_handle()) });
++        assert_eq!(describe(&runtime, eval(&runtime, "Reflect.ownKeys(dup).join()")), "foo", "unique keys are listed");
++        DUPLICATE_INDEX.with(|flag| flag.set(true));
++        let duplicate = eval(&runtime, "(() => { try { Reflect.ownKeys(dup); return 'no error' } catch (e) { return e instanceof TypeError ? 'TypeError' : String(e) } })()");
++        DUPLICATE_INDEX.with(|flag| flag.set(false));
++        assert_eq!(describe(&runtime, duplicate), "TypeError", "duplicate native keys are a proxy invariant violation");
++        assert_eq!(describe(&runtime, eval(&runtime, "Reflect.ownKeys(dup).join()")), "foo");
++        eval(&runtime, "delete globalThis.dup");
++    }
++
+     #[test]
+     fn partial_descriptors_through_dom_proxies_keep_absent_fields() {
+         let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index e00efdfaaf8..eff97c03b55 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -46,7 +46,7 @@ use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
+ use crate::principals::ServoJSPrincipalsRef;
+ use crate::reflector::DomObject;
+ use crate::str::DOMString;
+-use crate::utils::has_property_on_prototype;
++use crate::utils::{get_array_index_from_id, has_property_on_prototype};
+ 
+ /// Determine if this id shadows any existing properties for this proxy.
+ ///
+@@ -940,6 +940,15 @@ where
+         // [LegacyOverrideBuiltIns], and an own expando or unforgeable property (both
+         // live on the expando) hides it; that own key is listed once, with the
+         // expando keys below.
++        // On an object with indexed properties an array-index key never reaches the named
++        // getter (LegacyPlatformObjectGetOwnProperty sets ignoreNamedProps, as the generated
++        // get/getOwnPropertyDescriptor/hasOwn do with `get_array_index_from_id`), so such
++        // names are not own keys: in range they would duplicate an index, which V8's proxy
++        // ownKeys rejects with a TypeError. Non-canonical numeric names ("00", "-1",
++        // "4294967295") are not array indices and stay listed; named-only interfaces
++        // (Document) keep every numeric name.
++        let skip_index_names = config.indexed_getter_and_length.is_some();
++
+         if let Some(properties) = config.supported_named_properties {
+             rooted!(&in(cx) let mut rooted_jsid: jsid);
+             let mut names = properties(unwrapped_proxy, &mut cx);
+@@ -960,6 +969,10 @@ where
+                     if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
+                         return false;
+                     }
++                    // Dropped before any prototype lookup: no script runs for it.
++                    if skip_index_names && get_array_index_from_id(rooted_jsid.handle()).is_some() {
++                        continue;
++                    }
+                     if expando.is_null() {
+                         get_expando_object(proxy, expando.handle_mut());
+                     }
+@@ -993,6 +1006,10 @@ where
+                 if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
+                     return false;
+                 }
++                // Already dropped above unless [LegacyOverrideBuiltIns] skipped that pass.
++                if skip_index_names && get_array_index_from_id(rooted_jsid.handle()).is_some() {
++                    continue;
++                }
+                 let mut has_own = false;
+                 if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {
+                     return false;
+diff --git a/docs/handoff/0372-0373-visible-named-keys.md b/docs/handoff/0372-0373-visible-named-keys.md
+index b92b00fe26f..1d0325d5368 100644
+--- a/docs/handoff/0372-0373-visible-named-keys.md
++++ b/docs/handoff/0372-0373-visible-named-keys.md
+@@ -1,5 +1,8 @@
+ # 0372/0373 — visible named keys and the actual Document reflector
+ 
++Follow-up0375 addresses indexed/numeric named-key overlap with the existing index
++predicate; see0375-indexed-and-named-key-overlap.md. Real browser CI is still pending.
++
+ Follow-up0374 replaces the separate unused HTMLDocument class with the existing
+ LegacyWindowAlias mechanism; see0374-html-document-alias.md. Browser confirmation
+ remains pending for the combined batch.
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 73ac3065a81..a961dd5b93e 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -35,6 +35,8 @@ REQUIRED_CHECKS = {
+         "HTMLFormElement ownKeys, reads and hasOwn work with a null prototype",
+         "HTMLFormElement ownKeys lists a name once when a prototype trap shadows it",
+         "HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property",
++        "HTMLFormElement ownKeys omits array-index names and keeps other numeric names",
++        "Document ownKeys keeps numeric named properties",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 7eacbcff39e..9eb68809961 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -818,6 +818,69 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
+   if (queried) problems.push(`prototype queried ${queried} times`);
+   return problems.length ? problems.join("; ") : true;
+ }));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// On an object with indexed properties an array-index key is never a named property
++// (LegacyPlatformObjectGetOwnProperty ignores named properties for it), so a control named "0"
++// must not be listed again next to index 0 (V8 rejects duplicate proxy keys with a TypeError),
++// and an out-of-range index name is not an own key at all. Non-canonical numeric strings are
++// not array indices and stay named properties. Index names never reach the prototype.
++check("HTMLFormElement ownKeys omits array-index names and keeps other numeric names", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
++  const problems = [];
++  const names = ["0", "7", "00", "-1", "4294967295"];
++  const form = doc.createElement("form");
++  const inputs = names.map(name => {
++    const input = doc.createElement("input");
++    input.name = name;
++    form.append(input);
++    return input;
++  });
++  doc.body.append(form);
++  let indexQueries = 0;
++  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
++    has(target, property) {
++      if (property === "0" || property === "7") indexQueries++;
++      return Reflect.has(target, property);
++    },
++  }));
++  let keys;
++  try {
++    keys = Reflect.ownKeys(form);
++  } catch (error) {
++    return `ownKeys threw: ${(error && error.name) || error}`;
++  }
++  Object.setPrototypeOf(form, win.HTMLFormElement.prototype);
++  if (indexQueries) problems.push(`prototype queried ${indexQueries} times for index names`);
++  if (new Set(keys).size !== keys.length) problems.push(`duplicate keys: ${keys.map(String).join()}`);
++  const count = key => keys.filter(k => k === key).length;
++  for (let i = 0; i < form.length; i++) {
++    const desc = Object.getOwnPropertyDescriptor(form, String(i));
++    if (count(String(i)) !== 1 || !desc || desc.value !== inputs[i] || desc.writable !== false)
++      problems.push(`index ${i}: listed ${count(String(i))} ${describeDescriptor(desc)}`);
++  }
++  if (count("7") !== 0 || Object.hasOwn(form, "7") || Object.getOwnPropertyDescriptor(form, "7") !== undefined || form[7] !== undefined)
++    problems.push(`out-of-range "7": listed ${count("7")} own=${Object.hasOwn(form, "7")} get=${describeValue(form[7])}`);
++  for (const name of ["00", "-1", "4294967295"]) {
++    const input = inputs[names.indexOf(name)];
++    if (count(name) !== 1 || !Object.hasOwn(form, name) || form[name] !== input)
++      problems.push(`${JSON.stringify(name)}: listed ${count(name)} get=${describeValue(form[name])}`);
++  }
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Document has named but no indexed properties: every numeric name stays a visible own key.
++check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
++  const problems = [];
++  for (const name of ["0", "7", "00", "4294967295"]) {
++    const img = doc.createElement("img");
++    img.name = name;
++    doc.body.append(img);
++    const listed = Reflect.ownKeys(doc).filter(k => k === name).length;
++    if (listed !== 1 || !Object.hasOwn(doc, name) || doc[name] !== img)
++      problems.push(`${JSON.stringify(name)}: listed ${listed} get=${describeValue(doc[name])}`);
++    img.remove();
++  }
++  return problems.length ? problems.join("; ") : true;
++}));
+ finish();
+ </script>
+ </body></html>
+diff --git a/docs/handoff/0375-indexed-and-named-key-overlap.md b/docs/handoff/0375-indexed-and-named-key-overlap.md
+new file mode 100644
+index 00000000000..50832f38bb3
+--- /dev/null
++++ b/docs/handoff/0375-indexed-and-named-key-overlap.md
+@@ -0,0 +1,32 @@
++# 0375 — keep indexed DOM keys separate from numeric named keys
++
++The Form supported-name list can contain "0" while ownKeys already appends supported
++indices. Native IdVector appends without deduplication and the proxy bridge forwards it
++unchanged. The new native proof confirms duplicate integer ids reach V8 as duplicate
++string keys and Reflect.ownKeys throws TypeError; valid keys still work before and after.
++Do not hide invalid native handlers with generic proxy deduplication.
++
++Reuse utils::get_array_index_from_id only for interfaces with indexed getters. Omit
++canonical array-index names from their named-key pass, before prototype callbacks and in
++the final override path. This follows the binding's existing indexed-first/ignoreNamedProps
++read, GOPD and hasOwn rule, including out-of-range indices. The WebIDL ownKeys text does not
++explicitly spell out this filter: its extension to out-of-range named keys is an integration
++choice for consistency with those existing read hooks, not a new full-conformance claim.
++Named-only Document retains numeric names. "00", "-1" and "4294967295" remain named keys.
++No new field, dependency, numeric parser, HashSet, ordering scheme or persistent state.
++
++## Validation
++
++- Native proxy contracts (filter proxies::, includes WindowProxy):18 normal/18JITless pass.
++  The duplicate-key proof uses the real native ProxyTraps/IdVector path, not a JS-only proxy.
++- Runner42 pass (8 POSIX skips), Rust helper syntax valid. Source analysis shows the old
++  DOM loop can produce the overlapping ids; no local full-browser negative was run.
++- Required browser smoke covers Form readonly indices, overlapping and out-of-range numeric
++  names, noncanonical numeric names, no numeric-name prototype callbacks and unchanged
++  numeric named properties on Document. Normal/JITless browser confirmation remains CI-only.
++- Logs and prompts: target/task-0375. Chrome MCP unavailable (Target closed), so no fresh
++  browser reference claimed. No CPU/RAM saving claimed.
++
++The0372 own-property short circuit/reentrancy filtering and0371 exact/unpinned name
++conversion are preserved. SourceText0361, define/delete visibility and overall page
++retention remain open. This is not a universal repair of arbitrary malformed native traps.

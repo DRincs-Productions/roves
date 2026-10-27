@@ -35,6 +35,8 @@ REQUIRED_CHECKS = {
         "HTMLFormElement ownKeys, reads and hasOwn work with a null prototype",
         "HTMLFormElement ownKeys lists a name once when a prototype trap shadows it",
         "HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property",
+        "HTMLFormElement ownKeys omits array-index names and keeps other numeric names",
+        "Document ownKeys keeps numeric named properties",
     ),
     "stress.html": (
         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",

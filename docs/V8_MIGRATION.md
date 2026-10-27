@@ -18,7 +18,44 @@ incarico completo, revisione, verifiche/documentazione, commit locale, controllo
 push quando consentito e prossimo incarico. Le CI attive consentono sviluppo e commit,
 non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
-## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
+## Stato corrente — 27 ottobre 2026
+
+Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
+non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
+
+Pubblicato `dac65a4dbc8d9dd762e265ce5376dbe4e884a8be`, wiki `bc80b3c`. Include0371
+(nomi DOM senza CString/pin),0372/0373 (visibilità ownKeys, null/reentry e attributo sul
+Document reale) e0374 (HTMLDocument alias standard; rimossi classeRust/IDL inutilizzati).
+Il fix0373 affronta i due smoke Linux rossi del precedente f3d59895e36; non dichiarare quel
+batch verde. Le nuove prove browser devono confermare tutte le correzioni.
+
+Batch corrente: V8 `40488481393`, generale `40488481420`, Android `40488481644`,
+iOS `40488481524` esclusa insieme ai job macOS per istruzione utente. Ultimo controllo:
+nessuna rossa; runtimeV8 Linux/Windows4/4 verdi, Android3/3 verde, patch validationverde;
+browserV8 e build generali ancora attivi. Non fare push finché i richiesti restano attivi.
+
+0375 è completa localmente: [handoff](handoff/0375-indexed-and-named-key-overlap.md).
+Filtro nomi-indice per interfacce indicizzate, tramite helper esistente, senza dedupglobale.
+Document mantiene nomi numerici e le forme non canoniche restano nomi.18normal/18JITless
+proxy contracts verdi, runner42(8skipPOSIX), parseRustverde; prova nativa mostraTypeError
+per idduplicati. L'estensione del filtro agli indici fuoriintervallo segue le letture già
+esistenti: è scelta d'integrazione, non conformità universale dimostrata. BrowserCIpending.
+
+Prossimo lavoro circoscritto: analizzare la visibilità in defineProperty/delete con gli
+stessi attributi e helper mantenuti, dopo revisione/replay/commitlocale0375; niente WIPpush.
+Restano aperti sourceText0361, compatibilità completa delle proprietà legacy e retention
+complessiva. I frame specifici già verificati non dimostrano una garanzia globale.
+
+Codex dirige/revisiona, Claude implementa via CLI (Read/Edit/Write/Grep/Glob; nienteShell
+negata da ritentare). Nessun incarico Claude attivo al completamento0375. Quota ripristinata;
+il ricontrollo `ripresa-unica-claude-dopo-quota-0347` è stato ELIMINATO dopo il tentativo.
+Nessuna automazione periodica. Al nuovo limite reale usare /usage e la regola reset+2min.
+ChromeDevToolsMCP indisponibile nella sessione (Targetclosed), nessun nuovo riferimentoChrome.
+Build pesanti soloCI. Workspaces leggeri da riusare, cwd esplicito: normale
+`C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js`, JITless `...-00kx/roves-js`;
+CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`. Evitare nuove cache/copie.
+
+## Storico recente — 26–27 ottobre (non è il punto di ripresa)
 
 ### Implementazione0374 — HTMLDocument aliasstandard, rimosso codiceinutilizzato
 

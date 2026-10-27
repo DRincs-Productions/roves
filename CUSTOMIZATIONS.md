@@ -1,3 +1,14 @@
+## 2026-10-27 - Avoid overlap between indexed and numeric named DOM keys (0375)
+
+The DOM ownKeys helper reuses get_array_index_from_id when an indexed getter exists,
+omitting numeric named keys before prototype lookup and final append. This matches existing
+indexed-first read/descriptor handling and prevents duplicate index/name keys from reaching
+V8. Named-only Document and noncanonical numeric names remain visible. No generic dedup,
+new parser/dependency/config field or order change. Native proxy18normal/18JITless contracts
+pass, including a real duplicate-native-key TypeError proof; runner42 pass (8 POSIX skips).
+Browser normal/JITless smoke pending CI. The out-of-range filter follows existing read
+semantics; no full WebIDL or overall retention/sourceText completion claim. Patch0375.
+
 ## 2026-10-27 - Replace the unused HTMLDocument class with the standard alias (0374)
 
 Document.webidl now uses existing LegacyWindowAlias generation; Window.HTMLDocument and

@@ -1500,6 +1500,8 @@ mod proxies {
     thread_local! {
         static PROXY_FINALIZED: Cell<u32> = const { Cell::new(0) };
         static PROXY_TRACED: Cell<u32> = const { Cell::new(0) };
+        /// `own_property_keys` reports index 0 twice (an invalid native handler result).
+        static DUPLICATE_INDEX: Cell<bool> = const { Cell::new(false) };
     }
 
     /// The expando object (created on demand in the private slot, as Servo's DOM proxies do).
@@ -1554,6 +1556,11 @@ mod proxies {
         crate::rooted!(in(cx) let mut id = crate::jsid::VoidId());
         unsafe { RUST_INTERNED_STRING_TO_JSID(cx, foo, id.handle_mut().into_handle()) };
         unsafe { AppendToIdVector(props, id.handle().into_handle()) };
+        if DUPLICATE_INDEX.with(Cell::get) {
+            id.set(crate::jsid::IntId(0));
+            unsafe { AppendToIdVector(props, id.handle().into_handle()) };
+            unsafe { AppendToIdVector(props, id.handle().into_handle()) };
+        }
         crate::rooted!(in(cx) let expando = unsafe { expando(cx, proxy) });
         unsafe { GetPropertyKeys(cx, expando.handle().into_handle(), JSITER_OWNONLY | JSITER_HIDDEN | JSITER_SYMBOLS, props) }
     }
@@ -1649,6 +1656,29 @@ mod proxies {
         runtime.gc_for_testing();
         runtime.gc_for_testing();
         assert_eq!(PROXY_FINALIZED.with(Cell::get), finalized_before + 1, "the finalize trap runs once with the slots");
+    }
+
+    /// The ownKeys trap forwards native keys unchanged: duplicates from a handler (e.g. an
+    /// index also listed as a named property) stay a visible TypeError, not a silent dedup.
+    #[test]
+    fn native_own_keys_duplicates_raise_type_error() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let traps = traps();
+        let handler = unsafe { CreateProxyHandler(&traps, &EXTRA as *const u8 as *const std::ffi::c_void) };
+        rooted!(in(cx) let proto = eval(&runtime, "({})").to_object());
+        rooted!(in(cx) let private = UndefinedValue());
+        rooted!(in(cx) let proxy = unsafe { NewProxyObject(cx, handler, private.handle().into_handle(), proto.get(), ptr::null(), false) });
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let value = ObjectValue(proxy.get()));
+        assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"dup".as_ptr(), value.handle().into_handle()) });
+        assert_eq!(describe(&runtime, eval(&runtime, "Reflect.ownKeys(dup).join()")), "foo", "unique keys are listed");
+        DUPLICATE_INDEX.with(|flag| flag.set(true));
+        let duplicate = eval(&runtime, "(() => { try { Reflect.ownKeys(dup); return 'no error' } catch (e) { return e instanceof TypeError ? 'TypeError' : String(e) } })()");
+        DUPLICATE_INDEX.with(|flag| flag.set(false));
+        assert_eq!(describe(&runtime, duplicate), "TypeError", "duplicate native keys are a proxy invariant violation");
+        assert_eq!(describe(&runtime, eval(&runtime, "Reflect.ownKeys(dup).join()")), "foo");
+        eval(&runtime, "delete globalThis.dup");
     }
 
     #[test]

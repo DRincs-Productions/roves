@@ -818,6 +818,69 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
   if (queried) problems.push(`prototype queried ${queried} times`);
   return problems.length ? problems.join("; ") : true;
 }));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// On an object with indexed properties an array-index key is never a named property
+// (LegacyPlatformObjectGetOwnProperty ignores named properties for it), so a control named "0"
+// must not be listed again next to index 0 (V8 rejects duplicate proxy keys with a TypeError),
+// and an out-of-range index name is not an own key at all. Non-canonical numeric strings are
+// not array indices and stay named properties. Index names never reach the prototype.
+check("HTMLFormElement ownKeys omits array-index names and keeps other numeric names", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+  const problems = [];
+  const names = ["0", "7", "00", "-1", "4294967295"];
+  const form = doc.createElement("form");
+  const inputs = names.map(name => {
+    const input = doc.createElement("input");
+    input.name = name;
+    form.append(input);
+    return input;
+  });
+  doc.body.append(form);
+  let indexQueries = 0;
+  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    has(target, property) {
+      if (property === "0" || property === "7") indexQueries++;
+      return Reflect.has(target, property);
+    },
+  }));
+  let keys;
+  try {
+    keys = Reflect.ownKeys(form);
+  } catch (error) {
+    return `ownKeys threw: ${(error && error.name) || error}`;
+  }
+  Object.setPrototypeOf(form, win.HTMLFormElement.prototype);
+  if (indexQueries) problems.push(`prototype queried ${indexQueries} times for index names`);
+  if (new Set(keys).size !== keys.length) problems.push(`duplicate keys: ${keys.map(String).join()}`);
+  const count = key => keys.filter(k => k === key).length;
+  for (let i = 0; i < form.length; i++) {
+    const desc = Object.getOwnPropertyDescriptor(form, String(i));
+    if (count(String(i)) !== 1 || !desc || desc.value !== inputs[i] || desc.writable !== false)
+      problems.push(`index ${i}: listed ${count(String(i))} ${describeDescriptor(desc)}`);
+  }
+  if (count("7") !== 0 || Object.hasOwn(form, "7") || Object.getOwnPropertyDescriptor(form, "7") !== undefined || form[7] !== undefined)
+    problems.push(`out-of-range "7": listed ${count("7")} own=${Object.hasOwn(form, "7")} get=${describeValue(form[7])}`);
+  for (const name of ["00", "-1", "4294967295"]) {
+    const input = inputs[names.indexOf(name)];
+    if (count(name) !== 1 || !Object.hasOwn(form, name) || form[name] !== input)
+      problems.push(`${JSON.stringify(name)}: listed ${count(name)} get=${describeValue(form[name])}`);
+  }
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Document has named but no indexed properties: every numeric name stays a visible own key.
+check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+  const problems = [];
+  for (const name of ["0", "7", "00", "4294967295"]) {
+    const img = doc.createElement("img");
+    img.name = name;
+    doc.body.append(img);
+    const listed = Reflect.ownKeys(doc).filter(k => k === name).length;
+    if (listed !== 1 || !Object.hasOwn(doc, name) || doc[name] !== img)
+      problems.push(`${JSON.stringify(name)}: listed ${listed} get=${describeValue(doc[name])}`);
+    img.remove();
+  }
+  return problems.length ? problems.join("; ") : true;
+}));
 finish();
 </script>
 </body></html>

@@ -1,5 +1,8 @@
 # 0372/0373 — visible named keys and the actual Document reflector
 
+Follow-up0375 addresses indexed/numeric named-key overlap with the existing index
+predicate; see0375-indexed-and-named-key-overlap.md. Real browser CI is still pending.
+
 Follow-up0374 replaces the separate unused HTMLDocument class with the existing
 LegacyWindowAlias mechanism; see0374-html-document-alias.md. Browser confirmation
 remains pending for the combined batch.
