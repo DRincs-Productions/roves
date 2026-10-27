@@ -19,12 +19,21 @@
 //!
 //! V8 is initialized once per process by [`v8_mode`], in the mode named by `V8_TEST_MODE`,
 //! before the first `JsRuntime` exists.
+//!
+//! [`native_class`] holds the cppgc-backed native class fixture (owned metadata, traced native
+//! child, wrapper identity); it runs on the same stripped document runtime.
+
+mod native_class;
+
+pub use native_class::NativeClassReport;
+pub use native_class::native_class_ownership;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::OnceLock;
 
+use deno_core::Extension;
 use deno_core::ImportAttributesContext;
 use deno_core::JsRuntime;
 use deno_core::ModuleLoadOptions;
@@ -219,19 +228,26 @@ fn validate_import_attributes(
 /// when V8 posts a delayed task for an isolate created outside one (`runtime/setup.rs:99-110`),
 /// so the context is checked here instead of left to chance.
 pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
-    let mut runtime = new_raw_runtime(loader)?;
+    new_runtime_with(loader, Vec::new())
+}
+
+/// [`new_runtime`] plus native-only extensions (no ESM, no ops): used by the
+/// [`native_class`] fixture to register its class before the bootstrap globals are removed.
+fn new_runtime_with(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
+    let mut runtime = new_raw_runtime(loader, extensions)?;
     remove_bootstrap_globals(&mut runtime)?;
     Ok(runtime)
 }
 
 /// deno_core's runtime as `JsRuntime::try_new` leaves it, bootstrap globals included. Private:
-/// used by [`new_runtime`] and by [`bootstrap_isolation`]'s before/after observation only,
+/// used by [`new_runtime_with`] and by [`bootstrap_isolation`]'s before/after observation only,
 /// never handed to game code.
-fn new_raw_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+fn new_raw_runtime(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
     v8_mode()?;
     tokio::runtime::Handle::try_current().map_err(|error| format!("JsRuntime needs a tokio context: {error}"))?;
     JsRuntime::try_new(RuntimeOptions {
         module_loader: Some(loader),
+        extensions,
         validate_import_attributes_cb: Some(Box::new(validate_import_attributes)),
         ..Default::default()
     })
@@ -577,7 +593,7 @@ const PRIVILEGED_OP_PREFIXES: &[&str] = &[
 pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
     block_on(async {
         let (before, removal) = {
-            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])))?;
+            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])), Vec::new())?;
             let json = string_script(&mut raw, "describe.js", DESCRIBE_BOOTSTRAP_GLOBALS)?;
             let before: Log = deno_core::serde_json::from_str(&json).map_err(err)?;
             (before, remove_bootstrap_globals(&mut raw)?)

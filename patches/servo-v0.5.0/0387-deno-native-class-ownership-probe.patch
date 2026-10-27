@@ -1,0 +1,573 @@
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index dafb2b8103b..df101e5ba98 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -51,6 +51,15 @@ verificati, nuove asserzioni in attesa CI; non è isolamento generale o integraz
+ Ricontrollo19:02 eliminato. Prossima prova classe nativa/cppgc; mantenere un solo servizio.
+ Vedere handoff/0382-deno-bootstrap-isolation.md.
+ 
++### Bootstrap0382 verificato, classe nativa0383 pronta
++
++Bootstrap0382 CI40556912335 verde4/4: moduli/async dopo rimozione globale e import interni
++rifiutati. Non dimostra isolamento universale. [Classe0383](handoff/0383-deno-native-class.md)
++usa op2/cppgc/SameObject mantenuti per metadati posseduti e durata di vita di oggetti nativi,
++senza framework/cache nostro. Metadata/sintassi verificati; nuove asserzioni attendonoCI.
++Resta da provare il DOM reale, le conversioni/ereditarietà, la raccolta generale, CSP e il
++servizio moduli/async unico. Prossima prova indipendente: completamento/cancellazione opnative.
++
+ ## Prossimi passi, codice e librerie
+ 
+ | Area | Oggi | Direzione |
+diff --git a/support/deno-core-probe/README.md b/support/deno-core-probe/README.md
+index 8dc152b7cd4..2da21db5474 100644
+--- a/support/deno-core-probe/README.md
++++ b/support/deno-core-probe/README.md
+@@ -15,9 +15,10 @@ earlier secondary-context scenario (task 0378) was removed: it needed realm hook
+ does not make public, and the product no longer requires them.
+ 
+ Scenarios in `tests/probe.rs`. The task 0381 baseline (without namespace removal) passed in
+-CI run 40539608247 (4/4 jobs: Ubuntu and Windows, normal and JITless). The task 0382 changes
+-below (namespace removal, `bootstrap_namespace_is_removed_before_game_code`) have not been
+-compiled or run yet. All go
++CI run 40539608247 (4/4 jobs: Ubuntu and Windows, normal and JITless). The task 0382
++namespace removal was published for CI run 40556912335; the task 0383 native class scenario
++(`native_class_instances_own_their_values_and_share_owned_metadata`) has not been compiled
++or run yet. All go
+ through public deno_core APIs and its `v8` re-export, with an in-memory `ModuleLoader`
+ serving `https://game.invalid/`. Those URLs are a mock: the scenarios run modules and
+ scripts directly, with no HTML document, no HTML origin and no CSP header behind them.
+@@ -28,11 +29,11 @@ globals (`Deno`, `__bootstrap`, `__infra`) with the native `v8::Object` API righ
+ as a blocker instead of being hidden. So every scenario below runs on the stripped global.
+ The raw constructor is private and used only for the before/after observation.
+ 
+-The 10 logical scenarios are grouped in **2 Rust tests**:
++The 11 logical scenarios are grouped in **2 Rust tests**:
+ `mode_values_are_validated` (pure, no V8) and `single_document_scenarios`, which runs the
+-other nine in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
++other ten in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
+ on that thread (`--test-threads=1` alone serializes tests but may still run each on its own
+-thread). The first failing scenario stops the rest; they are not 10 independent tests.
++thread). The first failing scenario stops the rest; they are not 11 independent tests.
+ 
+ | Scenario | Checks | Does not prove |
+ |---|---|---|
+@@ -46,6 +47,7 @@ thread). The first failing scenario stops the rest; they are not 10 independent
+ | `only_allowlisted_urls_reach_the_loader` | Other origin/port, `data:`, `file:`, `ext:`, `node:`, bare specifiers never reach `load` | Servo fetch, CORS, CSP `script-src`, SRI, import maps |
+ | `context_flag_switches_string_compilation_off_and_on` | With the context flag off, `eval`/`new Function` throw `EvalError` while embedder-compiled scripts still run; with it on, both work | Per-string decisions, CSP `unsafe-eval` reporting, Trusted Types: the flag is context-wide, not a CSP implementation |
+ | `bootstrap_namespace_is_removed_before_game_code` | Raw deno_core has `Deno`/`__bootstrap` as configurable data properties (`__infra` already gone); after removal the game's first statements see none of them, no global value re-exposes `core`/`ops`/`primordials`/`internals`, `Object`/`Promise`/`queueMicrotask` work; `ext:core/mod.js` and `ext:core/ops` are refused by direct `import()`, by `import.meta.resolve`, and — when a loader alias maps a game specifier onto them — by deno_core's own `ext:` guard for dynamic and static imports; no fs/net/fetch/process-style op is registered and the resource table is empty | General privilege isolation: deno_core's builtin closures (`console`, `queueMicrotask`) still hold the core internally, builtin resource ops (`op_read`, `op_print`, ...) stay registered though unreachable from game code, `import.meta.main` is a Deno extra; no Servo DOM, origin or CSP |
++| `native_class_instances_own_their_values_and_share_owned_metadata` | `src/native_class.rs`: one class registered by `#[op2] impl` + `extension!(objects = [...])`, wrappers made by `deno_core::cppgc::make_cppgc_object` on the stripped runtime. Two instances share one prototype (`constructor.name`, `instanceof`, getters on the prototype, no own properties) and one `Rc<ClassMeta>` built at runtime, yet keep their own native value and their own wrapper-less cppgc child behind a traced `v8::cppgc::Member`; `info` returns a stable, per-instance object through deno_core's `SameObject`; a wrapper-less receiver and the exposed constructor cannot reach a native value. After the creator drops its `Rc`, exactly the two instances hold the metadata (`Weak` count 2); a public `Isolate::low_memory_notification` GC with both wrappers reachable finalizes nothing and the values still read back. After teardown every instance, child and `info` object is finalized once (cppgc `Drop` counters) and the metadata is freed | Servo DOM bindings, Web IDL conversions, inheritance, cross-realm wrappers; collection **before** teardown once the roots are gone (V8's public GC entry points do not promise it, and cppgc may scan the native stack conservatively: only an upper bound is asserted); a strict proof that tracing alone retained the child (a stale native-stack pointer could also keep it); the V8 class name and cppgc `get_name` remain `'static`, as those APIs require |
+ 
+ There is **no Servo DOM, no History API and no TanStack-style router** here, and none is
+ simulated: nothing in this crate proves that Servo's DOM, events or same-document routing
+@@ -65,7 +67,8 @@ V8_TEST_MODE=jitless cargo test --locked --manifest-path support/deno-core-probe
+ The build downloads the prebuilt rusty_v8 static library; it is heavy, so it runs online in
+ `.github/workflows/deno-core-probe.yml` (Ubuntu 24.04 and Windows, normal and JITless, no
+ browser executable needed). No result is claimed until that workflow has run; see
+-`target/task-0381/RESULTS.md` and `target/task-0382/RESULTS.md` for what was and was not
++`target/task-0381/RESULTS.md`, `target/task-0382/RESULTS.md` and
++`target/task-0383/RESULTS.md` for what was and was not
+ executed.
+ 
+ ## Engine version gap
+@@ -79,9 +82,12 @@ line for the whole engine (deno_core's), not two copies side by side.
+ 
+ Each needs a bounded proof using existing maintained APIs, not a new framework:
+ 
+-1. **DOM classes, globals and cppgc ownership.** Servo's DOM objects on deno_core's cppgc
+-   (`deno_core::cppgc`) with Roves-owned class metadata: the existing Roves class fixtures
+-   need owned metadata, prototype chains and wrapper identity, traced by V8's GC.
++1. **DOM classes, globals and cppgc ownership.** A single native class fixture with owned
++   metadata, a traced native child and `SameObject` identity is authored
++   (`native_class_instances_own_their_values_and_share_owned_metadata`, awaiting CI). Still
++   open: Servo's DOM objects and their prototype chains (inheritance through deno_core's
++   `Base`/`Inherits`), interface objects exposed on the document global instead of
++   `Deno.core.ops`, and Web IDL conversions.
+ 2. **Module and async single owner.** deno_core must replace Servo's module map and
+    dynamic-import service and the Promise job queue for the document, not run beside them;
+    the old path is removed in the same change.
+diff --git a/support/deno-core-probe/src/lib.rs b/support/deno-core-probe/src/lib.rs
+index 654ab4b6f12..898265b4267 100644
+--- a/support/deno-core-probe/src/lib.rs
++++ b/support/deno-core-probe/src/lib.rs
+@@ -19,12 +19,21 @@
+ //!
+ //! V8 is initialized once per process by [`v8_mode`], in the mode named by `V8_TEST_MODE`,
+ //! before the first `JsRuntime` exists.
++//!
++//! [`native_class`] holds the cppgc-backed native class fixture (owned metadata, traced native
++//! child, wrapper identity); it runs on the same stripped document runtime.
++
++mod native_class;
++
++pub use native_class::NativeClassReport;
++pub use native_class::native_class_ownership;
+ 
+ use std::cell::RefCell;
+ use std::collections::HashMap;
+ use std::rc::Rc;
+ use std::sync::OnceLock;
+ 
++use deno_core::Extension;
+ use deno_core::ImportAttributesContext;
+ use deno_core::JsRuntime;
+ use deno_core::ModuleLoadOptions;
+@@ -219,19 +228,26 @@ fn validate_import_attributes(
+ /// when V8 posts a delayed task for an isolate created outside one (`runtime/setup.rs:99-110`),
+ /// so the context is checked here instead of left to chance.
+ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+-    let mut runtime = new_raw_runtime(loader)?;
++    new_runtime_with(loader, Vec::new())
++}
++
++/// [`new_runtime`] plus native-only extensions (no ESM, no ops): used by the
++/// [`native_class`] fixture to register its class before the bootstrap globals are removed.
++fn new_runtime_with(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
++    let mut runtime = new_raw_runtime(loader, extensions)?;
+     remove_bootstrap_globals(&mut runtime)?;
+     Ok(runtime)
+ }
+ 
+ /// deno_core's runtime as `JsRuntime::try_new` leaves it, bootstrap globals included. Private:
+-/// used by [`new_runtime`] and by [`bootstrap_isolation`]'s before/after observation only,
++/// used by [`new_runtime_with`] and by [`bootstrap_isolation`]'s before/after observation only,
+ /// never handed to game code.
+-fn new_raw_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
++fn new_raw_runtime(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
+     v8_mode()?;
+     tokio::runtime::Handle::try_current().map_err(|error| format!("JsRuntime needs a tokio context: {error}"))?;
+     JsRuntime::try_new(RuntimeOptions {
+         module_loader: Some(loader),
++        extensions,
+         validate_import_attributes_cb: Some(Box::new(validate_import_attributes)),
+         ..Default::default()
+     })
+@@ -577,7 +593,7 @@ const PRIVILEGED_OP_PREFIXES: &[&str] = &[
+ pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
+     block_on(async {
+         let (before, removal) = {
+-            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])))?;
++            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])), Vec::new())?;
+             let json = string_script(&mut raw, "describe.js", DESCRIBE_BOOTSTRAP_GLOBALS)?;
+             let before: Log = deno_core::serde_json::from_str(&json).map_err(err)?;
+             (before, remove_bootstrap_globals(&mut raw)?)
+diff --git a/support/deno-core-probe/tests/probe.rs b/support/deno-core-probe/tests/probe.rs
+index 3de4c17312f..2169e3e5517 100644
+--- a/support/deno-core-probe/tests/probe.rs
++++ b/support/deno-core-probe/tests/probe.rs
+@@ -24,10 +24,10 @@ fn mode_values_are_validated() {
+     assert!(probe::parse_mode(None).is_err());
+ }
+ 
+-/// The nine V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
++/// The ten V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
+ /// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
+-/// the "before" half of the last one runs on `new_runtime`, i.e. after deno_core's bootstrap
+-/// globals were removed.
++/// the "before" half of the bootstrap one runs after deno_core's bootstrap globals were
++/// removed (`new_runtime`, or the same path plus the native class extension).
+ #[test]
+ fn single_document_scenarios() {
+     configured_mode_controls_webassembly();
+@@ -39,6 +39,7 @@ fn single_document_scenarios() {
+     only_allowlisted_urls_reach_the_loader();
+     context_flag_switches_string_compilation_off_and_on();
+     bootstrap_namespace_is_removed_before_game_code();
++    native_class_instances_own_their_values_and_share_owned_metadata();
+ }
+ 
+ fn configured_mode_controls_webassembly() {
+@@ -161,3 +162,46 @@ fn bootstrap_namespace_is_removed_before_game_code() {
+     assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
+     assert_eq!(report.resources, 0);
+ }
++
++fn native_class_instances_own_their_values_and_share_owned_metadata() {
++    // Not proven: Servo DOM bindings, Web IDL conversions, cross-realm wrappers, inheritance,
++    // or collection *before* teardown (V8's public GC entry points do not promise it; see
++    // README.md). Identity checks alone would be a JS tautology: the Rust-side `Rc`/`Weak`
++    // counts and the cppgc finalizer counters are what tie the wrappers to native ownership.
++    let report = probe::native_class_ownership().unwrap();
++
++    assert_eq!(
++        report.log,
++        strings(&[
++            "same-proto:true",
++            "constructor:NativeClass",
++            "instanceof:true",
++            "own-props:0",
++            "accessors:function,function,function,function",
++            "kind:NativeClass:NativeClass",
++            "value:alpha:beta",
++            "child:alpha-child:beta-child",
++            "info-stable:true",
++            "info-distinct:true",
++            "distinct:true",
++            // Native brand check: a wrapper-less receiver cannot reach a native value, and the
++            // exposed constructor does not mint native objects.
++            "foreign-receiver:threw",
++            "constructed-receiver:threw",
++        ])
++    );
++
++    // The creator's own Rc is gone; exactly the two native instances keep the metadata alive.
++    assert_eq!(report.meta_strong_after_creator_drop, 2);
++    // A full GC with both wrappers reachable finalizes nothing: wrappers keep their native
++    // objects, and each parent's traced Member keeps its wrapper-less child.
++    assert_eq!(report.drops_while_reachable, [0, 0, 0]);
++    assert_eq!(report.after_gc, "NativeClass/alpha/alpha-child,NativeClass/beta/beta-child");
++    // After the roots are deleted, collection before teardown is allowed but not required.
++    for (count, total) in report.drops_after_unroot.iter().zip([2, 2, 2]) {
++        assert!(*count <= total, "{:?}", report.drops_after_unroot);
++    }
++    // Dropping the runtime finalizes every native object once, and with them the metadata.
++    assert_eq!(report.drops_after_teardown, [2, 2, 2]);
++    assert!(!report.meta_alive_after_teardown);
++}
+diff --git a/support/deno-core-probe/src/native_class.rs b/support/deno-core-probe/src/native_class.rs
+new file mode 100644
+index 00000000000..1cb387ed27f
+--- /dev/null
++++ b/support/deno-core-probe/src/native_class.rs
+@@ -0,0 +1,297 @@
++//! Native class fixture for the single-document probe (task 0383): one cppgc-backed class whose
++//! JavaScript wrappers carry real Rust values, registered and wrapped only through maintained
++//! deno_core/rusty_v8 APIs. Glue is kept to this one fixture; it is not a binding generator and
++//! makes no claim about Servo DOM bindings.
++//!
++//! - Registration: `#[op2] impl NativeClass` + `extension!(objects = [NativeClass])`. deno_core
++//!   builds the class `FunctionTemplate` (getters on its prototype template) and keys it by
++//!   `type_name::<NativeClass>()`, so `deno_core::cppgc::make_cppgc_object` instantiates
++//!   wrappers with that prototype. The class function itself is only published under
++//!   `Deno.core.ops`, which [`crate::new_runtime`] removes: game code reaches it only through
++//!   `wrapper.constructor`, and that constructor wraps nothing (deno_core's no-op template
++//!   callback), so it cannot mint native objects.
++//! - Owned metadata: [`ClassMeta`] is heap-allocated Rust data behind an `Rc`; every instance
++//!   holds a strong reference, so it stays valid after its creator drops its own `Rc`, and it
++//!   is freed with the last instance. The class name V8 reports comes from the static op
++//!   declaration and `GarbageCollected::get_name` must be `'static` (cppgc contract): the owned
++//!   name is the observable [`ClassMeta::name`], read through the `kind` getter.
++//! - Tracing: each instance owns a native-only cppgc child (no JS wrapper) through a traced
++//!   `v8::cppgc::Member`.
++//! - Identity: the `info` getter goes through `deno_core::cppgc::SameObject`, deno_core's own
++//!   per-instance wrapper cache, not a map or a permanent global of ours.
++
++use std::cell::Cell;
++use std::rc::Rc;
++use std::rc::Weak;
++
++use deno_core::GarbageCollected;
++use deno_core::JsRuntime;
++use deno_core::cppgc::SameObject;
++use deno_core::op2;
++use deno_core::v8;
++
++use crate::Log;
++use crate::MemoryLoader;
++use crate::err;
++use crate::new_runtime_with;
++use crate::script;
++use crate::string_script;
++
++/// Finalizer counts, observed from Rust. Shared by `Rc` so the test can read them after the
++/// runtime that ran the finalizers is gone.
++#[derive(Default)]
++pub struct Drops {
++    pub instances: Cell<usize>,
++    pub children: Cell<usize>,
++    pub infos: Cell<usize>,
++}
++
++/// Class metadata: owned Rust data, never a borrowed stack or `static` pointer.
++pub struct ClassMeta {
++    pub name: String,
++}
++
++/// The native object behind each JavaScript wrapper.
++pub struct NativeClass {
++    meta: Rc<ClassMeta>,
++    value: String,
++    child: v8::cppgc::Member<NativeChild>,
++    info: SameObject<NativeInfo>,
++    drops: Rc<Drops>,
++}
++
++// SAFETY: `trace` visits the only cppgc pointer the object holds (`child`). `info` keeps its
++// wrapper through a `v8::Global` root (deno_core's `SameObject` design), not a traced edge.
++unsafe impl GarbageCollected for NativeClass {
++    fn trace(&self, visitor: &mut v8::cppgc::Visitor) {
++        visitor.trace(&self.child);
++    }
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"NativeClass"
++    }
++}
++
++impl Drop for NativeClass {
++    fn drop(&mut self) {
++        self.drops.instances.set(self.drops.instances.get() + 1);
++    }
++}
++
++#[op2]
++impl NativeClass {
++    /// The owned class metadata, shared by every instance.
++    #[getter]
++    #[string]
++    fn kind(&self) -> String {
++        self.meta.name.clone()
++    }
++
++    /// This instance's own native value.
++    #[getter]
++    #[string]
++    fn value(&self) -> String {
++        self.value.clone()
++    }
++
++    /// Read through the traced `Member`: only valid while tracing keeps the child alive.
++    #[getter]
++    #[string]
++    fn child(&self) -> String {
++        // SAFETY: `child` is set at construction and visited by `trace`.
++        unsafe { self.child.get() }.map(|child| child.label.clone()).unwrap_or_default()
++    }
++
++    /// The same wrapper object on every read, created on first use by `SameObject`. No return
++    /// attribute: deno_ops 0.289.0 parses `v8::Global<v8::$T>` as an unknown type
++    /// (`op2/signature.rs:1517`) and converts it with deno_core's `ToV8 for v8::Global<T>`
++    /// (`convert.rs:1322`).
++    #[getter]
++    fn info(&self, scope: &mut v8::PinScope) -> v8::Global<v8::Object> {
++        self.info.get(scope, |_| NativeInfo { drops: self.drops.clone() })
++    }
++}
++
++/// Native-only child: reachable solely through its parent's traced `Member`.
++pub struct NativeChild {
++    label: String,
++    drops: Rc<Drops>,
++}
++
++// SAFETY: holds no cppgc pointers.
++unsafe impl GarbageCollected for NativeChild {
++    fn trace(&self, _visitor: &mut v8::cppgc::Visitor) {}
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"NativeChild"
++    }
++}
++
++impl Drop for NativeChild {
++    fn drop(&mut self) {
++        self.drops.children.set(self.drops.children.get() + 1);
++    }
++}
++
++/// Object handed out by the `info` getter; unregistered, so it uses deno_core's generic
++/// cppgc template.
++pub struct NativeInfo {
++    drops: Rc<Drops>,
++}
++
++// SAFETY: holds no cppgc pointers.
++unsafe impl GarbageCollected for NativeInfo {
++    fn trace(&self, _visitor: &mut v8::cppgc::Visitor) {}
++
++    fn get_name(&self) -> &'static std::ffi::CStr {
++        c"NativeInfo"
++    }
++}
++
++impl Drop for NativeInfo {
++    fn drop(&mut self) {
++        self.drops.infos.set(self.drops.infos.get() + 1);
++    }
++}
++
++deno_core::extension!(roves_native_class_probe, objects = [NativeClass]);
++
++/// Allocates one instance with its native child and returns its wrapper. The child is held by
++/// a `cppgc::Persistent` root until the parent is wrapped, so its liveness never depends on
++/// conservative stack scanning while the wrapper allocation may trigger a GC.
++fn make_instance<'s>(
++    scope: &mut v8::PinScope<'s, '_>,
++    meta: &Rc<ClassMeta>,
++    value: &str,
++    drops: &Rc<Drops>,
++) -> Result<v8::Local<'s, v8::Object>, String> {
++    let (child, root) = {
++        let heap = scope.get_cpp_heap().ok_or("the isolate has no CppHeap")?;
++        // SAFETY: the pointer is immediately rooted by a Persistent and stored in a Member.
++        let pointer = unsafe {
++            v8::cppgc::make_garbage_collected(
++                heap,
++                NativeChild { label: format!("{value}-child"), drops: drops.clone() },
++            )
++        };
++        (v8::cppgc::Member::new(&pointer), v8::cppgc::Persistent::new(&pointer))
++    };
++    let native = NativeClass {
++        meta: meta.clone(),
++        value: value.to_owned(),
++        child,
++        info: SameObject::new(),
++        drops: drops.clone(),
++    };
++    let wrapper = deno_core::cppgc::make_cppgc_object(scope, native);
++    drop(root);
++    Ok(wrapper)
++}
++
++/// What `native_class_ownership` observed.
++pub struct NativeClassReport {
++    /// What the game script logged while both wrappers were reachable.
++    pub log: Log,
++    /// Strong `ClassMeta` references right after its creator dropped its own `Rc`.
++    pub meta_strong_after_creator_drop: usize,
++    /// `[instances, children, infos]` finalized after a full GC with both wrappers reachable.
++    pub drops_while_reachable: [usize; 3],
++    /// Values read by a second script after that GC.
++    pub after_gc: String,
++    /// `[instances, children, infos]` finalized after the roots were deleted and V8 was asked
++    /// to collect, before teardown. Observational only (see README.md).
++    pub drops_after_unroot: [usize; 3],
++    /// `[instances, children, infos]` finalized once the runtime was dropped.
++    pub drops_after_teardown: [usize; 3],
++    pub meta_alive_after_teardown: bool,
++}
++
++fn counts(drops: &Drops) -> [usize; 3] {
++    [drops.instances.get(), drops.children.get(), drops.infos.get()]
++}
++
++/// V8's public `LowMemoryNotification`: full GCs of the JS and cppgc heaps, with no test flag,
++/// no `--expose-gc` and nothing visible to scripts. Called with no open `HandleScope`, so no
++/// `Local` of ours roots a wrapper. cppgc may still scan the native stack conservatively.
++fn collect(runtime: &mut JsRuntime) {
++    runtime.v8_isolate().low_memory_notification();
++}
++
++// An IIFE: top-level `const`s of a classic script would live on in the global lexical
++// environment and keep the wrappers reachable after `unroot.js`.
++const GAME_CHECKS: &str = r#"(() => {
++  const log = [];
++  const a = globalThis.nativeA, b = globalThis.nativeB;
++  const proto = Object.getPrototypeOf(a);
++  log.push("same-proto:" + (proto === Object.getPrototypeOf(b)));
++  log.push("constructor:" + proto.constructor.name);
++  log.push("instanceof:" + (a instanceof proto.constructor && b instanceof proto.constructor));
++  log.push("own-props:" + Object.getOwnPropertyNames(a).length);
++  log.push("accessors:" + ["kind", "value", "child", "info"].map(k => typeof Object.getOwnPropertyDescriptor(proto, k)?.get).join());
++  log.push("kind:" + a.kind + ":" + b.kind);
++  log.push("value:" + a.value + ":" + b.value);
++  log.push("child:" + a.child + ":" + b.child);
++  log.push("info-stable:" + (a.info === a.info && b.info === b.info));
++  log.push("info-distinct:" + (a.info !== b.info));
++  log.push("distinct:" + (a !== b));
++  for (const [label, run] of [
++    ["foreign-receiver", () => Object.getOwnPropertyDescriptor(proto, "value").get.call({})],
++    ["constructed-receiver", () => new proto.constructor().value],
++  ]) {
++    try { run(); log.push(label + ":returned"); } catch (e) { log.push(label + ":threw"); }
++  }
++  return JSON.stringify(log);
++})()"#;
++
++/// Two instances of one native class share owned metadata, keep their own values and native
++/// children, have stable wrapper identity and a shared prototype; metadata outlives its Rust
++/// creator while wrappers are reachable; everything is finalized at teardown.
++pub fn native_class_ownership() -> Result<NativeClassReport, String> {
++    crate::block_on(async {
++        let drops = Rc::new(Drops::default());
++        let meta_weak: Weak<ClassMeta>;
++        let mut runtime = new_runtime_with(Rc::new(MemoryLoader::new(&[])), vec![roves_native_class_probe::init()])?;
++
++        let meta_strong_after_creator_drop = {
++            // Built at runtime: heap data owned by the creator, not a literal or a static.
++            let creator = Rc::new(ClassMeta { name: ["Native", "Class"].concat() });
++            meta_weak = Rc::downgrade(&creator);
++            deno_core::scope!(scope, runtime);
++            let context = scope.get_current_context();
++            let global = context.global(scope);
++            for (name, value) in [("nativeA", "alpha"), ("nativeB", "beta")] {
++                let wrapper = make_instance(scope, &creator, value, &drops)?;
++                let key = v8::String::new(scope, name).ok_or("cannot allocate a V8 string")?;
++                global.set(scope, key.into(), wrapper.into()).ok_or("setting a global threw")?;
++            }
++            drop(creator);
++            meta_weak.strong_count()
++        };
++
++        let json = string_script(&mut runtime, "native-class.js", GAME_CHECKS)?;
++        let log: Log = deno_core::serde_json::from_str(&json).map_err(err)?;
++
++        collect(&mut runtime);
++        let drops_while_reachable = counts(&drops);
++        let after_gc = string_script(
++            &mut runtime,
++            "after-gc.js",
++            "[nativeA, nativeB].map(o => o.kind + '/' + o.value + '/' + o.child).join()",
++        )?;
++
++        script(&mut runtime, "unroot.js", "delete globalThis.nativeA; delete globalThis.nativeB;")?;
++        collect(&mut runtime);
++        let drops_after_unroot = counts(&drops);
++
++        drop(runtime);
++        Ok(NativeClassReport {
++            log,
++            meta_strong_after_creator_drop,
++            drops_while_reachable,
++            after_gc,
++            drops_after_unroot,
++            drops_after_teardown: counts(&drops),
++            meta_alive_after_teardown: meta_weak.upgrade().is_some(),
++        })
++    })
++}
+diff --git a/docs/handoff/0383-deno-native-class.md b/docs/handoff/0383-deno-native-class.md
+new file mode 100644
+index 00000000000..531f013cf79
+--- /dev/null
++++ b/docs/handoff/0383-deno-native-class.md
+@@ -0,0 +1,39 @@
++# 0383 — native class, owned metadata and cppgc proof
++
++Independent experimental fixture only; production DOM/bindings and runtime are unchanged.
++Uses maintained deno_core op2/extension object registration, cppgc wrapping and SameObject,
++plus rusty_v8 Member/Persistent tracing and low_memory_notification. No new dependencies,
++private slots, binding framework, manual wrapper cache, FFI or NoHeapPointers.
++
++NativeClass holds owned Rc<ClassMeta> (runtime-created name), per-instance Rust value,
++a traced native-only child and a SameObject-backed info wrapper. Two instances share the
++metadata; its creator releases its Rc before JS runs. A temporary Persistent roots each
++child through wrapper allocation. The default probe runtime remains bootstrap-cleaned.
++
++The same single V8 test entry point now covers eleven logical scenarios in two Rust tests.
++New assertions check prototype/getters, separate native values/children, stable per-instance
++info identity, receiver brand failures, metadata ownership count, live-wrapper survival
++after a native low-memory notification and exact finalizer/metadata release at shutdown.
++Collection before shutdown is only observed/bounded, not guaranteed. GC may conservatively
++retain stack references; this is not proof that arbitrary cycles or full DOM frames collect.
++Static V8 class/GC type names remain static as required; the owned metadata is separate.
++
++Reviewed against actual deno_ops0.289.0 source: remove unsupported #[global] return marker;
++v8::Global<Object> uses the maintained ToV8 conversion without an annotation. Checked
++getter/string/scope syntax, absent-constructor behavior and wrapper-less receiver rejection.
++Metadata, Rust syntax and workflow/lock checks pass locally; macro expansion/typechecking
++and runtime assertions await CI. No heavy build or performance measurement locally.
++Windows/Linux patch replay should reproduce all changed paths. Local source/API/logs:
++target/task-0383/; sources of op2 are public crate inputs, not production dependencies added.
++
++Class declaration lives under Deno.core.ops before bootstrap cleanup; there is no global DOM
++interface object, inheritance or Web IDL conversion proof. SameObject's internal Global root
++can participate in back-reference cycles; this fixture does not construct one. Real Servo
++integration, HTML checkpoint order, CSP/Trusted Types callback gap, module/async single owner
++and general reclamation remain adoption checks. Next independent proof: native async-op
++completion/cancellation/cleanup under the same cleaned single-document runtime.
++
++At review, bootstrap0382 CI40556912335 is green4/4; general40556912161 required checks have
++five successes and packaging/Steam still active, no required failure. No push while they
++remain active. Apple checks excluded. Keep complete commits local and continue useful
++bounded assignments; no periodic polling or active retry automation.

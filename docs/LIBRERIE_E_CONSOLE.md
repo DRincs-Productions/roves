@@ -51,6 +51,15 @@ verificati, nuove asserzioni in attesa CI; non è isolamento generale o integraz
 Ricontrollo19:02 eliminato. Prossima prova classe nativa/cppgc; mantenere un solo servizio.
 Vedere handoff/0382-deno-bootstrap-isolation.md.
 
+### Bootstrap0382 verificato, classe nativa0383 pronta
+
+Bootstrap0382 CI40556912335 verde4/4: moduli/async dopo rimozione globale e import interni
+rifiutati. Non dimostra isolamento universale. [Classe0383](handoff/0383-deno-native-class.md)
+usa op2/cppgc/SameObject mantenuti per metadati posseduti e durata di vita di oggetti nativi,
+senza framework/cache nostro. Metadata/sintassi verificati; nuove asserzioni attendonoCI.
+Resta da provare il DOM reale, le conversioni/ereditarietà, la raccolta generale, CSP e il
+servizio moduli/async unico. Prossima prova indipendente: completamento/cancellazione opnative.
+
 ## Prossimi passi, codice e librerie
 
 | Area | Oggi | Direzione |

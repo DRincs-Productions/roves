@@ -24,10 +24,10 @@ fn mode_values_are_validated() {
     assert!(probe::parse_mode(None).is_err());
 }
 
-/// The nine V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
+/// The ten V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
 /// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
-/// the "before" half of the last one runs on `new_runtime`, i.e. after deno_core's bootstrap
-/// globals were removed.
+/// the "before" half of the bootstrap one runs after deno_core's bootstrap globals were
+/// removed (`new_runtime`, or the same path plus the native class extension).
 #[test]
 fn single_document_scenarios() {
     configured_mode_controls_webassembly();
@@ -39,6 +39,7 @@ fn single_document_scenarios() {
     only_allowlisted_urls_reach_the_loader();
     context_flag_switches_string_compilation_off_and_on();
     bootstrap_namespace_is_removed_before_game_code();
+    native_class_instances_own_their_values_and_share_owned_metadata();
 }
 
 fn configured_mode_controls_webassembly() {
@@ -160,4 +161,47 @@ fn bootstrap_namespace_is_removed_before_game_code() {
     assert_eq!(refused, ["ext:core/mod.js", "ext:core/ops"].into_iter().collect(), "{:?}", report.refused);
     assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
     assert_eq!(report.resources, 0);
+}
+
+fn native_class_instances_own_their_values_and_share_owned_metadata() {
+    // Not proven: Servo DOM bindings, Web IDL conversions, cross-realm wrappers, inheritance,
+    // or collection *before* teardown (V8's public GC entry points do not promise it; see
+    // README.md). Identity checks alone would be a JS tautology: the Rust-side `Rc`/`Weak`
+    // counts and the cppgc finalizer counters are what tie the wrappers to native ownership.
+    let report = probe::native_class_ownership().unwrap();
+
+    assert_eq!(
+        report.log,
+        strings(&[
+            "same-proto:true",
+            "constructor:NativeClass",
+            "instanceof:true",
+            "own-props:0",
+            "accessors:function,function,function,function",
+            "kind:NativeClass:NativeClass",
+            "value:alpha:beta",
+            "child:alpha-child:beta-child",
+            "info-stable:true",
+            "info-distinct:true",
+            "distinct:true",
+            // Native brand check: a wrapper-less receiver cannot reach a native value, and the
+            // exposed constructor does not mint native objects.
+            "foreign-receiver:threw",
+            "constructed-receiver:threw",
+        ])
+    );
+
+    // The creator's own Rc is gone; exactly the two native instances keep the metadata alive.
+    assert_eq!(report.meta_strong_after_creator_drop, 2);
+    // A full GC with both wrappers reachable finalizes nothing: wrappers keep their native
+    // objects, and each parent's traced Member keeps its wrapper-less child.
+    assert_eq!(report.drops_while_reachable, [0, 0, 0]);
+    assert_eq!(report.after_gc, "NativeClass/alpha/alpha-child,NativeClass/beta/beta-child");
+    // After the roots are deleted, collection before teardown is allowed but not required.
+    for (count, total) in report.drops_after_unroot.iter().zip([2, 2, 2]) {
+        assert!(*count <= total, "{:?}", report.drops_after_unroot);
+    }
+    // Dropping the runtime finalizes every native object once, and with them the metadata.
+    assert_eq!(report.drops_after_teardown, [2, 2, 2]);
+    assert!(!report.meta_alive_after_teardown);
 }

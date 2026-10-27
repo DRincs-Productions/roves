@@ -1,3 +1,16 @@
+## 2026-10-27 - Add a maintained-API native class ownership probe (0383)
+
+Isolated deno-core-probe gains native_class.rs: op2/extension registration, owned Rc class
+metadata, cppgc child tracing with allocation root, SameObject wrapper identity and native
+low-memory notifications. Add receiver/prototype/native-value/liveness/shutdown assertions
+to the same V8 test thread (eleven logical scenarios in two Rust tests). No manual cache,
+new dependency, FFI, private slot or NoHeapPointers. Correct unsupported #[global] before
+publication using actual deno_ops0.289.0 source and existing Global<Object> ToV8 conversion.
+Local metadata/syntax/workflow checks pass; typechecking and runtime await CI. Explain
+static type names, conservative GC and untested cycles/inheritance/real DOM boundaries.
+Update README/wiki/library/current/durable handoffs; patch0387. Bootstrap0382 is now4/4
+green online; general packaging/Steam still active, so keep new complete commits local.
+
 ## 2026-10-27 - Remove Deno bootstrap namespaces before isolated game scenarios (0382)
 
 Resume after verified reset succeeded; delete the single retry. In the isolated probe,

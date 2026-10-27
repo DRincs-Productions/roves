@@ -20,22 +20,25 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026
 
-Checkpoint pubblicato: `19103d9ceffb493d53e348d9015bfdddac05fa66`, wiki `1d69714`,
-roves-action `4b2a67f`. Include documentazione0380 e prova isolata0381.
-Prova deno_core0381 CI `40539608247` VERDE4/4, Linux/Windows normal/JITless con due
-testRust/dieci scenari perjob. Generale `40539608252` ora richiesti10/10verdi, packaging
-Windows/Linux eSteam compresi; Android `40539608239` verde. iOS `40539608230` esclusa
-insieme a macOS, non dichiarata verde. Batch precedente terminale, pubblicazione consentita.
+Checkpoint pubblicato: `d1eb92011b21fd1b7e66971061057934d36684f8`, wiki `43113f9`,
+roves-action `4b2a67f`. Include0382 bootstrap e precedenti checkpoint completi.
+CIbootstrap `40556912335` VERDE4/4 Linux/Windows normal/JITless: stessa suite dopo rimozione
+globali, importinterni diretti/alias/statici rifiutati. È prova isolata, non piena sicurezza
+o DOM/CSP/router/adozione. Generale `40556912161`: ultimi richiesti5verdi, packagingWindows/
+Linux eSteam attivi, nessunarossa. Android `40556912086` da controllare al prossimo punto;
+iOS `40556912246` e macOS esclusi. Nessunpushconrichiestiattivi. No polling periodico.
 
-**0382 ripresa e completa localmente:** tentativo autorizzato27ottobre19:02 riuscito,
-ricontrollo `ripresa-unica-claude-0382-alle-19-02` ELIMINATO. Quota17:26 e vecchia bozza
-sono storiche, non ulteriori istruzioni di retry. [Implementazione0382](handoff/0382-deno-bootstrap-isolation.md),
-patch0386: rimozioneDeno/__bootstrap/__infra conAPIpubbliche prima del gioco, stessa suite
-moduli/async dopo rimozione, rifiutoimportextdiretti/alias/statici e osservazioniops/risorse.
-Metadata/sintassi/contrattoYAML-lockpassano; NUOVEasserzioni da verificare online, non coperte
-dalverde0381. Nessuna adozione produttiva né prova di sicurezza generale/DOM/CSP/router.
-Prossimo incarico separato: classe nativa/metadata posseduti/cppgc, stessa modalità doppia.
-Nessun Claude attivo al checkpoint, nessuna automazione periodica; prossimi push solo dopoCI.
+0383 completa localmente: [classe nativa](handoff/0383-deno-native-class.md), patch0387.
+Metadati posseduti, due istanze/valori distinti, Member/Persistent cppgc e SameObject mantenuti,
+brand/prototipi/finalizzazione a shutdown. Metadata/sintassi/contrattoYAML-lockverdi,
+compilazione/asserzioni NUOVE da verificare online. NessunNoHeapPointers/nuovoFFI/dependency.
+Non affermare raccolta generale o prima della chiusura; niente DOM/prototipi completi.
+Prossimo incarico separato: native async op completion/cancellation/cleanup sul runtime pulito.
+
+La ripresa19:02 di0382 è riuscita e il ricontrollo è stato ELIMINATO; quota17:26 èstorica,
+nessun limite attuale o retry da concatenare. Nessun Claude attivo al checkpoint, prossimo
+incarico da avviare. Continuare sviluppo/commit locali durante CI, pubblicare solo quando
+tutte le verifiche richieste del batch lo consentono. TODO.md resta modifica separata.
 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.

@@ -777,5 +777,10 @@ remain planned. Details: [probe README](support/deno-core-probe/README.md).
 
 The isolated deno_core probe now removes its bootstrap namespaces before any game code
 and exercises module/async scenarios plus direct/aliased internal-import refusal afterwards.
-New assertions await CI; the earlier four green jobs validate only the baseline. Namespace
+Bootstrap CI now passes four jobs (Linux/Windows normal/JITless). Namespace
 absence is a bounded check, not general capability isolation or production DOM integration.
+
+The isolated experiment also contains a native class/owned-metadata/cppgc fixture using
+maintained op2, Member/Persistent and SameObject APIs. Local syntax/metadata checks pass;
+new class assertions await CI. It tests native lifetime/identity boundaries, not real Servo
+DOM integration, arbitrary-cycle collection or measured performance improvements.
