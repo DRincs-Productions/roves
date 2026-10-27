@@ -1,3 +1,12 @@
+### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
+
+L'utente autorizza anche Codex a implementare pezzi indipendenti per accelerare l'integrazione.
+Claude mantiene l'incarico0385 di adozione produttiva deno_core (runtime/moduli/async/DOM);
+Codex implementa la policy della shell in ports/servoshell, senza modificare quei file.
+Un solo incarico Claude attivo; nessuna ricerca o implementazione duplicata. Le interfacce
+condivise richiedono integrazione e revisione prima di cambiare ownership. Questa eccezione
+vale per la sessione corrente; quote, verifiche, patch e vincoli CI restano invariati.
+
 ## Direzione autorizzata — documento unico e servizi sostituibili (27 ottobre 2026)
 
 Conservare la shell Servo: una finestra, un documento, route interne tipo TanStack Router.

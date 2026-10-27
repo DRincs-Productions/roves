@@ -1,3 +1,16 @@
+## 2026-10-27 - Reject auxiliary game windows and coordinate runtime integration (0386)
+
+ports/servoshell/running_app_state.rs rejects CreateNewWebViewRequest by dropping the
+existing Servo responder (default None), before allocating/activating an auxiliary WebView.
+Warn once per RunningAppState with operation/reason; no modal dialog or custom responder.
+Maintained Servo already supplies the denial mechanism; no dependency or custom protocol.
+This is only the extra-window part of the single-document policy. Reload/navigation,
+development notice and trusted-click external links remain pending. Current navigation
+requests lack click provenance; do not infer it from URLs or timing. Rust syntax checked,
+real browser checks pending CI. Record user-authorized current-session Codex shell work
+alongside Claude's disjoint production deno_core task0385 in AGENTS/workflow/handoff.
+README/wiki distinguish partial policy from adoption; patch0389 reproduces source/process docs.
+
 ## 2026-10-27 - Probe native async-op completion and teardown cancellation (0384)
 
 Isolated deno-core-probe gains native_async.rs, one op2 Rust Future and trusted bootstrap

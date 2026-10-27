@@ -1,0 +1,91 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 239177ab2db..cf895036659 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -75,6 +75,15 @@ Claude implementa incarichi circoscritti via terminale. L'eccezione del22ottobre
+ Codex diretto per quota Claude) è terminata. Il file temporaneo docs/CLAUDE_RESUME.md
+ è stato rimosso su richiesta; il punto di ripresa unico è docs/V8_MIGRATION.md.
+ 
++### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
++
++L'utente autorizza anche Codex a implementare pezzi indipendenti per accelerare l'integrazione.
++Claude mantiene l'incarico0385 di adozione produttiva deno_core (runtime/moduli/async/DOM);
++Codex implementa la policy della shell in ports/servoshell, senza modificare quei file.
++Un solo incarico Claude attivo; nessuna ricerca o implementazione duplicata. Le interfacce
++condivise richiedono integrazione e revisione prima di cambiare ownership. Questa eccezione
++vale per la sessione corrente; quote, verifiche, patch e vincoli CI restano invariati.
++
+ ## Coordinamento con Claude e pubblicazione durante la CI
+ 
+ Codex dirige il lavoro: studia il problema, valuta il riuso di librerie mantenute e definisce
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+index b04aabe7d25..a2224f1a46c 100644
+--- a/docs/AGENT_WORKFLOW.md
++++ b/docs/AGENT_WORKFLOW.md
+@@ -1,3 +1,12 @@
++### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
++
++L'utente autorizza anche Codex a implementare pezzi indipendenti per accelerare l'integrazione.
++Claude mantiene l'incarico0385 di adozione produttiva deno_core (runtime/moduli/async/DOM);
++Codex implementa la policy della shell in ports/servoshell, senza modificare quei file.
++Un solo incarico Claude attivo; nessuna ricerca o implementazione duplicata. Le interfacce
++condivise richiedono integrazione e revisione prima di cambiare ownership. Questa eccezione
++vale per la sessione corrente; quote, verifiche, patch e vincoli CI restano invariati.
++
+ ## Direzione autorizzata — documento unico e servizi sostituibili (27 ottobre 2026)
+ 
+ Conservare la shell Servo: una finestra, un documento, route interne tipo TanStack Router.
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index 01afc26de58..ae2dcc4c093 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -181,6 +181,9 @@ pub(crate) struct RunningAppState {
+     /// Set by [`Self::notify_load_status_changed`] the first time `initial_webview_id`'s
+     /// `WebView` reaches `LoadStatus::Complete`. See [`Self::is_initial_page_loaded`].
+     initial_load_complete: Cell<bool>,
++
++    /// Emit the auxiliary-window policy warning at most once per application lifetime.
++    auxiliary_window_warning_emitted: Cell<bool>,
+ }
+ 
+ impl RunningAppState {
+@@ -206,6 +209,7 @@ impl RunningAppState {
+             accessibility_active: Cell::new(false),
+             initial_webview_id: Cell::new(None),
+             initial_load_complete: Cell::new(false),
++            auxiliary_window_warning_emitted: Cell::new(false),
+         }
+     }
+ 
+@@ -476,21 +480,16 @@ impl WebViewDelegate for RunningAppState {
+             .show_http_authentication_dialog(webview.id(), authentication_request);
+     }
+ 
+-    fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
+-        let window = self.window_for_webview(&parent_webview);
+-        let platform_window = window.platform_window();
+-
+-        let webview = request
+-            .builder(platform_window.rendering_context())
+-            .hidpi_scale_factor(platform_window.hidpi_scale_factor())
+-            .delegate(parent_webview.delegate())
+-            .build();
+-
+-        webview.notify_theme_change(platform_window.theme());
+-        window.add_webview(webview.clone());
+-
+-        // `window.open()` creates a new foreground tab.
+-        window.activate_webview(webview.id());
++    fn request_create_new(&self, _parent_webview: WebView, request: CreateNewWebViewRequest) {
++        // Servo's request responder sends None on drop. Reject before allocating a
++        // WebView, preserving the existing document and the native shell window.
++        drop(request);
++        if !self.auxiliary_window_warning_emitted.replace(true) {
++            log::warn!(
++                "Roves blocked auxiliary-window creation: games run in a single window; \
++                 repeated requests will be suppressed"
++            );
++        }
+     }
+ 
+     fn notify_closed(&self, webview: WebView) {

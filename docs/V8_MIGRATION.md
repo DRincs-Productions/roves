@@ -20,31 +20,30 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026
 
-Checkpoint pubblicato: `d1eb92011b21fd1b7e66971061057934d36684f8`, wiki `43113f9`,
-roves-action `4b2a67f`. Include0382 bootstrap e precedenti checkpoint completi.
-CIbootstrap `40556912335` VERDE4/4 Linux/Windows normal/JITless: stessa suite dopo rimozione
-globali, importinterni diretti/alias/statici rifiutati. È prova isolata, non piena sicurezza
-o DOM/CSP/router/adozione. Generale `40556912161`: ultimi richiesti8verdi, WindowsMSI eLinuxportable ancora attivi,
-nessunarossa. Non considerare il batch interamente verificato finché quei job non terminano. Android `40556912086` da controllare al prossimo punto;
-iOS `40556912246` e macOS esclusi. Nessunpushconrichiestiattivi. No polling periodico.
+Checkpoint pubblicato: `16b7149221e7989fe07c2cdfd266def61e646573`, wiki `be50deb`,
+roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
+Batch precedente d1eb: probe40556912335 verde4/4; generale40556912161 richiesti10/10verdi;
+Android40556912086 verde. Apple esclusi dal blocco. Nuovo batch: probe40564575701,
+generale40564575679, Android40564575708 attivi; iOS40564575683 esclusa. Nessun push
+mentre verifiche richieste attive o errori irrisolti; continuare sviluppo/commit locali.
 
-0383 completa localmente: [classe nativa](handoff/0383-deno-native-class.md), patch0387.
-Metadati posseduti, due istanze/valori distinti, Member/Persistent cppgc e SameObject mantenuti,
-brand/prototipi/finalizzazione a shutdown. Metadata/sintassi/contrattoYAML-lockverdi,
-compilazione/asserzioni NUOVE da verificare online. NessunNoHeapPointers/nuovoFFI/dependency.
-Non affermare raccolta generale o prima della chiusura; niente DOM/prototipi completi.
-0383 committata localmente `24f8b1d3a93`, wiki `ab18bfd`, senza push mentreCIattiva.
-0384 completa localmente: [opasincrono](handoff/0384-deno-native-async.md), patch0388:
-FutureRust reale viaop2/Deno/Tokio, ownershipinput/output, completamento/errori e pulizia
-shutdown dioperazionependentesenzacallbacktardivi. Dodici scenari logici in due testRust,
-metadata/sintassi/YAML-lockpassano; NUOVEasserzioni async+classe attendonoCI. Nessun nuovo
-executor/queue/timer/I/O/dependency o comportamento produttivo. Prossimo studio circoscritto:
-mappa di sostituzione task/moduli Servo con un unico ownerDeno, prima di un port parziale.
+Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
+async0384 patch0388: verifiche leggere passate, nuove asserzioni native attendono il batch
+corrente. Sono esperimenti, non integrazione produttiva né prova di retention risolta.
 
-La ripresa19:02 di0382 è riuscita e il ricontrollo è stato ELIMINATO; quota17:26 èstorica,
-nessun limite attuale o retry da concatenare. Nessun Claude attivo al checkpoint, prossimo
-incarico da avviare. Continuare sviluppo/commit locali durante CI, pubblicare solo quando
-tutte le verifiche richieste del batch lo consentono. TODO.md resta modifica separata.
+0385 ATTIVA con Claude: port produttivo dell'owner deno_core, moduli e async/adapter DOM;
+prompt e risultato in target/task-0385. Non pubblicare un backend parziale o dichiarare
+adozione prima della revisione e delle prove browser. Nessuna quota corrente rilevata;
+ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
+
+L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
+Codex possiede policy shell ports/servoshell, Claude il port runtime. Divisione esplicita
+in AGENTS/workflow e target/task-0385/COORDINATION.md. Nessun file sovrapposto.
+0386 locale: rifiuto delle nuove finestre prima di costruire WebView tramite il responder
+Servo esistente; warning nei log una sola volta per applicazione. Non implementa ancora
+blocco reload/navigazione, avviso sviluppo o apertura esterna su clic. Il NavigationRequest
+attuale non espone provenienza del clic: non inventare attivazione fidata nella shell.
+Sintassi Rust verificata; verifica browser online ancora necessaria. TODO.md resta separato.
 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.

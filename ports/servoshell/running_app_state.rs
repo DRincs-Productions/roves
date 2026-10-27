@@ -181,6 +181,9 @@ pub(crate) struct RunningAppState {
     /// Set by [`Self::notify_load_status_changed`] the first time `initial_webview_id`'s
     /// `WebView` reaches `LoadStatus::Complete`. See [`Self::is_initial_page_loaded`].
     initial_load_complete: Cell<bool>,
+
+    /// Emit the auxiliary-window policy warning at most once per application lifetime.
+    auxiliary_window_warning_emitted: Cell<bool>,
 }
 
 impl RunningAppState {
@@ -206,6 +209,7 @@ impl RunningAppState {
             accessibility_active: Cell::new(false),
             initial_webview_id: Cell::new(None),
             initial_load_complete: Cell::new(false),
+            auxiliary_window_warning_emitted: Cell::new(false),
         }
     }
 
@@ -476,21 +480,16 @@ impl WebViewDelegate for RunningAppState {
             .show_http_authentication_dialog(webview.id(), authentication_request);
     }
 
-    fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
-        let window = self.window_for_webview(&parent_webview);
-        let platform_window = window.platform_window();
-
-        let webview = request
-            .builder(platform_window.rendering_context())
-            .hidpi_scale_factor(platform_window.hidpi_scale_factor())
-            .delegate(parent_webview.delegate())
-            .build();
-
-        webview.notify_theme_change(platform_window.theme());
-        window.add_webview(webview.clone());
-
-        // `window.open()` creates a new foreground tab.
-        window.activate_webview(webview.id());
+    fn request_create_new(&self, _parent_webview: WebView, request: CreateNewWebViewRequest) {
+        // Servo's request responder sends None on drop. Reject before allocating a
+        // WebView, preserving the existing document and the native shell window.
+        drop(request);
+        if !self.auxiliary_window_warning_emitted.replace(true) {
+            log::warn!(
+                "Roves blocked auxiliary-window creation: games run in a single window; \
+                 repeated requests will be suppressed"
+            );
+        }
     }
 
     fn notify_closed(&self, webview: WebView) {

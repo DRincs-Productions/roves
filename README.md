@@ -789,3 +789,9 @@ The isolated deno_core experiment now also tests a real native Rust async op: ow
 error propagation and cancellation/payload cleanup at runtime shutdown. It reuses Deno's
 driver and Tokio instead of adding a job queue. New class/async assertions await CI; this
 does not establish production DOM integration or cancellation of real game resources.
+
+The shell now rejects auxiliary-window creation before allocating a WebView and logs the
+reason once per application, using Servo's existing rejection responder. This implements
+only the extra-window rule: navigation/reload blocking, development notices and trusted
+external-link handling remain pending. The production deno_core port is in progress;
+the isolated native class/async checks are now published for CI, not proof of adoption.
