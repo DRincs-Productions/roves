@@ -436,8 +436,8 @@ check("an iframe keeps its WindowProxy across origin changes and back", () => ne
 // (Document, https://html.spec.whatwg.org/multipage/#the-document-object), a supported name
 // wins over the prototype, otherwise (HTMLFormElement) the prototype hides it. Each check runs
 // in its own iframe and removes its prototype property.
-// The iframe document's reflector is a Document whose prototype is Document.prototype; the
-// spec's HTMLDocument alias of that prototype is a separate, known gap and is not asserted.
+// The iframe document's reflector is a Document whose prototype is Document.prototype
+// (Window.HTMLDocument is the same interface object, checked separately below).
 // The collision property goes on the document's actual prototype so that it really competes.
 const documentPrototype = (win, doc) => {
   if (!(doc instanceof win.Document) || doc.contentType !== "text/html")
@@ -508,6 +508,56 @@ check("Document [LegacyOverrideBuiltIns] named properties win over the prototype
     problems.push(`location: ${describeValue(doc.location)} ${describeDescriptor(locationDesc)}`);
   return problems.length ? problems.join("; ") : true;
 }));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Window.HTMLDocument is a writable, configurable, non-enumerable alias of the Document interface
+// object (https://html.spec.whatwg.org/multipage/#the-window-object). Fresh iframes resolve the
+// alias first by a read, Document first by a read, and the alias first by its own property
+// descriptor (before any read of either name); writing the alias must leave Document untouched.
+check("Window.HTMLDocument is the Document interface object", async () => {
+  const problems = [];
+  for (const first of ["HTMLDocument", "Document", "HTMLDocument descriptor"]) {
+    const result = await withNamedFrame("<p>alias</p>", (win, doc, cleanup) => {
+      const issues = [];
+      const resolved = {};
+      if (first === "HTMLDocument descriptor") {
+        const d = Object.getOwnPropertyDescriptor(win, "HTMLDocument");
+        if (!d || !("value" in d) || d.get !== undefined || d.set !== undefined || typeof d.value !== "function"
+            || d.writable !== true || d.configurable !== true || d.enumerable !== false)
+          issues.push(`first descriptor ${d ? `value=${typeof d.value} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined"}`);
+        resolved.HTMLDocument = d && d.value;
+        resolved.Document = win.Document;
+        if (!d || d.value !== resolved.Document) issues.push("descriptor value is not win.Document");
+      } else {
+        const second = first === "HTMLDocument" ? "Document" : "HTMLDocument";
+        resolved[first] = win[first];
+        resolved[second] = win[second];
+      }
+      const iface = resolved.Document, alias = resolved.HTMLDocument;
+      if (typeof iface !== "function" || alias !== iface) issues.push(`HTMLDocument ${typeof alias} !== Document ${typeof iface}`);
+      if (win.HTMLDocument !== iface || win.Document !== iface) issues.push("repeated reads differ");
+      if (alias && alias.prototype !== iface.prototype) issues.push("prototype differs");
+      if (Object.getPrototypeOf(doc) !== iface.prototype) issues.push("document prototype is not Document.prototype");
+      if (!(doc instanceof alias) || !(doc instanceof iface)) issues.push("document not instanceof both");
+      if (iface.prototype.constructor !== iface) issues.push("Document.prototype.constructor differs");
+      for (const name of ["HTMLDocument", "Document"]) {
+        const d = Object.getOwnPropertyDescriptor(win, name);
+        if (!d || d.value !== iface || d.writable !== true || d.configurable !== true || d.enumerable !== false)
+          issues.push(`${name} descriptor ${d ? `same=${d.value === iface} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined"}`);
+      }
+      // Writing the alias replaces only the alias property.
+      const marker = {};
+      cleanup.push(() => { win.HTMLDocument = iface; });
+      win.HTMLDocument = marker;
+      if (win.HTMLDocument !== marker) issues.push("alias write ignored");
+      if (win.Document !== iface) issues.push("alias write changed Document");
+      win.HTMLDocument = iface;
+      if (win.HTMLDocument !== iface || win.Document !== iface) issues.push("alias not restored");
+      return issues.length ? issues.join(", ") : true;
+    });
+    if (result !== true) problems.push(`${first} first: ${result}`);
+  }
+  return problems.length ? problems.join("; ") : true;
+});
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // HTMLFormElement has no [LegacyOverrideBuiltIns] in Roves' IDL: the prototype keeps hiding the
 // supported name, while a name without a prototype property stays visible.

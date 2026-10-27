@@ -20,6 +20,23 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Implementazione0374 — HTMLDocument aliasstandard, rimosso codiceinutilizzato
+
+[Alias0374](handoff/0374-html-document-alias.md): LegacyWindowAlias sulDocumentvero,
+riusando generatore/runtime giàusati daDOMMatrix. Rimossi sottoclasseRustHTMLDocument,
+IDLseparata, moddeclarationeconfigobsolete. Nessunfactorynuovo odipendenza/cache.
+DoctypeIsHTMLDocument eCreateHTMLDocument invariati. 9testgeneratorerealiverdi Win/Linux;
+vecchioIDLroute diverso e negativalias fallisce senzaerroriimport. Runner42(8skipPOSIX),
+smoke richiesto alias-first/Document-first/descriptor-first, identità/prototipo/attributi
+escritturaseparata; verificabrowsernormal/JITlesspendingCI. NessunrefrescoMCPChrome.
+
+Batchprecedentef3d59895e36 ORA tutto terminale nonApple: generale40481102827verde10/10,
+Android40481102823verde3/3; V840481102911runtime4/4verde+browserWindowsverde,
+browserLinux2rosse perguardHTMLDocument, causa efixDocument0373completi. Pubblicazione
+permessa con quellecorrezioni incluse, nessunarunrichiestaattiva; Appleesclusa.
+0371locale f9e024eea0a,0372/0373locale051f403fd65; pubblicareinsiemea0374doporeplay.
+Restano sourceText0361,numericdup,define/delete e retentionglobale: non dichiarare completamigrazione.
+
 ### Batchlocale0372/0373 — chiavi visibili e correzioneDocument reale
 
 [Handoff0372/0373](handoff/0372-0373-visible-named-keys.md): ownKeys filtra nomi

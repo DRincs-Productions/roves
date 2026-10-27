@@ -719,5 +719,7 @@ retention remains open.
 
 Named own-key enumeration excludes names hidden by prototypes or own/unforgeable properties,
 including null prototypes and reentrant expando creation. Own properties short-circuit prototype
-queries. This correction targets the actual Document reflector; the historical HTMLDocument
-alias/prototype mismatch remains separate. Browser normal/JITless confirmation is pending CI.
+queries. This correction targets the actual Document reflector. Window.HTMLDocument now uses the
+standard alias of Document through existing WebIDL generation; the unused subclass is removed.
+Constructor/prototype identity and property attributes have required browser regressions;
+normal/JITless browser confirmation is pending CI.

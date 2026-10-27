@@ -1,3 +1,14 @@
+## 2026-10-27 - Replace the unused HTMLDocument class with the standard alias (0374)
+
+Document.webidl now uses existing LegacyWindowAlias generation; Window.HTMLDocument and
+Document refer to the same interface object. Delete the unused Rust subclass/WebIDL,
+module declaration and Bindings.conf entry instead of adding an alias framework. Doctype
+flags and CreateHTMLDocument APIs are untouched. Full-real-IDL generator9 tests pass on
+Windows/Linux; old separate-interface route fails the alias regression. Required smoke
+covers both resolution orders, descriptor-first lookup, identity/attributes and assignment.
+Existing runtime alias machinery is reused, no dependency or new persistent state.
+Patch0374 includes exact deletions and test updates; browser normal/JITless CI pending.
+
 ## 2026-10-27 - Filter visible named keys and fix the actual Document route (0372/0373)
 
 ownKeys uses the existing IDL flag and JSAPI helpers to exclude names hidden by prototypes

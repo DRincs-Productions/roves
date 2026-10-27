@@ -11,7 +11,9 @@
 // [LegacyOverrideBuiltIns] comes from the HTML partial interface below
 // (https://html.spec.whatwg.org/multipage/#the-document-object). The WebIDL parser rejects it
 // on a partial interface, so it is declared here; it applies to every Document.
-[Exposed=Window, LegacyOverrideBuiltIns]
+// Window.HTMLDocument is the Document interface object itself:
+// https://html.spec.whatwg.org/multipage/#the-window-object
+[Exposed=Window, LegacyWindowAlias=HTMLDocument, LegacyOverrideBuiltIns]
 interface Document : Node {
   [Throws] constructor();
   [SameObject]

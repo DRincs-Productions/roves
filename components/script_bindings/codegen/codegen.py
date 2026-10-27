@@ -6222,7 +6222,7 @@ def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
     Whether named properties of this interface are visible even when the
     prototype chain has a property of the same name (compile-time IDL flag).
     The flag applies to every object implementing the interface, so it is
-    inherited (Document -> HTMLDocument, XMLDocument):
+    inherited (Document -> XMLDocument):
     https://webidl.spec.whatwg.org/#dfn-named-property-visibility
     """
     iface = descriptor.interface

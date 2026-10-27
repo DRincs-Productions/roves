@@ -7,11 +7,14 @@ https://webidl.spec.whatwg.org/#dfn-named-property-visibility
 
 Two configurations are used: a small synthetic IDL (controls with and without the attribute),
 and every real webidls/*.webidl file with the real Bindings.conf, parsed the way codegen/run.py
-does, so the Document, HTMLDocument, XMLDocument, DOMStringMap and HTMLFormElement cases come
-from the actual declarations. The negative case parses the same real files with the attribute
-removed from Document.webidl.
+does, so the Document, XMLDocument, DOMStringMap and HTMLFormElement cases come from the actual
+declarations. The negative case parses the same real files with the attribute removed from
+Document.webidl. HTMLDocument is no separate interface: the real configuration exposes it as a
+[LegacyWindowAlias] of Document (https://html.spec.whatwg.org/multipage/#the-window-object),
+checked through the real global-name generator.
 """
 
+import json
 import os
 from pathlib import Path
 import sys
@@ -32,7 +35,10 @@ from codegen import (  # noqa: E402
     CGDOMJSProxyHandler_getOwnPropertyDescriptor,
     CGDOMJSProxyHandler_hasOwn,
     CGDOMJSProxyHandler_ownPropertyKeys,
+    GlobalGenRoots,
     hasLegacyOverrideBuiltIns,
+    toBindingModuleFileFromDescriptor,
+    toBindingNamespace,
 )
 
 IDL = """
@@ -58,17 +64,19 @@ CONFIG = "DOMInterfaces = {}\nEnums = {}\nDictionaries = {}\nUnions = {}\nSubCra
 REAL_CONFIG = BINDINGS / "codegen" / "Bindings.conf"
 WEBIDLS = BINDINGS / "webidls"
 # The non-partial Document declaration carries the HTML partial's [LegacyOverrideBuiltIns]
-# (the parser rejects it on partial interfaces); the negative case removes exactly this.
-DOCUMENT_OVERRIDE = "[Exposed=Window, LegacyOverrideBuiltIns]\ninterface Document : Node {"
-DOCUMENT_PLAIN = "[Exposed=Window]\ninterface Document : Node {"
+# (the parser rejects it on partial interfaces); the negative case removes exactly this and
+# keeps the HTMLDocument alias.
+DOCUMENT_OVERRIDE = ("[Exposed=Window, LegacyWindowAlias=HTMLDocument, LegacyOverrideBuiltIns]\n"
+                     "interface Document : Node {")
+DOCUMENT_PLAIN = "[Exposed=Window, LegacyWindowAlias=HTMLDocument]\ninterface Document : Node {"
 
 NAMED = "NamedGetter("
 INDEXED = "IndexedGetter("
 SYNTHETIC_OVERRIDE = ("OverrideNamed", "OverrideIndexed")
 SYNTHETIC_PLAIN = ("PlainNamed", "PlainIndexed")
-# Real interfaces: Document carries the attribute, HTMLDocument and DOMStringMap declare it
-# themselves, XMLDocument inherits it from Document. HTMLFormElement has no attribute.
-REAL_OVERRIDE = ("Document", "HTMLDocument", "XMLDocument", "DOMStringMap")
+# Real interfaces: Document and DOMStringMap carry the attribute, XMLDocument inherits it from
+# Document. HTMLFormElement has no attribute.
+REAL_OVERRIDE = ("Document", "XMLDocument", "DOMStringMap")
 REAL_PLAIN = ("HTMLFormElement",)
 
 SCRATCH = tempfile.TemporaryDirectory()
@@ -104,14 +112,24 @@ def real_configuration(document_override):
     return Configuration(str(REAL_CONFIG), parser.finish())
 
 
-def descriptor(name, kind="synthetic"):
+def configuration(kind):
     if kind not in CONFIGS:
         CONFIGS[kind] = {
             "synthetic": synthetic_configuration,
             "real": lambda: real_configuration(True),
             "negative": lambda: real_configuration(False),
         }[kind]()
-    return CONFIGS[kind].getDescriptor(name)
+    return CONFIGS[kind]
+
+
+def descriptor(name, kind="synthetic"):
+    return configuration(kind).getDescriptor(name)
+
+
+def global_names(kind):
+    # The generator output run.py writes to InterfaceObjectMapData.json (global name ->
+    # [DefineDOMInterface, ConstructorEnabled]).
+    return json.loads(GlobalGenRoots.InterfaceObjectMapData(configuration(kind)).define())
 
 
 def cases(synthetic, real):
@@ -178,10 +196,9 @@ class NamedPropertyVisibilityTests(unittest.TestCase):
 
     def test_real_document_declares_the_attribute(self):
         # The reflector of every document is a Document (or XMLDocument): the attribute must be
-        # on Document itself, not only on the HTMLDocument interface.
+        # on Document itself.
         attribute = "LegacyOverrideBuiltIns"
         self.assertTrue(descriptor("Document", "real").interface.getExtendedAttribute(attribute))
-        self.assertTrue(descriptor("HTMLDocument", "real").interface.getExtendedAttribute(attribute))
         xml = descriptor("XMLDocument", "real").interface
         self.assertFalse(xml.getExtendedAttribute(attribute))
         self.assertEqual("Document", xml.parent.identifier.name)
@@ -220,14 +237,36 @@ class NamedPropertyVisibilityTests(unittest.TestCase):
 
     def test_without_the_document_attribute_document_hooks_are_wrong(self):
         # Regression guard: the real Document.webidl without the attribute generates the
-        # prototype-first order and a false ownKeys flag for Document and XMLDocument, although
-        # HTMLDocument (not the reflector of any document) keeps its own attribute.
+        # prototype-first order and a false ownKeys flag for Document and XMLDocument; the
+        # HTMLDocument alias (the same interface object) does not restore the attribute.
         for name in ("Document", "XMLDocument"):
             self.assertFalse(hasLegacyOverrideBuiltIns(descriptor(name, "negative")), name)
             self.assertPlainHooks(name, "negative")
             self.assertOwnKeysFlag(name, "negative", "false")
-        self.assertOverrideHooks("HTMLDocument", "negative")
-        self.assertOwnKeysFlag("HTMLDocument", "negative", "true")
+        self.assertEqual(["HTMLDocument"], descriptor("Document", "negative").interface.legacyWindowAliases)
+        self.assertNotIn("HTMLDocument", configuration("negative").interfaces)
+
+    def test_html_document_is_a_window_alias_of_document(self):
+        # https://html.spec.whatwg.org/multipage/#the-window-object: Window.HTMLDocument is the
+        # Document interface object, not an interface or descriptor of its own.
+        for kind in ("real", "negative"):
+            config = configuration(kind)
+            document = descriptor("Document", kind)
+            self.assertEqual(["HTMLDocument"], document.interface.legacyWindowAliases, kind)
+            self.assertNotIn("HTMLDocument", config.interfaces, kind)
+            self.assertEqual([], [d for d in config.getDescriptors() if d.name == "HTMLDocument"], kind)
+            # The global-name generator resolves the alias through Document's own binding.
+            names = global_names(kind)
+            path = f"codegen::Bindings::{toBindingModuleFileFromDescriptor(document)}::{toBindingNamespace('Document')}"
+            self.assertIn("Document_Binding", path)
+            expected = [f"{path}::DefineDOMInterface::<crate::DomTypeHolder>",
+                        f"{path}::ConstructorEnabled::<crate::DomTypeHolder>"]
+            self.assertEqual(expected, names["Document"], kind)
+            self.assertEqual(expected, names["HTMLDocument"], kind)
+            self.assertEqual({"Document", "HTMLDocument"},
+                             {name for name, entry in names.items() if entry == expected}, kind)
+            self.assertNotEqual(expected, names["XMLDocument"], kind)
+            self.assertEqual([], descriptor("XMLDocument", kind).interface.legacyWindowAliases, kind)
 
 
 if __name__ == "__main__":

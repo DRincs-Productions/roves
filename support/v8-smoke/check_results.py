@@ -26,6 +26,7 @@ REQUIRED_CHECKS = {
         "event listener list keeps its identity, once and mutation semantics",
         "inline event handlers keep identity, position and return semantics",
         "Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
+        "Window.HTMLDocument is the Document interface object",
         "HTMLFormElement named properties stay hidden by the prototype",
         "DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads",
         "Document ownKeys keeps supported names with NUL and Unicode exact",

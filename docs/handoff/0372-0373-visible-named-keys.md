@@ -1,5 +1,9 @@
 # 0372/0373 — visible named keys and the actual Document reflector
 
+Follow-up0374 replaces the separate unused HTMLDocument class with the existing
+LegacyWindowAlias mechanism; see0374-html-document-alias.md. Browser confirmation
+remains pending for the combined batch.
+
 ## CI correction0373
 
 Published0370 (f3d59895e36) built successfully on Windows and its native checks passed,
