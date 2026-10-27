@@ -1,5 +1,9 @@
 # 0370 — honor LegacyOverrideBuiltIns in generated read hooks
 
+Follow-up0373: browser CI showed that the actual reflector is Document, whose attribute
+was still commented out. The route and fixtures are corrected in
+0372-0373-visible-named-keys.md; HTMLDocument alias compatibility is not resolved.
+
 The existing WebIDL generator ignored the interface attribute when resolving named
 properties. It searched the prototype first even for HTMLDocument and DOMStringMap.
 The primary visibility algorithm requires own/unforgeable properties first, then

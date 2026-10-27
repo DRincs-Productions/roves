@@ -8,7 +8,10 @@
  */
 
 // https://dom.spec.whatwg.org/#interface-document
-[Exposed=Window]
+// [LegacyOverrideBuiltIns] comes from the HTML partial interface below
+// (https://html.spec.whatwg.org/multipage/#the-document-object). The WebIDL parser rejects it
+// on a partial interface, so it is declared here; it applies to every Document.
+[Exposed=Window, LegacyOverrideBuiltIns]
 interface Document : Node {
   [Throws] constructor();
   [SameObject]
@@ -90,7 +93,7 @@ dictionary ImportNodeOptions {
 };
 
 // https://html.spec.whatwg.org/multipage/#the-document-object
-// [LegacyOverrideBuiltIns]
+// [LegacyOverrideBuiltIns] (declared on the non-partial interface Document above)
 partial /*sealed*/ interface Document {
   [NewObject, Throws]
   static Document parseHTMLUnsafe((TrustedHTML or DOMString) html, optional SetHTMLUnsafeOptions options = {});

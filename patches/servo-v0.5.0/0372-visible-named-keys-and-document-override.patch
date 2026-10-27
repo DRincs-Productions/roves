@@ -1,0 +1,891 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index f3b3aa71b4d..33ffe70dc57 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -6221,8 +6221,16 @@ def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
+     """
+     Whether named properties of this interface are visible even when the
+     prototype chain has a property of the same name (compile-time IDL flag).
++    The flag applies to every object implementing the interface, so it is
++    inherited (Document -> HTMLDocument, XMLDocument):
++    https://webidl.spec.whatwg.org/#dfn-named-property-visibility
+     """
+-    return bool(descriptor.interface.getExtendedAttribute("LegacyOverrideBuiltIns"))
++    iface = descriptor.interface
++    while iface:
++        if iface.getExtendedAttribute("LegacyOverrideBuiltIns"):
++            return True
++        iface = iface.parent
++    return False
+ 
+ 
+ class CGProxySpecialOperation(CGPerSignatureCall):
+@@ -6474,7 +6482,8 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(CGAbstractExternMethod):
+             # Expando (and unforgeable) own properties were already checked
+             # above. Without [LegacyOverrideBuiltIns] a prototype property
+             # hides the named property; with it the prototype is skipped.
+-            # ownKeys/defineProperty/delete are not adjusted here.
++            # ownKeys applies the same rule in proxyhandler; defineProperty/delete
++            # are not adjusted.
+             if hasLegacyOverrideBuiltIns(self.descriptor):
+                 namedGet = f"""
+ if {condition} {{
+@@ -6647,12 +6656,15 @@ class CGDOMJSProxyHandler_ownPropertyKeys(CGAbstractExternMethod):
+             properties = f"Some(|unwrapped_proxy: *const {self.descriptor.concreteType}, cx| (*unwrapped_proxy).SupportedPropertyNames(cx.no_gc()))"
+         else:
+             properties = "None"
++        # Named property visibility: only [LegacyOverrideBuiltIns] skips the prototype check.
++        override_builtins = "true" if hasLegacyOverrideBuiltIns(self.descriptor) else "false"
+ 
+         return CGGeneric(f"""
+             let cross_origin = {cross_origin};
+             let config = crate::proxyhandler::JSProxyHandlerOwnPropertyKeysConfig {{
+                 indexed_getter_and_length: {length},
+                 supported_named_properties: {properties},
++                legacy_override_builtins: {override_builtins},
+                 cross_origin,
+                 unwrapped_proxy: UnwrapProxy::<D>,
+             }};
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index 6508e73b38b..e00efdfaaf8 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -46,6 +46,7 @@ use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
+ use crate::principals::ServoJSPrincipalsRef;
+ use crate::reflector::DomObject;
+ use crate::str::DOMString;
++use crate::utils::has_property_on_prototype;
+ 
+ /// Determine if this id shadows any existing properties for this proxy.
+ ///
+@@ -837,6 +838,9 @@ pub(crate) struct JSProxyHandlerOwnPropertyKeysConfig<T: DomObject> {
+     pub(crate) cross_origin: Option<&'static CrossOriginProperties>,
+     pub(crate) unwrapped_proxy: unsafe fn(RawHandleObject) -> *const T,
+     pub(crate) supported_named_properties: Option<fn(*const T, &mut JSContext) -> Vec<DOMString>>,
++    /// The interface has [LegacyOverrideBuiltIns]: the prototype chain does not hide
++    /// named properties.
++    pub(crate) legacy_override_builtins: bool,
+ }
+ 
+ /// Helper type to keep AutoRealm and &mut CurrentRealm alive with Deref to JSContext
+@@ -865,6 +869,22 @@ impl<'cx> DerefMut for Realm<'cx> {
+     }
+ }
+ 
++/// Converts a supported property name to an id. Names are user-controlled: keep their
++/// exact string units (embedded NULs, lone surrogates) and leave their atoms unpinned.
++fn named_property_id(cx: &mut JSContext, name: &DOMString, id: MutableHandle<jsid>) -> bool {
++    rooted!(&in(cx) let mut value = UndefinedValue());
++    name.safe_to_jsval(cx, value.handle_mut());
++    rooted!(&in(cx) let jsstring = value.get().to_string());
++    unsafe { JS_StringToId(cx, jsstring.handle(), id) }
++}
++
++/// Whether a (possibly null) expando has `id` as an own property: own expandos and
++/// unforgeables hide a named property. Runs no script (the expando is a plain object).
++fn expando_has_own(cx: &mut JSContext, expando: HandleObject, id: HandleId, has_own: &mut bool) -> bool {
++    *has_own = false;
++    expando.get().is_null() || unsafe { JS_AlreadyHasOwnPropertyById(cx, expando, id, has_own) }
++}
++
+ #[expect(non_snake_case)]
+ /// SAFETY: cx must point to a valid, non-null JS context.
+ pub(crate) unsafe fn JSProxyHandlerOwnPropertyKeys<T>(
+@@ -911,25 +931,83 @@ where
+             }
+         }
+ 
++        rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
++
++        // https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys
++        // Only visible named properties are listed
++        // (https://webidl.spec.whatwg.org/#dfn-named-property-visibility): the
++        // prototype chain hides a name unless the interface has
++        // [LegacyOverrideBuiltIns], and an own expando or unforgeable property (both
++        // live on the expando) hides it; that own key is listed once, with the
++        // expando keys below.
+         if let Some(properties) = config.supported_named_properties {
+-            rooted!(&in(cx) let mut value = UndefinedValue());
+             rooted!(&in(cx) let mut rooted_jsid: jsid);
+-            for name in properties(unwrapped_proxy, &mut cx) {
+-                // Names are user-controlled: keep their exact string units (embedded NULs,
+-                // lone surrogates) and leave their atoms unpinned.
+-                name.safe_to_jsval(&mut cx, value.handle_mut());
+-                rooted!(&in(cx) let jsstring = value.get().to_string());
+-                if !JS_StringToId(&mut cx, jsstring.handle(), rooted_jsid.handle_mut()) ||
+-                    !AppendToIdVector(props, rooted_jsid.handle())
+-                {
++            let mut names = properties(unwrapped_proxy, &mut cx);
++
++            // The prototype lookups can run script (a Proxy `has` trap on the chain)
++            // that adds or removes expando properties, so they all run first. Each
++            // is short-circuited by an own expando property, as the visibility
++            // algorithm checks own properties before the prototype: a hidden name
++            // never reaches the prototype. An earlier callback may have created
++            // the expando, so a null handle is re-read before each name.
++            // From the final expando filter to the expando keys no script runs, so
++            // a key cannot be appended both as a named property and as an expando
++            // key. Cost: one temporary Vec of the surviving names and a second
++            // id conversion (atomization) per surviving name; nothing is cached.
++            if !config.legacy_override_builtins {
++                let mut visible = Vec::with_capacity(names.len());
++                for name in names {
++                    if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
++                        return false;
++                    }
++                    if expando.is_null() {
++                        get_expando_object(proxy, expando.handle_mut());
++                    }
++                    let mut has_own = false;
++                    if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {
++                        return false;
++                    }
++                    if has_own {
++                        continue;
++                    }
++                    let mut has_on_proto = false;
++                    if !has_property_on_prototype(
++                        &mut cx,
++                        proxy,
++                        rooted_jsid.handle(),
++                        &mut has_on_proto,
++                    ) {
++                        return false;
++                    }
++                    if !has_on_proto {
++                        visible.push(name);
++                    }
++                }
++                names = visible;
++            }
++
++            if expando.is_null() {
++                get_expando_object(proxy, expando.handle_mut());
++            }
++            for name in names {
++                if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
++                    return false;
++                }
++                let mut has_own = false;
++                if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {
++                    return false;
++                }
++                if has_own {
++                    continue;
++                }
++                if !AppendToIdVector(props, rooted_jsid.handle()) {
+                     return false;
+                 }
+             }
++        } else {
++            get_expando_object(proxy, expando.handle_mut());
+         }
+ 
+-        rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
+-        get_expando_object(proxy, expando.handle_mut());
+-
+         if !expando.is_null() &&
+             !GetPropertyKeys(
+                 &mut cx,
+diff --git a/components/script_bindings/utils.rs b/components/script_bindings/utils.rs
+index 32b30dcb39d..6cc39d882aa 100644
+--- a/components/script_bindings/utils.rs
++++ b/components/script_bindings/utils.rs
+@@ -332,6 +332,8 @@ pub fn has_own_property(
+ ///
+ /// Returns a boolean indicating whether the check succeeded.
+ /// If `false` is returned then the value of `found` is unspecified.
++/// A null prototype (e.g. after `Object.setPrototypeOf(proxy, null)`) ends the
++/// chain: nothing is found.
+ pub fn has_property_on_prototype(
+     cx: &mut JSContext,
+     proxy: HandleObject,
+@@ -342,7 +344,10 @@ pub fn has_property_on_prototype(
+     if unsafe { !JS_GetPrototype(cx, proxy, proto.handle_mut()) } {
+         return false;
+     }
+-    assert!(!proto.is_null());
++    if proto.is_null() {
++        *found = false;
++        return true;
++    }
+     unsafe { JS_HasPropertyById(cx, proto.handle(), id, found) }
+ }
+ 
+diff --git a/components/script_bindings/webidls/Document.webidl b/components/script_bindings/webidls/Document.webidl
+index 18bf1aaf084..8ce29575ff6 100644
+--- a/components/script_bindings/webidls/Document.webidl
++++ b/components/script_bindings/webidls/Document.webidl
+@@ -8,7 +8,10 @@
+  */
+ 
+ // https://dom.spec.whatwg.org/#interface-document
+-[Exposed=Window]
++// [LegacyOverrideBuiltIns] comes from the HTML partial interface below
++// (https://html.spec.whatwg.org/multipage/#the-document-object). The WebIDL parser rejects it
++// on a partial interface, so it is declared here; it applies to every Document.
++[Exposed=Window, LegacyOverrideBuiltIns]
+ interface Document : Node {
+   [Throws] constructor();
+   [SameObject]
+@@ -90,7 +93,7 @@ dictionary ImportNodeOptions {
+ };
+ 
+ // https://html.spec.whatwg.org/multipage/#the-document-object
+-// [LegacyOverrideBuiltIns]
++// [LegacyOverrideBuiltIns] (declared on the non-partial interface Document above)
+ partial /*sealed*/ interface Document {
+   [NewObject, Throws]
+   static Document parseHTMLUnsafe((TrustedHTML or DOMString) html, optional SetHTMLUnsafeOptions options = {});
+diff --git a/docs/handoff/0368-native-dom-hook-map.md b/docs/handoff/0368-native-dom-hook-map.md
+index 6d99ee1c9c2..6c0588dd40c 100644
+--- a/docs/handoff/0368-native-dom-hook-map.md
++++ b/docs/handoff/0368-native-dom-hook-map.md
+@@ -1,5 +1,9 @@
+ # 0368 — native DOM hook map for ordinary V8 properties (HTMLDocument/Form/Select)
+ 
++Historical map at the pre0370 baseline. Follow-up0373 enables the attribute on the
++actual Document reflector and inherited interfaces; see0372-0373-visible-named-keys.md.
++The missing-codegen/Document-declaration observations below describe that earlier state.
++
+ Documentation only: no production edits, no new tests, no registry/shell/network access.
+ V8 API facts come only from the installed copies in `target/task-0368/v8-api/{template,
+ function,object,property_handler_flags}.rs`; behaviour facts only from 0367 (native test
+diff --git a/docs/handoff/0370-legacy-override-read-visibility.md b/docs/handoff/0370-legacy-override-read-visibility.md
+index c4f881742ee..511de363ead 100644
+--- a/docs/handoff/0370-legacy-override-read-visibility.md
++++ b/docs/handoff/0370-legacy-override-read-visibility.md
+@@ -1,5 +1,9 @@
+ # 0370 — honor LegacyOverrideBuiltIns in generated read hooks
+ 
++Follow-up0373: browser CI showed that the actual reflector is Document, whose attribute
++was still commented out. The route and fixtures are corrected in
++0372-0373-visible-named-keys.md; HTMLDocument alias compatibility is not resolved.
++
+ The existing WebIDL generator ignored the interface attribute when resolving named
+ properties. It searched the prototype first even for HTMLDocument and DOMStringMap.
+ The primary visibility algorithm requires own/unforgeable properties first, then
+diff --git a/docs/handoff/0371-supported-name-string-ids.md b/docs/handoff/0371-supported-name-string-ids.md
+index 39ab1fb573c..7c1780770e1 100644
+--- a/docs/handoff/0371-supported-name-string-ids.md
++++ b/docs/handoff/0371-supported-name-string-ids.md
+@@ -1,5 +1,8 @@
+ # 0371 — enumerate dynamic DOM names without C strings or permanent pins
+ 
++Follow-up0373 aligns smoke labels/prototype checks with the actual Document reflector.
++The string/id conversion itself is unchanged; see0372-0373-visible-named-keys.md.
++
+ SupportedPropertyNames returns page-controlled DOMString values. The old ownKeys loop
+ converted each to CString with unwrap (embedded NUL panics) and atomized/pinned every
+ name for the runtime lifetime. Static cross-origin property atoms remain unchanged.
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 0b84d6a5acc..258a2706bb5 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -25,10 +25,15 @@ REQUIRED_CHECKS = {
+         "an event listener keeps the callback context of its registration",
+         "event listener list keeps its identity, once and mutation semantics",
+         "inline event handlers keep identity, position and return semantics",
+-        "HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
++        "Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
+         "HTMLFormElement named properties stay hidden by the prototype",
+         "DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads",
+-        "HTMLDocument ownKeys keeps supported names with NUL and Unicode exact",
++        "Document ownKeys keeps supported names with NUL and Unicode exact",
++        "Document ownKeys lists only visible named properties, once",
++        "HTMLFormElement ownKeys omits names hidden by the prototype",
++        "HTMLFormElement ownKeys, reads and hasOwn work with a null prototype",
++        "HTMLFormElement ownKeys lists a name once when a prototype trap shadows it",
++        "HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index da4f6a9429a..fc23514bbe5 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -433,8 +433,19 @@ check("an iframe keeps its WindowProxy across origin changes and back", () => ne
+ }));
+ // Named property visibility (https://webidl.spec.whatwg.org/#dfn-named-property-visibility):
+ // an own property (expando or unforgeable) always wins; then, with [LegacyOverrideBuiltIns]
+-// (HTMLDocument), a supported name wins over the prototype, otherwise (HTMLFormElement) the
+-// prototype hides it. Each check runs in its own iframe and removes its prototype property.
++// (Document, https://html.spec.whatwg.org/multipage/#the-document-object), a supported name
++// wins over the prototype, otherwise (HTMLFormElement) the prototype hides it. Each check runs
++// in its own iframe and removes its prototype property.
++// The iframe document's reflector is a Document whose prototype is Document.prototype; the
++// spec's HTMLDocument alias of that prototype is a separate, known gap and is not asserted.
++// The collision property goes on the document's actual prototype so that it really competes.
++const documentPrototype = (win, doc) => {
++  if (!(doc instanceof win.Document) || doc.contentType !== "text/html")
++    throw new Error(`iframe document is not an HTML Document (${doc.contentType})`);
++  const proto = Object.getPrototypeOf(doc);
++  if (proto !== win.Document.prototype) throw new Error("iframe document prototype is not Document.prototype");
++  return proto;
++};
+ const withNamedFrame = (html, body) => new Promise(resolve => {
+   const frame = document.createElement("iframe");
+   frame.onload = () => {
+@@ -454,11 +465,10 @@ const withNamedFrame = (html, body) => new Promise(resolve => {
+ const describeValue = value => value && value.nodeName ? `<${value.nodeName}>` : String(value);
+ const describeDescriptor = d => d ? `value=${describeValue(d.value)} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined";
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+-check("HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
+-  if (!(doc instanceof win.HTMLDocument)) return "iframe document is not an HTMLDocument";
++check("Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
++  const proto = documentPrototype(win, doc);
+   const problems = [];
+   const key = "rovesNamedOverride", expandoKey = "rovesNamedExpando";
+-  const proto = win.HTMLDocument.prototype;
+   let protoReads = 0;
+   Object.defineProperty(proto, key, { configurable: true, get() { protoReads++; return "prototype"; } });
+   cleanup.push(() => delete proto[key]);
+@@ -544,7 +554,7 @@ check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the protot
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+ // Supported names are page-controlled: ownKeys must report them unchanged, including an
+ // embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
+-check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
++check("Document ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
+   const problems = [];
+   const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
+   const images = names.map(name => {
+@@ -571,6 +581,193 @@ check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", (
+     if (after.includes(name) || Object.hasOwn(doc, name)) problems.push(`after removal: ${show(name)} still listed`);
+   return problems.length ? problems.join("; ") : true;
+ }));
++// ownKeys lists a supported name only when it is visible
++// (https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys): an own expando or
++// unforgeable property hides it (the own key is still listed once), the prototype does not
++// ([LegacyOverrideBuiltIns]). Only counts are asserted; the key order is not part of this check.
++const countKey = (target, key) => Reflect.ownKeys(target).filter(k => k === key).length;
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++check("Document ownKeys lists only visible named properties, once", () => withNamedFrame("<p>own keys</p>", (win, doc, cleanup) => {
++  const proto = documentPrototype(win, doc);
++  const problems = [];
++  const key = "rovesKeysOverride", expandoKey = "rovesKeysExpando", symbol = Symbol("rovesKeysSymbol");
++  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
++  cleanup.push(() => delete proto[key]);
++  doc[symbol] = "symbol";
++  cleanup.push(() => delete doc[symbol]);
++  // The prototype property is reachable from the document before the name is supported.
++  if (doc[key] !== "prototype" || countKey(doc, key) !== 0 || Object.hasOwn(doc, key))
++    problems.push(`before: get=${describeValue(doc[key])} listed ${countKey(doc, key)} own=${Object.hasOwn(doc, key)}`);
++  const img = doc.createElement("img");
++  img.name = key;
++  doc.body.append(img);
++  const agree = (label, name, expected) => {
++    const count = countKey(doc, name), own = Object.hasOwn(doc, name), desc = Object.getOwnPropertyDescriptor(doc, name);
++    if (count !== 1 || !own || !desc || doc[name] !== expected || (desc.get === undefined && desc.value !== expected))
++      problems.push(`${label}: listed ${count} own=${own} get=${describeValue(doc[name])} ${describeDescriptor(desc)}`);
++  };
++  // The prototype does not hide the name: listed exactly once, and read/hasOwn/GOPD agree.
++  agree("override", key, img);
++  img.remove();
++  if (countKey(doc, key) !== 0 || Object.hasOwn(doc, key) || doc[key] !== "prototype")
++    problems.push(`after removal: listed ${countKey(doc, key)} get=${describeValue(doc[key])}`);
++  // An own expando defined before the name becomes supported hides the named property.
++  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
++  cleanup.push(() => delete doc[expandoKey]);
++  const shadowed = doc.createElement("img");
++  shadowed.name = expandoKey;
++  doc.body.append(shadowed);
++  agree("expando", expandoKey, "expando");
++  if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.writable !== true) problems.push("expando descriptor replaced");
++  // Deleting the expando makes the named property visible again.
++  delete doc[expandoKey];
++  agree("expando deleted", expandoKey, shadowed);
++  // The unforgeable location accessor hides a named "location".
++  const locationImg = doc.createElement("img");
++  locationImg.name = "location";
++  doc.body.append(locationImg);
++  agree("location", "location", win.location);
++  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function") problems.push("location is not the accessor");
++  if (countKey(doc, symbol) !== 1) problems.push(`symbol expando listed ${countKey(doc, symbol)}`);
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Without [LegacyOverrideBuiltIns] a prototype property hides the name from ownKeys too. Named
++// form properties are unenumerable, so Reflect.ownKeys (not Object.keys) is the observable list.
++check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withNamedFrame("<p>form keys</p>", (win, doc, cleanup) => {
++  const problems = [];
++  const key = "rovesFormKeysHidden", plainKey = "rovesFormKeysPlain", symbol = Symbol("rovesFormKeysSymbol");
++  const proto = win.HTMLFormElement.prototype;
++  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
++  cleanup.push(() => delete proto[key]);
++  const form = doc.createElement("form");
++  const hidden = doc.createElement("input"), plain = doc.createElement("input");
++  hidden.name = key;
++  plain.name = plainKey;
++  form.append(hidden, plain);
++  doc.body.append(form);
++  form.rovesFormKeysExpando = "expando";
++  form[symbol] = "symbol";
++  if (countKey(form, key) !== 0 || Object.hasOwn(form, key) || Object.getOwnPropertyDescriptor(form, key) !== undefined || form[key] !== "prototype")
++    problems.push(`hidden name: listed ${countKey(form, key)} own=${Object.hasOwn(form, key)} get=${describeValue(form[key])}`);
++  if (countKey(form, plainKey) !== 1 || !Object.hasOwn(form, plainKey) || form[plainKey] !== plain)
++    problems.push(`plain name: listed ${countKey(form, plainKey)} get=${describeValue(form[plainKey])}`);
++  for (const index of ["0", "1"])
++    if (countKey(form, index) !== 1) problems.push(`index ${index} listed ${countKey(form, index)}`);
++  if (countKey(form, "rovesFormKeysExpando") !== 1 || countKey(form, symbol) !== 1)
++    problems.push(`expando ${countKey(form, "rovesFormKeysExpando")} symbol ${countKey(form, symbol)}`);
++  // Removing the prototype property makes the name visible.
++  delete proto[key];
++  const desc = Object.getOwnPropertyDescriptor(form, key);
++  if (countKey(form, key) !== 1 || !Object.hasOwn(form, key) || !desc || desc.value !== hidden || form[key] !== hidden)
++    problems.push(`after prototype removal: listed ${countKey(form, key)} ${describeDescriptor(desc)}`);
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// A null prototype ends the chain: nothing hides a name any more, and the prototype lookup of
++// ownKeys/getOwnPropertyDescriptor/hasOwn must not fail. Only global functions are used once
++// the prototype is gone.
++check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", () => withNamedFrame("<p>null proto</p>", (win, doc) => {
++  const problems = [];
++  const plainKey = "rovesNullProtoPlain";
++  const form = doc.createElement("form");
++  const action = doc.createElement("input"), plain = doc.createElement("input");
++  action.name = "action";
++  plain.name = plainKey;
++  form.append(action, plain);
++  doc.body.append(form);
++  if (countKey(form, "action") !== 0 || Object.hasOwn(form, "action"))
++    problems.push(`before: "action" listed ${countKey(form, "action")}`);
++  Object.setPrototypeOf(form, null);
++  if (Object.getPrototypeOf(form) !== null) return "prototype not cleared";
++  for (const [name, element] of [["action", action], [plainKey, plain]]) {
++    const desc = Object.getOwnPropertyDescriptor(form, name);
++    if (countKey(form, name) !== 1 || !Object.hasOwn(form, name) || !desc || desc.value !== element || form[name] !== element)
++      problems.push(`${name}: listed ${countKey(form, name)} own=${Object.hasOwn(form, name)} get=${describeValue(form[name])} ${describeDescriptor(desc)}`);
++  }
++  if (countKey(form, "0") !== 1 || form[0] !== action) problems.push(`index 0 listed ${countKey(form, "0")}`);
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// A Proxy prototype's `has` trap runs during ownKeys. Here it makes the name an own expando
++// while that name is being checked (remove the control, define the property, put the control
++// back: a supported name cannot be defined directly without a named setter). The key must
++// still be listed exactly once, as the expando that now hides the named property.
++check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
++  const problems = [];
++  const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
++  const append = win.Element.prototype.append, remove = win.Element.prototype.remove;
++  const form = doc.createElement("form");
++  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
++  shadowed.name = key;
++  plain.name = plainKey;
++  form.append(shadowed, plain);
++  doc.body.append(form);
++  let armed = false, fired = 0;
++  const proto = new Proxy(win.HTMLFormElement.prototype, {
++    has(target, property) {
++      if (armed && property === key) {
++        armed = false;
++        fired++;
++        remove.call(shadowed);
++        Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
++        append.call(form, shadowed);
++      }
++      return Reflect.has(target, property);
++    },
++  });
++  Object.setPrototypeOf(form, proto);
++  armed = true;
++  const keys = Reflect.ownKeys(form);
++  armed = false;
++  if (fired !== 1) problems.push(`trap fired ${fired} times`);
++  const count = keys.filter(k => k === key).length, desc = Object.getOwnPropertyDescriptor(form, key);
++  if (count !== 1) problems.push(`shadowed name listed ${count} times`);
++  if (!desc || desc.value !== "own" || !Object.hasOwn(form, key) || form[key] !== "own")
++    problems.push(`shadowed name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
++  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Visibility checks own properties before the prototype: a name hidden by an own expando must
++// never reach the prototype. The Proxy prototype throws if it is queried for that name.
++check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
++  const problems = [];
++  const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
++  const form = doc.createElement("form");
++  doc.body.append(form);
++  // Defined while the name is not supported yet (no named setter), then the control is added.
++  Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
++  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
++  shadowed.name = key;
++  plain.name = plainKey;
++  form.append(shadowed, plain);
++  let queried = 0;
++  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
++    has(target, property) {
++      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
++      return Reflect.has(target, property);
++    },
++  }));
++  let keys;
++  try {
++    keys = Reflect.ownKeys(form);
++  } catch (error) {
++    return `ownKeys threw: ${(error && error.message) || error}`;
++  }
++  const count = keys.filter(k => k === key).length;
++  if (count !== 1) problems.push(`own name listed ${count} times`);
++  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
++  try {
++    const desc = Object.getOwnPropertyDescriptor(form, key);
++    if (form[key] !== "own" || !Object.hasOwn(form, key) || !desc || desc.value !== "own" || desc.writable !== true)
++      problems.push(`own name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
++  } catch (error) {
++    problems.push(`read threw: ${(error && error.message) || error}`);
++  }
++  if (queried) problems.push(`prototype queried ${queried} times`);
++  return problems.length ? problems.join("; ") : true;
++}));
+ finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/test_named_property_codegen.py b/support/v8-smoke/test_named_property_codegen.py
+index 3c7e83ef062..80d5d6cca95 100644
+--- a/support/v8-smoke/test_named_property_codegen.py
++++ b/support/v8-smoke/test_named_property_codegen.py
+@@ -1,10 +1,18 @@
+ """Named-property visibility in the generated proxy handlers ([LegacyOverrideBuiltIns]).
+ 
+-Runs the vendored WebIDL parser and the real binding generator on a small IDL and checks the
+-order of the lookups in the generated get, getOwnPropertyDescriptor and hasOwn hooks:
++Runs the vendored WebIDL parser and the real binding generator and checks the order of the
++lookups in the generated get, getOwnPropertyDescriptor and hasOwn hooks, plus the compile-time
++flag the generated ownKeys hook passes to proxyhandler:
+ https://webidl.spec.whatwg.org/#dfn-named-property-visibility
++
++Two configurations are used: a small synthetic IDL (controls with and without the attribute),
++and every real webidls/*.webidl file with the real Bindings.conf, parsed the way codegen/run.py
++does, so the Document, HTMLDocument, XMLDocument, DOMStringMap and HTMLFormElement cases come
++from the actual declarations. The negative case parses the same real files with the attribute
++removed from Document.webidl.
+ """
+ 
++import os
+ from pathlib import Path
+ import sys
+ import tempfile
+@@ -18,10 +26,13 @@ for path in (BINDINGS / "third_party" / "ply", BINDINGS / "third_party" / "WebID
+ 
+ import WebIDL  # noqa: E402
+ from configuration import Configuration  # noqa: E402
++from run import FILTER_PATTERN  # noqa: E402
+ from codegen import (  # noqa: E402
+     CGDOMJSProxyHandler_get,
+     CGDOMJSProxyHandler_getOwnPropertyDescriptor,
+     CGDOMJSProxyHandler_hasOwn,
++    CGDOMJSProxyHandler_ownPropertyKeys,
++    hasLegacyOverrideBuiltIns,
+ )
+ 
+ IDL = """
+@@ -43,46 +54,76 @@ IDL = """
+   readonly attribute unsigned long length;
+ };
+ """
+-# The real HTMLDocument.webidl, with stubs for what it references from Document.webidl.
+-HTML_DOCUMENT_STUBS = """
+-[Exposed=Window] interface Document {};
+-typedef DOMString NamedPropertyValue;
+-"""
+ CONFIG = "DOMInterfaces = {}\nEnums = {}\nDictionaries = {}\nUnions = {}\nSubCrates = {'script_webgpu': []}\n"
++REAL_CONFIG = BINDINGS / "codegen" / "Bindings.conf"
++WEBIDLS = BINDINGS / "webidls"
++# The non-partial Document declaration carries the HTML partial's [LegacyOverrideBuiltIns]
++# (the parser rejects it on partial interfaces); the negative case removes exactly this.
++DOCUMENT_OVERRIDE = "[Exposed=Window, LegacyOverrideBuiltIns]\ninterface Document : Node {"
++DOCUMENT_PLAIN = "[Exposed=Window]\ninterface Document : Node {"
+ 
+ NAMED = "NamedGetter("
+ INDEXED = "IndexedGetter("
+-# Real IDL interfaces with [LegacyOverrideBuiltIns] are included in every override case.
+-OVERRIDE = ("OverrideNamed", "OverrideIndexed", "HTMLDocument", "DOMStringMap")
+-PLAIN = ("PlainNamed", "PlainIndexed")
++SYNTHETIC_OVERRIDE = ("OverrideNamed", "OverrideIndexed")
++SYNTHETIC_PLAIN = ("PlainNamed", "PlainIndexed")
++# Real interfaces: Document carries the attribute, HTMLDocument and DOMStringMap declare it
++# themselves, XMLDocument inherits it from Document. HTMLFormElement has no attribute.
++REAL_OVERRIDE = ("Document", "HTMLDocument", "XMLDocument", "DOMStringMap")
++REAL_PLAIN = ("HTMLFormElement",)
++
++SCRATCH = tempfile.TemporaryDirectory()
++CONFIGS = {}
++
++
++def tearDownModule():
++    SCRATCH.cleanup()
++
++
++def synthetic_configuration():
++    parser = WebIDL.Parser(SCRATCH.name)
++    parser.parse(IDL, "NamedPropertyVisibility.webidl")
++    config_file = Path(SCRATCH.name) / "Bindings.conf"
++    config_file.write_text(CONFIG, encoding="utf-8")
++    return Configuration(str(config_file), parser.finish())
++
++
++def real_configuration(document_override):
++    # Same file selection as codegen/run.py (minus the generated CSSStyleDeclaration partial).
++    parser = WebIDL.Parser(SCRATCH.name)
++    for path in sorted(WEBIDLS.glob("*.webidl")):
++        contents = path.read_text(encoding="utf-8")
++        filter_match = FILTER_PATTERN.search(contents)
++        if filter_match and not os.environ.get(filter_match.group(1)):
++            continue
++        if path.name == "Document.webidl":
++            if contents.count(DOCUMENT_OVERRIDE) != 1:
++                raise AssertionError("Document.webidl no longer has the expected declaration")
++            if not document_override:
++                contents = contents.replace(DOCUMENT_OVERRIDE, DOCUMENT_PLAIN)
++        parser.parse(contents, str(path))
++    return Configuration(str(REAL_CONFIG), parser.finish())
+ 
+ 
+-def configuration():
+-    with tempfile.TemporaryDirectory() as scratch:
+-        parser = WebIDL.Parser(scratch)
+-        parser.parse(IDL, "NamedPropertyVisibility.webidl")
+-        parser.parse(HTML_DOCUMENT_STUBS, "Stubs.webidl")
+-        for name in ("HTMLDocument.webidl", "DOMStringMap.webidl"):
+-            path = BINDINGS / "webidls" / name
+-            parser.parse(path.read_text(encoding="utf-8"), str(path))
+-        results = parser.finish()
+-        config_file = Path(scratch) / "Bindings.conf"
+-        config_file.write_text(CONFIG, encoding="utf-8")
+-        return Configuration(str(config_file), results)
++def descriptor(name, kind="synthetic"):
++    if kind not in CONFIGS:
++        CONFIGS[kind] = {
++            "synthetic": synthetic_configuration,
++            "real": lambda: real_configuration(True),
++            "negative": lambda: real_configuration(False),
++        }[kind]()
++    return CONFIGS[kind].getDescriptor(name)
+ 
+ 
+-CONFIG_CACHE = None
++def cases(synthetic, real):
++    return [(name, "synthetic") for name in synthetic] + [(name, "real") for name in real]
+ 
+ 
+-def descriptor(name):
+-    global CONFIG_CACHE
+-    if CONFIG_CACHE is None:
+-        CONFIG_CACHE = configuration()
+-    return CONFIG_CACHE.getDescriptor(name)
++OVERRIDE = cases(SYNTHETIC_OVERRIDE, REAL_OVERRIDE)
++PLAIN = cases(SYNTHETIC_PLAIN, REAL_PLAIN)
+ 
+ 
+-def bodies(name):
+-    d = descriptor(name)
++def bodies(name, kind):
++    d = descriptor(name, kind)
+     return {
+         "get": CGDOMJSProxyHandler_get(d).getBody(),
+         "getOwnPropertyDescriptor": CGDOMJSProxyHandler_getOwnPropertyDescriptor(d).getBody(),
+@@ -90,67 +131,104 @@ def bodies(name):
+     }
+ 
+ 
++def own_keys_body(name, kind):
++    return CGDOMJSProxyHandler_ownPropertyKeys(descriptor(name, kind)).definition_body().define()
++
++
+ class NamedPropertyVisibilityTests(unittest.TestCase):
+     def assertBefore(self, body, first, second):
+         self.assertIn(first, body)
+         self.assertIn(second, body)
+         self.assertLess(body.index(first), body.index(second), f"{first!r} must come before {second!r}")
+ 
++    def assertOverrideHooks(self, name, kind):
++        hooks = bodies(name, kind)
++        self.assertBefore(hooks["get"], "get_expando_object(", NAMED)
++        self.assertBefore(hooks["get"], NAMED, "get_property_on_prototype(")
++        for hook, expando in (("getOwnPropertyDescriptor", "JS_GetPropertyDescriptorById("),
++                              ("hasOwn", "JS_HasPropertyById(")):
++            body = hooks[hook]
++            self.assertNotIn("has_property_on_prototype", body, f"{name}.{hook}")
++            self.assertBefore(body, "get_expando_object(", NAMED)
++            self.assertBefore(body, expando, NAMED)
++
++    def assertPlainHooks(self, name, kind):
++        hooks = bodies(name, kind)
++        self.assertBefore(hooks["get"], "get_expando_object(", "get_property_on_prototype(")
++        self.assertBefore(hooks["get"], "get_property_on_prototype(", NAMED)
++        for hook in ("getOwnPropertyDescriptor", "hasOwn"):
++            self.assertBefore(hooks[hook], "get_expando_object(", "has_property_on_prototype(")
++            self.assertBefore(hooks[hook], "has_property_on_prototype(", NAMED)
++
++    def assertOwnKeysFlag(self, name, kind, flag):
++        body = own_keys_body(name, kind)
++        self.assertEqual(1, body.count("legacy_override_builtins:"), name)
++        self.assertIn(f"legacy_override_builtins: {flag},", body, name)
++        self.assertIn("SupportedPropertyNames(", body, name)
++
+     def test_extended_attribute_is_read_from_the_idl(self):
+-        for name in OVERRIDE:
+-            d = descriptor(name)
++        for name, kind in OVERRIDE:
++            d = descriptor(name, kind)
+             self.assertTrue(d.proxy and d.supportsNamedProperties(), name)
+-            self.assertTrue(d.interface.getExtendedAttribute("LegacyOverrideBuiltIns"), name)
+-        for name in PLAIN + ("Document",):
+-            self.assertFalse(descriptor(name).interface.getExtendedAttribute("LegacyOverrideBuiltIns"), name)
+-
+-    def test_override_get_reads_named_before_the_prototype(self):
+-        for name in OVERRIDE:
+-            body = bodies(name)["get"]
+-            self.assertBefore(body, "get_expando_object(", NAMED)
+-            self.assertBefore(body, NAMED, "get_property_on_prototype(")
+-
+-    def test_plain_get_lets_the_prototype_hide_named(self):
+-        for name in PLAIN:
+-            body = bodies(name)["get"]
+-            self.assertBefore(body, "get_expando_object(", "get_property_on_prototype(")
+-            self.assertBefore(body, "get_property_on_prototype(", NAMED)
+-
+-    def test_override_own_property_hooks_skip_the_prototype(self):
+-        for name in OVERRIDE:
+-            hooks = bodies(name)
+-            for hook, expando in (("getOwnPropertyDescriptor", "JS_GetPropertyDescriptorById("),
+-                                  ("hasOwn", "JS_HasPropertyById(")):
+-                body = hooks[hook]
+-                self.assertNotIn("has_property_on_prototype", body, f"{name}.{hook}")
+-                self.assertBefore(body, "get_expando_object(", NAMED)
+-                self.assertBefore(body, expando, NAMED)
+-
+-    def test_plain_own_property_hooks_check_the_prototype(self):
+-        for name in PLAIN:
+-            for hook in ("getOwnPropertyDescriptor", "hasOwn"):
+-                body = bodies(name)[hook]
+-                self.assertBefore(body, "get_expando_object(", "has_property_on_prototype(")
+-                self.assertBefore(body, "has_property_on_prototype(", NAMED)
++            self.assertTrue(hasLegacyOverrideBuiltIns(d), name)
++        for name, kind in PLAIN:
++            d = descriptor(name, kind)
++            self.assertTrue(d.proxy and d.supportsNamedProperties(), name)
++            self.assertFalse(hasLegacyOverrideBuiltIns(d), name)
++
++    def test_real_document_declares_the_attribute(self):
++        # The reflector of every document is a Document (or XMLDocument): the attribute must be
++        # on Document itself, not only on the HTMLDocument interface.
++        attribute = "LegacyOverrideBuiltIns"
++        self.assertTrue(descriptor("Document", "real").interface.getExtendedAttribute(attribute))
++        self.assertTrue(descriptor("HTMLDocument", "real").interface.getExtendedAttribute(attribute))
++        xml = descriptor("XMLDocument", "real").interface
++        self.assertFalse(xml.getExtendedAttribute(attribute))
++        self.assertEqual("Document", xml.parent.identifier.name)
++
++    def test_override_hooks_read_named_before_the_prototype(self):
++        for name, kind in OVERRIDE:
++            self.assertOverrideHooks(name, kind)
++
++    def test_plain_hooks_let_the_prototype_hide_named(self):
++        for name, kind in PLAIN:
++            self.assertPlainHooks(name, kind)
+ 
+     def test_indexed_properties_stay_first_and_exclude_named(self):
+         for name in ("OverrideIndexed", "PlainIndexed"):
+-            for hook, body in bodies(name).items():
++            for hook, body in bodies(name, "synthetic").items():
+                 self.assertBefore(body, INDEXED, NAMED)
+                 self.assertIn("index.is_none() && (id.is_string() || id.is_int())", body, f"{name}.{hook}")
+             # get forwards a missing index neither to the expando nor to the named getter.
+-            self.assertBefore(bodies(name)["get"], INDEXED, "get_expando_object(")
++            self.assertBefore(bodies(name, "synthetic")["get"], INDEXED, "get_expando_object(")
+ 
+     def test_plain_output_matches_the_previous_shape(self):
+         # Without the attribute the named lookup stays after the prototype check, once per hook.
+-        for name in PLAIN:
+-            hooks = bodies(name)
++        for name in SYNTHETIC_PLAIN:
++            hooks = bodies(name, "synthetic")
+             self.assertEqual(1, hooks["get"].count("get_property_on_prototype("))
+             self.assertEqual(1, hooks["getOwnPropertyDescriptor"].count("has_property_on_prototype("))
+             self.assertEqual(1, hooks["hasOwn"].count("has_property_on_prototype("))
+             for body in hooks.values():
+                 self.assertEqual(1, body.count(NAMED))
+ 
++    def test_own_keys_config_carries_the_idl_attribute(self):
++        # ownKeys filters hidden names in proxyhandler; the generator only forwards the flag.
++        for names, flag in ((OVERRIDE, "true"), (PLAIN, "false")):
++            for name, kind in names:
++                self.assertOwnKeysFlag(name, kind, flag)
++
++    def test_without_the_document_attribute_document_hooks_are_wrong(self):
++        # Regression guard: the real Document.webidl without the attribute generates the
++        # prototype-first order and a false ownKeys flag for Document and XMLDocument, although
++        # HTMLDocument (not the reflector of any document) keeps its own attribute.
++        for name in ("Document", "XMLDocument"):
++            self.assertFalse(hasLegacyOverrideBuiltIns(descriptor(name, "negative")), name)
++            self.assertPlainHooks(name, "negative")
++            self.assertOwnKeysFlag(name, "negative", "false")
++        self.assertOverrideHooks("HTMLDocument", "negative")
++        self.assertOwnKeysFlag("HTMLDocument", "negative", "true")
++
+ 
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/docs/handoff/0372-0373-visible-named-keys.md b/docs/handoff/0372-0373-visible-named-keys.md
+new file mode 100644
+index 00000000000..7c31269e662
+--- /dev/null
++++ b/docs/handoff/0372-0373-visible-named-keys.md
+@@ -0,0 +1,53 @@
++# 0372/0373 — visible named keys and the actual Document reflector
++
++## CI correction0373
++
++Published0370 (f3d59895e36) built successfully on Windows and its native checks passed,
++but both Linux browser modes failed the new guard: the iframe is not an HTMLDocument
++instance. Roves wraps Box<Document::new_inherited> in document/document.rs; the separate
++HTMLDocument class is not that reflector. The actual Document IDL still commented out
++LegacyOverrideBuiltIns. This was a production routing gap, not a reason to drop the test.
++
++The HTML standard applies the attribute to the Document partial interface:
++https://html.spec.whatwg.org/multipage/dom.html#the-document-object
++The vendored parser rejects it on partial interfaces, so declare it on the main Document
++interface and use the existing maintained generator. The attribute also applies to objects
++implementing descendant interfaces; the generator now walks IDL ancestors (XMLDocument).
++No HTML/XML runtime class-name checks, new factory or HTMLDocument alias changes.
++
++Fixtures now require a text/html Document and its actual Document.prototype, then retain
++all prototype-collision, getter-not-called, descriptor/hasOwn, own/unforgeable and removal
++assertions. Required labels say Document consistently. The HTMLDocument alias/prototype
++compatibility gap remains separate and unresolved.
++
++## Visibility0372
++
++ownKeys previously appended every supported name, even when hidden by the prototype or
++by an own expando/unforgeable property. Pass the maintained IDL attribute as a compile-time
++flag and reuse existing JSAPI own-property/prototype checks. Keep index/name/expando/symbol
++ordering and the0371 exact-string/unpinned conversion.
++
++Own properties short-circuit prototype checks. For non-override interfaces, collect names
++surviving prototype checks before final expando filtering, because a Proxy has trap can run
++script and add expandos for earlier/current names. The final no-script phase excludes those
++names before appending expando keys. Override interfaces need one pass and no prototype
++queries. The bounded cost for non-override interfaces is one temporary Vec of moved names,
++second id conversion and own check for surviving names; no cache/dependency/GPU change.
++No performance saving is claimed. A null prototype now means not found, rather than panic.
++
++## Verification
++
++-8 generator tests pass on Windows and Linux, using all real WebIDL files, maintained parser
++ and actual Bindings.conf, plus small synthetic controls.
++- Negative configuration removes the actual Document attribute and demonstrates prototype-first
++ read hooks/false ownKeys flag. The old helper additionally fails2 inheritance/read-order
++ checks (zero import errors). Earlier ownKeys config negative also fails as expected.
++-27 generated read-hook bodies and both changed Rust helpers parse with rustfmt.
++- Runner42 pass (8 POSIX skips). Required smoke covers Document/Form visibility, own vs
++ prototype short circuit, null prototype and reentrant creation of an own property. Normal/
++ JITless real browser validation remains CI-only and pending for this correction.
++- Logs and prompts: target/task-0372 and target/task-0373. Chrome DevTools MCP unavailable;
++ no fresh Chrome reference or full browser build is claimed locally.
++
++Pre-existing numeric named/index duplicate cases, define/delete visibility, sourceText0361,
++and overall page retention remain open. This is not full WebIDL conformance.

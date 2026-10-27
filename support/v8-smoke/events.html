@@ -433,8 +433,19 @@ check("an iframe keeps its WindowProxy across origin changes and back", () => ne
 }));
 // Named property visibility (https://webidl.spec.whatwg.org/#dfn-named-property-visibility):
 // an own property (expando or unforgeable) always wins; then, with [LegacyOverrideBuiltIns]
-// (HTMLDocument), a supported name wins over the prototype, otherwise (HTMLFormElement) the
-// prototype hides it. Each check runs in its own iframe and removes its prototype property.
+// (Document, https://html.spec.whatwg.org/multipage/#the-document-object), a supported name
+// wins over the prototype, otherwise (HTMLFormElement) the prototype hides it. Each check runs
+// in its own iframe and removes its prototype property.
+// The iframe document's reflector is a Document whose prototype is Document.prototype; the
+// spec's HTMLDocument alias of that prototype is a separate, known gap and is not asserted.
+// The collision property goes on the document's actual prototype so that it really competes.
+const documentPrototype = (win, doc) => {
+  if (!(doc instanceof win.Document) || doc.contentType !== "text/html")
+    throw new Error(`iframe document is not an HTML Document (${doc.contentType})`);
+  const proto = Object.getPrototypeOf(doc);
+  if (proto !== win.Document.prototype) throw new Error("iframe document prototype is not Document.prototype");
+  return proto;
+};
 const withNamedFrame = (html, body) => new Promise(resolve => {
   const frame = document.createElement("iframe");
   frame.onload = () => {
@@ -454,11 +465,10 @@ const withNamedFrame = (html, body) => new Promise(resolve => {
 const describeValue = value => value && value.nodeName ? `<${value.nodeName}>` : String(value);
 const describeDescriptor = d => d ? `value=${describeValue(d.value)} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined";
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-check("HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
-  if (!(doc instanceof win.HTMLDocument)) return "iframe document is not an HTMLDocument";
+check("Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
   const problems = [];
   const key = "rovesNamedOverride", expandoKey = "rovesNamedExpando";
-  const proto = win.HTMLDocument.prototype;
   let protoReads = 0;
   Object.defineProperty(proto, key, { configurable: true, get() { protoReads++; return "prototype"; } });
   cleanup.push(() => delete proto[key]);
@@ -544,7 +554,7 @@ check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the protot
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Supported names are page-controlled: ownKeys must report them unchanged, including an
 // embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
-check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
+check("Document ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
   const problems = [];
   const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
   const images = names.map(name => {
@@ -569,6 +579,193 @@ check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", (
   const after = Reflect.ownKeys(doc);
   for (const name of names)
     if (after.includes(name) || Object.hasOwn(doc, name)) problems.push(`after removal: ${show(name)} still listed`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// ownKeys lists a supported name only when it is visible
+// (https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys): an own expando or
+// unforgeable property hides it (the own key is still listed once), the prototype does not
+// ([LegacyOverrideBuiltIns]). Only counts are asserted; the key order is not part of this check.
+const countKey = (target, key) => Reflect.ownKeys(target).filter(k => k === key).length;
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("Document ownKeys lists only visible named properties, once", () => withNamedFrame("<p>own keys</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
+  const problems = [];
+  const key = "rovesKeysOverride", expandoKey = "rovesKeysExpando", symbol = Symbol("rovesKeysSymbol");
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  doc[symbol] = "symbol";
+  cleanup.push(() => delete doc[symbol]);
+  // The prototype property is reachable from the document before the name is supported.
+  if (doc[key] !== "prototype" || countKey(doc, key) !== 0 || Object.hasOwn(doc, key))
+    problems.push(`before: get=${describeValue(doc[key])} listed ${countKey(doc, key)} own=${Object.hasOwn(doc, key)}`);
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  const agree = (label, name, expected) => {
+    const count = countKey(doc, name), own = Object.hasOwn(doc, name), desc = Object.getOwnPropertyDescriptor(doc, name);
+    if (count !== 1 || !own || !desc || doc[name] !== expected || (desc.get === undefined && desc.value !== expected))
+      problems.push(`${label}: listed ${count} own=${own} get=${describeValue(doc[name])} ${describeDescriptor(desc)}`);
+  };
+  // The prototype does not hide the name: listed exactly once, and read/hasOwn/GOPD agree.
+  agree("override", key, img);
+  img.remove();
+  if (countKey(doc, key) !== 0 || Object.hasOwn(doc, key) || doc[key] !== "prototype")
+    problems.push(`after removal: listed ${countKey(doc, key)} get=${describeValue(doc[key])}`);
+  // An own expando defined before the name becomes supported hides the named property.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => delete doc[expandoKey]);
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  agree("expando", expandoKey, "expando");
+  if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.writable !== true) problems.push("expando descriptor replaced");
+  // Deleting the expando makes the named property visible again.
+  delete doc[expandoKey];
+  agree("expando deleted", expandoKey, shadowed);
+  // The unforgeable location accessor hides a named "location".
+  const locationImg = doc.createElement("img");
+  locationImg.name = "location";
+  doc.body.append(locationImg);
+  agree("location", "location", win.location);
+  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function") problems.push("location is not the accessor");
+  if (countKey(doc, symbol) !== 1) problems.push(`symbol expando listed ${countKey(doc, symbol)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Without [LegacyOverrideBuiltIns] a prototype property hides the name from ownKeys too. Named
+// form properties are unenumerable, so Reflect.ownKeys (not Object.keys) is the observable list.
+check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withNamedFrame("<p>form keys</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormKeysHidden", plainKey = "rovesFormKeysPlain", symbol = Symbol("rovesFormKeysSymbol");
+  const proto = win.HTMLFormElement.prototype;
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const hidden = doc.createElement("input"), plain = doc.createElement("input");
+  hidden.name = key;
+  plain.name = plainKey;
+  form.append(hidden, plain);
+  doc.body.append(form);
+  form.rovesFormKeysExpando = "expando";
+  form[symbol] = "symbol";
+  if (countKey(form, key) !== 0 || Object.hasOwn(form, key) || Object.getOwnPropertyDescriptor(form, key) !== undefined || form[key] !== "prototype")
+    problems.push(`hidden name: listed ${countKey(form, key)} own=${Object.hasOwn(form, key)} get=${describeValue(form[key])}`);
+  if (countKey(form, plainKey) !== 1 || !Object.hasOwn(form, plainKey) || form[plainKey] !== plain)
+    problems.push(`plain name: listed ${countKey(form, plainKey)} get=${describeValue(form[plainKey])}`);
+  for (const index of ["0", "1"])
+    if (countKey(form, index) !== 1) problems.push(`index ${index} listed ${countKey(form, index)}`);
+  if (countKey(form, "rovesFormKeysExpando") !== 1 || countKey(form, symbol) !== 1)
+    problems.push(`expando ${countKey(form, "rovesFormKeysExpando")} symbol ${countKey(form, symbol)}`);
+  // Removing the prototype property makes the name visible.
+  delete proto[key];
+  const desc = Object.getOwnPropertyDescriptor(form, key);
+  if (countKey(form, key) !== 1 || !Object.hasOwn(form, key) || !desc || desc.value !== hidden || form[key] !== hidden)
+    problems.push(`after prototype removal: listed ${countKey(form, key)} ${describeDescriptor(desc)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// A null prototype ends the chain: nothing hides a name any more, and the prototype lookup of
+// ownKeys/getOwnPropertyDescriptor/hasOwn must not fail. Only global functions are used once
+// the prototype is gone.
+check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", () => withNamedFrame("<p>null proto</p>", (win, doc) => {
+  const problems = [];
+  const plainKey = "rovesNullProtoPlain";
+  const form = doc.createElement("form");
+  const action = doc.createElement("input"), plain = doc.createElement("input");
+  action.name = "action";
+  plain.name = plainKey;
+  form.append(action, plain);
+  doc.body.append(form);
+  if (countKey(form, "action") !== 0 || Object.hasOwn(form, "action"))
+    problems.push(`before: "action" listed ${countKey(form, "action")}`);
+  Object.setPrototypeOf(form, null);
+  if (Object.getPrototypeOf(form) !== null) return "prototype not cleared";
+  for (const [name, element] of [["action", action], [plainKey, plain]]) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (countKey(form, name) !== 1 || !Object.hasOwn(form, name) || !desc || desc.value !== element || form[name] !== element)
+      problems.push(`${name}: listed ${countKey(form, name)} own=${Object.hasOwn(form, name)} get=${describeValue(form[name])} ${describeDescriptor(desc)}`);
+  }
+  if (countKey(form, "0") !== 1 || form[0] !== action) problems.push(`index 0 listed ${countKey(form, "0")}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// A Proxy prototype's `has` trap runs during ownKeys. Here it makes the name an own expando
+// while that name is being checked (remove the control, define the property, put the control
+// back: a supported name cannot be defined directly without a named setter). The key must
+// still be listed exactly once, as the expando that now hides the named property.
+check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
+  const problems = [];
+  const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
+  const append = win.Element.prototype.append, remove = win.Element.prototype.remove;
+  const form = doc.createElement("form");
+  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
+  shadowed.name = key;
+  plain.name = plainKey;
+  form.append(shadowed, plain);
+  doc.body.append(form);
+  let armed = false, fired = 0;
+  const proto = new Proxy(win.HTMLFormElement.prototype, {
+    has(target, property) {
+      if (armed && property === key) {
+        armed = false;
+        fired++;
+        remove.call(shadowed);
+        Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
+        append.call(form, shadowed);
+      }
+      return Reflect.has(target, property);
+    },
+  });
+  Object.setPrototypeOf(form, proto);
+  armed = true;
+  const keys = Reflect.ownKeys(form);
+  armed = false;
+  if (fired !== 1) problems.push(`trap fired ${fired} times`);
+  const count = keys.filter(k => k === key).length, desc = Object.getOwnPropertyDescriptor(form, key);
+  if (count !== 1) problems.push(`shadowed name listed ${count} times`);
+  if (!desc || desc.value !== "own" || !Object.hasOwn(form, key) || form[key] !== "own")
+    problems.push(`shadowed name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
+  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Visibility checks own properties before the prototype: a name hidden by an own expando must
+// never reach the prototype. The Proxy prototype throws if it is queried for that name.
+check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
+  const problems = [];
+  const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
+  const form = doc.createElement("form");
+  doc.body.append(form);
+  // Defined while the name is not supported yet (no named setter), then the control is added.
+  Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
+  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
+  shadowed.name = key;
+  plain.name = plainKey;
+  form.append(shadowed, plain);
+  let queried = 0;
+  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    has(target, property) {
+      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
+      return Reflect.has(target, property);
+    },
+  }));
+  let keys;
+  try {
+    keys = Reflect.ownKeys(form);
+  } catch (error) {
+    return `ownKeys threw: ${(error && error.message) || error}`;
+  }
+  const count = keys.filter(k => k === key).length;
+  if (count !== 1) problems.push(`own name listed ${count} times`);
+  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
+  try {
+    const desc = Object.getOwnPropertyDescriptor(form, key);
+    if (form[key] !== "own" || !Object.hasOwn(form, key) || !desc || desc.value !== "own" || desc.writable !== true)
+      problems.push(`own name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
+  } catch (error) {
+    problems.push(`read threw: ${(error && error.message) || error}`);
+  }
+  if (queried) problems.push(`prototype queried ${queried} times`);
   return problems.length ? problems.join("; ") : true;
 }));
 finish();

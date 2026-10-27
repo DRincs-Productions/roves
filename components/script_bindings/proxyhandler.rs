@@ -46,6 +46,7 @@ use crate::interfaces::{DomHelpers, GlobalScopeHelpers};
 use crate::principals::ServoJSPrincipalsRef;
 use crate::reflector::DomObject;
 use crate::str::DOMString;
+use crate::utils::has_property_on_prototype;
 
 /// Determine if this id shadows any existing properties for this proxy.
 ///
@@ -837,6 +838,9 @@ pub(crate) struct JSProxyHandlerOwnPropertyKeysConfig<T: DomObject> {
     pub(crate) cross_origin: Option<&'static CrossOriginProperties>,
     pub(crate) unwrapped_proxy: unsafe fn(RawHandleObject) -> *const T,
     pub(crate) supported_named_properties: Option<fn(*const T, &mut JSContext) -> Vec<DOMString>>,
+    /// The interface has [LegacyOverrideBuiltIns]: the prototype chain does not hide
+    /// named properties.
+    pub(crate) legacy_override_builtins: bool,
 }
 
 /// Helper type to keep AutoRealm and &mut CurrentRealm alive with Deref to JSContext
@@ -863,6 +867,22 @@ impl<'cx> DerefMut for Realm<'cx> {
             Realm::CurrentRealm(current_realm) => current_realm,
         }
     }
+}
+
+/// Converts a supported property name to an id. Names are user-controlled: keep their
+/// exact string units (embedded NULs, lone surrogates) and leave their atoms unpinned.
+fn named_property_id(cx: &mut JSContext, name: &DOMString, id: MutableHandle<jsid>) -> bool {
+    rooted!(&in(cx) let mut value = UndefinedValue());
+    name.safe_to_jsval(cx, value.handle_mut());
+    rooted!(&in(cx) let jsstring = value.get().to_string());
+    unsafe { JS_StringToId(cx, jsstring.handle(), id) }
+}
+
+/// Whether a (possibly null) expando has `id` as an own property: own expandos and
+/// unforgeables hide a named property. Runs no script (the expando is a plain object).
+fn expando_has_own(cx: &mut JSContext, expando: HandleObject, id: HandleId, has_own: &mut bool) -> bool {
+    *has_own = false;
+    expando.get().is_null() || unsafe { JS_AlreadyHasOwnPropertyById(cx, expando, id, has_own) }
 }
 
 #[expect(non_snake_case)]
@@ -911,24 +931,82 @@ where
             }
         }
 
+        rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
+
+        // https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys
+        // Only visible named properties are listed
+        // (https://webidl.spec.whatwg.org/#dfn-named-property-visibility): the
+        // prototype chain hides a name unless the interface has
+        // [LegacyOverrideBuiltIns], and an own expando or unforgeable property (both
+        // live on the expando) hides it; that own key is listed once, with the
+        // expando keys below.
         if let Some(properties) = config.supported_named_properties {
-            rooted!(&in(cx) let mut value = UndefinedValue());
             rooted!(&in(cx) let mut rooted_jsid: jsid);
-            for name in properties(unwrapped_proxy, &mut cx) {
-                // Names are user-controlled: keep their exact string units (embedded NULs,
-                // lone surrogates) and leave their atoms unpinned.
-                name.safe_to_jsval(&mut cx, value.handle_mut());
-                rooted!(&in(cx) let jsstring = value.get().to_string());
-                if !JS_StringToId(&mut cx, jsstring.handle(), rooted_jsid.handle_mut()) ||
-                    !AppendToIdVector(props, rooted_jsid.handle())
-                {
+            let mut names = properties(unwrapped_proxy, &mut cx);
+
+            // The prototype lookups can run script (a Proxy `has` trap on the chain)
+            // that adds or removes expando properties, so they all run first. Each
+            // is short-circuited by an own expando property, as the visibility
+            // algorithm checks own properties before the prototype: a hidden name
+            // never reaches the prototype. An earlier callback may have created
+            // the expando, so a null handle is re-read before each name.
+            // From the final expando filter to the expando keys no script runs, so
+            // a key cannot be appended both as a named property and as an expando
+            // key. Cost: one temporary Vec of the surviving names and a second
+            // id conversion (atomization) per surviving name; nothing is cached.
+            if !config.legacy_override_builtins {
+                let mut visible = Vec::with_capacity(names.len());
+                for name in names {
+                    if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
+                        return false;
+                    }
+                    if expando.is_null() {
+                        get_expando_object(proxy, expando.handle_mut());
+                    }
+                    let mut has_own = false;
+                    if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {
+                        return false;
+                    }
+                    if has_own {
+                        continue;
+                    }
+                    let mut has_on_proto = false;
+                    if !has_property_on_prototype(
+                        &mut cx,
+                        proxy,
+                        rooted_jsid.handle(),
+                        &mut has_on_proto,
+                    ) {
+                        return false;
+                    }
+                    if !has_on_proto {
+                        visible.push(name);
+                    }
+                }
+                names = visible;
+            }
+
+            if expando.is_null() {
+                get_expando_object(proxy, expando.handle_mut());
+            }
+            for name in names {
+                if !named_property_id(&mut cx, &name, rooted_jsid.handle_mut()) {
+                    return false;
+                }
+                let mut has_own = false;
+                if !expando_has_own(&mut cx, expando.handle(), rooted_jsid.handle(), &mut has_own) {
+                    return false;
+                }
+                if has_own {
+                    continue;
+                }
+                if !AppendToIdVector(props, rooted_jsid.handle()) {
                     return false;
                 }
             }
+        } else {
+            get_expando_object(proxy, expando.handle_mut());
         }
-
-        rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
-        get_expando_object(proxy, expando.handle_mut());
 
         if !expando.is_null() &&
             !GetPropertyKeys(

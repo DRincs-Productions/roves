@@ -332,6 +332,8 @@ pub fn has_own_property(
 ///
 /// Returns a boolean indicating whether the check succeeded.
 /// If `false` is returned then the value of `found` is unspecified.
+/// A null prototype (e.g. after `Object.setPrototypeOf(proxy, null)`) ends the
+/// chain: nothing is found.
 pub fn has_property_on_prototype(
     cx: &mut JSContext,
     proxy: HandleObject,
@@ -342,7 +344,10 @@ pub fn has_property_on_prototype(
     if unsafe { !JS_GetPrototype(cx, proxy, proto.handle_mut()) } {
         return false;
     }
-    assert!(!proto.is_null());
+    if proto.is_null() {
+        *found = false;
+        return true;
+    }
     unsafe { JS_HasPropertyById(cx, proto.handle(), id, found) }
 }
 

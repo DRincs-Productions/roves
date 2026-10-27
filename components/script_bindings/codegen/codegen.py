@@ -6221,8 +6221,16 @@ def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
     """
     Whether named properties of this interface are visible even when the
     prototype chain has a property of the same name (compile-time IDL flag).
+    The flag applies to every object implementing the interface, so it is
+    inherited (Document -> HTMLDocument, XMLDocument):
+    https://webidl.spec.whatwg.org/#dfn-named-property-visibility
     """
-    return bool(descriptor.interface.getExtendedAttribute("LegacyOverrideBuiltIns"))
+    iface = descriptor.interface
+    while iface:
+        if iface.getExtendedAttribute("LegacyOverrideBuiltIns"):
+            return True
+        iface = iface.parent
+    return False
 
 
 class CGProxySpecialOperation(CGPerSignatureCall):
@@ -6474,7 +6482,8 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(CGAbstractExternMethod):
             # Expando (and unforgeable) own properties were already checked
             # above. Without [LegacyOverrideBuiltIns] a prototype property
             # hides the named property; with it the prototype is skipped.
-            # ownKeys/defineProperty/delete are not adjusted here.
+            # ownKeys applies the same rule in proxyhandler; defineProperty/delete
+            # are not adjusted.
             if hasLegacyOverrideBuiltIns(self.descriptor):
                 namedGet = f"""
 if {condition} {{
@@ -6647,12 +6656,15 @@ class CGDOMJSProxyHandler_ownPropertyKeys(CGAbstractExternMethod):
             properties = f"Some(|unwrapped_proxy: *const {self.descriptor.concreteType}, cx| (*unwrapped_proxy).SupportedPropertyNames(cx.no_gc()))"
         else:
             properties = "None"
+        # Named property visibility: only [LegacyOverrideBuiltIns] skips the prototype check.
+        override_builtins = "true" if hasLegacyOverrideBuiltIns(self.descriptor) else "false"
 
         return CGGeneric(f"""
             let cross_origin = {cross_origin};
             let config = crate::proxyhandler::JSProxyHandlerOwnPropertyKeysConfig {{
                 indexed_getter_and_length: {length},
                 supported_named_properties: {properties},
+                legacy_override_builtins: {override_builtins},
                 cross_origin,
                 unwrapped_proxy: UnwrapProxy::<D>,
             }};

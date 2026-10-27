@@ -20,6 +20,26 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Batchlocale0372/0373 — chiavi visibili e correzioneDocument reale
+
+[Handoff0372/0373](handoff/0372-0373-visible-named-keys.md): ownKeys filtra nomi
+nascosti da prototype/own/unforgeable, rispettando corto circuito e rientranza; nullproto
+noncausa piùpanic. FlagdaIDL, nessunbackend/cache/dipendenzanuova. Nonoverride usaVec
+transitorio e seconda conversione pernomisopravvissuti; nessunrisparmioCPU promesso.
+
+CI0370V8`40481102911`: Linuxnormal`122111336685` eJITless`122111336640` fallite:
+iframe nonHTMLDocument. Il reflector reale èDocument, il cui attributo era commentato.
+SpecHTML confermaDocument; attivato sulmainIDL perchéparsernonloaccettasullepartial,
+con eredità versoXMLDocument. FixturevincolatoDocumentreale/prototipovero, tuttii check
+comportamentali mantenuti. AliasHTMLDocument preesistente nonrisolto. Storici crosslinkati.
+8test realiIDL Windows/Linuxverdi, negativaoldhelper2fallimentiveri/zeroerroriimport;
+27hookRustparse, utils/proxyparse, runner42verdi(8skip). Nuovismokebrowser da verificareCI.
+
+0371 giàlocale`f9e024eea0a`; replay0372/0373 Windows/Linux11/11percorsiidenticiLF.
+Correzionecompleta inlocale; generale40481102827 ormai9/10nonAppleverdi,
+Linuxportable122112403272ancoraattiva. Niente push finché quella run restaattiva. Numericduplicate,define/delete,
+sourceText0361 e retentionglobale restanoaperti. ChromeMCP indisponibile, nessunrefrescoChrome.
+
 ### Implementazione0371 — nomi DOM senza CString e pin permanente, completa locale
 
 [Fix0371](handoff/0371-supported-name-string-ids.md): conversioneDOMString esistente

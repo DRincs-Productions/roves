@@ -1,5 +1,8 @@
 # 0371 — enumerate dynamic DOM names without C strings or permanent pins
 
+Follow-up0373 aligns smoke labels/prototype checks with the actual Document reflector.
+The string/id conversion itself is unchanged; see0372-0373-visible-named-keys.md.
+
 SupportedPropertyNames returns page-controlled DOMString values. The old ownKeys loop
 converted each to CString with unwrap (embedded NUL panics) and atomized/pinned every
 name for the runtime lifetime. Static cross-origin property atoms remain unchanged.

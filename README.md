@@ -702,7 +702,8 @@ Android and shared checks still gate publication.
 Scoped-handler source-text compatibility remains open. Native normal/JITless proofs show
 that ordinary V8 properties preserve external accessor receivers, but DOM key ordering and
 generated hook compatibility need further gates. No experimental DOM backend was adopted.
-Named-property reads now honor LegacyOverrideBuiltIns for HTMLDocument and dataset:
+Named-property reads now honor LegacyOverrideBuiltIns for Document (including its
+inherited XMLDocument binding) and dataset:
 supported names take precedence over prototype properties, while own/unforgeable properties
 still win. For example, data-to-string makes element.dataset.toString return the attribute
 value; removing the attribute restores the inherited method. Browser confirmation is in CI.
@@ -715,3 +716,8 @@ Dynamic DOM named-property enumeration preserves embedded NUL and Unicode names 
 C-string conversion or permanently pinning their atoms. Normal/JITless native regressions
 pass; the required browser smoke runs in CI and is pending for this change. Overall page
 retention remains open.
+
+Named own-key enumeration excludes names hidden by prototypes or own/unforgeable properties,
+including null prototypes and reentrant expando creation. Own properties short-circuit prototype
+queries. This correction targets the actual Document reflector; the historical HTMLDocument
+alias/prototype mismatch remains separate. Browser normal/JITless confirmation is pending CI.

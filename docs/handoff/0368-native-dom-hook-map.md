@@ -1,5 +1,9 @@
 # 0368 — native DOM hook map for ordinary V8 properties (HTMLDocument/Form/Select)
 
+Historical map at the pre0370 baseline. Follow-up0373 enables the attribute on the
+actual Document reflector and inherited interfaces; see0372-0373-visible-named-keys.md.
+The missing-codegen/Document-declaration observations below describe that earlier state.
+
 Documentation only: no production edits, no new tests, no registry/shell/network access.
 V8 API facts come only from the installed copies in `target/task-0368/v8-api/{template,
 function,object,property_handler_flags}.rs`; behaviour facts only from 0367 (native test

@@ -1,3 +1,20 @@
+## 2026-10-27 - Filter visible named keys and fix the actual Document route (0372/0373)
+
+ownKeys uses the existing IDL flag and JSAPI helpers to exclude names hidden by prototypes
+or own/unforgeable properties, preserving existing key order and0371 string conversion.
+A two-phase non-override path handles reentrant expando creation while preserving the
+own-property short circuit; it uses one temporary Vec, with no cache/new dependency.
+Null prototype is a valid end-of-chain in utils, not an assertion failure.
+
+Both Linux browser modes of0370 exposed that Roves constructs Document, not HTMLDocument.
+Enable LegacyOverrideBuiltIns on the actual Document IDL declaration (the vendored parser
+rejects that attribute on partials), inherit through maintained IDL ancestors (XMLDocument),
+and require the real Document prototype in smoke fixtures without removing behavioral checks.
+Eight full-real-IDL generator tests pass Windows/Linux; old helper fails2 behavior checks;
+27 Rust read hooks parse; runner42 pass (8 POSIX skips). Real browser verification pending CI.
+Patch0372 includes these related corrections and tests; historical handoffs are cross-linked.
+No full sourceText, numeric-key, define/delete or page-retention conformance claim.
+
 ## 2026-10-27 - Preserve dynamic DOM names and avoid unconditional atom pinning (0371)
 
 The proxy ownKeys loop now uses existing DOMString conversion and standard JS_StringToId
