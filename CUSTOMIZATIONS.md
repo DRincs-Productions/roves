@@ -1,3 +1,14 @@
+## 2026-10-27 - Proceed with Deno static loading as a provisional test-review item
+
+Latest user instruction reauthorizes option1 after clarification: static module loading may
+pause game input/timers; dynamic imports stay asynchronous. Supersede the intervening option2
+in AGENTS/workflow/current and0385 handoffs, library plan, README/wiki. Explicitly require
+review of startup versus runtime-inserted module scripts, local/network cold/warm/slow loads,
+actual pause durations, input/timers/frame behavior, errors and closing. No latency threshold
+or acceptable-performance claim. Resume saved0385 preparation only with review, preserving
+HTML/TLA/fetch security and removing substituted services in the complete cutover. Patch0394
+captures durable process/design changes; no production adoption is claimed by these docs.
+
 ## 2026-10-27 - Supersede the static-load pause authorization on latest user choice
 
 Latest explicit answer selects option2: all loading stays asynchronous; wait for suitable

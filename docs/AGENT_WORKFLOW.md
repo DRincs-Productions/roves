@@ -28,16 +28,20 @@ installazioni separate. Nessun risparmio o adozione dichiarati senza evidenza. N
 fixture esistenti prima di definire le prove sostitutive. Handoff0380 descrive comportamento
 e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI invariati.
 
-### Caricamento deno_core: piena asincronia confermata (27 ottobre 2026)
+### Caricamento statico deno_core: pausa provvisoria autorizzata (27 ottobre 2026)
 
-L'ultima risposta dell'utente alla scelta esplicita e OPZIONE2: mantenere tutto asincrono
-ed attendere un'API pubblica adatta. Questa risposta sostituisce la precedente scelta1;
-la pausa del thread del gioco durante il caricamento statico NON e piu autorizzata.
-Nessun fork Deno, grafo duplicato, prestito esclusivo mantenuto mentre si eseguono task JS
-o import() che cambi i tempi HTML/TLA. Il port produttivo e sospeso su questo gap, non
-completato. Conservare il backend corrente e continuare solo lavori indipendenti utili.
-La bozza parziale dell'opzione1 e salvata fuori dai sorgenti pubblicabili in
-target/task-0385/superseded-option1-wip; non ripristinarla senza nuova direzione applicabile.
+L'ultima istruzione dell'utente autorizza a procedere subito: durante il caricamento e
+l'istanziamento dei moduli statici input e timer del gioco possono fermarsi temporaneamente.
+Gli import dinamici restano asincroni. Questa decisione sostituisce la precedente scelta2.
+E un compromesso PROVVISORIO DA RIVEDERE nei test, non una prestazione accettabile gia
+misurata: documentare quando accade (avvio e script module aggiunti a gioco avviato), durata,
+sorgenti locali/rete, input/timer/frame e gestione errori/chiusura. Confrontare caricamenti
+freddi/caldi e rete lenta controllata; non inventare durata o soglie accettate dall'utente.
+Preservare valutazione HTML/TLA, sicurezza fetch, import map e microtask. Nessun rientro JS
+mentre JsRuntime e preso in prestito esclusivo; nessun fork o grafo duplicato permanente.
+Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisionata;
+nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
+la decisione e rivalutare un'API pubblica interamente asincrona.
 
 ## Eccezione Apple autorizzata il 26 ottobre 2026
 

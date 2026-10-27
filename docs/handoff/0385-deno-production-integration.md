@@ -36,23 +36,34 @@ Reviewed alternatives, SOURCE ANALYSIS rather than executed browser proofs:
 - Keeping only Servo's root-byte fetch does not discover dependency graphs. Avoid a
   second handwritten graph, unsafe borrow extension or cancelling/restarting load futures.
 
-The latest explicit user answer selects OPTION2: preserve fully asynchronous operation and
-wait for a suitable maintained public API. It SUPERSEDES the earlier option1 authorization;
-static-load ScriptThread pauses are no longer authorized. Do not resume the blocking port.
+## Current decision: proceed with a PROVISIONAL static-load pause
 
-Claude was stopped promptly on the new choice. Its incomplete seven-file compatibility
-preparation is saved in target/task-0385/superseded-option1-wip/incomplete.patch with exact
-file copies. Only task-owned source edits were restored; TODO.md remains untouched.
-No production dependency, V8 downgrade, callback shim or partial runtime was published.
-No active Claude process, quota block or automation. Root b5201929aaa/wiki3a3dff2 still
-contain the historical option1 documentation; this superseding documentation must accompany
-the next permitted push. Do not describe the superseded authorization as current.
+The latest user instruction supersedes option2 and authorizes proceeding now with a
+ScriptThread pause during STATIC module graph fetch/instantiation. Dynamic imports stay
+asynchronous. Preserve the HTML evaluation point and TLA semantics; do not wait for TLA
+settlement before unrelated deferred scripts/DOMContentLoaded progression.
 
-The API gap remains: load/instantiate a graph without evaluating it through a future that
-does not borrow JsRuntime across unrelated JS tasks. Keep the current runtime until a
-maintained public solution supports HTML/TLA. No private internals, custom second graph,
-unsafe borrow extension, source rewrites or timing-changing dynamic-import emulation.
-No upstream issue/message was sent. Independent shell work may continue under AGENTS.
+This is explicitly an OPEN REVIEW ITEM FOR TESTING, not a proven acceptable pause:
+
+- Record whether it occurs at initial game startup or when adding a new module script to
+  a running game; distinguish static imports from dynamic import().
+- Measure local packaged assets versus network assets, cold/warm loads and deliberately
+  slow responses. Record scene/build/platform/mode and actual pause durations.
+- Observe queued input, delayed timers, animation/frame interruptions, network failure,
+  timeout and closing behavior; do not claim shell responsiveness without a test.
+- Verify dynamic imports still allow input/timers while awaiting data, and TLA evaluation
+  does not hold the exclusive static-loading borrow.
+- Revisit the design if pauses are problematic. No user-approved latency threshold exists;
+  a suitable maintained independently-owned async Deno load API remains the preferred
+  future way to remove this limitation. No fork/private API/second graph authorized.
+
+The interrupted seven-file preparation is saved under
+ target/task-0385/superseded-option1-wip/incomplete.patch with exact file copies.
+Reuse it after review rather than redoing research; it is not a completed cutover.
+The earlier choice2 was briefly recorded in local a9d055b06bd and is now superseded.
+Claude resumes with reapproved-provisional.txt. Current backend remains until atomic
+implementation and review; no partial source/dependency change may be published.
+No upstream message/issue, scheduled retry or quota block. TODO.md remains external.
 
 ## Other integration requirements already authorized
 
@@ -69,6 +80,6 @@ No upstream issue/message was sent. Independent shell work may continue under AG
 - Remove each replaced service when the complete cutover is reviewed; no half backend.
 
 Detailed task-local evidence: target/task-0385/RESULTS.md, CODEX_REVIEW.md, prompt.txt,
-followup.txt and v8-public headers. The implementation assignment was stopped on the superseding user choice.
+followup.txt and v8-public headers. The interrupted assignment is now authorized to resume under the provisional decision.
 No quota block, automation or scheduled retry. Chrome MCP new_page was denied to Claude;
 not retried. No Chrome measurements or executed B3 counterexamples are claimed.

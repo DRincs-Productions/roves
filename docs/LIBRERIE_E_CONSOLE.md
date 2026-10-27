@@ -1,3 +1,13 @@
+## Deno static loading: provisional decision to review in tests (27 October 2026)
+
+Proceed with public Deno/Tokio static graph loading even though it temporarily pauses the
+game ScriptThread. Dynamic imports stay asynchronous. This supersedes the intervening
+fully-async-only decision. Preserve HTML/TLA and existing fetch security; no permanent
+second graph or Deno fork. Open question: actual impact at startup and when module scripts
+are added during gameplay, for local/cold/warm/slow-network cases, input/timers/frame time,
+errors and closing. No measurements or accepted latency threshold yet. Review with tests;
+prefer a maintained fully asynchronous API when available. See handoff0385.
+
 # Roves: librerie, GPU e console
 
 Obiettivo a lungo termine: Roves come assemblaggio di librerie mantenute da altri, con solo il

@@ -33,15 +33,16 @@ async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4
 0385 consegnata e revisionata: [gap API del caricamento statico](handoff/0385-deno-production-integration.md).
 Nessun port produttivo o cambio Cargo/lockfile lasciato. Deno load-without-evaluate mantiene
 &mut runtime durante il fetch; import()/import.defer() non sono equivalenti per HTML+TLA.
-Sono controesempi da analisi sorgente, non prove browser eseguite. L'ULTIMA risposta utente
-alla domanda esplicita sceglie OPZIONE2: mantenere piena asincronia e attendere API pubblica
-adatta. SOSTITUISCE la precedente scelta1: pausa caricamento statico NON piu autorizzata.
-Claude interrotto appena ricevuta la nuova scelta; bozza parziale salvata in
-target/task-0385/superseded-option1-wip/incomplete.patch con copie dei7file. Ripristinati
-solo file del task; nessun nuovo Cargo/dependency/shim incompleto nei sorgenti pubblicabili.
-Backend corrente preservato. Nessuna sessione Claude attiva, quota o automazione.
-B1 header verificati e B2 vincolo documento unico restano requisiti di un eventuale futuro
-port, non motivo per pubblicare ora il backend parziale. TODO.md resta separato.
+Sono controesempi da analisi sorgente, non prove browser eseguite. L'ULTIMA istruzione utente
+AUTORIZZA di nuovo opzione1: pausa durante fetch/istanziamento statico, import dinamici
+asincroni. Sostituisce scelta2. Compromesso PROVVISORIO DA RIVEDERE NEI TEST: documentare
+avvio e script module aggiunti durante il gioco, file locali/rete, durata, input/timer/frame,
+errori/chiusura, freddo/caldo e rete lenta controllata. Nessuna durata o soglia gia provata.
+Conservare HTML/TLA e sicurezza; nessun rientro JS durante prestito esclusivo del runtime.
+Ripresa0385 da target/task-0385/superseded-option1-wip, bozza incompleta da revisionare,
+non codice verificato. Nuovo incarico target/task-0385/reapproved-provisional.txt;
+consegna attesa IMPLEMENTATION.md. B1 shim/header e B2 documento unico restano necessari.
+Nessuna quota o automazione attiva. TODO.md resta modifica separata.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
