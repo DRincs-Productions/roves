@@ -1,0 +1,101 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 9edb30856c6..239177ab2db 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -19,7 +19,11 @@ devono essere accessibili al gioco; restano necessari caricamento iniziale shell
+ Quando si implementa questa policy, bloccare le operazioni non supportate nel motore prima
+ di modificare il documento, preservando il gioco. Segnalare almeno un warning nei log/console
+ con operazione e motivo; limitare ripetizioni, niente alert modali o crash come segnalazione.
+-Un eventuale avviso visibile deve essere non modale. Questa è una direttiva da implementare,
++Scelte confermate dall'utente: avviso discreto non modale durante lo sviluppo, solo log
++nel gioco distribuito. Link esterni nel browser di sistema solo dopo un clic reale
++dell'utente; richieste automatiche bloccate e segnalate, mai navigate dentro Roves.
++Prima completare la prova isolata deno_core per il documento unico; poi implementare
++insieme al runtime scelto la policy di blocco e diagnostica. Questa è una direttiva da implementare,
+ non una funzionalità già disponibile: handoff docs/handoff/0380-single-document-runtime.md.
+ 
+ Si possono sostituire e rimuovere servizi interni Servo tramite librerie mantenute. rusty_v8
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+index 7806f2738f7..b04aabe7d25 100644
+--- a/docs/AGENT_WORKFLOW.md
++++ b/docs/AGENT_WORKFLOW.md
+@@ -6,6 +6,9 @@ tab, nuove finestre o iframe; reload e cambi pagina completi da gioco sono fuori
+ Policy da implementare nel motore: rifiuto prima di cambiare documento/stato, risultato API
+ coerente e warning almeno nei log/console con operazione/motivo. Limitare ripetizioni; niente
+ crash o alert modali per notificare il rifiuto. Avviso visibile eventualmente non modale.
++Decisioni confermate: avviso discreto non modale in sviluppo, solo log nel distribuito;
++link esterni nel browser di sistema solo su clic reale, automatici bloccati con warning.
++Prima prova isolata deno_core a documento unico, poi policy/diagnostica col runtime scelto.
+ Caricamento iniziale shell/chiusura rimangono. Non presentare la policy come già implementata.
+ 
+ Servizi Servo possono essere sostituiti e rimossi. Rivalutare deno_core con un solo contesto:
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index 900e160c755..0fa5d8a65e8 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -16,7 +16,11 @@ essere accessibili al gioco. Caricamento iniziale shell e chiusura restano neces
+ La policy deve impedire richieste non supportate prima di sostituire il documento, senza
+ interrompere il gioco, e segnalarle almeno nei log/console con operazione e motivo. Preferire
+ diagnostica/UI esistenti; limitare ripetizioni e non usare alert modali. Un avviso visibile
+-può essere non modale. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
++è discreto e non modale solo in sviluppo; nel gioco distribuito usare solo i log.
++I link esterni possono aprire il browser di sistema solo dopo un clic reale dell'utente;
++le richieste automatiche restano bloccate e segnalate. Non si naviga dentro Roves.
++Ordine scelto: prima la prova deno_core per un documento, poi policy e diagnostica insieme
++al runtime selezionato. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
+ Dettagli e casi di accettazione: [handoff0380](handoff/0380-single-document-runtime.md).
+ 
+ Si possono sostituire e rimuovere servizi interni Servo, non solo affiancarli. DOM/layout/
+diff --git a/docs/handoff/0380-single-document-runtime.md b/docs/handoff/0380-single-document-runtime.md
+index 9611ae0617a..7b036bd76ab 100644
+--- a/docs/handoff/0380-single-document-runtime.md
++++ b/docs/handoff/0380-single-document-runtime.md
+@@ -22,7 +22,10 @@ window is created/replaced, not merely by hiding shell controls. Cover script an
+ navigation paths, including reload/location assignment, document-replacing links/forms,
+ refresh/redirect requests and attempted additional windows/frames. Preserve the current
+ game/document, route and state. Do not automatically turn an ordinary link into a router
+-transition or open an external browser; supported internal routing remains the router's job.
++transition; supported internal routing remains the router's job. User-confirmed external
++links open the system browser only following a real user click/native activation. Automatic
++requests are blocked and logged. A synthetic click alone must not grant that permission.
++The external page never replaces the game document or creates a Roves tab/window.
+ Actual implementation must respect existing API result contracts; do not add arbitrary
+ exceptions, crashes or process termination merely to signal a blocked operation. A game
+ that depends on an unsupported feature may still lack that feature; no universal guarantee
+@@ -32,7 +35,9 @@ Every blocked attempt must be diagnosable through the existing console/logging f
+ warning identifies the requested operation and the reason it is unsupported. Prefer
+ existing diagnostics, logging and UI components over new frameworks/dependencies. Repeated
+ identical requests must not flood logs or produce repeated dialogs. Logging is the minimum
+-required behavior; any visible notification is non-modal and must not pause the game.
++required behavior. User-confirmed behavior is a discreet, non-modal notification in
++development and logs only in the distributed game. No player-facing warning popup in the
++distributed game; development notices must not pause the game.
+ Do not use blocking JavaScript alert() as the enforcement/notification mechanism.
+ 
+ These are planned requirements only: no runtime policy, blocking or new warnings were
+@@ -40,6 +45,13 @@ implemented by this documentation change. Existing multi-frame/navigation fixtur
+ not evidence that the new product policy is enforced; do not silently delete them before
+ replacement coverage exists.
+ 
++## Confirmed implementation order
++
++First complete the isolated single-document deno_core feasibility probe. Then implement
++navigation enforcement, external-link handling and diagnostics with the selected runtime.
++Do not implement the policy twice merely to keep both runtimes in parallel. Do not present
++these product choices as a GO result or as already working enforcement.
++
+ ## Next bounded deno_core evaluation
+ 
+ Use one document/context rather than mandatory frame/navigation lifecycle. Evaluate
+@@ -53,7 +65,10 @@ No separate Chromium or Deno installation. Heavy builds remain online.
+ Acceptance coverage must include TanStack-style push/replace/back/forward and fragments
+ without document/context replacement; blocked reload/location/link/form/refresh/popup/frame
+ attempts retain game state and emit a useful warning; repeated attempts are bounded;
+-logging never causes a blocking dialog. Initial shell load and clean shutdown still work.
++development shows a discreet non-modal notice and distributed games log only; real-click
++external links open the system browser while automatic/synthetic-click attempts are blocked
++and logged. No path creates a Roves window or replaces the game document. Logging never
++causes a blocking dialog. Initial shell load and clean shutdown still work.
+ Test normal/JITless, DOM/events, security and teardown separately. No CPU/RAM/startup gains
+ or completed integration are claimed until measured. SourceText0361, other legacy DOM
+ gaps and overall retention remain open, subject to the revised product scope.

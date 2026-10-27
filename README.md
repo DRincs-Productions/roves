@@ -752,8 +752,11 @@ routes such as TanStack Router using the History API and fragments. Additional t
 and iframes are not required. Game-driven reloads and full-document navigations are outside
 this scope. The planned engine policy must block unsupported attempts before replacing the
 document and emit at least a useful console/log warning, without crashing or opening a
-blocking alert. Repeated attempts must not flood logs; any visible notification is non-modal.
-Initial shell loading and normal shutdown remain supported lifecycle requirements.
+blocking alert. Repeated attempts must not flood logs. The confirmed behavior is a discreet
+non-modal notice in development and logs only in distributed games. External links may open
+the system browser only after a real user click; automatic attempts are blocked and logged,
+without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
+First evaluate deno_core for this scope, then implement the policy with the selected runtime.
 
 This policy is planned, not yet implemented by this documentation update. deno_core is to
 be re-evaluated for the single-document scope: the previous multi-frame/WindowProxy NO-GO

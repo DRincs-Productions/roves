@@ -22,7 +22,10 @@ window is created/replaced, not merely by hiding shell controls. Cover script an
 navigation paths, including reload/location assignment, document-replacing links/forms,
 refresh/redirect requests and attempted additional windows/frames. Preserve the current
 game/document, route and state. Do not automatically turn an ordinary link into a router
-transition or open an external browser; supported internal routing remains the router's job.
+transition; supported internal routing remains the router's job. User-confirmed external
+links open the system browser only following a real user click/native activation. Automatic
+requests are blocked and logged. A synthetic click alone must not grant that permission.
+The external page never replaces the game document or creates a Roves tab/window.
 Actual implementation must respect existing API result contracts; do not add arbitrary
 exceptions, crashes or process termination merely to signal a blocked operation. A game
 that depends on an unsupported feature may still lack that feature; no universal guarantee
@@ -32,13 +35,22 @@ Every blocked attempt must be diagnosable through the existing console/logging f
 warning identifies the requested operation and the reason it is unsupported. Prefer
 existing diagnostics, logging and UI components over new frameworks/dependencies. Repeated
 identical requests must not flood logs or produce repeated dialogs. Logging is the minimum
-required behavior; any visible notification is non-modal and must not pause the game.
+required behavior. User-confirmed behavior is a discreet, non-modal notification in
+development and logs only in the distributed game. No player-facing warning popup in the
+distributed game; development notices must not pause the game.
 Do not use blocking JavaScript alert() as the enforcement/notification mechanism.
 
 These are planned requirements only: no runtime policy, blocking or new warnings were
 implemented by this documentation change. Existing multi-frame/navigation fixtures are
 not evidence that the new product policy is enforced; do not silently delete them before
 replacement coverage exists.
+
+## Confirmed implementation order
+
+First complete the isolated single-document deno_core feasibility probe. Then implement
+navigation enforcement, external-link handling and diagnostics with the selected runtime.
+Do not implement the policy twice merely to keep both runtimes in parallel. Do not present
+these product choices as a GO result or as already working enforcement.
 
 ## Next bounded deno_core evaluation
 
@@ -53,7 +65,10 @@ No separate Chromium or Deno installation. Heavy builds remain online.
 Acceptance coverage must include TanStack-style push/replace/back/forward and fragments
 without document/context replacement; blocked reload/location/link/form/refresh/popup/frame
 attempts retain game state and emit a useful warning; repeated attempts are bounded;
-logging never causes a blocking dialog. Initial shell load and clean shutdown still work.
+development shows a discreet non-modal notice and distributed games log only; real-click
+external links open the system browser while automatic/synthetic-click attempts are blocked
+and logged. No path creates a Roves window or replaces the game document. Logging never
+causes a blocking dialog. Initial shell load and clean shutdown still work.
 Test normal/JITless, DOM/events, security and teardown separately. No CPU/RAM/startup gains
 or completed integration are claimed until measured. SourceText0361, other legacy DOM
 gaps and overall retention remain open, subject to the revised product scope.

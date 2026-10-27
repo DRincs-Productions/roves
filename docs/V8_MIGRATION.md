@@ -43,7 +43,11 @@ fra documenti non sono più criteri obbligatori per adottare deno_core.
 Requisito DA IMPLEMENTARE: bloccare nel motore le richieste non supportate prima di
 sostituire documento/stato, segnalando almeno un warning console/log con operazione e
 motivo. Niente crash o alert modali come segnalazione; eventuale avviso non modale, ripetizioni
-limitate. History API/router e frammenti devono continuare a funzionare. Non convertire
+limitate. Scelta confermata: avviso discreto non modale in sviluppo, solo log nel distribuito.
+Link esterni al browser di sistema solo su clic reale; richieste automatiche bloccate e
+segnalate, mai navigate dentro Roves. Prima prova isolata deno_core a documento unico,
+poi implementare policy e diagnostica col runtime selezionato.
+History API/router e frammenti devono continuare a funzionare. Non convertire
 silenziosamente navigazioni native in route o apertura browser esterno. Non rimuovere
 fixture esistenti prima di prove sostitutive e revisione del perimetro.
 

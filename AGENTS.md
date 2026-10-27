@@ -19,7 +19,11 @@ devono essere accessibili al gioco; restano necessari caricamento iniziale shell
 Quando si implementa questa policy, bloccare le operazioni non supportate nel motore prima
 di modificare il documento, preservando il gioco. Segnalare almeno un warning nei log/console
 con operazione e motivo; limitare ripetizioni, niente alert modali o crash come segnalazione.
-Un eventuale avviso visibile deve essere non modale. Questa è una direttiva da implementare,
+Scelte confermate dall'utente: avviso discreto non modale durante lo sviluppo, solo log
+nel gioco distribuito. Link esterni nel browser di sistema solo dopo un clic reale
+dell'utente; richieste automatiche bloccate e segnalate, mai navigate dentro Roves.
+Prima completare la prova isolata deno_core per il documento unico; poi implementare
+insieme al runtime scelto la policy di blocco e diagnostica. Questa è una direttiva da implementare,
 non una funzionalità già disponibile: handoff docs/handoff/0380-single-document-runtime.md.
 
 Si possono sostituire e rimuovere servizi interni Servo tramite librerie mantenute. rusty_v8

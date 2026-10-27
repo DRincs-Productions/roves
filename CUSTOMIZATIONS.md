@@ -1,3 +1,14 @@
+## 2026-10-27 - Record confirmed diagnostics, external-link and implementation-order choices
+
+Single-document policy clarification: discreet non-modal warnings in development, logs
+only in distributed games. External links open the system browser only after a real user
+click/native activation; automatic attempts stay blocked/logged without navigating the
+game document. First evaluate deno_core in isolation, then implement policy/diagnostics
+with the selected runtime. Update shared instructions, migration/library/workflow docs,
+handoff0380 and README/wiki. Documentation only; no runtime enforcement, new privilege,
+packaging flag or adoption is implemented. Existing diagnostics/opener components should
+be reused rather than adding a framework. Patch0383; previous scope evidence retained.
+
 ## 2026-10-27 - Narrow the runtime product scope and require non-blocking diagnostics (0380)
 
 Record the user's one-window/one-document game scope with TanStack-style internal routes.

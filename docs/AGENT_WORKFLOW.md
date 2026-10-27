@@ -6,6 +6,9 @@ tab, nuove finestre o iframe; reload e cambi pagina completi da gioco sono fuori
 Policy da implementare nel motore: rifiuto prima di cambiare documento/stato, risultato API
 coerente e warning almeno nei log/console con operazione/motivo. Limitare ripetizioni; niente
 crash o alert modali per notificare il rifiuto. Avviso visibile eventualmente non modale.
+Decisioni confermate: avviso discreto non modale in sviluppo, solo log nel distribuito;
+link esterni nel browser di sistema solo su clic reale, automatici bloccati con warning.
+Prima prova isolata deno_core a documento unico, poi policy/diagnostica col runtime scelto.
 Caricamento iniziale shell/chiusura rimangono. Non presentare la policy come già implementata.
 
 Servizi Servo possono essere sostituiti e rimossi. Rivalutare deno_core con un solo contesto:

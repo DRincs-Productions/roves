@@ -16,7 +16,11 @@ essere accessibili al gioco. Caricamento iniziale shell e chiusura restano neces
 La policy deve impedire richieste non supportate prima di sostituire il documento, senza
 interrompere il gioco, e segnalarle almeno nei log/console con operazione e motivo. Preferire
 diagnostica/UI esistenti; limitare ripetizioni e non usare alert modali. Un avviso visibile
-può essere non modale. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
+è discreto e non modale solo in sviluppo; nel gioco distribuito usare solo i log.
+I link esterni possono aprire il browser di sistema solo dopo un clic reale dell'utente;
+le richieste automatiche restano bloccate e segnalate. Non si naviga dentro Roves.
+Ordine scelto: prima la prova deno_core per un documento, poi policy e diagnostica insieme
+al runtime selezionato. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
 Dettagli e casi di accettazione: [handoff0380](handoff/0380-single-document-runtime.md).
 
 Si possono sostituire e rimuovere servizi interni Servo, non solo affiancarli. DOM/layout/
