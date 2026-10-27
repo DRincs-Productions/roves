@@ -25,7 +25,9 @@ fn mode_values_are_validated() {
 }
 
 /// The nine V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
-/// V8 in the configured mode; a failure stops the remaining scenarios.
+/// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
+/// the "before" half of the last one runs on `new_runtime`, i.e. after deno_core's bootstrap
+/// globals were removed.
 #[test]
 fn single_document_scenarios() {
     configured_mode_controls_webassembly();
@@ -36,7 +38,7 @@ fn single_document_scenarios() {
     import_attributes_and_module_types_follow_html_rules();
     only_allowlisted_urls_reach_the_loader();
     context_flag_switches_string_compilation_off_and_on();
-    main_realm_exposes_deno_globals();
+    bootstrap_namespace_is_removed_before_game_code();
 }
 
 fn configured_mode_controls_webassembly() {
@@ -111,9 +113,51 @@ fn context_flag_switches_string_compilation_off_and_on() {
     assert_eq!(allowed, strings(&["eval:allowed", "Function:allowed", "script:ran"]));
 }
 
-fn main_realm_exposes_deno_globals() {
-    // Observation pinned so a deno_core upgrade that changes it is noticed. Games must not
-    // see `Deno`: hiding or removing it is an open bootstrap item (README.md).
-    let log = probe::main_realm_globals().unwrap();
-    assert!(log.contains(&"Deno:object".to_string()), "{log:?}");
+fn bootstrap_namespace_is_removed_before_game_code() {
+    // Not proven: general privilege isolation. Closures inside deno_core's builtins (console,
+    // queueMicrotask) still hold the core internally, `import.meta.main` is a Deno extra, and
+    // there is no Servo DOM, HTML origin or CSP here. This pins the absence of the namespace.
+    let report = probe::bootstrap_isolation().unwrap();
+
+    // Raw deno_core: plain configurable data properties (a non-configurable one would have
+    // failed `bootstrap_isolation` with a "blocker:" error instead).
+    assert_eq!(
+        report.before,
+        strings(&["Deno:data:configurable", "__bootstrap:data:configurable", "__infra:absent"])
+    );
+    assert_eq!(report.removal, strings(&["Deno:deleted", "__bootstrap:deleted", "__infra:absent"]));
+
+    let log = &report.log;
+    let position = |entry: &str| log.iter().position(|item| item == entry).unwrap_or_else(|| panic!("{entry} in {log:?}"));
+    // The game's first statements already see a global without the namespace.
+    assert_eq!(
+        log[..3],
+        strings(&["Deno:undefined:false", "__bootstrap:undefined:false", "__infra:undefined:false"]),
+        "{log:?}"
+    );
+    position("Object:a");
+    position("namespace-leaks:");
+    position("privileged-globals:");
+    position("import.meta:main,resolve,url");
+    position("meta-resolve:TypeError");
+    // Standard Promise jobs and queueMicrotask still run, in FIFO order, right after the module.
+    let sync_done = position("main:sync-done");
+    assert_eq!(position("promise:p"), sync_done + 1, "{log:?}");
+    assert_eq!(position("queueMicrotask:ran"), sync_done + 2, "{log:?}");
+
+    // Direct internal specifiers stop at the loader's allowlist; aliases that a loader maps
+    // onto them are refused by deno_core's own ext: guard, dynamic and static alike.
+    position("ext-mod:rejected:other");
+    position("ext-ops:rejected:other");
+    position("alias-ops:rejected:core-guard");
+    position("alias-mod:rejected:core-guard");
+    assert!(log.iter().any(|entry| entry.starts_with("static-alias:rejected:")), "{log:?}");
+    assert!(!log.iter().any(|entry| entry.contains(":fulfilled") || entry.starts_with("static-alias:evaluated")), "{log:?}");
+    assert_eq!(log.len(), 16, "{log:?}");
+
+    assert_eq!(report.loads, strings(&["https://game.invalid/main.js", "https://game.invalid/static-alias.js"]));
+    let refused: std::collections::BTreeSet<_> = report.refused.iter().map(String::as_str).collect();
+    assert_eq!(refused, ["ext:core/mod.js", "ext:core/ops"].into_iter().collect(), "{:?}", report.refused);
+    assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
+    assert_eq!(report.resources, 0);
 }

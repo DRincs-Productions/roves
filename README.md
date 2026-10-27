@@ -774,3 +774,8 @@ APIs, without integrating Servo DOM or changing the game runtime. Local metadata
 checks and online CI pass: Linux/Windows normal and JITless, four jobs, two Rust tests per
 job covering ten logical scenarios. This does not prove Servo DOM/CSP/routing integration. Navigation policy and warnings
 remain planned. Details: [probe README](support/deno-core-probe/README.md).
+
+The isolated deno_core probe now removes its bootstrap namespaces before any game code
+and exercises module/async scenarios plus direct/aliased internal-import refusal afterwards.
+New assertions await CI; the earlier four green jobs validate only the baseline. Namespace
+absence is a bounded check, not general capability isolation or production DOM integration.

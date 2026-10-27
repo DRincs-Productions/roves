@@ -1,3 +1,8 @@
+> Status update: the authorized27October19:02 retry succeeded. Claude completed the
+> draft and Codex reviewed it; the one-shot automation was deleted. The quota below is
+> historical, not a current stop/retry instruction. Current implementation/evidence:
+> [bootstrap isolation](0382-deno-bootstrap-isolation.md). New CI still must validate it.
+
 # 0382 — bootstrap isolation draft suspended at verified Claude session quota
 
 ## Current checkpoint

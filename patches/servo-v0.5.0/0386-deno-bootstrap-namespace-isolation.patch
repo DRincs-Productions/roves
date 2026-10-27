@@ -1,0 +1,485 @@
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index 3a2b64ef166..dafb2b8103b 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -37,7 +37,7 @@ produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o inst
+ separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
+ percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
+ 
+-### Prova0381 verificata online, bootstrap0382 sospeso per quota
++### Prova0381 verificata online, bootstrap0382 pronto per CI
+ 
+ [Handoff0381](handoff/0381-deno-single-document-probe.md): workspace isolato in
+ support/deno-core-probe, nessuna dipendenza produttiva. Dieci scenari logici in due test
+@@ -45,9 +45,11 @@ Rust, una sola thread per gli scenari V8, stessa suite normale/JITless su Linux/
+ Metadata/parse e contratto YAML/lock verificati; CI40539608247 verde4/4, Linux/Windows
+ normale/JITless. Due testRust perjob coprono dieci scenari logici, non integrazione DOM. RustyV8150 espone il flag globale di contesto per eval/Function, non la callback per
+ singola stringa di152: gap CSP/TrustedTypes ancora da valutare. Nessun DOM/router simulato,
+-nessuna prova di integrazione reale o misura prestazionale. Prova bootstrap0382 iniziata ma non completata per quota: bozza separata,
+-nessun nuovo comportamento pubblicato. Ripresa unica19:02 nel handoff corrente; mantenere
+-un solo servizio moduli/async. Vedere handoff/0382-bootstrap-resume.md.
++nessuna prova di integrazione reale o misura prestazionale. Prova bootstrap0382 completata dopo il reset: rimuove globali interni prima del gioco e
++riesegue scenari moduli/async con import interni rifiutati, via API pubbliche. Metadata/parse
++verificati, nuove asserzioni in attesa CI; non è isolamento generale o integrazione DOM.
++Ricontrollo19:02 eliminato. Prossima prova classe nativa/cppgc; mantenere un solo servizio.
++Vedere handoff/0382-deno-bootstrap-isolation.md.
+ 
+ ## Prossimi passi, codice e librerie
+ 
+diff --git a/docs/handoff/0382-bootstrap-resume.md b/docs/handoff/0382-bootstrap-resume.md
+index 51ab22382f4..88af3c522ab 100644
+--- a/docs/handoff/0382-bootstrap-resume.md
++++ b/docs/handoff/0382-bootstrap-resume.md
+@@ -1,3 +1,8 @@
++> Status update: the authorized27October19:02 retry succeeded. Claude completed the
++> draft and Codex reviewed it; the one-shot automation was deleted. The quota below is
++> historical, not a current stop/retry instruction. Current implementation/evidence:
++> [bootstrap isolation](0382-deno-bootstrap-isolation.md). New CI still must validate it.
++
+ # 0382 — bootstrap isolation draft suspended at verified Claude session quota
+ 
+ ## Current checkpoint
+diff --git a/support/deno-core-probe/README.md b/support/deno-core-probe/README.md
+index 755a2a4b127..8dc152b7cd4 100644
+--- a/support/deno-core-probe/README.md
++++ b/support/deno-core-probe/README.md
+@@ -14,9 +14,21 @@ WindowProxy identity across replaced documents are out of scope for the product,
+ earlier secondary-context scenario (task 0378) was removed: it needed realm hooks deno_core
+ does not make public, and the product no longer requires them.
+ 
+-Authored scenarios awaiting CI (`tests/probe.rs`; none has been compiled or run yet). All go
++Scenarios in `tests/probe.rs`. The task 0381 baseline (without namespace removal) passed in
++CI run 40539608247 (4/4 jobs: Ubuntu and Windows, normal and JITless). The task 0382 changes
++below (namespace removal, `bootstrap_namespace_is_removed_before_game_code`) have not been
++compiled or run yet. All go
+ through public deno_core APIs and its `v8` re-export, with an in-memory `ModuleLoader`
+-serving `https://game.invalid/`. The 10 logical scenarios are grouped in **2 Rust tests**:
++serving `https://game.invalid/`. Those URLs are a mock: the scenarios run modules and
++scripts directly, with no HTML document, no HTML origin and no CSP header behind them.
++
++Game code only ever runs on `new_runtime`, which removes deno_core's bootstrap namespace
++globals (`Deno`, `__bootstrap`, `__infra`) with the native `v8::Object` API right after
++`JsRuntime::try_new` and before any script or module; a non-configurable global is reported
++as a blocker instead of being hidden. So every scenario below runs on the stripped global.
++The raw constructor is private and used only for the before/after observation.
++
++The 10 logical scenarios are grouped in **2 Rust tests**:
+ `mode_values_are_validated` (pure, no V8) and `single_document_scenarios`, which runs the
+ other nine in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
+ on that thread (`--test-threads=1` alone serializes tests but may still run each on its own
+@@ -33,7 +45,7 @@ thread). The first failing scenario stops the rest; they are not 10 independent
+ | `import_attributes_and_module_types_follow_html_rules` | Unsupported attributes/types and type mismatches reject (validator callback + loader check) | CSS module scripts |
+ | `only_allowlisted_urls_reach_the_loader` | Other origin/port, `data:`, `file:`, `ext:`, `node:`, bare specifiers never reach `load` | Servo fetch, CORS, CSP `script-src`, SRI, import maps |
+ | `context_flag_switches_string_compilation_off_and_on` | With the context flag off, `eval`/`new Function` throw `EvalError` while embedder-compiled scripts still run; with it on, both work | Per-string decisions, CSP `unsafe-eval` reporting, Trusted Types: the flag is context-wide, not a CSP implementation |
+-| `main_realm_exposes_deno_globals` | Pins that `Deno` is present in the main realm (observation) | That it can be hidden from games |
++| `bootstrap_namespace_is_removed_before_game_code` | Raw deno_core has `Deno`/`__bootstrap` as configurable data properties (`__infra` already gone); after removal the game's first statements see none of them, no global value re-exposes `core`/`ops`/`primordials`/`internals`, `Object`/`Promise`/`queueMicrotask` work; `ext:core/mod.js` and `ext:core/ops` are refused by direct `import()`, by `import.meta.resolve`, and — when a loader alias maps a game specifier onto them — by deno_core's own `ext:` guard for dynamic and static imports; no fs/net/fetch/process-style op is registered and the resource table is empty | General privilege isolation: deno_core's builtin closures (`console`, `queueMicrotask`) still hold the core internally, builtin resource ops (`op_read`, `op_print`, ...) stay registered though unreachable from game code, `import.meta.main` is a Deno extra; no Servo DOM, origin or CSP |
+ 
+ There is **no Servo DOM, no History API and no TanStack-style router** here, and none is
+ simulated: nothing in this crate proves that Servo's DOM, events or same-document routing
+@@ -53,7 +65,8 @@ V8_TEST_MODE=jitless cargo test --locked --manifest-path support/deno-core-probe
+ The build downloads the prebuilt rusty_v8 static library; it is heavy, so it runs online in
+ `.github/workflows/deno-core-probe.yml` (Ubuntu 24.04 and Windows, normal and JITless, no
+ browser executable needed). No result is claimed until that workflow has run; see
+-`target/task-0381/RESULTS.md` for what was and was not executed.
++`target/task-0381/RESULTS.md` and `target/task-0382/RESULTS.md` for what was and was not
++executed.
+ 
+ ## Engine version gap
+ 
+@@ -72,8 +85,11 @@ Each needs a bounded proof using existing maintained APIs, not a new framework:
+ 2. **Module and async single owner.** deno_core must replace Servo's module map and
+    dynamic-import service and the Promise job queue for the document, not run beside them;
+    the old path is removed in the same change.
+-3. **Bootstrap globals and capabilities.** `Deno`, `__bootstrap`, `__infra` and op
+-   bindings must not be reachable by game code; no privileged Deno API is exposed.
++3. **Bootstrap globals and capabilities.** Namespace removal is authored
++   (`bootstrap_namespace_is_removed_before_game_code`, awaiting CI). The absence of these
++   globals is not a universal capability proof: privilege isolation still has to be
++   re-checked once Servo's DOM globals, console and event loop replace deno_core's
++   builtins, and production integration is pending.
+ 4. **HTML checkpoint timing, security and teardown.** Microtask checkpoints interleaved with
+    Servo tasks per HTML, CSP/codegen decided by Servo's policy, clean isolate teardown at
+    shutdown, all in normal and JITless mode.
+diff --git a/support/deno-core-probe/src/lib.rs b/support/deno-core-probe/src/lib.rs
+index 133ecdd9502..654ab4b6f12 100644
+--- a/support/deno-core-probe/src/lib.rs
++++ b/support/deno-core-probe/src/lib.rs
+@@ -7,6 +7,11 @@
+ //! public deno_core APIs and its `v8` re-export are used. Each scenario returns the JS-side
+ //! log so `tests/probe.rs` can assert the observed order.
+ //!
++//! [`new_runtime`] is the only constructor scenarios use for game code: it removes deno_core's
++//! bootstrap namespace globals (`Deno`, `__bootstrap`, `__infra`) before any script or module
++//! runs, so every scenario below also runs on the stripped global. The `JsRuntime` stays the
++//! single owner of the module map, dynamic imports and the event loop.
++//!
+ //! Scope of the evidence: these scenarios exercise deno_core's module map, loader, event
+ //! loop, the import-attributes callback and the context's string-compilation flag. They involve no Servo DOM, no History API and no HTML
+ //! origin security or CSP policy; where a scenario touches those areas it only shows that
+@@ -103,6 +108,8 @@ struct Served {
+ /// layer, which would be called from `resolve`/`load` in a real integration.
+ pub struct MemoryLoader {
+     modules: HashMap<String, Served>,
++    /// Specifiers mapped verbatim to a URL, bypassing the allowlist (see [`Self::with_alias`]).
++    aliases: HashMap<String, String>,
+     /// Every URL `load` was asked for, allowed or not.
+     pub loads: RefCell<Vec<String>>,
+     /// Every specifier `resolve` refused.
+@@ -118,14 +125,26 @@ impl MemoryLoader {
+                     (format!("{ORIGIN}{path}"), Served { module_type: module_type.clone(), code })
+                 })
+                 .collect(),
++            aliases: HashMap::new(),
+             loads: RefCell::default(),
+             refused: RefCell::default(),
+         }
+     }
++
++    /// Models a loader or import map that maps a game specifier onto deno_core's internal
++    /// namespace (e.g. `ext:core/ops`). deno_core's own `ext:` guard in `ModuleMap::resolve`,
++    /// not this allowlist, must then refuse it.
++    pub fn with_alias(mut self, specifier: &str, url: &str) -> Self {
++        self.aliases.insert(specifier.to_owned(), url.to_owned());
++        self
++    }
+ }
+ 
+ impl ModuleLoader for MemoryLoader {
+     fn resolve(&self, specifier: &str, referrer: &str, _kind: ResolutionKind) -> ModuleResolveResponse {
++        if let Some(url) = self.aliases.get(specifier) {
++            return ModuleSpecifier::parse(url).map_err(|error| ModuleLoaderError::generic(error.to_string()));
++        }
+         let refuse = |why: &str| {
+             self.refused.borrow_mut().push(specifier.to_owned());
+             Err(ModuleLoaderError::type_error(format!("{why}: {specifier}")))
+@@ -194,10 +213,21 @@ fn validate_import_attributes(
+     }
+ }
+ 
+-/// Creates the document's runtime. Must run inside a tokio runtime: deno_core aborts the
+-/// process when V8 posts a delayed task for an isolate created outside one
+-/// (`runtime/setup.rs:99-110`), so the context is checked here instead of left to chance.
++/// Creates the document's runtime: deno_core's bootstrap followed by
++/// `remove_bootstrap_globals`, before any game script or module can run. This is the only
++/// constructor for game code. Must run inside a tokio runtime: deno_core aborts the process
++/// when V8 posts a delayed task for an isolate created outside one (`runtime/setup.rs:99-110`),
++/// so the context is checked here instead of left to chance.
+ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
++    let mut runtime = new_raw_runtime(loader)?;
++    remove_bootstrap_globals(&mut runtime)?;
++    Ok(runtime)
++}
++
++/// deno_core's runtime as `JsRuntime::try_new` leaves it, bootstrap globals included. Private:
++/// used by [`new_runtime`] and by [`bootstrap_isolation`]'s before/after observation only,
++/// never handed to game code.
++fn new_raw_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+     v8_mode()?;
+     tokio::runtime::Handle::try_current().map_err(|error| format!("JsRuntime needs a tokio context: {error}"))?;
+     JsRuntime::try_new(RuntimeOptions {
+@@ -208,6 +238,47 @@ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+     .map_err(err)
+ }
+ 
++/// Global names deno_core 0.413.0's bootstrap puts on the main realm: `Deno` (`runtime/
++/// bindings.rs` `initialize_deno_core_namespace`), `__bootstrap` (`00_primordials.js`) and
++/// `__infra` (`00_infra.js`; `01_core.js` already deletes it, kept so a deno_core change that
++/// stops doing so is caught). Op functions live under `Deno.core.ops`.
++pub const BOOTSTRAP_GLOBALS: [&str; 3] = ["Deno", "__bootstrap", "__infra"];
++
++/// Deletes [`BOOTSTRAP_GLOBALS`] from the global object with the native `v8::Object` API, after
++/// `JsRuntime::try_new` returned. deno_core reads `Deno.core` from the global only while it is
++/// being constructed (`store_js_callbacks`, `snapshotted_fast_op_refs`) and keeps `v8::Global`
++/// handles afterwards; its own comments describe `Deno.core` being scrubbed after bootstrap.
++/// A non-configurable property is reported as a blocker, never hidden behind a facade.
++fn remove_bootstrap_globals(runtime: &mut JsRuntime) -> Result<Log, String> {
++    deno_core::scope!(scope, runtime);
++    let context = scope.get_current_context();
++    let global = context.global(scope);
++    let configurable_key = v8::String::new(scope, "configurable").ok_or("cannot allocate a V8 string")?;
++    let mut report = Log::new();
++    for name in BOOTSTRAP_GLOBALS {
++        let key = v8::String::new(scope, name).ok_or("cannot allocate a V8 string")?;
++        let descriptor = global
++            .get_own_property_descriptor(scope, key.into())
++            .ok_or_else(|| format!("reading the globalThis.{name} descriptor threw"))?;
++        if descriptor.is_undefined() {
++            report.push(format!("{name}:absent"));
++            continue;
++        }
++        let descriptor: v8::Local<v8::Object> = descriptor.try_into().map_err(err)?;
++        let configurable = descriptor.get(scope, configurable_key.into()).is_some_and(|value| value.is_true());
++        if !configurable {
++            return Err(format!(
++                "blocker: globalThis.{name} is non-configurable and cannot be removed with public APIs"
++            ));
++        }
++        if global.delete(scope, key.into()) != Some(true) || global.has_own_property(scope, key.into()) != Some(false) {
++            return Err(format!("deleting globalThis.{name} did not remove it"));
++        }
++        report.push(format!("{name}:deleted"));
++    }
++    Ok(report)
++}
++
+ /// A current-thread tokio runtime per scenario; `enable_all` because deno_core's delayed V8
+ /// tasks sleep on tokio's timer (tokio's "time" feature comes from deno_core's `tokio/full`).
+ fn block_on<T>(future: impl std::future::Future<Output = Result<T, String>>) -> Result<T, String> {
+@@ -464,15 +535,114 @@ pub fn webassembly_availability() -> Result<String, String> {
+     })
+ }
+ 
+-/// Non-web globals deno_core installs in its main realm (observed, not a pass/fail check).
+-pub fn main_realm_globals() -> Result<Log, String> {
++/// What `bootstrap_isolation` observed.
++pub struct IsolationReport {
++    /// Property descriptors of [`BOOTSTRAP_GLOBALS`] on a raw runtime, read by a trusted script.
++    pub before: Log,
++    /// What `remove_bootstrap_globals` reported on that same raw runtime.
++    pub removal: Log,
++    /// What the game's main module logged on a [`new_runtime`] document.
++    pub log: Log,
++    pub loads: Vec<String>,
++    pub refused: Vec<String>,
++    /// Registered op names that look like file system, network or process capabilities.
++    pub privileged_ops: Vec<String>,
++    /// Entries in the runtime's resource table after the game ran (no stdio, files, sockets).
++    pub resources: usize,
++}
++
++const DESCRIBE_BOOTSTRAP_GLOBALS: &str = r#"
++  JSON.stringify(["Deno", "__bootstrap", "__infra"].map(name => {
++    const d = Object.getOwnPropertyDescriptor(globalThis, name);
++    if (d === undefined) return name + ":absent";
++    return name + ":" + ("value" in d ? "data" : "accessor") + ":" + (d.configurable ? "configurable" : "non-configurable");
++  }))
++"#;
++
++/// Op-name fragments of Deno's privileged extensions (fs, net, fetch, process, ffi, node).
++/// deno_core's builtin resource ops (`op_read`, `op_write`, `op_print`, ...) are registered
++/// but reachable only through the removed `Deno.core` namespace and `ext:core/ops`.
++const PRIVILEGED_OP_PREFIXES: &[&str] = &[
++    // Not "op_run": the builtin op_run_microtasks would match.
++    "op_fs_", "op_net_", "op_fetch", "op_http", "op_ws_", "op_spawn", "op_kill", "op_env", "op_open",
++    "op_read_file", "op_write_file", "op_remove", "op_mkdir", "op_dlopen", "op_ffi", "op_node_", "op_process",
++    "op_exit",
++];
++
++/// Bootstrap globals before and after removal, then a game module on the default document
++/// runtime: target globals absent, standard globals working, deno_core's internal modules
++/// unreachable by direct specifier, by a loader alias, by a static import and by
++/// `import.meta.resolve`. Proves the absence of this namespace only, not general privilege
++/// isolation (see README.md).
++pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
+     block_on(async {
+-        let mut runtime = new_runtime(Rc::new(MemoryLoader::new(&[])))?;
+-        script(
+-            &mut runtime,
+-            "globals.js",
+-            r#"globalThis.log = ["Deno", "__bootstrap", "__infra", "queueMicrotask"].map(name => name + ":" + typeof globalThis[name]);"#,
+-        )?;
+-        read_log(&mut runtime)
++        let (before, removal) = {
++            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])))?;
++            let json = string_script(&mut raw, "describe.js", DESCRIBE_BOOTSTRAP_GLOBALS)?;
++            let before: Log = deno_core::serde_json::from_str(&json).map_err(err)?;
++            (before, remove_bootstrap_globals(&mut raw)?)
++        };
++
++        let loader = Rc::new(
++            MemoryLoader::new(&[
++                (
++                    "main.js",
++                    ModuleType::JavaScript,
++                    r#"for (const name of ["Deno", "__bootstrap", "__infra"]) {
++                         log.push(name + ":" + typeof globalThis[name] + ":" + Object.hasOwn(globalThis, name));
++                       }
++                       log.push("Object:" + Object.keys({ a: 1 }).join());
++                       const leaks = [];
++                       for (const name of Object.getOwnPropertyNames(globalThis)) {
++                         const value = globalThis[name];
++                         if (value === globalThis || value === null || (typeof value !== "object" && typeof value !== "function")) continue;
++                         for (const key of ["core", "ops", "primordials", "internals"]) {
++                           if (Object.hasOwn(value, key)) leaks.push(name + "." + key);
++                         }
++                       }
++                       log.push("namespace-leaks:" + leaks.join());
++                       const privileged = ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "process", "require", "Buffer", "Bun", "open", "importScripts"];
++                       log.push("privileged-globals:" + privileged.filter(name => typeof globalThis[name] !== "undefined").join());
++                       log.push("import.meta:" + Object.keys(import.meta).sort().join());
++                       try { import.meta.resolve("ext:core/ops"); log.push("meta-resolve:allowed"); }
++                       catch (e) { log.push("meta-resolve:" + e.name); }
++                       Promise.resolve("p").then(v => log.push("promise:" + v));
++                       queueMicrotask(() => log.push("queueMicrotask:ran"));
++                       const guard = (label, promise) => promise.then(
++                         () => log.push(label + ":fulfilled"),
++                         e => log.push(label + ":rejected:" + (String(e && e.message).includes("Importing ext: modules is only allowed") ? "core-guard" : "other")),
++                       );
++                       guard("ext-mod", import("ext:core/mod.js"));
++                       guard("ext-ops", import("ext:core/ops"));
++                       guard("alias-ops", import("internal-ops"));
++                       guard("alias-mod", import("internal-mod"));
++                       guard("static-alias", import("./static-alias.js"));
++                       log.push("main:sync-done");"#,
++                ),
++                ("static-alias.js", ModuleType::JavaScript, r#"import * as ops from "internal-ops"; log.push("static-alias:evaluated:" + typeof ops);"#),
++            ])
++            .with_alias("internal-ops", "ext:core/ops")
++            .with_alias("internal-mod", "ext:core/mod.js"),
++        );
++        let mut runtime = new_runtime(loader.clone())?;
++        script(&mut runtime, "setup.js", SETUP)?;
++        run_main(&mut runtime, "main.js").await?;
++        let log = read_log(&mut runtime)?;
++        let privileged_ops = runtime
++            .op_names()
++            .into_iter()
++            .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
++            .map(str::to_owned)
++            .collect();
++        let resources = runtime.op_state().borrow().resource_table.names().count();
++        Ok(IsolationReport {
++            before,
++            removal,
++            log,
++            loads: loader.loads.borrow().clone(),
++            refused: loader.refused.borrow().clone(),
++            privileged_ops,
++            resources,
++        })
+     })
+ }
+diff --git a/support/deno-core-probe/tests/probe.rs b/support/deno-core-probe/tests/probe.rs
+index c41af278388..3de4c17312f 100644
+--- a/support/deno-core-probe/tests/probe.rs
++++ b/support/deno-core-probe/tests/probe.rs
+@@ -25,7 +25,9 @@ fn mode_values_are_validated() {
+ }
+ 
+ /// The nine V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
+-/// V8 in the configured mode; a failure stops the remaining scenarios.
++/// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
++/// the "before" half of the last one runs on `new_runtime`, i.e. after deno_core's bootstrap
++/// globals were removed.
+ #[test]
+ fn single_document_scenarios() {
+     configured_mode_controls_webassembly();
+@@ -36,7 +38,7 @@ fn single_document_scenarios() {
+     import_attributes_and_module_types_follow_html_rules();
+     only_allowlisted_urls_reach_the_loader();
+     context_flag_switches_string_compilation_off_and_on();
+-    main_realm_exposes_deno_globals();
++    bootstrap_namespace_is_removed_before_game_code();
+ }
+ 
+ fn configured_mode_controls_webassembly() {
+@@ -111,9 +113,51 @@ fn context_flag_switches_string_compilation_off_and_on() {
+     assert_eq!(allowed, strings(&["eval:allowed", "Function:allowed", "script:ran"]));
+ }
+ 
+-fn main_realm_exposes_deno_globals() {
+-    // Observation pinned so a deno_core upgrade that changes it is noticed. Games must not
+-    // see `Deno`: hiding or removing it is an open bootstrap item (README.md).
+-    let log = probe::main_realm_globals().unwrap();
+-    assert!(log.contains(&"Deno:object".to_string()), "{log:?}");
++fn bootstrap_namespace_is_removed_before_game_code() {
++    // Not proven: general privilege isolation. Closures inside deno_core's builtins (console,
++    // queueMicrotask) still hold the core internally, `import.meta.main` is a Deno extra, and
++    // there is no Servo DOM, HTML origin or CSP here. This pins the absence of the namespace.
++    let report = probe::bootstrap_isolation().unwrap();
++
++    // Raw deno_core: plain configurable data properties (a non-configurable one would have
++    // failed `bootstrap_isolation` with a "blocker:" error instead).
++    assert_eq!(
++        report.before,
++        strings(&["Deno:data:configurable", "__bootstrap:data:configurable", "__infra:absent"])
++    );
++    assert_eq!(report.removal, strings(&["Deno:deleted", "__bootstrap:deleted", "__infra:absent"]));
++
++    let log = &report.log;
++    let position = |entry: &str| log.iter().position(|item| item == entry).unwrap_or_else(|| panic!("{entry} in {log:?}"));
++    // The game's first statements already see a global without the namespace.
++    assert_eq!(
++        log[..3],
++        strings(&["Deno:undefined:false", "__bootstrap:undefined:false", "__infra:undefined:false"]),
++        "{log:?}"
++    );
++    position("Object:a");
++    position("namespace-leaks:");
++    position("privileged-globals:");
++    position("import.meta:main,resolve,url");
++    position("meta-resolve:TypeError");
++    // Standard Promise jobs and queueMicrotask still run, in FIFO order, right after the module.
++    let sync_done = position("main:sync-done");
++    assert_eq!(position("promise:p"), sync_done + 1, "{log:?}");
++    assert_eq!(position("queueMicrotask:ran"), sync_done + 2, "{log:?}");
++
++    // Direct internal specifiers stop at the loader's allowlist; aliases that a loader maps
++    // onto them are refused by deno_core's own ext: guard, dynamic and static alike.
++    position("ext-mod:rejected:other");
++    position("ext-ops:rejected:other");
++    position("alias-ops:rejected:core-guard");
++    position("alias-mod:rejected:core-guard");
++    assert!(log.iter().any(|entry| entry.starts_with("static-alias:rejected:")), "{log:?}");
++    assert!(!log.iter().any(|entry| entry.contains(":fulfilled") || entry.starts_with("static-alias:evaluated")), "{log:?}");
++    assert_eq!(log.len(), 16, "{log:?}");
++
++    assert_eq!(report.loads, strings(&["https://game.invalid/main.js", "https://game.invalid/static-alias.js"]));
++    let refused: std::collections::BTreeSet<_> = report.refused.iter().map(String::as_str).collect();
++    assert_eq!(refused, ["ext:core/mod.js", "ext:core/ops"].into_iter().collect(), "{:?}", report.refused);
++    assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
++    assert_eq!(report.resources, 0);
+ }
+diff --git a/docs/handoff/0382-deno-bootstrap-isolation.md b/docs/handoff/0382-deno-bootstrap-isolation.md
+new file mode 100644
+index 00000000000..6f5b37f3e16
+--- /dev/null
++++ b/docs/handoff/0382-deno-bootstrap-isolation.md
+@@ -0,0 +1,47 @@
++# 0382 — public-API bootstrap namespace removal before game code
++
++The authorized27October19:02 retry succeeded; the one-shot
++`ripresa-unica-claude-0382-alle-19-02` was deleted. No new quota/schedule or periodic polling.
++The earlier quota/draft checkpoint remains historical in0382-bootstrap-resume.md.
++
++## Implementation
++
++In the isolated support/deno-core-probe, new_runtime creates the Deno runtime and then
++removes Deno/__bootstrap/__infra using maintained V8 own-descriptor/delete APIs before any
++game/module code. A non-configurable namespace is an explicit blocker, not hidden behind
++a facade. The raw constructor is private and used only for the before/after observation.
++No new dependency, context, private slot, FFI or production runtime change.
++
++All existing module/static/dynamic/JSON/cycle/TLA/microtask/context-flag/mode scenarios run
++after removal. The final scenario observes initial descriptors and removal results, then
++asserts namespace absence from the first game statements, standard globals/FIFO jobs,
++direct and aliased internal ext: imports rejected (including static import and
++import.meta.resolve), no matching privileged extension ops and an empty resource table.
++These are authored assertions: expected descriptor/message/count details await CI.
++The same two-test/ten-logical-scenario suite runs normal/JITless on a single V8 test thread.
++
++Local metadata/workflow/lock contract checks and Rust syntax parsing pass. Patch replay
++must match changed paths after LF normalization. No heavy build or new runtime test was
++executed locally. Baseline0381 CI40539608247 was4/4green; it does NOT validate0382.
++
++## Limits and next proof
++
++Absence of named globals is not a general privilege-isolation guarantee. Deno console/
++queueMicrotask closures retain core references; internal resource/print/panic ops remain
++registered, and import.meta.main is a Deno addition. No privileged fs/network/process
++extensions are installed, but the heuristic op-name filter is only a bounded diagnostic,
++not an exhaustive capability audit. Recheck this boundary after real DOM/console/task
++integration. No Servo DOM/History/router or CSP implementation is simulated here.
++
++Next separate assignment: prove a real native class/owned metadata and cppgc wrapper
++identity/tracing through maintained APIs on the cleaned single-document runtime. Keep
++that proof distinct from full Servo bindings integration. The module/async owner, HTML
++checkpoint timing, per-source CSP/Trusted Types callback gap in V8150, compatible V8 line
++and final reclamation remain adoption checks. Product navigation/warnings follow the
++runtime choice; no bootstrap success alone authorizes exposing Deno capabilities.
++
++Preceding19103 batch is now terminal and required green: deno probe4/4, general10/10
++(Windows/Linux packaging+Steam), Androidsuccess. Apple excluded from the gate; general
++Apple jobs also succeeded, but no iOS success is claimed. Publish only complete reviewed
++work; collect new runs once, continue next assignment while CI runs, no further push
++until that batch permits it. Local logs/prompt/results and old saved draft: target/task-0382/.

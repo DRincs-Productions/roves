@@ -1,3 +1,15 @@
+## 2026-10-27 - Remove Deno bootstrap namespaces before isolated game scenarios (0382)
+
+Resume after verified reset succeeded; delete the single retry. In the isolated probe,
+new_runtime removes configurable Deno/__bootstrap/__infra using existing V8 APIs before
+game code; a private raw constructor exists only for descriptor observations. All module/
+async scenarios run on the cleaned global. Add direct/aliased/static ext: import refusal,
+namespace/standard-globals/FIFO/ops/resource checks and explain their bounded scope.
+No production dependency, private slots, facade, FFI or capability grant. Metadata/syntax/
+workflow checks pass; runtime assertions await new CI, baseline0381 green4/4 is separate.
+Update current/durable/library handoffs and README/wiki. Patch0386; no CPU/RAM or full
+security/DOM/CSP claim. Next bounded proof is native class/owned metadata/cppgc lifetime.
+
 ## 2026-10-27 - Record green deno_core probe and preserve unfinished bootstrap work (0382)
 
 The isolated0381 probe compiles and passes all four Linux/Windows normal/JITless CI jobs;

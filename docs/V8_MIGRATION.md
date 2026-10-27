@@ -22,20 +22,20 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 Checkpoint pubblicato: `19103d9ceffb493d53e348d9015bfdddac05fa66`, wiki `1d69714`,
 roves-action `4b2a67f`. Include documentazione0380 e prova isolata0381.
-Prova deno_core CI `40539608247` VERDE4/4: Linux/Windows normal/JITless, due testRust
-perjob con dieci scenarilogici. LogLinux confermano entrambitestpassati, zeroignored/filtered.
-Compilazione ed esecuzione ora dimostrate per questa prova, non ServoDOM/router/CSPcompleta,
-bootstrap privato o adozione produttiva. Android `40539608239` verde. Generale `40539608252`:
-ultimoaggregato shared/probe/patchverdi, packagingWindows/Linux eSteam attivi, nessun errore
-nonApple. iOS `40539608230` e macOS esclusi, non dichiarati verdi. Nessunpushconrichiestiattivi.
+Prova deno_core0381 CI `40539608247` VERDE4/4, Linux/Windows normal/JITless con due
+testRust/dieci scenari perjob. Generale `40539608252` ora richiesti10/10verdi, packaging
+Windows/Linux eSteam compresi; Android `40539608239` verde. iOS `40539608230` esclusa
+insieme a macOS, non dichiarata verde. Batch precedente terminale, pubblicazione consentita.
 
-**Sospeso per quota Claude0382:** /usage27ottobre17:26 Europe/Rome sessione100%, reset19:00.
-Tentativo UNICO27ottobre19:02 programmato con `ripresa-unica-claude-0382-alle-19-02`;
-eliminarlo dopoiltentativo, niente retryconcatenati se lo stessolimitepersiste.
-[Ripresa0382](handoff/0382-bootstrap-resume.md): bozza incompleta bootstrap salvata in
-target/task-0382/incomplete-bootstrap.patch e copieWIP; tre sorgenti ripristinati dal commit
-pubblicato, nessuna modifica incompleta da pubblicare. CLIinterattiva chiusa. Non sostituire
-Claude con Codex per nuove implementazioni; analisiCI/handoff consentiti, poi sospendere.
+**0382 ripresa e completa localmente:** tentativo autorizzato27ottobre19:02 riuscito,
+ricontrollo `ripresa-unica-claude-0382-alle-19-02` ELIMINATO. Quota17:26 e vecchia bozza
+sono storiche, non ulteriori istruzioni di retry. [Implementazione0382](handoff/0382-deno-bootstrap-isolation.md),
+patch0386: rimozioneDeno/__bootstrap/__infra conAPIpubbliche prima del gioco, stessa suite
+moduli/async dopo rimozione, rifiutoimportextdiretti/alias/statici e osservazioniops/risorse.
+Metadata/sintassi/contrattoYAML-lockpassano; NUOVEasserzioni da verificare online, non coperte
+dalverde0381. Nessuna adozione produttiva né prova di sicurezza generale/DOM/CSP/router.
+Prossimo incarico separato: classe nativa/metadata posseduti/cppgc, stessa modalità doppia.
+Nessun Claude attivo al checkpoint, nessuna automazione periodica; prossimi push solo dopoCI.
 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
@@ -94,7 +94,7 @@ target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
 SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
 0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
 non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
-ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0382 sospesa per quota, bozza separata dai sorgenti; ripresa19:02 sopra.
+ELIMINATO; nessuna automazione periodica. 0382 ripresa e completata, nessun limite corrente o retry da concatenare; dettagli sopra.
 [Esito0378 storico](handoff/0378-deno-core-feasibility.md): mancanoAPI realm/WindowProxy
 per il vecchio perimetro browser, non più requisiti del prodotto a documento unico;
 194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.

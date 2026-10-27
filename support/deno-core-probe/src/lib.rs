@@ -7,6 +7,11 @@
 //! public deno_core APIs and its `v8` re-export are used. Each scenario returns the JS-side
 //! log so `tests/probe.rs` can assert the observed order.
 //!
+//! [`new_runtime`] is the only constructor scenarios use for game code: it removes deno_core's
+//! bootstrap namespace globals (`Deno`, `__bootstrap`, `__infra`) before any script or module
+//! runs, so every scenario below also runs on the stripped global. The `JsRuntime` stays the
+//! single owner of the module map, dynamic imports and the event loop.
+//!
 //! Scope of the evidence: these scenarios exercise deno_core's module map, loader, event
 //! loop, the import-attributes callback and the context's string-compilation flag. They involve no Servo DOM, no History API and no HTML
 //! origin security or CSP policy; where a scenario touches those areas it only shows that
@@ -103,6 +108,8 @@ struct Served {
 /// layer, which would be called from `resolve`/`load` in a real integration.
 pub struct MemoryLoader {
     modules: HashMap<String, Served>,
+    /// Specifiers mapped verbatim to a URL, bypassing the allowlist (see [`Self::with_alias`]).
+    aliases: HashMap<String, String>,
     /// Every URL `load` was asked for, allowed or not.
     pub loads: RefCell<Vec<String>>,
     /// Every specifier `resolve` refused.
@@ -118,14 +125,26 @@ impl MemoryLoader {
                     (format!("{ORIGIN}{path}"), Served { module_type: module_type.clone(), code })
                 })
                 .collect(),
+            aliases: HashMap::new(),
             loads: RefCell::default(),
             refused: RefCell::default(),
         }
+    }
+
+    /// Models a loader or import map that maps a game specifier onto deno_core's internal
+    /// namespace (e.g. `ext:core/ops`). deno_core's own `ext:` guard in `ModuleMap::resolve`,
+    /// not this allowlist, must then refuse it.
+    pub fn with_alias(mut self, specifier: &str, url: &str) -> Self {
+        self.aliases.insert(specifier.to_owned(), url.to_owned());
+        self
     }
 }
 
 impl ModuleLoader for MemoryLoader {
     fn resolve(&self, specifier: &str, referrer: &str, _kind: ResolutionKind) -> ModuleResolveResponse {
+        if let Some(url) = self.aliases.get(specifier) {
+            return ModuleSpecifier::parse(url).map_err(|error| ModuleLoaderError::generic(error.to_string()));
+        }
         let refuse = |why: &str| {
             self.refused.borrow_mut().push(specifier.to_owned());
             Err(ModuleLoaderError::type_error(format!("{why}: {specifier}")))
@@ -194,10 +213,21 @@ fn validate_import_attributes(
     }
 }
 
-/// Creates the document's runtime. Must run inside a tokio runtime: deno_core aborts the
-/// process when V8 posts a delayed task for an isolate created outside one
-/// (`runtime/setup.rs:99-110`), so the context is checked here instead of left to chance.
+/// Creates the document's runtime: deno_core's bootstrap followed by
+/// `remove_bootstrap_globals`, before any game script or module can run. This is the only
+/// constructor for game code. Must run inside a tokio runtime: deno_core aborts the process
+/// when V8 posts a delayed task for an isolate created outside one (`runtime/setup.rs:99-110`),
+/// so the context is checked here instead of left to chance.
 pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+    let mut runtime = new_raw_runtime(loader)?;
+    remove_bootstrap_globals(&mut runtime)?;
+    Ok(runtime)
+}
+
+/// deno_core's runtime as `JsRuntime::try_new` leaves it, bootstrap globals included. Private:
+/// used by [`new_runtime`] and by [`bootstrap_isolation`]'s before/after observation only,
+/// never handed to game code.
+fn new_raw_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
     v8_mode()?;
     tokio::runtime::Handle::try_current().map_err(|error| format!("JsRuntime needs a tokio context: {error}"))?;
     JsRuntime::try_new(RuntimeOptions {
@@ -206,6 +236,47 @@ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
         ..Default::default()
     })
     .map_err(err)
+}
+
+/// Global names deno_core 0.413.0's bootstrap puts on the main realm: `Deno` (`runtime/
+/// bindings.rs` `initialize_deno_core_namespace`), `__bootstrap` (`00_primordials.js`) and
+/// `__infra` (`00_infra.js`; `01_core.js` already deletes it, kept so a deno_core change that
+/// stops doing so is caught). Op functions live under `Deno.core.ops`.
+pub const BOOTSTRAP_GLOBALS: [&str; 3] = ["Deno", "__bootstrap", "__infra"];
+
+/// Deletes [`BOOTSTRAP_GLOBALS`] from the global object with the native `v8::Object` API, after
+/// `JsRuntime::try_new` returned. deno_core reads `Deno.core` from the global only while it is
+/// being constructed (`store_js_callbacks`, `snapshotted_fast_op_refs`) and keeps `v8::Global`
+/// handles afterwards; its own comments describe `Deno.core` being scrubbed after bootstrap.
+/// A non-configurable property is reported as a blocker, never hidden behind a facade.
+fn remove_bootstrap_globals(runtime: &mut JsRuntime) -> Result<Log, String> {
+    deno_core::scope!(scope, runtime);
+    let context = scope.get_current_context();
+    let global = context.global(scope);
+    let configurable_key = v8::String::new(scope, "configurable").ok_or("cannot allocate a V8 string")?;
+    let mut report = Log::new();
+    for name in BOOTSTRAP_GLOBALS {
+        let key = v8::String::new(scope, name).ok_or("cannot allocate a V8 string")?;
+        let descriptor = global
+            .get_own_property_descriptor(scope, key.into())
+            .ok_or_else(|| format!("reading the globalThis.{name} descriptor threw"))?;
+        if descriptor.is_undefined() {
+            report.push(format!("{name}:absent"));
+            continue;
+        }
+        let descriptor: v8::Local<v8::Object> = descriptor.try_into().map_err(err)?;
+        let configurable = descriptor.get(scope, configurable_key.into()).is_some_and(|value| value.is_true());
+        if !configurable {
+            return Err(format!(
+                "blocker: globalThis.{name} is non-configurable and cannot be removed with public APIs"
+            ));
+        }
+        if global.delete(scope, key.into()) != Some(true) || global.has_own_property(scope, key.into()) != Some(false) {
+            return Err(format!("deleting globalThis.{name} did not remove it"));
+        }
+        report.push(format!("{name}:deleted"));
+    }
+    Ok(report)
 }
 
 /// A current-thread tokio runtime per scenario; `enable_all` because deno_core's delayed V8
@@ -464,15 +535,114 @@ pub fn webassembly_availability() -> Result<String, String> {
     })
 }
 
-/// Non-web globals deno_core installs in its main realm (observed, not a pass/fail check).
-pub fn main_realm_globals() -> Result<Log, String> {
+/// What `bootstrap_isolation` observed.
+pub struct IsolationReport {
+    /// Property descriptors of [`BOOTSTRAP_GLOBALS`] on a raw runtime, read by a trusted script.
+    pub before: Log,
+    /// What `remove_bootstrap_globals` reported on that same raw runtime.
+    pub removal: Log,
+    /// What the game's main module logged on a [`new_runtime`] document.
+    pub log: Log,
+    pub loads: Vec<String>,
+    pub refused: Vec<String>,
+    /// Registered op names that look like file system, network or process capabilities.
+    pub privileged_ops: Vec<String>,
+    /// Entries in the runtime's resource table after the game ran (no stdio, files, sockets).
+    pub resources: usize,
+}
+
+const DESCRIBE_BOOTSTRAP_GLOBALS: &str = r#"
+  JSON.stringify(["Deno", "__bootstrap", "__infra"].map(name => {
+    const d = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (d === undefined) return name + ":absent";
+    return name + ":" + ("value" in d ? "data" : "accessor") + ":" + (d.configurable ? "configurable" : "non-configurable");
+  }))
+"#;
+
+/// Op-name fragments of Deno's privileged extensions (fs, net, fetch, process, ffi, node).
+/// deno_core's builtin resource ops (`op_read`, `op_write`, `op_print`, ...) are registered
+/// but reachable only through the removed `Deno.core` namespace and `ext:core/ops`.
+const PRIVILEGED_OP_PREFIXES: &[&str] = &[
+    // Not "op_run": the builtin op_run_microtasks would match.
+    "op_fs_", "op_net_", "op_fetch", "op_http", "op_ws_", "op_spawn", "op_kill", "op_env", "op_open",
+    "op_read_file", "op_write_file", "op_remove", "op_mkdir", "op_dlopen", "op_ffi", "op_node_", "op_process",
+    "op_exit",
+];
+
+/// Bootstrap globals before and after removal, then a game module on the default document
+/// runtime: target globals absent, standard globals working, deno_core's internal modules
+/// unreachable by direct specifier, by a loader alias, by a static import and by
+/// `import.meta.resolve`. Proves the absence of this namespace only, not general privilege
+/// isolation (see README.md).
+pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
     block_on(async {
-        let mut runtime = new_runtime(Rc::new(MemoryLoader::new(&[])))?;
-        script(
-            &mut runtime,
-            "globals.js",
-            r#"globalThis.log = ["Deno", "__bootstrap", "__infra", "queueMicrotask"].map(name => name + ":" + typeof globalThis[name]);"#,
-        )?;
-        read_log(&mut runtime)
+        let (before, removal) = {
+            let mut raw = new_raw_runtime(Rc::new(MemoryLoader::new(&[])))?;
+            let json = string_script(&mut raw, "describe.js", DESCRIBE_BOOTSTRAP_GLOBALS)?;
+            let before: Log = deno_core::serde_json::from_str(&json).map_err(err)?;
+            (before, remove_bootstrap_globals(&mut raw)?)
+        };
+
+        let loader = Rc::new(
+            MemoryLoader::new(&[
+                (
+                    "main.js",
+                    ModuleType::JavaScript,
+                    r#"for (const name of ["Deno", "__bootstrap", "__infra"]) {
+                         log.push(name + ":" + typeof globalThis[name] + ":" + Object.hasOwn(globalThis, name));
+                       }
+                       log.push("Object:" + Object.keys({ a: 1 }).join());
+                       const leaks = [];
+                       for (const name of Object.getOwnPropertyNames(globalThis)) {
+                         const value = globalThis[name];
+                         if (value === globalThis || value === null || (typeof value !== "object" && typeof value !== "function")) continue;
+                         for (const key of ["core", "ops", "primordials", "internals"]) {
+                           if (Object.hasOwn(value, key)) leaks.push(name + "." + key);
+                         }
+                       }
+                       log.push("namespace-leaks:" + leaks.join());
+                       const privileged = ["fetch", "XMLHttpRequest", "WebSocket", "EventSource", "process", "require", "Buffer", "Bun", "open", "importScripts"];
+                       log.push("privileged-globals:" + privileged.filter(name => typeof globalThis[name] !== "undefined").join());
+                       log.push("import.meta:" + Object.keys(import.meta).sort().join());
+                       try { import.meta.resolve("ext:core/ops"); log.push("meta-resolve:allowed"); }
+                       catch (e) { log.push("meta-resolve:" + e.name); }
+                       Promise.resolve("p").then(v => log.push("promise:" + v));
+                       queueMicrotask(() => log.push("queueMicrotask:ran"));
+                       const guard = (label, promise) => promise.then(
+                         () => log.push(label + ":fulfilled"),
+                         e => log.push(label + ":rejected:" + (String(e && e.message).includes("Importing ext: modules is only allowed") ? "core-guard" : "other")),
+                       );
+                       guard("ext-mod", import("ext:core/mod.js"));
+                       guard("ext-ops", import("ext:core/ops"));
+                       guard("alias-ops", import("internal-ops"));
+                       guard("alias-mod", import("internal-mod"));
+                       guard("static-alias", import("./static-alias.js"));
+                       log.push("main:sync-done");"#,
+                ),
+                ("static-alias.js", ModuleType::JavaScript, r#"import * as ops from "internal-ops"; log.push("static-alias:evaluated:" + typeof ops);"#),
+            ])
+            .with_alias("internal-ops", "ext:core/ops")
+            .with_alias("internal-mod", "ext:core/mod.js"),
+        );
+        let mut runtime = new_runtime(loader.clone())?;
+        script(&mut runtime, "setup.js", SETUP)?;
+        run_main(&mut runtime, "main.js").await?;
+        let log = read_log(&mut runtime)?;
+        let privileged_ops = runtime
+            .op_names()
+            .into_iter()
+            .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
+            .map(str::to_owned)
+            .collect();
+        let resources = runtime.op_state().borrow().resource_table.names().count();
+        Ok(IsolationReport {
+            before,
+            removal,
+            log,
+            loads: loader.loads.borrow().clone(),
+            refused: loader.refused.borrow().clone(),
+            privileged_ops,
+            resources,
+        })
     })
 }

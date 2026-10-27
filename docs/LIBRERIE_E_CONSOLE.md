@@ -37,7 +37,7 @@ produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o inst
 separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
 percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
 
-### Prova0381 verificata online, bootstrap0382 sospeso per quota
+### Prova0381 verificata online, bootstrap0382 pronto per CI
 
 [Handoff0381](handoff/0381-deno-single-document-probe.md): workspace isolato in
 support/deno-core-probe, nessuna dipendenza produttiva. Dieci scenari logici in due test
@@ -45,9 +45,11 @@ Rust, una sola thread per gli scenari V8, stessa suite normale/JITless su Linux/
 Metadata/parse e contratto YAML/lock verificati; CI40539608247 verde4/4, Linux/Windows
 normale/JITless. Due testRust perjob coprono dieci scenari logici, non integrazione DOM. RustyV8150 espone il flag globale di contesto per eval/Function, non la callback per
 singola stringa di152: gap CSP/TrustedTypes ancora da valutare. Nessun DOM/router simulato,
-nessuna prova di integrazione reale o misura prestazionale. Prova bootstrap0382 iniziata ma non completata per quota: bozza separata,
-nessun nuovo comportamento pubblicato. Ripresa unica19:02 nel handoff corrente; mantenere
-un solo servizio moduli/async. Vedere handoff/0382-bootstrap-resume.md.
+nessuna prova di integrazione reale o misura prestazionale. Prova bootstrap0382 completata dopo il reset: rimuove globali interni prima del gioco e
+riesegue scenari moduli/async con import interni rifiutati, via API pubbliche. Metadata/parse
+verificati, nuove asserzioni in attesa CI; non è isolamento generale o integrazione DOM.
+Ricontrollo19:02 eliminato. Prossima prova classe nativa/cppgc; mantenere un solo servizio.
+Vedere handoff/0382-deno-bootstrap-isolation.md.
 
 ## Prossimi passi, codice e librerie
 
