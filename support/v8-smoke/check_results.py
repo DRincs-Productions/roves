@@ -39,6 +39,7 @@ REQUIRED_CHECKS = {
         "Document ownKeys keeps numeric named properties",
         "Document visible named properties cannot be deleted without a named deleter",
         "HTMLFormElement deletes only hidden named properties and records no read",
+        "HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor",
         "DOMStringMap named deleter removes the data attribute",
     ),
     "stress.html": (

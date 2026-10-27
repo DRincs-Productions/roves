@@ -23,39 +23,46 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
 
-**Ripresa0376 riuscita il27ottobre dopo il reset14:00:** ricontrollo unico
-`ripresa-unica-claude-quota-0376` ELIMINATO dopo il tentativo. Nessun polling periodico.
-Claude ha completato e Codex ha revisionato la cancellazione dei nomi visibili senza
-deleter: [handoff0376](handoff/0376-visible-named-delete.md), patch0377. Si riusano
-SupportedPropertyNames e ObjectOpResult, evitando NamedGetter che registra past names.
-Own/unforgeable, nomi nascosti, simboli e Dataset conservano i percorsi pertinenti.
-14test generatore Windows/Linux, negativa sul generatore precedente e parseRust delle
-quattro hook reali verdi; runner42(8skipPOSIX). Browser normal/JITless demandati alla CI.
-Il controllo del prototipo usa ancora HasProperty: scarto normativo da correggere,
-non dichiarare completata la compatibilità Legacy*.
+## Direzione autorizzata — shell Servo, servizi sostituibili
 
-Pubblicato `dac65a4dbc8d9dd762e265ce5376dbe4e884a8be`, wiki `bc80b3c`.
-Il batch è ora terminale verde per tutte le verifiche richieste: V8 `40488481393`7/7,
-generale `40488481420`10/10, Android `40488481644`3/3. macOS e iOS `40488481524`
-esclusi per istruzione utente, non dichiarati verdi. Confermati nel browser i fix0371–74.
-La pubblicazione del lavoro completo0375/0376 è consentita dopo replay e revisione.
-0375 locale `68d687ce5ae`, wiki locale `86cbaf5`:18normal/18JITless proxy contracts,
-runner42(8skip), replayWin/Linux6percorsi. Filtro indice/nome segue le letture esistenti,
-non prova conformità completa; browser0375 e0376 attendono il prossimo batch.
+Conservare la shell Servo; l'utente autorizza a sostituire e rimuovere anche servizi
+interni Servo (moduli/gestione asincrona) quando una libreria mantenuta riduce il codice
+nostro. rusty_v8 è già usato; deno_core è in prova isolata0378, NON adottato in produzione.
+Nessun obbligo di preservare l'architettura interna, nessuna installazione separata di
+Deno/Chromium o API Deno per i giochi. DOM/layout/rendering rimangono inizialmente Servo.
+GO solo con API pubbliche mantenute, frame multipli, sicurezza web e JITless, rimuovendo
+il vecchio percorso. Niente fork nostro/doppia implementazione permanente. Decisione e
+prove devono distinguere test eseguiti, blocchi e costi non misurati. PianoLIBRERIE_E_CONSOLE
+e regoleAGENTS/AGENT_WORKFLOW aggiornati; ruoli e vincoli CI invariati.
 
-ChromeDevToolsMCP nuovamente disponibile: Chrome156.0.0.0 Windows visibile, iframe
-text/html. Con nomi indipendenti Reflect/sloppy/strict restituiscono true: Document
-rimuove la proprietà esposta ma non l'elemento; Form conserva il nome. HTMLDocument è
-distinto da Document. Sono divergenze osservate rispetto agli obiettivi normativi,
-non una conferma di parità; riferimento salvato in target/task-0376/chrome-mcp-reference.json.
-Nessuna misura prestazionale/headless.
+Pubblicato `735a1154698984a3151652389d664665b011945c`, wiki `48bfc3d`, include0375/0376.
+Batch V8 `40520566885`: richiesti7/7verdi (browserLinuxnormal/JITless eWindows compresi);
+Android `40520566920` verde. Generale `40520566879`: patch/probeWindows/Linux/shared
+verdi, ma build/packaging eSteam SALTATI perché il gate aggregato include il probe macOS
+cancellato. Non considerarli verdi: manca copertura richiesta. iOS `40520566892` fallita
+e macOS esclusi per istruzione utente; non disattivare iworkflow né ritentare soloApple.
+Riparare l'accoppiamento del gate e includere la correzione prima della pubblicazione.
+Nessuna run precedente attiva, nessun difetto runtime nonApple mostrato dal batch.
 
-Prossimi problemi concreti: query prototipo conforme a GetOwnProperty, delete indicizzato,
-defineProperty legacy; sourceText0361 e retention complessiva restano aperti. I frame
-specifici già verificati non dimostrano una garanzia globale. Non ricreare CLAUDE_RESUME.md.
-Codex dirige/revisiona, Claude implementa un incarico alla volta; build pesanti soloCI.
-Workspaces leggeri da riusare: normale `C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js`,
-JITless `...-00kx/roves-js`; CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.
+0377 implementata/revisionata localmente: [handoff](handoff/0377-prototype-descriptor-visibility.md),
+patch0378. Il controllo prototipo riusa JS_GetPropertyDescriptorById, senza un nuovo walker.
+1native normal/1JITless verdi; runner42(8skipPOSIX), generatore14, parseRustverde.
+Negativa isolata della vecchia query HasProperty fallisce sulla trap sbagliata, sorgente
+isolato ripristinato. Nuove fixturebrowsernormali/JITless da verificare in CI. Lo skip dei
+named-properties objects e il punto iniziale WindowProperties restano gap espliciti.
+
+ChromeMCP156.0.0.0Windowsvisibile, iframe text/html: nomi indipendenti Reflect/sloppy/strict
+true; Document rimuove proprietà non elemento, Form conserva nome; HTMLDocument distinto
+daDocument. Differenze rispetto agli obiettivi normativi, non parità. Riferimento0376 in
+target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
+
+SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
+Conservare WIP0377 solo fino a replay/doc completi; TODO.md contiene una modifica separata
+non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
+ELIMINATO; nessuna automazione periodica. Claude attivo solo su prova0378; Codex verifica0377,
+senza duplicare la ricerca delegata. Build pesanti soloCI. Workspaces leggeri da riusare:
+`C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js` e `...-00kx/roves-js`,
+CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.
 
 ## Storico recente — 26–27 ottobre (non è il punto di ripresa)
 

@@ -1,3 +1,16 @@
+## Direzione autorizzata — shell Servo, servizi sostituibili (27 ottobre 2026)
+
+Conservare la shell Servo, riducendo il codice mantenuto da Roves. rusty_v8 è già in uso;
+deno_core è un candidato da verificare isolatamente, non una dipendenza produttiva adottata.
+L'utente autorizza a sostituire anche i servizi interni di Servo e rimuoverli quando diventano
+inutili: non duplicare permanentemente runtime, moduli o loop asincroni. DOM/layout/rendering
+rimangono inizialmente in Servo. Nessuna installazione separata Chromium/Deno né API Deno
+esposte ai giochi. Adottare solo tramite API mantenute senza fork nostro, preservando frame,
+sicurezza web e JITless, con bilancio esplicito fra codice eliminato e adattatori aggiunti.
+Registrare test eseguiti separatamente dalle ipotesi; non promettere risparmi non misurati.
+Il loop Codex direzione/revisione e Claude implementazione, le quote e le regole CI restano
+invariati. Una prova negativa può concludere correttamente la valutazione senza adozione.
+
 ## Eccezione Apple autorizzata il 26 ottobre 2026
 
 Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono

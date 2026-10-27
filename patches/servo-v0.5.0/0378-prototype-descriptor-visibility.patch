@@ -1,0 +1,531 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 35bf38c41f6..6f9be643785 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -561,6 +561,100 @@ mod object_model {
+         assert!(unsafe { JS_HasOwnPropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), &mut found) } && !found);
+     }
+ 
++    /// `JS_GetPropertyDescriptorById` is the prototype walk of WebIDL named property visibility
++    /// (script_bindings `has_property_on_prototype`): every object on the chain is asked for an
++    /// own property ([[GetOwnProperty]]) and the walk moves on with [[GetPrototypeOf]], so a
++    /// Proxy answers through `getOwnPropertyDescriptor`/`getPrototypeOf`, never `has`. The two
++    /// traps disagree on purpose for `hasOnly`/`descriptorOnly`.
++    #[test]
++    fn property_descriptor_walk_uses_own_descriptor_and_prototype_traps() {
++        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        eval(&runtime, r#"
++            globalThis.log = [];
++            globalThis.getterCalls = 0;
++            globalThis.deep = { deepKey: 'deep' };
++            globalThis.middle = Object.create(deep, {
++                undefinedKey: { configurable: true, writable: true, value: undefined },
++                accessorKey: { configurable: true, get() { getterCalls++; return 'getter'; } },
++            });
++            globalThis.trapped = new Proxy(middle, {
++                getOwnPropertyDescriptor(target, key) {
++                    log.push('descriptor:' + String(key));
++                    if (key === 'throwKey') throw new RangeError('descriptor trap');
++                    if (key === 'descriptorOnly') return { configurable: true, writable: true, value: 'trap' };
++                    return Reflect.getOwnPropertyDescriptor(target, key);
++                },
++                getPrototypeOf(target) { log.push('prototype'); return Reflect.getPrototypeOf(target); },
++                has(target, key) { log.push('has:' + String(key)); return key === 'hasOnly' || Reflect.has(target, key); },
++            });
++            globalThis.nullEnded = new Proxy(Object.create(null), {
++                getOwnPropertyDescriptor(target, key) { log.push('descriptor:' + String(key)); return undefined; },
++                getPrototypeOf() { log.push('prototype'); return null; },
++                has(target, key) { log.push('has:' + String(key)); return true; },
++            });
++        "#);
++        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
++        rooted!(in(cx) let trapped_object = eval(&runtime, "trapped").to_object());
++        rooted!(in(cx) let null_ended = eval(&runtime, "nullEnded").to_object());
++        // Returns (succeeded, is_none, descriptor); the holder is stored as `globalThis.holder`.
++        let lookup = |object: HandleObject, name: &std::ffi::CStr| {
++            eval(&runtime, "log.length = 0; globalThis.holder = undefined");
++            let atom = unsafe { JS_AtomizeAndPinString(cx, name.as_ptr()) };
++            rooted!(in(cx) let mut id = crate::jsid::VoidId());
++            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, atom, id.handle_mut().into_handle()) };
++            rooted!(in(cx) let mut desc = PropertyDescriptor::default());
++            rooted!(in(cx) let mut holder = ptr::null_mut::<JSObject>());
++            let mut is_none = true;
++            let succeeded = unsafe {
++                JS_GetPropertyDescriptorById(cx, object, id.handle().into_handle(), desc.handle_mut().into_handle(), holder.handle_mut().into(), &mut is_none)
++            };
++            if succeeded && !is_none {
++                rooted!(in(cx) let value = ObjectValue(holder.get()));
++                assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"holder".as_ptr(), value.handle().into_handle()) });
++            }
++            (succeeded, is_none, *desc)
++        };
++        let log = || describe(&runtime, eval(&runtime, "log.join()"));
++        let trapped = trapped_object.handle().into_handle();
++
++        // An own data property whose value is undefined is found on the Proxy itself.
++        let (ok, is_none, desc) = lookup(trapped, c"undefinedKey");
++        assert!(ok && !is_none && desc.hasValue_() && desc.value_.is_undefined());
++        assert_eq!(log(), "descriptor:undefinedKey");
++        assert_eq!(describe(&runtime, eval(&runtime, "holder === trapped")), "true");
++        // An accessor is reported without calling its getter.
++        let (ok, is_none, desc) = lookup(trapped, c"accessorKey");
++        assert!(ok && !is_none && desc.hasGetter_() && !desc.getter_.is_null());
++        assert_eq!(log(), "descriptor:accessorKey");
++        assert_eq!(describe(&runtime, eval(&runtime, "getterCalls")), "0");
++        // Inherited: the walk leaves the Proxy through its getPrototypeOf trap.
++        let (ok, is_none, _) = lookup(trapped, c"deepKey");
++        assert!(ok && !is_none);
++        assert_eq!(log(), "descriptor:deepKey,prototype");
++        assert_eq!(describe(&runtime, eval(&runtime, "holder === deep")), "true");
++        // `has` says present, the descriptor says absent: not found, `has` never runs.
++        let (ok, is_none, _) = lookup(trapped, c"hasOnly");
++        assert!(ok && is_none);
++        assert_eq!(log(), "descriptor:hasOnly,prototype");
++        // The descriptor trap alone decides presence.
++        let (ok, is_none, desc) = lookup(trapped, c"descriptorOnly");
++        assert!(ok && !is_none && desc.hasValue_());
++        assert_eq!(log(), "descriptor:descriptorOnly");
++        // A null prototype ends the walk.
++        let (ok, is_none, _) = lookup(null_ended.handle().into_handle(), c"missing");
++        assert!(ok && is_none);
++        assert_eq!(log(), "descriptor:missing,prototype");
++        // A throwing descriptor trap fails the call with its exception pending, unchanged.
++        let (ok, _, _) = lookup(trapped, c"throwKey");
++        assert!(!ok);
++        assert_eq!(log(), "descriptor:throwKey");
++        rooted!(in(cx) let mut exception = UndefinedValue());
++        assert!(unsafe { JS_GetPendingException(cx, exception.handle_mut()) });
++        assert_eq!(describe(&runtime, exception.get()), "RangeError: descriptor trap");
++        unsafe { JS_ClearPendingException(cx) };
++    }
++
+     unsafe extern "C" fn add_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
+         // SAFETY: the JSNative contract.
+         let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index 01ee291ba21..1736c28a3e7 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -1003,7 +1003,8 @@ where
+             rooted!(&in(cx) let mut rooted_jsid: jsid);
+             let mut names = properties(unwrapped_proxy, &mut cx);
+ 
+-            // The prototype lookups can run script (a Proxy `has` trap on the chain)
++            // The prototype lookups can run script (a Proxy `getOwnPropertyDescriptor`
++            // or `getPrototypeOf` trap on the chain)
+             // that adds or removes expando properties, so they all run first. Each
+             // is short-circuited by an own expando property, as the visibility
+             // algorithm checks own properties before the prototype: a hidden name
+diff --git a/components/script_bindings/utils.rs b/components/script_bindings/utils.rs
+index 6cc39d882aa..8a35477dee7 100644
+--- a/components/script_bindings/utils.rs
++++ b/components/script_bindings/utils.rs
+@@ -18,14 +18,16 @@ use js::jsapi::{
+     JS_GetLatin1StringCharsAndLength, JS_IsGlobalObject, JS_MayResolveStandardClass,
+     JS_NewEnumerateStandardClasses, JS_ResolveStandardClass, JSAtom, JSAtomState, JSJitInfo,
+     JSObject, JSPROP_ENUMERATE, JSTracer, MutableHandleIdVector as RawMutableHandleIdVector,
+-    MutableHandleValue as RawMutableHandleValue, PropertyKey, StringIsArrayIndex, jsid,
++    MutableHandleValue as RawMutableHandleValue, PropertyDescriptor, PropertyKey,
++    StringIsArrayIndex, jsid,
+ };
+ use js::jsid::StringId;
+ use js::jsval::{JSVal, UndefinedValue};
+ use js::rust::wrappers2::{
+     CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, CallOriginalPromiseReject,
+     JS_ClearPendingException, JS_DefineProperty, JS_ForwardGetPropertyTo, JS_FreezeObject,
+-    JS_GetPendingException, JS_GetProperty, JS_GetPrototype, JS_HasOwnProperty, JS_HasProperty,
++    JS_GetPendingException, JS_GetProperty, JS_GetPropertyDescriptorById, JS_GetPrototype,
++    JS_HasOwnProperty, JS_HasProperty,
+     JS_HasPropertyById, JS_IsExceptionPending, JS_SetPendingException, JS_SetProperty,
+ };
+ use js::rust::{
+@@ -334,6 +336,17 @@ pub fn has_own_property(
+ /// If `false` is returned then the value of `found` is unspecified.
+ /// A null prototype (e.g. after `Object.setPrototypeOf(proxy, null)`) ends the
+ /// chain: nothing is found.
++///
++/// This is the prototype walk of the named property visibility algorithm
++/// (https://webidl.spec.whatwg.org/#dfn-named-property-visibility): each
++/// prototype is asked for an *own* property through `[[GetOwnProperty]]` and
++/// the walk continues through `[[GetPrototypeOf]]`, so a Proxy on the chain sees
++/// `getOwnPropertyDescriptor`/`getPrototypeOf` traps, never `has`. Any descriptor
++/// (an `undefined` value, an accessor) counts as found; getters are not called.
++/// `JS_GetPropertyDescriptorById` performs that walk; its descriptor and holder
++/// are only rooted here and discarded. A named properties object on the chain is
++/// not skipped (the spec skips it); no default DOM proxy chain contains one, and
++/// `WindowProperties` itself starts the walk at its own prototype.
+ pub fn has_property_on_prototype(
+     cx: &mut JSContext,
+     proxy: HandleObject,
+@@ -348,7 +361,23 @@ pub fn has_property_on_prototype(
+         *found = false;
+         return true;
+     }
+-    unsafe { JS_HasPropertyById(cx, proto.handle(), id, found) }
++    rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
++    rooted!(&in(cx) let mut holder = ptr::null_mut::<JSObject>());
++    let mut is_none = true;
++    if unsafe {
++        !JS_GetPropertyDescriptorById(
++            cx,
++            proto.handle(),
++            id,
++            desc.handle_mut(),
++            holder.handle_mut(),
++            &mut is_none,
++        )
++    } {
++        return false;
++    }
++    *found = !is_none;
++    true
+ }
+ 
+ pub trait CallPolicy {
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 764a668b789..b0407edd95a 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -39,6 +39,7 @@ REQUIRED_CHECKS = {
+         "Document ownKeys keeps numeric named properties",
+         "Document visible named properties cannot be deleted without a named deleter",
+         "HTMLFormElement deletes only hidden named properties and records no read",
++        "HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor",
+         "DOMStringMap named deleter removes the data attribute",
+     ),
+     "stress.html": (
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index a13360a45e7..9e84b301373 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -739,10 +739,11 @@ check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", ()
+   return problems.length ? problems.join("; ") : true;
+ }));
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+-// A Proxy prototype's `has` trap runs during ownKeys. Here it makes the name an own expando
+-// while that name is being checked (remove the control, define the property, put the control
+-// back: a supported name cannot be defined directly without a named setter). The key must
+-// still be listed exactly once, as the expando that now hides the named property.
++// The visibility walk asks each prototype for an own property ([[GetOwnProperty]]), so a Proxy
++// prototype's `getOwnPropertyDescriptor` trap runs during ownKeys. Here it makes the name an own
++// expando while that name is being checked (remove the control, define the property, put the
++// control back: a supported name cannot be defined directly without a named setter). The key
++// must still be listed exactly once, as the expando that now hides the named property.
+ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
+   const problems = [];
+   const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
+@@ -753,24 +754,32 @@ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows i
+   plain.name = plainKey;
+   form.append(shadowed, plain);
+   doc.body.append(form);
+-  let armed = false, fired = 0;
++  let armed = false, listing = false, fired = 0, hasQueries = 0;
+   const proto = new Proxy(win.HTMLFormElement.prototype, {
+-    has(target, property) {
++    getOwnPropertyDescriptor(target, property) {
+       if (armed && property === key) {
+         armed = false;
+         fired++;
++        // Only the visibility walk is checked for `has`, not this callback's own operations.
++        listing = false;
+         remove.call(shadowed);
+         Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
+         append.call(form, shadowed);
++        listing = true;
+       }
++      return Reflect.getOwnPropertyDescriptor(target, property);
++    },
++    has(target, property) {
++      if (listing) hasQueries++;
+       return Reflect.has(target, property);
+     },
+   });
+   Object.setPrototypeOf(form, proto);
+-  armed = true;
++  armed = listing = true;
+   const keys = Reflect.ownKeys(form);
+-  armed = false;
++  armed = listing = false;
+   if (fired !== 1) problems.push(`trap fired ${fired} times`);
++  if (hasQueries) problems.push(`has trap ran ${hasQueries} times`);
+   const count = keys.filter(k => k === key).length, desc = Object.getOwnPropertyDescriptor(form, key);
+   if (count !== 1) problems.push(`shadowed name listed ${count} times`);
+   if (!desc || desc.value !== "own" || !Object.hasOwn(form, key) || form[key] !== "own")
+@@ -780,7 +789,8 @@ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows i
+ }));
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+ // Visibility checks own properties before the prototype: a name hidden by an own expando must
+-// never reach the prototype. The Proxy prototype throws if it is queried for that name.
++// never reach the prototype. The Proxy prototype throws if it is queried for that name, through
++// either `getOwnPropertyDescriptor` (the visibility walk) or `has`.
+ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
+   const problems = [];
+   const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
+@@ -792,8 +802,13 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
+   shadowed.name = key;
+   plain.name = plainKey;
+   form.append(shadowed, plain);
+-  let queried = 0;
++  let queried = 0, plainQueries = 0;
+   Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
++    getOwnPropertyDescriptor(target, property) {
++      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
++      if (property === plainKey) plainQueries++;
++      return Reflect.getOwnPropertyDescriptor(target, property);
++    },
+     has(target, property) {
+       if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
+       return Reflect.has(target, property);
+@@ -805,6 +820,8 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
+   } catch (error) {
+     return `ownKeys threw: ${(error && error.message) || error}`;
+   }
++  // The supported, not-own name does reach the trap: the short circuit is not vacuous.
++  if (plainQueries !== 1) problems.push(`plain name queried ${plainQueries} times`);
+   const count = keys.filter(k => k === key).length;
+   if (count !== 1) problems.push(`own name listed ${count} times`);
+   if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
+@@ -835,8 +852,13 @@ check("HTMLFormElement ownKeys omits array-index names and keeps other numeric n
+     return input;
+   });
+   doc.body.append(form);
+-  let indexQueries = 0;
++  let indexQueries = 0, numericQueries = 0;
+   Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
++    getOwnPropertyDescriptor(target, property) {
++      if (property === "0" || property === "7") indexQueries++;
++      else if (property === "00" || property === "-1" || property === "4294967295") numericQueries++;
++      return Reflect.getOwnPropertyDescriptor(target, property);
++    },
+     has(target, property) {
+       if (property === "0" || property === "7") indexQueries++;
+       return Reflect.has(target, property);
+@@ -850,6 +872,8 @@ check("HTMLFormElement ownKeys omits array-index names and keeps other numeric n
+   }
+   Object.setPrototypeOf(form, win.HTMLFormElement.prototype);
+   if (indexQueries) problems.push(`prototype queried ${indexQueries} times for index names`);
++  // Non-index numeric names are named properties: each one reaches the visibility walk once.
++  if (numericQueries !== 3) problems.push(`non-index numeric names queried ${numericQueries} times`);
+   if (new Set(keys).size !== keys.length) problems.push(`duplicate keys: ${keys.map(String).join()}`);
+   const count = key => keys.filter(k => k === key).length;
+   for (let i = 0; i < form.length; i++) {
+@@ -988,8 +1012,8 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
+   readInput.name = "rovesPastReadRenamed";
+   if (read.rovesPastRead !== readInput) problems.push(`read form: past name not kept (${describeValue(read.rovesPastRead)})`);
+   // Prototype callbacks: own properties and supported names are checked first, so a Proxy
+-  // prototype's `has` trap runs once and only for a supported, not-own name; its exception
+-  // propagates out of the delete.
++  // prototype's `getOwnPropertyDescriptor` trap runs once and only for a supported, not-own name;
++  // its exception propagates out of the delete. The `has` trap never runs.
+   const trapped = doc.createElement("form");
+   doc.body.append(trapped);
+   const ownKey = "rovesDeleteTrapOwn", namedKey = "rovesDeleteTrapNamed", throwKey = "rovesDeleteTrapThrow";
+@@ -1000,11 +1024,15 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
+     input.name = name;
+     trapped.append(input);
+   }
+-  const queries = [], thrown = new Error("rovesDeleteTrapThrown");
++  const queries = [], hasQueries = [], thrown = new Error("rovesDeleteTrapThrown");
+   Object.setPrototypeOf(trapped, new Proxy(win.HTMLFormElement.prototype, {
+-    has(target, property) {
++    getOwnPropertyDescriptor(target, property) {
+       queries.push(property);
+       if (property === throwKey) throw thrown;
++      return Reflect.getOwnPropertyDescriptor(target, property);
++    },
++    has(target, property) {
++      hasQueries.push(property);
+       return Reflect.has(target, property);
+     },
+   }));
+@@ -1015,8 +1043,149 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
+   if (queries.join(",") !== namedKey) problems.push(`trap form: supported name queries: ${queries.join(",")}`);
+   let caught = "no error";
+   try { Reflect.deleteProperty(trapped, throwKey); } catch (error) { caught = error; }
+-  if (caught !== thrown) problems.push(`trap form: has exception not propagated: ${describeValue(caught)}`);
++  if (caught !== thrown) problems.push(`trap form: descriptor exception not propagated: ${describeValue(caught)}`);
+   if (queries.join(",") !== `${namedKey},${throwKey}`) problems.push(`trap form: queries after throw: ${queries.join(",")}`);
++  if (hasQueries.length) problems.push(`trap form: has trap ran for ${hasQueries.map(String).join(",")}`);
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// https://webidl.spec.whatwg.org/#dfn-named-property-visibility walks the prototype chain with
++// [[GetPrototypeOf]] and asks each prototype whether it has an *own* property ([[GetOwnProperty]]),
++// so a Proxy on the chain answers through `getOwnPropertyDescriptor`/`getPrototypeOf`, never
++// `has`. Any own descriptor hides the name, including a data property whose value is undefined
++// and an accessor (its getter is not called); a property further up the chain hides it too; a
++// null prototype ends the walk. Trap exceptions propagate unchanged. `has` and
++// `getOwnPropertyDescriptor` deliberately disagree on two names so that the trap actually
++// consulted decides the result. Only delete, hasOwn, getOwnPropertyDescriptor and ownKeys are
++// used on the form: a [[Get]] would consult the prototype on its own (get semantics).
++check("HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor", () => withNamedFrame("<p>visibility</p>", (win, doc) => {
++  const problems = [];
++  const undefinedKey = "rovesVisUndefined", accessorKey = "rovesVisAccessor", deepKey = "rovesVisDeep";
++  const plainKey = "rovesVisPlain", hasOnlyKey = "rovesVisHasOnly", descriptorOnlyKey = "rovesVisDescriptorOnly";
++  const throwKey = "rovesVisThrow";
++  const names = [undefinedKey, accessorKey, deepKey, plainKey, hasOnlyKey, descriptorOnlyKey, throwKey];
++  const form = doc.createElement("form");
++  const inputs = {};
++  for (const name of names) {
++    const input = doc.createElement("input");
++    input.name = name;
++    form.append(input);
++    inputs[name] = input;
++  }
++  doc.body.append(form);
++  let getterCalls = 0;
++  // form -> Proxy(middle) -> deep -> HTMLFormElement.prototype -> ...
++  const deep = Object.create(win.HTMLFormElement.prototype, {
++    [deepKey]: { configurable: true, writable: true, value: "deep" },
++  });
++  const middle = Object.create(deep, {
++    [undefinedKey]: { configurable: true, writable: true, value: undefined },
++    [accessorKey]: { configurable: true, get() { getterCalls++; return "getter"; } },
++  });
++  const queries = [], hasQueries = [], protoThrown = new Error("rovesVisProtoThrown"), thrown = new Error("rovesVisThrown");
++  let protoCalls = 0, throwArmed = false, protoThrowArmed = false;
++  const handler = () => ({
++    getOwnPropertyDescriptor(t, property) {
++      queries.push(property);
++      if (throwArmed && property === throwKey) throw thrown;
++      // Reported own by this trap only: `has` says it is absent.
++      if (property === descriptorOnlyKey) return { configurable: true, writable: true, enumerable: true, value: "descriptor" };
++      return Reflect.getOwnPropertyDescriptor(t, property);
++    },
++    getPrototypeOf(t) {
++      protoCalls++;
++      if (protoThrowArmed) throw protoThrown;
++      return Reflect.getPrototypeOf(t);
++    },
++    has(t, property) {
++      hasQueries.push(property);
++      // Reported present by this trap only: `getOwnPropertyDescriptor` says it is absent.
++      if (property === hasOnlyKey) return true;
++      if (property === descriptorOnlyKey) return false;
++      return Reflect.has(t, property);
++    },
++  });
++  Object.setPrototypeOf(form, new Proxy(middle, handler()));
++  const reset = () => { queries.length = 0; hasQueries.length = 0; protoCalls = 0; };
++  const expectWalk = (label, expectedQueries, expectedProtoCalls) => {
++    if (queries.join(",") !== expectedQueries.join(",")) problems.push(`${label}: descriptor queries [${queries.map(String).join(",")}]`);
++    if (protoCalls !== expectedProtoCalls) problems.push(`${label}: getPrototypeOf ran ${protoCalls} times`);
++  };
++  // Delete: own and unsupported names never reach the prototype; each supported name runs one
++  // walk. getPrototypeOf runs only when the Proxy itself has no own property.
++  const hidden = [[undefinedKey, 0], [accessorKey, 0], [deepKey, 1], [descriptorOnlyKey, 0]];
++  const visible = [plainKey, hasOnlyKey];
++  for (const [name, expectedProtoCalls] of hidden) {
++    reset();
++    if (Reflect.deleteProperty(form, name) !== true) problems.push(`${name}: hidden name delete returned false`);
++    expectWalk(`delete ${name}`, [name], expectedProtoCalls);
++  }
++  for (const name of visible) {
++    reset();
++    if (Reflect.deleteProperty(form, name) !== false) problems.push(`${name}: visible name deleted`);
++    expectWalk(`delete ${name}`, [name], 1);
++  }
++  reset();
++  if (Reflect.deleteProperty(form, "rovesVisMissing") !== true) problems.push("missing name delete failed");
++  expectWalk("delete missing", [], 0);
++  // The prototype chain is unchanged by those deletes.
++  if (!Object.hasOwn(deep, deepKey) || !Object.hasOwn(middle, undefinedKey) || !Object.hasOwn(middle, accessorKey))
++    problems.push("prototype property removed");
++  // Exceptions from either trap propagate unchanged, after exactly the queries made so far.
++  reset();
++  throwArmed = true;
++  let caught = "no error";
++  try { Reflect.deleteProperty(form, throwKey); } catch (error) { caught = error; }
++  if (caught !== thrown) problems.push(`delete: descriptor exception not propagated: ${describeValue(caught)}`);
++  expectWalk("delete throw", [throwKey], 0);
++  caught = "no error";
++  try { Object.hasOwn(form, throwKey); } catch (error) { caught = error; }
++  if (caught !== thrown) problems.push(`hasOwn: descriptor exception not propagated: ${describeValue(caught)}`);
++  caught = "no error";
++  try { Object.getOwnPropertyDescriptor(form, throwKey); } catch (error) { caught = error; }
++  if (caught !== thrown) problems.push(`getOwnPropertyDescriptor: descriptor exception not propagated: ${describeValue(caught)}`);
++  throwArmed = false;
++  reset();
++  protoThrowArmed = true;
++  caught = "no error";
++  try { Reflect.deleteProperty(form, plainKey); } catch (error) { caught = error; }
++  protoThrowArmed = false;
++  if (caught !== protoThrown) problems.push(`delete: getPrototypeOf exception not propagated: ${describeValue(caught)}`);
++  expectWalk("delete getPrototypeOf throw", [plainKey], 1);
++  // ownKeys: one walk per supported, not-own name; the visible ones are listed once.
++  reset();
++  let keys = [];
++  try { keys = Reflect.ownKeys(form); } catch (error) { problems.push(`ownKeys threw: ${(error && error.message) || error}`); }
++  const sortedQueries = queries.map(String).sort().join(","), sortedNames = [...names].sort().join(",");
++  if (sortedQueries !== sortedNames) problems.push(`ownKeys: descriptor queries [${queries.map(String).join(",")}]`);
++  // Not own on the Proxy: deepKey, plainKey, hasOnlyKey and throwKey (unarmed).
++  if (protoCalls !== 4) problems.push(`ownKeys: getPrototypeOf ran ${protoCalls} times`);
++  for (const name of names) {
++    const expected = visible.includes(name) || name === throwKey ? 1 : 0;
++    const count = keys.filter(k => k === name).length;
++    if (count !== expected) problems.push(`ownKeys: ${name} listed ${count} times`);
++  }
++  // hasOwn and getOwnPropertyDescriptor agree with delete and ownKeys.
++  for (const [name] of hidden) {
++    const desc = Object.getOwnPropertyDescriptor(form, name);
++    if (Object.hasOwn(form, name) || desc !== undefined) problems.push(`${name}: hidden name own, ${describeDescriptor(desc)}`);
++  }
++  for (const name of visible) {
++    const desc = Object.getOwnPropertyDescriptor(form, name);
++    if (!Object.hasOwn(form, name) || !desc || desc.value !== inputs[name]) problems.push(`${name}: visible name ${describeDescriptor(desc)}`);
++  }
++  if (getterCalls) problems.push(`prototype getter called ${getterCalls} times`);
++  if (hasQueries.length) problems.push(`has trap ran for ${hasQueries.map(String).join(",")}`);
++  // A Proxy whose own prototype is null ends the walk: the name is visible.
++  const nullForm = doc.createElement("form"), nullInput = doc.createElement("input");
++  nullInput.name = plainKey;
++  nullForm.append(nullInput);
++  doc.body.append(nullForm);
++  Object.setPrototypeOf(nullForm, new Proxy(Object.create(null), handler()));
++  reset();
++  if (Reflect.deleteProperty(nullForm, plainKey) !== false) problems.push("null-prototype Proxy: visible name deleted");
++  expectWalk("null-prototype Proxy", [plainKey], 1);
++  if (!Object.hasOwn(nullForm, plainKey) || hasQueries.length) problems.push("null-prototype Proxy: name not visible or has trap ran");
+   return problems.length ? problems.join("; ") : true;
+ }));
+ // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+diff --git a/docs/handoff/0377-prototype-descriptor-visibility.md b/docs/handoff/0377-prototype-descriptor-visibility.md
+new file mode 100644
+index 00000000000..c4445daa50b
+--- /dev/null
++++ b/docs/handoff/0377-prototype-descriptor-visibility.md
+@@ -0,0 +1,33 @@
++# 0377 — named visibility queries own descriptors on prototypes
++
++Use the maintained JS_GetPropertyDescriptorById operation, starting at the object's
++prototype, instead of JS_HasPropertyById. Existing V8-backed traversal asks own descriptors
++and follows prototypes without invoking accessors. No new traversal, cache, dependency or
++public API. Null prototypes and pending exceptions retain their existing handling.
++
++Affected visibility callers are generated getOwnPropertyDescriptor/hasOwn, ownKeys,
++named deletion and WindowProperties. Actual property-value reads are unchanged. Adapted
++browser fixtures retain reentrant expando, duplicate-key, own-property short-circuit and
++numeric-index gating coverage, now through descriptor traps; has traps must remain unused.
++The new required fixture covers undefined/accessor descriptors, inherited properties,
++opposite has/descriptor answers, null chains and exceptions from both descriptor/prototype
++traps. Query order for all ownKeys names is not asserted; query multiplicity is.
++
++Local validation: one new native contract passes normal and JITless; runner42 passes
++(8 POSIX skips on Windows), generator14 passes, utils Rust syntax parses. An isolated
++negative replacing the descriptor query with the former HasProperty operation fails on
++the actual `has:undefinedKey` versus `descriptor:undefinedKey` trap difference. The mutated
++isolated source was restored; tracked sources were never mutated for that negative.
++Browser compilation/execution remains CI-only. Source/logs in target/task-0377/.
++
++Tradeoff: descriptor objects/conversion and two additional stack roots replace a boolean
++presence query; no measured CPU/RAM improvement is claimed. The generic traversal still
++does not skip named-properties objects inserted in custom chains, and WindowProperties'
++starting point is unchanged. These remain explicit gaps. SourceText0361, indexed deletion,
++property definition and overall retention are not resolved by this task.
++
++Preceding735a batch: V840520566885 required7/7 green; Android40520566920 green.
++General40520566879 probes/shared checks pass, but macOS probe cancellation caused all
++build-and-publish and Steam jobs to skip through the aggregate dependency. Required
++Windows/Linux packaging/Steam coverage is therefore missing, not green. Apple checks
++remain excluded; repair the dependency coupling without disabling Apple workflows.

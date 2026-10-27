@@ -6,6 +6,25 @@ sostituire, in ordine di rapporto guadagno/rischio.
 
 Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
 
+## Shell Servo e riduzione dei servizi — decisione del 27 ottobre 2026
+
+La shell Servo resta il contenitore di Roves; preservare la sua architettura interna non è
+un vincolo. Moduli, gestione asincrona e altri servizi Servo possono essere sostituiti e
+rimossi quando una libreria mantenuta copre il lavoro. DOM, layout e rendering rimangono
+inizialmente in Servo: deno_core non fornisce un motore completo della pagina.
+
+rusty_v8 è già utilizzato. deno_core è autorizzato come candidato per una prova isolata di
+moduli e operazioni asincrone, non ancora adottato in produzione. La prova deve verificare
+compatibilità V8/JITless, frame multipli, import statici/dinamici/JSON, cicli, top-level await,
+microtask, CSP/origini e rilascio dei contesti. Distinguere test del runtime da integrazione
+HTML effettivamente dimostrata. Usare API pubbliche mantenute; niente fork nostro o doppio
+percorso permanente. Rimuovere il sottosistema sostituito e mantenere solo il collegamento
+necessario. Non aggiungere una dipendenza per un uso futuro o un risparmio ipotetico.
+
+Nessuna installazione separata di Deno/Chromium, nessun cambiamento intenzionale alle API
+JavaScript dei giochi. Valutare licenze, piattaforme, dipendenze transitive e costi reali di
+avvio/memoria. Non promettere percentuali di risparmio. Handoff corrente in V8_MIGRATION.md.
+
 ## Prossimi passi, codice e librerie
 
 | Area | Oggi | Direzione |

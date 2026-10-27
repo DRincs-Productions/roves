@@ -1003,7 +1003,8 @@ where
             rooted!(&in(cx) let mut rooted_jsid: jsid);
             let mut names = properties(unwrapped_proxy, &mut cx);
 
-            // The prototype lookups can run script (a Proxy `has` trap on the chain)
+            // The prototype lookups can run script (a Proxy `getOwnPropertyDescriptor`
+            // or `getPrototypeOf` trap on the chain)
             // that adds or removes expando properties, so they all run first. Each
             // is short-circuited by an own expando property, as the visibility
             // algorithm checks own properties before the prototype: a hidden name

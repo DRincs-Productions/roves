@@ -1,0 +1,342 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 7182a90ba81..a7ac7a22b6a 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -10,6 +10,19 @@
+   parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
+   aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
+ 
++### Direzione autorizzata: shell Servo e servizi sostituibili (27 ottobre 2026)
++
++Conservare la shell Servo come contenitore dell'applicazione. Non è obbligatorio preservare
++i servizi o l'architettura interna di Servo: moduli, gestione asincrona e altri servizi possono
++essere sostituiti con librerie mantenute, rimuovendo le implementazioni rese inutili.
++rusty_v8 è già la base V8; valutare deno_core tramite una prova isolata prima dell'adozione.
++Adottarlo solo quando permette di eliminare un sottosistema e mantiene frame multipli,
++sicurezza web, comportamento dei giochi e JITless tramite API pubbliche, senza fork nostro
++o duplicazione permanente. DOM, layout e rendering restano inizialmente in Servo.
++Non richiedere installazioni separate di Deno o Chromium e non esporre API Deno ai giochi.
++Documentare prove, costi e limiti reali: autorizzazione progettuale non significa integrazione
++già completata. Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
++
+ ### Valutazione obbligatoria prima di ogni modifica
+ 
+ Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+new file mode 100644
+index 00000000000..c81ac698042
+--- /dev/null
++++ b/docs/AGENT_WORKFLOW.md
+@@ -0,0 +1,240 @@
++## Direzione autorizzata — shell Servo, servizi sostituibili (27 ottobre 2026)
++
++Conservare la shell Servo, riducendo il codice mantenuto da Roves. rusty_v8 è già in uso;
++deno_core è un candidato da verificare isolatamente, non una dipendenza produttiva adottata.
++L'utente autorizza a sostituire anche i servizi interni di Servo e rimuoverli quando diventano
++inutili: non duplicare permanentemente runtime, moduli o loop asincroni. DOM/layout/rendering
++rimangono inizialmente in Servo. Nessuna installazione separata Chromium/Deno né API Deno
++esposte ai giochi. Adottare solo tramite API mantenute senza fork nostro, preservando frame,
++sicurezza web e JITless, con bilancio esplicito fra codice eliminato e adattatori aggiunti.
++Registrare test eseguiti separatamente dalle ipotesi; non promettere risparmi non misurati.
++Il loop Codex direzione/revisione e Claude implementazione, le quote e le regole CI restano
++invariati. Una prova negativa può concludere correttamente la valutazione senza adozione.
++
++## Eccezione Apple autorizzata il 26 ottobre 2026
++
++Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono
++verifiche superate: documentarle come escluse/mancanti, senza disattivare workflow o
++ritentare per la sola piattaforma Apple. Tutti i job non Apple necessari devono restare
++verdi e terminali prima del push. Questa eccezione prevale sulla regola generale di batch
++interamente verde solo per macOS/iOS; il loop di sviluppo e gli altri limiti restano validi.
++
++## Loop operativo autonomo
++
++La procedura in AGENTS.md è ciclica: definire un incarico, implementare e verificare,
++revisionare fino al completamento, aggiornare MD/patch e committare localmente, controllare
++il batch CI e pubblicare solo quando consentito. Dopo ogni incarico o push si passa al
++prossimo lavoro utile senza conferme ordinarie. Con CI attiva si sviluppa e si committa,
++ma non si pusha; eventuali fallimenti vanno corretti nel prossimo batch. Restano validi
++stop utente, quote effettive, blocchi non risolvibili e assenza di lavoro utile; nessun
++polling continuo. I dettagli e la divisione Codex/Claude sono in AGENTS.md.
++
++## Ripresa dopo limite Claude — regola aggiornata il 25 ottobre 2026
++
++Quando Claude segnala una quota esaurita, salvare l'incarico e verificare la quota con
++`/usage` nella CLI, senza richieste al modello. Per il limite della sessione di 5 ore,
++pianificare un solo tentativo all'orario di reset indicato più 2 minuti, rispettando data
++e fuso orario della CLI. Questa regola sostituisce le 5 ore dal messaggio di blocco;
++le vecchie scadenze riportate nello storico non sono istruzioni correnti.
++Se il reset è assente o ambiguo, non inventare una scadenza. Nessun polling intermedio
++o duplicato: aggiornare il ricontrollo esistente. Un orario esplicito dell'utente prevale.
++Disattivare dopo il tentativo; se lo stesso limite persiste, fermarsi senza retry concatenati.
++Restano esclusi retry automatici per quote settimanali/mensili, stop utente e cambi modello.
++Restano in vigore revisione, verifiche e vincoli CI di AGENTS.md.
++
++## Prosecuzione durante la CI
++
++Con run attive e nessuna fallita, continuare il lavoro utile autorizzato, revisionare e
++committare in locale senza push. Non terminare il ciclo soltanto perché la CI è in corso.
++Controllare il batch al completamento delle implementazioni; pubblicare secondo AGENTS.md.
++
++## Tentativo18:45 eseguito — 23 ottobre 2026
++
++Claude disponibile:0315 consegnato con test positivi/negativi e replay. Codex ha revisionato
++le prove e il diff; nessuna ripetizione senza motivo. Ricontrollo one-shot eliminato dopo
++l'esecuzione. La precedente quota è storica, non un blocco corrente. Prossimo incarico:
++deriva patch preesistente rilevata dal replay completo, mantenendo un solo Claude attivo.
++
++## Delega ripristinata — 23 ottobre 2026
++
++L'utente ha ripristinato Codex direzione/revisione e Claude implementazione via terminale.
++Un solo incarico Claude attivo, nessuna implementazione duplicata, nessun tetto numerico o
++contabilità ordinaria. L'eccezione Codex diretto del22ottobre è terminata. Handoff unico:
++docs/V8_MIGRATION.md; il file temporaneo CLAUDE_RESUME.md è stato rimosso su richiesta.
++Il lavoro remoto di Claude è stato acquisito con fast-forward fino a8e4fb2e6cf4 (wiki b86bb38).
++La CI generale/Android/iOS è verde; V8 fallisce nei due smoke Linux con main non definita
++in gc-lifecycle.html. Correzione mirata delegata; pubblicare dopo revisione e batch concluso. La prima invocazione0315 si è
++fermata per quota effettiva (reset CLI18:40 Europe/Rome23ottobre) prima di verifiche/replay.
++Bozza archiviata sotto docs/handoff, sorgenti ripristinati. Il blocco iniziale è storico: l’utente ha poi richiesto il tentativo delle18:45 e autorizzato
++la regola5ore descritta in cima. Nessun cambio modello/sviluppo
++Codex sostitutivo per aggirare il limite.
++
++# Regola corrente — aggiornamento 22 ottobre 2026
++
++L'utente ha eliminato i tetti di25/50 chiamate e l'obbligo di registrare consumo e lavoro
++residuo per incarico. Codex continua autonomamente con un solo Claude attivo, incarichi
++circoscritti, revisione e vincoli CI; si ferma soltanto per quota effettiva, stop esplicito
++o blocco non risolvibile. Nessuna nuova contabilità di chiamate/turni/token. Le misure e
++le soglie nelle sezioni seguenti sono storiche, non regole correnti.
++
++# Consumi e coordinamento degli agenti
++
++## Stato e obiettivo
++
++Il 22 ottobre 2026 l'utente ha fermato la migrazione e approvato la priorità **minimo consumo
++complessivo**. Nessun rapporto rigido 50/50: token e quote dei due abbonamenti non sono
++unità direttamente confrontabili. La ripresa è stata autorizzata; questo paragrafo conserva il contesto storico.
++L'automazione `migrazione-v8-ci-e-delega-claude` è stata eliminata; nessun nuovo monitor previsto.
++
++## Evidenze della sessione del 22 ottobre
++
++Fonte: record finali `type=result` dei cinque log locali `target/claude-*.log` indicati sotto.
++I token cache letti sono cumulativi fra richieste: non rappresentano altrettanti token unici.
++Il costo è quello indicativo a listino riportato dal client, non una fattura o la conversione
++in crediti dell'abbonamento. Nei record stream l'output parziale sottostima il totale:
++per questi conteggi è stato usato il record finale, senza sommare copie dello stesso messaggio.
++
++| Incarico / log | Turni | Token output | Token cache letti | USD indicativi |
++| --- | ---: | ---: | ---: | ---: |
++| 0269 / claude-0269-oct22.log | 85 | 51.745 | 6.776.451 | 3,6162 |
++| 0270 / claude-0270-module-private.log | 88 | 56.962 | 9.927.231 | 4,6834 |
++| 0271 / claude-0271-host-referrer.log | 100 | 84.055 | 14.672.382 | 6,5647 |
++| 0272 / claude-0272-traced-owner.log | 124 | 73.194 | 17.996.233 | 6,8699 |
++| 0273 / claude-0273-native-traps.log | 49 | 32.904 | 4.493.603 | 2,6278 |
++| **Totale** | **446** | **298.860** | **53.865.900** | **24,3620** |
++
++Sono stati inoltre scritti nella cache 951.098 token. Il contesto iniziale dei cinque incarichi
++andava da 44.496 a 45.802 token; alcuni contesti successivi superavano 240.000 token.
++Ogni incarico ha prodotto circa 157.000–280.000 caratteri di output degli strumenti;
++alcuni singoli output superavano 30.000 caratteri. Tutti i record indicano claude-opus-5-5.
++Questi dati non spiegano da soli la conversione nelle percentuali di quota dell'account.
++
++Non è disponibile un conteggio affidabile attribuibile a Codex per la stessa finestra.
++Non è quindi possibile quantificare il costo totale dei due servizi o dimostrare un
++risparmio percentuale rispetto a uno sviluppo equivalente svolto soltanto da Codex.
++
++## Diagnosi
++
++Non è stato dimostrato un loop infinito di richieste Claude: i cinque processi sono finiti,
++l'ultimo per limite di sessione. Il ciclo di sviluppo era però aperto a incarichi successivi
++senza budget per incarico. Le richieste di implementazione includevano ricerca, test positivi
++e negativi, replay delle patch e documentazione: erano più ampie di quanto suggerisse la
++qualifica di incarichi circoscritti. Il contesto crescente veniva riprocessato molte volte.
++
++Codex ha aggiunto controlli CI/processo frequenti, letture estese di output e analisi di
++soluzioni già delegate. I riferimenti browser indipendenti erano verifiche pertinenti, ma mancava una separazione
++esplicita delle responsabilità e una regola contro le ripetizioni della ricerca e dei test.
++Una ricerca ricorsiva non limitata ha attraversato il workspace ed è stata interrotta.
++L'automazione ogni 20 minuti ha inoltre generato risvegli durante una quota già esaurita.
++Non è verificabile da questi log quanti crediti Codex abbia consumato ciascuna di tali attività.
++
++La responsabilità del coordinamento e della frequenza dei controlli è di Codex: delegare
++l'implementazione non produce risparmio se il coordinatore continua a fare lo stesso lavoro.
++
++## Procedura approvata
++
++Le regole operative vincolanti sono in [AGENTS.md](../AGENTS.md): un delegato, soglia iniziale
++25 tool call, nessun rilancio automatico oltre budget, niente ricerca duplicata, letture
++mirate, evidenze dei test riutilizzate, niente polling continuo e stop al limite di quota.
++La soglia riguarda le chiamate agli strumenti, non i turni o i token e non è un limite CLI
++verificato. Non usare un tetto USD destinato alle API come promessa di controllo dei crediti.
++
++Per il primo incarico dopo una futura ripresa:
++
++1. Mantenere i modelli invariati e fissare un solo risultato, pochi file e le verifiche minime
++   necessarie. Indicare la soglia nel prompt prima di avviare Claude.
++2. Registrare contesto iniziale, modello, chiamate tool univoche, turni, token nuovi,
++   creazione/lettura cache, output e verifiche; conservare i log fuori dal contesto del modello.
++3. Codex revisiona diff ed evidenze; ripete verifiche solo per un motivo esplicito.
++4. Confrontare con incarichi simili per complessità e copertura. Quote account eventualmente
++   rilevate prima/dopo sono soltanto indicative se nel frattempo c'è altra attività.
++5. Modificare soglia o strategia dopo il confronto, senza promettere anticipatamente il 50%.
++
++Non sono stati modificati codice, dipendenze, API, flag, build o politiche di release.
++Non servono patch di sorgenti Servo, sincronizzazioni di roves-action/Packmaster o nuovi test
++per questo aggiornamento delle istruzioni e del handoff.
++
++## Prima ripresa con soglia — incarico 0274
++
++L'utente ha chiesto di riprendere. Claude ha usato lo stesso modello (`claude-opus-5-5`) e
++si è fermato a 25 tool_use univoci; 26 turni. Contesto iniziale 46.186 token. Record finale:
++36 input token, 96.697 token cache creati, 1.399.981 cache letti, 34.467 output (18.420 thinking).
++Costo indicativo riportato 1,7430562 USD, non crediti dell'abbonamento. Fonte unica:
++`target/claude-0274-owned-resolve.log`. Codex ha atteso il processo tramite un'orchestrazione
++strumentale, senza nuovi turni del modello ogni minuto o analisi concorrenti della soluzione.
++
++L'incarico non è completo: test isolati 67 normal/66 JIT-less passano, ma mancano replay
++completo, integrazione/verifica frontend e chiusura della documentazione. Un errore iniziale
++della fixture (callee letto da vp[1] anziché vp[0]) ha richiesto una correzione prima dei test
++finali. Il WIP è salvato separatamente e i sorgenti pubblicabili sono ripristinati. Nessun
++commit/push; nessun rilancio oltre soglia. Questo verifica il rispetto del limite di processo,
++non un risparmio percentuale a parità di lavoro completato: il compito è differente e incompleto.
++Non aumentare automaticamente il budget; la decisione successiva spetta all'utente.
++
++## Estensione autorizzata — completamento 0274
++
++L'utente ha autorizzato esplicitamente una sola estensione dello stesso incarico 0274: stesso
++modello (`claude-opus-5-5`), 25 tool_use univoci aggiuntivi, massimo cumulativo 50; il budget
++non è stato azzerato. L'estensione ha usato 21 chiamate (cumulativo 46/50), inclusa una
++chiamata fallita per un errore di quoting della shell, e ha completato l'incarico in locale:
++verifica API frontend senza correzioni, regressione browser con marker esatti, test del runner
++in WSL, replay da pristine e documentazione. Test roves-js riusati tramite confronto della copia
++isolata, non rieseguiti. Token, turni e costo di questa estensione vanno aggiunti da Codex dal
++record finale; nessun dato stimato qui. Nessun commit/push, nessun nuovo incarico, nessun polling.
++
++### Esito verificato dell'estensione 0274
++
++Conteggio dal log finale `target/claude-0274-completion.log`: 22 tool_use univoci (non 21 come
++nel riepilogo del delegato), 23 turni; contesto iniziale 46.019 token. Token: 48 input nuovi,
++91.386 cache creati, 1.839.535 cache letti, 28.331 output (12.154 thinking); costo indicativo
++1,665807 USD. Totale incarico con la prima parte: 47 chiamate su 50 autorizzate, 49 turni,
++188.083 token cache creati, 3.239.516 cache letti, 62.798 output e 3,4088632 USD indicativi.
++Non sono crediti d'abbonamento e non dimostrano un risparmio percentuale su lavori equivalenti.
++
++La chiusura riusa i test runtime 67/66 perché le copie coincidono; nuovi contratti runner 9/9.
++Codex ha revisionato il diff e confrontato i sei file del replay e la copia runtime, senza
++rieseguire i test già dimostrati. Il replay di 57 patch e il dry-run/apply 0274 coincidono;
++frontend e browser reale restano responsabilità della CI. Il limite cumulativo è rispettato.
++L'utente ha autorizzato il ciclo con nuovi incarichi circoscritti; questo non autorizza
++rilanci illimitati di un incarico incompleto o tentativi dopo un limite di quota.
++
++### Incarico 0275: registro debole dei moduli sorgente
++
++21 tool_use univoci, 22 turni; modello invariato claude-opus-5-5. Contesto iniziale 46.535 token;
++44 input nuovi, 130.679 cache creati, 2.262.903 cache letti, 56.063 output (31.020 thinking).
++Costo indicativo 2,6194486 USD. Fonte: record finale target/claude-0275-weak-source-registry.log.
++Il compito è completo localmente entro 25 chiamate: 71 test normali/70 JIT-less passati,
++negativi mirati e replay di 48 patch precedenti più 0275. Codex ha confrontato i quattro file
++ricostruiti e la copia runtime con i sorgenti, senza ripetere i test. JSON e realm restano forti:
++non è un risultato sulla memoria delle pagine. Nessuna percentuale di risparmio attribuita.
++
++
++### 0276: incomplete permission-blocked assignment (2026-10-22)
++Claude Opus 5.5, 17 unique tool calls, 18 turns; no production source edits or tests.
++The noninteractive acceptEdits session denied shell write commands (including git apply
++--check); six denied attempts are recorded in the final result. Stop rather than repeatedly
++trying equivalent commands or restarting to reset the budget. Scratch draft remains in
++target/task-0276; clarify worker permissions and remaining/extended budget before resuming.
++Usage: input34, cache creation83914, cache read1124421, output36756 (thinking16925).
++Indicative provider list-price USD1.6314522; this is not account credit consumption or a
++comparison with equivalent Codex work. Full log: target/claude-0276-weak-defined-functions.log.
++
++
++### Authorized autonomous continuation (2026-10-22)
++The user approved one Codex-authorized justified extension per assignment: 25 initial
++unique tool calls, maximum50 cumulative across resumed sessions. Stop at50 or actual
++subscription quota; do not reset counters, switch models or retry equivalent denied actions.
++Diagnose worker permissions before resuming; never bypass automatic review rejections.
++Task0276 resumes from17 calls with at most33 additional calls, including required checks.
++Codex directs/reviews and Claude implements. CI gates, online heavy builds, no duplicate
++checks and no periodic automation remain in force. Historical stops above remain evidence.
++
++
++### 0276 completion with explicitly allowed session tools
++Resumed Opus5.5 with explicit allowedTools (not bypassPermissions):18 unique tool calls,
++35 cumulative including17 previous calls; zero permission denials. Input38, cache creation
++76720, cache read1411455, output17619 (thinking5611). Normal72/JITless71 pass, negative
++strong-root regression fails as required; replay51 prior patches plus0276 matches sources.
++Codex reviewed the source diff and independently compared six production/audit/replay files;
++no duplicate tests. Log target/claude-0276-resume.log. JIT-info lookup now enters V8;
++performance impact unmeasured, realms/JSON/Servo maps still retain objects.
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+new file mode 100644
+index 00000000000..07d321da25b
+--- /dev/null
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -0,0 +1,66 @@
++# Roves: librerie, GPU e console
++
++Obiettivo a lungo termine: Roves come assemblaggio di librerie mantenute da altri, con solo il
++codice necessario a farle lavorare insieme. Questo documento elenca cosa si può togliere o
++sostituire, in ordine di rapporto guadagno/rischio.
++
++Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
++
++## Shell Servo e riduzione dei servizi — decisione del 27 ottobre 2026
++
++La shell Servo resta il contenitore di Roves; preservare la sua architettura interna non è
++un vincolo. Moduli, gestione asincrona e altri servizi Servo possono essere sostituiti e
++rimossi quando una libreria mantenuta copre il lavoro. DOM, layout e rendering rimangono
++inizialmente in Servo: deno_core non fornisce un motore completo della pagina.
++
++rusty_v8 è già utilizzato. deno_core è autorizzato come candidato per una prova isolata di
++moduli e operazioni asincrone, non ancora adottato in produzione. La prova deve verificare
++compatibilità V8/JITless, frame multipli, import statici/dinamici/JSON, cicli, top-level await,
++microtask, CSP/origini e rilascio dei contesti. Distinguere test del runtime da integrazione
++HTML effettivamente dimostrata. Usare API pubbliche mantenute; niente fork nostro o doppio
++percorso permanente. Rimuovere il sottosistema sostituito e mantenere solo il collegamento
++necessario. Non aggiungere una dipendenza per un uso futuro o un risparmio ipotetico.
++
++Nessuna installazione separata di Deno/Chromium, nessun cambiamento intenzionale alle API
++JavaScript dei giochi. Valutare licenze, piattaforme, dipendenze transitive e costi reali di
++avvio/memoria. Non promettere percentuali di risparmio. Handoff corrente in V8_MIGRATION.md.
++
++## Prossimi passi, codice e librerie
++
++| Area | Oggi | Direzione |
++| --- | --- | --- |
++| WebGPU | Attivo per default (wgpu + naga); thread già avviati su richiesta e poller sospeso quando inattivo | Tenerlo: serve ai giochi. Misurare il lavoro effettivo prima di proporre altre modifiche |
++| `mach bundle` (`post_build_commands.py`, ~1,7k righe nostre) | Packaging scritto a mano | Valutare `cargo-packager` per msi/dmg/deb; tenere solo la logica Roves (contenuti, icone, Steam) |
++| Tastiera e gamepad | `code` dal crate `keycode`; `key` e gamepad mappati a mano | Restano come glue: usare il più possibile i tipi del crate `sdl3` |
++| roves-js (~22k righe) | Emula l'API mozjs sopra V8 | Ridurlo spostando il codegen dei binding verso il crate `v8` diretto (ArrayBuffer, ValueSerializer per structured clone), togliendo l'emulazione jsapi pezzo per pezzo |
++| egui | Solo splash, dialoghi ed errori | Valutare dialoghi nativi SDL3 e uno splash disegnato direttamente: egui potrebbe uscire del tutto |
++
++## GPU
++
++- Windows usa ANGLE (GL → D3D11). Più compatibile; il GL nativo è più veloce su NVIDIA/AMD ma
++  fragile con i driver Intel. Opzione futura: scelta automatica per vendor, con ANGLE di riserva.
++- Il costo per frame misurato è quasi tutto nel render di WebRender e nel driver (vedi
++  `ROVES_PERFORMANCE.md`). Il guadagno vero passa da un renderer che parla direttamente
++  D3D12/Vulkan/Metal.
++
++## Console
++
++| Vincolo | PlayStation / Switch | Xbox |
++| --- | --- | --- |
++| JIT | Vietato: serve V8 `jitless` (feature già presente; niente WebAssembly) | Permesso in GDK |
++| Grafica | Niente OpenGL: serve un renderer non GL | D3D12; ANGLE su D3D11 forse in modalità GDK desktop |
++| Processi | Un solo processo | Un solo processo |
++| Media | GStreamer non praticabile: decoder della piattaforma | Media Foundation |
++| SDK, SDL3, Rust | Sotto NDA tramite i programmi sviluppatore | GDK |
++
++Percorso a tappe:
++
++1. **Desktop come banco di prova:** modalità single-process, `jitless` e un backend media senza
++   GStreamer, validati su Windows e Linux.
++2. **Xbox su PC tramite GDK:** è Windows, con JIT e D3D11 permessi; la tappa più vicina.
++3. **Renderer non GL:** wgpu/Vello al posto di WebRender GL (Servo ha già un lavoro `vello`). È il
++   collo di bottiglia per tutte le console.
++4. **Switch e PlayStation:** dopo l'accesso agli SDK, build di V8 e del codice Rust per quelle
++   piattaforme.
++
++Le tappe 3 e 4 sono lavori di mesi; le tappe 1 e 2 si possono iniziare subito.

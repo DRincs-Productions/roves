@@ -726,13 +726,23 @@ normal/JITless browser checks passed in the dac65 CI batch.
 
 Indexed DOM collections keep array-index keys separate from numeric named keys, preventing
 duplicate native ownKeys results. Noncanonical numeric names and numeric names on Document
-remain available. Native normal/JITless regressions pass; real browser CI is pending.
+remain available. Native regressions and required Windows/Linux browser CI passed.
 
 Visible named DOM properties without a named deleter now reject deletion according to
 WebIDL, while own expandos and Dataset retain their ordinary/deleter behavior. Form delete
 support checks do not register a named read or keep a renamed control in its past-names map.
-Normal/JITless browser verification of this change is pending CI. Visible Chrome156 differs
+Required Windows/Linux browser verification passed in the735a batch. Visible Chrome156 differs
 on these deletions and exposes a distinct HTMLDocument constructor; Roves follows the
 normative expectations here, so this is not a claim of Chrome parity. Indexed deletion,
 property definition, prototype-query conformance, inline-handler source text and overall
 retention remain under migration.
+
+Named-property visibility now reuses V8-backed descriptor traversal rather than a Proxy
+`has` query on prototypes. Accessor getters are not invoked by this presence check; native
+normal/JITless tests pass, with the new browser fixtures awaiting CI. This is a bounded
+correction, not complete WebIDL conformance.
+
+Roves keeps its Servo shell while evaluating maintained libraries to replace internal
+services and remove duplicate implementation. rusty_v8 is already used; deno_core remains
+an isolated evaluation, not an adopted production runtime. DOM/layout/rendering stay in
+Servo initially. No separate Chromium or Deno installation is planned.

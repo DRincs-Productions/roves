@@ -561,6 +561,100 @@ mod object_model {
         assert!(unsafe { JS_HasOwnPropertyById(cx, object.handle().into_handle(), id.handle().into_handle(), &mut found) } && !found);
     }
 
+    /// `JS_GetPropertyDescriptorById` is the prototype walk of WebIDL named property visibility
+    /// (script_bindings `has_property_on_prototype`): every object on the chain is asked for an
+    /// own property ([[GetOwnProperty]]) and the walk moves on with [[GetPrototypeOf]], so a
+    /// Proxy answers through `getOwnPropertyDescriptor`/`getPrototypeOf`, never `has`. The two
+    /// traps disagree on purpose for `hasOnly`/`descriptorOnly`.
+    #[test]
+    fn property_descriptor_walk_uses_own_descriptor_and_prototype_traps() {
+        let runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        eval(&runtime, r#"
+            globalThis.log = [];
+            globalThis.getterCalls = 0;
+            globalThis.deep = { deepKey: 'deep' };
+            globalThis.middle = Object.create(deep, {
+                undefinedKey: { configurable: true, writable: true, value: undefined },
+                accessorKey: { configurable: true, get() { getterCalls++; return 'getter'; } },
+            });
+            globalThis.trapped = new Proxy(middle, {
+                getOwnPropertyDescriptor(target, key) {
+                    log.push('descriptor:' + String(key));
+                    if (key === 'throwKey') throw new RangeError('descriptor trap');
+                    if (key === 'descriptorOnly') return { configurable: true, writable: true, value: 'trap' };
+                    return Reflect.getOwnPropertyDescriptor(target, key);
+                },
+                getPrototypeOf(target) { log.push('prototype'); return Reflect.getPrototypeOf(target); },
+                has(target, key) { log.push('has:' + String(key)); return key === 'hasOnly' || Reflect.has(target, key); },
+            });
+            globalThis.nullEnded = new Proxy(Object.create(null), {
+                getOwnPropertyDescriptor(target, key) { log.push('descriptor:' + String(key)); return undefined; },
+                getPrototypeOf() { log.push('prototype'); return null; },
+                has(target, key) { log.push('has:' + String(key)); return true; },
+            });
+        "#);
+        rooted!(in(cx) let global = eval(&runtime, "globalThis").to_object());
+        rooted!(in(cx) let trapped_object = eval(&runtime, "trapped").to_object());
+        rooted!(in(cx) let null_ended = eval(&runtime, "nullEnded").to_object());
+        // Returns (succeeded, is_none, descriptor); the holder is stored as `globalThis.holder`.
+        let lookup = |object: HandleObject, name: &std::ffi::CStr| {
+            eval(&runtime, "log.length = 0; globalThis.holder = undefined");
+            let atom = unsafe { JS_AtomizeAndPinString(cx, name.as_ptr()) };
+            rooted!(in(cx) let mut id = crate::jsid::VoidId());
+            unsafe { RUST_INTERNED_STRING_TO_JSID(cx, atom, id.handle_mut().into_handle()) };
+            rooted!(in(cx) let mut desc = PropertyDescriptor::default());
+            rooted!(in(cx) let mut holder = ptr::null_mut::<JSObject>());
+            let mut is_none = true;
+            let succeeded = unsafe {
+                JS_GetPropertyDescriptorById(cx, object, id.handle().into_handle(), desc.handle_mut().into_handle(), holder.handle_mut().into(), &mut is_none)
+            };
+            if succeeded && !is_none {
+                rooted!(in(cx) let value = ObjectValue(holder.get()));
+                assert!(unsafe { JS_SetProperty(cx, global.handle().into_handle(), c"holder".as_ptr(), value.handle().into_handle()) });
+            }
+            (succeeded, is_none, *desc)
+        };
+        let log = || describe(&runtime, eval(&runtime, "log.join()"));
+        let trapped = trapped_object.handle().into_handle();
+
+        // An own data property whose value is undefined is found on the Proxy itself.
+        let (ok, is_none, desc) = lookup(trapped, c"undefinedKey");
+        assert!(ok && !is_none && desc.hasValue_() && desc.value_.is_undefined());
+        assert_eq!(log(), "descriptor:undefinedKey");
+        assert_eq!(describe(&runtime, eval(&runtime, "holder === trapped")), "true");
+        // An accessor is reported without calling its getter.
+        let (ok, is_none, desc) = lookup(trapped, c"accessorKey");
+        assert!(ok && !is_none && desc.hasGetter_() && !desc.getter_.is_null());
+        assert_eq!(log(), "descriptor:accessorKey");
+        assert_eq!(describe(&runtime, eval(&runtime, "getterCalls")), "0");
+        // Inherited: the walk leaves the Proxy through its getPrototypeOf trap.
+        let (ok, is_none, _) = lookup(trapped, c"deepKey");
+        assert!(ok && !is_none);
+        assert_eq!(log(), "descriptor:deepKey,prototype");
+        assert_eq!(describe(&runtime, eval(&runtime, "holder === deep")), "true");
+        // `has` says present, the descriptor says absent: not found, `has` never runs.
+        let (ok, is_none, _) = lookup(trapped, c"hasOnly");
+        assert!(ok && is_none);
+        assert_eq!(log(), "descriptor:hasOnly,prototype");
+        // The descriptor trap alone decides presence.
+        let (ok, is_none, desc) = lookup(trapped, c"descriptorOnly");
+        assert!(ok && !is_none && desc.hasValue_());
+        assert_eq!(log(), "descriptor:descriptorOnly");
+        // A null prototype ends the walk.
+        let (ok, is_none, _) = lookup(null_ended.handle().into_handle(), c"missing");
+        assert!(ok && is_none);
+        assert_eq!(log(), "descriptor:missing,prototype");
+        // A throwing descriptor trap fails the call with its exception pending, unchanged.
+        let (ok, _, _) = lookup(trapped, c"throwKey");
+        assert!(!ok);
+        assert_eq!(log(), "descriptor:throwKey");
+        rooted!(in(cx) let mut exception = UndefinedValue());
+        assert!(unsafe { JS_GetPendingException(cx, exception.handle_mut()) });
+        assert_eq!(describe(&runtime, exception.get()), "RangeError: descriptor trap");
+        unsafe { JS_ClearPendingException(cx) };
+    }
+
     unsafe extern "C" fn add_native(cx: *mut JSContext, argc: u32, vp: *mut JSVal) -> bool {
         // SAFETY: the JSNative contract.
         let args = unsafe { std::slice::from_raw_parts_mut(vp, argc as usize + 2) };

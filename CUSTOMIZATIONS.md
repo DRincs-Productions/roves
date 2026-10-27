@@ -1,3 +1,19 @@
+## 2026-10-27 - Reuse descriptor traversal for named visibility (0377)
+
+script_bindings/utils.rs now uses the existing JS_GetPropertyDescriptorById traversal
+instead of HasProperty on prototypes. Adapt ownKeys/delete callback fixtures and add a
+required browser visibility check and native API contract. Existing V8 APIs own the walk;
+no new loop, dependency or public API. Normal/JITless native1/1, runner42 (8 POSIX skips),
+generator14 and Rust syntax pass; isolated old-HasProperty negative fails on the actual
+wrong has trap. Browser compilation/execution pending CI. Descriptor conversion/two roots
+add unmeasured costs. Named-properties-object skipping and WindowProperties start point
+remain pre-existing gaps; no overall retention/sourceText completion claim. Patch0378.
+
+The735a batch confirms0375/0376 V8 browser checks on required platforms and Android.
+General packaging/Steam were skipped due to the cancelled Apple probe's aggregate gate;
+these missing required checks are not treated as green. Repair dependency coupling before
+the next publication; Apple workflows remain enabled and excluded from the gate.
+
 ## 2026-10-27 - Reject deletion of visible named properties without a deleter (0376)
 
 codegen.py selects and generates the custom delete hook for non-global named interfaces

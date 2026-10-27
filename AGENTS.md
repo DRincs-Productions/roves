@@ -10,6 +10,19 @@
   parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
   aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
 
+### Direzione autorizzata: shell Servo e servizi sostituibili (27 ottobre 2026)
+
+Conservare la shell Servo come contenitore dell'applicazione. Non è obbligatorio preservare
+i servizi o l'architettura interna di Servo: moduli, gestione asincrona e altri servizi possono
+essere sostituiti con librerie mantenute, rimuovendo le implementazioni rese inutili.
+rusty_v8 è già la base V8; valutare deno_core tramite una prova isolata prima dell'adozione.
+Adottarlo solo quando permette di eliminare un sottosistema e mantiene frame multipli,
+sicurezza web, comportamento dei giochi e JITless tramite API pubbliche, senza fork nostro
+o duplicazione permanente. DOM, layout e rendering restano inizialmente in Servo.
+Non richiedere installazioni separate di Deno o Chromium e non esporre API Deno ai giochi.
+Documentare prove, costi e limiti reali: autorizzazione progettuale non significa integrazione
+già completata. Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+
 ### Valutazione obbligatoria prima di ogni modifica
 
 Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle

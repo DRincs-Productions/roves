@@ -18,14 +18,16 @@ use js::jsapi::{
     JS_GetLatin1StringCharsAndLength, JS_IsGlobalObject, JS_MayResolveStandardClass,
     JS_NewEnumerateStandardClasses, JS_ResolveStandardClass, JSAtom, JSAtomState, JSJitInfo,
     JSObject, JSPROP_ENUMERATE, JSTracer, MutableHandleIdVector as RawMutableHandleIdVector,
-    MutableHandleValue as RawMutableHandleValue, PropertyKey, StringIsArrayIndex, jsid,
+    MutableHandleValue as RawMutableHandleValue, PropertyDescriptor, PropertyKey,
+    StringIsArrayIndex, jsid,
 };
 use js::jsid::StringId;
 use js::jsval::{JSVal, UndefinedValue};
 use js::rust::wrappers2::{
     CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, CallOriginalPromiseReject,
     JS_ClearPendingException, JS_DefineProperty, JS_ForwardGetPropertyTo, JS_FreezeObject,
-    JS_GetPendingException, JS_GetProperty, JS_GetPrototype, JS_HasOwnProperty, JS_HasProperty,
+    JS_GetPendingException, JS_GetProperty, JS_GetPropertyDescriptorById, JS_GetPrototype,
+    JS_HasOwnProperty, JS_HasProperty,
     JS_HasPropertyById, JS_IsExceptionPending, JS_SetPendingException, JS_SetProperty,
 };
 use js::rust::{
@@ -334,6 +336,17 @@ pub fn has_own_property(
 /// If `false` is returned then the value of `found` is unspecified.
 /// A null prototype (e.g. after `Object.setPrototypeOf(proxy, null)`) ends the
 /// chain: nothing is found.
+///
+/// This is the prototype walk of the named property visibility algorithm
+/// (https://webidl.spec.whatwg.org/#dfn-named-property-visibility): each
+/// prototype is asked for an *own* property through `[[GetOwnProperty]]` and
+/// the walk continues through `[[GetPrototypeOf]]`, so a Proxy on the chain sees
+/// `getOwnPropertyDescriptor`/`getPrototypeOf` traps, never `has`. Any descriptor
+/// (an `undefined` value, an accessor) counts as found; getters are not called.
+/// `JS_GetPropertyDescriptorById` performs that walk; its descriptor and holder
+/// are only rooted here and discarded. A named properties object on the chain is
+/// not skipped (the spec skips it); no default DOM proxy chain contains one, and
+/// `WindowProperties` itself starts the walk at its own prototype.
 pub fn has_property_on_prototype(
     cx: &mut JSContext,
     proxy: HandleObject,
@@ -348,7 +361,23 @@ pub fn has_property_on_prototype(
         *found = false;
         return true;
     }
-    unsafe { JS_HasPropertyById(cx, proto.handle(), id, found) }
+    rooted!(&in(cx) let mut desc = PropertyDescriptor::default());
+    rooted!(&in(cx) let mut holder = ptr::null_mut::<JSObject>());
+    let mut is_none = true;
+    if unsafe {
+        !JS_GetPropertyDescriptorById(
+            cx,
+            proto.handle(),
+            id,
+            desc.handle_mut(),
+            holder.handle_mut(),
+            &mut is_none,
+        )
+    } {
+        return false;
+    }
+    *found = !is_none;
+    true
 }
 
 pub trait CallPolicy {

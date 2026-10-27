@@ -739,10 +739,11 @@ check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", ()
   return problems.length ? problems.join("; ") : true;
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-// A Proxy prototype's `has` trap runs during ownKeys. Here it makes the name an own expando
-// while that name is being checked (remove the control, define the property, put the control
-// back: a supported name cannot be defined directly without a named setter). The key must
-// still be listed exactly once, as the expando that now hides the named property.
+// The visibility walk asks each prototype for an own property ([[GetOwnProperty]]), so a Proxy
+// prototype's `getOwnPropertyDescriptor` trap runs during ownKeys. Here it makes the name an own
+// expando while that name is being checked (remove the control, define the property, put the
+// control back: a supported name cannot be defined directly without a named setter). The key
+// must still be listed exactly once, as the expando that now hides the named property.
 check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
   const problems = [];
   const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
@@ -753,24 +754,32 @@ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows i
   plain.name = plainKey;
   form.append(shadowed, plain);
   doc.body.append(form);
-  let armed = false, fired = 0;
+  let armed = false, listing = false, fired = 0, hasQueries = 0;
   const proto = new Proxy(win.HTMLFormElement.prototype, {
-    has(target, property) {
+    getOwnPropertyDescriptor(target, property) {
       if (armed && property === key) {
         armed = false;
         fired++;
+        // Only the visibility walk is checked for `has`, not this callback's own operations.
+        listing = false;
         remove.call(shadowed);
         Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
         append.call(form, shadowed);
+        listing = true;
       }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      if (listing) hasQueries++;
       return Reflect.has(target, property);
     },
   });
   Object.setPrototypeOf(form, proto);
-  armed = true;
+  armed = listing = true;
   const keys = Reflect.ownKeys(form);
-  armed = false;
+  armed = listing = false;
   if (fired !== 1) problems.push(`trap fired ${fired} times`);
+  if (hasQueries) problems.push(`has trap ran ${hasQueries} times`);
   const count = keys.filter(k => k === key).length, desc = Object.getOwnPropertyDescriptor(form, key);
   if (count !== 1) problems.push(`shadowed name listed ${count} times`);
   if (!desc || desc.value !== "own" || !Object.hasOwn(form, key) || form[key] !== "own")
@@ -780,7 +789,8 @@ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows i
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Visibility checks own properties before the prototype: a name hidden by an own expando must
-// never reach the prototype. The Proxy prototype throws if it is queried for that name.
+// never reach the prototype. The Proxy prototype throws if it is queried for that name, through
+// either `getOwnPropertyDescriptor` (the visibility walk) or `has`.
 check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
   const problems = [];
   const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
@@ -792,8 +802,13 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
   shadowed.name = key;
   plain.name = plainKey;
   form.append(shadowed, plain);
-  let queried = 0;
+  let queried = 0, plainQueries = 0;
   Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
+      if (property === plainKey) plainQueries++;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
     has(target, property) {
       if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
       return Reflect.has(target, property);
@@ -805,6 +820,8 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
   } catch (error) {
     return `ownKeys threw: ${(error && error.message) || error}`;
   }
+  // The supported, not-own name does reach the trap: the short circuit is not vacuous.
+  if (plainQueries !== 1) problems.push(`plain name queried ${plainQueries} times`);
   const count = keys.filter(k => k === key).length;
   if (count !== 1) problems.push(`own name listed ${count} times`);
   if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
@@ -835,8 +852,13 @@ check("HTMLFormElement ownKeys omits array-index names and keeps other numeric n
     return input;
   });
   doc.body.append(form);
-  let indexQueries = 0;
+  let indexQueries = 0, numericQueries = 0;
   Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === "0" || property === "7") indexQueries++;
+      else if (property === "00" || property === "-1" || property === "4294967295") numericQueries++;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
     has(target, property) {
       if (property === "0" || property === "7") indexQueries++;
       return Reflect.has(target, property);
@@ -850,6 +872,8 @@ check("HTMLFormElement ownKeys omits array-index names and keeps other numeric n
   }
   Object.setPrototypeOf(form, win.HTMLFormElement.prototype);
   if (indexQueries) problems.push(`prototype queried ${indexQueries} times for index names`);
+  // Non-index numeric names are named properties: each one reaches the visibility walk once.
+  if (numericQueries !== 3) problems.push(`non-index numeric names queried ${numericQueries} times`);
   if (new Set(keys).size !== keys.length) problems.push(`duplicate keys: ${keys.map(String).join()}`);
   const count = key => keys.filter(k => k === key).length;
   for (let i = 0; i < form.length; i++) {
@@ -988,8 +1012,8 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
   readInput.name = "rovesPastReadRenamed";
   if (read.rovesPastRead !== readInput) problems.push(`read form: past name not kept (${describeValue(read.rovesPastRead)})`);
   // Prototype callbacks: own properties and supported names are checked first, so a Proxy
-  // prototype's `has` trap runs once and only for a supported, not-own name; its exception
-  // propagates out of the delete.
+  // prototype's `getOwnPropertyDescriptor` trap runs once and only for a supported, not-own name;
+  // its exception propagates out of the delete. The `has` trap never runs.
   const trapped = doc.createElement("form");
   doc.body.append(trapped);
   const ownKey = "rovesDeleteTrapOwn", namedKey = "rovesDeleteTrapNamed", throwKey = "rovesDeleteTrapThrow";
@@ -1000,11 +1024,15 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
     input.name = name;
     trapped.append(input);
   }
-  const queries = [], thrown = new Error("rovesDeleteTrapThrown");
+  const queries = [], hasQueries = [], thrown = new Error("rovesDeleteTrapThrown");
   Object.setPrototypeOf(trapped, new Proxy(win.HTMLFormElement.prototype, {
-    has(target, property) {
+    getOwnPropertyDescriptor(target, property) {
       queries.push(property);
       if (property === throwKey) throw thrown;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      hasQueries.push(property);
       return Reflect.has(target, property);
     },
   }));
@@ -1015,8 +1043,149 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
   if (queries.join(",") !== namedKey) problems.push(`trap form: supported name queries: ${queries.join(",")}`);
   let caught = "no error";
   try { Reflect.deleteProperty(trapped, throwKey); } catch (error) { caught = error; }
-  if (caught !== thrown) problems.push(`trap form: has exception not propagated: ${describeValue(caught)}`);
+  if (caught !== thrown) problems.push(`trap form: descriptor exception not propagated: ${describeValue(caught)}`);
   if (queries.join(",") !== `${namedKey},${throwKey}`) problems.push(`trap form: queries after throw: ${queries.join(",")}`);
+  if (hasQueries.length) problems.push(`trap form: has trap ran for ${hasQueries.map(String).join(",")}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// https://webidl.spec.whatwg.org/#dfn-named-property-visibility walks the prototype chain with
+// [[GetPrototypeOf]] and asks each prototype whether it has an *own* property ([[GetOwnProperty]]),
+// so a Proxy on the chain answers through `getOwnPropertyDescriptor`/`getPrototypeOf`, never
+// `has`. Any own descriptor hides the name, including a data property whose value is undefined
+// and an accessor (its getter is not called); a property further up the chain hides it too; a
+// null prototype ends the walk. Trap exceptions propagate unchanged. `has` and
+// `getOwnPropertyDescriptor` deliberately disagree on two names so that the trap actually
+// consulted decides the result. Only delete, hasOwn, getOwnPropertyDescriptor and ownKeys are
+// used on the form: a [[Get]] would consult the prototype on its own (get semantics).
+check("HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor", () => withNamedFrame("<p>visibility</p>", (win, doc) => {
+  const problems = [];
+  const undefinedKey = "rovesVisUndefined", accessorKey = "rovesVisAccessor", deepKey = "rovesVisDeep";
+  const plainKey = "rovesVisPlain", hasOnlyKey = "rovesVisHasOnly", descriptorOnlyKey = "rovesVisDescriptorOnly";
+  const throwKey = "rovesVisThrow";
+  const names = [undefinedKey, accessorKey, deepKey, plainKey, hasOnlyKey, descriptorOnlyKey, throwKey];
+  const form = doc.createElement("form");
+  const inputs = {};
+  for (const name of names) {
+    const input = doc.createElement("input");
+    input.name = name;
+    form.append(input);
+    inputs[name] = input;
+  }
+  doc.body.append(form);
+  let getterCalls = 0;
+  // form -> Proxy(middle) -> deep -> HTMLFormElement.prototype -> ...
+  const deep = Object.create(win.HTMLFormElement.prototype, {
+    [deepKey]: { configurable: true, writable: true, value: "deep" },
+  });
+  const middle = Object.create(deep, {
+    [undefinedKey]: { configurable: true, writable: true, value: undefined },
+    [accessorKey]: { configurable: true, get() { getterCalls++; return "getter"; } },
+  });
+  const queries = [], hasQueries = [], protoThrown = new Error("rovesVisProtoThrown"), thrown = new Error("rovesVisThrown");
+  let protoCalls = 0, throwArmed = false, protoThrowArmed = false;
+  const handler = () => ({
+    getOwnPropertyDescriptor(t, property) {
+      queries.push(property);
+      if (throwArmed && property === throwKey) throw thrown;
+      // Reported own by this trap only: `has` says it is absent.
+      if (property === descriptorOnlyKey) return { configurable: true, writable: true, enumerable: true, value: "descriptor" };
+      return Reflect.getOwnPropertyDescriptor(t, property);
+    },
+    getPrototypeOf(t) {
+      protoCalls++;
+      if (protoThrowArmed) throw protoThrown;
+      return Reflect.getPrototypeOf(t);
+    },
+    has(t, property) {
+      hasQueries.push(property);
+      // Reported present by this trap only: `getOwnPropertyDescriptor` says it is absent.
+      if (property === hasOnlyKey) return true;
+      if (property === descriptorOnlyKey) return false;
+      return Reflect.has(t, property);
+    },
+  });
+  Object.setPrototypeOf(form, new Proxy(middle, handler()));
+  const reset = () => { queries.length = 0; hasQueries.length = 0; protoCalls = 0; };
+  const expectWalk = (label, expectedQueries, expectedProtoCalls) => {
+    if (queries.join(",") !== expectedQueries.join(",")) problems.push(`${label}: descriptor queries [${queries.map(String).join(",")}]`);
+    if (protoCalls !== expectedProtoCalls) problems.push(`${label}: getPrototypeOf ran ${protoCalls} times`);
+  };
+  // Delete: own and unsupported names never reach the prototype; each supported name runs one
+  // walk. getPrototypeOf runs only when the Proxy itself has no own property.
+  const hidden = [[undefinedKey, 0], [accessorKey, 0], [deepKey, 1], [descriptorOnlyKey, 0]];
+  const visible = [plainKey, hasOnlyKey];
+  for (const [name, expectedProtoCalls] of hidden) {
+    reset();
+    if (Reflect.deleteProperty(form, name) !== true) problems.push(`${name}: hidden name delete returned false`);
+    expectWalk(`delete ${name}`, [name], expectedProtoCalls);
+  }
+  for (const name of visible) {
+    reset();
+    if (Reflect.deleteProperty(form, name) !== false) problems.push(`${name}: visible name deleted`);
+    expectWalk(`delete ${name}`, [name], 1);
+  }
+  reset();
+  if (Reflect.deleteProperty(form, "rovesVisMissing") !== true) problems.push("missing name delete failed");
+  expectWalk("delete missing", [], 0);
+  // The prototype chain is unchanged by those deletes.
+  if (!Object.hasOwn(deep, deepKey) || !Object.hasOwn(middle, undefinedKey) || !Object.hasOwn(middle, accessorKey))
+    problems.push("prototype property removed");
+  // Exceptions from either trap propagate unchanged, after exactly the queries made so far.
+  reset();
+  throwArmed = true;
+  let caught = "no error";
+  try { Reflect.deleteProperty(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`delete: descriptor exception not propagated: ${describeValue(caught)}`);
+  expectWalk("delete throw", [throwKey], 0);
+  caught = "no error";
+  try { Object.hasOwn(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`hasOwn: descriptor exception not propagated: ${describeValue(caught)}`);
+  caught = "no error";
+  try { Object.getOwnPropertyDescriptor(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`getOwnPropertyDescriptor: descriptor exception not propagated: ${describeValue(caught)}`);
+  throwArmed = false;
+  reset();
+  protoThrowArmed = true;
+  caught = "no error";
+  try { Reflect.deleteProperty(form, plainKey); } catch (error) { caught = error; }
+  protoThrowArmed = false;
+  if (caught !== protoThrown) problems.push(`delete: getPrototypeOf exception not propagated: ${describeValue(caught)}`);
+  expectWalk("delete getPrototypeOf throw", [plainKey], 1);
+  // ownKeys: one walk per supported, not-own name; the visible ones are listed once.
+  reset();
+  let keys = [];
+  try { keys = Reflect.ownKeys(form); } catch (error) { problems.push(`ownKeys threw: ${(error && error.message) || error}`); }
+  const sortedQueries = queries.map(String).sort().join(","), sortedNames = [...names].sort().join(",");
+  if (sortedQueries !== sortedNames) problems.push(`ownKeys: descriptor queries [${queries.map(String).join(",")}]`);
+  // Not own on the Proxy: deepKey, plainKey, hasOnlyKey and throwKey (unarmed).
+  if (protoCalls !== 4) problems.push(`ownKeys: getPrototypeOf ran ${protoCalls} times`);
+  for (const name of names) {
+    const expected = visible.includes(name) || name === throwKey ? 1 : 0;
+    const count = keys.filter(k => k === name).length;
+    if (count !== expected) problems.push(`ownKeys: ${name} listed ${count} times`);
+  }
+  // hasOwn and getOwnPropertyDescriptor agree with delete and ownKeys.
+  for (const [name] of hidden) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (Object.hasOwn(form, name) || desc !== undefined) problems.push(`${name}: hidden name own, ${describeDescriptor(desc)}`);
+  }
+  for (const name of visible) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (!Object.hasOwn(form, name) || !desc || desc.value !== inputs[name]) problems.push(`${name}: visible name ${describeDescriptor(desc)}`);
+  }
+  if (getterCalls) problems.push(`prototype getter called ${getterCalls} times`);
+  if (hasQueries.length) problems.push(`has trap ran for ${hasQueries.map(String).join(",")}`);
+  // A Proxy whose own prototype is null ends the walk: the name is visible.
+  const nullForm = doc.createElement("form"), nullInput = doc.createElement("input");
+  nullInput.name = plainKey;
+  nullForm.append(nullInput);
+  doc.body.append(nullForm);
+  Object.setPrototypeOf(nullForm, new Proxy(Object.create(null), handler()));
+  reset();
+  if (Reflect.deleteProperty(nullForm, plainKey) !== false) problems.push("null-prototype Proxy: visible name deleted");
+  expectWalk("null-prototype Proxy", [plainKey], 1);
+  if (!Object.hasOwn(nullForm, plainKey) || hasQueries.length) problems.push("null-prototype Proxy: name not visible or has trap ran");
   return problems.length ? problems.join("; ") : true;
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
