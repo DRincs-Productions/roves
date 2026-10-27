@@ -31,17 +31,29 @@ fixture0377; build pesanti online, nessun polling periodico. Il batch735a sotto 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
 
-## Direzione autorizzata — shell Servo, servizi sostituibili
+## Direzione aggiornata — documento unico e rivalutazione deno_core
 
-Conservare la shell Servo; l'utente autorizza a sostituire e rimuovere anche servizi
-interni Servo (moduli/gestione asincrona) quando una libreria mantenuta riduce il codice
-nostro. rusty_v8 è già usato; deno_core0378 valutato: NO-GO0.413.0, NON adottato in produzione.
-Nessun obbligo di preservare l'architettura interna, nessuna installazione separata di
-Deno/Chromium o API Deno per i giochi. DOM/layout/rendering rimangono inizialmente Servo.
-GO solo con API pubbliche mantenute, frame multipli, sicurezza web e JITless, rimuovendo
-il vecchio percorso. Niente fork nostro/doppia implementazione permanente. Decisione e
-prove devono distinguere test eseguiti, blocchi e costi non misurati. PianoLIBRERIE_E_CONSOLE
-e regoleAGENTS/AGENT_WORKFLOW aggiornati; ruoli e vincoli CI invariati.
+[Decisione0380](handoff/0380-single-document-runtime.md): shell Servo, una finestra e un
+documento di gioco, route interne TanStack-style tramite History API e frammenti. Tab,
+nuove finestre e iframe non obbligatori; nessun reload/cambio pagina completo accessibile
+al gioco. Caricamento iniziale shell e chiusura restano necessari. Questo restringe il
+perimetro rispetto alla precedente valutazione browser: frame multipli e riuso WindowProxy
+fra documenti non sono più criteri obbligatori per adottare deno_core.
+
+Requisito DA IMPLEMENTARE: bloccare nel motore le richieste non supportate prima di
+sostituire documento/stato, segnalando almeno un warning console/log con operazione e
+motivo. Niente crash o alert modali come segnalazione; eventuale avviso non modale, ripetizioni
+limitate. History API/router e frammenti devono continuare a funzionare. Non convertire
+silenziosamente navigazioni native in route o apertura browser esterno. Non rimuovere
+fixture esistenti prima di prove sostitutive e revisione del perimetro.
+
+Servizi Servo sostituibili/rimovibili, DOM/layout/rendering inizialmente Servo. rusty_v8
+già usato; deno_core NON ancora adottato, ma da rivalutare con un solo contesto. Il NO-GO0378
+era riferito al perimetro precedente, non vieta la nuova prova. Verificare DOM/eventi,
+microtask, moduli, sicurezza, GC/chiusura, V8 compatibile e JITless usando API mantenute,
+eliminando il percorso sostituito senza fork nostro/doppio servizio permanente. Nessuna
+installazione separata Chromium/Deno o API Deno privilegiate ai giochi, nessuna prestazione
+o compatibilità già dimostrata. AGENTS/AGENT_WORKFLOW/LIBRERIE_E_CONSOLE allineati.
 
 Batch precedente `735a1154698984a3151652389d664665b011945c`, wiki `48bfc3d`, include0375/0376.
 Batch V8 `40520566885`: richiesti7/7verdi (browserLinuxnormal/JITless eWindows compresi);
@@ -70,11 +82,12 @@ SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva a
 0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
 non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
 ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0378 e0379 consegnate e revisionate.
-[Esito0378](handoff/0378-deno-core-feasibility.md): mancanoAPI pubbliche realm/WindowProxy;
+[Esito0378 storico](handoff/0378-deno-core-feasibility.md): mancanoAPI realm/WindowProxy
+per il vecchio perimetro browser, non più requisiti del prodotto a documento unico;
 194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.
 Prototipo non compilato locale in target/task-0378; nessuna dipendenza produttiva o
-beneficio prestazionale dichiarato. Non compilare altroV8 pesante per aggirare il gate
-API già fallito. Restano autorizzate sostituzioni di servizi con rimozione reale di codice.
+beneficio prestazionale dichiarato. Riprendere con una prova deno_core limitata al documento unico e alle nuove verifiche0380;
+le build pesanti restano online. Restano autorizzate rimozioni dei servizi sostituiti.
 [FixCI0379](handoff/0379-ci-probe-dependency.md), mirrorREADMEroves-action aggiornato. Build pesanti soloCI. Workspaces leggeri da riusare:
 `C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js` e `...-00kx/roves-js`,
 CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.

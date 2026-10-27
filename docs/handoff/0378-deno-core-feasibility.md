@@ -1,3 +1,10 @@
+> Scope update, 27 October 2026: the NO-GO below evaluated a wider browser-compatible
+> product with multiple frames and WindowProxy reuse across page replacements. The user
+> has since selected one window/document, internal TanStack-style routes and no game-driven
+> reload/full-page navigation. Those two requirements are no longer adoption gates.
+> Findings remain historical source evidence; re-evaluate deno_core under
+> [task0380](0380-single-document-runtime.md). No adoption/runtime tests are claimed here.
+
 # 0378 — deno_core production adoption: NO-GO for version 0.413.0
 
 ## Decision and scope

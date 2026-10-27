@@ -747,10 +747,19 @@ services and remove duplicate implementation. rusty_v8 is already used; deno_cor
 an isolated evaluation, not an adopted production runtime. DOM/layout/rendering stay in
 Servo initially. No separate Chromium or Deno installation is planned.
 
-The deno_core0.413.0 evaluation currently keeps rusty_v8 direct: public APIs needed for
-additional realms and navigation/global-proxy reuse are missing. No Deno production
-dependency was added and no runtime/performance benefit is claimed. Servo services remain
-replaceable when a maintained library can remove their implementation.
+The product direction is one Servo-shell window and one game document, with internal
+routes such as TanStack Router using the History API and fragments. Additional tabs/windows
+and iframes are not required. Game-driven reloads and full-document navigations are outside
+this scope. The planned engine policy must block unsupported attempts before replacing the
+document and emit at least a useful console/log warning, without crashing or opening a
+blocking alert. Repeated attempts must not flood logs; any visible notification is non-modal.
+Initial shell loading and normal shutdown remain supported lifecycle requirements.
+
+This policy is planned, not yet implemented by this documentation update. deno_core is to
+be re-evaluated for the single-document scope: the previous multi-frame/WindowProxy NO-GO
+does not decide it. DOM/events, security, HTML microtasks, module loading, GC and JITless
+still require proof. No Deno production dependency or runtime/performance benefit is claimed;
+replaced Servo services may be removed instead of kept alongside a second implementation.
 
 The macOS gamepad probe runs independently from the required Windows/Linux probe matrix,
 so its cancellation/failure no longer skips their packaging and Steam checks. Apple checks

@@ -1,0 +1,237 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 1c9ddd7884f..9edb30856c6 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -10,22 +10,27 @@
+   parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
+   aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
+ 
+-### Direzione autorizzata: shell Servo e servizi sostituibili (27 ottobre 2026)
+-
+-Conservare la shell Servo come contenitore dell'applicazione. Non è obbligatorio preservare
+-i servizi o l'architettura interna di Servo: moduli, gestione asincrona e altri servizi possono
+-essere sostituiti con librerie mantenute, rimuovendo le implementazioni rese inutili.
+-rusty_v8 è già la base V8; valutare deno_core tramite una prova isolata prima dell'adozione.
+-Adottarlo solo quando permette di eliminare un sottosistema e mantiene frame multipli,
+-sicurezza web, comportamento dei giochi e JITless tramite API pubbliche, senza fork nostro
+-o duplicazione permanente. DOM, layout e rendering restano inizialmente in Servo.
+-Non richiedere installazioni separate di Deno o Chromium e non esporre API Deno ai giochi.
+-Documentare prove, costi e limiti reali: autorizzazione progettuale non significa integrazione
+-già completata. Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+-La valutazione0378 non adotta deno_core0.413.0: mancano hook pubblici necessari a realm
+-aggiuntivi/WindowProxy; mantenere rusty_v8 diretto e non duplicare il servizio per il solo
+-realm principale. Evidenza e limiti in docs/handoff/0378-deno-core-feasibility.md.
+-
++### Direzione autorizzata: shell Servo e documento unico (27 ottobre 2026)
++
++Conservare la shell Servo. Il prodotto esegue un solo documento di gioco in una finestra,
++con route interne tipo TanStack Router (History API e frammenti, senza nuovo documento).
++Tab, finestre aggiuntive e iframe non sono requisiti. Reload e cambi pagina completi non
++devono essere accessibili al gioco; restano necessari caricamento iniziale shell e chiusura.
++Quando si implementa questa policy, bloccare le operazioni non supportate nel motore prima
++di modificare il documento, preservando il gioco. Segnalare almeno un warning nei log/console
++con operazione e motivo; limitare ripetizioni, niente alert modali o crash come segnalazione.
++Un eventuale avviso visibile deve essere non modale. Questa è una direttiva da implementare,
++non una funzionalità già disponibile: handoff docs/handoff/0380-single-document-runtime.md.
++
++Si possono sostituire e rimuovere servizi interni Servo tramite librerie mantenute. rusty_v8
++è già usato; rivalutare deno_core per il documento unico, senza imporre frame multipli o
++identità WindowProxy fra pagine sostituite. Il NO-GO0378 riguardava il precedente perimetro
++browser più ampio, non decide quello nuovo. Verificare DOM/eventi, sicurezza web, microtask,
++moduli, GC e JITless con API pubbliche, rimuovendo il servizio sostituito senza fork nostro o
++duplicazione permanente. DOM/layout/rendering restano inizialmente Servo. Nessuna installazione
++separata Deno/Chromium o API Deno privilegiate ai giochi. Non eliminare test esistenti prima
++di avere copertura sostitutiva del perimetro; non dichiarare adozione o prestazioni provate.
++Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+ 
+ ### Valutazione obbligatoria prima di ogni modifica
+ 
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+index bc90c29148c..7806f2738f7 100644
+--- a/docs/AGENT_WORKFLOW.md
++++ b/docs/AGENT_WORKFLOW.md
+@@ -1,20 +1,20 @@
+-## Direzione autorizzata — shell Servo, servizi sostituibili (27 ottobre 2026)
+-
+-Conservare la shell Servo, riducendo il codice mantenuto da Roves. rusty_v8 è già in uso;
+-deno_core è un candidato da verificare isolatamente, non una dipendenza produttiva adottata.
+-L'utente autorizza a sostituire anche i servizi interni di Servo e rimuoverli quando diventano
+-inutili: non duplicare permanentemente runtime, moduli o loop asincroni. DOM/layout/rendering
+-rimangono inizialmente in Servo. Nessuna installazione separata Chromium/Deno né API Deno
+-esposte ai giochi. Adottare solo tramite API mantenute senza fork nostro, preservando frame,
+-sicurezza web e JITless, con bilancio esplicito fra codice eliminato e adattatori aggiunti.
+-Registrare test eseguiti separatamente dalle ipotesi; non promettere risparmi non misurati.
+-Il loop Codex direzione/revisione e Claude implementazione, le quote e le regole CI restano
+-invariati. Una prova negativa può concludere correttamente la valutazione senza adozione.
+-
+-Esito0378: deno_core0.413.0 NON adottato per mancanza di API pubbliche necessarie a
+-realm aggiuntivi/WindowProxy. Risoluzione Cargo/metadata/parse verificati, nessuna esecuzione
+-runtime o misura; prototipo locale non compilato, nessuna nuova dipendenza produttiva.
+-Restano autorizzate sostituzioni future dimostrate; vedere handoff/0378-deno-core-feasibility.md.
++## Direzione autorizzata — documento unico e servizi sostituibili (27 ottobre 2026)
++
++Conservare la shell Servo: una finestra, un documento, route interne tipo TanStack Router.
++History API/back/forward e frammenti non sostituiscono il documento. Niente requisito di
++tab, nuove finestre o iframe; reload e cambi pagina completi da gioco sono fuori perimetro.
++Policy da implementare nel motore: rifiuto prima di cambiare documento/stato, risultato API
++coerente e warning almeno nei log/console con operazione/motivo. Limitare ripetizioni; niente
++crash o alert modali per notificare il rifiuto. Avviso visibile eventualmente non modale.
++Caricamento iniziale shell/chiusura rimangono. Non presentare la policy come già implementata.
++
++Servizi Servo possono essere sostituiti e rimossi. Rivalutare deno_core con un solo contesto:
++il NO-GO0378 per frame multipli/WindowProxy valeva per il perimetro precedente e non blocca
++questa nuova prova. Verificare DOM/eventi, sicurezza, microtask/moduli/GC e JITless; una sola
++implementazione del servizio, API mantenute, niente fork nostro, privilegi Deno ai giochi o
++installazioni separate. Nessun risparmio o adozione dichiarati senza evidenza. Non rimuovere
++fixture esistenti prima di definire le prove sostitutive. Handoff0380 descrive comportamento
++e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI invariati.
+ 
+ ## Eccezione Apple autorizzata il 26 ottobre 2026
+ 
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index f41f31205e7..900e160c755 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -6,36 +6,32 @@ sostituire, in ordine di rapporto guadagno/rischio.
+ 
+ Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
+ 
+-## Shell Servo e riduzione dei servizi — decisione del 27 ottobre 2026
+-
+-La shell Servo resta il contenitore di Roves; preservare la sua architettura interna non è
+-un vincolo. Moduli, gestione asincrona e altri servizi Servo possono essere sostituiti e
+-rimossi quando una libreria mantenuta copre il lavoro. DOM, layout e rendering rimangono
+-inizialmente in Servo: deno_core non fornisce un motore completo della pagina.
+-
+-rusty_v8 è già utilizzato. deno_core è autorizzato come candidato per una prova isolata di
+-moduli e operazioni asincrone, non ancora adottato in produzione. La prova deve verificare
+-compatibilità V8/JITless, frame multipli, import statici/dinamici/JSON, cicli, top-level await,
+-microtask, CSP/origini e rilascio dei contesti. Distinguere test del runtime da integrazione
+-HTML effettivamente dimostrata. Usare API pubbliche mantenute; niente fork nostro o doppio
+-percorso permanente. Rimuovere il sottosistema sostituito e mantenere solo il collegamento
+-necessario. Non aggiungere una dipendenza per un uso futuro o un risparmio ipotetico.
+-
+-Nessuna installazione separata di Deno/Chromium, nessun cambiamento intenzionale alle API
+-JavaScript dei giochi. Valutare licenze, piattaforme, dipendenze transitive e costi reali di
+-avvio/memoria. Non promettere percentuali di risparmio. Handoff corrente in V8_MIGRATION.md.
+-
+-### Esito0378: deno_core0.413.0 non adottato in produzione
+-
+-[Valutazione e limiti](handoff/0378-deno-core-feasibility.md): API pubblica mancante per
+-creare/registrare realm aggiuntivi e riutilizzare WindowProxy. Adottarlo solo per il realm
+-principale manterrebbe due servizi, contrario all'obiettivo. I servizi Servo restano
+-sostituibili, ma per questa release si mantiene rusty_v8 diretto. Lock della prova isolata
+-risolto (194pacchetti; v8 150.4.0 contro152.2.0Roves), metadata eparsevalidi. Nessun test
+-runtime/benchmark eseguito o risultato CSP/frame/JITless dichiarato: il gate pubblico già
+-fallisce, quindi non si compila un secondoV8 pesante per una prova che non cambia la
+-decisione. Prototipo non compilato resta in target/task-0378, nessuna dipendenza produttiva.
+-Rivalutare con API pubbliche concrete e rimozioni reali, non per aggiungere un nuovo strato.
++## Shell Servo e documento unico — decisione aggiornata del 27 ottobre 2026
++
++Roves mantiene la shell Servo e un solo documento di gioco, con route interne tipo TanStack
++Router. History API/pushState/replaceState/back/forward e frammenti restano interni. Tab,
++finestre aggiuntive e iframe non sono obbligatori; reload e cambi pagina completi non devono
++essere accessibili al gioco. Caricamento iniziale shell e chiusura restano necessari.
++
++La policy deve impedire richieste non supportate prima di sostituire il documento, senza
++interrompere il gioco, e segnalarle almeno nei log/console con operazione e motivo. Preferire
++diagnostica/UI esistenti; limitare ripetizioni e non usare alert modali. Un avviso visibile
++può essere non modale. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
++Dettagli e casi di accettazione: [handoff0380](handoff/0380-single-document-runtime.md).
++
++Si possono sostituire e rimuovere servizi interni Servo, non solo affiancarli. DOM/layout/
++rendering restano inizialmente Servo. rusty_v8 è già usato; deno_core è da rivalutare per
++il singolo documento, senza i vecchi vincoli di frame multipli/WindowProxy fra navigazioni.
++La [valutazione0378](handoff/0378-deno-core-feasibility.md) resta evidenza del precedente
++perimetro: lock194pacchetti/metadata/parse verificati, nessun test runtime o misura eseguiti.
++Non costituisce una bocciatura del nuovo prodotto, né prova di fattibilità dell'integrazione.
++
++Verificare API pubbliche mantenute per DOM/eventi, moduli statici/dinamici/JSON/cicli/TLA,
++microtask HTML/Promise, CSP/origini, GC/chiusura e JITless. Adottare solo con rimozioni reali
++dei servizi sostituiti, senza fork nostro o doppio percorso permanente. Nessuna dipendenza
++produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o installazione
++separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
++percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
+ 
+ ## Prossimi passi, codice e librerie
+ 
+diff --git a/docs/handoff/0378-deno-core-feasibility.md b/docs/handoff/0378-deno-core-feasibility.md
+index 8def0338e2f..de3a5d268cf 100644
+--- a/docs/handoff/0378-deno-core-feasibility.md
++++ b/docs/handoff/0378-deno-core-feasibility.md
+@@ -1,3 +1,10 @@
++> Scope update, 27 October 2026: the NO-GO below evaluated a wider browser-compatible
++> product with multiple frames and WindowProxy reuse across page replacements. The user
++> has since selected one window/document, internal TanStack-style routes and no game-driven
++> reload/full-page navigation. Those two requirements are no longer adoption gates.
++> Findings remain historical source evidence; re-evaluate deno_core under
++> [task0380](0380-single-document-runtime.md). No adoption/runtime tests are claimed here.
++
+ # 0378 — deno_core production adoption: NO-GO for version 0.413.0
+ 
+ ## Decision and scope
+diff --git a/docs/handoff/0380-single-document-runtime.md b/docs/handoff/0380-single-document-runtime.md
+new file mode 100644
+index 00000000000..9611ae0617a
+--- /dev/null
++++ b/docs/handoff/0380-single-document-runtime.md
+@@ -0,0 +1,59 @@
++# 0380 — single-document product scope and non-disruptive diagnostics
++
++## Product decision, 27 October 2026
++
++Keep the Servo shell, DOM/layout/rendering initially. Roves runs one game document in
++one window, with internal client-side routes such as TanStack Router. Same-document
++History API (pushState, replaceState, popstate/back/forward) and fragment changes are in
++scope. Tabs, additional game windows and iframes are not required. Full document reloads
++or page replacements must not be accessible to game code. Initial loading by the shell
++and normal application shutdown remain necessary lifecycle operations, not game navigation.
++
++This changes the earlier browser-compatible assessment: preserving WindowProxy identity
++across document replacements and multiple frame contexts are no longer adoption gates.
++Task0378's public-API findings remain historical evidence for its former wider scope;
++they do not establish a NO-GO for this single-document product. deno_core must be
++re-evaluated, not described as adopted or already proven compatible.
++
++## Planned behavior for unsupported operations
++
++Block unsupported navigation/window/frame requests centrally before a document or native
++window is created/replaced, not merely by hiding shell controls. Cover script and native
++navigation paths, including reload/location assignment, document-replacing links/forms,
++refresh/redirect requests and attempted additional windows/frames. Preserve the current
++game/document, route and state. Do not automatically turn an ordinary link into a router
++transition or open an external browser; supported internal routing remains the router's job.
++Actual implementation must respect existing API result contracts; do not add arbitrary
++exceptions, crashes or process termination merely to signal a blocked operation. A game
++that depends on an unsupported feature may still lack that feature; no universal guarantee
++of compatibility is implied.
++
++Every blocked attempt must be diagnosable through the existing console/logging facility:
++warning identifies the requested operation and the reason it is unsupported. Prefer
++existing diagnostics, logging and UI components over new frameworks/dependencies. Repeated
++identical requests must not flood logs or produce repeated dialogs. Logging is the minimum
++required behavior; any visible notification is non-modal and must not pause the game.
++Do not use blocking JavaScript alert() as the enforcement/notification mechanism.
++
++These are planned requirements only: no runtime policy, blocking or new warnings were
++implemented by this documentation change. Existing multi-frame/navigation fixtures are
++not evidence that the new product policy is enforced; do not silently delete them before
++replacement coverage exists.
++
++## Next bounded deno_core evaluation
++
++Use one document/context rather than mandatory frame/navigation lifecycle. Evaluate
++public-API integration with Servo DOM/bindings/events, native ownership/GC, CSP/codegen,
++module loading (static/dynamic/JSON/cycles/TLA), combined HTML/Promise microtask order and
++JITless. Resolve one compatible V8 version and bootstrap globals/security before adoption.
++Replace complete Servo services and remove the old path; do not keep two permanent module
++or async services. Do not expose Deno filesystem/network/process capabilities to games.
++No separate Chromium or Deno installation. Heavy builds remain online.
++
++Acceptance coverage must include TanStack-style push/replace/back/forward and fragments
++without document/context replacement; blocked reload/location/link/form/refresh/popup/frame
++attempts retain game state and emit a useful warning; repeated attempts are bounded;
++logging never causes a blocking dialog. Initial shell load and clean shutdown still work.
++Test normal/JITless, DOM/events, security and teardown separately. No CPU/RAM/startup gains
++or completed integration are claimed until measured. SourceText0361, other legacy DOM
++gaps and overall retention remain open, subject to the revised product scope.

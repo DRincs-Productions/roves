@@ -10,22 +10,27 @@
   parte del lavoro, preferiscila al codice scritto a mano. Restare compatibili con i futuri
   aggiornamenti di Servo non è un vincolo. Piano e candidati sono in `docs/LIBRERIE_E_CONSOLE.md`.
 
-### Direzione autorizzata: shell Servo e servizi sostituibili (27 ottobre 2026)
+### Direzione autorizzata: shell Servo e documento unico (27 ottobre 2026)
 
-Conservare la shell Servo come contenitore dell'applicazione. Non è obbligatorio preservare
-i servizi o l'architettura interna di Servo: moduli, gestione asincrona e altri servizi possono
-essere sostituiti con librerie mantenute, rimuovendo le implementazioni rese inutili.
-rusty_v8 è già la base V8; valutare deno_core tramite una prova isolata prima dell'adozione.
-Adottarlo solo quando permette di eliminare un sottosistema e mantiene frame multipli,
-sicurezza web, comportamento dei giochi e JITless tramite API pubbliche, senza fork nostro
-o duplicazione permanente. DOM, layout e rendering restano inizialmente in Servo.
-Non richiedere installazioni separate di Deno o Chromium e non esporre API Deno ai giochi.
-Documentare prove, costi e limiti reali: autorizzazione progettuale non significa integrazione
-già completata. Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
-La valutazione0378 non adotta deno_core0.413.0: mancano hook pubblici necessari a realm
-aggiuntivi/WindowProxy; mantenere rusty_v8 diretto e non duplicare il servizio per il solo
-realm principale. Evidenza e limiti in docs/handoff/0378-deno-core-feasibility.md.
+Conservare la shell Servo. Il prodotto esegue un solo documento di gioco in una finestra,
+con route interne tipo TanStack Router (History API e frammenti, senza nuovo documento).
+Tab, finestre aggiuntive e iframe non sono requisiti. Reload e cambi pagina completi non
+devono essere accessibili al gioco; restano necessari caricamento iniziale shell e chiusura.
+Quando si implementa questa policy, bloccare le operazioni non supportate nel motore prima
+di modificare il documento, preservando il gioco. Segnalare almeno un warning nei log/console
+con operazione e motivo; limitare ripetizioni, niente alert modali o crash come segnalazione.
+Un eventuale avviso visibile deve essere non modale. Questa è una direttiva da implementare,
+non una funzionalità già disponibile: handoff docs/handoff/0380-single-document-runtime.md.
 
+Si possono sostituire e rimuovere servizi interni Servo tramite librerie mantenute. rusty_v8
+è già usato; rivalutare deno_core per il documento unico, senza imporre frame multipli o
+identità WindowProxy fra pagine sostituite. Il NO-GO0378 riguardava il precedente perimetro
+browser più ampio, non decide quello nuovo. Verificare DOM/eventi, sicurezza web, microtask,
+moduli, GC e JITless con API pubbliche, rimuovendo il servizio sostituito senza fork nostro o
+duplicazione permanente. DOM/layout/rendering restano inizialmente Servo. Nessuna installazione
+separata Deno/Chromium o API Deno privilegiate ai giochi. Non eliminare test esistenti prima
+di avere copertura sostitutiva del perimetro; non dichiarare adozione o prestazioni provate.
+Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
 
 ### Valutazione obbligatoria prima di ogni modifica
 

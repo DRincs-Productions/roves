@@ -1,3 +1,18 @@
+## 2026-10-27 - Narrow the runtime product scope and require non-blocking diagnostics (0380)
+
+Record the user's one-window/one-document game scope with TanStack-style internal routes.
+Full reload/document replacement is not game-accessible; extra tabs/windows and iframes are
+not required. Planned engine enforcement must preserve the current game and emit at least
+console/log warnings with operation/reason, bounded repetitions and no modal alerts/crashes.
+Initial shell loading/shutdown remain necessary. This update changes documentation only,
+not runtime enforcement or diagnostics. Reuse existing logging/UI facilities when implemented.
+
+Update AGENTS, workflow/library plans, migration handoff, README/wiki and durable0380 handoff;
+annotate0378's NO-GO as historical for its wider browser scope. Re-evaluate deno_core with
+one document; multi-realm/global-proxy navigation no longer block adoption on their own.
+DOM/events, microtasks, security, modules, GC and JITless still need proof. No production
+dependency, removed runtime behavior, performance claim or completed integration. Patch0382.
+
 ## 2026-10-27 - Evaluate deno_core without adding an unused production dependency (0378)
 
 Keep the Servo shell; user explicitly permits removing replaced Servo services. Align

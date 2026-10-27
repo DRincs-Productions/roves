@@ -1,20 +1,20 @@
-## Direzione autorizzata — shell Servo, servizi sostituibili (27 ottobre 2026)
+## Direzione autorizzata — documento unico e servizi sostituibili (27 ottobre 2026)
 
-Conservare la shell Servo, riducendo il codice mantenuto da Roves. rusty_v8 è già in uso;
-deno_core è un candidato da verificare isolatamente, non una dipendenza produttiva adottata.
-L'utente autorizza a sostituire anche i servizi interni di Servo e rimuoverli quando diventano
-inutili: non duplicare permanentemente runtime, moduli o loop asincroni. DOM/layout/rendering
-rimangono inizialmente in Servo. Nessuna installazione separata Chromium/Deno né API Deno
-esposte ai giochi. Adottare solo tramite API mantenute senza fork nostro, preservando frame,
-sicurezza web e JITless, con bilancio esplicito fra codice eliminato e adattatori aggiunti.
-Registrare test eseguiti separatamente dalle ipotesi; non promettere risparmi non misurati.
-Il loop Codex direzione/revisione e Claude implementazione, le quote e le regole CI restano
-invariati. Una prova negativa può concludere correttamente la valutazione senza adozione.
+Conservare la shell Servo: una finestra, un documento, route interne tipo TanStack Router.
+History API/back/forward e frammenti non sostituiscono il documento. Niente requisito di
+tab, nuove finestre o iframe; reload e cambi pagina completi da gioco sono fuori perimetro.
+Policy da implementare nel motore: rifiuto prima di cambiare documento/stato, risultato API
+coerente e warning almeno nei log/console con operazione/motivo. Limitare ripetizioni; niente
+crash o alert modali per notificare il rifiuto. Avviso visibile eventualmente non modale.
+Caricamento iniziale shell/chiusura rimangono. Non presentare la policy come già implementata.
 
-Esito0378: deno_core0.413.0 NON adottato per mancanza di API pubbliche necessarie a
-realm aggiuntivi/WindowProxy. Risoluzione Cargo/metadata/parse verificati, nessuna esecuzione
-runtime o misura; prototipo locale non compilato, nessuna nuova dipendenza produttiva.
-Restano autorizzate sostituzioni future dimostrate; vedere handoff/0378-deno-core-feasibility.md.
+Servizi Servo possono essere sostituiti e rimossi. Rivalutare deno_core con un solo contesto:
+il NO-GO0378 per frame multipli/WindowProxy valeva per il perimetro precedente e non blocca
+questa nuova prova. Verificare DOM/eventi, sicurezza, microtask/moduli/GC e JITless; una sola
+implementazione del servizio, API mantenute, niente fork nostro, privilegi Deno ai giochi o
+installazioni separate. Nessun risparmio o adozione dichiarati senza evidenza. Non rimuovere
+fixture esistenti prima di definire le prove sostitutive. Handoff0380 descrive comportamento
+e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI invariati.
 
 ## Eccezione Apple autorizzata il 26 ottobre 2026
 

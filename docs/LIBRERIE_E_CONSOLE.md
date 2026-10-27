@@ -6,36 +6,32 @@ sostituire, in ordine di rapporto guadagno/rischio.
 
 Le rimozioni e migrazioni completate sono registrate in `CUSTOMIZATIONS.md`.
 
-## Shell Servo e riduzione dei servizi — decisione del 27 ottobre 2026
+## Shell Servo e documento unico — decisione aggiornata del 27 ottobre 2026
 
-La shell Servo resta il contenitore di Roves; preservare la sua architettura interna non è
-un vincolo. Moduli, gestione asincrona e altri servizi Servo possono essere sostituiti e
-rimossi quando una libreria mantenuta copre il lavoro. DOM, layout e rendering rimangono
-inizialmente in Servo: deno_core non fornisce un motore completo della pagina.
+Roves mantiene la shell Servo e un solo documento di gioco, con route interne tipo TanStack
+Router. History API/pushState/replaceState/back/forward e frammenti restano interni. Tab,
+finestre aggiuntive e iframe non sono obbligatori; reload e cambi pagina completi non devono
+essere accessibili al gioco. Caricamento iniziale shell e chiusura restano necessari.
 
-rusty_v8 è già utilizzato. deno_core è autorizzato come candidato per una prova isolata di
-moduli e operazioni asincrone, non ancora adottato in produzione. La prova deve verificare
-compatibilità V8/JITless, frame multipli, import statici/dinamici/JSON, cicli, top-level await,
-microtask, CSP/origini e rilascio dei contesti. Distinguere test del runtime da integrazione
-HTML effettivamente dimostrata. Usare API pubbliche mantenute; niente fork nostro o doppio
-percorso permanente. Rimuovere il sottosistema sostituito e mantenere solo il collegamento
-necessario. Non aggiungere una dipendenza per un uso futuro o un risparmio ipotetico.
+La policy deve impedire richieste non supportate prima di sostituire il documento, senza
+interrompere il gioco, e segnalarle almeno nei log/console con operazione e motivo. Preferire
+diagnostica/UI esistenti; limitare ripetizioni e non usare alert modali. Un avviso visibile
+può essere non modale. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
+Dettagli e casi di accettazione: [handoff0380](handoff/0380-single-document-runtime.md).
 
-Nessuna installazione separata di Deno/Chromium, nessun cambiamento intenzionale alle API
-JavaScript dei giochi. Valutare licenze, piattaforme, dipendenze transitive e costi reali di
-avvio/memoria. Non promettere percentuali di risparmio. Handoff corrente in V8_MIGRATION.md.
+Si possono sostituire e rimuovere servizi interni Servo, non solo affiancarli. DOM/layout/
+rendering restano inizialmente Servo. rusty_v8 è già usato; deno_core è da rivalutare per
+il singolo documento, senza i vecchi vincoli di frame multipli/WindowProxy fra navigazioni.
+La [valutazione0378](handoff/0378-deno-core-feasibility.md) resta evidenza del precedente
+perimetro: lock194pacchetti/metadata/parse verificati, nessun test runtime o misura eseguiti.
+Non costituisce una bocciatura del nuovo prodotto, né prova di fattibilità dell'integrazione.
 
-### Esito0378: deno_core0.413.0 non adottato in produzione
-
-[Valutazione e limiti](handoff/0378-deno-core-feasibility.md): API pubblica mancante per
-creare/registrare realm aggiuntivi e riutilizzare WindowProxy. Adottarlo solo per il realm
-principale manterrebbe due servizi, contrario all'obiettivo. I servizi Servo restano
-sostituibili, ma per questa release si mantiene rusty_v8 diretto. Lock della prova isolata
-risolto (194pacchetti; v8 150.4.0 contro152.2.0Roves), metadata eparsevalidi. Nessun test
-runtime/benchmark eseguito o risultato CSP/frame/JITless dichiarato: il gate pubblico già
-fallisce, quindi non si compila un secondoV8 pesante per una prova che non cambia la
-decisione. Prototipo non compilato resta in target/task-0378, nessuna dipendenza produttiva.
-Rivalutare con API pubbliche concrete e rimozioni reali, non per aggiungere un nuovo strato.
+Verificare API pubbliche mantenute per DOM/eventi, moduli statici/dinamici/JSON/cicli/TLA,
+microtask HTML/Promise, CSP/origini, GC/chiusura e JITless. Adottare solo con rimozioni reali
+dei servizi sostituiti, senza fork nostro o doppio percorso permanente. Nessuna dipendenza
+produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o installazione
+separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
+percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
 
 ## Prossimi passi, codice e librerie
 
