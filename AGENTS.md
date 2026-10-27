@@ -36,16 +36,16 @@ separata Deno/Chromium o API Deno privilegiate ai giochi. Non eliminare test esi
 di avere copertura sostitutiva del perimetro; non dichiarare adozione o prestazioni provate.
 Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
 
-### Caricamento statico deno_core: compromesso autorizzato (27 ottobre 2026)
+### Caricamento deno_core: piena asincronia confermata (27 ottobre 2026)
 
-L'utente ha scelto esplicitamente l'opzione1: durante il fetch/istanziamento dei grafi di
-moduli statici il thread del gioco puo mettere temporaneamente in pausa input e timer.
-Usare le API pubbliche deno_core di caricamento separato dalla valutazione; mantenere
-l'esecuzione nel punto previsto da HTML e non attendere il completamento del TLA per
-sbloccare impropriamente DOMContentLoaded o gli altri script differiti. Gli import dinamici
-restano asincroni. Nessuna attesa di rete con rientro nei task JS mentre JsRuntime e preso
-in prestito esclusivo; risposte di rete indipendenti dal thread del gioco. Questo supera
-il blocco decisionale B3 del handoff0385, non dimostra l'integrazione gia completata.
+L'ultima risposta dell'utente alla scelta esplicita e OPZIONE2: mantenere tutto asincrono
+ed attendere un'API pubblica adatta. Questa risposta sostituisce la precedente scelta1;
+la pausa del thread del gioco durante il caricamento statico NON e piu autorizzata.
+Nessun fork Deno, grafo duplicato, prestito esclusivo mantenuto mentre si eseguono task JS
+o import() che cambi i tempi HTML/TLA. Il port produttivo e sospeso su questo gap, non
+completato. Conservare il backend corrente e continuare solo lavori indipendenti utili.
+La bozza parziale dell'opzione1 e salvata fuori dai sorgenti pubblicabili in
+target/task-0385/superseded-option1-wip; non ripristinarla senza nuova direzione applicabile.
 
 ### Valutazione obbligatoria prima di ogni modifica
 

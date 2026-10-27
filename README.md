@@ -798,7 +798,7 @@ bundles keep log-only diagnostics. Repeated requests do not reopen the notice. T
 the isolated native class/async checks are now published for CI, not proof of adoption.
 
 Production deno_core adoption remains pending: the reviewed public API cannot independently
-load and instantiate an HTML module graph while Servo continues using the runtime. A temporary static
-load pause is now explicitly accepted for this integration; dynamic imports remain async
-and HTML evaluation timing must be preserved. No runtime dependency was added and the current backend remains active. The isolated
+load and instantiate an HTML module graph while Servo continues using the runtime. The latest product decision requires fully asynchronous loading and supersedes the earlier
+static-load pause authorization; adoption waits for a suitable maintained public API.
+No runtime dependency was added and the current backend remains active. The isolated
 native class/async suite passes Linux/Windows normal/JITless (four CI jobs).

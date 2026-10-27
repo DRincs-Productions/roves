@@ -1,3 +1,13 @@
+## 2026-10-27 - Supersede the static-load pause authorization on latest user choice
+
+Latest explicit answer selects option2: all loading stays asynchronous; wait for suitable
+public Deno API. It supersedes the earlier option1. Stop active Claude implementation,
+save its seven-file unverified preparation under target/task-0385/superseded-option1-wip,
+and restore only task-owned source paths. No partial shim/dependency/downgrade published;
+TODO.md untouched. Update AGENTS/workflow/current and0385 handoffs plus README/wiki to
+remove obsolete authorization. Patch0393 reproduces this superseding process decision.
+Current rusty_v8 backend and complete independent shell changes remain; no adoption claim.
+
 ## 2026-10-27 - Accept the public-API static loading tradeoff for Deno adoption
 
 The user selected option1: static graph fetch/instantiation may pause ScriptThread input

@@ -20,13 +20,12 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026
 
-Checkpoint pubblicato: `16b7149221e7989fe07c2cdfd266def61e646573`, wiki `be50deb`,
+Checkpoint pubblicato: `b5201929aaa95c68eeccefd1d9c5f816d6f62549`, wiki `3a3dff2`,
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
-Batch precedente d1eb: probe40556912335 verde4/4; generale40556912161 richiesti10/10verdi;
-Android40556912086 verde. Apple esclusi dal blocco. Nuovo batch: probe40564575701,
-generale40564575679 VERDE10/10 richiesti, Android40564575708 VERDE; iOS40564575683 esclusa.
-Batch16b interamente verde per le verifiche richieste: pubblicazione shell/docs consentita.
-Dopo il push identificare il nuovo batch prima di ulteriori pubblicazioni.
+Batch precedente16b: probe40564575701 verde4/4; generale40564575679 richiesti10/10verdi;
+Android40564575708 verde. Nuovo batch b520: generale40588014903, Android40588015577;
+iOS40588015016 esclusa. Non usare il verde precedente come risultato del nuovo batch.
+Nessun push mentre richiesti attivi/errori irrisolti; continuare lavoro indipendente utile.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
@@ -34,14 +33,15 @@ async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4
 0385 consegnata e revisionata: [gap API del caricamento statico](handoff/0385-deno-production-integration.md).
 Nessun port produttivo o cambio Cargo/lockfile lasciato. Deno load-without-evaluate mantiene
 &mut runtime durante il fetch; import()/import.defer() non sono equivalenti per HTML+TLA.
-Sono controesempi da analisi sorgente, non prove browser eseguite. L'utente ha SCELTO
-opzione1: pausa del thread del gioco durante caricamento/istanziamento statico autorizzata;
-import dinamici asincroni e valutazione al punto HTML corretta, TLA compreso. B3 decisionale
-superato; non aspettare nuove conferme per lo stesso compromesso. B1 callback pubblica
-verificata su header150.4 esatti; B2 blocco nuovi documenti gia autorizzato, insieme al port.
-Claude ripreso su IMPLEMENTAZIONE produttiva da target/task-0385/approved-static-load.txt,
-output target/task-0385/approved-result.json, consegna attesa IMPLEMENTATION.md.
-Nessun cambio produttivo considerato verificato prima di revisione e CI.
+Sono controesempi da analisi sorgente, non prove browser eseguite. L'ULTIMA risposta utente
+alla domanda esplicita sceglie OPZIONE2: mantenere piena asincronia e attendere API pubblica
+adatta. SOSTITUISCE la precedente scelta1: pausa caricamento statico NON piu autorizzata.
+Claude interrotto appena ricevuta la nuova scelta; bozza parziale salvata in
+target/task-0385/superseded-option1-wip/incomplete.patch con copie dei7file. Ripristinati
+solo file del task; nessun nuovo Cargo/dependency/shim incompleto nei sorgenti pubblicabili.
+Backend corrente preservato. Nessuna sessione Claude attiva, quota o automazione.
+B1 header verificati e B2 vincolo documento unico restano requisiti di un eventuale futuro
+port, non motivo per pubblicare ora il backend parziale. TODO.md resta separato.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
