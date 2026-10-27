@@ -2,8 +2,9 @@
 
 Runs the vendored WebIDL parser and the real binding generator and checks the order of the
 lookups in the generated get, getOwnPropertyDescriptor and hasOwn hooks, plus the compile-time
-flag the generated ownKeys hook passes to proxyhandler:
+flag the generated ownKeys and delete hooks pass to proxyhandler:
 https://webidl.spec.whatwg.org/#dfn-named-property-visibility
+https://webidl.spec.whatwg.org/#legacy-platform-object-delete
 
 Two configurations are used: a small synthetic IDL (controls with and without the attribute),
 and every real webidls/*.webidl file with the real Bindings.conf, parsed the way codegen/run.py
@@ -31,12 +32,16 @@ import WebIDL  # noqa: E402
 from configuration import Configuration  # noqa: E402
 from run import FILTER_PATTERN  # noqa: E402
 from codegen import (  # noqa: E402
+    CGDefineProxyHandler,
+    CGDOMJSProxyHandler_delete,
     CGDOMJSProxyHandler_get,
     CGDOMJSProxyHandler_getOwnPropertyDescriptor,
     CGDOMJSProxyHandler_hasOwn,
     CGDOMJSProxyHandler_ownPropertyKeys,
     GlobalGenRoots,
+    hasCustomDelete,
     hasLegacyOverrideBuiltIns,
+    hasNamedDeleteFailure,
     toBindingModuleFileFromDescriptor,
     toBindingNamespace,
 )
@@ -267,6 +272,87 @@ class NamedPropertyVisibilityTests(unittest.TestCase):
                              {name for name, entry in names.items() if entry == expected}, kind)
             self.assertNotEqual(expected, names["XMLDocument"], kind)
             self.assertEqual([], descriptor("XMLDocument", kind).interface.legacyWindowAliases, kind)
+
+
+def delete_body(name, kind):
+    return CGDOMJSProxyHandler_delete(descriptor(name, kind)).getBody()
+
+
+def handler_delete(name, kind):
+    body = CGDefineProxyHandler(descriptor(name, kind)).definition_body().define()
+    for line in body.splitlines():
+        if line.strip().startswith("delete_:"):
+            return line.strip()
+    raise AssertionError(f"{name}: no delete_ entry in the proxy handler")
+
+
+# Named getter, no named deleter: deleting a visible name must fail. HTMLFormElement also has
+# an indexed getter.
+NO_DELETER = cases(SYNTHETIC_OVERRIDE + SYNTHETIC_PLAIN, REAL_OVERRIDE[:2] + REAL_PLAIN)
+ORDINARY_DELETE = "return proxyhandler::delete(cx.raw_cx(), proxy.into(), id.into(), res);"
+
+
+class NamedPropertyDeleteTests(unittest.TestCase):
+    def assertBefore(self, body, first, second):
+        self.assertIn(first, body)
+        self.assertIn(second, body)
+        self.assertLess(body.index(first), body.index(second), f"{first!r} must come before {second!r}")
+
+    def test_visible_names_without_a_deleter_fail(self):
+        for name, kind in NO_DELETER:
+            d = descriptor(name, kind)
+            self.assertTrue(hasNamedDeleteFailure(d), name)
+            self.assertTrue(hasCustomDelete(d), name)
+            self.assertEqual("delete_: Some(delete::<D>),", handler_delete(name, kind), name)
+            body = delete_body(name, kind)
+            flag = "true" if hasLegacyOverrideBuiltIns(d) else "false"
+            self.assertIn(f"        {flag},\n", body, name)
+            self.assertBefore(body, "proxyhandler::is_visible_named_property(", "fail_cant_delete()")
+            self.assertBefore(body, "fail_cant_delete()", ORDINARY_DELETE)
+            self.assertIn("SupportedPropertyNames(cx.no_gc())", body, name)
+            self.assertNotIn("has_property_on_prototype", body, name)
+            # The presence query never calls a getter: HTMLFormElement's named getter records
+            # past names, so a deletion attempt must not register a read.
+            self.assertNotIn(NAMED, body, name)
+            self.assertNotIn(INDEXED, body, name)
+            self.assertNotIn("NamedDeleter(", body, name)
+
+    def test_array_index_keys_keep_the_ordinary_delete(self):
+        for name, kind in cases(("OverrideIndexed", "PlainIndexed"), ("HTMLFormElement",)):
+            body = delete_body(name, kind)
+            self.assertIn("if get_array_index_from_id(id).is_none() && (id.is_string() || id.is_int()) {", body, name)
+        for name, kind in cases(("OverrideNamed", "PlainNamed"), ("Document", "XMLDocument")):
+            body = delete_body(name, kind)
+            self.assertNotIn("get_array_index_from_id", body, name)
+            self.assertIn("if id.is_string() || id.is_int() {", body, name)
+
+    def test_the_previous_predicate_kept_the_expando_only_delete(self):
+        # Regression guard: before this change these handlers had no generated delete hook,
+        # so a visible named property reported a successful delete and remained.
+        for name, kind in NO_DELETER:
+            d = descriptor(name, kind)
+            self.assertFalse(d.isMaybeCrossOriginObject() or d.operations["NamedDeleter"], name)
+
+    def test_named_deleter_body_is_unchanged(self):
+        d = descriptor("DOMStringMap", "real")
+        self.assertIsNotNone(d.operations["NamedDeleter"])
+        self.assertFalse(hasNamedDeleteFailure(d))
+        body = delete_body("DOMStringMap", "real")
+        self.assertEqual(1, body.count("NamedDeleter("))
+        self.assertNotIn("is_visible_named_property", body)
+        self.assertNotIn("fail_cant_delete", body)
+        self.assertTrue(body.endswith(ORDINARY_DELETE))
+
+    def test_index_only_and_global_interfaces_are_unchanged(self):
+        select = descriptor("HTMLSelectElement", "real")
+        self.assertTrue(select.proxy and select.supportsIndexedProperties())
+        self.assertFalse(select.supportsNamedProperties())
+        self.assertFalse(hasCustomDelete(select))
+        self.assertEqual("delete_: Some(proxyhandler::delete),", handler_delete("HTMLSelectElement", "real"))
+        # [Global] objects are excluded by the delete algorithm.
+        window = descriptor("Window", "real")
+        self.assertTrue(window.supportsNamedProperties() and window.isGlobal())
+        self.assertFalse(hasNamedDeleteFailure(window))
 
 
 if __name__ == "__main__":

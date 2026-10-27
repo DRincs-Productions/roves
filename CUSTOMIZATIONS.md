@@ -1,3 +1,19 @@
+## 2026-10-27 - Reject deletion of visible named properties without a deleter (0376)
+
+codegen.py selects and generates the custom delete hook for non-global named interfaces
+without a named deleter. proxyhandler.rs checks own expando/unforgeable properties first,
+then SupportedPropertyNames and the inherited LegacyOverrideBuiltIns flag. Use existing
+ObjectOpResult failure and exact unpinned id conversion, never the Form getter which records
+past names. No new dependency/cache/public API; temporary list/search costs remain.
+Update events/check_results and real-parser generator tests. Four generated Rust hooks parse;
+14 generator tests pass Windows/Linux; old handler-selection negative fails as expected;
+runner42 passes (8 POSIX skips). Browser tests pending next CI. Previous required batch
+dac65 is all green (V8 7/7, general10/10, Android3/3); Apple excluded, not asserted green.
+Visible Chrome156 MCP differs from normative delete/HTMLDocument alias expectations, recorded
+in the handoff rather than claimed as parity. Existing prototype HasProperty vs normative
+GetOwnProperty discrepancy, indexed delete, defineProperty, sourceText and overall retention
+remain open. Patch0377; previous0376 quota checkpoint remains historical.
+
 ## 2026-10-27 - Save the next assignment at the verified new Claude session limit
 
 No source implementation started for0376. Interactive /usage confirms session reset14:00

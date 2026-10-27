@@ -4118,7 +4118,7 @@ class CGDefineProxyHandler(CGAbstractMethod):
             customDefineProperty = 'defineProperty::<D>'
 
         customDelete = 'proxyhandler::delete'
-        if self.descriptor.isMaybeCrossOriginObject() or self.descriptor.operations['NamedDeleter']:
+        if hasCustomDelete(self.descriptor):
             customDelete = 'delete::<D>'
 
         customGetPrototypeIfOrdinary = 'Some(proxyhandler::get_prototype_if_ordinary)'
@@ -6233,6 +6233,24 @@ def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
     return False
 
 
+def hasNamedDeleteFailure(descriptor: Descriptor) -> bool:
+    """
+    Whether deleting a visible named property must fail because there is no
+    named deleter: https://webidl.spec.whatwg.org/#legacy-platform-object-delete
+    ([Global] objects are excluded by the spec).
+    """
+    return (descriptor.supportsNamedProperties()
+            and descriptor.operations['NamedDeleter'] is None
+            and not descriptor.isGlobal())
+
+
+def hasCustomDelete(descriptor: Descriptor) -> bool:
+    """Whether the proxy handler uses the generated delete hook."""
+    return (descriptor.isMaybeCrossOriginObject()
+            or descriptor.operations['NamedDeleter'] is not None
+            or hasNamedDeleteFailure(descriptor))
+
+
 class CGProxySpecialOperation(CGPerSignatureCall):
     """
     Base class for classes for calling an indexed or named special operation
@@ -6482,8 +6500,8 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(CGAbstractExternMethod):
             # Expando (and unforgeable) own properties were already checked
             # above. Without [LegacyOverrideBuiltIns] a prototype property
             # hides the named property; with it the prototype is skipped.
-            # ownKeys applies the same rule in proxyhandler; defineProperty/delete
-            # are not adjusted.
+            # ownKeys and delete apply the same rule in proxyhandler; defineProperty
+            # is not adjusted.
             if hasLegacyOverrideBuiltIns(self.descriptor):
                 namedGet = f"""
 if {condition} {{
@@ -6623,6 +6641,32 @@ class CGDOMJSProxyHandler_delete(CGAbstractExternMethod):
                 raise TypeError("Can't handle a deleter on an interface that has "
                                 "unforgeables. Figure out how that should work!")
             set += CGProxyNamedDeleter(self.descriptor).define()
+        elif hasNamedDeleteFailure(self.descriptor):
+            # https://webidl.spec.whatwg.org/#legacy-platform-object-delete step 2.1: a
+            # visible named property without a named deleter cannot be deleted. Support is
+            # read from SupportedPropertyNames, not the named getter (no read is registered).
+            # Array-index keys of indexed interfaces keep the ordinary delete below.
+            condition = "id.is_string() || id.is_int()"
+            if self.descriptor.operations['IndexedGetter']:
+                condition = f"get_array_index_from_id(id).is_none() && ({condition})"
+            override_builtins = "true" if hasLegacyOverrideBuiltIns(self.descriptor) else "false"
+            set += (f"if {condition} {{\n"
+                    "    let this = &*UnwrapProxy::<D>(proxy.into());\n"
+                    "    let mut visible = false;\n"
+                    "    if !proxyhandler::is_visible_named_property(\n"
+                    "        cx,\n"
+                    "        proxy,\n"
+                    "        id,\n"
+                    "        |cx: &mut JSContext| this.SupportedPropertyNames(cx.no_gc()),\n"
+                    f"        {override_builtins},\n"
+                    "        &mut visible,\n"
+                    "    ) {\n"
+                    "        return false;\n"
+                    "    }\n"
+                    "    if visible {\n"
+                    "        return (*res).fail_cant_delete();\n"
+                    "    }\n"
+                    "}\n")
         set += "return proxyhandler::delete(cx.raw_cx(), proxy.into(), id.into(), res);"
         return set
 
@@ -7531,7 +7575,7 @@ class CGDescriptor(CGThing):
                 # We want to prevent indexed deleters from compiling at all.
                 assert not descriptor.operations['IndexedDeleter']
 
-                if descriptor.isMaybeCrossOriginObject() or descriptor.operations['NamedDeleter']:
+                if hasCustomDelete(descriptor):
                     cgThings.append(CGDOMJSProxyHandler_delete(descriptor))
 
                 if descriptor.isMaybeCrossOriginObject():

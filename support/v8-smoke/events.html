@@ -881,6 +881,154 @@ check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<
   }
   return problems.length ? problems.join("; ") : true;
 }));
+// https://webidl.spec.whatwg.org/#legacy-platform-object-delete: deleting a visible named
+// property of an interface without a named deleter fails (false in sloppy code, TypeError in
+// strict code) and leaves the element in place; otherwise the ordinary own-property delete
+// applies. Array-index keys are not exercised here.
+const sloppyDelete = (target, key) => delete target[key];
+const strictDelete = (target, key) => { "use strict"; try { delete target[key]; return "no error"; } catch (error) { return error && error.name; } };
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("Document visible named properties cannot be deleted without a named deleter", () => withNamedFrame("<p>delete</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
+  const problems = [];
+  const key = "rovesDeleteNamed", overrideKey = "rovesDeleteOverride", expandoKey = "rovesDeleteExpando";
+  const symbol = Symbol("rovesDeleteSymbol");
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  const remains = (label, name, element) => {
+    const desc = Object.getOwnPropertyDescriptor(doc, name);
+    if (doc[name] !== element || !Object.hasOwn(doc, name) || !desc || desc.value !== element || !element.isConnected)
+      problems.push(`${label}: get=${describeValue(doc[name])} own=${Object.hasOwn(doc, name)} ${describeDescriptor(desc)} connected=${element.isConnected}`);
+  };
+  if (Reflect.deleteProperty(doc, key) !== false) problems.push("Reflect.deleteProperty did not return false");
+  if (sloppyDelete(doc, key) !== false) problems.push("sloppy delete did not return false");
+  const strict = strictDelete(doc, key);
+  if (strict !== "TypeError") problems.push(`strict delete: ${strict}`);
+  remains("after delete", key, img);
+  // [LegacyOverrideBuiltIns]: a prototype property does not hide the name, so it stays undeletable.
+  Object.defineProperty(proto, overrideKey, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[overrideKey]);
+  const overrideImg = doc.createElement("img");
+  overrideImg.name = overrideKey;
+  doc.body.append(overrideImg);
+  if (Reflect.deleteProperty(doc, overrideKey) !== false) problems.push("override name deleted");
+  remains("override", overrideKey, overrideImg);
+  if (typeof Object.getOwnPropertyDescriptor(proto, overrideKey)?.get !== "function") problems.push("prototype property removed");
+  // An own expando defined before the name became supported is deleted; the name then shows.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => { if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.value === "expando") delete doc[expandoKey]; });
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  if (Reflect.deleteProperty(doc, expandoKey) !== true) problems.push("own expando not deleted");
+  remains("after expando delete", expandoKey, shadowed);
+  if (Reflect.deleteProperty(doc, expandoKey) !== false) problems.push("name visible after the expando deleted");
+  // The unforgeable location accessor is own and non-configurable.
+  if (Reflect.deleteProperty(doc, "location") !== false) problems.push("location deleted");
+  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function" || doc.location !== win.location)
+    problems.push("location accessor changed");
+  // A missing name and an own symbol expando use the ordinary delete.
+  if (Reflect.deleteProperty(doc, "rovesDeleteMissing") !== true) problems.push("missing name delete failed");
+  doc[symbol] = "symbol";
+  if (Reflect.deleteProperty(doc, symbol) !== true || Object.hasOwn(doc, symbol)) problems.push("symbol expando not deleted");
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTMLFormElement has no [LegacyOverrideBuiltIns] and no named deleter: a name hidden by the
+// prototype is not visible, so its delete is the ordinary (no-op) one and the prototype stays.
+// Support is read from the supported names, not the named getter: the getter records past names
+// (https://html.spec.whatwg.org/multipage/#past-names-map), so a deletion attempt on a name never
+// read must not keep it reachable after the control is renamed. A real read still does.
+check("HTMLFormElement deletes only hidden named properties and records no read", () => withNamedFrame("<p>form delete</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormDeleteHidden";
+  const proto = win.HTMLFormElement.prototype;
+  const getter = () => "prototype";
+  Object.defineProperty(proto, key, { configurable: true, get: getter });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const hidden = doc.createElement("input");
+  hidden.name = key;
+  form.append(hidden);
+  doc.body.append(form);
+  if (Reflect.deleteProperty(form, key) !== true) problems.push("hidden name delete returned false");
+  if (Object.getOwnPropertyDescriptor(proto, key)?.get !== getter || form[key] !== "prototype")
+    problems.push(`prototype changed: ${describeValue(form[key])}`);
+  if (!hidden.isConnected || hidden.form !== form) problems.push("hidden control removed");
+  delete proto[key];
+  if (Reflect.deleteProperty(form, key) !== false) problems.push("visible name deleted");
+  if (form[key] !== hidden || !Object.hasOwn(form, key)) problems.push(`visible name: ${describeValue(form[key])}`);
+  // Null prototype: nothing hides the name.
+  const nullForm = doc.createElement("form");
+  const action = doc.createElement("input");
+  action.name = "action";
+  nullForm.append(action);
+  doc.body.append(nullForm);
+  Object.setPrototypeOf(nullForm, null);
+  if (Reflect.deleteProperty(nullForm, "action") !== false) problems.push("null prototype: visible name deleted");
+  if (Reflect.deleteProperty(nullForm, "rovesFormDeleteMissing") !== true) problems.push("null prototype: missing name delete failed");
+  if (nullForm.action !== action) problems.push(`null prototype: ${describeValue(nullForm.action)}`);
+  // Past names: a deletion attempt on a never-read name, then a rename.
+  const attempted = doc.createElement("form"), attemptedInput = doc.createElement("input");
+  attemptedInput.name = "rovesPastAttempted";
+  attempted.append(attemptedInput);
+  doc.body.append(attempted);
+  if (Reflect.deleteProperty(attempted, "rovesPastAttempted") !== false) problems.push("past-name form: visible name deleted");
+  attemptedInput.name = "rovesPastRenamed";
+  if (attempted.rovesPastAttempted !== undefined || "rovesPastAttempted" in attempted || Reflect.ownKeys(attempted).includes("rovesPastAttempted"))
+    problems.push(`deletion attempt kept the old name: ${describeValue(attempted.rovesPastAttempted)}`);
+  if (attempted.rovesPastRenamed !== attemptedInput) problems.push("renamed control not reachable");
+  // Control: a real read registers the past name, which survives the rename.
+  const read = doc.createElement("form"), readInput = doc.createElement("input");
+  readInput.name = "rovesPastRead";
+  read.append(readInput);
+  doc.body.append(read);
+  if (read.rovesPastRead !== readInput) problems.push("read form: name not readable");
+  readInput.name = "rovesPastReadRenamed";
+  if (read.rovesPastRead !== readInput) problems.push(`read form: past name not kept (${describeValue(read.rovesPastRead)})`);
+  // Prototype callbacks: own properties and supported names are checked first, so a Proxy
+  // prototype's `has` trap runs once and only for a supported, not-own name; its exception
+  // propagates out of the delete.
+  const trapped = doc.createElement("form");
+  doc.body.append(trapped);
+  const ownKey = "rovesDeleteTrapOwn", namedKey = "rovesDeleteTrapNamed", throwKey = "rovesDeleteTrapThrow";
+  // Defined before the name is supported (no named setter), then the control is added.
+  Object.defineProperty(trapped, ownKey, { configurable: true, writable: true, enumerable: true, value: "own" });
+  for (const name of [ownKey, namedKey, throwKey]) {
+    const input = doc.createElement("input");
+    input.name = name;
+    trapped.append(input);
+  }
+  const queries = [], thrown = new Error("rovesDeleteTrapThrown");
+  Object.setPrototypeOf(trapped, new Proxy(win.HTMLFormElement.prototype, {
+    has(target, property) {
+      queries.push(property);
+      if (property === throwKey) throw thrown;
+      return Reflect.has(target, property);
+    },
+  }));
+  if (Reflect.deleteProperty(trapped, ownKey) !== true) problems.push("trap form: own expando not deleted");
+  if (Reflect.deleteProperty(trapped, "rovesDeleteTrapMissing") !== true) problems.push("trap form: missing name delete failed");
+  if (queries.length !== 0) problems.push(`trap form: prototype queried for own/unsupported names: ${queries.join(",")}`);
+  if (Reflect.deleteProperty(trapped, namedKey) !== false) problems.push("trap form: visible name deleted");
+  if (queries.join(",") !== namedKey) problems.push(`trap form: supported name queries: ${queries.join(",")}`);
+  let caught = "no error";
+  try { Reflect.deleteProperty(trapped, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`trap form: has exception not propagated: ${describeValue(caught)}`);
+  if (queries.join(",") !== `${namedKey},${throwKey}`) problems.push(`trap form: queries after throw: ${queries.join(",")}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// DOMStringMap keeps its named deleter: deleting a data property removes the attribute.
+check("DOMStringMap named deleter removes the data attribute", () => {
+  const element = document.createElement("div");
+  element.setAttribute("data-roves-delete", "value");
+  const map = element.dataset;
+  if (Reflect.deleteProperty(map, "rovesDelete") !== true) return "delete returned false";
+  if (element.hasAttribute("data-roves-delete") || Object.hasOwn(map, "rovesDelete")) return "attribute kept";
+  return Reflect.deleteProperty(map, "rovesDeleteMissing") === true ? true : "missing name delete failed";
+});
 finish();
 </script>
 </body></html>

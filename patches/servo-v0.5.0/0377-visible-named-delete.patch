@@ -1,0 +1,500 @@
+diff --git a/components/script_bindings/codegen/codegen.py b/components/script_bindings/codegen/codegen.py
+index 8dda19039df..49f9fb3ed08 100644
+--- a/components/script_bindings/codegen/codegen.py
++++ b/components/script_bindings/codegen/codegen.py
+@@ -4118,7 +4118,7 @@ class CGDefineProxyHandler(CGAbstractMethod):
+             customDefineProperty = 'defineProperty::<D>'
+ 
+         customDelete = 'proxyhandler::delete'
+-        if self.descriptor.isMaybeCrossOriginObject() or self.descriptor.operations['NamedDeleter']:
++        if hasCustomDelete(self.descriptor):
+             customDelete = 'delete::<D>'
+ 
+         customGetPrototypeIfOrdinary = 'Some(proxyhandler::get_prototype_if_ordinary)'
+@@ -6233,6 +6233,24 @@ def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
+     return False
+ 
+ 
++def hasNamedDeleteFailure(descriptor: Descriptor) -> bool:
++    """
++    Whether deleting a visible named property must fail because there is no
++    named deleter: https://webidl.spec.whatwg.org/#legacy-platform-object-delete
++    ([Global] objects are excluded by the spec).
++    """
++    return (descriptor.supportsNamedProperties()
++            and descriptor.operations['NamedDeleter'] is None
++            and not descriptor.isGlobal())
++
++
++def hasCustomDelete(descriptor: Descriptor) -> bool:
++    """Whether the proxy handler uses the generated delete hook."""
++    return (descriptor.isMaybeCrossOriginObject()
++            or descriptor.operations['NamedDeleter'] is not None
++            or hasNamedDeleteFailure(descriptor))
++
++
+ class CGProxySpecialOperation(CGPerSignatureCall):
+     """
+     Base class for classes for calling an indexed or named special operation
+@@ -6482,8 +6500,8 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(CGAbstractExternMethod):
+             # Expando (and unforgeable) own properties were already checked
+             # above. Without [LegacyOverrideBuiltIns] a prototype property
+             # hides the named property; with it the prototype is skipped.
+-            # ownKeys applies the same rule in proxyhandler; defineProperty/delete
+-            # are not adjusted.
++            # ownKeys and delete apply the same rule in proxyhandler; defineProperty
++            # is not adjusted.
+             if hasLegacyOverrideBuiltIns(self.descriptor):
+                 namedGet = f"""
+ if {condition} {{
+@@ -6623,6 +6641,32 @@ class CGDOMJSProxyHandler_delete(CGAbstractExternMethod):
+                 raise TypeError("Can't handle a deleter on an interface that has "
+                                 "unforgeables. Figure out how that should work!")
+             set += CGProxyNamedDeleter(self.descriptor).define()
++        elif hasNamedDeleteFailure(self.descriptor):
++            # https://webidl.spec.whatwg.org/#legacy-platform-object-delete step 2.1: a
++            # visible named property without a named deleter cannot be deleted. Support is
++            # read from SupportedPropertyNames, not the named getter (no read is registered).
++            # Array-index keys of indexed interfaces keep the ordinary delete below.
++            condition = "id.is_string() || id.is_int()"
++            if self.descriptor.operations['IndexedGetter']:
++                condition = f"get_array_index_from_id(id).is_none() && ({condition})"
++            override_builtins = "true" if hasLegacyOverrideBuiltIns(self.descriptor) else "false"
++            set += (f"if {condition} {{\n"
++                    "    let this = &*UnwrapProxy::<D>(proxy.into());\n"
++                    "    let mut visible = false;\n"
++                    "    if !proxyhandler::is_visible_named_property(\n"
++                    "        cx,\n"
++                    "        proxy,\n"
++                    "        id,\n"
++                    "        |cx: &mut JSContext| this.SupportedPropertyNames(cx.no_gc()),\n"
++                    f"        {override_builtins},\n"
++                    "        &mut visible,\n"
++                    "    ) {\n"
++                    "        return false;\n"
++                    "    }\n"
++                    "    if visible {\n"
++                    "        return (*res).fail_cant_delete();\n"
++                    "    }\n"
++                    "}\n")
+         set += "return proxyhandler::delete(cx.raw_cx(), proxy.into(), id.into(), res);"
+         return set
+ 
+@@ -7531,7 +7575,7 @@ class CGDescriptor(CGThing):
+                 # We want to prevent indexed deleters from compiling at all.
+                 assert not descriptor.operations['IndexedDeleter']
+ 
+-                if descriptor.isMaybeCrossOriginObject() or descriptor.operations['NamedDeleter']:
++                if hasCustomDelete(descriptor):
+                     cgThings.append(CGDOMJSProxyHandler_delete(descriptor))
+ 
+                 if descriptor.isMaybeCrossOriginObject():
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index eff97c03b55..01ee291ba21 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -885,6 +885,56 @@ fn expando_has_own(cx: &mut JSContext, expando: HandleObject, id: HandleId, has_
+     expando.get().is_null() || unsafe { JS_AlreadyHasOwnPropertyById(cx, expando, id, has_own) }
+ }
+ 
++/// The named property visibility algorithm for a single `id`
++/// (https://webidl.spec.whatwg.org/#dfn-named-property-visibility), used by the generated
++/// delete hook of interfaces without a named deleter. Support is decided from the supported
++/// property names alone: no named getter runs, so a deletion attempt never registers a read
++/// (HTMLFormElement's getter records past names). An own expando or unforgeable property
++/// hides the name before the names list is built; the prototype, which can run script, is
++/// consulted last and only for a supported name. Cost: the temporary names list and one id
++/// conversion per name up to the match (ids compare by atom); nothing is cached.
++pub(crate) fn is_visible_named_property(
++    cx: &mut JSContext,
++    proxy: HandleObject,
++    id: HandleId,
++    supported_names: impl FnOnce(&mut JSContext) -> Vec<DOMString>,
++    legacy_override_builtins: bool,
++    visible: &mut bool,
++) -> bool {
++    *visible = false;
++    rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
++    get_expando_object(proxy, expando.handle_mut());
++    let mut has_own = false;
++    if !expando_has_own(cx, expando.handle(), id, &mut has_own) {
++        return false;
++    }
++    if has_own {
++        return true;
++    }
++    let names = supported_names(cx);
++    rooted!(&in(cx) let mut name_id: jsid);
++    let mut supported = false;
++    for name in &names {
++        if !named_property_id(cx, name, name_id.handle_mut()) {
++            return false;
++        }
++        if name_id.get() == id.get() {
++            supported = true;
++            break;
++        }
++    }
++    if !supported || legacy_override_builtins {
++        *visible = supported;
++        return true;
++    }
++    let mut has_on_proto = false;
++    if !has_property_on_prototype(cx, proxy, id, &mut has_on_proto) {
++        return false;
++    }
++    *visible = !has_on_proto;
++    true
++}
++
+ #[expect(non_snake_case)]
+ /// SAFETY: cx must point to a valid, non-null JS context.
+ pub(crate) unsafe fn JSProxyHandlerOwnPropertyKeys<T>(
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index a961dd5b93e..764a668b789 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -37,6 +37,9 @@ REQUIRED_CHECKS = {
+         "HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property",
+         "HTMLFormElement ownKeys omits array-index names and keeps other numeric names",
+         "Document ownKeys keeps numeric named properties",
++        "Document visible named properties cannot be deleted without a named deleter",
++        "HTMLFormElement deletes only hidden named properties and records no read",
++        "DOMStringMap named deleter removes the data attribute",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 9eb68809961..a13360a45e7 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -881,6 +881,154 @@ check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<
+   }
+   return problems.length ? problems.join("; ") : true;
+ }));
++// https://webidl.spec.whatwg.org/#legacy-platform-object-delete: deleting a visible named
++// property of an interface without a named deleter fails (false in sloppy code, TypeError in
++// strict code) and leaves the element in place; otherwise the ordinary own-property delete
++// applies. Array-index keys are not exercised here.
++const sloppyDelete = (target, key) => delete target[key];
++const strictDelete = (target, key) => { "use strict"; try { delete target[key]; return "no error"; } catch (error) { return error && error.name; } };
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++check("Document visible named properties cannot be deleted without a named deleter", () => withNamedFrame("<p>delete</p>", (win, doc, cleanup) => {
++  const proto = documentPrototype(win, doc);
++  const problems = [];
++  const key = "rovesDeleteNamed", overrideKey = "rovesDeleteOverride", expandoKey = "rovesDeleteExpando";
++  const symbol = Symbol("rovesDeleteSymbol");
++  const img = doc.createElement("img");
++  img.name = key;
++  doc.body.append(img);
++  const remains = (label, name, element) => {
++    const desc = Object.getOwnPropertyDescriptor(doc, name);
++    if (doc[name] !== element || !Object.hasOwn(doc, name) || !desc || desc.value !== element || !element.isConnected)
++      problems.push(`${label}: get=${describeValue(doc[name])} own=${Object.hasOwn(doc, name)} ${describeDescriptor(desc)} connected=${element.isConnected}`);
++  };
++  if (Reflect.deleteProperty(doc, key) !== false) problems.push("Reflect.deleteProperty did not return false");
++  if (sloppyDelete(doc, key) !== false) problems.push("sloppy delete did not return false");
++  const strict = strictDelete(doc, key);
++  if (strict !== "TypeError") problems.push(`strict delete: ${strict}`);
++  remains("after delete", key, img);
++  // [LegacyOverrideBuiltIns]: a prototype property does not hide the name, so it stays undeletable.
++  Object.defineProperty(proto, overrideKey, { configurable: true, get() { return "prototype"; } });
++  cleanup.push(() => delete proto[overrideKey]);
++  const overrideImg = doc.createElement("img");
++  overrideImg.name = overrideKey;
++  doc.body.append(overrideImg);
++  if (Reflect.deleteProperty(doc, overrideKey) !== false) problems.push("override name deleted");
++  remains("override", overrideKey, overrideImg);
++  if (typeof Object.getOwnPropertyDescriptor(proto, overrideKey)?.get !== "function") problems.push("prototype property removed");
++  // An own expando defined before the name became supported is deleted; the name then shows.
++  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
++  cleanup.push(() => { if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.value === "expando") delete doc[expandoKey]; });
++  const shadowed = doc.createElement("img");
++  shadowed.name = expandoKey;
++  doc.body.append(shadowed);
++  if (Reflect.deleteProperty(doc, expandoKey) !== true) problems.push("own expando not deleted");
++  remains("after expando delete", expandoKey, shadowed);
++  if (Reflect.deleteProperty(doc, expandoKey) !== false) problems.push("name visible after the expando deleted");
++  // The unforgeable location accessor is own and non-configurable.
++  if (Reflect.deleteProperty(doc, "location") !== false) problems.push("location deleted");
++  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function" || doc.location !== win.location)
++    problems.push("location accessor changed");
++  // A missing name and an own symbol expando use the ordinary delete.
++  if (Reflect.deleteProperty(doc, "rovesDeleteMissing") !== true) problems.push("missing name delete failed");
++  doc[symbol] = "symbol";
++  if (Reflect.deleteProperty(doc, symbol) !== true || Object.hasOwn(doc, symbol)) problems.push("symbol expando not deleted");
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// HTMLFormElement has no [LegacyOverrideBuiltIns] and no named deleter: a name hidden by the
++// prototype is not visible, so its delete is the ordinary (no-op) one and the prototype stays.
++// Support is read from the supported names, not the named getter: the getter records past names
++// (https://html.spec.whatwg.org/multipage/#past-names-map), so a deletion attempt on a name never
++// read must not keep it reachable after the control is renamed. A real read still does.
++check("HTMLFormElement deletes only hidden named properties and records no read", () => withNamedFrame("<p>form delete</p>", (win, doc, cleanup) => {
++  const problems = [];
++  const key = "rovesFormDeleteHidden";
++  const proto = win.HTMLFormElement.prototype;
++  const getter = () => "prototype";
++  Object.defineProperty(proto, key, { configurable: true, get: getter });
++  cleanup.push(() => delete proto[key]);
++  const form = doc.createElement("form");
++  const hidden = doc.createElement("input");
++  hidden.name = key;
++  form.append(hidden);
++  doc.body.append(form);
++  if (Reflect.deleteProperty(form, key) !== true) problems.push("hidden name delete returned false");
++  if (Object.getOwnPropertyDescriptor(proto, key)?.get !== getter || form[key] !== "prototype")
++    problems.push(`prototype changed: ${describeValue(form[key])}`);
++  if (!hidden.isConnected || hidden.form !== form) problems.push("hidden control removed");
++  delete proto[key];
++  if (Reflect.deleteProperty(form, key) !== false) problems.push("visible name deleted");
++  if (form[key] !== hidden || !Object.hasOwn(form, key)) problems.push(`visible name: ${describeValue(form[key])}`);
++  // Null prototype: nothing hides the name.
++  const nullForm = doc.createElement("form");
++  const action = doc.createElement("input");
++  action.name = "action";
++  nullForm.append(action);
++  doc.body.append(nullForm);
++  Object.setPrototypeOf(nullForm, null);
++  if (Reflect.deleteProperty(nullForm, "action") !== false) problems.push("null prototype: visible name deleted");
++  if (Reflect.deleteProperty(nullForm, "rovesFormDeleteMissing") !== true) problems.push("null prototype: missing name delete failed");
++  if (nullForm.action !== action) problems.push(`null prototype: ${describeValue(nullForm.action)}`);
++  // Past names: a deletion attempt on a never-read name, then a rename.
++  const attempted = doc.createElement("form"), attemptedInput = doc.createElement("input");
++  attemptedInput.name = "rovesPastAttempted";
++  attempted.append(attemptedInput);
++  doc.body.append(attempted);
++  if (Reflect.deleteProperty(attempted, "rovesPastAttempted") !== false) problems.push("past-name form: visible name deleted");
++  attemptedInput.name = "rovesPastRenamed";
++  if (attempted.rovesPastAttempted !== undefined || "rovesPastAttempted" in attempted || Reflect.ownKeys(attempted).includes("rovesPastAttempted"))
++    problems.push(`deletion attempt kept the old name: ${describeValue(attempted.rovesPastAttempted)}`);
++  if (attempted.rovesPastRenamed !== attemptedInput) problems.push("renamed control not reachable");
++  // Control: a real read registers the past name, which survives the rename.
++  const read = doc.createElement("form"), readInput = doc.createElement("input");
++  readInput.name = "rovesPastRead";
++  read.append(readInput);
++  doc.body.append(read);
++  if (read.rovesPastRead !== readInput) problems.push("read form: name not readable");
++  readInput.name = "rovesPastReadRenamed";
++  if (read.rovesPastRead !== readInput) problems.push(`read form: past name not kept (${describeValue(read.rovesPastRead)})`);
++  // Prototype callbacks: own properties and supported names are checked first, so a Proxy
++  // prototype's `has` trap runs once and only for a supported, not-own name; its exception
++  // propagates out of the delete.
++  const trapped = doc.createElement("form");
++  doc.body.append(trapped);
++  const ownKey = "rovesDeleteTrapOwn", namedKey = "rovesDeleteTrapNamed", throwKey = "rovesDeleteTrapThrow";
++  // Defined before the name is supported (no named setter), then the control is added.
++  Object.defineProperty(trapped, ownKey, { configurable: true, writable: true, enumerable: true, value: "own" });
++  for (const name of [ownKey, namedKey, throwKey]) {
++    const input = doc.createElement("input");
++    input.name = name;
++    trapped.append(input);
++  }
++  const queries = [], thrown = new Error("rovesDeleteTrapThrown");
++  Object.setPrototypeOf(trapped, new Proxy(win.HTMLFormElement.prototype, {
++    has(target, property) {
++      queries.push(property);
++      if (property === throwKey) throw thrown;
++      return Reflect.has(target, property);
++    },
++  }));
++  if (Reflect.deleteProperty(trapped, ownKey) !== true) problems.push("trap form: own expando not deleted");
++  if (Reflect.deleteProperty(trapped, "rovesDeleteTrapMissing") !== true) problems.push("trap form: missing name delete failed");
++  if (queries.length !== 0) problems.push(`trap form: prototype queried for own/unsupported names: ${queries.join(",")}`);
++  if (Reflect.deleteProperty(trapped, namedKey) !== false) problems.push("trap form: visible name deleted");
++  if (queries.join(",") !== namedKey) problems.push(`trap form: supported name queries: ${queries.join(",")}`);
++  let caught = "no error";
++  try { Reflect.deleteProperty(trapped, throwKey); } catch (error) { caught = error; }
++  if (caught !== thrown) problems.push(`trap form: has exception not propagated: ${describeValue(caught)}`);
++  if (queries.join(",") !== `${namedKey},${throwKey}`) problems.push(`trap form: queries after throw: ${queries.join(",")}`);
++  return problems.length ? problems.join("; ") : true;
++}));
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// DOMStringMap keeps its named deleter: deleting a data property removes the attribute.
++check("DOMStringMap named deleter removes the data attribute", () => {
++  const element = document.createElement("div");
++  element.setAttribute("data-roves-delete", "value");
++  const map = element.dataset;
++  if (Reflect.deleteProperty(map, "rovesDelete") !== true) return "delete returned false";
++  if (element.hasAttribute("data-roves-delete") || Object.hasOwn(map, "rovesDelete")) return "attribute kept";
++  return Reflect.deleteProperty(map, "rovesDeleteMissing") === true ? true : "missing name delete failed";
++});
+ finish();
+ </script>
+ </body></html>
+diff --git a/support/v8-smoke/test_named_property_codegen.py b/support/v8-smoke/test_named_property_codegen.py
+index 36c3d9c5161..6defd29cb73 100644
+--- a/support/v8-smoke/test_named_property_codegen.py
++++ b/support/v8-smoke/test_named_property_codegen.py
+@@ -2,8 +2,9 @@
+ 
+ Runs the vendored WebIDL parser and the real binding generator and checks the order of the
+ lookups in the generated get, getOwnPropertyDescriptor and hasOwn hooks, plus the compile-time
+-flag the generated ownKeys hook passes to proxyhandler:
++flag the generated ownKeys and delete hooks pass to proxyhandler:
+ https://webidl.spec.whatwg.org/#dfn-named-property-visibility
++https://webidl.spec.whatwg.org/#legacy-platform-object-delete
+ 
+ Two configurations are used: a small synthetic IDL (controls with and without the attribute),
+ and every real webidls/*.webidl file with the real Bindings.conf, parsed the way codegen/run.py
+@@ -31,12 +32,16 @@ import WebIDL  # noqa: E402
+ from configuration import Configuration  # noqa: E402
+ from run import FILTER_PATTERN  # noqa: E402
+ from codegen import (  # noqa: E402
++    CGDefineProxyHandler,
++    CGDOMJSProxyHandler_delete,
+     CGDOMJSProxyHandler_get,
+     CGDOMJSProxyHandler_getOwnPropertyDescriptor,
+     CGDOMJSProxyHandler_hasOwn,
+     CGDOMJSProxyHandler_ownPropertyKeys,
+     GlobalGenRoots,
++    hasCustomDelete,
+     hasLegacyOverrideBuiltIns,
++    hasNamedDeleteFailure,
+     toBindingModuleFileFromDescriptor,
+     toBindingNamespace,
+ )
+@@ -269,5 +274,86 @@ class NamedPropertyVisibilityTests(unittest.TestCase):
+             self.assertEqual([], descriptor("XMLDocument", kind).interface.legacyWindowAliases, kind)
+ 
+ 
++def delete_body(name, kind):
++    return CGDOMJSProxyHandler_delete(descriptor(name, kind)).getBody()
++
++
++def handler_delete(name, kind):
++    body = CGDefineProxyHandler(descriptor(name, kind)).definition_body().define()
++    for line in body.splitlines():
++        if line.strip().startswith("delete_:"):
++            return line.strip()
++    raise AssertionError(f"{name}: no delete_ entry in the proxy handler")
++
++
++# Named getter, no named deleter: deleting a visible name must fail. HTMLFormElement also has
++# an indexed getter.
++NO_DELETER = cases(SYNTHETIC_OVERRIDE + SYNTHETIC_PLAIN, REAL_OVERRIDE[:2] + REAL_PLAIN)
++ORDINARY_DELETE = "return proxyhandler::delete(cx.raw_cx(), proxy.into(), id.into(), res);"
++
++
++class NamedPropertyDeleteTests(unittest.TestCase):
++    def assertBefore(self, body, first, second):
++        self.assertIn(first, body)
++        self.assertIn(second, body)
++        self.assertLess(body.index(first), body.index(second), f"{first!r} must come before {second!r}")
++
++    def test_visible_names_without_a_deleter_fail(self):
++        for name, kind in NO_DELETER:
++            d = descriptor(name, kind)
++            self.assertTrue(hasNamedDeleteFailure(d), name)
++            self.assertTrue(hasCustomDelete(d), name)
++            self.assertEqual("delete_: Some(delete::<D>),", handler_delete(name, kind), name)
++            body = delete_body(name, kind)
++            flag = "true" if hasLegacyOverrideBuiltIns(d) else "false"
++            self.assertIn(f"        {flag},\n", body, name)
++            self.assertBefore(body, "proxyhandler::is_visible_named_property(", "fail_cant_delete()")
++            self.assertBefore(body, "fail_cant_delete()", ORDINARY_DELETE)
++            self.assertIn("SupportedPropertyNames(cx.no_gc())", body, name)
++            self.assertNotIn("has_property_on_prototype", body, name)
++            # The presence query never calls a getter: HTMLFormElement's named getter records
++            # past names, so a deletion attempt must not register a read.
++            self.assertNotIn(NAMED, body, name)
++            self.assertNotIn(INDEXED, body, name)
++            self.assertNotIn("NamedDeleter(", body, name)
++
++    def test_array_index_keys_keep_the_ordinary_delete(self):
++        for name, kind in cases(("OverrideIndexed", "PlainIndexed"), ("HTMLFormElement",)):
++            body = delete_body(name, kind)
++            self.assertIn("if get_array_index_from_id(id).is_none() && (id.is_string() || id.is_int()) {", body, name)
++        for name, kind in cases(("OverrideNamed", "PlainNamed"), ("Document", "XMLDocument")):
++            body = delete_body(name, kind)
++            self.assertNotIn("get_array_index_from_id", body, name)
++            self.assertIn("if id.is_string() || id.is_int() {", body, name)
++
++    def test_the_previous_predicate_kept_the_expando_only_delete(self):
++        # Regression guard: before this change these handlers had no generated delete hook,
++        # so a visible named property reported a successful delete and remained.
++        for name, kind in NO_DELETER:
++            d = descriptor(name, kind)
++            self.assertFalse(d.isMaybeCrossOriginObject() or d.operations["NamedDeleter"], name)
++
++    def test_named_deleter_body_is_unchanged(self):
++        d = descriptor("DOMStringMap", "real")
++        self.assertIsNotNone(d.operations["NamedDeleter"])
++        self.assertFalse(hasNamedDeleteFailure(d))
++        body = delete_body("DOMStringMap", "real")
++        self.assertEqual(1, body.count("NamedDeleter("))
++        self.assertNotIn("is_visible_named_property", body)
++        self.assertNotIn("fail_cant_delete", body)
++        self.assertTrue(body.endswith(ORDINARY_DELETE))
++
++    def test_index_only_and_global_interfaces_are_unchanged(self):
++        select = descriptor("HTMLSelectElement", "real")
++        self.assertTrue(select.proxy and select.supportsIndexedProperties())
++        self.assertFalse(select.supportsNamedProperties())
++        self.assertFalse(hasCustomDelete(select))
++        self.assertEqual("delete_: Some(proxyhandler::delete),", handler_delete("HTMLSelectElement", "real"))
++        # [Global] objects are excluded by the delete algorithm.
++        window = descriptor("Window", "real")
++        self.assertTrue(window.supportsNamedProperties() and window.isGlobal())
++        self.assertFalse(hasNamedDeleteFailure(window))
++
++
+ if __name__ == "__main__":
+     unittest.main()
+diff --git a/docs/handoff/0376-visible-named-delete.md b/docs/handoff/0376-visible-named-delete.md
+new file mode 100644
+index 00000000000..7ec24faed1f
+--- /dev/null
++++ b/docs/handoff/0376-visible-named-delete.md
+@@ -0,0 +1,50 @@
++# 0376 — visible named deletion without a deleter (patch 0377)
++
++The authorized 27 October 14:02 Europe/Rome retry succeeded. The one-shot
++`ripresa-unica-claude-quota-0376` was deleted. The earlier quota checkpoint is historical,
++not an instruction to retry again. No periodic automation or CLAUDE_RESUME.md.
++
++## Implementation and reuse
++
++Use the existing WebIDL parser/generator, supported-name metadata, exact unpinned DOMString
++id conversion and ObjectOpResult::fail_cant_delete. The handler table and hook generation
++both select the generated delete for non-global named interfaces without a named deleter.
++An own expando/unforgeable property takes the existing ordinary path first; only supported,
++visible non-indexed names fail deletion. Existing named deleters, symbols and indexed
++deletion remain separate. No new dependency, cache or public API.
++
++Support is queried through SupportedPropertyNames, never NamedGetter: Form's actual getter
++records past names. Building the temporary names list and scanning/converting names costs
++memory and CPU per attempt; underlying metadata collection can also sort/deduplicate. No
++performance saving is claimed. The existing prototype helper uses [[HasProperty]], whereas
++the normative visibility algorithm walks [[GetOwnProperty]]; this pre-existing discrepancy
++remains open and is not presented as full WebIDL conformance.
++
++## Evidence
++
++- Real vendored parser/generator: 14 tests pass on Windows and Linux, including real
++  Document/XMLDocument/Form, inherited flags, handler wiring, Dataset and Global controls.
++- Old HEAD generator fails the actual Document handler-selection assertion, not an import.
++- Four real generated delete hooks and the helper pass Rust syntax parsing; typechecking
++  and real browser execution require CI.
++- Runner 42 tests pass, 8 POSIX skips on Windows. Browser fixtures cover Reflect/sloppy/
++  strict failure, own/unforgeable properties, null/prototype cases, Dataset deletion,
++  rename after a never-read delete attempt versus an actual Form read, prototype callback
++  short circuit, one callback and exception propagation.
++- Windows/Linux patch replay must match all changed paths after LF normalization.
++  Local logs, negative, generated hooks and MCP reference: target/task-0376/.
++
++Chrome DevTools MCP became available again: visible Windows Chrome156.0.0.0, fresh
++same-origin iframe, text/html, independent names for Reflect/sloppy/strict. Document names
++were visible and own before each operation; deletion returned true and removed the exposed
++property while leaving the element connected. Form deletion returned true but kept the
++named property. HTMLDocument !== Document (distinct constructors). These observations differ
++from the normative expectations used in Roves; they do not validate browser parity. The
++first preliminary probe reused a deleted key, so only the second independent-key probe
++supports the strict-mode comparison. No headless or performance measurement was made.
++
++Previous dac65 batch is terminal green for required checks: V8 7/7, general 10/10,
++Android 3/3. macOS/iOS excluded by user instruction, not asserted green. This clears
++publication of complete local0375 plus0376 after review/replay. New normal/JITless browser
++smoke still needs the next CI. SourceText0361, indexed deletion, property definition,
++prototype-query conformance and overall retention remain open.

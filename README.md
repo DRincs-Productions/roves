@@ -722,8 +722,17 @@ including null prototypes and reentrant expando creation. Own properties short-c
 queries. This correction targets the actual Document reflector. Window.HTMLDocument now uses the
 standard alias of Document through existing WebIDL generation; the unused subclass is removed.
 Constructor/prototype identity and property attributes have required browser regressions;
-normal/JITless browser confirmation is pending CI.
+normal/JITless browser checks passed in the dac65 CI batch.
 
 Indexed DOM collections keep array-index keys separate from numeric named keys, preventing
 duplicate native ownKeys results. Noncanonical numeric names and numeric names on Document
 remain available. Native normal/JITless regressions pass; real browser CI is pending.
+
+Visible named DOM properties without a named deleter now reject deletion according to
+WebIDL, while own expandos and Dataset retain their ordinary/deleter behavior. Form delete
+support checks do not register a named read or keep a renamed control in its past-names map.
+Normal/JITless browser verification of this change is pending CI. Visible Chrome156 differs
+on these deletions and exposes a distinct HTMLDocument constructor; Roves follows the
+normative expectations here, so this is not a claim of Chrome parity. Indexed deletion,
+property definition, prototype-query conformance, inline-handler source text and overall
+retention remain under migration.

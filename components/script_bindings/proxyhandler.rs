@@ -885,6 +885,56 @@ fn expando_has_own(cx: &mut JSContext, expando: HandleObject, id: HandleId, has_
     expando.get().is_null() || unsafe { JS_AlreadyHasOwnPropertyById(cx, expando, id, has_own) }
 }
 
+/// The named property visibility algorithm for a single `id`
+/// (https://webidl.spec.whatwg.org/#dfn-named-property-visibility), used by the generated
+/// delete hook of interfaces without a named deleter. Support is decided from the supported
+/// property names alone: no named getter runs, so a deletion attempt never registers a read
+/// (HTMLFormElement's getter records past names). An own expando or unforgeable property
+/// hides the name before the names list is built; the prototype, which can run script, is
+/// consulted last and only for a supported name. Cost: the temporary names list and one id
+/// conversion per name up to the match (ids compare by atom); nothing is cached.
+pub(crate) fn is_visible_named_property(
+    cx: &mut JSContext,
+    proxy: HandleObject,
+    id: HandleId,
+    supported_names: impl FnOnce(&mut JSContext) -> Vec<DOMString>,
+    legacy_override_builtins: bool,
+    visible: &mut bool,
+) -> bool {
+    *visible = false;
+    rooted!(&in(cx) let mut expando = ptr::null_mut::<JSObject>());
+    get_expando_object(proxy, expando.handle_mut());
+    let mut has_own = false;
+    if !expando_has_own(cx, expando.handle(), id, &mut has_own) {
+        return false;
+    }
+    if has_own {
+        return true;
+    }
+    let names = supported_names(cx);
+    rooted!(&in(cx) let mut name_id: jsid);
+    let mut supported = false;
+    for name in &names {
+        if !named_property_id(cx, name, name_id.handle_mut()) {
+            return false;
+        }
+        if name_id.get() == id.get() {
+            supported = true;
+            break;
+        }
+    }
+    if !supported || legacy_override_builtins {
+        *visible = supported;
+        return true;
+    }
+    let mut has_on_proto = false;
+    if !has_property_on_prototype(cx, proxy, id, &mut has_on_proto) {
+        return false;
+    }
+    *visible = !has_on_proto;
+    true
+}
+
 #[expect(non_snake_case)]
 /// SAFETY: cx must point to a valid, non-null JS context.
 pub(crate) unsafe fn JSProxyHandlerOwnPropertyKeys<T>(

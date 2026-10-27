@@ -23,46 +23,39 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
 
-**Sospeso per nuovo limite Claude:** `/usage` aperto il27ottobre11:46 Europe/Rome
-conferma sessione100% e reset alle14:00 dioggi. Un solo tentativo alle14:02 è programmato
-con `ripresa-unica-claude-quota-0376`: eliminarlo dopoil tentativo. Se persiste la stessa
-quota, registrare e fermarsi senza retry concatenati. Nessun cambio modello o ripartenza aggiuntiva oltre quel singolo tentativo.
-[Incarico0376 durabile](handoff/0376-named-delete-resume.md): il tentativo è stato bloccato
-subito, non ha lasciato WIP. Prompt locale aggiornato in `target/task-0376/prompt.txt`.
+**Ripresa0376 riuscita il27ottobre dopo il reset14:00:** ricontrollo unico
+`ripresa-unica-claude-quota-0376` ELIMINATO dopo il tentativo. Nessun polling periodico.
+Claude ha completato e Codex ha revisionato la cancellazione dei nomi visibili senza
+deleter: [handoff0376](handoff/0376-visible-named-delete.md), patch0377. Si riusano
+SupportedPropertyNames e ObjectOpResult, evitando NamedGetter che registra past names.
+Own/unforgeable, nomi nascosti, simboli e Dataset conservano i percorsi pertinenti.
+14test generatore Windows/Linux, negativa sul generatore precedente e parseRust delle
+quattro hook reali verdi; runner42(8skipPOSIX). Browser normal/JITless demandati alla CI.
+Il controllo del prototipo usa ancora HasProperty: scarto normativo da correggere,
+non dichiarare completata la compatibilità Legacy*.
 
-Pubblicato `dac65a4dbc8d9dd762e265ce5376dbe4e884a8be`, wiki `bc80b3c`. Include0371
-(nomi DOM senza CString/pin),0372/0373 (visibilità ownKeys, null/reentry e attributo sul
-Document reale) e0374 (HTMLDocument alias standard; rimossi classeRust/IDL inutilizzati).
-Il fix0373 affronta i due smoke Linux rossi del precedente f3d59895e36; non dichiarare quel
-batch verde. Le nuove prove browser devono confermare tutte le correzioni.
+Pubblicato `dac65a4dbc8d9dd762e265ce5376dbe4e884a8be`, wiki `bc80b3c`.
+Il batch è ora terminale verde per tutte le verifiche richieste: V8 `40488481393`7/7,
+generale `40488481420`10/10, Android `40488481644`3/3. macOS e iOS `40488481524`
+esclusi per istruzione utente, non dichiarati verdi. Confermati nel browser i fix0371–74.
+La pubblicazione del lavoro completo0375/0376 è consentita dopo replay e revisione.
+0375 locale `68d687ce5ae`, wiki locale `86cbaf5`:18normal/18JITless proxy contracts,
+runner42(8skip), replayWin/Linux6percorsi. Filtro indice/nome segue le letture esistenti,
+non prova conformità completa; browser0375 e0376 attendono il prossimo batch.
 
-Batch corrente: V8 `40488481393`, generale `40488481420`, Android `40488481644`,
-iOS `40488481524` esclusa insieme ai job macOS per istruzione utente. Ultimo controllo:
-nessuna rossa; runtimeV8 Linux/Windows4/4 verdi, Android3/3 verde, patch validationverde;
-browserV8 e build generali ancora attivi. Non fare push finché i richiesti restano attivi.
+ChromeDevToolsMCP nuovamente disponibile: Chrome156.0.0.0 Windows visibile, iframe
+text/html. Con nomi indipendenti Reflect/sloppy/strict restituiscono true: Document
+rimuove la proprietà esposta ma non l'elemento; Form conserva il nome. HTMLDocument è
+distinto da Document. Sono divergenze osservate rispetto agli obiettivi normativi,
+non una conferma di parità; riferimento salvato in target/task-0376/chrome-mcp-reference.json.
+Nessuna misura prestazionale/headless.
 
-0375 è completa localmente: [handoff](handoff/0375-indexed-and-named-key-overlap.md).
-Filtro nomi-indice per interfacce indicizzate, tramite helper esistente, senza dedupglobale.
-Document mantiene nomi numerici e le forme non canoniche restano nomi.18normal/18JITless
-proxy contracts verdi, runner42(8skipPOSIX), parseRustverde; prova nativa mostraTypeError
-per idduplicati. L'estensione del filtro agli indici fuoriintervallo segue le letture già
-esistenti: è scelta d'integrazione, non conformità universale dimostrata. BrowserCIpending.
-
-0375 è committata localmente come `68d687ce5ae`, wiki locale `86cbaf5`; replayWin/Linux
-6/6percorsiidenticiLF. Prossimo incarico0376 salvato: delete di nomi visibili senza deleter.
-Non usare NamedGetter come mera query se modifica i past names; niente WIP da pubblicare.
-Restano aperti sourceText0361, compatibilità completa delle proprietà legacy e retention
-complessiva. I frame specifici già verificati non dimostrano una garanzia globale.
-
-Codex dirige/revisiona, Claude implementa via CLI (Read/Edit/Write/Grep/Glob; nienteShell
-negata da ritentare). Nessun incarico Claude o CLI interattiva attivi. Il precedente ricontrollo
-`ripresa-unica-claude-dopo-quota-0347` è stato ELIMINATO dopo il tentativo riuscito.
-L’attuale nuovo evento di quota0376 ha soltanto il tentativo14:02 sopra; nessuna automazione
-periodica né controllo intermedio. Riprendere il loop soltanto se quota disponibile.
-ChromeDevToolsMCP indisponibile nella sessione (Targetclosed), nessun nuovo riferimentoChrome.
-Build pesanti soloCI. Workspaces leggeri da riusare, cwd esplicito: normale
-`C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js`, JITless `...-00kx/roves-js`;
-CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`. Evitare nuove cache/copie.
+Prossimi problemi concreti: query prototipo conforme a GetOwnProperty, delete indicizzato,
+defineProperty legacy; sourceText0361 e retention complessiva restano aperti. I frame
+specifici già verificati non dimostrano una garanzia globale. Non ricreare CLAUDE_RESUME.md.
+Codex dirige/revisiona, Claude implementa un incarico alla volta; build pesanti soloCI.
+Workspaces leggeri da riusare: normale `C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js`,
+JITless `...-00kx/roves-js`; CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.
 
 ## Storico recente — 26–27 ottobre (non è il punto di ripresa)
 
