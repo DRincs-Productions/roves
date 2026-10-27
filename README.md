@@ -803,3 +803,7 @@ module loading; dynamic imports remain asynchronous. Pause timing and effects at
 and during gameplay are an open test/review item, with no measured latency claim.
 No runtime dependency was added and the current backend remains active. The isolated
 native class/async suite passes Linux/Windows normal/JITless (four CI jobs).
+
+The auxiliary-window denial and development notice changes pass the required Linux/Windows
+build and packaging checks. This does not establish visual notice behavior or production
+Deno integration; the provisional module-loading impact review remains open.

@@ -1,3 +1,12 @@
+## 2026-10-28 - Resume the single authorized Deno retry after required shell CI passes
+
+Previous b520 batch is green for all required checks: general10/10 and Android. Shell
+window-denial/development-notice changes compile/package on Linux/Windows; visual behavior
+and production Deno remain unverified. Dispatch the single0385 retry after verified reset
+from saved provisional prompt, then delete its one-shot automation. Update current/0385
+handoffs and README/wiki, distinguishing dispatch from completed integration. Patch0396
+captures the durable handoff update. No second Claude task or partial source publication.
+
 ## 2026-10-27 - Save the provisional Deno task at the verified session reset
 
 The resumed0385 task reached its actual five-hour session quota before new source edits.
