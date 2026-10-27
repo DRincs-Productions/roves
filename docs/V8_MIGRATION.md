@@ -20,6 +20,14 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026
 
+Checkpoint pubblicato: `0eb67d506431377ec24cf47e288a5e8139ff0c6a`, wiki `9c037af`,
+roves-action `4ba4230`. Include0377 consolidata, decisione0378 e fixCI0379.
+Nuovo batch: V8 `40528119179`, generale `40528119248`, Android `40528119174`,
+iOS `40528119198` esclusa insieme a macOS. Alla lettura aggregata dopo il push:
+V8/generale in coda, Android in corso; nessun risultato conclusivo. Non fare altri push
+mentre le run obbligatorie sono attive. Verificare soprattutto packaging/Steam e nuove
+fixture0377; build pesanti online, nessun polling periodico. Il batch735a sotto è precedente.
+
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
 
@@ -35,18 +43,18 @@ il vecchio percorso. Niente fork nostro/doppia implementazione permanente. Decis
 prove devono distinguere test eseguiti, blocchi e costi non misurati. PianoLIBRERIE_E_CONSOLE
 e regoleAGENTS/AGENT_WORKFLOW aggiornati; ruoli e vincoli CI invariati.
 
-Pubblicato `735a1154698984a3151652389d664665b011945c`, wiki `48bfc3d`, include0375/0376.
+Batch precedente `735a1154698984a3151652389d664665b011945c`, wiki `48bfc3d`, include0375/0376.
 Batch V8 `40520566885`: richiesti7/7verdi (browserLinuxnormal/JITless eWindows compresi);
 Android `40520566920` verde. Generale `40520566879`: patch/probeWindows/Linux/shared
 verdi, ma build/packaging eSteam SALTATI perché il gate aggregato include il probe macOS
 cancellato. Non considerarli verdi: manca copertura richiesta. iOS `40520566892` fallita
 e macOS esclusi per istruzione utente; non disattivare iworkflow né ritentare soloApple.
-Gate corretto localmente0379, patch0381: probeApple separato ma abilitato, nomi invariati;
-PyYAML verifica matrice/dipendenze e build/Steam invariati. Includere il fix nel push,
-poi verificare che la nuova CI esegua packaging/Steam precedentemente saltati.
-Nessuna run precedente attiva, nessun difetto runtime nonApple mostrato dal batch.
+Gate corretto e pubblicato0379, patch0381: probeApple separato ma abilitato, nomi invariati;
+PyYAML verifica matrice/dipendenze e build/Steam invariati. La nuova CI deve ancora confermare
+packaging/Steam precedentemente saltati. Batch735a terminale, nessun difetto runtime nonApple
+mostrato da quel batch; nuovo batch attivo riportato sopra.
 
-0377 implementata/revisionata localmente: [handoff](handoff/0377-prototype-descriptor-visibility.md),
+0377 implementata/revisionata e pubblicata: [handoff](handoff/0377-prototype-descriptor-visibility.md),
 patch0378. Il controllo prototipo riusa JS_GetPropertyDescriptorById, senza un nuovo walker.
 1native normal/1JITless verdi; runner42(8skipPOSIX), generatore14, parseRustverde.
 Negativa isolata della vecchia query HasProperty fallisce sulla trap sbagliata, sorgente
