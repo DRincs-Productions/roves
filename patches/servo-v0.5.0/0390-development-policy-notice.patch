@@ -1,0 +1,128 @@
+diff --git a/ports/servoshell/desktop/app.rs b/ports/servoshell/desktop/app.rs
+index 00d1b9ce1ae..e0c6cb727c3 100644
+--- a/ports/servoshell/desktop/app.rs
++++ b/ports/servoshell/desktop/app.rs
+@@ -484,6 +484,9 @@ impl App {
+                 .map(Rc::new),
+         ));
+ 
++        // Real bundles have launch metadata; a CLI development run does not.
++        running_state.set_development_mode(self.game_content.is_none());
++
+         // Keep the boot splash up (see its own doc comment) instead of immediately
+         // handing off to a page that hasn't painted anything of its own yet — a no-op
+         // for headless, which has no splash/window to begin with.
+diff --git a/ports/servoshell/desktop/gui.rs b/ports/servoshell/desktop/gui.rs
+index 90772214df4..e4563f2ddc5 100644
+--- a/ports/servoshell/desktop/gui.rs
++++ b/ports/servoshell/desktop/gui.rs
+@@ -901,6 +901,7 @@ impl Gui {
+ 
+         let sdl_window = headed_window.sdl_window();
+         let had_dialog = std::cell::Cell::new(false);
++        let had_policy_notice = state.policy_notice().is_some();
+         let mut full_window = false;
+         // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
+         // (egui 0.36 removed the `Context`-based top-level panel API this used to go
+@@ -957,6 +958,22 @@ impl Gui {
+                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
+             }
+ 
++            if let Some(message) = state.policy_notice() {
++                let mut open = true;
++                egui::Window::new("Roves development")
++                    .id(Id::new("roves-policy-notice"))
++                    .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
++                    .collapsible(false)
++                    .resizable(false)
++                    .open(&mut open)
++                    .show(ui.ctx(), |ui| {
++                        ui.label(message);
++                    });
++                if !open {
++                    state.dismiss_policy_notice();
++                }
++            }
++
+             window.repaint_webviews();
+ 
+             let (width, height) = sdl_window.size_in_pixels();
+@@ -989,7 +1006,7 @@ impl Gui {
+             single_webview: window.webview_ids().len() == 1 && window.active_webview().is_some(),
+             full_window,
+             no_dialogs: !had_dialog.get(),
+-            no_status_overlay: self.status_text.is_none(),
++            no_status_overlay: self.status_text.is_none() && !had_policy_notice,
+             no_egui_focus: !self.context.egui_ctx.egui_wants_keyboard_input()
+                 && !self.context.egui_ctx.egui_is_using_pointer(),
+             accessibility_idle: !state.accessibility_active()
+diff --git a/ports/servoshell/running_app_state.rs b/ports/servoshell/running_app_state.rs
+index ae2dcc4c093..bf6922c26a5 100644
+--- a/ports/servoshell/running_app_state.rs
++++ b/ports/servoshell/running_app_state.rs
+@@ -184,6 +184,10 @@ pub(crate) struct RunningAppState {
+ 
+     /// Emit the auxiliary-window policy warning at most once per application lifetime.
+     auxiliary_window_warning_emitted: Cell<bool>,
++    #[cfg(not(target_os = "android"))]
++    development_mode: Cell<bool>,
++    #[cfg(not(target_os = "android"))]
++    policy_notice: Cell<Option<&'static str>>,
+ }
+ 
+ impl RunningAppState {
+@@ -210,9 +214,29 @@ impl RunningAppState {
+             initial_webview_id: Cell::new(None),
+             initial_load_complete: Cell::new(false),
+             auxiliary_window_warning_emitted: Cell::new(false),
++            #[cfg(not(target_os = "android"))]
++            development_mode: Cell::new(false),
++            #[cfg(not(target_os = "android"))]
++            policy_notice: Cell::new(None),
+         }
+     }
+ 
++    /// Bundled games retain log diagnostics but never show development notices.
++    #[cfg(not(target_os = "android"))]
++    pub(crate) fn set_development_mode(&self, enabled: bool) {
++        self.development_mode.set(enabled);
++    }
++
++    #[cfg(not(target_os = "android"))]
++    pub(crate) fn policy_notice(&self) -> Option<&'static str> {
++        self.policy_notice.get()
++    }
++
++    #[cfg(not(target_os = "android"))]
++    pub(crate) fn dismiss_policy_notice(&self) {
++        self.policy_notice.set(None);
++    }
++
+     pub(crate) fn open_window(
+         self: &Rc<Self>,
+         platform_window: Rc<dyn PlatformWindow>,
+@@ -480,7 +504,7 @@ impl WebViewDelegate for RunningAppState {
+             .show_http_authentication_dialog(webview.id(), authentication_request);
+     }
+ 
+-    fn request_create_new(&self, _parent_webview: WebView, request: CreateNewWebViewRequest) {
++    fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
+         // Servo's request responder sends None on drop. Reject before allocating a
+         // WebView, preserving the existing document and the native shell window.
+         drop(request);
+@@ -489,6 +513,15 @@ impl WebViewDelegate for RunningAppState {
+                 "Roves blocked auxiliary-window creation: games run in a single window; \
+                  repeated requests will be suppressed"
+             );
++            #[cfg(not(target_os = "android"))]
++            if self.development_mode.get() {
++                self.policy_notice.set(Some(
++                    "An extra window was blocked. Roves keeps the game in one window.",
++                ));
++                self.window_for_webview(&parent_webview).set_needs_update();
++            }
++            #[cfg(target_os = "android")]
++            let _ = parent_webview;
+         }
+     }
+ 

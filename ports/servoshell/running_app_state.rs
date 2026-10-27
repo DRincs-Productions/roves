@@ -184,6 +184,10 @@ pub(crate) struct RunningAppState {
 
     /// Emit the auxiliary-window policy warning at most once per application lifetime.
     auxiliary_window_warning_emitted: Cell<bool>,
+    #[cfg(not(target_os = "android"))]
+    development_mode: Cell<bool>,
+    #[cfg(not(target_os = "android"))]
+    policy_notice: Cell<Option<&'static str>>,
 }
 
 impl RunningAppState {
@@ -210,7 +214,27 @@ impl RunningAppState {
             initial_webview_id: Cell::new(None),
             initial_load_complete: Cell::new(false),
             auxiliary_window_warning_emitted: Cell::new(false),
+            #[cfg(not(target_os = "android"))]
+            development_mode: Cell::new(false),
+            #[cfg(not(target_os = "android"))]
+            policy_notice: Cell::new(None),
         }
+    }
+
+    /// Bundled games retain log diagnostics but never show development notices.
+    #[cfg(not(target_os = "android"))]
+    pub(crate) fn set_development_mode(&self, enabled: bool) {
+        self.development_mode.set(enabled);
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub(crate) fn policy_notice(&self) -> Option<&'static str> {
+        self.policy_notice.get()
+    }
+
+    #[cfg(not(target_os = "android"))]
+    pub(crate) fn dismiss_policy_notice(&self) {
+        self.policy_notice.set(None);
     }
 
     pub(crate) fn open_window(
@@ -480,7 +504,7 @@ impl WebViewDelegate for RunningAppState {
             .show_http_authentication_dialog(webview.id(), authentication_request);
     }
 
-    fn request_create_new(&self, _parent_webview: WebView, request: CreateNewWebViewRequest) {
+    fn request_create_new(&self, parent_webview: WebView, request: CreateNewWebViewRequest) {
         // Servo's request responder sends None on drop. Reject before allocating a
         // WebView, preserving the existing document and the native shell window.
         drop(request);
@@ -489,6 +513,15 @@ impl WebViewDelegate for RunningAppState {
                 "Roves blocked auxiliary-window creation: games run in a single window; \
                  repeated requests will be suppressed"
             );
+            #[cfg(not(target_os = "android"))]
+            if self.development_mode.get() {
+                self.policy_notice.set(Some(
+                    "An extra window was blocked. Roves keeps the game in one window.",
+                ));
+                self.window_for_webview(&parent_webview).set_needs_update();
+            }
+            #[cfg(target_os = "android")]
+            let _ = parent_webview;
         }
     }
 

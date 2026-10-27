@@ -792,6 +792,7 @@ does not establish production DOM integration or cancellation of real game resou
 
 The shell now rejects auxiliary-window creation before allocating a WebView and logs the
 reason once per application, using Servo's existing rejection responder. This implements
-only the extra-window rule: navigation/reload blocking, development notices and trusted
-external-link handling remain pending. The production deno_core port is in progress;
+only the extra-window rule: navigation/reload blocking and trusted external-link handling
+remain pending. CLI development launches also show a dismissible non-modal notice; real
+bundles keep log-only diagnostics. Repeated requests do not reopen the notice. The production deno_core port is in progress;
 the isolated native class/async checks are now published for CI, not proof of adoption.

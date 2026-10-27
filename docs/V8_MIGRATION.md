@@ -24,14 +24,13 @@ Checkpoint pubblicato: `16b7149221e7989fe07c2cdfd266def61e646573`, wiki `be50deb
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
 Batch precedente d1eb: probe40556912335 verde4/4; generale40556912161 richiesti10/10verdi;
 Android40556912086 verde. Apple esclusi dal blocco. Nuovo batch: probe40564575701,
-generale40564575679, Android40564575708 attivi; iOS40564575683 esclusa. Nessun push
+generale40564575679, Android40564575708 da ricontrollare al termine del lavoro; iOS40564575683 esclusa. Nessun push
 mentre verifiche richieste attive o errori irrisolti; continuare sviluppo/commit locali.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
-async0384 patch0388: verifiche leggere passate, nuove asserzioni native attendono il batch
-corrente. Sono esperimenti, non integrazione produttiva né prova di retention risolta.
+async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
 
-0385 ATTIVA con Claude: port produttivo dell'owner deno_core, moduli e async/adapter DOM;
+0385 ATTIVA con Claude (ripresa mirata dopo diagnosi B3): port produttivo dell'owner deno_core, moduli e async/adapter DOM;
 prompt e risultato in target/task-0385. Non pubblicare un backend parziale o dichiarare
 adozione prima della revisione e delle prove browser. Nessuna quota corrente rilevata;
 ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
@@ -41,7 +40,10 @@ Codex possiede policy shell ports/servoshell, Claude il port runtime. Divisione 
 in AGENTS/workflow e target/task-0385/COORDINATION.md. Nessun file sovrapposto.
 0386 locale: rifiuto delle nuove finestre prima di costruire WebView tramite il responder
 Servo esistente; warning nei log una sola volta per applicazione. Non implementa ancora
-blocco reload/navigazione, avviso sviluppo o apertura esterna su clic. Il NavigationRequest
+blocco reload/navigazione o apertura esterna su clic.
+0387 locale completa avviso sviluppo non modale e chiudibile tramite egui esistente;
+solo esecuzioni CLI senza metadata bundle, nei distribuiti solo log. Non riapre dopo
+richieste ripetute. Rendering avviso e comportamento browser attendono CI/verifica visiva. Il NavigationRequest
 attuale non espone provenienza del clic: non inventare attivazione fidata nella shell.
 Sintassi Rust verificata; verifica browser online ancora necessaria. TODO.md resta separato.
 

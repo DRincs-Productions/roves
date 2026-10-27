@@ -1,3 +1,15 @@
+## 2026-10-27 - Show a dismissible policy notice only in development launches (0387)
+
+Reuse existing egui Window for the auxiliary-window denial notice, not modal dialogs,
+new dependencies, game-injected JS or a notification framework. desktop/app identifies
+real bundles from existing game_content launch metadata, not debug/release compilation,
+window title or URL scheme. Distributed bundles default to log-only; Android remains
+log-only. RunningAppState retains one static notice and one warning per application;
+dismissal is persistent for repeated attempts. GUI direct-present fast path is disabled
+for every frame containing the notice, including its closing frame. Normal game input
+outside the notice remains available. Syntax checks pass; browser/visual checks pending.
+Update README/wiki and migration handoff; patch0390. Full navigation/link policy pending.
+
 ## 2026-10-27 - Reject auxiliary game windows and coordinate runtime integration (0386)
 
 ports/servoshell/running_app_state.rs rejects CreateNewWebViewRequest by dropping the

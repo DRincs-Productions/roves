@@ -484,6 +484,9 @@ impl App {
                 .map(Rc::new),
         ));
 
+        // Real bundles have launch metadata; a CLI development run does not.
+        running_state.set_development_mode(self.game_content.is_none());
+
         // Keep the boot splash up (see its own doc comment) instead of immediately
         // handing off to a page that hasn't painted anything of its own yet — a no-op
         // for headless, which has no splash/window to begin with.

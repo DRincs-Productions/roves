@@ -901,6 +901,7 @@ impl Gui {
 
         let sdl_window = headed_window.sdl_window();
         let had_dialog = std::cell::Cell::new(false);
+        let had_policy_notice = state.policy_notice().is_some();
         let mut full_window = false;
         // `EguiGlow::run`'s callback now hands back the whole-window `&mut Ui` directly
         // (egui 0.36 removed the `Context`-based top-level panel API this used to go
@@ -957,6 +958,22 @@ impl Gui {
                 .show(|ui| ui.add(Label::new(status_text.clone()).extend()));
             }
 
+            if let Some(message) = state.policy_notice() {
+                let mut open = true;
+                egui::Window::new("Roves development")
+                    .id(Id::new("roves-policy-notice"))
+                    .anchor(egui::Align2::RIGHT_TOP, [-12.0, 12.0])
+                    .collapsible(false)
+                    .resizable(false)
+                    .open(&mut open)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(message);
+                    });
+                if !open {
+                    state.dismiss_policy_notice();
+                }
+            }
+
             window.repaint_webviews();
 
             let (width, height) = sdl_window.size_in_pixels();
@@ -989,7 +1006,7 @@ impl Gui {
             single_webview: window.webview_ids().len() == 1 && window.active_webview().is_some(),
             full_window,
             no_dialogs: !had_dialog.get(),
-            no_status_overlay: self.status_text.is_none(),
+            no_status_overlay: self.status_text.is_none() && !had_policy_notice,
             no_egui_focus: !self.context.egui_ctx.egui_wants_keyboard_input()
                 && !self.context.egui_ctx.egui_is_using_pointer(),
             accessibility_idle: !state.accessibility_active()
