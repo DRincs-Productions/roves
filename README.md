@@ -807,3 +807,8 @@ native class/async suite passes Linux/Windows normal/JITless (four CI jobs).
 The auxiliary-window denial and development notice changes pass the required Linux/Windows
 build and packaging checks. This does not establish visual notice behavior or production
 Deno integration; the provisional module-loading impact review remains open.
+
+Production Deno integration also has a reviewed module-error reporting gap: its public static
+evaluation API exposes failures through an internal unhandled rejection rather than the
+current error/onerror path. That separate behavior change has not been accepted or
+implemented; the provisional static-loading pause decision remains unchanged.

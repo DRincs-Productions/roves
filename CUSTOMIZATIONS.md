@@ -1,3 +1,14 @@
+## 2026-10-28 - Record the post-reset module-evaluation reporting gap
+
+The single0385 retry completed with Claude available and no source/dependency/test changes.
+Review C2: public mod_evaluate discards ordinary rejection from its result and rethrows in
+an internal promise reaction, unlike the existing Roves synchronous evaluation-error path.
+Do not silently change error/onerror into unhandledrejection. Record separate pending user
+choice, retaining the accepted provisional static-loading pause and test review. C1 public
+external-op tracking candidate and network-thread delivery are design findings, unverified.
+Update current/0385 handoffs, README/wiki; patch0397 reproduces durable evidence. No active
+Claude task, quota block or automation; reuse completed session context if resumed.
+
 ## 2026-10-28 - Resume the single authorized Deno retry after required shell CI passes
 
 Previous b520 batch is green for all required checks: general10/10 and Android. Shell

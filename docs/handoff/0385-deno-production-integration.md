@@ -63,13 +63,40 @@ Reuse it after review rather than redoing research; it is not a completed cutove
 The earlier choice2 was briefly recorded in local a9d055b06bd and is now superseded.
 Claude resumes with reapproved-provisional.txt. Current backend remains until atomic
 implementation and review; no partial source/dependency change may be published.
-No upstream message/issue. The27October attempt hit the session limit without source edits;
-/usage22:53 confirmed100%, reset28October00:00 Europe/Rome. The authorized single retry
-started28October00:02 from reapproved-provisional.txt, output reset-result.json. Await
-its delivery before any other Claude assignment. Automation ripresa-unica-claude-0385-dopo-reset
-was DELETED after dispatch. No periodic monitoring, new same-block retry or model change.
-Preceding b520 batch now passes all required checks: general10/10 and Android; Linux/Windows
-shell build/package green does not establish visual notice behavior or production Deno.
+## Post-reset result: new evaluation-error API gap (C2), decision pending
+
+The single28October00:02 retry completed normally and Claude is available, not quota-blocked.
+No production source, manifest, lockfile or test was changed. Deliverable:
+ target/task-0385/IMPLEMENTATION.md; result reset-result.json; session
+ab3e2eb3-6c0f-44ee-9277-de12c954a202. Prefer reusing this context for the next correction
+instead of repeating completed research. The one-shot automation was DELETED.
+
+C2 SOURCE REVIEW (not an executed browser proof): public JsRuntime::mod_evaluate returns
+Ok on ordinary module evaluation rejection. modules/map/evaluation.rs:153-162 rethrows the
+reason in an internal promise reaction, producing an unhandled rejection. The public future
+does not expose that reason; module handle/map accessors remain pub(crate). Current Roves
+ModuleEvaluate returns the actual evaluation promise and ThrowOnModuleEvaluationFailure
+checks its rejected reason (components/roves-js/src/modules_impl.rs:818-849), preserving a
+synchronous error path used by Servo. Do not silently replace error/window.onerror with
+unhandledrejection or identify internal promises through unreliable origin heuristics.
+
+An asynchronous question asks the user to choose: preserve error/onerror and pause adoption
+on C2, or explicitly accept unhandledrejection for static module evaluation errors. This
+is SEPARATE from the already-approved provisional static-loading pause; keep that approval
+and its performance review requirements intact. No answer means no permission for the new
+error-reporting deviation. No fork or upstream communication has been authorized/performed.
+
+C1 has a public candidate solution: external_ops_tracker.ref_op for the document lifetime
+prevents Deno from declaring a TLA awaiting Servo timers/fetch/events stalled; unref before
+drop. This remains unimplemented/unverified, with wakeups/shutdown behavior to test.
+net_traits::fetch_async delivers on the FetchThread and can supply static loading bytes
+without reentering ScriptThread JS. Preserve all fetch/security policy in the adapter.
+Other risks recorded: inline module import.meta.url identities and extra Deno microtask
+checkpoints require explicit review; do not claim full HTML behavior from isolated probes.
+
+The saved seven-file preparation remains OUTSIDE publishable sources. No need to redo B1
+research: exact public150.4 headers are available, but compiled shim/actual crate-header
+availability is still unverified. No decorative dependency or two V8 static libraries.
 
 ## Other integration requirements already authorized
 

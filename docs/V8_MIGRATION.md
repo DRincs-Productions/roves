@@ -20,14 +20,12 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 28 ottobre 2026
 
-Checkpoint pubblicato: `b5201929aaa95c68eeccefd1d9c5f816d6f62549`, wiki `3a3dff2`,
+Checkpoint pubblicato: `c660cbf58816d14ca9cbf57be893fb6e9c754c6c`, wiki `001c058`,
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
-Batch precedente16b: probe40564575701 verde4/4; generale40564575679 richiesti10/10verdi;
-Android40564575708 verde. Nuovo batch b520: generale40588014903, Android40588015577;
-iOS40588015016 esclusa. Batch b520 concluso VERDE per tutti i richiesti: generale10/10,
-Androidverde. Shell0386/0387 compilata e pacchettizzata Linux/Windows; non e una verifica
-visiva dell'avviso o una prova di port Deno. Pubblicazione dei commit completi consentita.
-Dopo prossimo push identificare nuove run e rispettare il loro batch prima di altri push.
+Batch precedente b520: generale40588014903 VERDE10/10 richiesti, Android40588015577 VERDE.
+Shell0386/0387 compilata/pacchettizzata Linux/Windows; comportamento visivo non verificato.
+Nuovo batch c660: generale40599426163, Android40599426266; iOS40599426187 esclusa.
+Non fare push mentre richiesti attivi o errori irrisolti; nessun polling periodico.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
@@ -44,13 +42,18 @@ Conservare HTML/TLA e sicurezza; nessun rientro JS durante prestito esclusivo de
 Ripresa0385 da target/task-0385/superseded-option1-wip, bozza incompleta da revisionare,
 non codice verificato. Nuovo incarico target/task-0385/reapproved-provisional.txt;
 consegna attesa IMPLEMENTATION.md. B1 shim/header e B2 documento unico restano necessari.
-Il27ottobre22:53 /usage verificava100%, reset28ottobre00:00 Europe/Rome. Il tentativo
-UNICO dopo reset e stato avviato28ottobre00:02 da reapproved-provisional.txt, output
- target/task-0385/reset-result.json, consegna IMPLEMENTATION.md. Attendere esito dell'incarico,
-non avviarne un secondo. Il ricontrollo ripresa-unica-claude-0385-dopo-reset e stato ELIMINATO;
-nessuna automazione attiva o polling intermedio. Non dichiarare gia disponibile/completato
-il runtime senza consegna e revisione. Se persiste stessa quota, salvare e fermarsi senza
-nuovo retry/cambio modello. TODO.md resta modifica separata.
+Ripresa UNICA28ottobre00:02 completata: Claude disponibile, nessuna quota corrente, ma
+nuovo gapC2 nella valutazione: mod_evaluate pubblico non espone ragione del reject e la
+rilancia comeunhandledrejection interna, invece del percorso error/onerror esistente.
+Analisi sorgente revisionata, NON prova browser eseguita. Domanda utente pendente: mantenere
+onerror e sospendere adozione sul gap, oppure accettare esplicitamente nuova deviazione.
+Non assumere consenso. Pausa statica PROVVISORIA gia autorizzata resta un compromesso SEPARATO.
+C1 stalloTLA suasyncServo: soluzione pubblica candidata external_ops_tracker.ref_op/unref_op,
+non implementata/verificata. Deliverable target/task-0385/IMPLEMENTATION.md, reset-result.json;
+sessione ab3e2eb3-6c0f-44ee-9277-de12c954a202 da riusare per evitare ricerche duplicate.
+Nessun sorgente/dependency/lockfile/test cambiato; bozza7file resta separata. Nessun taskClaude
+attivo. Automazione ripresa-unica-claude-0385-dopo-reset ELIMINATA; nessun retry programmato.
+TODO.md resta modifica separata. Nessuna adozione o retentioncomplessiva dichiarata risolta.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
