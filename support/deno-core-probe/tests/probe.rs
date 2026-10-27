@@ -24,10 +24,10 @@ fn mode_values_are_validated() {
     assert!(probe::parse_mode(None).is_err());
 }
 
-/// The ten V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
+/// The eleven V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
 /// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
 /// the "before" half of the bootstrap one runs after deno_core's bootstrap globals were
-/// removed (`new_runtime`, or the same path plus the native class extension).
+/// removed (`new_runtime`, or the same path plus a fixture extension).
 #[test]
 fn single_document_scenarios() {
     configured_mode_controls_webassembly();
@@ -40,6 +40,7 @@ fn single_document_scenarios() {
     context_flag_switches_string_compilation_off_and_on();
     bootstrap_namespace_is_removed_before_game_code();
     native_class_instances_own_their_values_and_share_owned_metadata();
+    native_async_op_completes_or_is_dropped_with_the_runtime();
 }
 
 fn configured_mode_controls_webassembly() {
@@ -204,4 +205,68 @@ fn native_class_instances_own_their_values_and_share_owned_metadata() {
     // Dropping the runtime finalizes every native object once, and with them the metadata.
     assert_eq!(report.drops_after_teardown, [2, 2, 2]);
     assert!(!report.meta_alive_after_teardown);
+}
+
+fn native_async_op_completes_or_is_dropped_with_the_runtime() {
+    // Not proven: cancellation of real resources (I/O, timers, DOM work), Servo task ordering,
+    // abort signals, or ordering against unrelated futures. One fixture op on deno_core's
+    // driver; the Rust-side counters, not the JS log alone, show that a native future ran.
+    let report = probe::native_async_op_lifecycle().unwrap();
+    let counts = |started, resumed_after_gate, completed, cancelled, payloads_dropped| probe::OpCounts {
+        started,
+        resumed_after_gate,
+        completed,
+        cancelled,
+        payloads_dropped,
+    };
+
+    // Exactly one game-visible entry point; no bootstrap namespace, no op by name.
+    let head = strings(&[
+        "bootstrap-globals:",
+        "fixture:function:nativeFixture",
+        "returns-promise:true",
+        // deno_core's stub tags pending op promises with a Symbol.for key (internal detail).
+        "internal-id-symbol:true",
+        "script:returned",
+    ]);
+    // The classic script returned with both futures polled once and suspended in Rust.
+    assert_eq!(report.completion_log_after_script, head);
+    assert_eq!(report.completion_counts_after_script, counts(2, 0, 0, 0, 0));
+    assert!(report.fixture_op_registered);
+    assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
+
+    // The script's own Promise job runs first; the op callbacks only after their futures
+    // completed on a later event loop turn. The two ops' relative order is not asserted.
+    let log = &report.completion_log;
+    assert_eq!(log[..head.len()], head[..], "{log:?}");
+    assert_eq!(log[head.len()], "promise-job", "{log:?}");
+    let position = |entry: &str| log.iter().position(|item| item == entry).unwrap_or_else(|| panic!("{entry} in {log:?}"));
+    assert!(position("ok:fulfilled:native:alpha") < position("ok:chained"), "{log:?}");
+    position("fail:rejected:BadResource:fixture failed: beta");
+    assert_eq!(log.len(), head.len() + 4, "{log:?}");
+    // Both guards saw a result (Ok and Err alike), both owned payloads were freed.
+    assert_eq!(report.completion_counts, counts(2, 0, 2, 0, 2));
+
+    // A rejection with no handler surfaces as the event loop's error.
+    let error = report.unhandled_error.as_deref().unwrap_or_else(|| panic!("unhandled rejection was swallowed"));
+    assert!(error.contains("fixture failed: unhandled"), "{error}");
+    assert_eq!(report.unhandled_counts, counts(3, 0, 3, 0, 3));
+    assert!(!report.completion_payload_alive_after_teardown);
+
+    // Pending: first poll happened (started), one public event loop tick ran the Promise job
+    // and stayed pending; no game callback, the payload is alive.
+    assert_eq!(report.pending_counts_before_poll, counts(1, 0, 0, 0, 0));
+    assert!(report.pending_poll_was_pending);
+    assert_eq!(report.pending_log, strings(&["script:returned", "promise-job"]));
+    assert_eq!(report.pending_counts_after_poll, counts(1, 0, 0, 0, 0));
+    assert!(report.pending_payload_alive_before_drop);
+
+    // Dropping the runtime dropped the suspended future: guard cancelled, payload freed, and
+    // the runtime kept no clone of the gate or the counters.
+    assert_eq!(report.cancel_counts_after_drop, counts(1, 0, 0, 1, 1));
+    assert!(!report.cancel_payload_alive_after_drop);
+    assert_eq!(report.gate_strong_after_drop, 1);
+    assert_eq!(report.counters_strong_after_drop, 1);
+    // Notifying the gate afterwards resumes nothing.
+    assert_eq!(report.counts_after_gate_release, counts(1, 0, 0, 1, 1));
 }

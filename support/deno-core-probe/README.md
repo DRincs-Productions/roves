@@ -5,7 +5,9 @@ Isolated feasibility experiment for running the one Roves game document on
 following [docs/handoff/0380-single-document-runtime.md](../../docs/handoff/0380-single-document-runtime.md).
 It is **not** an adoption, not a production dependency and not wired into the engine: the
 crate is its own Cargo workspace, nothing in the Roves workspace depends on it, and no game
-API, Deno extension or capability (file system, network, process) is exposed.
+API, Deno extension or capability (file system, network, process) is exposed. The only
+game-visible additions are test fixtures: the native class wrappers and one
+`nativeFixture` function backed by an in-memory Rust future.
 
 ## Scope
 
@@ -16,9 +18,10 @@ does not make public, and the product no longer requires them.
 
 Scenarios in `tests/probe.rs`. The task 0381 baseline (without namespace removal) passed in
 CI run 40539608247 (4/4 jobs: Ubuntu and Windows, normal and JITless). The task 0382
-namespace removal was published for CI run 40556912335; the task 0383 native class scenario
-(`native_class_instances_own_their_values_and_share_owned_metadata`) has not been compiled
-or run yet. All go
+namespace removal passed in CI run 40556912335 (4/4 jobs). The task 0383 native class
+scenario (`native_class_instances_own_their_values_and_share_owned_metadata`) and the task
+0384 native async op scenario (`native_async_op_completes_or_is_dropped_with_the_runtime`)
+have not been compiled or run yet. All go
 through public deno_core APIs and its `v8` re-export, with an in-memory `ModuleLoader`
 serving `https://game.invalid/`. Those URLs are a mock: the scenarios run modules and
 scripts directly, with no HTML document, no HTML origin and no CSP header behind them.
@@ -29,11 +32,11 @@ globals (`Deno`, `__bootstrap`, `__infra`) with the native `v8::Object` API righ
 as a blocker instead of being hidden. So every scenario below runs on the stripped global.
 The raw constructor is private and used only for the before/after observation.
 
-The 11 logical scenarios are grouped in **2 Rust tests**:
+The 12 logical scenarios are grouped in **2 Rust tests**:
 `mode_values_are_validated` (pure, no V8) and `single_document_scenarios`, which runs the
-other ten in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
+other eleven in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
 on that thread (`--test-threads=1` alone serializes tests but may still run each on its own
-thread). The first failing scenario stops the rest; they are not 11 independent tests.
+thread). The first failing scenario stops the rest; they are not 12 independent tests.
 
 | Scenario | Checks | Does not prove |
 |---|---|---|
@@ -48,6 +51,7 @@ thread). The first failing scenario stops the rest; they are not 11 independent 
 | `context_flag_switches_string_compilation_off_and_on` | With the context flag off, `eval`/`new Function` throw `EvalError` while embedder-compiled scripts still run; with it on, both work | Per-string decisions, CSP `unsafe-eval` reporting, Trusted Types: the flag is context-wide, not a CSP implementation |
 | `bootstrap_namespace_is_removed_before_game_code` | Raw deno_core has `Deno`/`__bootstrap` as configurable data properties (`__infra` already gone); after removal the game's first statements see none of them, no global value re-exposes `core`/`ops`/`primordials`/`internals`, `Object`/`Promise`/`queueMicrotask` work; `ext:core/mod.js` and `ext:core/ops` are refused by direct `import()`, by `import.meta.resolve`, and — when a loader alias maps a game specifier onto them — by deno_core's own `ext:` guard for dynamic and static imports; no fs/net/fetch/process-style op is registered and the resource table is empty | General privilege isolation: deno_core's builtin closures (`console`, `queueMicrotask`) still hold the core internally, builtin resource ops (`op_read`, `op_print`, ...) stay registered though unreachable from game code, `import.meta.main` is a Deno extra; no Servo DOM, origin or CSP |
 | `native_class_instances_own_their_values_and_share_owned_metadata` | `src/native_class.rs`: one class registered by `#[op2] impl` + `extension!(objects = [...])`, wrappers made by `deno_core::cppgc::make_cppgc_object` on the stripped runtime. Two instances share one prototype (`constructor.name`, `instanceof`, getters on the prototype, no own properties) and one `Rc<ClassMeta>` built at runtime, yet keep their own native value and their own wrapper-less cppgc child behind a traced `v8::cppgc::Member`; `info` returns a stable, per-instance object through deno_core's `SameObject`; a wrapper-less receiver and the exposed constructor cannot reach a native value. After the creator drops its `Rc`, exactly the two instances hold the metadata (`Weak` count 2); a public `Isolate::low_memory_notification` GC with both wrappers reachable finalizes nothing and the values still read back. After teardown every instance, child and `info` object is finalized once (cppgc `Drop` counters) and the metadata is freed | Servo DOM bindings, Web IDL conversions, inheritance, cross-realm wrappers; collection **before** teardown once the roots are gone (V8's public GC entry points do not promise it, and cppgc may scan the native stack conservatively: only an upper bound is asserted); a strict proof that tracing alone retained the child (a stale native-stack pointer could also keep it); the V8 class name and cppgc `get_name` remain `'static`, as those APIs require |
+| `native_async_op_completes_or_is_dropped_with_the_runtime` | `src/native_async.rs`: one `#[op2] async fn` (owned `String` in, owned `String` or `ResourceError` out) registered by `extension!(ops = [...])`; the extension's trusted `js` source captures it into one arrow function, `globalThis.nativeFixture`, before the bootstrap namespace is removed, so the game sees that one function and no `Deno`/`op_*` global. Per-runtime state lives in the public `OpState` and is cloned out before the first `await`. Suspension uses tokio's `yield_now`/`Notify` on deno_core's own op driver; no executor, timer or polling loop of ours. Rust-side counters (first poll, completion vs cancellation guard, owned payload drops, `Weak`) show that the futures ran: after the classic script returns both are polled once and suspended, with no callback; `run_event_loop` runs the script's Promise job first, then fulfils with the native result (a chained job follows) and rejects the failing op as `BadResource` (completion errors count as completions, not cancellations); a rejection with no handler is returned as the event loop's error. A `wait:` op that one public `poll_event_loop` tick leaves pending (the Promise job ran, no op callback) is dropped by `JsRuntime` teardown: its guard counts a cancellation, its payload is freed, the runtime keeps no clone of the gate or counters, and notifying the gate afterwards resumes nothing | Cancellation of real resources (I/O, timers, network, DOM work) or abort signals; Servo task ordering; order between independent native ops; that a callback after teardown is impossible in general (here the isolate is gone, so none can run). deno_core tags pending op promises with a `Symbol.for("Deno.core.internalPromiseId")` key visible to the game (pinned as observed, not hidden) |
 
 There is **no Servo DOM, no History API and no TanStack-style router** here, and none is
 simulated: nothing in this crate proves that Servo's DOM, events or same-document routing
@@ -67,8 +71,8 @@ V8_TEST_MODE=jitless cargo test --locked --manifest-path support/deno-core-probe
 The build downloads the prebuilt rusty_v8 static library; it is heavy, so it runs online in
 `.github/workflows/deno-core-probe.yml` (Ubuntu 24.04 and Windows, normal and JITless, no
 browser executable needed). No result is claimed until that workflow has run; see
-`target/task-0381/RESULTS.md`, `target/task-0382/RESULTS.md` and
-`target/task-0383/RESULTS.md` for what was and was not
+`target/task-0381/RESULTS.md`, `target/task-0382/RESULTS.md`,
+`target/task-0383/RESULTS.md` and `target/task-0384/RESULTS.md` for what was and was not
 executed.
 
 ## Engine version gap
@@ -90,7 +94,11 @@ Each needs a bounded proof using existing maintained APIs, not a new framework:
    `Deno.core.ops`, and Web IDL conversions.
 2. **Module and async single owner.** deno_core must replace Servo's module map and
    dynamic-import service and the Promise job queue for the document, not run beside them;
-   the old path is removed in the same change.
+   the old path is removed in the same change. One native async op fixture driven by
+   deno_core's op driver is authored
+   (`native_async_op_completes_or_is_dropped_with_the_runtime`, awaiting CI); still open:
+   how Servo's own task sources (network, timers, DOM events) would feed or share that
+   event loop.
 3. **Bootstrap globals and capabilities.** Namespace removal is authored
    (`bootstrap_namespace_is_removed_before_game_code`, awaiting CI). The absence of these
    globals is not a universal capability proof: privilege isolation still has to be

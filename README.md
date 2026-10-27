@@ -784,3 +784,8 @@ The isolated experiment also contains a native class/owned-metadata/cppgc fixtur
 maintained op2, Member/Persistent and SameObject APIs. Local syntax/metadata checks pass;
 new class assertions await CI. It tests native lifetime/identity boundaries, not real Servo
 DOM integration, arbitrary-cycle collection or measured performance improvements.
+
+The isolated deno_core experiment now also tests a real native Rust async op: owned results,
+error propagation and cancellation/payload cleanup at runtime shutdown. It reuses Deno's
+driver and Tokio instead of adding a job queue. New class/async assertions await CI; this
+does not establish production DOM integration or cancellation of real game resources.

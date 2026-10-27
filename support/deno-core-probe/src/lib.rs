@@ -22,9 +22,16 @@
 //!
 //! [`native_class`] holds the cppgc-backed native class fixture (owned metadata, traced native
 //! child, wrapper identity); it runs on the same stripped document runtime.
+//!
+//! [`native_async`] holds the native async op fixture (one Rust future behind one captured
+//! game function, completion and shutdown cancellation); same stripped document runtime.
 
+mod native_async;
 mod native_class;
 
+pub use native_async::NativeAsyncReport;
+pub use native_async::OpCounts;
+pub use native_async::native_async_op_lifecycle;
 pub use native_class::NativeClassReport;
 pub use native_class::native_class_ownership;
 
@@ -231,8 +238,9 @@ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
     new_runtime_with(loader, Vec::new())
 }
 
-/// [`new_runtime`] plus native-only extensions (no ESM, no ops): used by the
-/// [`native_class`] fixture to register its class before the bootstrap globals are removed.
+/// [`new_runtime`] plus fixture extensions, initialized (ops, objects, trusted extension
+/// scripts) before the bootstrap globals are removed: used by the [`native_class`] and
+/// [`native_async`] fixtures.
 fn new_runtime_with(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
     let mut runtime = new_raw_runtime(loader, extensions)?;
     remove_bootstrap_globals(&mut runtime)?;
@@ -585,6 +593,16 @@ const PRIVILEGED_OP_PREFIXES: &[&str] = &[
     "op_exit",
 ];
 
+/// Registered op names matching [`PRIVILEGED_OP_PREFIXES`].
+fn privileged_ops(runtime: &JsRuntime) -> Vec<String> {
+    runtime
+        .op_names()
+        .into_iter()
+        .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
+        .map(str::to_owned)
+        .collect()
+}
+
 /// Bootstrap globals before and after removal, then a game module on the default document
 /// runtime: target globals absent, standard globals working, deno_core's internal modules
 /// unreachable by direct specifier, by a loader alias, by a static import and by
@@ -644,12 +662,7 @@ pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
         script(&mut runtime, "setup.js", SETUP)?;
         run_main(&mut runtime, "main.js").await?;
         let log = read_log(&mut runtime)?;
-        let privileged_ops = runtime
-            .op_names()
-            .into_iter()
-            .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
-            .map(str::to_owned)
-            .collect();
+        let privileged_ops = privileged_ops(&runtime);
         let resources = runtime.op_state().borrow().resource_table.names().count();
         Ok(IsolationReport {
             before,

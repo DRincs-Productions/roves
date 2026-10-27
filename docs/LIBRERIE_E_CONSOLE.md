@@ -60,6 +60,15 @@ senza framework/cache nostro. Metadata/sintassi verificati; nuove asserzioni att
 Resta da provare il DOM reale, le conversioni/ereditarietà, la raccolta generale, CSP e il
 servizio moduli/async unico. Prossima prova indipendente: completamento/cancellazione opnative.
 
+### Op nativo asincrono0384 pronto per CI
+
+[Prova0384](handoff/0384-deno-native-async.md): FutureRust reale sul driverDeno e Tokio
+esistenti, senza un nuovo executor/queue nostro. Contatori verificano avvio effettivo,
+input/output posseduti, risultato/errore e cancellazione a shutdown, non solo logJS.
+Dodici scenarilogici/due testRust; metadata/sintassi verificati, esecuzione ancoraCIpending.
+Classi0383 e async0384 non dimostrano il DOM o il reale loopServo: prossimo studio bounded
+del servizio da sostituire e dei checkpointHTML, rimuovendo il vecchio owner nel port.
+
 ## Prossimi passi, codice e librerie
 
 | Area | Oggi | Direzione |

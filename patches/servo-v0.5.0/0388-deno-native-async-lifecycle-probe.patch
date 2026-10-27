@@ -1,0 +1,616 @@
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index df101e5ba98..d5f523c00d5 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -60,6 +60,15 @@ senza framework/cache nostro. Metadata/sintassi verificati; nuove asserzioni att
+ Resta da provare il DOM reale, le conversioni/ereditarietà, la raccolta generale, CSP e il
+ servizio moduli/async unico. Prossima prova indipendente: completamento/cancellazione opnative.
+ 
++### Op nativo asincrono0384 pronto per CI
++
++[Prova0384](handoff/0384-deno-native-async.md): FutureRust reale sul driverDeno e Tokio
++esistenti, senza un nuovo executor/queue nostro. Contatori verificano avvio effettivo,
++input/output posseduti, risultato/errore e cancellazione a shutdown, non solo logJS.
++Dodici scenarilogici/due testRust; metadata/sintassi verificati, esecuzione ancoraCIpending.
++Classi0383 e async0384 non dimostrano il DOM o il reale loopServo: prossimo studio bounded
++del servizio da sostituire e dei checkpointHTML, rimuovendo il vecchio owner nel port.
++
+ ## Prossimi passi, codice e librerie
+ 
+ | Area | Oggi | Direzione |
+diff --git a/support/deno-core-probe/README.md b/support/deno-core-probe/README.md
+index 2da21db5474..f62deda7eb2 100644
+--- a/support/deno-core-probe/README.md
++++ b/support/deno-core-probe/README.md
+@@ -5,7 +5,9 @@ Isolated feasibility experiment for running the one Roves game document on
+ following [docs/handoff/0380-single-document-runtime.md](../../docs/handoff/0380-single-document-runtime.md).
+ It is **not** an adoption, not a production dependency and not wired into the engine: the
+ crate is its own Cargo workspace, nothing in the Roves workspace depends on it, and no game
+-API, Deno extension or capability (file system, network, process) is exposed.
++API, Deno extension or capability (file system, network, process) is exposed. The only
++game-visible additions are test fixtures: the native class wrappers and one
++`nativeFixture` function backed by an in-memory Rust future.
+ 
+ ## Scope
+ 
+@@ -16,9 +18,10 @@ does not make public, and the product no longer requires them.
+ 
+ Scenarios in `tests/probe.rs`. The task 0381 baseline (without namespace removal) passed in
+ CI run 40539608247 (4/4 jobs: Ubuntu and Windows, normal and JITless). The task 0382
+-namespace removal was published for CI run 40556912335; the task 0383 native class scenario
+-(`native_class_instances_own_their_values_and_share_owned_metadata`) has not been compiled
+-or run yet. All go
++namespace removal passed in CI run 40556912335 (4/4 jobs). The task 0383 native class
++scenario (`native_class_instances_own_their_values_and_share_owned_metadata`) and the task
++0384 native async op scenario (`native_async_op_completes_or_is_dropped_with_the_runtime`)
++have not been compiled or run yet. All go
+ through public deno_core APIs and its `v8` re-export, with an in-memory `ModuleLoader`
+ serving `https://game.invalid/`. Those URLs are a mock: the scenarios run modules and
+ scripts directly, with no HTML document, no HTML origin and no CSP header behind them.
+@@ -29,11 +32,11 @@ globals (`Deno`, `__bootstrap`, `__infra`) with the native `v8::Object` API righ
+ as a blocker instead of being hidden. So every scenario below runs on the stripped global.
+ The raw constructor is private and used only for the before/after observation.
+ 
+-The 11 logical scenarios are grouped in **2 Rust tests**:
++The 12 logical scenarios are grouped in **2 Rust tests**:
+ `mode_values_are_validated` (pure, no V8) and `single_document_scenarios`, which runs the
+-other ten in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
++other eleven in a fixed order on one thread, so V8 initialization and every `JsRuntime` stay
+ on that thread (`--test-threads=1` alone serializes tests but may still run each on its own
+-thread). The first failing scenario stops the rest; they are not 11 independent tests.
++thread). The first failing scenario stops the rest; they are not 12 independent tests.
+ 
+ | Scenario | Checks | Does not prove |
+ |---|---|---|
+@@ -48,6 +51,7 @@ thread). The first failing scenario stops the rest; they are not 11 independent
+ | `context_flag_switches_string_compilation_off_and_on` | With the context flag off, `eval`/`new Function` throw `EvalError` while embedder-compiled scripts still run; with it on, both work | Per-string decisions, CSP `unsafe-eval` reporting, Trusted Types: the flag is context-wide, not a CSP implementation |
+ | `bootstrap_namespace_is_removed_before_game_code` | Raw deno_core has `Deno`/`__bootstrap` as configurable data properties (`__infra` already gone); after removal the game's first statements see none of them, no global value re-exposes `core`/`ops`/`primordials`/`internals`, `Object`/`Promise`/`queueMicrotask` work; `ext:core/mod.js` and `ext:core/ops` are refused by direct `import()`, by `import.meta.resolve`, and — when a loader alias maps a game specifier onto them — by deno_core's own `ext:` guard for dynamic and static imports; no fs/net/fetch/process-style op is registered and the resource table is empty | General privilege isolation: deno_core's builtin closures (`console`, `queueMicrotask`) still hold the core internally, builtin resource ops (`op_read`, `op_print`, ...) stay registered though unreachable from game code, `import.meta.main` is a Deno extra; no Servo DOM, origin or CSP |
+ | `native_class_instances_own_their_values_and_share_owned_metadata` | `src/native_class.rs`: one class registered by `#[op2] impl` + `extension!(objects = [...])`, wrappers made by `deno_core::cppgc::make_cppgc_object` on the stripped runtime. Two instances share one prototype (`constructor.name`, `instanceof`, getters on the prototype, no own properties) and one `Rc<ClassMeta>` built at runtime, yet keep their own native value and their own wrapper-less cppgc child behind a traced `v8::cppgc::Member`; `info` returns a stable, per-instance object through deno_core's `SameObject`; a wrapper-less receiver and the exposed constructor cannot reach a native value. After the creator drops its `Rc`, exactly the two instances hold the metadata (`Weak` count 2); a public `Isolate::low_memory_notification` GC with both wrappers reachable finalizes nothing and the values still read back. After teardown every instance, child and `info` object is finalized once (cppgc `Drop` counters) and the metadata is freed | Servo DOM bindings, Web IDL conversions, inheritance, cross-realm wrappers; collection **before** teardown once the roots are gone (V8's public GC entry points do not promise it, and cppgc may scan the native stack conservatively: only an upper bound is asserted); a strict proof that tracing alone retained the child (a stale native-stack pointer could also keep it); the V8 class name and cppgc `get_name` remain `'static`, as those APIs require |
++| `native_async_op_completes_or_is_dropped_with_the_runtime` | `src/native_async.rs`: one `#[op2] async fn` (owned `String` in, owned `String` or `ResourceError` out) registered by `extension!(ops = [...])`; the extension's trusted `js` source captures it into one arrow function, `globalThis.nativeFixture`, before the bootstrap namespace is removed, so the game sees that one function and no `Deno`/`op_*` global. Per-runtime state lives in the public `OpState` and is cloned out before the first `await`. Suspension uses tokio's `yield_now`/`Notify` on deno_core's own op driver; no executor, timer or polling loop of ours. Rust-side counters (first poll, completion vs cancellation guard, owned payload drops, `Weak`) show that the futures ran: after the classic script returns both are polled once and suspended, with no callback; `run_event_loop` runs the script's Promise job first, then fulfils with the native result (a chained job follows) and rejects the failing op as `BadResource` (completion errors count as completions, not cancellations); a rejection with no handler is returned as the event loop's error. A `wait:` op that one public `poll_event_loop` tick leaves pending (the Promise job ran, no op callback) is dropped by `JsRuntime` teardown: its guard counts a cancellation, its payload is freed, the runtime keeps no clone of the gate or counters, and notifying the gate afterwards resumes nothing | Cancellation of real resources (I/O, timers, network, DOM work) or abort signals; Servo task ordering; order between independent native ops; that a callback after teardown is impossible in general (here the isolate is gone, so none can run). deno_core tags pending op promises with a `Symbol.for("Deno.core.internalPromiseId")` key visible to the game (pinned as observed, not hidden) |
+ 
+ There is **no Servo DOM, no History API and no TanStack-style router** here, and none is
+ simulated: nothing in this crate proves that Servo's DOM, events or same-document routing
+@@ -67,8 +71,8 @@ V8_TEST_MODE=jitless cargo test --locked --manifest-path support/deno-core-probe
+ The build downloads the prebuilt rusty_v8 static library; it is heavy, so it runs online in
+ `.github/workflows/deno-core-probe.yml` (Ubuntu 24.04 and Windows, normal and JITless, no
+ browser executable needed). No result is claimed until that workflow has run; see
+-`target/task-0381/RESULTS.md`, `target/task-0382/RESULTS.md` and
+-`target/task-0383/RESULTS.md` for what was and was not
++`target/task-0381/RESULTS.md`, `target/task-0382/RESULTS.md`,
++`target/task-0383/RESULTS.md` and `target/task-0384/RESULTS.md` for what was and was not
+ executed.
+ 
+ ## Engine version gap
+@@ -90,7 +94,11 @@ Each needs a bounded proof using existing maintained APIs, not a new framework:
+    `Deno.core.ops`, and Web IDL conversions.
+ 2. **Module and async single owner.** deno_core must replace Servo's module map and
+    dynamic-import service and the Promise job queue for the document, not run beside them;
+-   the old path is removed in the same change.
++   the old path is removed in the same change. One native async op fixture driven by
++   deno_core's op driver is authored
++   (`native_async_op_completes_or_is_dropped_with_the_runtime`, awaiting CI); still open:
++   how Servo's own task sources (network, timers, DOM events) would feed or share that
++   event loop.
+ 3. **Bootstrap globals and capabilities.** Namespace removal is authored
+    (`bootstrap_namespace_is_removed_before_game_code`, awaiting CI). The absence of these
+    globals is not a universal capability proof: privilege isolation still has to be
+diff --git a/support/deno-core-probe/src/lib.rs b/support/deno-core-probe/src/lib.rs
+index 898265b4267..9d5937beca2 100644
+--- a/support/deno-core-probe/src/lib.rs
++++ b/support/deno-core-probe/src/lib.rs
+@@ -22,9 +22,16 @@
+ //!
+ //! [`native_class`] holds the cppgc-backed native class fixture (owned metadata, traced native
+ //! child, wrapper identity); it runs on the same stripped document runtime.
++//!
++//! [`native_async`] holds the native async op fixture (one Rust future behind one captured
++//! game function, completion and shutdown cancellation); same stripped document runtime.
+ 
++mod native_async;
+ mod native_class;
+ 
++pub use native_async::NativeAsyncReport;
++pub use native_async::OpCounts;
++pub use native_async::native_async_op_lifecycle;
+ pub use native_class::NativeClassReport;
+ pub use native_class::native_class_ownership;
+ 
+@@ -231,8 +238,9 @@ pub fn new_runtime(loader: Rc<MemoryLoader>) -> Result<JsRuntime, String> {
+     new_runtime_with(loader, Vec::new())
+ }
+ 
+-/// [`new_runtime`] plus native-only extensions (no ESM, no ops): used by the
+-/// [`native_class`] fixture to register its class before the bootstrap globals are removed.
++/// [`new_runtime`] plus fixture extensions, initialized (ops, objects, trusted extension
++/// scripts) before the bootstrap globals are removed: used by the [`native_class`] and
++/// [`native_async`] fixtures.
+ fn new_runtime_with(loader: Rc<MemoryLoader>, extensions: Vec<Extension>) -> Result<JsRuntime, String> {
+     let mut runtime = new_raw_runtime(loader, extensions)?;
+     remove_bootstrap_globals(&mut runtime)?;
+@@ -585,6 +593,16 @@ const PRIVILEGED_OP_PREFIXES: &[&str] = &[
+     "op_exit",
+ ];
+ 
++/// Registered op names matching [`PRIVILEGED_OP_PREFIXES`].
++fn privileged_ops(runtime: &JsRuntime) -> Vec<String> {
++    runtime
++        .op_names()
++        .into_iter()
++        .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
++        .map(str::to_owned)
++        .collect()
++}
++
+ /// Bootstrap globals before and after removal, then a game module on the default document
+ /// runtime: target globals absent, standard globals working, deno_core's internal modules
+ /// unreachable by direct specifier, by a loader alias, by a static import and by
+@@ -644,12 +662,7 @@ pub fn bootstrap_isolation() -> Result<IsolationReport, String> {
+         script(&mut runtime, "setup.js", SETUP)?;
+         run_main(&mut runtime, "main.js").await?;
+         let log = read_log(&mut runtime)?;
+-        let privileged_ops = runtime
+-            .op_names()
+-            .into_iter()
+-            .filter(|name| PRIVILEGED_OP_PREFIXES.iter().any(|prefix| name.starts_with(prefix)))
+-            .map(str::to_owned)
+-            .collect();
++        let privileged_ops = privileged_ops(&runtime);
+         let resources = runtime.op_state().borrow().resource_table.names().count();
+         Ok(IsolationReport {
+             before,
+diff --git a/support/deno-core-probe/tests/probe.rs b/support/deno-core-probe/tests/probe.rs
+index 2169e3e5517..d7c832ccc66 100644
+--- a/support/deno-core-probe/tests/probe.rs
++++ b/support/deno-core-probe/tests/probe.rs
+@@ -24,10 +24,10 @@ fn mode_values_are_validated() {
+     assert!(probe::parse_mode(None).is_err());
+ }
+ 
+-/// The ten V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
++/// The eleven V8-bearing scenarios, in a fixed order, on one thread. The first one initializes
+ /// V8 in the configured mode; a failure stops the remaining scenarios. Every scenario except
+ /// the "before" half of the bootstrap one runs after deno_core's bootstrap globals were
+-/// removed (`new_runtime`, or the same path plus the native class extension).
++/// removed (`new_runtime`, or the same path plus a fixture extension).
+ #[test]
+ fn single_document_scenarios() {
+     configured_mode_controls_webassembly();
+@@ -40,6 +40,7 @@ fn single_document_scenarios() {
+     context_flag_switches_string_compilation_off_and_on();
+     bootstrap_namespace_is_removed_before_game_code();
+     native_class_instances_own_their_values_and_share_owned_metadata();
++    native_async_op_completes_or_is_dropped_with_the_runtime();
+ }
+ 
+ fn configured_mode_controls_webassembly() {
+@@ -205,3 +206,67 @@ fn native_class_instances_own_their_values_and_share_owned_metadata() {
+     assert_eq!(report.drops_after_teardown, [2, 2, 2]);
+     assert!(!report.meta_alive_after_teardown);
+ }
++
++fn native_async_op_completes_or_is_dropped_with_the_runtime() {
++    // Not proven: cancellation of real resources (I/O, timers, DOM work), Servo task ordering,
++    // abort signals, or ordering against unrelated futures. One fixture op on deno_core's
++    // driver; the Rust-side counters, not the JS log alone, show that a native future ran.
++    let report = probe::native_async_op_lifecycle().unwrap();
++    let counts = |started, resumed_after_gate, completed, cancelled, payloads_dropped| probe::OpCounts {
++        started,
++        resumed_after_gate,
++        completed,
++        cancelled,
++        payloads_dropped,
++    };
++
++    // Exactly one game-visible entry point; no bootstrap namespace, no op by name.
++    let head = strings(&[
++        "bootstrap-globals:",
++        "fixture:function:nativeFixture",
++        "returns-promise:true",
++        // deno_core's stub tags pending op promises with a Symbol.for key (internal detail).
++        "internal-id-symbol:true",
++        "script:returned",
++    ]);
++    // The classic script returned with both futures polled once and suspended in Rust.
++    assert_eq!(report.completion_log_after_script, head);
++    assert_eq!(report.completion_counts_after_script, counts(2, 0, 0, 0, 0));
++    assert!(report.fixture_op_registered);
++    assert!(report.privileged_ops.is_empty(), "{:?}", report.privileged_ops);
++
++    // The script's own Promise job runs first; the op callbacks only after their futures
++    // completed on a later event loop turn. The two ops' relative order is not asserted.
++    let log = &report.completion_log;
++    assert_eq!(log[..head.len()], head[..], "{log:?}");
++    assert_eq!(log[head.len()], "promise-job", "{log:?}");
++    let position = |entry: &str| log.iter().position(|item| item == entry).unwrap_or_else(|| panic!("{entry} in {log:?}"));
++    assert!(position("ok:fulfilled:native:alpha") < position("ok:chained"), "{log:?}");
++    position("fail:rejected:BadResource:fixture failed: beta");
++    assert_eq!(log.len(), head.len() + 4, "{log:?}");
++    // Both guards saw a result (Ok and Err alike), both owned payloads were freed.
++    assert_eq!(report.completion_counts, counts(2, 0, 2, 0, 2));
++
++    // A rejection with no handler surfaces as the event loop's error.
++    let error = report.unhandled_error.as_deref().unwrap_or_else(|| panic!("unhandled rejection was swallowed"));
++    assert!(error.contains("fixture failed: unhandled"), "{error}");
++    assert_eq!(report.unhandled_counts, counts(3, 0, 3, 0, 3));
++    assert!(!report.completion_payload_alive_after_teardown);
++
++    // Pending: first poll happened (started), one public event loop tick ran the Promise job
++    // and stayed pending; no game callback, the payload is alive.
++    assert_eq!(report.pending_counts_before_poll, counts(1, 0, 0, 0, 0));
++    assert!(report.pending_poll_was_pending);
++    assert_eq!(report.pending_log, strings(&["script:returned", "promise-job"]));
++    assert_eq!(report.pending_counts_after_poll, counts(1, 0, 0, 0, 0));
++    assert!(report.pending_payload_alive_before_drop);
++
++    // Dropping the runtime dropped the suspended future: guard cancelled, payload freed, and
++    // the runtime kept no clone of the gate or the counters.
++    assert_eq!(report.cancel_counts_after_drop, counts(1, 0, 0, 1, 1));
++    assert!(!report.cancel_payload_alive_after_drop);
++    assert_eq!(report.gate_strong_after_drop, 1);
++    assert_eq!(report.counters_strong_after_drop, 1);
++    // Notifying the gate afterwards resumes nothing.
++    assert_eq!(report.counts_after_gate_release, counts(1, 0, 0, 1, 1));
++}
+diff --git a/support/deno-core-probe/src/native_async.rs b/support/deno-core-probe/src/native_async.rs
+new file mode 100644
+index 00000000000..9d5adcb694b
+--- /dev/null
++++ b/support/deno-core-probe/src/native_async.rs
+@@ -0,0 +1,318 @@
++//! Native async op fixture for the single-document probe (task 0384): one Rust `Future`, driven
++//! by deno_core's own op driver and event loop, exposed to the game as exactly one function.
++//! Glue is kept to this one fixture; it makes no claim about Servo tasks, DOM APIs or resource
++//! cancellation in general.
++//!
++//! - Registration: `#[op2] async fn` + `extension!(ops = [...], js = [...])`. deno_core wraps the
++//!   op in its `setUpAsyncStub` (`00_infra.js`), so a call returns a Promise that its event loop
++//!   settles when the Rust future completes. The extension's trusted `js` source runs inside
++//!   `JsRuntime::try_new`, while `Deno.core.ops` still exists, and captures the op into one
++//!   arrow function on `globalThis.nativeFixture`; [`crate::new_runtime_with`] then removes the
++//!   bootstrap namespace, so the game never sees `Deno` or the op by name.
++//! - Driving: deno_core polls the future once eagerly on submit (`FuturesUnorderedDriver::
++//!   submit_op_*`), then from its tokio-spawned driver task; `JsRuntime::run_event_loop` and
++//!   `poll_event_loop` resolve the Promise. No executor, job queue, waker or timer of ours: the
++//!   suspension points are tokio's `task::yield_now` and `sync::Notify`.
++//! - State: per-runtime [`FixtureState`] lives in deno_core's public `OpState`; the op clones
++//!   what it needs out of it before its first `await`, so no `RefCell` borrow spans a suspension.
++//! - Observation: [`Counters`] (shared by `Rc`, outliving the runtime) count first polls,
++//!   resumptions after the gate, completions and cancellations (an [`OpGuard`] dropped before or
++//!   after the op finished) and the drops of each op's owned [`Payload`].
++
++use std::cell::Cell;
++use std::cell::RefCell;
++use std::rc::Rc;
++use std::rc::Weak;
++use std::task::Poll;
++
++use deno_core::JsRuntime;
++use deno_core::OpState;
++use deno_core::PollEventLoopOptions;
++use deno_core::error::ResourceError;
++use deno_core::op2;
++use tokio::sync::Notify;
++
++use crate::Log;
++use crate::MemoryLoader;
++use crate::err;
++use crate::new_runtime_with;
++use crate::privileged_ops;
++use crate::read_log;
++use crate::script;
++
++/// Lifecycle counts of every fixture op run by one runtime.
++#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
++pub struct OpCounts {
++    /// Op bodies that reached their first poll (deno_core polls eagerly on submit).
++    pub started: usize,
++    /// `wait:` ops that ran past the gate.
++    pub resumed_after_gate: usize,
++    /// Guards dropped after their op produced a result (`Ok` or `Err`).
++    pub completed: usize,
++    /// Guards dropped while their op was still suspended: the future itself was dropped.
++    pub cancelled: usize,
++    /// Owned payloads freed.
++    pub payloads_dropped: usize,
++}
++
++#[derive(Default)]
++pub struct Counters {
++    counts: Cell<OpCounts>,
++    /// The most recent op's payload; upgrading it shows whether that op's owned data is alive.
++    last_payload: RefCell<Weak<Payload>>,
++}
++
++impl Counters {
++    fn bump(&self, update: impl FnOnce(&mut OpCounts)) {
++        let mut counts = self.counts.get();
++        update(&mut counts);
++        self.counts.set(counts);
++    }
++
++    fn last_payload_alive(&self) -> bool {
++        self.last_payload.borrow().upgrade().is_some()
++    }
++}
++
++/// Owned per-op data: built from the op's owned `String` argument, freed with the future.
++struct Payload {
++    text: String,
++    counters: Rc<Counters>,
++}
++
++impl Drop for Payload {
++    fn drop(&mut self) {
++        self.counters.bump(|counts| counts.payloads_dropped += 1);
++    }
++}
++
++/// Dropped exactly once per op: after the result (completion) or with the suspended future
++/// (cancellation).
++struct OpGuard {
++    counters: Rc<Counters>,
++    finished: bool,
++}
++
++impl Drop for OpGuard {
++    fn drop(&mut self) {
++        let finished = self.finished;
++        self.counters.bump(|counts| {
++            if finished {
++                counts.completed += 1
++            } else {
++                counts.cancelled += 1
++            }
++        });
++    }
++}
++
++/// Per-runtime fixture state in `OpState`.
++struct FixtureState {
++    counters: Rc<Counters>,
++    gate: Rc<Notify>,
++}
++
++/// `"ok:<text>"` and `"fail:<text>"` yield once to tokio, then fulfil with an owned `String` or
++/// reject with a `BadResource` error; `"wait:<text>"` stays suspended on the gate until it is
++/// notified.
++#[op2]
++#[string]
++async fn op_roves_fixture_native(
++    state: Rc<RefCell<OpState>>,
++    #[string] input: String,
++) -> Result<String, ResourceError> {
++    // Cloned out before the first await: no OpState borrow is held while suspended.
++    let (counters, gate) = {
++        let state = state.borrow();
++        let fixture = state.borrow::<FixtureState>();
++        (fixture.counters.clone(), fixture.gate.clone())
++    };
++    let (mode, text) = input.split_once(':').unwrap_or((input.as_str(), ""));
++    let mode = mode.to_owned();
++    let payload = Rc::new(Payload { text: text.to_owned(), counters: counters.clone() });
++    *counters.last_payload.borrow_mut() = Rc::downgrade(&payload);
++    counters.bump(|counts| counts.started += 1);
++    let mut guard = OpGuard { counters: counters.clone(), finished: false };
++    let result = match mode.as_str() {
++        "ok" => {
++            tokio::task::yield_now().await;
++            Ok(format!("native:{}", payload.text))
++        },
++        "fail" => {
++            tokio::task::yield_now().await;
++            Err(ResourceError::Other(format!("fixture failed: {}", payload.text)))
++        },
++        "wait" => {
++            gate.notified().await;
++            counters.bump(|counts| counts.resumed_after_gate += 1);
++            Ok(format!("released:{}", payload.text))
++        },
++        _ => Err(ResourceError::Other(format!("unknown fixture mode: {mode}"))),
++    };
++    guard.finished = true;
++    result
++}
++
++deno_core::extension!(
++    roves_native_async_probe,
++    ops = [op_roves_fixture_native],
++    js = ["ext:roves_native_async_probe/capture.js" = {
++        source = r#"
++"use strict";
++(() => {
++  const op = Deno.core.ops.op_roves_fixture_native;
++  const nativeFixture = (input) => op(input);
++  Object.defineProperty(globalThis, "nativeFixture", {
++    value: nativeFixture, writable: false, enumerable: false, configurable: true,
++  });
++})();
++"#
++    }],
++);
++
++fn fixture_runtime(counters: &Rc<Counters>, gate: &Rc<Notify>) -> Result<JsRuntime, String> {
++    let runtime = new_runtime_with(Rc::new(MemoryLoader::new(&[])), vec![roves_native_async_probe::init()])?;
++    runtime
++        .op_state()
++        .borrow_mut()
++        .put(FixtureState { counters: counters.clone(), gate: gate.clone() });
++    Ok(runtime)
++}
++
++/// What `native_async_op_lifecycle` observed.
++pub struct NativeAsyncReport {
++    /// Completion runtime: the game log right after its classic script returned.
++    pub completion_log_after_script: Log,
++    pub completion_counts_after_script: OpCounts,
++    /// The game log once `run_event_loop` settled both ops.
++    pub completion_log: Log,
++    pub completion_counts: OpCounts,
++    /// `op_names()` matching the bootstrap check's privileged prefixes, and whether the fixture
++    /// op itself is registered.
++    pub privileged_ops: Vec<String>,
++    pub fixture_op_registered: bool,
++    /// `run_event_loop` result after a rejection nobody handled.
++    pub unhandled_error: Option<String>,
++    pub unhandled_counts: OpCounts,
++    pub completion_payload_alive_after_teardown: bool,
++
++    /// Cancellation runtime: the game log after its script and one `poll_event_loop`.
++    pub pending_log: Log,
++    pub pending_counts_before_poll: OpCounts,
++    pub pending_poll_was_pending: bool,
++    pub pending_counts_after_poll: OpCounts,
++    pub pending_payload_alive_before_drop: bool,
++    pub cancel_counts_after_drop: OpCounts,
++    pub cancel_payload_alive_after_drop: bool,
++    /// Strong references left once the runtime is gone: only the test's own.
++    pub gate_strong_after_drop: usize,
++    pub counters_strong_after_drop: usize,
++    /// Counts after the gate was notified and tokio ran its other tasks.
++    pub counts_after_gate_release: OpCounts,
++}
++
++const COMPLETION_GAME: &str = r#"(() => {
++  globalThis.log = [];
++  log.push("bootstrap-globals:" + ["Deno", "__bootstrap", "__infra"].filter(name => name in globalThis).join());
++  log.push("fixture:" + typeof nativeFixture + ":" + Object.getOwnPropertyNames(globalThis).filter(name => name.startsWith("op_") || name === "nativeFixture").join());
++  const settle = (label, promise) => promise.then(
++    value => { log.push(label + ":fulfilled:" + value); Promise.resolve().then(() => log.push(label + ":chained")); },
++    error => log.push(label + ":rejected:" + error.name + ":" + error.message),
++  );
++  const ok = nativeFixture("ok:alpha");
++  log.push("returns-promise:" + (ok instanceof Promise));
++  log.push("internal-id-symbol:" + (Symbol.for("Deno.core.internalPromiseId") in ok));
++  settle("ok", ok);
++  settle("fail", nativeFixture("fail:beta"));
++  Promise.resolve().then(() => log.push("promise-job"));
++  log.push("script:returned");
++})()"#;
++
++const PENDING_GAME: &str = r#"(() => {
++  globalThis.log = [];
++  nativeFixture("wait:gamma").then(
++    value => log.push("wait:fulfilled:" + value),
++    error => log.push("wait:rejected:" + error.name),
++  );
++  Promise.resolve().then(() => log.push("promise-job"));
++  log.push("script:returned");
++})()"#;
++
++/// A real Rust future behind one game-visible function: completion with owned input and
++/// result, a completion error, an unhandled rejection surfacing from the event loop, and a
++/// pending op that runtime shutdown drops without ever calling back into the game.
++pub fn native_async_op_lifecycle() -> Result<NativeAsyncReport, String> {
++    crate::block_on(async {
++        // Completion.
++        let counters = Rc::new(Counters::default());
++        let gate = Rc::new(Notify::new());
++        let mut runtime = fixture_runtime(&counters, &gate)?;
++        let privileged_ops = privileged_ops(&runtime);
++        let fixture_op_registered = runtime.op_names().contains(&"op_roves_fixture_native");
++        script(&mut runtime, "completion.js", COMPLETION_GAME)?;
++        let completion_log_after_script = read_log(&mut runtime)?;
++        let completion_counts_after_script = counters.counts.get();
++        runtime.run_event_loop(Default::default()).await.map_err(err)?;
++        let completion_log = read_log(&mut runtime)?;
++        let completion_counts = counters.counts.get();
++
++        script(&mut runtime, "unhandled.js", r#"nativeFixture("fail:unhandled");"#)?;
++        let unhandled_error = runtime.run_event_loop(Default::default()).await.err().map(err);
++        let unhandled_counts = counters.counts.get();
++        drop(runtime);
++        let completion_payload_alive_after_teardown = counters.last_payload_alive();
++
++        // Cancellation.
++        let counters = Rc::new(Counters::default());
++        let gate = Rc::new(Notify::new());
++        let mut runtime = fixture_runtime(&counters, &gate)?;
++        script(&mut runtime, "pending.js", PENDING_GAME)?;
++        let pending_counts_before_poll = counters.counts.get();
++        // One tick of deno_core's public event loop: Promise jobs run, the op stays pending.
++        let poll = std::future::poll_fn(|cx| Poll::Ready(runtime.poll_event_loop(cx, PollEventLoopOptions::default()))).await;
++        let pending_poll_was_pending = match poll {
++            Poll::Pending => true,
++            Poll::Ready(result) => {
++                result.map_err(err)?;
++                false
++            },
++        };
++        let pending_log = read_log(&mut runtime)?;
++        let pending_counts_after_poll = counters.counts.get();
++        let pending_payload_alive_before_drop = counters.last_payload_alive();
++
++        drop(runtime);
++        let cancel_counts_after_drop = counters.counts.get();
++        let cancel_payload_alive_after_drop = counters.last_payload_alive();
++        let gate_strong_after_drop = Rc::strong_count(&gate);
++        let counters_strong_after_drop = Rc::strong_count(&counters);
++
++        // Releasing the gate now must not resume anything: the future is gone.
++        gate.notify_waiters();
++        gate.notify_one();
++        tokio::task::yield_now().await;
++        let counts_after_gate_release = counters.counts.get();
++
++        Ok(NativeAsyncReport {
++            completion_log_after_script,
++            completion_counts_after_script,
++            completion_log,
++            completion_counts,
++            privileged_ops,
++            fixture_op_registered,
++            unhandled_error,
++            unhandled_counts,
++            completion_payload_alive_after_teardown,
++            pending_log,
++            pending_counts_before_poll,
++            pending_poll_was_pending,
++            pending_counts_after_poll,
++            pending_payload_alive_before_drop,
++            cancel_counts_after_drop,
++            cancel_payload_alive_after_drop,
++            gate_strong_after_drop,
++            counters_strong_after_drop,
++            counts_after_gate_release,
++        })
++    })
++}
+diff --git a/docs/handoff/0384-deno-native-async.md b/docs/handoff/0384-deno-native-async.md
+new file mode 100644
+index 00000000000..b66bb4b060a
+--- /dev/null
++++ b/docs/handoff/0384-deno-native-async.md
+@@ -0,0 +1,33 @@
++# 0384 — native async-op completion and shutdown cleanup
++
++Isolated experiment, not a production task-source or navigation-policy implementation.
++Uses maintained op2/Extension/OpState, Deno's async driver and public event-loop polling,
++Tokio yield_now/Notify and a single controlled std::future::poll_fn. No new executor,
++queue, waker framework, timer service, I/O, dependency, private API or NoHeapPointers.
++
++One intentional fixture function captures its op during trusted extension bootstrap;
++Deno/internal globals are removed before the game. The default runtime still registers
++no fixture extensions. Per-runtime counters/gates are cloned out of OpState before await;
++owned inputs/results and Drop guards distinguish native first poll, completion and
++cancellation. The same single V8 test thread now runs twelve logical scenarios in two
++Rust tests, normal/JITless. Earlier class0383 assertions remain unverified until next CI.
++
++New assertions: native futures already started/suspended when the classic script returns;
++Promise jobs precede result callbacks; fulfilled value/chain and BadResource failure;
++unhandled rejection surfaces from run_event_loop. A separate runtime starts a genuinely
++pending op, one event-loop poll stays Pending, its guard/payload are live, shutdown drops
++them, and notifying the gate afterwards cannot resume the operation. Count/Rc/Weak checks
++make this more than a JS-only Promise test. No ordering between unrelated native ops is
++assumed. Exact eager-poll, rejection text and synchronous shutdown observations await CI.
++
++Metadata, Rust syntax and workflow/lock checks pass locally; heavy build/runtime tests
++are online only. New source and all authored expectations require the next probe CI.
++No universal resource cancellation, Servo task ordering, HTML CSP/DOM/router integration,
++general leak freedom or performance result is claimed. Deno's internal promise-id Symbol
++is explicitly observed as visible, not considered a privileged capability by this test.
++
++Changed probe paths: native_async.rs, lib.rs (small registration/exports + reused op
++prefix diagnostic), tests/probe.rs and README.md. Manifest/lock/workflow unchanged.
++Public API evidence and local logs: target/task-0384/. Next integration question: how Servo
++task sources enter the single Deno event loop and which existing queue/service is removed;
++study a bounded replacement map before attempting a partial production runtime port.

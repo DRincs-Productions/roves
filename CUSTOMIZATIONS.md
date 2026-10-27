@@ -1,3 +1,15 @@
+## 2026-10-27 - Probe native async-op completion and teardown cancellation (0384)
+
+Isolated deno-core-probe gains native_async.rs, one op2 Rust Future and trusted bootstrap
+binding to a fixture function; game code still sees no Deno namespace. Use existing Deno
+async driver/OpState and Tokio yield/Notify, not a new queue/executor/timer/I/O service.
+Owned payload/Drop/Rc/Weak counters test real first poll, fulfillment/error, unhandled
+rejection and a pending op dropped at shutdown without later resume. Same single V8 test
+thread, twelve logical scenarios in two Rust tests. Reuse the op-prefix diagnostic.
+No dependency/manifest/lock/workflow or production change. Metadata/syntax/workflow checks
+pass locally; new async and class assertions await CI. Update handoffs/library plan and
+README/wiki; patch0388. No general cancellation/DOM/CSP/security/performance claim.
+
 ## 2026-10-27 - Add a maintained-API native class ownership probe (0383)
 
 Isolated deno-core-probe gains native_class.rs: op2/extension registration, owned Rc class

@@ -24,8 +24,8 @@ Checkpoint pubblicato: `d1eb92011b21fd1b7e66971061057934d36684f8`, wiki `43113f9
 roves-action `4b2a67f`. Include0382 bootstrap e precedenti checkpoint completi.
 CIbootstrap `40556912335` VERDE4/4 Linux/Windows normal/JITless: stessa suite dopo rimozione
 globali, importinterni diretti/alias/statici rifiutati. È prova isolata, non piena sicurezza
-o DOM/CSP/router/adozione. Generale `40556912161`: ultimi richiesti5verdi, packagingWindows/
-Linux eSteam attivi, nessunarossa. Android `40556912086` da controllare al prossimo punto;
+o DOM/CSP/router/adozione. Generale `40556912161`: ultimi richiesti8verdi, WindowsMSI eLinuxportable ancora attivi,
+nessunarossa. Non considerare il batch interamente verificato finché quei job non terminano. Android `40556912086` da controllare al prossimo punto;
 iOS `40556912246` e macOS esclusi. Nessunpushconrichiestiattivi. No polling periodico.
 
 0383 completa localmente: [classe nativa](handoff/0383-deno-native-class.md), patch0387.
@@ -33,7 +33,13 @@ Metadati posseduti, due istanze/valori distinti, Member/Persistent cppgc e SameO
 brand/prototipi/finalizzazione a shutdown. Metadata/sintassi/contrattoYAML-lockverdi,
 compilazione/asserzioni NUOVE da verificare online. NessunNoHeapPointers/nuovoFFI/dependency.
 Non affermare raccolta generale o prima della chiusura; niente DOM/prototipi completi.
-Prossimo incarico separato: native async op completion/cancellation/cleanup sul runtime pulito.
+0383 committata localmente `24f8b1d3a93`, wiki `ab18bfd`, senza push mentreCIattiva.
+0384 completa localmente: [opasincrono](handoff/0384-deno-native-async.md), patch0388:
+FutureRust reale viaop2/Deno/Tokio, ownershipinput/output, completamento/errori e pulizia
+shutdown dioperazionependentesenzacallbacktardivi. Dodici scenari logici in due testRust,
+metadata/sintassi/YAML-lockpassano; NUOVEasserzioni async+classe attendonoCI. Nessun nuovo
+executor/queue/timer/I/O/dependency o comportamento produttivo. Prossimo studio circoscritto:
+mappa di sostituzione task/moduli Servo con un unico ownerDeno, prima di un port parziale.
 
 La ripresa19:02 di0382 è riuscita e il ricontrollo è stato ELIMINATO; quota17:26 èstorica,
 nessun limite attuale o retry da concatenare. Nessun Claude attivo al checkpoint, prossimo
