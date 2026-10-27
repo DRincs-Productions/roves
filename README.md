@@ -702,8 +702,11 @@ Android and shared checks still gate publication.
 Scoped-handler source-text compatibility remains open. Native normal/JITless proofs show
 that ordinary V8 properties preserve external accessor receivers, but DOM key ordering and
 generated hook compatibility need further gates. No experimental DOM backend was adopted.
-The reviewed hook map also identified missing LegacyOverrideBuiltIns read precedence in
-the current generator; that correction is tracked separately.
+Named-property reads now honor LegacyOverrideBuiltIns for HTMLDocument and dataset:
+supported names take precedence over prototype properties, while own/unforgeable properties
+still win. For example, data-to-string makes element.dataset.toString return the attribute
+value; removing the attribute restores the inherited method. Browser confirmation is in CI.
+This fixes read visibility; definition/deletion/enumeration and source-text gaps remain open.
 
 Documentation patch paths now use portable separators, fixing Linux reconstruction
 of the migration handoff series; runtime behavior is unchanged.

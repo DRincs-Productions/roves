@@ -49,6 +49,11 @@ jobs:
       - name: test smoke runner failure contracts
         shell: bash
         run: python -m unittest discover -s support/v8-smoke -p test_runner.py
+      # Runs the real WebIDL parser and binding generator on a small IDL: no build needed.
+      - name: test generated named-property visibility
+        if: matrix.mode == 'normal'
+        shell: bash
+        run: python -m unittest discover -s support/v8-smoke -p test_named_property_codegen.py
       - name: test discarded-pipeline task ownership
         if: matrix.mode == 'normal'
         shell: bash

@@ -25,6 +25,9 @@ REQUIRED_CHECKS = {
         "an event listener keeps the callback context of its registration",
         "event listener list keeps its identity, once and mutation semantics",
         "inline event handlers keep identity, position and return semantics",
+        "HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
+        "HTMLFormElement named properties stay hidden by the prototype",
+        "DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads",
     ),
     "stress.html": (
         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",

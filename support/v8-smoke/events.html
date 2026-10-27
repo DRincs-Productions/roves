@@ -431,6 +431,116 @@ check("an iframe keeps its WindowProxy across origin changes and back", () => ne
     end(true);
   })().catch(error => end(String((error && error.message) || error)));
 }));
+// Named property visibility (https://webidl.spec.whatwg.org/#dfn-named-property-visibility):
+// an own property (expando or unforgeable) always wins; then, with [LegacyOverrideBuiltIns]
+// (HTMLDocument), a supported name wins over the prototype, otherwise (HTMLFormElement) the
+// prototype hides it. Each check runs in its own iframe and removes its prototype property.
+const withNamedFrame = (html, body) => new Promise(resolve => {
+  const frame = document.createElement("iframe");
+  frame.onload = () => {
+    const cleanup = [];
+    try {
+      resolve(body(frame.contentWindow, frame.contentDocument, cleanup));
+    } catch (error) {
+      resolve(String((error && error.message) || error));
+    } finally {
+      for (const undo of cleanup.reverse()) { try { undo(); } catch (_) {} }
+      frame.remove();
+    }
+  };
+  frame.srcdoc = html;
+  document.body.append(frame);
+});
+const describeValue = value => value && value.nodeName ? `<${value.nodeName}>` : String(value);
+const describeDescriptor = d => d ? `value=${describeValue(d.value)} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined";
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
+  if (!(doc instanceof win.HTMLDocument)) return "iframe document is not an HTMLDocument";
+  const problems = [];
+  const key = "rovesNamedOverride", expandoKey = "rovesNamedExpando";
+  const proto = win.HTMLDocument.prototype;
+  let protoReads = 0;
+  Object.defineProperty(proto, key, { configurable: true, get() { protoReads++; return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  if (doc[key] !== "prototype" || Object.hasOwn(doc, key) || Object.getOwnPropertyDescriptor(doc, key) !== undefined)
+    problems.push("prototype property not visible without a supported name");
+  // A supported name: the element wins and the prototype getter is never reached.
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  protoReads = 0;
+  const value = doc[key], own = Object.hasOwn(doc, key), desc = Object.getOwnPropertyDescriptor(doc, key);
+  if (value !== img) problems.push(`get ${describeValue(value)}`);
+  if (!own) problems.push("hasOwn false");
+  if (!desc || desc.value !== img || desc.writable !== false || desc.enumerable !== true || desc.configurable !== true)
+    problems.push(`descriptor ${describeDescriptor(desc)}`);
+  if (protoReads) problems.push(`prototype getter ran ${protoReads} times`);
+  // Removing the element makes the prototype property visible again.
+  img.remove();
+  const after = doc[key];
+  if (after !== "prototype" || Object.hasOwn(doc, key) || Object.getOwnPropertyDescriptor(doc, key) !== undefined)
+    problems.push(`after removal: ${describeValue(after)} own=${Object.hasOwn(doc, key)}`);
+  // An own expando defined before the name became supported still wins.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => delete doc[expandoKey]);
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  const expandoDesc = Object.getOwnPropertyDescriptor(doc, expandoKey);
+  if (doc[expandoKey] !== "expando" || !Object.hasOwn(doc, expandoKey) || !expandoDesc || expandoDesc.value !== "expando" || expandoDesc.writable !== true)
+    problems.push(`expando: ${describeValue(doc[expandoKey])} ${describeDescriptor(expandoDesc)}`);
+  // The unforgeable location accessor is an own property: a named element cannot clobber it.
+  const locationImg = doc.createElement("img");
+  locationImg.name = "location";
+  doc.body.append(locationImg);
+  const locationDesc = Object.getOwnPropertyDescriptor(doc, "location");
+  if (doc.location !== win.location || !locationDesc || typeof locationDesc.get !== "function" || locationDesc.configurable !== false)
+    problems.push(`location: ${describeValue(doc.location)} ${describeDescriptor(locationDesc)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTMLFormElement has no [LegacyOverrideBuiltIns] in Roves' IDL: the prototype keeps hiding the
+// supported name, while a name without a prototype property stays visible.
+check("HTMLFormElement named properties stay hidden by the prototype", () => withNamedFrame("<p>form</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormOverride", plainKey = "rovesFormPlain";
+  const proto = win.HTMLFormElement.prototype;
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const input = doc.createElement("input"), plain = doc.createElement("input");
+  input.name = key;
+  plain.name = plainKey;
+  form.append(input, plain);
+  doc.body.append(form);
+  if (form[key] !== "prototype") problems.push(`get ${describeValue(form[key])}`);
+  if (Object.hasOwn(form, key)) problems.push("hasOwn true");
+  const desc = Object.getOwnPropertyDescriptor(form, key);
+  if (desc !== undefined) problems.push(`descriptor ${describeDescriptor(desc)}`);
+  if (form[plainKey] !== plain || !Object.hasOwn(form, plainKey)) problems.push(`plain name ${describeValue(form[plainKey])}`);
+  if (form[0] !== input) problems.push(`index 0 ${describeValue(form[0])}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// DOMStringMap (el.dataset) is the other [LegacyOverrideBuiltIns] interface: data-to-string
+// shadows Object.prototype.toString while the attribute exists. Detached element, nothing to undo.
+check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads", () => {
+  const problems = [];
+  const element = document.createElement("div");
+  const map = element.dataset, inherited = Object.prototype.toString;
+  if (map.toString !== inherited || Object.hasOwn(map, "toString") || Object.getOwnPropertyDescriptor(map, "toString") !== undefined)
+    problems.push(`before: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
+  element.setAttribute("data-to-string", "from-attribute");
+  const value = map.toString, own = Object.hasOwn(map, "toString"), desc = Object.getOwnPropertyDescriptor(map, "toString");
+  if (value !== "from-attribute") problems.push(`get ${typeof value === "function" ? "function" : String(value)}`);
+  if (!own) problems.push("hasOwn false");
+  if (!desc || desc.value !== "from-attribute" || desc.writable !== true || desc.enumerable !== true || desc.configurable !== true)
+    problems.push(`descriptor ${describeDescriptor(desc)}`);
+  element.removeAttribute("data-to-string");
+  if (map.toString !== inherited || Object.hasOwn(map, "toString") || Object.getOwnPropertyDescriptor(map, "toString") !== undefined)
+    problems.push(`after removal: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
+  return problems.length ? problems.join("; ") : true;
+});
 finish();
 </script>
 </body></html>

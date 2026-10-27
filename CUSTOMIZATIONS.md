@@ -1,3 +1,15 @@
+## 2026-10-27 - Honor LegacyOverrideBuiltIns in generated named-property reads (0370)
+
+components/script_bindings/codegen/codegen.py now reads the maintained WebIDL descriptor
+attribute and places supported names before the prototype in get/GOPD/hasOwn for
+HTMLDocument and DOMStringMap. Indexed and own/unforgeable precedence remain unchanged;
+no-attribute output is byte-identical. Reuse existing generators, no new dependency.
+Seven parser/generator tests pass, old generator fails two behavioral checks,18 generated
+Rust hooks parse. Required normal/JITless browser smoke covers HTMLDocument, dataset and
+the unchanged Form control; heavy builds remain in CI. Internal v8.yml test step only,
+no build/bundle flags or test.yml changes. Patch0370 includes the source, smoke and test.
+Definition/deletion/key-enumeration gaps and scoped-handler sourceText remain open.
+
 ## 2026-10-27 - Review the native DOM hook map and resume after the session reset (0368)
 
 Correct the architecture map: HTMLDocument declares LegacyOverrideBuiltIns; its current

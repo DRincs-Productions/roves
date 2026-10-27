@@ -20,6 +20,21 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Implementazione0370 — letture LegacyOverrideBuiltIns complete localmente
+
+[Fix0370](handoff/0370-legacy-override-read-visibility.md): get/GOPD/hasOwn usano
+l'attributo del parser WebIDL, senza nomi classe a runtime. HTMLDocument e dataset
+leggono il nome supportato prima del prototype, dopo indexed e own/unforgeable.
+7 test parser/generatore verdi suWindows eLinux; runner42 verdi(8skipPOSIX).
+ReplayLinux0361–0370 con baseline mirata:18/18fileidentici normalizzandoLF.
+Vecchio generatore:2 fallimenti di comportamento,
+zero errori import;9 corpi senza attributo identici;18 hook Rust superano il parse.
+Smoke obbligatori HTMLDocument, dataset e controlloForm da eseguire normal/JITlessCI.
+Nessuna buildpesante locale. ChromeDevToolsMCP indisponibile; fonte primariaWebIDL,
+nessun riferimentoChrome fresco rivendicato. Backendproxy invariato e0361ancoraaperta.
+Batch precedente fa7164e52f8 richiesto interamente verde. Revisione, replay e runner
+conclusi; pronto al push. Mappa0368 revisionata nel commitlocale c7152ae07d1.
+
 ### Ripresa 27 ottobre — revisione 0368 conclusa, CI del fix verde
 
 Claude disponibile al tentativo di ripresa: [mappa0368](handoff/0368-native-dom-hook-map.md)

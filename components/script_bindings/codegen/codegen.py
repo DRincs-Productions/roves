@@ -6217,6 +6217,14 @@ class CGClass(CGThing):
         return result
 
 
+def hasLegacyOverrideBuiltIns(descriptor: Descriptor) -> bool:
+    """
+    Whether named properties of this interface are visible even when the
+    prototype chain has a property of the same name (compile-time IDL flag).
+    """
+    return bool(descriptor.interface.getExtendedAttribute("LegacyOverrideBuiltIns"))
+
+
 class CGProxySpecialOperation(CGPerSignatureCall):
     """
     Base class for classes for calling an indexed or named special operation
@@ -6462,10 +6470,19 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(CGAbstractExternMethod):
             condition = "id.is_string() || id.is_int()"
             if indexedGetter:
                 condition = f"index.is_none() && ({condition})"
-            # Once we start supporting OverrideBuiltins we need to make
-            # ResolveOwnProperty or EnumerateOwnProperties filter out named
-            # properties that shadow prototype properties.
-            namedGet = f"""
+            # https://webidl.spec.whatwg.org/#dfn-named-property-visibility
+            # Expando (and unforgeable) own properties were already checked
+            # above. Without [LegacyOverrideBuiltIns] a prototype property
+            # hides the named property; with it the prototype is skipped.
+            # ownKeys/defineProperty/delete are not adjusted here.
+            if hasLegacyOverrideBuiltIns(self.descriptor):
+                namedGet = f"""
+if {condition} {{
+    {CGIndenter(CGProxyNamedGetter(self.descriptor, templateValues), 4).define()}
+}}
+"""
+            else:
+                namedGet = f"""
 if {condition} {{
     let mut has_on_proto = false;
     if !has_property_on_prototype(cx, proxy, id, &mut has_on_proto) {{
@@ -6726,7 +6743,18 @@ class CGDOMJSProxyHandler_hasOwn(CGAbstractExternMethod):
         condition = "id.is_string() || id.is_int()"
         if indexedGetter:
             condition = f"index.is_none() && ({condition})"
-        if self.descriptor.supportsNamedProperties():
+        if self.descriptor.supportsNamedProperties() and hasLegacyOverrideBuiltIns(self.descriptor):
+            # [LegacyOverrideBuiltIns]: the prototype does not hide named
+            # properties (expando/unforgeable own properties still win above).
+            named = f"""
+if {condition} {{
+    {CGIndenter(CGProxyNamedGetter(self.descriptor), 4).define()}
+    *bp = result.is_some();
+    return true;
+}}
+
+"""
+        elif self.descriptor.supportsNamedProperties():
             named = f"""
 if {condition} {{
     let mut has_on_proto = false;
@@ -6834,6 +6862,16 @@ if !expando.is_null() {
         else:
             getNamed = ""
 
+        # https://webidl.spec.whatwg.org/#dfn-named-property-visibility
+        # With [LegacyOverrideBuiltIns] supported names are looked up before
+        # the prototype chain; otherwise the prototype hides them.
+        if hasLegacyOverrideBuiltIns(self.descriptor):
+            getNamedBeforeProto = getNamed
+            getNamedAfterProto = ""
+        else:
+            getNamedBeforeProto = ""
+            getNamedAfterProto = getNamed
+
         return f"""
 //MOZ_ASSERT(!xpc::WrapperFactory::IsXrayWrapper(proxy),
 //"Should not have a XrayWrapper here");
@@ -6848,7 +6886,7 @@ let mut vp = MutableHandle::from_raw(vp);
 
 {maybeCrossOriginGet}
 
-{getIndexedOrExpando}
+{getIndexedOrExpando}{getNamedBeforeProto}
 let mut found = false;
 if !get_property_on_prototype(cx, proxy, receiver, id, &mut found, vp.reborrow()) {{
     return false;
@@ -6857,7 +6895,7 @@ if !get_property_on_prototype(cx, proxy, receiver, id, &mut found, vp.reborrow()
 if found {{
     return true;
 }}
-{getNamed}
+{getNamedAfterProto}
 vp.set(UndefinedValue());
 true"""
 
