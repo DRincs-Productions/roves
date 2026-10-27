@@ -30,10 +30,15 @@ mentre verifiche richieste attive o errori irrisolti; continuare sviluppo/commit
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
 
-0385 ATTIVA con Claude (ripresa mirata dopo diagnosi B3): port produttivo dell'owner deno_core, moduli e async/adapter DOM;
-prompt e risultato in target/task-0385. Non pubblicare un backend parziale o dichiarare
-adozione prima della revisione e delle prove browser. Nessuna quota corrente rilevata;
-ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
+0385 consegnata e revisionata: [gap API del caricamento statico](handoff/0385-deno-production-integration.md).
+Nessun port produttivo o cambio Cargo/lockfile lasciato. Deno load-without-evaluate mantiene
+&mut runtime durante il fetch; import()/import.defer() non sono equivalenti per HTML+TLA.
+Sono controesempi da analisi sorgente, non prove browser eseguite. Domanda all'utente pendente:
+accettare pausa ScriptThread durante caricamento statico, oppure preservare piena asincronia
+in attesa di API pubblica adatta. Non assumere consenso. B1 callback pubblica verificata su
+header150.4 esatti; B2 rifiuto nuovi documenti già autorizzato, necessari insieme al port.
+Claude ha consegnato e si è fermato, nessuna sessione CLI attiva o quota rilevata.
+Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
 Codex possiede policy shell ports/servoshell, Claude il port runtime. Divisione esplicita

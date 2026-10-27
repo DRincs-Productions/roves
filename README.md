@@ -796,3 +796,9 @@ only the extra-window rule: navigation/reload blocking and trusted external-link
 remain pending. CLI development launches also show a dismissible non-modal notice; real
 bundles keep log-only diagnostics. Repeated requests do not reopen the notice. The production deno_core port is in progress;
 the isolated native class/async checks are now published for CI, not proof of adoption.
+
+Production deno_core adoption remains pending: the reviewed public API cannot independently
+load and instantiate an HTML module graph while Servo continues using the runtime. A static
+load pause needs an explicit product decision; import-based alternatives differ for top-level
+await. No runtime dependency was added and the current backend remains active. The isolated
+native class/async suite passes Linux/Windows normal/JITless (four CI jobs).

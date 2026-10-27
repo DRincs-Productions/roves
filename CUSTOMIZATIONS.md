@@ -1,3 +1,13 @@
+## 2026-10-27 - Record the reviewed production Deno module-loading gap (0385)
+
+Add durable docs/handoff/0385-deno-production-integration.md distinguishing green isolated
+class/async CI from an unimplemented production cutover. Document exclusive load futures,
+HTML/TLA counterexamples, exact public V8 header evidence and the pending user choice on
+static-load pauses. No production dependency, unsafe workaround, fork or duplicate graph.
+Update current handoff/README/wiki; patch0391 reproduces the new durable design evidence.
+Previous shell changes pass syntax, existing SDL3 contracts and five-file replay comparison;
+actual browser/visual coverage remains pending. No active Claude task or scheduled retry.
+
 ## 2026-10-27 - Show a dismissible policy notice only in development launches (0387)
 
 Reuse existing egui Window for the auxiliary-window denial notice, not modal dialogs,
