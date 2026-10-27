@@ -1,3 +1,11 @@
+## 2026-10-27 - Save the next assignment at the verified new Claude session limit
+
+No source implementation started for0376. Interactive /usage confirms session reset14:00
+Europe/Rome and a single retry14:02; the completed earlier retry was deleted. Preserve the
+named-deletion task in docs/handoff/0376-named-delete-resume.md and the authoritative migration
+handoff. Completed0375 stays local pending the previous CI batch; no incomplete source is
+published. Patch0376 contains only the durable resume document, not a runtime fix.
+
 ## 2026-10-27 - Avoid overlap between indexed and numeric named DOM keys (0375)
 
 The DOM ownKeys helper reuses get_array_index_from_id when an indexed getter exists,

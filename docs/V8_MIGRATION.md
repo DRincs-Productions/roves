@@ -23,6 +23,13 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
 
+**Sospeso per nuovo limite Claude:** `/usage` aperto il27ottobre11:46 Europe/Rome
+conferma sessione100% e reset alle14:00 dioggi. Un solo tentativo alle14:02 è programmato
+con `ripresa-unica-claude-quota-0376`: eliminarlo dopoil tentativo. Se persiste la stessa
+quota, registrare e fermarsi senza retry concatenati. Nessun cambio modello o ripartenza aggiuntiva oltre quel singolo tentativo.
+[Incarico0376 durabile](handoff/0376-named-delete-resume.md): il tentativo è stato bloccato
+subito, non ha lasciato WIP. Prompt locale aggiornato in `target/task-0376/prompt.txt`.
+
 Pubblicato `dac65a4dbc8d9dd762e265ce5376dbe4e884a8be`, wiki `bc80b3c`. Include0371
 (nomi DOM senza CString/pin),0372/0373 (visibilità ownKeys, null/reentry e attributo sul
 Document reale) e0374 (HTMLDocument alias standard; rimossi classeRust/IDL inutilizzati).
@@ -41,15 +48,17 @@ proxy contracts verdi, runner42(8skipPOSIX), parseRustverde; prova nativa mostra
 per idduplicati. L'estensione del filtro agli indici fuoriintervallo segue le letture già
 esistenti: è scelta d'integrazione, non conformità universale dimostrata. BrowserCIpending.
 
-Prossimo lavoro circoscritto: analizzare la visibilità in defineProperty/delete con gli
-stessi attributi e helper mantenuti, dopo revisione/replay/commitlocale0375; niente WIPpush.
+0375 è committata localmente come `68d687ce5ae`, wiki locale `86cbaf5`; replayWin/Linux
+6/6percorsiidenticiLF. Prossimo incarico0376 salvato: delete di nomi visibili senza deleter.
+Non usare NamedGetter come mera query se modifica i past names; niente WIP da pubblicare.
 Restano aperti sourceText0361, compatibilità completa delle proprietà legacy e retention
 complessiva. I frame specifici già verificati non dimostrano una garanzia globale.
 
 Codex dirige/revisiona, Claude implementa via CLI (Read/Edit/Write/Grep/Glob; nienteShell
-negata da ritentare). Nessun incarico Claude attivo al completamento0375. Quota ripristinata;
-il ricontrollo `ripresa-unica-claude-dopo-quota-0347` è stato ELIMINATO dopo il tentativo.
-Nessuna automazione periodica. Al nuovo limite reale usare /usage e la regola reset+2min.
+negata da ritentare). Nessun incarico Claude o CLI interattiva attivi. Il precedente ricontrollo
+`ripresa-unica-claude-dopo-quota-0347` è stato ELIMINATO dopo il tentativo riuscito.
+L’attuale nuovo evento di quota0376 ha soltanto il tentativo14:02 sopra; nessuna automazione
+periodica né controllo intermedio. Riprendere il loop soltanto se quota disponibile.
 ChromeDevToolsMCP indisponibile nella sessione (Targetclosed), nessun nuovo riferimentoChrome.
 Build pesanti soloCI. Workspaces leggeri da riusare, cwd esplicito: normale
 `C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js`, JITless `...-00kx/roves-js`;
