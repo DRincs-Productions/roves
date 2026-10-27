@@ -63,7 +63,11 @@ Reuse it after review rather than redoing research; it is not a completed cutove
 The earlier choice2 was briefly recorded in local a9d055b06bd and is now superseded.
 Claude resumes with reapproved-provisional.txt. Current backend remains until atomic
 implementation and review; no partial source/dependency change may be published.
-No upstream message/issue, scheduled retry or quota block. TODO.md remains external.
+No upstream message/issue. Resume attempt hit the actual five-hour session limit before
+leaving any source edits. CLI /usage checked27October22:53 Europe/Rome:100%, reset12am
+means28October00:00. One retry scheduled28October00:02 in the same chat, automation
+ripresa-unica-claude-0385-dopo-reset. Resume reapproved-provisional.txt; delete the retry
+after its single attempt, no chained retries/model changes. TODO.md remains external.
 
 ## Other integration requirements already authorized
 

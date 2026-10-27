@@ -24,7 +24,9 @@ Checkpoint pubblicato: `b5201929aaa95c68eeccefd1d9c5f816d6f62549`, wiki `3a3dff2
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
 Batch precedente16b: probe40564575701 verde4/4; generale40564575679 richiesti10/10verdi;
 Android40564575708 verde. Nuovo batch b520: generale40588014903, Android40588015577;
-iOS40588015016 esclusa. Non usare il verde precedente come risultato del nuovo batch.
+iOS40588015016 esclusa. Ultimo controllo: Androidverde; generale7/10richiestiverdi
+(shared/probe/patch, Steam, Linuxdeb), Windowsportable/MSI eLinuxportable attivi, nessuna
+rossa. Non usare il verde precedente come risultato del nuovo batch.
 Nessun push mentre richiesti attivi/errori irrisolti; continuare lavoro indipendente utile.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
@@ -42,7 +44,12 @@ Conservare HTML/TLA e sicurezza; nessun rientro JS durante prestito esclusivo de
 Ripresa0385 da target/task-0385/superseded-option1-wip, bozza incompleta da revisionare,
 non codice verificato. Nuovo incarico target/task-0385/reapproved-provisional.txt;
 consegna attesa IMPLEMENTATION.md. B1 shim/header e B2 documento unico restano necessari.
-Nessuna quota o automazione attiva. TODO.md resta modifica separata.
+Tentativo ripresa fermato alla quota sessione senza nuovi sorgenti modificati. /usage nella
+CLI il27ottobre22:53 Europe/Rome:100%, reset12am =28ottobre00:00. Programmato UN SOLO
+tentativo28ottobre00:02, automazione ripresa-unica-claude-0385-dopo-reset; eliminarla dopo
+tentativo riuscito/bloccato, nessun retry concatenato sullo stesso limite. La scelta PROVVISORIA
+resta valida. Output quota target/task-0385/reapproved-result.json; prompt salvato pronto.
+Nessun cambio modello o sostituzione del port con Codex. TODO.md resta modifica separata.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:

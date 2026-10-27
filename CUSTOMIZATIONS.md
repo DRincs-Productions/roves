@@ -1,3 +1,12 @@
+## 2026-10-27 - Save the provisional Deno task at the verified session reset
+
+The resumed0385 task reached its actual five-hour session quota before new source edits.
+CLI /usage27October22:53 Europe/Rome confirms100% and12am reset (28October00:00).
+Save current/0385 handoffs and schedule one retry at00:02 under AGENTS; no intermediate
+polling, model change or same-block retry chain. The provisional static-load decision and
+required testing review remain current. Patch0395 captures the durable handoff update;
+no source/runtime dependency or completed adoption is claimed.
+
 ## 2026-10-27 - Proceed with Deno static loading as a provisional test-review item
 
 Latest user instruction reauthorizes option1 after clarification: static module loading may
