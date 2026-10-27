@@ -1,0 +1,82 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index cf895036659..91afe18dfc6 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -36,6 +36,17 @@ separata Deno/Chromium o API Deno privilegiate ai giochi. Non eliminare test esi
+ di avere copertura sostitutiva del perimetro; non dichiarare adozione o prestazioni provate.
+ Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+ 
++### Caricamento statico deno_core: compromesso autorizzato (27 ottobre 2026)
++
++L'utente ha scelto esplicitamente l'opzione1: durante il fetch/istanziamento dei grafi di
++moduli statici il thread del gioco puo mettere temporaneamente in pausa input e timer.
++Usare le API pubbliche deno_core di caricamento separato dalla valutazione; mantenere
++l'esecuzione nel punto previsto da HTML e non attendere il completamento del TLA per
++sbloccare impropriamente DOMContentLoaded o gli altri script differiti. Gli import dinamici
++restano asincroni. Nessuna attesa di rete con rientro nei task JS mentre JsRuntime e preso
++in prestito esclusivo; risposte di rete indipendenti dal thread del gioco. Questo supera
++il blocco decisionale B3 del handoff0385, non dimostra l'integrazione gia completata.
++
+ ### Valutazione obbligatoria prima di ogni modifica
+ 
+ Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+index a2224f1a46c..7fa6f369d7f 100644
+--- a/docs/AGENT_WORKFLOW.md
++++ b/docs/AGENT_WORKFLOW.md
+@@ -28,6 +28,17 @@ installazioni separate. Nessun risparmio o adozione dichiarati senza evidenza. N
+ fixture esistenti prima di definire le prove sostitutive. Handoff0380 descrive comportamento
+ e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI invariati.
+ 
++### Caricamento statico deno_core: compromesso autorizzato (27 ottobre 2026)
++
++L'utente ha scelto esplicitamente l'opzione1: durante il fetch/istanziamento dei grafi di
++moduli statici il thread del gioco puo mettere temporaneamente in pausa input e timer.
++Usare le API pubbliche deno_core di caricamento separato dalla valutazione; mantenere
++l'esecuzione nel punto previsto da HTML e non attendere il completamento del TLA per
++sbloccare impropriamente DOMContentLoaded o gli altri script differiti. Gli import dinamici
++restano asincroni. Nessuna attesa di rete con rientro nei task JS mentre JsRuntime e preso
++in prestito esclusivo; risposte di rete indipendenti dal thread del gioco. Questo supera
++il blocco decisionale B3 del handoff0385, non dimostra l'integrazione gia completata.
++
+ ## Eccezione Apple autorizzata il 26 ottobre 2026
+ 
+ Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono
+diff --git a/docs/handoff/0385-deno-production-integration.md b/docs/handoff/0385-deno-production-integration.md
+index 6f670c12577..755cd75ace7 100644
+--- a/docs/handoff/0385-deno-production-integration.md
++++ b/docs/handoff/0385-deno-production-integration.md
+@@ -36,13 +36,17 @@ Reviewed alternatives, SOURCE ANALYSIS rather than executed browser proofs:
+ - Keeping only Servo's root-byte fetch does not discover dependency graphs. Avoid a
+   second handwritten graph, unsafe borrow extension or cancelling/restarting load futures.
+ 
+-Two product choices were presented asynchronously to the user: explicitly accept a
+-ScriptThread pause during static graph loading (dynamic import remains async), or retain
+-fully async behavior and await a maintained public Deno API. No answer means no authority
+-to introduce the pause. Do not claim that upstream has accepted or scheduled an API.
+-A possible minimal upstream API is an independently owned load-and-instantiate future
+-polled through the runtime event loop, returning ModuleId without evaluating the graph.
+-No upstream message/issue was sent.
++The user explicitly selected OPTION1 after the review: a temporary ScriptThread pause during
++static graph loading/instantiation is accepted; dynamic imports remain asynchronous. This
++unblocks B3. Preserve HTML evaluation timing and TLA semantics; the authorization does not
++permit waiting for TLA settlement before progressing deferred scripts/DOMContentLoaded.
++Network completion must not depend on reentering JS tasks while JsRuntime is exclusively
++borrowed. Reuse maintained Deno/Tokio plus Servo's existing network security policy.
++
++Claude resumed actual implementation using target/task-0385/approved-static-load.txt.
++The earlier diagnosis below remains evidence of why the tradeoff was presented, not a
++current request for approval. No upstream issue/message was sent; no fork or second graph
++authorized. Production integration is still pending code/review/necessary checks.
+ 
+ ## Other integration requirements already authorized
+ 
+@@ -59,6 +63,6 @@ No upstream message/issue was sent.
+ - Remove each replaced service when the complete cutover is reviewed; no half backend.
+ 
+ Detailed task-local evidence: target/task-0385/RESULTS.md, CODEX_REVIEW.md, prompt.txt,
+-followup.txt and v8-public headers. Claude has delivered and stopped; no active CLI task,
+-quota block, automation or scheduled retry. Chrome MCP new_page was denied to Claude;
++followup.txt and v8-public headers. The initial diagnosis was delivered; a new implementation assignment is active.
++No quota block, automation or scheduled retry. Chrome MCP new_page was denied to Claude;
+ not retried. No Chrome measurements or executed B3 counterexamples are claimed.

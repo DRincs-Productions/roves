@@ -28,6 +28,17 @@ installazioni separate. Nessun risparmio o adozione dichiarati senza evidenza. N
 fixture esistenti prima di definire le prove sostitutive. Handoff0380 descrive comportamento
 e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI invariati.
 
+### Caricamento statico deno_core: compromesso autorizzato (27 ottobre 2026)
+
+L'utente ha scelto esplicitamente l'opzione1: durante il fetch/istanziamento dei grafi di
+moduli statici il thread del gioco puo mettere temporaneamente in pausa input e timer.
+Usare le API pubbliche deno_core di caricamento separato dalla valutazione; mantenere
+l'esecuzione nel punto previsto da HTML e non attendere il completamento del TLA per
+sbloccare impropriamente DOMContentLoaded o gli altri script differiti. Gli import dinamici
+restano asincroni. Nessuna attesa di rete con rientro nei task JS mentre JsRuntime e preso
+in prestito esclusivo; risposte di rete indipendenti dal thread del gioco. Questo supera
+il blocco decisionale B3 del handoff0385, non dimostra l'integrazione gia completata.
+
 ## Eccezione Apple autorizzata il 26 ottobre 2026
 
 Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono

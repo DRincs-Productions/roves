@@ -24,8 +24,9 @@ Checkpoint pubblicato: `16b7149221e7989fe07c2cdfd266def61e646573`, wiki `be50deb
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
 Batch precedente d1eb: probe40556912335 verde4/4; generale40556912161 richiesti10/10verdi;
 Android40556912086 verde. Apple esclusi dal blocco. Nuovo batch: probe40564575701,
-generale40564575679, Android40564575708 da ricontrollare al termine del lavoro; iOS40564575683 esclusa. Nessun push
-mentre verifiche richieste attive o errori irrisolti; continuare sviluppo/commit locali.
+generale40564575679 VERDE10/10 richiesti, Android40564575708 VERDE; iOS40564575683 esclusa.
+Batch16b interamente verde per le verifiche richieste: pubblicazione shell/docs consentita.
+Dopo il push identificare il nuovo batch prima di ulteriori pubblicazioni.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
@@ -33,11 +34,14 @@ async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4
 0385 consegnata e revisionata: [gap API del caricamento statico](handoff/0385-deno-production-integration.md).
 Nessun port produttivo o cambio Cargo/lockfile lasciato. Deno load-without-evaluate mantiene
 &mut runtime durante il fetch; import()/import.defer() non sono equivalenti per HTML+TLA.
-Sono controesempi da analisi sorgente, non prove browser eseguite. Domanda all'utente pendente:
-accettare pausa ScriptThread durante caricamento statico, oppure preservare piena asincronia
-in attesa di API pubblica adatta. Non assumere consenso. B1 callback pubblica verificata su
-header150.4 esatti; B2 rifiuto nuovi documenti già autorizzato, necessari insieme al port.
-Claude ha consegnato e si è fermato, nessuna sessione CLI attiva o quota rilevata.
+Sono controesempi da analisi sorgente, non prove browser eseguite. L'utente ha SCELTO
+opzione1: pausa del thread del gioco durante caricamento/istanziamento statico autorizzata;
+import dinamici asincroni e valutazione al punto HTML corretta, TLA compreso. B3 decisionale
+superato; non aspettare nuove conferme per lo stesso compromesso. B1 callback pubblica
+verificata su header150.4 esatti; B2 blocco nuovi documenti gia autorizzato, insieme al port.
+Claude ripreso su IMPLEMENTAZIONE produttiva da target/task-0385/approved-static-load.txt,
+output target/task-0385/approved-result.json, consegna attesa IMPLEMENTATION.md.
+Nessun cambio produttivo considerato verificato prima di revisione e CI.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:

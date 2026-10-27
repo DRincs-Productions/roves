@@ -36,13 +36,17 @@ Reviewed alternatives, SOURCE ANALYSIS rather than executed browser proofs:
 - Keeping only Servo's root-byte fetch does not discover dependency graphs. Avoid a
   second handwritten graph, unsafe borrow extension or cancelling/restarting load futures.
 
-Two product choices were presented asynchronously to the user: explicitly accept a
-ScriptThread pause during static graph loading (dynamic import remains async), or retain
-fully async behavior and await a maintained public Deno API. No answer means no authority
-to introduce the pause. Do not claim that upstream has accepted or scheduled an API.
-A possible minimal upstream API is an independently owned load-and-instantiate future
-polled through the runtime event loop, returning ModuleId without evaluating the graph.
-No upstream message/issue was sent.
+The user explicitly selected OPTION1 after the review: a temporary ScriptThread pause during
+static graph loading/instantiation is accepted; dynamic imports remain asynchronous. This
+unblocks B3. Preserve HTML evaluation timing and TLA semantics; the authorization does not
+permit waiting for TLA settlement before progressing deferred scripts/DOMContentLoaded.
+Network completion must not depend on reentering JS tasks while JsRuntime is exclusively
+borrowed. Reuse maintained Deno/Tokio plus Servo's existing network security policy.
+
+Claude resumed actual implementation using target/task-0385/approved-static-load.txt.
+The earlier diagnosis below remains evidence of why the tradeoff was presented, not a
+current request for approval. No upstream issue/message was sent; no fork or second graph
+authorized. Production integration is still pending code/review/necessary checks.
 
 ## Other integration requirements already authorized
 
@@ -59,6 +63,6 @@ No upstream message/issue was sent.
 - Remove each replaced service when the complete cutover is reviewed; no half backend.
 
 Detailed task-local evidence: target/task-0385/RESULTS.md, CODEX_REVIEW.md, prompt.txt,
-followup.txt and v8-public headers. Claude has delivered and stopped; no active CLI task,
-quota block, automation or scheduled retry. Chrome MCP new_page was denied to Claude;
+followup.txt and v8-public headers. The initial diagnosis was delivered; a new implementation assignment is active.
+No quota block, automation or scheduled retry. Chrome MCP new_page was denied to Claude;
 not retried. No Chrome measurements or executed B3 counterexamples are claimed.

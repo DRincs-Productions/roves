@@ -1,3 +1,13 @@
+## 2026-10-27 - Accept the public-API static loading tradeoff for Deno adoption
+
+The user selected option1: static graph fetch/instantiation may pause ScriptThread input
+and timers, while dynamic imports remain asynchronous. Preserve HTML evaluation/TLA timing;
+no unsafe runtime reentry, private Deno graph or permanent duplicate service. Update AGENTS,
+workflow and0385/current handoffs to unblock implementation rather than ask again. The
+production port remains unverified/in progress. README/wiki record the accepted limitation;
+patch0392 reproduces the process/design change. No public game API or dependency changes
+are claimed by this documentation commit.
+
 ## 2026-10-27 - Record the reviewed production Deno module-loading gap (0385)
 
 Add durable docs/handoff/0385-deno-production-integration.md distinguishing green isolated
