@@ -716,6 +716,28 @@ pub unsafe fn RUST_INTERNED_STRING_TO_JSID(cx: *mut JSContext, s: *mut JSString,
     id.set(result);
 }
 
+/// SpiderMonkey's `JS_StringToId`: the unpinned atom of the string's exact UTF-16 units, or
+/// an int id for a canonical array index. `false` (with any exception pending) on failure.
+pub unsafe fn JS_StringToId(cx: *mut JSContext, s: Handle<*mut JSString>, mut idp: MutableHandleId) -> bool {
+    let string = s.get();
+    if string.is_null() {
+        return false;
+    }
+    let result = raw(cx).catching(|scope| {
+        // SAFETY: callers pass a rooted, live string.
+        let key = value(scope, crate::jsval::StringValue(unsafe { &*string }));
+        let id = key_id(scope, key);
+        (!id.is_void()).then_some(id)
+    });
+    match result {
+        Some(id) => {
+            idp.set(id);
+            true
+        },
+        None => false,
+    }
+}
+
 pub unsafe fn int_to_jsid(i: i32, mut id: MutableHandleId) {
     id.set(IntId(i));
 }

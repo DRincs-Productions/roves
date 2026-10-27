@@ -4,7 +4,7 @@
 
 //! Utilities for the implementation of JSAPI proxy handlers.
 
-use std::ffi::{CStr, CString};
+use std::ffi::CStr;
 use std::ops::{Deref, DerefMut};
 use std::os::raw::c_char;
 use std::ptr;
@@ -31,7 +31,7 @@ use js::rust::wrappers2::{
     InvokeGetOwnPropertyDescriptor, JS_AlreadyHasOwnPropertyById, JS_AtomizeAndPinString,
     JS_DefineFunctions, JS_DefineProperties, JS_DefinePropertyById, JS_DeletePropertyById,
     JS_GetOwnPropertyDescriptorById, JS_IdToValue, JS_IsExceptionPending,
-    JS_NewObjectWithGivenProto, JS_ValueToSource, RUST_INTERNED_STRING_TO_JSID, RUST_JSID_IS_VOID,
+    JS_NewObjectWithGivenProto, JS_StringToId, JS_ValueToSource, RUST_INTERNED_STRING_TO_JSID, RUST_JSID_IS_VOID,
     SetDataPropertyDescriptor, SetPropertyIgnoringNamedGetter, int_to_jsid,
 };
 use js::rust::{
@@ -912,17 +912,18 @@ where
         }
 
         if let Some(properties) = config.supported_named_properties {
+            rooted!(&in(cx) let mut value = UndefinedValue());
+            rooted!(&in(cx) let mut rooted_jsid: jsid);
             for name in properties(unwrapped_proxy, &mut cx) {
-                let cstring = CString::new(name).unwrap();
-                let jsstring = JS_AtomizeAndPinString(&cx, cstring.as_ptr());
-                rooted!(&in(cx) let rooted = jsstring);
-                rooted!(&in(cx) let mut rooted_jsid: jsid);
-                RUST_INTERNED_STRING_TO_JSID(
-                    &mut cx,
-                    rooted.handle().get(),
-                    rooted_jsid.handle_mut(),
-                );
-                AppendToIdVector(props, rooted_jsid.handle());
+                // Names are user-controlled: keep their exact string units (embedded NULs,
+                // lone surrogates) and leave their atoms unpinned.
+                name.safe_to_jsval(&mut cx, value.handle_mut());
+                rooted!(&in(cx) let jsstring = value.get().to_string());
+                if !JS_StringToId(&mut cx, jsstring.handle(), rooted_jsid.handle_mut()) ||
+                    !AppendToIdVector(props, rooted_jsid.handle())
+                {
+                    return false;
+                }
             }
         }
 

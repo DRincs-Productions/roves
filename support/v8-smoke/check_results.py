@@ -28,6 +28,7 @@ REQUIRED_CHECKS = {
         "HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
         "HTMLFormElement named properties stay hidden by the prototype",
         "DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads",
+        "HTMLDocument ownKeys keeps supported names with NUL and Unicode exact",
     ),
     "stress.html": (
         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",

@@ -1,3 +1,14 @@
+## 2026-10-27 - Preserve dynamic DOM names and avoid unconditional atom pinning (0371)
+
+The proxy ownKeys loop now uses existing DOMString conversion and standard JS_StringToId
+instead of CString::new(...).unwrap and JS_AtomizeAndPinString. Add the missing JSAPI shim
+using V8 key_id, regenerate the wrapper from maintained mozjs lists, remove CString and
+propagate conversion/append failures. No new dependency, order/visibility change or static
+atom change. Native6normal/6JITless pass; pin-mutant negative fails; old NUL conversion
+panic reproduced in a small fragment; runner42 passes (8 POSIX skips). Required browser
+smoke checks exact NUL/Unicode names and removal, pending CI. Patch0371 replays source/tests.
+This is not a complete page-retention or source-text compatibility claim.
+
 ## 2026-10-27 - Honor LegacyOverrideBuiltIns in generated named-property reads (0370)
 
 components/script_bindings/codegen/codegen.py now reads the maintained WebIDL descriptor

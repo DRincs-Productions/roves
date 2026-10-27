@@ -710,3 +710,8 @@ This fixes read visibility; definition/deletion/enumeration and source-text gaps
 
 Documentation patch paths now use portable separators, fixing Linux reconstruction
 of the migration handoff series; runtime behavior is unchanged.
+
+Dynamic DOM named-property enumeration preserves embedded NUL and Unicode names without
+C-string conversion or permanently pinning their atoms. Normal/JITless native regressions
+pass; the required browser smoke runs in CI and is pending for this change. Overall page
+retention remains open.

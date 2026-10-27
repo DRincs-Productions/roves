@@ -1231,6 +1231,82 @@ mod atoms {
         assert!(again.get().is_int() && again.get().to_int() == 42);
     }
 
+    /// The id `JS_StringToId` gives the string `source` evaluates to.
+    fn string_to_id(runtime: &Runtime, source: &str, id: crate::gc::MutableHandleId) {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let string = eval(runtime, source).to_string());
+        assert!(unsafe { JS_StringToId(cx, string.handle().into_handle(), id.into_handle()) });
+    }
+
+    #[test]
+    fn string_to_id_keeps_exact_units_without_pinning() {
+        const TRANSIENT: usize = 16;
+        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let mut nul = crate::jsid::VoidId());
+        rooted!(in(cx) let mut unicode = crate::jsid::VoidId());
+        rooted!(in(cx) let mut astral = crate::jsid::VoidId());
+        rooted!(in(cx) let mut lone = crate::jsid::VoidId());
+        string_to_id(&runtime, "'a\\u0000b'", nul.handle_mut());
+        string_to_id(&runtime, "'n\\u00e4me\\u4e2d'", unicode.handle_mut());
+        string_to_id(&runtime, "'\\uD83D\\uDE00'", astral.handle_mut());
+        string_to_id(&runtime, "'x\\uDC00'", lone.handle_mut());
+        // Collects the evaluated temporaries first, so the count below is exact.
+        runtime.gc_for_testing();
+        let before = finalized();
+        runtime.gc_for_testing();
+        production_gc(&runtime);
+        runtime.gc_for_testing();
+        assert_eq!(finalized(), before, "rooted ids keep their atoms");
+        assert_eq!(units(nul.get()), [0x61, 0x00, 0x62], "embedded NUL is kept");
+        assert_eq!(units(unicode.get()), "n\u{e4}me\u{4e2d}".encode_utf16().collect::<Vec<_>>());
+        assert_eq!(units(astral.get()), [0xD83D, 0xDE00]);
+        assert_eq!(units(lone.get()), [0x78, 0xDC00], "lone surrogates are not replaced");
+        // The same atom as the property-key path.
+        rooted!(in(cx) let mut again = crate::jsid::VoidId());
+        string_id(&runtime, "'a' + String.fromCharCode(0) + 'b'", again.handle_mut());
+        assert_eq!(again.get(), nul.get());
+        // Canonical array indices become int ids; other numeric-looking names stay strings.
+        string_to_id(&runtime, "'42'", again.handle_mut());
+        assert!(again.get().is_int() && again.get().to_int() == 42);
+        for name in ["042", "-1", "2147483648", "1.5"] {
+            string_to_id(&runtime, &format!("'{name}'"), again.handle_mut());
+            assert_eq!(units(again.get()), name.encode_utf16().collect::<Vec<_>>());
+        }
+        // A null string fails without producing an id.
+        again.set(crate::jsid::VoidId());
+        rooted!(in(cx) let null = std::ptr::null_mut::<JSString>());
+        assert!(!unsafe { JS_StringToId(cx, null.handle().into_handle(), again.handle_mut().into_handle()) });
+        assert!(again.get().is_void());
+        // Unlike JS_AtomizeAndPinString, the atoms are collected once no id references them.
+        // The finalized count also includes the evaluated strings, so a control round without
+        // ids measures those first.
+        let collected = |runtime: &mut Runtime, prefix: &str, make_ids: bool| {
+            let cx = runtime.raw_cx();
+            runtime.gc_for_testing();
+            let before = finalized();
+            {
+                rooted!(in(cx) let mut transient = crate::jsid::VoidId());
+                for i in 0..TRANSIENT {
+                    let source = format!("['{prefix}', {i}].join('\\u0000\\uD800')");
+                    if make_ids {
+                        string_to_id(runtime, &source, transient.handle_mut());
+                    } else {
+                        rooted!(in(cx) let _string = eval(runtime, &source).to_string());
+                    }
+                }
+            }
+            runtime.gc_for_testing();
+            production_gc(runtime);
+            runtime.gc_for_testing();
+            finalized() - before
+        };
+        let control = collected(&mut runtime, "control", false);
+        let with_ids = collected(&mut runtime, "transient", true);
+        assert!(with_ids >= control + TRANSIENT, "unpinned atoms are collected ({with_ids} vs {control})");
+        assert_eq!(units(nul.get()), [0x61, 0x00, 0x62]);
+    }
+
     #[test]
     fn pinned_atoms_live_for_the_runtime() {
         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());

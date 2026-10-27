@@ -541,6 +541,36 @@ check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the protot
     problems.push(`after removal: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
   return problems.length ? problems.join("; ") : true;
 });
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Supported names are page-controlled: ownKeys must report them unchanged, including an
+// embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
+check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
+  const problems = [];
+  const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
+  const images = names.map(name => {
+    const img = doc.createElement("img");
+    img.name = name;
+    doc.body.append(img);
+    return img;
+  });
+  const show = name => JSON.stringify(name);
+  for (const round of [0, 1]) {
+    const keys = Reflect.ownKeys(doc);
+    names.forEach((name, i) => {
+      const count = keys.filter(key => key === name).length;
+      if (count !== 1) problems.push(`round ${round}: ${show(name)} listed ${count} times`);
+      if (doc[name] !== images[i]) problems.push(`round ${round}: get ${show(name)} ${describeValue(doc[name])}`);
+      const desc = Object.getOwnPropertyDescriptor(doc, name);
+      if (!desc || desc.value !== images[i]) problems.push(`round ${round}: descriptor ${show(name)} ${describeDescriptor(desc)}`);
+    });
+    if (keys.includes("rovesNul")) problems.push(`round ${round}: NUL name truncated`);
+  }
+  images.forEach(img => img.remove());
+  const after = Reflect.ownKeys(doc);
+  for (const name of names)
+    if (after.includes(name) || Object.hasOwn(doc, name)) problems.push(`after removal: ${show(name)} still listed`);
+  return problems.length ? problems.join("; ") : true;
+}));
 finish();
 </script>
 </body></html>

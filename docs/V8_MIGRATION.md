@@ -20,6 +20,23 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
 
+### Implementazione0371 — nomi DOM senza CString e pin permanente, completa locale
+
+[Fix0371](handoff/0371-supported-name-string-ids.md): conversioneDOMString esistente
+più JS_StringToId standard, shimV8 tramitekey_id giàpresente. Rimuove panicNUL e pin
+incondizionato dei nomi enumerati, preserva unitàstringa eordine. Wrapper rigenerato
+con generatoreufficiale e liste realimozjs. Staticcross-originatoms invariati.
+6normal/6JITless verdi; pinforzato respinto dall'assertGC; sorgenteisolato ripristinato,
+normaleripetutoverde. VecchioCStringpanic riprodotto in frammentoRust, nonbrowser.
+Runner42verdi(8skipPOSIX), parseRustverde; browserNUL/Unicode richiesto nei dueCI V8.
+Replaypatch applicato,7/7percorsiidentici normalizzandoLF.
+Nessuna promessa di retentionglobale osourceText risolta. Modifica completa solo inlocale.
+
+Pubblicato0370 `f3d59895e36`, wiki`eeb3a53`. BatchV8`40481102911`, generale
+`40481102827`, Android`40481102823` (verde3/3), iOS`40481102821` esclusa.
+Al controllo di fineimplementazione0371 nessunfallimento: runtimeV8 Linux/Windows4/4
+verdi, browserV8 e buildgenerali ancoraattivi. Niente push di0371 finché richiestiattivi.
+
 ### Implementazione0370 — letture LegacyOverrideBuiltIns complete localmente
 
 [Fix0370](handoff/0370-legacy-override-read-visibility.md): get/GOPD/hasOwn usano

@@ -1,0 +1,275 @@
+diff --git a/components/roves-js/src/jsapi_impl.rs b/components/roves-js/src/jsapi_impl.rs
+index 5f38442c92f..6f5ad124cfc 100644
+--- a/components/roves-js/src/jsapi_impl.rs
++++ b/components/roves-js/src/jsapi_impl.rs
+@@ -716,6 +716,28 @@ pub unsafe fn RUST_INTERNED_STRING_TO_JSID(cx: *mut JSContext, s: *mut JSString,
+     id.set(result);
+ }
+ 
++/// SpiderMonkey's `JS_StringToId`: the unpinned atom of the string's exact UTF-16 units, or
++/// an int id for a canonical array index. `false` (with any exception pending) on failure.
++pub unsafe fn JS_StringToId(cx: *mut JSContext, s: Handle<*mut JSString>, mut idp: MutableHandleId) -> bool {
++    let string = s.get();
++    if string.is_null() {
++        return false;
++    }
++    let result = raw(cx).catching(|scope| {
++        // SAFETY: callers pass a rooted, live string.
++        let key = value(scope, crate::jsval::StringValue(unsafe { &*string }));
++        let id = key_id(scope, key);
++        (!id.is_void()).then_some(id)
++    });
++    match result {
++        Some(id) => {
++            idp.set(id);
++            true
++        },
++        None => false,
++    }
++}
++
+ pub unsafe fn int_to_jsid(i: i32, mut id: MutableHandleId) {
+     id.set(IntId(i));
+ }
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 8df4bc779a0..c2a26bda93e 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -1231,6 +1231,82 @@ mod atoms {
+         assert!(again.get().is_int() && again.get().to_int() == 42);
+     }
+ 
++    /// The id `JS_StringToId` gives the string `source` evaluates to.
++    fn string_to_id(runtime: &Runtime, source: &str, id: crate::gc::MutableHandleId) {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let string = eval(runtime, source).to_string());
++        assert!(unsafe { JS_StringToId(cx, string.handle().into_handle(), id.into_handle()) });
++    }
++
++    #[test]
++    fn string_to_id_keeps_exact_units_without_pinning() {
++        const TRANSIENT: usize = 16;
++        let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let mut nul = crate::jsid::VoidId());
++        rooted!(in(cx) let mut unicode = crate::jsid::VoidId());
++        rooted!(in(cx) let mut astral = crate::jsid::VoidId());
++        rooted!(in(cx) let mut lone = crate::jsid::VoidId());
++        string_to_id(&runtime, "'a\\u0000b'", nul.handle_mut());
++        string_to_id(&runtime, "'n\\u00e4me\\u4e2d'", unicode.handle_mut());
++        string_to_id(&runtime, "'\\uD83D\\uDE00'", astral.handle_mut());
++        string_to_id(&runtime, "'x\\uDC00'", lone.handle_mut());
++        // Collects the evaluated temporaries first, so the count below is exact.
++        runtime.gc_for_testing();
++        let before = finalized();
++        runtime.gc_for_testing();
++        production_gc(&runtime);
++        runtime.gc_for_testing();
++        assert_eq!(finalized(), before, "rooted ids keep their atoms");
++        assert_eq!(units(nul.get()), [0x61, 0x00, 0x62], "embedded NUL is kept");
++        assert_eq!(units(unicode.get()), "n\u{e4}me\u{4e2d}".encode_utf16().collect::<Vec<_>>());
++        assert_eq!(units(astral.get()), [0xD83D, 0xDE00]);
++        assert_eq!(units(lone.get()), [0x78, 0xDC00], "lone surrogates are not replaced");
++        // The same atom as the property-key path.
++        rooted!(in(cx) let mut again = crate::jsid::VoidId());
++        string_id(&runtime, "'a' + String.fromCharCode(0) + 'b'", again.handle_mut());
++        assert_eq!(again.get(), nul.get());
++        // Canonical array indices become int ids; other numeric-looking names stay strings.
++        string_to_id(&runtime, "'42'", again.handle_mut());
++        assert!(again.get().is_int() && again.get().to_int() == 42);
++        for name in ["042", "-1", "2147483648", "1.5"] {
++            string_to_id(&runtime, &format!("'{name}'"), again.handle_mut());
++            assert_eq!(units(again.get()), name.encode_utf16().collect::<Vec<_>>());
++        }
++        // A null string fails without producing an id.
++        again.set(crate::jsid::VoidId());
++        rooted!(in(cx) let null = std::ptr::null_mut::<JSString>());
++        assert!(!unsafe { JS_StringToId(cx, null.handle().into_handle(), again.handle_mut().into_handle()) });
++        assert!(again.get().is_void());
++        // Unlike JS_AtomizeAndPinString, the atoms are collected once no id references them.
++        // The finalized count also includes the evaluated strings, so a control round without
++        // ids measures those first.
++        let collected = |runtime: &mut Runtime, prefix: &str, make_ids: bool| {
++            let cx = runtime.raw_cx();
++            runtime.gc_for_testing();
++            let before = finalized();
++            {
++                rooted!(in(cx) let mut transient = crate::jsid::VoidId());
++                for i in 0..TRANSIENT {
++                    let source = format!("['{prefix}', {i}].join('\\u0000\\uD800')");
++                    if make_ids {
++                        string_to_id(runtime, &source, transient.handle_mut());
++                    } else {
++                        rooted!(in(cx) let _string = eval(runtime, &source).to_string());
++                    }
++                }
++            }
++            runtime.gc_for_testing();
++            production_gc(runtime);
++            runtime.gc_for_testing();
++            finalized() - before
++        };
++        let control = collected(&mut runtime, "control", false);
++        let with_ids = collected(&mut runtime, "transient", true);
++        assert!(with_ids >= control + TRANSIENT, "unpinned atoms are collected ({with_ids} vs {control})");
++        assert_eq!(units(nul.get()), [0x61, 0x00, 0x62]);
++    }
++
+     #[test]
+     fn pinned_atoms_live_for_the_runtime() {
+         let mut runtime = Runtime::new(crate::rust::JSEngineHandle::for_tests());
+diff --git a/components/roves-js/src/wrappers2.in.rs b/components/roves-js/src/wrappers2.in.rs
+index 89bed4e0285..d6732b1cb6b 100644
+--- a/components/roves-js/src/wrappers2.in.rs
++++ b/components/roves-js/src/wrappers2.in.rs
+@@ -140,6 +140,7 @@ wrap!(jsapi: pub fn JS_TransplantObject(cx: &mut JSContext, origobj: HandleObjec
+ wrap!(jsapi: pub fn JS_ResolveStandardClass(cx: &mut JSContext, obj: HandleObject, id: HandleId, resolved: *mut bool) -> bool);
+ wrap!(jsapi: pub fn JS_NewEnumerateStandardClasses(cx: &mut JSContext, obj: HandleObject, properties: MutableHandleIdVector, enumerableOnly: bool) -> bool);
+ wrap!(jsapi: pub fn JS_InitGlobalInterfaceProperties(cx: &mut JSContext, obj: HandleObject) -> bool);
++wrap!(jsapi: pub fn JS_StringToId(cx: &mut JSContext, s: HandleString, idp: MutableHandleId) -> bool);
+ wrap!(jsapi: pub fn JS_IdToValue(cx: &JSContext, id: jsid, vp: MutableHandle<Value>) -> bool);
+ wrap!(jsapi: pub fn JS_LinkConstructorAndPrototype(cx: &mut JSContext, ctor: Handle<*mut JSObject>, proto: Handle<*mut JSObject>) -> bool);
+ wrap!(jsapi: pub fn JS_NewObject(cx: &mut JSContext, clasp: *const JSClass) -> *mut JSObject);
+diff --git a/components/script_bindings/proxyhandler.rs b/components/script_bindings/proxyhandler.rs
+index daf5971910f..6508e73b38b 100644
+--- a/components/script_bindings/proxyhandler.rs
++++ b/components/script_bindings/proxyhandler.rs
+@@ -4,7 +4,7 @@
+ 
+ //! Utilities for the implementation of JSAPI proxy handlers.
+ 
+-use std::ffi::{CStr, CString};
++use std::ffi::CStr;
+ use std::ops::{Deref, DerefMut};
+ use std::os::raw::c_char;
+ use std::ptr;
+@@ -31,7 +31,7 @@ use js::rust::wrappers2::{
+     InvokeGetOwnPropertyDescriptor, JS_AlreadyHasOwnPropertyById, JS_AtomizeAndPinString,
+     JS_DefineFunctions, JS_DefineProperties, JS_DefinePropertyById, JS_DeletePropertyById,
+     JS_GetOwnPropertyDescriptorById, JS_IdToValue, JS_IsExceptionPending,
+-    JS_NewObjectWithGivenProto, JS_ValueToSource, RUST_INTERNED_STRING_TO_JSID, RUST_JSID_IS_VOID,
++    JS_NewObjectWithGivenProto, JS_StringToId, JS_ValueToSource, RUST_INTERNED_STRING_TO_JSID, RUST_JSID_IS_VOID,
+     SetDataPropertyDescriptor, SetPropertyIgnoringNamedGetter, int_to_jsid,
+ };
+ use js::rust::{
+@@ -912,17 +912,18 @@ where
+         }
+ 
+         if let Some(properties) = config.supported_named_properties {
++            rooted!(&in(cx) let mut value = UndefinedValue());
++            rooted!(&in(cx) let mut rooted_jsid: jsid);
+             for name in properties(unwrapped_proxy, &mut cx) {
+-                let cstring = CString::new(name).unwrap();
+-                let jsstring = JS_AtomizeAndPinString(&cx, cstring.as_ptr());
+-                rooted!(&in(cx) let rooted = jsstring);
+-                rooted!(&in(cx) let mut rooted_jsid: jsid);
+-                RUST_INTERNED_STRING_TO_JSID(
+-                    &mut cx,
+-                    rooted.handle().get(),
+-                    rooted_jsid.handle_mut(),
+-                );
+-                AppendToIdVector(props, rooted_jsid.handle());
++                // Names are user-controlled: keep their exact string units (embedded NULs,
++                // lone surrogates) and leave their atoms unpinned.
++                name.safe_to_jsval(&mut cx, value.handle_mut());
++                rooted!(&in(cx) let jsstring = value.get().to_string());
++                if !JS_StringToId(&mut cx, jsstring.handle(), rooted_jsid.handle_mut()) ||
++                    !AppendToIdVector(props, rooted_jsid.handle())
++                {
++                    return false;
++                }
+             }
+         }
+ 
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index fd61263dcd1..0b84d6a5acc 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -28,6 +28,7 @@ REQUIRED_CHECKS = {
+         "HTMLDocument [LegacyOverrideBuiltIns] named properties win over the prototype on reads",
+         "HTMLFormElement named properties stay hidden by the prototype",
+         "DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads",
++        "HTMLDocument ownKeys keeps supported names with NUL and Unicode exact",
+     ),
+     "stress.html": (
+         "dedicated worker: promise jobs and queueMicrotask callbacks share one FIFO queue",
+diff --git a/support/v8-smoke/events.html b/support/v8-smoke/events.html
+index 14f8bc51802..da4f6a9429a 100644
+--- a/support/v8-smoke/events.html
++++ b/support/v8-smoke/events.html
+@@ -541,6 +541,36 @@ check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the protot
+     problems.push(`after removal: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
+   return problems.length ? problems.join("; ") : true;
+ });
++// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
++// Supported names are page-controlled: ownKeys must report them unchanged, including an
++// embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
++check("HTMLDocument ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
++  const problems = [];
++  const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
++  const images = names.map(name => {
++    const img = doc.createElement("img");
++    img.name = name;
++    doc.body.append(img);
++    return img;
++  });
++  const show = name => JSON.stringify(name);
++  for (const round of [0, 1]) {
++    const keys = Reflect.ownKeys(doc);
++    names.forEach((name, i) => {
++      const count = keys.filter(key => key === name).length;
++      if (count !== 1) problems.push(`round ${round}: ${show(name)} listed ${count} times`);
++      if (doc[name] !== images[i]) problems.push(`round ${round}: get ${show(name)} ${describeValue(doc[name])}`);
++      const desc = Object.getOwnPropertyDescriptor(doc, name);
++      if (!desc || desc.value !== images[i]) problems.push(`round ${round}: descriptor ${show(name)} ${describeDescriptor(desc)}`);
++    });
++    if (keys.includes("rovesNul")) problems.push(`round ${round}: NUL name truncated`);
++  }
++  images.forEach(img => img.remove());
++  const after = Reflect.ownKeys(doc);
++  for (const name of names)
++    if (after.includes(name) || Object.hasOwn(doc, name)) problems.push(`after removal: ${show(name)} still listed`);
++  return problems.length ? problems.join("; ") : true;
++}));
+ finish();
+ </script>
+ </body></html>
+diff --git a/docs/handoff/0371-supported-name-string-ids.md b/docs/handoff/0371-supported-name-string-ids.md
+new file mode 100644
+index 00000000000..39ab1fb573c
+--- /dev/null
++++ b/docs/handoff/0371-supported-name-string-ids.md
+@@ -0,0 +1,33 @@
++# 0371 — enumerate dynamic DOM names without C strings or permanent pins
++
++SupportedPropertyNames returns page-controlled DOMString values. The old ownKeys loop
++converted each to CString with unwrap (embedded NUL panics) and atomized/pinned every
++name for the runtime lifetime. Static cross-origin property atoms remain unchanged.
++
++Reuse DOMString.safe_to_jsval, standard SpiderMonkey JS_StringToId and the existing
++V8 key_id/atom cache. Add the missing compatibility entry and regenerate wrappers2.in.rs
++with support/roves_js/gen_wrappers2.py from the real mozjs0.21.6 lists. No dependency,
++new parser, UTF-8/Latin-1 roundtrip, alternate property engine or change to key ordering.
++StringToId writes its output only on success; null strings and conversion failures
++return false.
++The DOM loop roots the value/string/id and propagates conversion/append failures.
++
++## Verification
++
++- Native atoms module:6 normal +6 JITless checks pass, including exact NUL, Unicode,
++  supplementary and unpaired UTF-16 units, canonical integer ids, identity and GC.
++- A temporary pin-forcing mutant is rejected by the transient-atom collection assertion
++  (16 collected vs16 control); isolated source restored exactly, normal checks rerun green.
++- The old CString conversion panic is reproduced with an isolated standard-library
++  fragment, not a browser build. Logs and probes: target/task-0371/.
++- Runner:42 tests pass (8 POSIX skips on Windows), including regeneration from real mozjs
++  wrapper lists. The first run caught hand-inserted wrapper ordering; official regeneration
++  fixes it without changing signatures. proxyhandler.rs parses with rustfmt.
++- Required events smoke checks exact HTMLDocument ownKeys/read/descriptor behavior for
++  img names containing NUL and supplementary Unicode, repeated enumeration and removal.
++  Real browser normal/JITless execution remains in CI. No local heavy build was run.
++
++The API preserves unpaired UTF-16 units natively; no claim is made that DOM name storage
++preserves such units (the smoke uses valid Unicode). Chrome DevTools MCP unavailable in
++this session; no fresh browser reference claimed. This removes only the unconditional
++name pin and C-string panic; overall page retention/sourceText0361 remain open.
