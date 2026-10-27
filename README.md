@@ -771,5 +771,6 @@ remain enabled and visible; required non-Apple failures still block dependent jo
 An isolated deno_core single-document experiment now has its own Linux/Windows normal and
 JITless CI workflow (`deno-core-probe.yml`). It tests module/async scenarios using maintained
 APIs, without integrating Servo DOM or changing the game runtime. Local metadata/syntax
-checks pass; compilation and runtime results await online CI. Navigation policy and warnings
+checks and online CI pass: Linux/Windows normal and JITless, four jobs, two Rust tests per
+job covering ten logical scenarios. This does not prove Servo DOM/CSP/routing integration. Navigation policy and warnings
 remain planned. Details: [probe README](support/deno-core-probe/README.md).

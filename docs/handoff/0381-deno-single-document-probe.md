@@ -31,9 +31,10 @@ roves-action README documents that this experiment changes no input, pin or bund
 
 Cargo metadata --no-deps --locked, Rust syntax parsing and maintained PyYAML workflow/
 manifest/lock checks pass locally. Cargo.lock matches the previously resolved bytes.
-Windows/Linux patch replay must reproduce all delivered paths. No cargo compilation or
-runtime scenarios have run locally, and no startup/RAM/CPU/GPU comparison is claimed.
-The first online batch must establish compilation and actual normal/JITless results.
+Windows/Linux patch replay reproduced8/8paths after LF normalization. No heavy cargo
+compilation or runtime scenarios ran locally. CI40539608247 now passes4/4 Linux/Windows
+normal/JITless; Linux logs explicitly show both Rust tests pass with zero ignored/filtered.
+No startup/RAM/CPU/GPU comparison or actual Servo DOM integration is claimed.
 Local prompts, public source API review and logs: target/task-0381/.
 
 Important correction: published rusty_v8 150.4.0 lacks Roves152's

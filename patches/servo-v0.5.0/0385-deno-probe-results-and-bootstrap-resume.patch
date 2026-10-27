@@ -1,0 +1,113 @@
+diff --git a/docs/LIBRERIE_E_CONSOLE.md b/docs/LIBRERIE_E_CONSOLE.md
+index ba4a7288ee8..3a2b64ef166 100644
+--- a/docs/LIBRERIE_E_CONSOLE.md
++++ b/docs/LIBRERIE_E_CONSOLE.md
+@@ -37,16 +37,17 @@ produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o inst
+ separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
+ percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
+ 
+-### Prova0381 pronta per verifica online
++### Prova0381 verificata online, bootstrap0382 sospeso per quota
+ 
+ [Handoff0381](handoff/0381-deno-single-document-probe.md): workspace isolato in
+ support/deno-core-probe, nessuna dipendenza produttiva. Dieci scenari logici in due test
+ Rust, una sola thread per gli scenari V8, stessa suite normale/JITless su Linux/Windows.
+-Metadata/parse e contratto YAML/lock verificati; compilazione e risultati runtime attendono
+-CI. RustyV8150 espone il flag globale di contesto per eval/Function, non la callback per
++Metadata/parse e contratto YAML/lock verificati; CI40539608247 verde4/4, Linux/Windows
++normale/JITless. Due testRust perjob coprono dieci scenari logici, non integrazione DOM. RustyV8150 espone il flag globale di contesto per eval/Function, non la callback per
+ singola stringa di152: gap CSP/TrustedTypes ancora da valutare. Nessun DOM/router simulato,
+-nessuna prova di integrazione reale o misura prestazionale. Prossima prova: bootstrap e
+-visibilità delle API Deno prima del gioco, mantenendo un solo servizio moduli/async.
++nessuna prova di integrazione reale o misura prestazionale. Prova bootstrap0382 iniziata ma non completata per quota: bozza separata,
++nessun nuovo comportamento pubblicato. Ripresa unica19:02 nel handoff corrente; mantenere
++un solo servizio moduli/async. Vedere handoff/0382-bootstrap-resume.md.
+ 
+ ## Prossimi passi, codice e librerie
+ 
+diff --git a/docs/handoff/0381-deno-single-document-probe.md b/docs/handoff/0381-deno-single-document-probe.md
+index 0c8a04ec421..90e9c226073 100644
+--- a/docs/handoff/0381-deno-single-document-probe.md
++++ b/docs/handoff/0381-deno-single-document-probe.md
+@@ -31,9 +31,10 @@ roves-action README documents that this experiment changes no input, pin or bund
+ 
+ Cargo metadata --no-deps --locked, Rust syntax parsing and maintained PyYAML workflow/
+ manifest/lock checks pass locally. Cargo.lock matches the previously resolved bytes.
+-Windows/Linux patch replay must reproduce all delivered paths. No cargo compilation or
+-runtime scenarios have run locally, and no startup/RAM/CPU/GPU comparison is claimed.
+-The first online batch must establish compilation and actual normal/JITless results.
++Windows/Linux patch replay reproduced8/8paths after LF normalization. No heavy cargo
++compilation or runtime scenarios ran locally. CI40539608247 now passes4/4 Linux/Windows
++normal/JITless; Linux logs explicitly show both Rust tests pass with zero ignored/filtered.
++No startup/RAM/CPU/GPU comparison or actual Servo DOM integration is claimed.
+ Local prompts, public source API review and logs: target/task-0381/.
+ 
+ Important correction: published rusty_v8 150.4.0 lacks Roves152's
+diff --git a/docs/handoff/0382-bootstrap-resume.md b/docs/handoff/0382-bootstrap-resume.md
+new file mode 100644
+index 00000000000..51ab22382f4
+--- /dev/null
++++ b/docs/handoff/0382-bootstrap-resume.md
+@@ -0,0 +1,55 @@
++# 0382 — bootstrap isolation draft suspended at verified Claude session quota
++
++## Current checkpoint
++
++Published root19103d9ceffb493d53e348d9015bfdddac05fa66, wiki1d69714, roves-action4b2a67f.
++The single-document deno_core probe0381 is compiled and green in CI40539608247: four jobs
++(Linux/Windows normal/JITless), two Rust tests per job containing ten logical scenarios.
++Linux normal/JITless logs explicitly show both tests pass with no ignored/filtered tests.
++This proves the isolated module/async/context-flag scenarios, not Servo DOM, CSP, routing,
++bootstrap privilege isolation or production adoption. Android40539608239 is green.
++General40539608252 last aggregate: shared/probe/patch checks green, Windows/Linux packaging
++and Steam still active, no non-Apple failure. Apple40539608230/macOS excluded, not green.
++
++## Saved incomplete work
++
++Claude began removing Deno/bootstrap/internal globals before game code and updating the
++same module/async scenarios. It exhausted the session before a final report or review.
++Do not call this complete or publish it. Saved:
++
++- target/task-0382/incomplete-bootstrap.patch
++- target/task-0382/wip/support/deno-core-probe/{src/lib.rs,tests/probe.rs,README.md}
++- target/task-0382/prompt.txt, result.json (session_id for an authorized CLI resume), stderr.log
++- target/task-0382/quota.txt
++
++The three source files were restored byte-for-byte from published HEAD; only complete
++0381 remains in publishable sources. The probe's previously authored /target/ .gitignore
++is housekeeping, independent of this incomplete runtime experiment. TODO.md is a separate
++user change and is not included in migration commits.
++
++## Quota and single retry
++
++Interactive Claude /usage at27October17:26 Europe/Rome confirms session100%, reset19:00.
++No model request was sent through that command; the interactive CLI was exited.
++One retry is scheduled27October19:02 Europe/Rome (reset plus2min), automation
++`ripresa-unica-claude-0382-alle-19-02`, COUNT1, current thread. No intermediate polling.
++Delete the retry after that attempt succeeds or is blocked. If the same limit persists,
++record it and stop without model switching, chained retries or another schedule for this
++block. No periodic automation and no CLAUDE_RESUME.md.
++
++## Resume assignment
++
++Inspect Git and the saved draft first; resume only this bootstrap task with Claude via
++Read/Edit/Write/Grep/Glob, no denied shell retries, commits/push or subagents. If applying
++the saved diff, review conflicts and preserve newer source changes rather than force it.
++Public APIs only; no facade/private slots/fork. Verify actual configurable descriptors,
++namespace absence before the game, standard globals and module/async functionality after
++removal, and direct/aliased ext:core/mod.js/ext:core/ops import refusal. Distinguish lack of
++named globals from universal privilege isolation and full CSP. Heavy builds remain online.
++
++Finish/review the implementation and tests, update patch/CUSTOMIZATIONS/README/wiki/handoff
++once complete, commit locally. Check all current required CI jobs at that point. No push
++while any required non-Apple job is active or has unresolved failures. Continue the loop
++if quota is available; next separate proof concerns real class/cppgc ownership. Navigation
++policy and notices remain after the runtime decision: single document with internal routes,
++development-only non-modal notices/released logs, external browser only after real click.
+diff --git a/support/deno-core-probe/.gitignore b/support/deno-core-probe/.gitignore
+new file mode 100644
+index 00000000000..b83d22266ac
+--- /dev/null
++++ b/support/deno-core-probe/.gitignore
+@@ -0,0 +1 @@
++/target/

@@ -1,3 +1,17 @@
+## 2026-10-27 - Record green deno_core probe and preserve unfinished bootstrap work (0382)
+
+The isolated0381 probe compiles and passes all four Linux/Windows normal/JITless CI jobs;
+two Rust tests per job exercise ten logical scenarios. No Servo DOM/CSP/router integration
+or production adoption is claimed. Record this evidence in README/wiki/library/current
+and0381 handoffs. Android is green; general packaging/Steam remain active at the checkpoint.
+
+Claude0382 bootstrap work stopped at the session quota before review/completion. Save the
+diff and three WIP source copies under target/task-0382, restore the published source bytes,
+and add a durable resume document. /usage17:26 Europe/Rome confirms reset19:00; one retry
+19:02 is scheduled, no intermediate polling or same-block retry chain. Track the probe's
+existing /target/ .gitignore as housekeeping. Patch0385 contains only complete documentation/
+housekeeping, never the unfinished bootstrap implementation. No new runtime behavior.
+
 ## 2026-10-27 - Add an isolated deno_core single-document CI experiment (0381)
 
 support/deno-core-probe is an independent locked workspace, not an engine dependency.

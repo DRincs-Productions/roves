@@ -20,22 +20,22 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 27 ottobre 2026
 
-Checkpoint pubblicato: `0eb67d506431377ec24cf47e288a5e8139ff0c6a`, wiki `9c037af`,
-roves-action `4ba4230`. Include0377 consolidata, decisione0378 e fixCI0379.
-Batch0eb ora terminale verde per i richiesti: V8 `40528119179`7/7,
-generale `40528119248`10/10 (packagingWindows/Linux eSteam compresi), Android `40528119174`
-verde. iOS `40528119198` e macOS esclusi, non dichiarati verdi. Confermate le fixture0377
-e il disaccoppiamento del probeApple. Pubblicabili i commit completi accumulati; identificare
-nuove run dopo il push e non ripubblicare mentre i richiesti sono attivi. Nessun polling.
+Checkpoint pubblicato: `19103d9ceffb493d53e348d9015bfdddac05fa66`, wiki `1d69714`,
+roves-action `4b2a67f`. Include documentazione0380 e prova isolata0381.
+Prova deno_core CI `40539608247` VERDE4/4: Linux/Windows normal/JITless, due testRust
+perjob con dieci scenarilogici. LogLinux confermano entrambitestpassati, zeroignored/filtered.
+Compilazione ed esecuzione ora dimostrate per questa prova, non ServoDOM/router/CSPcompleta,
+bootstrap privato o adozione produttiva. Android `40539608239` verde. Generale `40539608252`:
+ultimoaggregato shared/probe/patchverdi, packagingWindows/Linux eSteam attivi, nessun errore
+nonApple. iOS `40539608230` e macOS esclusi, non dichiarati verdi. Nessunpushconrichiestiattivi.
 
-0381 pronta localmente: [prova deno_core](handoff/0381-deno-single-document-probe.md),
-support/deno-core-probe e workflowisolatoLinux/Windows normal/JITless. Dieci scenari logici
-in due testRust; tutti gli scenariV8 sulla stessa thread, modeobbligatorioprimadiinit.
-Metadata/parse/contrattoYAML-lockverdi; compilazione e runtime NON eseguiti localmente,
-da confermare online. Nessun DOM/router simulato o adozione produttiva. La callback per
-singola stringa manca inV8150: la prova usa solo il flagcontesto pubblico eval/Function,
-non dimostra CSPcompleta. Prossimo incarico circoscritto: bootstrap/globaleDeno nascosto
-prima del gioco senza rompere moduli/async, usando solo API mantenute. Patch0384.
+**Sospeso per quota Claude0382:** /usage27ottobre17:26 Europe/Rome sessione100%, reset19:00.
+Tentativo UNICO27ottobre19:02 programmato con `ripresa-unica-claude-0382-alle-19-02`;
+eliminarlo dopoiltentativo, niente retryconcatenati se lo stessolimitepersiste.
+[Ripresa0382](handoff/0382-bootstrap-resume.md): bozza incompleta bootstrap salvata in
+target/task-0382/incomplete-bootstrap.patch e copieWIP; tre sorgenti ripristinati dal commit
+pubblicato, nessuna modifica incompleta da pubblicare. CLIinterattiva chiusa. Non sostituire
+Claude con Codex per nuove implementazioni; analisiCI/handoff consentiti, poi sospendere.
 
 Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
 non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
@@ -94,7 +94,7 @@ target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
 SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
 0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
 non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
-ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0381 consegnata e revisionata, prossima prova bootstrap da avviare.
+ELIMINATO; nessuna automazione periodica. Nessun Claude attivo:0382 sospesa per quota, bozza separata dai sorgenti; ripresa19:02 sopra.
 [Esito0378 storico](handoff/0378-deno-core-feasibility.md): mancanoAPI realm/WindowProxy
 per il vecchio perimetro browser, non più requisiti del prodotto a documento unico;
 194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.
