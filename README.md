@@ -682,8 +682,8 @@ thread, as in browsers. Going back or forward in history therefore reloads the p
 resuming it from memory (`session_history_max_length` defaults to 0).
 
 V8 migration status and agent handoff are maintained in [docs/V8_MIGRATION.md](docs/V8_MIGRATION.md).
-The Linux GC smoke's missing entry point (after the removed-frame diagnostic change) is fixed
-locally with a lightweight entry-sequence regression; browser confirmation is pending CI.
+The Linux GC smoke entry point is fixed and verified in normal/JITless browser CI, with
+a lightweight entry-sequence regression.
 Removed-frame collection remains diagnostic, not a completed page-retention guarantee.
 
 The agent workflow runs a continuous implementation/review/CI loop, keeping commits local while the preceding CI batch is active.
@@ -692,25 +692,18 @@ see [docs/AGENT_WORKFLOW.md](docs/AGENT_WORKFLOW.md).
 
 The current Linux frame-retention smoke releases its iframe element, document and probe
 after eight collections; additive-listener GC controls pass in normal and JITless modes.
-This verifies that scene, while inline-handler GC awaits the proxy-scope compiler fix in CI.
+Inline-handler GC controls also pass in normal and JITless CI. This verifies those scenes,
+not a universal page-retention guarantee.
 
 During the current V8 migration, macOS/iOS CI results are excluded from the publication
 gate by user instruction; missing Apple checks remain unverified. Linux, Windows,
 Android and shared checks still gate publication.
 
-The scoped-handler source-text compatibility item remains open: the evaluated prototype was
-not adopted because it would change method-call receivers. Runtime behavior is unchanged.
-
-The next source-text implementation is still being evaluated; verified engine prototypes
-have not changed the production DOM property backend.
-
-The API-object adapter gate exposed a receiver limitation in the public V8 callback API.
-Its incomplete prototype was rejected; ordinary-property integration is under evaluation.
-The scoped-handler source-text compatibility item remains open.
-
-A focused normal/JITless proof confirms ordinary V8 properties preserve external accessor
-receivers. DOM key-order compatibility still needs a separate integration gate; no runtime
-representation change has been adopted.
+Scoped-handler source-text compatibility remains open. Native normal/JITless proofs show
+that ordinary V8 properties preserve external accessor receivers, but DOM key ordering and
+generated hook compatibility need further gates. No experimental DOM backend was adopted.
+The reviewed hook map also identified missing LegacyOverrideBuiltIns read precedence in
+the current generator; that correction is tracked separately.
 
 Documentation patch paths now use portable separators, fixing Linux reconstruction
 of the migration handoff series; runtime behavior is unchanged.

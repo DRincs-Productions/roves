@@ -18,7 +18,28 @@ incarico completo, revisione, verifiche/documentazione, commit locale, controllo
 push quando consentito e prossimo incarico. Le CI attive consentono sviluppo e commit,
 non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
-## Stato corrente — 26 ottobre 2026, revisione Codex dopo il lavoro Claude
+## Stato corrente — 27 ottobre 2026, revisione Codex dopo il lavoro Claude
+
+### Ripresa 27 ottobre — revisione 0368 conclusa, CI del fix verde
+
+Claude disponibile al tentativo di ripresa: [mappa0368](handoff/0368-native-dom-hook-map.md)
+corretta e revisionata. HTMLDocument dichiara LegacyOverrideBuiltIns; il generatore ignora
+ancora l'attributo nelle letture. Le ipotesi su Form/Select e sull'ordine delle chiavi V8
+restano provvisorie, senza dichiarazioni di impossibilità generale o backend già compatibile.
+La fonte primaria WebIDL conferma la precedenza: indexed, own/unforgeable, poi named prima
+del prototype solo con LegacyOverrideBuiltIns. Nessuna nuova dipendenza necessaria.
+
+Batch pubblicato fa7164e52f8: generale40399631700, dieci job nonApple tutti verdi,
+compresa validazione completa delle patch e build Windows/Linux; Android40399631807
+verde3/3. Le build prima saltate sono ora verificate dal nuovo batch. Apple esclusa.
+Ricontrollo `ripresa-unica-claude-dopo-quota-0347` eliminato dopo il tentativo.
+Il risveglio effettivo è avvenuto il27ottobre10:13 Europe/Rome, dopo l'orario previsto.
+
+Prossimo incarico0370 delegato: correggere solo le letture LegacyOverrideBuiltIns nel
+generatore (get/GOPD/hasOwn), con test del generatore e smoke richiesti normali/JITless.
+Riusa parserWebIDL e generatori esistenti. Non cambia backend, né risolve sourceText0361.
+ChromeDevToolsMCP indisponibile alla ripresa (Targetclosed); nessun nuovo riferimentoChrome
+rivendicato. Heavybuild soloCI. Commit/push dopo revisione e verifiche necessarie.
 
 ### Stop per quota 0368 — reset 27 ottobre 01:30, singola ripresa 01:32
 

@@ -1,3 +1,12 @@
+## 2026-10-27 - Review the native DOM hook map and resume after the session reset (0368)
+
+Correct the architecture map: HTMLDocument declares LegacyOverrideBuiltIns; its current
+codegen read paths do not implement that precedence. Form/Select API-object compatibility
+and untested V8 configurations remain open, not impossible or complete. No runtime code
+adopted. The full patch series and all required Windows/Linux/Android checks forfa7164e52f8
+are green. The one-shot quota retry completed and was deleted; read-visibility fix0370
+is a separate assignment. Patch0368 preserves the reviewed map, not the rejected draft.
+
 ## 2026-10-26 - Save review0368 at the verified Claude session limit
 
 No production change. The unreviewed hook-map draft is preserved outside publishable
