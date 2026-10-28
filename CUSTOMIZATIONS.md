@@ -1,3 +1,31 @@
+## 2026-10-28 - Provide a standalone operational migration handoff and defer Claude
+
+Before further implementation, rewrite the current section of docs/V8_MIGRATION.md
+as a self-contained handoff: approved scope/tradeoffs, real Git/CI refs, source ownership,
+WIP backups, file map, verified commands/results, known bugs and ordered exit criteria.
+Mark older0385 material as historical. Align AGENTS/AGENT_WORKFLOW, README and wiki.
+The user explicitly defers Claude until October30,2026 17:30 Europe/Rome; create one
+thread reminder, verify quota then, no earlier model requests or periodic retries.
+
+Record actual native evidence:108normal/107compiled-feature-JITless,2/3ignored; nine
+Deno tests include distinct inline fragments, relative base/cache and classic/eval/Function
+referrers. Correct misleading log filenames: V8_TEST_MODE without --features is normal.
+A genuine Function import-referrer cache regression is reproduced before the public
+--no-compilation-cache guard; no source rewrite or duplicate graph. Performance cost
+is unmeasured. Single-document smoke adaptations preserve archived multi-document
+fixtures; current snapshot replacement/external-link channel remain unverified WIP.
+No runtime source is published by this documentation checkpoint. Patch0401 is documentation
+only; complete runtime/source patch and replay remain a required exit task, not finished.
+
+## 2026-10-28 - Accept distinct inline module URL fragments provisionally
+
+The user accepts C3: only inline modules may expose `#roves-inline-module-N` in
+import.meta.url. Record this decision in AGENTS/workflow/current and0385 handoffs,
+README and wiki. Require distinct inline identities, unchanged relative asset bases
+and exact external module URLs. This is a provisional compatibility difference, not
+evidence of completed browser integration. Patch0401 captures the decision documents;
+source and coverage changes remain part of the uncommitted complete-cutover work.
+
 ## 2026-10-28 - Continue the unverified Deno cutover directly under user authorization
 
 User authorizes direct Codex implementation; cancel13:21 Claude retry to avoid competing

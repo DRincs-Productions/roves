@@ -778,8 +778,8 @@ application and shows a dismissible non-modal notice in CLI development launches
 games keep logs only. Required Linux/Windows build and packaging checks pass. Visual notice
 behavior, full navigation/reload refusal and trusted-click external links still need work.
 
-The production Deno cutover is drafted but incomplete and kept outside publishable sources.
-Direct Codex corrections pass the isolated Windows native suite:107tests normal,106JITless
+The production Deno cutover is incomplete in the local worktree and is not part of the published backend.
+Direct Codex corrections pass the isolated Windows native suite:108tests normal,107JITless
 (two benchmarks excluded, plus one Wasm test in JITless). The revised navigation gate and
 full Servo/browser integration still need verification. The current shipped backend remains active. No partial
 runtime dependency change is published.
@@ -791,5 +791,12 @@ overlays may miss them; classic errors and fetch/parse/link/dynamic-import contr
 separate. The pause is PROVISIONAL: its duration and impact at startup and when adding
 modules during gameplay, with local/cold/warm/slow-network loads, input/timers/frame behavior,
 errors and closing must be measured and reviewed. No latency threshold or benefit is proved.
+Inline modules also provisionally expose a distinct `#roves-inline-module-N` fragment in
+`import.meta.url`; relative asset resolution must retain its base, while external module
+URLs remain unchanged. Browser verification of the cutover is still pending.
+A reproduced Function-constructor import-referrer bug requires V8's public
+`--no-compilation-cache` guard; the Deno module cache stays enabled. Compilation/startup
+costs remain unmeasured. The handoff now lists explicit remaining tasks, test commands and
+unverified behavior so another coding agent can resume without chat history.
 
 Current implementation status: [migration handoff](docs/V8_MIGRATION.md).

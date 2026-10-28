@@ -1,3 +1,22 @@
+### Sospensione Claude fino al 30 ottobre 2026, 17:30 Europe/Rome
+
+Per richiesta esplicita dell'utente del28ottobre, non usare Claude prima del30ottobre2026
+alle17:30 Europe/Rome, anche se il limite delle5ore scade prima. Promemoria unico:
+`ripresa-claude-il-30-ottobre-alle-17-30`. Alla scadenza verificare `/usage` senza richiesta
+al modello; l'orario autorizza un tentativo, non certifica che la quota settimanale sia
+ripristinata. Nessun nuovo tentativo automatico se resta limitato. Coordinare l'ownership
+prima di riprendere la delega. Nessuna automazione periodica. Prima di altre implementazioni
+consegnare il handoff dettagliato in docs/V8_MIGRATION.md chiesto dall'utente.
+
+### URL dei moduli inline: differenza provvisoria autorizzata (28 ottobre 2026)
+
+L'utente accetta il frammento interno `#roves-inline-module-N` in `import.meta.url`
+SOLO per i moduli inline. Serve a distinguere script inline diversi nel registro Deno.
+Verificare identita distinte, base corretta dei percorsi relativi e URL dei moduli esterni
+invariati. La differenza e provvisoria e va documentata; non autorizza riscritture degli
+URL esterni o cambiamenti alla sicurezza del caricamento. Non chiedere nuovamente questa
+scelta. Il port completo e le verifiche browser rimangono necessari prima di pubblicare.
+
 ### Eccezione corrente: implementazione diretta Codex (28 ottobre 2026)
 
 Dopo il nuovo limite Claude, l'utente ha chiesto esplicitamente a Codex di continuare

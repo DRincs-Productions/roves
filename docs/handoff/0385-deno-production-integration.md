@@ -1,3 +1,32 @@
+## PUNTO CORRENTE — 28 ottobre 2026, handoff autonomo
+
+Il documento autorevole completo è [V8_MIGRATION.md](../V8_MIGRATION.md), sezioni1–10 prima
+di FINE DEL PUNTO OPERATIVO. Contiene decisioni approvate, Git/CI, mappa file, prove reali,
+comandi, problemi e incarichi in ordine. Leggere quello prima di questo storico.
+
+- Deno produttivo è nel WORKTREE e incompleto; non committato/pubblicato. TODO.md è utente.
+- Codex implementa direttamente; nessun Claude attivo. Non usare Claude prima del30ottobre
+  alle17:30 Europe/Rome. Promemoria unico ripresa-claude-il-30-ottobre-alle-17-30 creato.
+- C3 inline fragment accettato, oltre a pausa statica provvisoria e C2rejection.
+- Test reali aggiornati:108normal/107featureJITless, rispettivamente2/3ignore;9Deno specifici.
+  Log JITless valido: direct-cache-guard-feature-jitless.log. V8_TEST_MODE da solo NON basta.
+- Riprodotta regressione Function/import relativo; guard pubblico --no-compilation-cache
+  risolve. Costo avvio/compilazione ancora da misurare. Cache moduli Deno resta attiva.
+- Helper smoke56pass/8skip; nuove prove documento unico collegate; nuova scena snapshot e
+  link esterni tipizzati ancora da consolidare/verificare. Nessuna prova browser del port.
+- Batch pubblicato54ae generale13/13 e Androidverdi; non verificano il worktree.
+- Backup sorgenti più recente target/task-0385/handoff-2026-10-28/manifest.json + diff +
+  new-files. NON sovrascrivere il worktree con incomplete-cutover-2026-10-28/incomplete.patch.
+
+### Storico0385 sotto: alcuni stati, backup e orari sono superati
+
+## Decisione C3 confermata — 28 ottobre 2026
+
+Accettato provvisoriamente il frammento `#roves-inline-module-N` SOLO per `import.meta.url`
+dei moduli inline. Verificare due inline distinti, import relativi corretti e URL esterni
+invariati. La risposta dell'utente chiude la richiesta di scelta, non prova l'integrazione.
+Il worktree attuale include correzioni Codex successive al backup: non sovrascriverlo.
+
 # Current direct Codex continuation - 28 October 2026
 
 User explicitly authorized direct Codex implementation after Claude quota. Retry13:21 deleted;

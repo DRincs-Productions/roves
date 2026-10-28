@@ -1,0 +1,101 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index 7af6b0a9c62..4b609019874 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -63,6 +63,15 @@ percorso degli eventi di rejection. Non fingere una promise appartenente al gioc
+ interna alla libreria. La pausa statica provvisoria e i suoi test restano un tema separato.
+ Nessun fork, layout privato o grafo duplicato autorizzato; adozione ancora da completare.
+ 
++### URL dei moduli inline: differenza provvisoria autorizzata (28 ottobre 2026)
++
++L'utente accetta il frammento interno `#roves-inline-module-N` in `import.meta.url`
++SOLO per i moduli inline. Serve a distinguere script inline diversi nel registro Deno.
++Verificare identita distinte, base corretta dei percorsi relativi e URL dei moduli esterni
++invariati. La differenza e provvisoria e va documentata; non autorizza riscritture degli
++URL esterni o cambiamenti alla sicurezza del caricamento. Non chiedere nuovamente questa
++scelta. Il port completo e le verifiche browser rimangono necessari prima di pubblicare.
++
+ ### Valutazione obbligatoria prima di ogni modifica
+ 
+ Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle
+@@ -102,6 +111,16 @@ Claude implementa incarichi circoscritti via terminale. L'eccezione del22ottobre
+ Codex diretto per quota Claude) è terminata. Il file temporaneo docs/CLAUDE_RESUME.md
+ è stato rimosso su richiesta; il punto di ripresa unico è docs/V8_MIGRATION.md.
+ 
++### Sospensione Claude fino al 30 ottobre 2026, 17:30 Europe/Rome
++
++Per richiesta esplicita dell'utente del28ottobre, non usare Claude prima del30ottobre2026
++alle17:30 Europe/Rome, anche se il limite delle5ore scade prima. Promemoria unico:
++`ripresa-claude-il-30-ottobre-alle-17-30`. Alla scadenza verificare `/usage` senza richiesta
++al modello; l'orario autorizza un tentativo, non certifica che la quota settimanale sia
++ripristinata. Nessun nuovo tentativo automatico se resta limitato. Coordinare l'ownership
++prima di riprendere la delega. Nessuna automazione periodica. Prima di altre implementazioni
++consegnare il handoff dettagliato in docs/V8_MIGRATION.md chiesto dall'utente.
++
+ ### Eccezione corrente: implementazione diretta Codex (28 ottobre 2026)
+ 
+ Dopo il nuovo limite Claude, l'utente ha chiesto esplicitamente a Codex di continuare
+diff --git a/docs/AGENT_WORKFLOW.md b/docs/AGENT_WORKFLOW.md
+index 5cb5fe1d4c2..67d8c6c63f3 100644
+--- a/docs/AGENT_WORKFLOW.md
++++ b/docs/AGENT_WORKFLOW.md
+@@ -1,3 +1,22 @@
++### Sospensione Claude fino al 30 ottobre 2026, 17:30 Europe/Rome
++
++Per richiesta esplicita dell'utente del28ottobre, non usare Claude prima del30ottobre2026
++alle17:30 Europe/Rome, anche se il limite delle5ore scade prima. Promemoria unico:
++`ripresa-claude-il-30-ottobre-alle-17-30`. Alla scadenza verificare `/usage` senza richiesta
++al modello; l'orario autorizza un tentativo, non certifica che la quota settimanale sia
++ripristinata. Nessun nuovo tentativo automatico se resta limitato. Coordinare l'ownership
++prima di riprendere la delega. Nessuna automazione periodica. Prima di altre implementazioni
++consegnare il handoff dettagliato in docs/V8_MIGRATION.md chiesto dall'utente.
++
++### URL dei moduli inline: differenza provvisoria autorizzata (28 ottobre 2026)
++
++L'utente accetta il frammento interno `#roves-inline-module-N` in `import.meta.url`
++SOLO per i moduli inline. Serve a distinguere script inline diversi nel registro Deno.
++Verificare identita distinte, base corretta dei percorsi relativi e URL dei moduli esterni
++invariati. La differenza e provvisoria e va documentata; non autorizza riscritture degli
++URL esterni o cambiamenti alla sicurezza del caricamento. Non chiedere nuovamente questa
++scelta. Il port completo e le verifiche browser rimangono necessari prima di pubblicare.
++
+ ### Eccezione corrente: implementazione diretta Codex (28 ottobre 2026)
+ 
+ Dopo il nuovo limite Claude, l'utente ha chiesto esplicitamente a Codex di continuare
+diff --git a/docs/handoff/0385-deno-production-integration.md b/docs/handoff/0385-deno-production-integration.md
+index a80bf4c89e3..dc7630ed04d 100644
+--- a/docs/handoff/0385-deno-production-integration.md
++++ b/docs/handoff/0385-deno-production-integration.md
+@@ -1,3 +1,32 @@
++## PUNTO CORRENTE — 28 ottobre 2026, handoff autonomo
++
++Il documento autorevole completo è [V8_MIGRATION.md](../V8_MIGRATION.md), sezioni1–10 prima
++di FINE DEL PUNTO OPERATIVO. Contiene decisioni approvate, Git/CI, mappa file, prove reali,
++comandi, problemi e incarichi in ordine. Leggere quello prima di questo storico.
++
++- Deno produttivo è nel WORKTREE e incompleto; non committato/pubblicato. TODO.md è utente.
++- Codex implementa direttamente; nessun Claude attivo. Non usare Claude prima del30ottobre
++  alle17:30 Europe/Rome. Promemoria unico ripresa-claude-il-30-ottobre-alle-17-30 creato.
++- C3 inline fragment accettato, oltre a pausa statica provvisoria e C2rejection.
++- Test reali aggiornati:108normal/107featureJITless, rispettivamente2/3ignore;9Deno specifici.
++  Log JITless valido: direct-cache-guard-feature-jitless.log. V8_TEST_MODE da solo NON basta.
++- Riprodotta regressione Function/import relativo; guard pubblico --no-compilation-cache
++  risolve. Costo avvio/compilazione ancora da misurare. Cache moduli Deno resta attiva.
++- Helper smoke56pass/8skip; nuove prove documento unico collegate; nuova scena snapshot e
++  link esterni tipizzati ancora da consolidare/verificare. Nessuna prova browser del port.
++- Batch pubblicato54ae generale13/13 e Androidverdi; non verificano il worktree.
++- Backup sorgenti più recente target/task-0385/handoff-2026-10-28/manifest.json + diff +
++  new-files. NON sovrascrivere il worktree con incomplete-cutover-2026-10-28/incomplete.patch.
++
++### Storico0385 sotto: alcuni stati, backup e orari sono superati
++
++## Decisione C3 confermata — 28 ottobre 2026
++
++Accettato provvisoriamente il frammento `#roves-inline-module-N` SOLO per `import.meta.url`
++dei moduli inline. Verificare due inline distinti, import relativi corretti e URL esterni
++invariati. La risposta dell'utente chiude la richiesta di scelta, non prova l'integrazione.
++Il worktree attuale include correzioni Codex successive al backup: non sovrascriverlo.
++
+ # Current direct Codex continuation - 28 October 2026
+ 
+ User explicitly authorized direct Codex implementation after Claude quota. Retry13:21 deleted;

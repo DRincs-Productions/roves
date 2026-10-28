@@ -1,154 +1,289 @@
-# Completamento dell’integrazione V8 in Roves
+# Migrazione V8 / deno_core — istruzioni operative di ripresa
 
-## Ripresa dopo limite Claude — regola aggiornata il 25 ottobre 2026
+## Leggere prima di modificare — checkpoint del 28 ottobre 2026
 
-Quando Claude segnala una quota esaurita, salvare l'incarico e verificare la quota con
-`/usage` nella CLI, senza richieste al modello. Per il limite della sessione di 5 ore,
-pianificare un solo tentativo all'orario di reset indicato più 2 minuti, rispettando data
-e fuso orario della CLI. Questa regola sostituisce le 5 ore dal messaggio di blocco;
-le vecchie scadenze riportate nello storico non sono istruzioni correnti.
-Se il reset è assente o ambiguo, non inventare una scadenza. Nessun polling intermedio
-o duplicato: aggiornare il ricontrollo esistente. Un orario esplicito dell'utente prevale.
-Disattivare dopo il tentativo; se lo stesso limite persiste, fermarsi senza retry concatenati.
-Restano esclusi retry automatici per quote settimanali/mensili, stop utente e cambi modello.
-Restano in vigore revisione, verifiche e vincoli CI di AGENTS.md.
+Questo blocco operativo, prima dello storico, è il punto autorevole. È scritto per
+un agente che non conosce la chat. Non leggere tutto lo storico per ricostruire lo stato.
+Le sezioni storiche sotto possono descrivere scelte superate: non sono istruzioni correnti.
+Leggere anche `AGENTS.md`. Se Git differisce dai riferimenti sotto, prevalgono i file reali:
+controllare il diff, non ripristinare automaticamente una vecchia versione.
 
-La prosecuzione segue il loop autonomo esplicito in AGENTS.md e docs/AGENT_WORKFLOW.md:
-incarico completo, revisione, verifiche/documentazione, commit locale, controllo CI,
-push quando consentito e prossimo incarico. Le CI attive consentono sviluppo e commit,
-non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
+**Risultato reale:** il backend V8 diretto è pubblicato; il passaggio produttivo a deno_core
+è INCOMPLETO e nel worktree. Esistono test nativi Windows verdi, ma NON una build/browser
+Servo del port corrente già verde. Non dichiarare completata l'adozione o risolta la retention.
 
-## Stato corrente — 28 ottobre 2026
+### 1. Vincoli e decisioni già approvate: non richiederle di nuovo
 
-Checkpoint pubblicato: `54ae32b3daed3ae94efd73a7c03704e226201af0`, wiki `b919c94`,
-roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
-Batch precedente b520: generale40588014903 VERDE10/10 richiesti, Android40588015577 VERDE.
-Shell0386/0387 compilata/pacchettizzata Linux/Windows; comportamento visivo non verificato.
-Batch c660 concluso: generale40599426163 VERDE10/10richiesti e Android40599426266 VERDE.
-Nuovo batch54ae: generale40655538314 in coda, Android40655538288 attiva; iOS40655538256
-esclusa. Pubblicati SOLO docs/patchdocumentali; nessun sorgente del port incompleto.
-Non fare push mentre richiesti attivi o errori irrisolti; nessun polling periodico.
+- Mantenere shell Servo, DOM, layout e rendering. Usare librerie mantenute per ridurre il
+  codice Roves; rusty_v8 e deno_core sono approvati. Non serve installare Deno o Chromium.
+- Un documento di gioco, una finestra; route History API/hash tipo TanStack. Non servono
+  frame multipli, tab o identità WindowProxy tra pagine sostituite. I vecchi NO-GO per quel
+  perimetro browser NON vietano deno_core per questo prodotto.
+- Bloccare reload, sostituzione della pagina, iframe e finestre aggiuntive prima di cambiare
+  documento/stato. Consentire caricamento iniziale della shell, route interne e chiusura.
+  Non trasformare automaticamente una navigazione vietata in una route del router.
+- Segnalazione: log/warning con motivo, ripetizioni limitate; avviso discreto non modale in
+  sviluppo, solo log nel gioco distribuito. Nessun alert modale o crash come segnalazione.
+- Link esterni: browser di sistema solo dopo clic reale. `.click()`, eventi sintetici,
+  timer e navigazione automatica non autorizzano aperture esterne. Non dedurre il clic
+  dall'URL o da un intervallo temporale; usare fiducia nativa dell'evento.
+- PAUSA STATICA PROVVISORIA: il fetch/istanziamento statico può sospendere input/timer;
+  valutazione e top-level await non devono attendere il completamento dell'await.
+  Import dinamici asincroni. Misurare startup e script module aggiunti durante il gioco,
+  sorgenti locali/rete, freddo/caldo/rete lenta controllata, frame/input/timer/errori/chiusura.
+  Nessuna durata o soglia accettabile è stata misurata o concordata. Tema DA RIVEDERE.
+- C2 ACCETTATO: soli errori di VALUTAZIONE statica tramite `unhandledrejection` nel backend
+  Deno invece di `error/window.onerror`. Overlay basati solo su onerror possono perderli.
+  Errori classici, fetch, parse/link e import dinamici mantengono contratti distinti.
+- C3 ACCETTATO PROVVISORIAMENTE: solo i moduli INLINE espongono un frammento distinto
+  `#roves-inline-module-N` in `import.meta.url`. Import relativi e asset conservano la base;
+  URL dei moduli ESTERNI invariati. Non generalizzare la riscrittura a ogni URL.
+- Nessuna API Deno privilegiata ai giochi, fork Deno/V8, parser JS nostro, layout V8 privato
+  o secondo grafo permanente. Non togliere test senza copertura sostitutiva motivata.
 
-Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
-async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
+### 2. Claude, proprietà del lavoro e promemoria
 
-0385 IN CORSO direttamente con CODEX, autorizzazione esplicita28ottobre dopo quotaClaude.
-Il retry13:21 ripresa-unica-claude-0385-alle-13-21 e stato ELIMINATO per evitare sovrapposizioni.
-Nessun Claude attivo. Agenti/workflow aggiornati con ownership diretta temporanea.
+L'utente ha chiesto a Codex di sviluppare DIRETTAMENTE mentre Claude ha poca quota.
+**Non usare Claude prima del 30 ottobre 2026 alle 17:30 Europe/Rome (16:30 UTC).**
+Promemoria unico creato: `ripresa-claude-il-30-ottobre-alle-17-30`; nessuna automazione
+periodica. Il retry del28ottobre13:21 è stato eliminato: non ricrearlo.
+Alla scadenza usare `/usage` senza richiesta al modello; l'orario è una nuova autorizzazione,
+NON prova che i crediti si siano ripristinati. Se indisponibile, registrare e fermare il
+retry senza cambiare modello o concatenare pianificazioni. Prima di delegare ripartire
+l'ownership: nessuna implementazione contemporanea sugli stessi file.
 
-Bozza30file ripristinata e migliorata nel WORKTREE, non committata/pubblicata. NON ripristinare
-sopra il lavoro attuale la vecchia incomplete-cutover-2026-10-28/incomplete.patch: e backup
-PRECEDENTE alle correzioni Codex. TODO.md intatto. Mainpub resta backend152/c660+docs54ae.
-Compromessi accettati invariati: pausa statica PROVVISORIA con test impatto; C2unhandledrejection
-per solaVALUTAZIONEstatica. Nessuna nuova domanda sulle stesse scelte.
+Nessun incarico Claude attivo al checkpoint. La sessione precedente0385 è
+`ab3e2eb3-6c0f-44ee-9277-de12c954a202`, solo riferimento storico, non avviarla ora.
+Prima di ulteriore codice l'utente ha chiesto questo handoff dettagliato. Non ricreare
+`CLAUDE_RESUME.md`. `TODO.md` contiene modifiche dell'utente: non toccare/stagiare/ripristinare.
 
-Correzioni Codex REALI: quattro bindingV8pubblici mancanti150 nel nuovo compat.rs/shim.cc,
-tipi stdString/Result dei test, attesa ciclo corretta (typeof costante =string). Isolato
-cargo check --tests passa. Test Deno8/8 NORMAL+JITless; single_document3/3 normale;
-SUITE NATIVA COMPLETA107passati/2benchmarkignorati normale,106passati/3ignorati JITless
-(2benchmark+Wasm). Log direct-all-normal.log/direct-all-jitless.log. NON e testbrowserServo.
+### 3. Git e CI: distinguere pubblicato e locale
 
-Policy engine modificata (sintassiRustverde, esecuzione ancoraCI): navigazione conserva
-frammenti e blocca sostituzioni prima di unload/messaggi; iframe fermati prima di contesti
-sincroni/pipeline; Constellation difende load/reload/iframe e preflight storia PRIMA dei drain
-consentendo solo pipelinecorrente. Rimosso DOCUMENT_STARTED thread_local in pre_page_load.
-Warnuna volta per categoria tramite shared/constellation/game_document_policy.rs. Avviso
-sviluppo per queste nuove categorie ancora da collegare; aux-windowgiaimplementato.
-Loader installato anche prima dei classici per preservare import() nei worker; prova browser
-ancora necessaria. NON pubblicare finche mancano fixture/correzioni sotto.
+| Oggetto | Riferimento al checkpoint | Significato |
+| --- | --- | --- |
+| Root pubblicato | `54ae32b3daed3ae94efd73a7c03704e226201af0` | Vecchio backend + docs; NON port Deno corrente |
+| Root HEAD prima del presente handoff | `07dd273da07c0b428dc5959ea5e783c9567fa32f` | Commit locali documentali; anche `ed91ae425d1` locale |
+| Wiki pubblicata | `b919c94` | Stato precedente |
+| Wiki locale prima del presente handoff | `03f32df8aced25e013bcb949f231d37b3e081f08` | Detached HEAD; ulteriori modifiche documentali locali |
+| roves-action HEAD | `4b2a67fec7e6dcf57131708d1653a52a3dbb10dd` | README mirror modificato localmente; niente nuovi input |
 
-Prossimi passi: adattare events.html helper13testnamed-property daiframes a documentounico
-con cleanup sincrono; conservare prove di risoluzione alias Document/HTMLDocument in processi
-separati; sostituire positivi di navigazione/frame con negativi singolodocumento+History,
-preservando fixture legacy e coperturaGC locale/retention non risolta. run.sh e v8.yml hanno
-ancora nav1/gc-lifecycle/frame-retention dipendenti daframe da convertire con copertura reale.
-Aggiungere moduloHTML/TLA/C2 fetch/parse/link fixtures e warningUI native; rivedere referrer,
-inlineimport.meta.url e testcaller-private archiviati. Rigenerare standalone lockcrate.
-Poi verifiche leggere/replay/fullpatch/docs/actionmirror, commit/pushsoloportcompleto.
-BuildServo pesantiSOLOCI. Nativeharness target/task-0385/native-workspace, buildcache
- C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js/target, -j1, V8_TEST_MODE corretto.
-SnapshotNATIVO dopo modifiche non coincide automaticamente con root: sincronizzare prima test.
-Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
+Prima azione di un nuovo agente: `git status --short`, `git log -3 --oneline`, poi gli stessi
+controlli nei due repository. I riferimenti sopra sono checkpoint, non valori da forzare.
+Il commit di questo handoff avrà necessariamente uno SHA successivo: usare Git reale.
 
-L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:
-Codex possiede policy shell ports/servoshell, Claude il port runtime. Divisione esplicita
-in AGENTS/workflow e target/task-0385/COORDINATION.md. Nessun file sovrapposto.
-0386 locale: rifiuto delle nuove finestre prima di costruire WebView tramite il responder
-Servo esistente; warning nei log una sola volta per applicazione. Non implementa ancora
-blocco reload/navigazione o apertura esterna su clic.
-0387 locale completa avviso sviluppo non modale e chiudibile tramite egui esistente;
-solo esecuzioni CLI senza metadata bundle, nei distribuiti solo log. Non riapre dopo
-richieste ripetute. Rendering avviso e comportamento browser attendono CI/verifica visiva. Il NavigationRequest
-attuale non espone provenienza del clic: non inventare attivazione fidata nella shell.
-Sintassi Rust verificata; verifica browser online ancora necessaria. TODO.md resta separato.
+Batch54ae verificato concluso: generale **40655538314 VERDE13/13**, inclusi tutti i10 job
+non Apple richiesti; Android **40655538288 VERDE**. iOS **40655538256 verde**, esclusa dal
+gate insieme a macOS per istruzione utente. Queste run verificano54ae, NON il nuovo worktree.
+Probe isolato Deno40564575701 verde4/4 Windows/Linux normal/JITless: non è Servo+DOM.
 
-Questo è il punto di ripresa autorevole. Lo storico sotto non contiene istruzioni correnti:
-non rileggere i log o rilanciare gli incarichi conclusi senza un problema concreto.
+Il gate non è ora bloccato dalle vecchie run, ma il codice locale è ancora WIP e non va
+pubblicato. Non fare push per cancellare vecchie run. Dopo una modifica completa: controllare
+aggregatamente il batch precedente; correggere ogni fallimento non Apple e non pushare con
+run richieste attive. Si possono sviluppare e committare modifiche COMPLETE durante la CI.
+Build complete Servo solo online. Nessun polling continuo.
 
-## Direzione aggiornata — documento unico e rivalutazione deno_core
+### 4. Dove si trova il lavoro: NON ripristinare il backup vecchio
 
-[Decisione0380](handoff/0380-single-document-runtime.md): shell Servo, una finestra e un
-documento di gioco, route interne TanStack-style tramite History API e frammenti. Tab,
-nuove finestre e iframe non obbligatori; nessun reload/cambio pagina completo accessibile
-al gioco. Caricamento iniziale shell e chiusura restano necessari. Questo restringe il
-perimetro rispetto alla precedente valutazione browser: frame multipli e riuso WindowProxy
-fra documenti non sono più criteri obbligatori per adottare deno_core.
+Il lavoro attuale è nei sorgenti modificati/non tracciati. Non è sparito perché non è
+committato. Non fare `reset --hard`, `clean`, checkout/restore massivi o `git add -A`.
 
-Requisito DA IMPLEMENTARE: bloccare nel motore le richieste non supportate prima di
-sostituire documento/stato, segnalando almeno un warning console/log con operazione e
-motivo. Niente crash o alert modali come segnalazione; eventuale avviso non modale, ripetizioni
-limitate. Scelta confermata: avviso discreto non modale in sviluppo, solo log nel distribuito.
-Link esterni al browser di sistema solo su clic reale; richieste automatiche bloccate e
-segnalate, mai navigate dentro Roves. Prima prova isolata deno_core a documento unico,
-poi implementare policy e diagnostica col runtime selezionato.
-History API/router e frammenti devono continuare a funzionare. Non convertire
-silenziosamente navigazioni native in route o apertura browser esterno. Non rimuovere
-fixture esistenti prima di prove sostitutive e revisione del perimetro.
+- Backup vecchio `target/task-0385/incomplete-cutover-2026-10-28/incomplete.patch`, base
+  b8fb2eb4904, SHA256 `b81d31d495be7492d596aba6ce05e02f57f052f0c660d738b30ec9df9039bdbc`:
+  PRECEDE le correzioni Codex. NON applicarlo sopra i sorgenti correnti.
+- Snapshot prima del presente aggiornamento documentale:
+  `target/task-0385/handoff-2026-10-28/manifest.json`, `status.txt`, `worktree.patch`,
+  `new-files/`. Include hash dei nuovi file e del diff, esclude TODO.md e modifiche ai
+  subrepository. È un backup WIP, non una patch approvata per la pubblicazione.
+- `IMPLEMENTATION.md`, `MANIFEST_READY.md`, `NATIVE_REVIEW.md` in target/task-0385 sono
+  consegne/diagnosi storiche della bozza: consultarle solo per dettagli concreti. NON
+  seguire vecchie istruzioni di restore o vecchie dichiarazioni di completamento.
+- Nuovi file non tracciati devono essere inclusi nel futuro commit completo; controllare
+  esplicitamente `git ls-files --others --exclude-standard`. Un diff dei soli tracked li perde.
 
-Servizi Servo sostituibili/rimovibili, DOM/layout/rendering inizialmente Servo. rusty_v8
-già usato; deno_core NON ancora adottato, ma da rivalutare con un solo contesto. Il NO-GO0378
-era riferito al perimetro precedente, non vieta la nuova prova. Verificare DOM/eventi,
-microtask, moduli, sicurezza, GC/chiusura, V8 compatibile e JITless usando API mantenute,
-eliminando il percorso sostituito senza fork nostro/doppio servizio permanente. Nessuna
-installazione separata Chromium/Deno o API Deno privilegiate ai giochi, nessuna prestazione
-o compatibilità già dimostrata. AGENTS/AGENT_WORKFLOW/LIBRERIE_E_CONSOLE allineati.
+### 5. Architettura implementata nella bozza e file da leggere
 
-Batch precedente `735a1154698984a3151652389d664665b011945c`, wiki `48bfc3d`, include0375/0376.
-Batch V8 `40520566885`: richiesti7/7verdi (browserLinuxnormal/JITless eWindows compresi);
-Android `40520566920` verde. Generale `40520566879`: patch/probeWindows/Linux/shared
-verdi, ma build/packaging eSteam SALTATI perché il gate aggregato include il probe macOS
-cancellato. Non considerarli verdi: manca copertura richiesta. iOS `40520566892` fallita
-e macOS esclusi per istruzione utente; non disattivare iworkflow né ritentare soloApple.
-Gate corretto e pubblicato0379, patch0381: probeApple separato ma abilitato, nomi invariati;
-PyYAML verifica matrice/dipendenze e build/Steam invariati. Il batch0eb ha confermato
-packaging/Steam precedentemente saltati. Batch735a terminale, nessun difetto runtime nonApple
-mostrato da quel batch; batch0eb terminale riportato sopra.
+| Area | File principali | Comportamento / stato |
+| --- | --- | --- |
+| Runtime | `components/roves-js/src/deno_impl.rs`, `rust.rs`, `runtime_impl.rs`, `realm_impl.rs` | Deno possiede isolate/context/grafo/event loop; un documento; native suite Windows verde |
+| V8 pubblico | `components/roves-v8/build.rs`, `src/shim.cc`, `compat.rs`, `codegen.rs`, `incumbent.rs` | Shim C++ compilato contro header pubblici150; niente simboli C++ inventati |
+| Versioni | Cargo.toml/lock root e dei2crate | deno_core0.413.0 + un solo v8=150.4.0; standalone lock rigenerati offline |
+| HTML/fetch | `components/script/script_module.rs` | Adapter Servo: import map, CSP, MIME, credenziali, referrer, SRI, resource timing; da verificare nel browser |
+| Worker/classici | globalscope/script_execution.rs, script_runtime.rs | Loader installato anche prima dei classici per preservare import() nei worker; browser ancora pendente |
+| Policy precoce | `components/script/navigation.rs`, htmliframeelement.rs | Blocca full navigation/reload prima unload; iframe prima della creazione sincrona di context/pipeline |
+| Difesa centrale | `components/constellation/constellation.rs` | Blocca load/reload/iframe; preflight storia prima dei drain; History/hash solo pipeline corrente |
+| Diagnostica | shared/constellation/game_document_policy.rs, shared/embedder/lib.rs, servo/{servo,webview_delegate}.rs | Warning per categoria/processo + messaggio nativo tipizzato; niente parsing log del gioco |
+| Avviso sviluppo | `ports/servoshell/running_app_state.rs` | Riusa policy_notice/egui, development-only; rendering ancora da verificare |
+| Link esterni | script/links.rs, htmlanchor/area, EmbedderMsg, WebViewDelegate, running_app_state.rs | Bozza RECENTE non compilata: event.IsTrusted nativo, solo HTTP(S) cross-origin, SDL3 open_url; headless rifiuta e Android warning |
+| Rimozioni | modules_impl.rs, roves-v8/global_proxy.rs, script/module_loading.rs | Eliminati e scollegati; grafo sostituito da Deno; gen_wrappers2.py aggiornato al nuovo modulo |
 
-0377 implementata/revisionata e pubblicata: [handoff](handoff/0377-prototype-descriptor-visibility.md),
-patch0378. Il controllo prototipo riusa JS_GetPropertyDescriptorById, senza un nuovo walker.
-1native normal/1JITless verdi; runner42(8skipPOSIX), generatore14, parseRustverde.
-Negativa isolata della vecchia query HasProperty fallisce sulla trap sbagliata, sorgente
-isolato ripristinato. FixturebrowserLinuxnormal/JITless eWindows verificate nel batch0eb. Lo skip dei
-named-properties objects e il punto iniziale WindowProperties restano gap espliciti.
+Le ultime modifiche link esterni sono state fatte PRIMA della richiesta di aggiornare il
+handoff e non vanno considerate concluse. Rivedere in particolare: url.into_url/trait import,
+match esaustivi EmbedderMsg, gestione _blank prima della creazione WebView, .click()/eventi
+sintetici non fidati, URL same-origin (full navigation bloccata), schemi nonHTTP, fallimento
+OS. Per ora il canale è per anchor/area; window.open resta rifiutato, non dedurre una sua
+provenienza fidata. Non dichiarare apertura esterna mobile o verifica visiva già funzionanti.
+SDL3 già presente offre `sdl3::url::open_url`: nessuna nuova dipendenza o shell command.
 
-ChromeMCP156.0.0.0Windowsvisibile, iframe text/html: nomi indipendenti Reflect/sloppy/strict
-true; Document rimuove proprietà non elemento, Form conserva nome; HTMLDocument distinto
-daDocument. Differenze rispetto agli obiettivi normativi, non parità. Riferimento0376 in
-target/task-0376/chrome-mcp-reference.json; nessun benchmark/headless.
+Deno bootstrap elimina Deno/__bootstrap/__infra/console/queueMicrotask prima del gioco;
+Servo installa le proprie API. slot realm5 per evitare collisioni. Primo global adotta il
+main context Deno, altri global rifiutati. Non ripristinare WindowProxy multi-frame come
+requisito. Le valutazioni partono al punto HTML; static fetch usa oneshot dal thread rete,
+non un task JS rientrante durante borrow esclusivo di JsRuntime. Non fare pump di task JS
+nel block_on. `external_ops_tracker` resta ref per vita documento per TLA che aspetta eventi
+host; unref in Drop. Verificare chiusura e wake senza spin, non inventare un event loop parallelo.
 
-SourceText0361, deleteindicizzato, definePropertylegacy e retentioncomplessiva aperti.
-0377 consolidata in d72e403693e/wiki ca83aa9 con replayWin/Linux6/6fileidenticiLF; TODO.md contiene una modifica separata
-non inclusa nei commit V8. Non ricreare CLAUDE_RESUME.md. Il retry0376 è riuscito ed è stato
-ELIMINATO; nessuna automazione periodica. 0382 ripresa e completata, nessun limite corrente o retry da concatenare; dettagli sopra.
-[Esito0378 storico](handoff/0378-deno-core-feasibility.md): mancanoAPI realm/WindowProxy
-per il vecchio perimetro browser, non più requisiti del prodotto a documento unico;
-194dipendenze risolte, metadata/parsevalidi, nessuna esecuzione runtime/benchmark.
-Prototipo non compilato locale in target/task-0378; nessuna dipendenza produttiva o
-beneficio prestazionale dichiarato. Riprendere con una prova deno_core limitata al documento unico e alle nuove verifiche0380;
-le build pesanti restano online. Restano autorizzate rimozioni dei servizi sostituiti.
-[FixCI0379](handoff/0379-ci-probe-dependency.md), mirrorREADMEroves-action aggiornato. Build pesanti soloCI. Workspaces leggeri da riusare:
-`C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js` e `...-00kx/roves-js`,
-CARGO_TARGET_DIR `C:/Users/simon/3D Objects/roves/target/roves-js`.
+### 6. Difetto cache Function scoperto e protezione corrente
+
+Test reale `classic_eval_and_constructed_functions_keep_their_import_referrer`:
+2 script identici in `/left/classic.js` e `/right/classic.js`; ognuno produce closure,
+direct-eval e new Function con import relativo `./owner.js`. Senza protezione V8 restituisce
+`left:left:left:right:right:left`, atteso `left:left:left:right:right:right`.
+Log negativo `target/task-0385/direct-referrer-normal.log` (1 fallimento reale).
+
+Il flag pubblico V8 **`--no-compilation-cache`** risolve il caso. Inserito in
+roves-v8/src/lib.rs prima dell'inizializzazione. Non riscrive sorgenti e NON disattiva la
+cache dei moduli Deno. Costo compilazione/avvio NON misurato: tenerlo come protezione di
+correttezza e tema da rivalutare alla prossima versione condivisa Deno/V8. Non togliere il
+flag per "ottimizzazione" senza il test negativo/positivo equivalente.
+Nessun fix della retention complessiva è deducibile da questo risultato.
+
+### 7. Verifiche effettive e limiti delle prove
+
+Tutti i log qui sotto sono in `target/task-0385/` (artefatti locali, non presenti su un clone
+nuovo). Le prove native usano copie isolate di sorgenti: sincronizzarle quando cambiano.
+
+| Prova | Esito verificato | Log |
+| --- | --- | --- |
+| Native complete, ultime modifiche runtime/cache, Windows normale | 108 pass, 2 benchmark ignorati | direct-cache-guard-all-normal.log |
+| Native complete, VERA feature JITless compilata | 107 pass, 3 ignorati (2 benchmark+Wasm) | direct-cache-guard-feature-jitless.log |
+| Deno specifici con C3/referrer/JSON/cicli/TLA/dinamici/errori/Drop | 9/9 normale; inclusi anche nei107 JITless sopra | direct-referrer-fixed-normal.log |
+| Regressione cache prima del fix | riprodotta, 1 test fallito | direct-referrer-normal.log |
+| Helper smoke/codegen Python+Node | 56 test, 8 skip dichiarati, pass | direct-smoke-runner-final.log |
+| Sintassi inline JS delle7 pagine nuove/modificate | pass prima delle ultime fixture referrer | da rigenerare se si modifica JS |
+| Port Servo/browser e link esterni del worktree corrente | NON eseguito | build pesante da fare online |
+| Pausa input/timer e prestazioni / avviso grafico | NON misurati | non inventare numeri |
+
+ATTENZIONE: `V8_TEST_MODE=jitless` DA SOLO non abilita JITless nei test Cargo.
+La CI interpreta la variabile passando `--features jitless`; il comando locale deve farlo.
+I log direct-inline-jitless.log, direct-referrer-fixed-jitless.log e
+ direct-cache-guard-all-jitless.log prodotti in questa ripresa senza feature sono esecuzioni
+NORMALI nonostante il nome. Non citarli come prova JITless; usare esclusivamente
+`direct-cache-guard-feature-jitless.log` per la prova attuale. Le prove precedenti con
+feature107/106 nello storico riguardano un set precedente e non sostituiscono quella attuale.
+
+Ambiente native locale (non è una build del browser):
+
+```powershell
+$env:CARGO_TARGET_DIR='C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js/target'
+# Prima sincronizzare i sorgenti modificati in target/task-0385/native-workspace/.
+cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js -j1 -- --test-threads=1
+cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js --features roves-js/jitless -j1 -- --test-threads=1
+python -m unittest discover -s support/v8-smoke -p 'test_*.py'
+```
+
+Salvare stdout/stderr estesi in file, leggere solo esito/errori. Non riversare730warning
+legacy o JSON GitHub completi nel contesto. In PowerShell controllare LASTEXITCODE dopo
+ogni comando: un successivo comando riuscito può mascherare un fallimento Python/Cargo.
+Non rifare una suite già valida senza modifica o dubbio concreto.
+
+### 8. Smoke browser adattati: cosa c'è e cosa NON è verificato
+
+- `single-document.html`: stato/documento/Window conservati dopo reload/assign/replace,
+  cross-origin, iframe srcdoc/src, window.open; History push/replace/back/forward e hash.
+  Runner richiede assenza di richieste al target vietato nei due serverHTTP.
+- `module-order.html`: body già parsato, moduli deferred, TLA che aspetta DOMContentLoaded
+  senza bloccarlo, C2rejection e prosecuzione gioco, C3inline distinti/base/URL esterni,
+  classicierror, parse/link/fetch statici distinti, dynamic rejection e referrer Function.
+- `single-document-fixtures/`: moduli value/order/evaluation/parse/link e cartelle left/right
+  per referrer. JSON è già coperto dalla suite modules e da quella nativa. parse-error.mjs è
+  INTENZIONALMENTE invalido: non "correggerlo" perché node --check fallisce.
+- `events.html`: conserva named-property/descriptors/deleter/ownKeys. Helper
+  withNamedDocument sostituisce iframe: harness seriale, callback SOLO sincrona, cleanup
+  proprietà/prototipi e nodi nuovi prima del caso successivo. Non trasformarlo in async.
+- `document-interface-alias.html`: tre PROCESSI FRESCHI via query first=Document,
+  HTMLDocument,descriptor. Un loop nello stesso documento NON prova il primo accesso.
+- `gc-lifecycle.html`: conserva controlli reali DOM/weakref/cicli/listener/signal/inlinehandler,
+  importer classico e cleanup entry-settings; nuovi importOwner/evalImportOwner e resolver
+  prima/dopo GC nel documento unico. Le vecchie2coppie di frame non sono più attive.
+- `document-retention.html`: nuova scena snapshot nativo dopo8GC; controlloDOM vivo +
+  wrapper/ciclo staccato osservato con WeakRef. Conteggi di rilascio diagnostici, non prova
+  retention risolta. Runner continua a validare file snapshot e stringhe scena.
+- `legacy-multidocument/`: copie originali prima della modifica; non suite autonoma eseguibile.
+  I mock storici iframe/GC in test_runner leggono copie archiviate. Mantenerli distinti
+  dalle prove browser del nuovo prodotto, non spacciarli per test di frame supportati.
+- run.sh e REQUIRED_CHECKS aggiornati per i nuovi casi. Ultima scena snapshot nuova ha
+  bisogno di verifiche runner/negative specifiche; vecchi mock snapshot ancora riguardano
+  frame-retention.html e NON validano la nuova scena. Non considerare la sostituzione coperta
+  solo perché i56 test storici passano.
+
+### 9. Prossimi incarichi, in ordine, con criteri di uscita
+
+**A. Consolidare le ultime modifiche e copertura, senza altra ricerca generale.**
+1. Leggere solo i diff recenti sopra, verificare sintassi Rust dei file non nativi toccati
+   (rustfmt --emit stdout come parser, senza riformattare massivamente il repository).
+2. Finire revisione del canale link esterni e testare rifiuto di richieste sintetiche e
+   schemi nonHTTP. Prova positiva nativa clic reale con OS handoff controllato; non aprire
+   browser dal runner headless. Se impossibile verificarla localmente, documentare esattamente
+   la prova online/manuale mancante, senza dichiararla riuscita.
+3. Cercare iframe/full navigation rimasti negli smoke ATTIVI e relativi helper/assertioni.
+   Non basta aver modificato events/gc; games/modules/errors/stress possono avere dipendenze.
+   Conservare copertura valida di worker/moduli/CSP e sostituire i vecchi positivi fuori scope.
+4. Aggiungere controllo nuova scena document-retention (8GC esatti, controllo vivo, errori,
+   snapshot mancante/corrotto e stringhe corrette) senza fingere vere raccolte con mock Node.
+5. Verificare run.sh con bash -n, JS valido con node --check; fixture parse-error esclusa.
+   Eseguire Python/Node e negative mirate dopo le modifiche. Aggiornare validatore senza
+   consentire skip arbitrari o rimuovere REQUIRED_CHECKS per ottenere verde.
+
+**B. Riesame runtime e sicurezza.**
+1. Conservare test referrer per classici/directeval/Function e C3; un solo v8 nella lock.
+   Testare worker classico import(), worker module, import map, redirect/MIME/CSP/SRI/referrer
+   e credenziali con le fixture esistenti; completare le lacune senza duplicare grafo/fetch.
+2. Verificare HTML ordine/defer/async, TLA su timer/eventi, rejection non fatale e shutdown
+   mentre fetch/TLA/import sono pendenti. Non reintrodurre catch_unwind generici per nascondere
+   errori; evaluate_module usa il namespace pubblico per un modulo già errored.
+3. Verificare lifetime host loader/global e Drop, wake senza polling continuo; nessun
+   NoHeapPointers nel GC di produzione. Retention generale, SourceText0361 e precedenti
+   problemi aperti rimangono aperti finché una prova concreta non li chiude.
+
+**C. Rendere il cambiamento completo, applicabile e pubblicabile.**
+1. CI v8.yml: includere build.rs nelle copie native (già fatto), ampliare i path trigger per
+   script/policy/constellation/servo/shell interessati. Rivedere nome artifact snapshot
+   frame-retention residuo rispetto alla nuova scena; allineare note roves-action nello
+   stesso turno. Nessun input build/bundle nuovo attualmente richiesto.
+2. Verificare standalone crate lock con --locked e metadata; il lock generato in una cartella
+   sotto il workspace richiede workspace isolato/temporaneo. Non aggiungere [workspace] ai
+   manifest produttivi solo per questo. Root lock e2standalone già aggiornati ma da rivedere.
+3. Generare patch SORGENTE completa dalla base effettiva: tracked+nuovi+eliminati. Non usare
+   il tag v0.4.0 come baseline e non usare il backupWIP come patch approvata. Ultimo patch
+   documentale0401; prossimo numero libero da ricontrollare prima di generare la sorgente.
+4. Replay contro pristine v0.5.0 + serie, Windows e percorsoLinux disponibile. Confrontare
+   i file realmente applicati con i sorgenti (LF); dichiarare le eccezioni metadata esistenti
+   Cargo.lock/README/vecchio gamepad-probe, non dire full tree identico se non lo è.
+5. Allineare CUSTOMIZATIONS, README, wiki e questo handoff una volta con l'esito completo.
+   Commit root/wiki/action ESPLICITI per i file propri; lasciare TODO.md intatto. Nessun
+   backend parziale pubblicato solo per far compilare alla CI una bozza incompleta.
+6. Quando il port è coerente/revisionato e le verifiche leggere necessarie passano, pubblicare
+   secondo gate e identificare nuove run in una lettura aggregata. Buildbrowser pesanti
+   online; analizzare/fixare i fallimenti, continuare lavoro utile senza push concorrenti.
+
+**D. Misure e chiusura.**
+Misurare pausa statica e impatto di no-compilation-cache nelle condizioni del punto1;
+confrontare codice rimosso/aggiunto, avvio e RAM senza promettere risparmi. Controllare avviso
+sviluppo e distribuito logs-only, external link su input reale, History e chiusura. Per
+riferimento Chrome usare DevTools MCP quando disponibile e dichiarare se manca/bloccato.
+Non presentare Node, sintassi, native crate o mock come misure browser/MCP.
+
+### 10. Quando poter dire «integrazione Deno completata»
+
+Servono: implementazione coerente senza doppio backend/grafo; patch replay valida; suite
+native e browser richieste Windows/Linux normal/JITless verdi; Android e controlli condivisi
+verdi; policy documento unico preserva gioco e routing; nessuna API Deno privilegiata;
+errori distinti verificati; dati e limiti delle pause dichiarati; documentazione coerente.
+Le verifiche Apple escluse non vanno segnate verdi per finta. Un probe isolato o i108test
+Windows non soddisfano da soli questi criteri. I problemi storici non pertinenti al port
+non diventano automaticamente risolti quando il port compila.
+
+**FINE DEL PUNTO OPERATIVO — sotto solo storico, leggere per un problema concreto.**
 
 ## Storico recente — 26–27 ottobre (non è il punto di ripresa)
 
