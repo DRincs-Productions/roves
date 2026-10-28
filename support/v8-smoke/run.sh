@@ -62,7 +62,9 @@ run_page() {
   # Bash 3.2 treats an empty array as unset under nounset. Only expand non-empty arrays.
   local argv=()
   if [ "$RUNNER_COUNT" -gt 0 ]; then argv=("${RUNNER[@]}"); fi
-  argv+=("$BIN")
+  # Reuse Servo's crash-test mode: a failed script thread must terminate this process,
+  # rather than leaving a blank window alive until every page timeout expires.
+  argv+=("$BIN" --hard-fail)
   if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
   argv+=(-z "$url")
   if [ "$PAGE_ENV_COUNT" -gt 0 ]; then

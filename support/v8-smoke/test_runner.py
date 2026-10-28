@@ -1077,6 +1077,8 @@ else:
 assert sys.argv[browser] == 'unused-browser', sys.argv
 assert sys.argv[-2] == '-z', sys.argv
 options = sys.argv[browser + 1:-2]
+assert options and options[0] == '--hard-fail', sys.argv
+options = options[1:]
 page = sys.argv[-1].rsplit('/', 1)[-1].split('?', 1)[0]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
 if scenario == 'runtime-logs':

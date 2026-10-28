@@ -802,3 +802,6 @@ isolated CI caches represent cold scenes, not a complete latency or memory bench
 The integrated build now compiles; Linux smoke and packaged launches exposed a document
 initialization ordering panic. Loader installation moves after document attachment;
 browser startup and module behavior still require successful CI with this correction.
+
+Disposable V8 smoke processes use Servo hard-fail mode so native thread panics cannot
+leave blank windows running until each page timeout. This does not change packaged games.

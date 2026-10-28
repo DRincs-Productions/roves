@@ -1,3 +1,13 @@
+## 2026-10-28 - Use Servo hard-fail mode in the V8 smoke runner (0409)
+
+Pass the existing --hard-fail CLI option to each disposable smoke process. A script-thread
+panic must end that process with an error instead of keeping a blank window alive until
+the page timeout. Keep normal suite validation, timeout handling and snapshot controls.
+The fake launcher now requires the flag before processing preference options; focused Linux
+checks pass3/3 covering runtime logs, normal/post-completion timeout and wrapped/unwrapped
+snapshots. Bash syntax and patch dry-run/replay match both changed files. No new dependency
+or public option: this is contributor test behavior, not game crash policy.
+
 ## 2026-10-28 - Install the Deno loader after attaching Document (0408)
 
 Linux smoke and Windows/Linux bundle logs reproduce the same startup panic: Document

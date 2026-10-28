@@ -2,6 +2,13 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Miglioramento0409 completo locale:** il runner V8 passa l'opzione Servo esistente
+--hard-fail a ogni processo usa-e-getta; i panic script devono terminare il processo e
+non lasciare finestre vuote fino al timeout. Il simulatore richiede il flag; prove Linux
+mirate3/3 verdi (log, timeout dopo completamento, snapshot con/senza wrapper), Bash syntax
+e replay2file verdi. Log target/task-0385/linux-hard-fail-review.log. Nessuna modifica alla
+policy di crash dei giochi. Pubblicare insieme a0408 solo dopo la fine del batch precedente.
+
 **Checkpoint corrente: correzione avvio0408 pronta localmente.** Root pubblicata6efa696f176;
 locali completi0407 cc0f2b0e8da e handoff89ec77ca418, action57d710e e wikifac0dbb.
 Nessun Claude attivo. La sola modifica utente TODO (riga vuota) resta fuori dai commit.
@@ -179,7 +186,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0408:
+Scratch Windows gia applicato fino0409:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
