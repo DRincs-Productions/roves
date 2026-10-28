@@ -506,6 +506,43 @@ pub unsafe fn DescribeScriptedCaller(cx: *mut JSContext, buffer: *mut c_char, bu
 
 // --- Errors ----------------------------------------------------------------------------------
 
+fn module_error_location_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
+    let name = v8::String::new(scope, "roves-js module error location").expect("a short string");
+    v8::Private::for_api(scope, Some(name))
+}
+
+/// A Deno graph error is rebuilt as an Error in the game realm. Keep Deno's public source
+/// data on that object (no registry/root) so Servo reports the module, not the error builder.
+pub(crate) fn retain_module_error_info(
+    scope: &mut v8::PinScope,
+    exception: v8::Local<v8::Value>,
+    original: &deno_core::error::JsError,
+) {
+    let Ok(object) = v8::Local::<v8::Object>::try_from(exception) else { return };
+    if let (Some(key), Some(stack)) = (v8::String::new(scope, "stack"), v8::String::new(scope, &original.to_string())) {
+        object.define_own_property(scope, key.into(), stack.into(), v8::PropertyAttribute::DONT_ENUM);
+    }
+    let Some(frame) = original.frames.get(original.source_line_frame_index.unwrap_or(0)) else { return };
+    let Some(file) = frame.file_name.as_deref().and_then(|name| v8::String::new(scope, name)) else { return };
+    let Some(line) = frame.line_number.and_then(|n| u32::try_from(n).ok()) else { return };
+    let Some(column) = frame.column_number.and_then(|n| u32::try_from(n).ok()) else { return };
+    let line = v8::Integer::new_from_unsigned(scope, line);
+    let column = v8::Integer::new_from_unsigned(scope, column);
+    let location = v8::Array::new_with_elements(scope, &[file.into(), line.into(), column.into()]);
+    let key = module_error_location_key(scope);
+    object.set_private(scope, key, location.into());
+}
+
+fn module_error_location(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> Option<(String, u32, u32)> {
+    let object = v8::Local::<v8::Object>::try_from(exception).ok()?;
+    let key = module_error_location_key(scope);
+    let location = v8::Local::<v8::Array>::try_from(object.get_private(scope, key)?).ok()?;
+    let file = location.get_index(scope, 0)?.to_string(scope)?.to_rust_string_lossy(scope);
+    let line = location.get_index(scope, 1)?.uint32_value(scope)?;
+    let column = location.get_index(scope, 2)?.uint32_value(scope)?;
+    Some((file, line, column))
+}
+
 /// The message, file, line and column V8 reports for an exception value.
 fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> (String, String, u32, u32) {
     let message = v8::Exception::create_message(scope, exception);
@@ -518,6 +555,7 @@ fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> 
     // V8 uses -1 for missing locations; rusty_v8 exposes that sentinel as usize.
     // Preserve the embedder's zero (unknown) instead of truncating and overflowing.
     let column = u32::try_from(message.get_start_column()).ok().and_then(|column| column.checked_add(1)).unwrap_or(0);
+    let (file, line, column) = module_error_location(scope, exception).unwrap_or((file, line, column));
     (text, file, line, column)
 }
 

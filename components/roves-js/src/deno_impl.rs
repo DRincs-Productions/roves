@@ -495,8 +495,11 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
                 // public conversion preserves that class instead of turning every error
                 // into SyntaxError (in particular, invalid attributes are TypeError).
                 raw.with_scope(|scope| {
-                    let error = deno_core::error::to_v8_error(scope, &error);
-                    raw.set_pending(scope, error);
+                    let exception = deno_core::error::to_v8_error(scope, &error);
+                    if let deno_core::error::CoreErrorKind::Js(original) = error.as_kind() {
+                        crate::script_impl::retain_module_error_info(scope, exception, original);
+                    }
+                    raw.set_pending(scope, exception);
                 });
                 Err(ModuleGraphError::Rethrow)
             },

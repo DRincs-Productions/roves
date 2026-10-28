@@ -52,13 +52,13 @@ check("classic errors still use error events", () => new Promise(resolve => {
   addEventListener("error", listener);
   setTimeout(() => { throw new Error("roves-classic-error"); }, 0);
 }));
-async function failingStatic(path, expectsFetchError, expectedError = SyntaxError) {
+async function failingStatic(path, expectsFetchError, expectedError = SyntaxError, verifyLocation = null) {
   const script = document.createElement("script"); script.type = "module";
   const observed = new Promise(resolve => {
     let timer;
     function error(event) {
       if (expectsFetchError || !(event.error instanceof expectedError)) return;
-      event.preventDefault(); cleanup(); resolve(true);
+      event.preventDefault(); cleanup(); resolve(verifyLocation ? verifyLocation(event) : true);
     }
     function cleanup() { clearTimeout(timer); removeEventListener("error", error); script.remove(); }
     script.onerror = () => { cleanup(); resolve(expectsFetchError); };
@@ -70,6 +70,14 @@ async function failingStatic(path, expectsFetchError, expectedError = SyntaxErro
 }
 check("static parse failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/parse-error.mjs", false));
 check("static link failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/link-error.mjs", false));
+check("static parse reports identify the external module source", () => {
+  const path = "single-document-fixtures/located-parse-error.mjs";
+  const url = new URL(path, document.baseURI).href;
+  return failingStatic(path, false, SyntaxError, event =>
+    (event.filename === url && event.lineno === 3 && event.colno === 14 &&
+     String(event.error.stack).includes(url + ":3:14")) ||
+    JSON.stringify({ filename: event.filename, line: event.lineno, column: event.colno, stack: String(event.error.stack) }));
+});
 check("static fetch failure remains a script loading failure", () => failingStatic("single-document-fixtures/absent-static.mjs", true));
 check("static import attribute failures retain TypeError", () =>
   failingStatic("single-document-fixtures/invalid-attributes.mjs", false, TypeError));

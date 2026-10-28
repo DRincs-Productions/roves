@@ -761,7 +761,7 @@ The source integration follows the single-document scope; browser validation rem
 The source candidate integrates deno_core with the existing Servo DOM, layout and shell,
 using one V8 version and replacing the old Roves module graph. Cross-platform browser
 validation is still pending; use artifacts from successful CI runs, not an unverified
-source checkpoint. Native Windows checks pass110tests normally and109with the compiled
+source checkpoint. Native Windows checks pass112tests normally and111with the compiled
 JITless feature (two benchmarks excluded, plus Wasm in JITless).
 
 Games keep one document: History/hash routes remain available; full navigation, reload,
@@ -813,3 +813,6 @@ are recorded in docs/ROVES_PERFORMANCE.md; Roves comparison remains pending brow
 Static import-attribute errors preserve TypeError through Deno public error conversion;
 parse failures retain SyntaxError. Native module checks pass in normal and JITless modes;
 the corresponding browser fixture remains subject to CI.
+
+Module error reports retain Deno source URLs, coordinates and formatted stacks through
+error-owned metadata. The separate inline HTML line offset remains an open diagnostic gap.

@@ -1,0 +1,169 @@
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index bb12d87e12c..ac397690b7a 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -495,8 +495,11 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
+                 // public conversion preserves that class instead of turning every error
+                 // into SyntaxError (in particular, invalid attributes are TypeError).
+                 raw.with_scope(|scope| {
+-                    let error = deno_core::error::to_v8_error(scope, &error);
+-                    raw.set_pending(scope, error);
++                    let exception = deno_core::error::to_v8_error(scope, &error);
++                    if let deno_core::error::CoreErrorKind::Js(original) = error.as_kind() {
++                        crate::script_impl::retain_module_error_info(scope, exception, original);
++                    }
++                    raw.set_pending(scope, exception);
+                 });
+                 Err(ModuleGraphError::Rethrow)
+             },
+diff --git a/components/roves-js/src/script_impl.rs b/components/roves-js/src/script_impl.rs
+index f8795833606..1c9f91297a7 100644
+--- a/components/roves-js/src/script_impl.rs
++++ b/components/roves-js/src/script_impl.rs
+@@ -506,6 +506,43 @@ pub unsafe fn DescribeScriptedCaller(cx: *mut JSContext, buffer: *mut c_char, bu
+ 
+ // --- Errors ----------------------------------------------------------------------------------
+ 
++fn module_error_location_key<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Private> {
++    let name = v8::String::new(scope, "roves-js module error location").expect("a short string");
++    v8::Private::for_api(scope, Some(name))
++}
++
++/// A Deno graph error is rebuilt as an Error in the game realm. Keep Deno's public source
++/// data on that object (no registry/root) so Servo reports the module, not the error builder.
++pub(crate) fn retain_module_error_info(
++    scope: &mut v8::PinScope,
++    exception: v8::Local<v8::Value>,
++    original: &deno_core::error::JsError,
++) {
++    let Ok(object) = v8::Local::<v8::Object>::try_from(exception) else { return };
++    if let (Some(key), Some(stack)) = (v8::String::new(scope, "stack"), v8::String::new(scope, &original.to_string())) {
++        object.define_own_property(scope, key.into(), stack.into(), v8::PropertyAttribute::DONT_ENUM);
++    }
++    let Some(frame) = original.frames.get(original.source_line_frame_index.unwrap_or(0)) else { return };
++    let Some(file) = frame.file_name.as_deref().and_then(|name| v8::String::new(scope, name)) else { return };
++    let Some(line) = frame.line_number.and_then(|n| u32::try_from(n).ok()) else { return };
++    let Some(column) = frame.column_number.and_then(|n| u32::try_from(n).ok()) else { return };
++    let line = v8::Integer::new_from_unsigned(scope, line);
++    let column = v8::Integer::new_from_unsigned(scope, column);
++    let location = v8::Array::new_with_elements(scope, &[file.into(), line.into(), column.into()]);
++    let key = module_error_location_key(scope);
++    object.set_private(scope, key, location.into());
++}
++
++fn module_error_location(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> Option<(String, u32, u32)> {
++    let object = v8::Local::<v8::Object>::try_from(exception).ok()?;
++    let key = module_error_location_key(scope);
++    let location = v8::Local::<v8::Array>::try_from(object.get_private(scope, key)?).ok()?;
++    let file = location.get_index(scope, 0)?.to_string(scope)?.to_rust_string_lossy(scope);
++    let line = location.get_index(scope, 1)?.uint32_value(scope)?;
++    let column = location.get_index(scope, 2)?.uint32_value(scope)?;
++    Some((file, line, column))
++}
++
+ /// The message, file, line and column V8 reports for an exception value.
+ fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) -> (String, String, u32, u32) {
+     let message = v8::Exception::create_message(scope, exception);
+@@ -518,6 +555,7 @@ fn exception_info(scope: &mut v8::PinScope, exception: v8::Local<v8::Value>) ->
+     // V8 uses -1 for missing locations; rusty_v8 exposes that sentinel as usize.
+     // Preserve the embedder's zero (unknown) instead of truncating and overflowing.
+     let column = u32::try_from(message.get_start_column()).ok().and_then(|column| column.checked_add(1)).unwrap_or(0);
++    let (file, line, column) = module_error_location(scope, exception).unwrap_or((file, line, column));
+     (text, file, line, column)
+ }
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index db5fb3bf307..e74bc6b018d 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7285,6 +7285,33 @@ mod deno_modules {
+         assert_eq!(log(&runtime), "42", "typed JSON still loads after rejected attributes");
+     }
+ 
++    #[test]
++    fn static_parse_errors_preserve_module_source_in_reports() {
++        let (mut runtime, _, _) = runtime_with(&[
++            ("located.js", HostModuleKind::JavaScript, "\n\nexport const = ;"),
++        ]);
++        let url = format!("{ORIGIN}located.js");
++        assert_eq!(load_module_graph(runtime.cx(), &url, None), Err(ModuleGraphError::Rethrow));
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let mut exception = UndefinedValue());
++        let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
++        assert_eq!((info.filename.as_str(), info.line, info.col), (url.as_str(), 3, 14));
++        rooted!(in(cx) let object = exception.get().to_object());
++        let report = unsafe { JS_ErrorFromException(cx, object.handle().into_handle()) };
++        assert!(!report.is_null());
++        assert_eq!(unsafe { (*report)._base.lineno }, 3);
++        assert_eq!(unsafe { (*report)._base.column._base }, 14);
++        let file = unsafe { std::ffi::CStr::from_ptr((*report)._base.filename.data_) }.to_string_lossy();
++        assert_eq!(file, url);
++        let stack = unsafe { &*cx }.with_scope(|scope| {
++            let value = unsafe { crate::cell::cell_value(scope, object.get() as *mut std::ffi::c_void) };
++            let object = v8::Local::<v8::Object>::try_from(value).unwrap();
++            let key = v8::String::new(scope, "stack").unwrap();
++            object.get(scope, key.into()).unwrap().to_string(scope).unwrap().to_rust_string_lossy(scope)
++        });
++        assert!(stack.contains(&format!("{url}:3:14")), "{stack}");
++    }
++
+     #[test]
+     fn graph_failures_keep_their_contracts() {
+         let (mut runtime, _, _) = runtime_with(&[
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index a92384a0935..6425830a81d 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -23,7 +23,7 @@ WASM_SKIPS = {
+ REQUIRED_CHECKS = {
+     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError'),
++    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source'),
+     "single-document.html": (
+         "reload preserves the live game document",
+         "same-origin assignment preserves the live game document",
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index 7d8b2d3a9c1..3219fef1dd0 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -52,13 +52,13 @@ check("classic errors still use error events", () => new Promise(resolve => {
+   addEventListener("error", listener);
+   setTimeout(() => { throw new Error("roves-classic-error"); }, 0);
+ }));
+-async function failingStatic(path, expectsFetchError, expectedError = SyntaxError) {
++async function failingStatic(path, expectsFetchError, expectedError = SyntaxError, verifyLocation = null) {
+   const script = document.createElement("script"); script.type = "module";
+   const observed = new Promise(resolve => {
+     let timer;
+     function error(event) {
+       if (expectsFetchError || !(event.error instanceof expectedError)) return;
+-      event.preventDefault(); cleanup(); resolve(true);
++      event.preventDefault(); cleanup(); resolve(verifyLocation ? verifyLocation(event) : true);
+     }
+     function cleanup() { clearTimeout(timer); removeEventListener("error", error); script.remove(); }
+     script.onerror = () => { cleanup(); resolve(expectsFetchError); };
+@@ -70,6 +70,14 @@ async function failingStatic(path, expectsFetchError, expectedError = SyntaxErro
+ }
+ check("static parse failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/parse-error.mjs", false));
+ check("static link failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/link-error.mjs", false));
++check("static parse reports identify the external module source", () => {
++  const path = "single-document-fixtures/located-parse-error.mjs";
++  const url = new URL(path, document.baseURI).href;
++  return failingStatic(path, false, SyntaxError, event =>
++    (event.filename === url && event.lineno === 3 && event.colno === 14 &&
++     String(event.error.stack).includes(url + ":3:14")) ||
++    JSON.stringify({ filename: event.filename, line: event.lineno, column: event.colno, stack: String(event.error.stack) }));
++});
+ check("static fetch failure remains a script loading failure", () => failingStatic("single-document-fixtures/absent-static.mjs", true));
+ check("static import attribute failures retain TypeError", () =>
+   failingStatic("single-document-fixtures/invalid-attributes.mjs", false, TypeError));
+diff --git a/support/v8-smoke/single-document-fixtures/located-parse-error.mjs b/support/v8-smoke/single-document-fixtures/located-parse-error.mjs
+new file mode 100644
+index 00000000000..b50a1c5a467
+--- /dev/null
++++ b/support/v8-smoke/single-document-fixtures/located-parse-error.mjs
+@@ -0,0 +1,3 @@
++
++
++export const = ;

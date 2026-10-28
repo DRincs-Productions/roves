@@ -1,3 +1,16 @@
+## 2026-10-28 - Retain Deno module source positions in Servo error reports (0412)
+
+A native negative proves a parse error at located.js3:14 reports undefined:0:0 after
+rebuilding the exception. Reuse public JsError frame data and its formatter; attach location
+as a V8 private property on the error and keep its formatted stack non-enumerable. Servo's
+existing pending-exception/error-report path reads that metadata before its V8 fallback.
+No registry, extra root, source parser, layout access or new dependency. Classic exception
+behavior is unchanged; inline HTML source offsets and overall retention remain open.
+Full native112normal/2ignored and111JITless/3ignored pass, including both report APIs and
+stack coordinates. Required browser fixture asserts the external URL/line3/column14/stack;
+Node syntax/helper Linux8/8 and six-file incremental replay match. Await browser CI.
+Consolidate the authoritative handoff instead of retaining obsolete current CI statements.
+
 ## 2026-10-28 - Preserve static module import-attribute error classes (0411)
 
 A negative native regression proves invalid type css becomes SyntaxError: Uncaught TypeError

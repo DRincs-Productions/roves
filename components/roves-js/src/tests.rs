@@ -7286,6 +7286,33 @@ mod deno_modules {
     }
 
     #[test]
+    fn static_parse_errors_preserve_module_source_in_reports() {
+        let (mut runtime, _, _) = runtime_with(&[
+            ("located.js", HostModuleKind::JavaScript, "\n\nexport const = ;"),
+        ]);
+        let url = format!("{ORIGIN}located.js");
+        assert_eq!(load_module_graph(runtime.cx(), &url, None), Err(ModuleGraphError::Rethrow));
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let mut exception = UndefinedValue());
+        let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
+        assert_eq!((info.filename.as_str(), info.line, info.col), (url.as_str(), 3, 14));
+        rooted!(in(cx) let object = exception.get().to_object());
+        let report = unsafe { JS_ErrorFromException(cx, object.handle().into_handle()) };
+        assert!(!report.is_null());
+        assert_eq!(unsafe { (*report)._base.lineno }, 3);
+        assert_eq!(unsafe { (*report)._base.column._base }, 14);
+        let file = unsafe { std::ffi::CStr::from_ptr((*report)._base.filename.data_) }.to_string_lossy();
+        assert_eq!(file, url);
+        let stack = unsafe { &*cx }.with_scope(|scope| {
+            let value = unsafe { crate::cell::cell_value(scope, object.get() as *mut std::ffi::c_void) };
+            let object = v8::Local::<v8::Object>::try_from(value).unwrap();
+            let key = v8::String::new(scope, "stack").unwrap();
+            object.get(scope, key.into()).unwrap().to_string(scope).unwrap().to_rust_string_lossy(scope)
+        });
+        assert!(stack.contains(&format!("{url}:3:14")), "{stack}");
+    }
+
+    #[test]
     fn graph_failures_keep_their_contracts() {
         let (mut runtime, _, _) = runtime_with(&[
             ("broken.js", HostModuleKind::JavaScript, "export const = ;"),

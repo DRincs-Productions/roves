@@ -2,71 +2,50 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
-**0411 completa locale:** regressione negativa riprodotta: attributo statico type css
-veniva ricreato come SyntaxError: Uncaught TypeError. Ora la conversione pubblica
-`deno_core::error::to_v8_error` mantiene la classe; non usare CoreError::to_v8_error,
-che nella versione0.413 ricrea sempre TypeError e rompe il test SyntaxError gia esistente.
-Deno modulo12/12 normal e12/12 JITless verdi: tre combinazioni attributi illegali non fanno
-fetch; JSON tipizzato valido funziona dopo gli errori. Parse SyntaxError e risoluzione
-TypeError restano verdi. La conversione avviene dopo il rilascio del prestito esclusivo
-JsRuntime. Log originale Deno conservato per URL/posizioni, diagnostica inline resta aperta.
-Fixture browser aggiunta e richiesta: static import attribute failures retain TypeError.
-Syntax Node e helper Linux7/7 verdi; patch0411 dry-run/replay e5file identici LF.
-Log target/task-0385/static-attributes-{negative,normal,jitless}.log. Nessuna nuova dipendenza.
-Conservare localmente insieme a0410 (root039aa80685b, wiki97c3bcd) durante la CI0aa2.
+**Git e CI correnti:** pubblicati root0aa2a55040e, actionb001464, wikifc6cbd1.
+Locali completi0410 root039aa80685b (metriche),0411 rootfb7f2820acd (classi errori)
+e0412 nel commit di questo checkpoint (posizioni errori); wiki locale2f26015.
+La riga vuota utente TODO resta fuori dai commit. Non usare Claude. Il trigger5ore riprende
+il loop completo; nessun polling continuo o implementazioni duplicate.
 
-**Pubblicato0aa2a55040e**, actionb001464, wikifc6cbd1. Nuovo batch:
-V840760300642, generale40760300801, Android40760300574; iOS40760300584 esclusa.
-Identificati in coda dopo il push. Nessun altro push finche richiesti attivi o errori irrisolti.
+Batch pubblicato: V840760300642, generale40760300801, Android40760300574;
+iOS40760300584/Apple escluse. Ultimo controllo: runtime Linux/Windows normal/JITless,
+Android, pristine replay e controlli condivisi VERDI; browser e packaging richiesti ATTIVI,
+nessuna rossa. Niente push finche tutti i richiesti terminano e gli errori sono corretti.
 
-**0410 completo locale:** diagnostica pausa in JSON con tre scene cold/warm/slow,
-intervalli timer e frame e contatori; richiesta la presenza di dati finiti/non negativi,
-contatori interi positivi e visibility valida. Rifiutati rapporti mancanti, duplicati,
-malformati o dopo il totale finale; nessuna soglia di latenza inventata. Prove Linux9/9,
-poi6/6 dopo il controllo negativo aggiuntivo; sintassi Node e replay3file verdi.
-Chrome DevTools MCP ora disponibile: riferimento reale Chrome156 su Windows, tab attiva
-visibility visible, viewport929x861, modalita headed/headless non verificata. Caricamenti
-cold10.9ms/warm0.6ms/slow261.4ms con250ms di ritardo server. Tre rapporti reali validati;
-fixture14/17 per le3differenze Deno attese. Nessuna misura Roves ancora. Dati e limiti in
-docs/ROVES_PERFORMANCE.md, log locale target/task-0385/chrome-pause-0410.log.
+**0412 verificata localmente:** il report di un parse error Deno in located.js3:14 prima
+restituiva undefined:0:0 (negativa riprodotta). Ora dati pubblici JsError (frame e formatter)
+sono conservati sull'oggetto errore: posizione in proprieta privata V8, stack originale non
+enumerabile. Nessun registro/root aggiuntivo, parser o grafo duplicato. I report Servo
+PendingExceptionStackInfo/JS_ErrorFromException leggono quei dati; errori classici invariati.
+Suite nativa completa112normal/2ignore e111JITless/3ignore verdi (benchmark, piu Wasm
+in JITless). Browser fixture obbligatoria verifica filename/line3/column14/stack. Helper
+Linux8/8, Node syntax e patch0412 dry-run/replay/confronto6file verdi. Log
+static-location-{negative,all-normal,all-jitless,fixture-checks}.log sotto target/task-0385.
+Non risolve l'offset della riga HTML dei moduli inline ne retention/SourceText0361.
 
-**Miglioramento0409 completo locale:** il runner V8 passa l'opzione Servo esistente
---hard-fail a ogni processo usa-e-getta; i panic script devono terminare il processo e
-non lasciare finestre vuote fino al timeout. Il simulatore richiede il flag; prove Linux
-mirate3/3 verdi (log, timeout dopo completamento, snapshot con/senza wrapper), Bash syntax
-e replay2file verdi. Log target/task-0385/linux-hard-fail-review.log. Nessuna modifica alla
-policy di crash dei giochi. Batch precedente ora terminale;0408/0409 e0407 sono pronti per il push coordinato.
+**0411 verificata:** type css veniva ricreato SyntaxError: Uncaught TypeError. Usare
+la conversione pubblica deno_core::error::to_v8_error; NON CoreError::to_v8_error, che in
+0.413 crea sempre TypeError e rompe SyntaxError. Tre combinazioni attributi illegali non
+fanno fetch; JSON tipizzato successivo valido. Contratti moduli12/12 normal e JITless verdi
+prima0412, ora13/13 nella suite completa. Browser TypeError fixture obbligatoria aggiunta.
 
-**Checkpoint corrente: correzione avvio0408 pronta localmente.** Root pubblicata6efa696f176;
-locali completi0407 cc0f2b0e8da e handoff89ec77ca418, action57d710e e wikifac0dbb.
-Nessun Claude attivo. La sola modifica utente TODO (riga vuota) resta fuori dai commit.
+**0410 verificata:** rapporti JSON cold/warm/slow richiedono durate finite non negative,
+contatori timer/frame interi positivi e visibility valida. Mancanti/duplicati/malformati/
+post-total falliscono; nessuna soglia prestazionale. Chrome DevTools MCP156 su Windows:
+tab attiva visible929x861; avvio headed/headless non verificato. Un run10.9/0.6/261.4ms,
+slow server250ms, con campioni timer/frame continuati. Fixture0410 Chrome14/17 per le tre
+aspettative Deno differenti; non prova le fixture successive. Dati/limiti in
+ROVES_PERFORMANCE.md, log locale chrome-pause-0410.log. Nessuna misura Roves ottenuta.
 
-Batch6efa: V840752923347 conclusa; runtime Linux/Windows normal/JITless VERDI e build
-browser Windows VERDE. Browser Linux normal/JITless compilano ma gli smoke FALLISCONO:
-Document accessed before initialization (window.rs1447). Non attribuire questo ai warning
-libEGL: lo stesso panic compare nei bundle Windows portable/MSI, Linux deb e Steam.
-Generale40752923425: pristine replay e contratti condivisi verdi; bundle sopra falliti;
-Linux portable123046390802 terminata FALLITA: stesso panic di inizializzazione, seguito
-da assenza input DOM. Non sono emerse altre cause nel log. Android40752923374 verde.
-Apple esclusa. Non pushare con run richieste ancora attive o ulteriori errori irrisolti.
-
-Causa0408: script_thread installava il loader appena creato Window, prima di init_document.
-install_module_loader prende global.task_manager().networking_task_source(); Window.task_manager
-chiama Document(), che richiede il documento gia collegato. Spostata l'installazione subito
-dopo window.init_document e prima di JS_InitGlobalInterfaceProperties/page script.
-Nessun nuovo servizio o dipendenza: riuso del lifecycle e delle task source esistenti.
-Rustfmt parse, patch0408 dry-run/replay e confronto file LF passano. Nessuna build browser
-locale; gli smoke esistenti sono la regressione runtime obbligatoria nella prossima CI.
-
-0407 mantiene un roves.log per processo con cache XDG isolata, artifact anche su successo
-includendo la directory nascosta. Focus Linux runner/snapshot2/2 verdi; replay3file verde.
-La suite Linux completa precedente0404/0405 passa59/59 senza skip. I runtime nativi CI ora
-sono verdi; questo NON prova che il browser avvii o che le nuove fixture moduli passino.
-
-Batch precedente interamente terminale: revisione0408/0409 completa, tutte le cause richieste
-analizzate e correzione pronta. Pubblicare i cambiamenti completi (siblings prima dei gitlink root). Identificare nuove run una volta,
-poi continuare il lavoro utile senza polling. JSON preload temporaneamente indisponibile;
-misure pausa, diagnostica inline, click reale/avviso, SourceText0361 e retention aperti.
+**Gia pubblicati0407–0409:** log per processo/cold cache e artifact anche su successo;
+loader installato dopo init_document e prima delle interfacce (fix panic comune browser/
+bundle del batch6efa); --hard-fail solo per smoke usa-e-getta. La nuova CI deve confermare
+avvio e contratti browser. Le vecchie CI verdi native non equivalgono a browser funzionante.
+Prossimo: analizzare eventuali nuovi errori CI al termine di un incarico, completarli;
+quando il batch richiesto e terminale e le correzioni complete, pubblicare wiki prima dei
+gitlink root, identificare le run una volta e continuare il loop. Restano policy UI/clic
+reale/chiusura con fetch-TLA pendenti, misure Roves pausa, inline HTML offset e retention.
 
 Leggere questo blocco e AGENTS prima di modificare. Lo storico dopo FINE DEL PUNTO OPERATIVO
 contiene scelte e backup superati; consultarlo solo per un problema concreto.
@@ -122,13 +101,12 @@ retention risolte. Il prossimo passo e la CI completa, seguita dalle correzioni 
 
 ### 3. Git, CI e significato dei riferimenti
 
-Pubblicati root f8efd5c35ee, wiki062490f e action0964874. Il batch associato e
-concluso: V8/general falliti per gli errori descritti nel checkpoint iniziale; Android,
-action e wiki verdi. La precedente serie pristine e verde in validate-servo-patches.
-Controllare Git reale prima di riprendere; i nuovi commit avranno SHA successivi.
+Il checkpoint corrente iniziale e il riferimento autorevole: pubblicato0aa2a55040e e
+serie locale0410–0412. Controllare Git reale: il commit di questo handoff ha uno SHA nuovo.
+Batch precedente6efa terminato: compilazione e runtime verdi, startup browser/bundle
+fallito per Document prima di init, fix0408 pubblicata. Batch0aa2 ancora da concludere;
+pristine replay verde fino0409. Non pushare0410–0412 durante le run richieste attive.
 ProbeDeno40564575701 verde4/4 resta una prova isolata, NON Servo+DOM.
-Dopo il prossimo push identificare le run una volta e continuare sviluppo/commit locali
-mentre procedono; nessun nuovo push con verifiche richieste attive.
 
 ### 4. Cosa cambia nel candidato sorgente
 
@@ -161,10 +139,11 @@ Log sotto target/task-0385, locali/ignorati da Git. Su un clone nuovo vanno rige
 
 | Prova | Esito | Log |
 | --- | --- | --- |
-| Suite nativa Windows, sorgenti attuali | 110pass,2benchmarkignore normale | pre-ci-native-normal.log |
-| Stessa suite con VERA feature JITless | 109pass,3ignore (benchmark+Wasm) | pre-ci-native-jitless.log |
-| Contratti moduli dopo ultime correzioni | 11/11 normale e JITless | final-module-contracts-*.log |
-| Python/Node e codegen | 59test/8skip passati | pre-ci-python-checks.log |
+| Suite nativa Windows, sorgenti0412 | 112pass,2benchmarkignore normale | static-location-all-normal.log |
+| Stessa suite con VERA feature JITless | 111pass,3ignore (benchmark+Wasm) | static-location-all-jitless.log |
+| Contratti moduli0412 | 13/13 normale e JITless nella suite completa | static-location-all-*.log |
+| Runner Linux0404 | 59/59 senza skip | linux-runner-complete.log |
+| Helper/runner pertinenti0412 | 8/8 Linux | static-location-fixture-checks.log |
 | Root e2standalone Cargo metadata | --locked --offline validi | root-metadata.json e output locale |
 | Rust e Bash | sintassi modifiche verificata, non typecheck browser | *-syntax.rs / bash -n |
 | HTTP fixture | Referer presente/assente e file statico verificati | esecuzione locale stdlibserver |
@@ -175,7 +154,7 @@ isolata o --features jitless nel crate standalone, come fa CI. Non citare come p
 i vecchi log *jitless che omettevano la feature (specificati nel checkpoint storico).
 
 ```powershell
-$env:CARGO_TARGET_DIR='C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js/target'
+$env:CARGO_TARGET_DIR=Join-Path (Get-Location) 'target/roves-js'
 # Prima sincronizzare i file modificati in target/task-0385/native-workspace/.
 cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js -j1 -- --test-threads=1
 cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js --features roves-js/jitless -j1 -- --test-threads=1
@@ -214,7 +193,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0411:
+Scratch Windows gia applicato fino0412:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
@@ -243,8 +222,8 @@ Prima superare il panic di avvio nella CI browser; la raccolta0407 non risolve q
 
 1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
    root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
-2. Batch6efa compila ma fallisce avvio: includere0408 e ogni ulteriore correzione
-   dopo la conclusione di tutte le run richieste. Identificare nuove run e SHA.
+2. Concludere batch0aa2 e correggere i nuovi errori prima del push locale0410–0412.
+   Identificare nuove run e SHA una volta; continuare sviluppo mentre procedono.
 3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
    pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
    senza errori, continuare lavoro utile/commit locali senza push; niente polling continuo.
@@ -262,7 +241,7 @@ Dire integrazione completata SOLO con codice coerente senza doppio grafo/backend
 pristine valida e verifiche necessarie browser/native/nonApple verdi, policy/documento e
 sicurezza confermate, limiti/misure documentati. Retention complessiva e SourceText0361
 restano problemi distinti aperti: non chiuderli solo perche Deno compila. Le CI Apple escluse
-non vanno segnate verdi o eseguite per finta. No automazioni periodiche o polling continuo.
+non vanno segnate verdi o eseguite per finta. Nessun polling continuo; resta autorizzato il solo trigger5ore di ripresa loop.
 
 **FINE DEL PUNTO OPERATIVO — sotto solo storico, leggere per un problema concreto.**
 

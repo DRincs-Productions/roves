@@ -14,7 +14,7 @@ non una pulizia certificata di tutte le cache del sistema. Slow usa250ms di rita
 
 Nessuna soglia prestazionale accettata, media o confronto Roves ottenuto. I tre rapporti
 JSON reali superano il nuovo validatore. Log locale target/task-0385/chrome-pause-0410.log;
-la tabella conserva i dati arrotondati nel repository. La fixture completa Chrome14/17:
+la tabella conserva i dati arrotondati nel repository. La fixture0410 (prima0411/0412) completa Chrome14/17:
 i tre scostamenti sono attesi dalle condizioni specifiche Deno (rejection statica, frammento
 inline, preload JSON indisponibile); non dichiarare Chrome o Roves completamente verdi.
 Il controllo timer/frame della pausa passa. Misure Roves dipendono dal superamento del
