@@ -2907,10 +2907,6 @@ impl ScriptThread {
             self.this.clone(),
         );
 
-        // ES modules and dynamic imports of this document go through deno_core, with Servo's
-        // resolution and fetch (import maps, CSP, SRI, credentials, referrer policy).
-        crate::script_module::install_module_loader(cx, window.upcast::<GlobalScope>());
-
         let mut realm = enter_auto_realm(cx, &*window);
         let cx = &mut realm;
 
@@ -3011,6 +3007,11 @@ impl ScriptThread {
             .insert(incomplete.pipeline_id, &document);
 
         window.init_document(&document);
+
+        // The loader takes Window's networking task source, which belongs to Document.
+        // Install it only after attaching the document, and before interfaces or page script
+        // can request a module. Resolution and fetch still use Servo's security policies.
+        crate::script_module::install_module_loader(cx, window.upcast::<GlobalScope>());
 
         // Exposure predicates can inspect the document URL, so initialize lazy
         // interface properties after attaching the document and before page script.

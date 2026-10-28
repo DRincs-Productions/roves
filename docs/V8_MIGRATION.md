@@ -2,44 +2,36 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
-**Local complete checkpoint:** cc0f2b0e8da (0407 runtime-log preservation), with
-local action57d710e and wikifac0dbb; none of these three commits is published. Publish
-siblings before the root gitlinks only after the required6efa batch permits it. Working
-tree retains the unrelated user TODO blank line; do not stage it. Last aggregate check:
-required V8 native/browser jobs active, general pristine replay and windowing contracts
-already green, other general/Android checks active. No required failure seen at that check.
+**Checkpoint corrente: correzione avvio0408 pronta localmente.** Root pubblicata6efa696f176;
+locali completi0407 cc0f2b0e8da e handoff89ec77ca418, action57d710e e wikifac0dbb.
+Nessun Claude attivo. La sola modifica utente TODO (riga vuota) resta fuori dai commit.
 
-**Published correction batch:** root6efa696f176, actiona1eaa70, wikic2ff1b6.
-V840752923347 and general40752923425 queued; Android40752923374 in progress;
-iOS40752923453 excluded. Do not push while required runs are active. Local next task0407
-preserves existing runtime file logs per fresh smoke process, including static pause
-measurements. Each process uses an isolated XDG cache; these are cold-cache CI scenes,
-not warm-load/slow-network/frame-latency measurements. Dedicated artifacts include hidden
-paths and survive successful jobs. Focused Linux runner and snapshot tests pass2/2 (three wrapped/unwrapped scenarios);
-0407 dry-run/replay and3file comparisons pass. Log: target/task-0385/linux-runtime-log-review.log.
-Keep this complete change local until the published batch permits another push.
+Batch6efa: V840752923347 conclusa; runtime Linux/Windows normal/JITless VERDI e build
+browser Windows VERDE. Browser Linux normal/JITless compilano ma gli smoke FALLISCONO:
+Document accessed before initialization (window.rs1447). Non attribuire questo ai warning
+libEGL: lo stesso panic compare nei bundle Windows portable/MSI, Linux deb e Steam.
+Generale40752923425: pristine replay e contratti condivisi verdi; bundle sopra falliti;
+Linux portable123046390802 ancora attivo all'ultimo controllo. Android40752923374 verde.
+Apple esclusa. Non pushare con run richieste ancora attive o ulteriori errori irrisolti.
 
-**Current correction checkpoint:** root f8efd5c35ee, action0964874 and wiki062490f
-are published. Required batch is terminal: V8 40719636766 and general40719636661 failed;
-Android40719636685, action40719590816 and wiki40719601745 passed. Apple is excluded.
-Historical f8 Linux/Windows browser and packaging logs share two compiler errors: redundant no_trace
-on Option<ModuleId> and the task macro hiding poll_module_event_loop. Both are corrected
-locally, with the latter explicitly qualified to the module function. New build proof
-requires CI; no local browser build was run.
+Causa0408: script_thread installava il loader appena creato Window, prima di init_document.
+install_module_loader prende global.task_manager().networking_task_source(); Window.task_manager
+chiama Document(), che richiede il documento gia collegato. Spostata l'installazione subito
+dopo window.init_document e prima di JS_InitGlobalInterfaceProperties/page script.
+Nessun nuovo servizio o dipendenza: riuso del lifecycle e delle task source esistenti.
+Rustfmt parse, patch0408 dry-run/replay e confronto file LF passano. Nessuna build browser
+locale; gli smoke esistenti sono la regressione runtime obbligatoria nella prossima CI.
 
-Linux runner simulation now uses the single-document GC/snapshot protocol, recognizes
-query-bearing alias runs and the stdlib server, and retains negative failure checks.
-The final complete LF/WSL run passes59/59 tests with no skips, including the corrected
-three-process alias assertion and negative snapshot-control case. Log:
-`target/task-0385/linux-runner-complete.log`. Code-generator ResourceWarnings remain
-non-fatal and are not browser behavior evidence.
+0407 mantiene un roves.log per processo con cache XDG isolata, artifact anche su successo
+includendo la directory nascosta. Focus Linux runner/snapshot2/2 verdi; replay3file verde.
+La suite Linux completa precedente0404/0405 passa59/59 senza skip. I runtime nativi CI ora
+sono verdi; questo NON prova che il browser avvii o che le nuove fixture moduli passino.
 
-Patches0404 (CI/compiler/runner),0405 (redirect/MIME/referrer/SRI fixtures) and0406
-(periodic-loop authorization) are the incremental changes. Network fixtures use existing
-stdlib HTTP support; endpoint/syntax checks passed, actual browser behavior awaits CI.
-The five-hour user-requested trigger resumes the whole AGENTS loop without concurrent
-work or continuous polling. Claude remains suspended. JSON preload, static-pause
-measurement, visual/trusted-click checks, SourceText0361 and overall retention remain open.
+Prossimo: completare revisione0408, aggiornare commit/patch/wiki; al punto motivato controllare
+la run Linux portable rimasta, analizzare ogni errore ulteriore e solo dopo pubblicare tutti
+i cambiamenti completi (siblings prima dei gitlink root). Identificare nuove run una volta,
+poi continuare il lavoro utile senza polling. JSON preload temporaneamente indisponibile;
+misure pausa, diagnostica inline, click reale/avviso, SourceText0361 e retention aperti.
 
 Leggere questo blocco e AGENTS prima di modificare. Lo storico dopo FINE DEL PUNTO OPERATIVO
 contiene scelte e backup superati; consultarlo solo per un problema concreto.
@@ -187,7 +179,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0406:
+Scratch Windows gia applicato fino0408:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
@@ -216,8 +208,8 @@ Prima raccogliere la prima esecuzione browser della CI; la raccolta0407 non riso
 
 1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
    root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
-2. Batch f8 e terminale con errori: completare le correzioni compiler/runner, registrare
-   verifiche e pubblicarle insieme. Identificare nuove run e SHA; non dire verificato.
+2. Batch6efa compila ma fallisce avvio: includere0408 e ogni ulteriore correzione
+   dopo la conclusione di tutte le run richieste. Identificare nuove run e SHA.
 3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
    pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
    senza errori, continuare lavoro utile/commit locali senza push; niente polling continuo.

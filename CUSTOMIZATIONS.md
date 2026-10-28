@@ -1,3 +1,15 @@
+## 2026-10-28 - Install the Deno loader after attaching Document (0408)
+
+Linux smoke and Windows/Linux bundle logs reproduce the same startup panic: Document
+accessed before initialization. The loader takes Window's networking task source through
+Window.task_manager, which calls Document(); installing before init_document therefore
+panics before page script. Move installation immediately after attachment and before global
+interface initialization. Reuse existing lifecycle/task APIs without a new dependency.
+Rustfmt syntax, incremental dry-run/replay and source equality pass. Existing browser
+smoke/bundle scenarios are the required runtime regression, not yet verified by this fix.
+Native runtime CI is green on Linux/Windows normal/JITless; do not conflate it with browser
+startup. Keep0407 logs and this correction local until all prior required jobs terminate.
+
 ## 2026-10-28 - Record the post-push verification boundary
 
 Record published6efa versus complete local0407/root/action/wiki commits and pending CI.

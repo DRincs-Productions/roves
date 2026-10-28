@@ -798,3 +798,7 @@ Their browser execution remains pending the next successful CI batch.
 
 Smoke runtime logs are retained per fresh process for provisional static-load pause review;
 isolated CI caches represent cold scenes, not a complete latency or memory benchmark.
+
+The integrated build now compiles; Linux smoke and packaged launches exposed a document
+initialization ordering panic. Loader installation moves after document attachment;
+browser startup and module behavior still require successful CI with this correction.
