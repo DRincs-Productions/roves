@@ -1,0 +1,80 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js removed frame heap snapshot scene</title></head>
+<body>
+<script>
+// A controlled scene for one native V8 heap snapshot of a debug servoshell (run.sh runs it only
+// when V8_SMOKE_HEAP_SNAPSHOT names a destination): one blank same-origin srcdoc frame is
+// loaded, given an identifiable probe object from its own realm, then removed. Exactly
+// COLLECTIONS awaited TestUtils.gc() calls follow; the runner asks for the snapshot at the last
+// one, so its retainers can be read in DevTools' Memory panel. No module, no other frame, no
+// fake collection. Whether the frame is released is reported as a diagnostic only.
+"use strict";
+const COLLECTIONS = 8;
+const FRAME_TIMEOUT_MS = 5000;
+// Searchable in the snapshot: the probe's property on the frame's global, its tag string and
+// the frame element's id.
+const PROBE_TAG = "roves-frame-retention-probe";
+const FRAME_ID = "roves-frame-retention-frame";
+const failures = [];
+const report = (...parts) => console.log("ROVES-V8 frame-retention " + parts.join(" "));
+const fail = reason => { failures.push(reason); report("failure", reason); };
+addEventListener("error", event => fail("error " + event.message));
+addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+
+const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+
+// Loads and removes the frame; returns only WeakRefs, so nothing outside this activation keeps
+// the element, its document or the probe once it returns. Listeners and the timer are removed
+// on every exit.
+async function createAndRemoveFrame() {
+  const frame = document.createElement("iframe");
+  frame.id = FRAME_ID;
+  frame.srcdoc = "<!doctype html><title>roves frame retention</title>";
+  let timer, onLoad, onError;
+  try {
+    await new Promise((resolve, reject) => {
+      onLoad = resolve;
+      onError = () => reject(new Error("frame failed to load"));
+      frame.addEventListener("load", onLoad);
+      frame.addEventListener("error", onError);
+      timer = setTimeout(() => reject(new Error("frame load timed out")), FRAME_TIMEOUT_MS);
+      document.body.appendChild(frame);
+    });
+  } finally {
+    clearTimeout(timer);
+    frame.removeEventListener("load", onLoad);
+    frame.removeEventListener("error", onError);
+  }
+  const child = frame.contentWindow, childDocument = frame.contentDocument;
+  if (!child || !childDocument) throw new Error("frame has no window or document");
+  // Created in, and held only by, the frame's realm.
+  const probe = new child.Object();
+  probe.rovesProbeTag = PROBE_TAG;
+  child.rovesFrameRetentionProbe = probe;
+  const refs = { element: new WeakRef(frame), document: new WeakRef(childDocument), probe: new WeakRef(probe) };
+  frame.remove();
+  report("frame created true removed", String(!frame.isConnected));
+  return refs;
+}
+
+async function main() {
+  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+  report("api", String(api));
+  if (!api) throw new Error("TestUtils.gc unavailable");
+  const refs = await createAndRemoveFrame();
+  // A task boundary ends the job that created the WeakRefs (which keeps their targets alive).
+  await nextTask();
+  for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
+  report("collections complete", String(COLLECTIONS));
+  await nextTask();
+  await nextTask();
+  const released = name => String(refs[name].deref() === undefined);
+  report("diagnostic released element", released("element"), "document", released("document"),
+    "probe", released("probe"));
+}
+
+main()
+  .catch(error => fail("exception " + (error && error.name) + " " + (error && error.message)))
+  .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));
+</script>
+</body></html>

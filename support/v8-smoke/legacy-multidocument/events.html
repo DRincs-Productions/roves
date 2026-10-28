@@ -1,0 +1,1203 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js events and scheduling</title>
+<script src="harness.js"></script>
+<style>#target { width: 100px; height: 40px; }</style>
+</head>
+<body>
+<button id="target">target</button><input id="field">
+<script>
+// Event dispatch and task scheduling on V8: the order of microtasks, timers and animation
+// frames, synthetic input events, focus, listener options and custom events.
+// HTML does not order a 0 ms timer against the next animation frame: both orders are valid
+// (Chrome runs the frame first in a visible page). Wait for both callbacks; the microtasks queued
+// by the script must run, in FIFO order, before either. A missing callback fails on the harness
+// timeout.
+check("microtasks run before timer and frame callbacks, in either order", () => new Promise(resolve => {
+  const order = [];
+  let pending = 2;
+  const settle = () => {
+    if (--pending) return;
+    const seen = order.join();
+    resolve(seen === "sync,microtask,queueMicrotask,timeout,frame" || seen === "sync,microtask,queueMicrotask,frame,timeout" || seen);
+  };
+  setTimeout(() => { order.push("timeout"); settle(); }, 0);
+  requestAnimationFrame(() => { order.push("frame"); settle(); });
+  Promise.resolve().then(() => order.push("microtask"));
+  queueMicrotask(() => order.push("queueMicrotask"));
+  order.push("sync");
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTML has one microtask queue: promise jobs and queueMicrotask callbacks run in the order they
+// were queued, nested ones included (Chrome 155: "p1,q,p2", then "q1,p1,p2,q2"). An engine that
+// runs every promise job before the next queueMicrotask callback gives "p1,p2,q".
+check("promise jobs and queueMicrotask callbacks share one FIFO microtask queue", () => new Promise(resolve => {
+  const first = [], second = [];
+  Promise.resolve().then(() => { first.push("p1"); Promise.resolve().then(() => first.push("p2")); });
+  queueMicrotask(() => first.push("q"));
+  setTimeout(() => {
+    queueMicrotask(() => { second.push("q1"); Promise.resolve().then(() => second.push("p2")); queueMicrotask(() => second.push("q2")); });
+    Promise.resolve().then(() => second.push("p1"));
+    setTimeout(() => {
+      const seen = `${first.join()} ${second.join()}`;
+      resolve(seen === "p1,q,p2 q1,p1,p2,q2" || seen);
+    }, 0);
+  }, 0);
+}));
+check("nested timers keep their order", () => new Promise(resolve => {
+  const order = [];
+  setTimeout(() => { order.push(1); setTimeout(() => { order.push(3); resolve(order.join() === "1,2,3" || order.join()); }, 0); }, 0);
+  setTimeout(() => order.push(2), 0);
+}));
+check("clearTimeout and clearInterval cancel callbacks", () => new Promise(resolve => {
+  let fired = false, ticks = 0;
+  const id = setTimeout(() => fired = true, 0);
+  clearTimeout(id);
+  const interval = setInterval(() => { if (++ticks === 3) clearInterval(interval); }, 5);
+  setTimeout(() => resolve((!fired && ticks === 3) || `fired ${fired} ticks ${ticks}`), 200);
+}));
+check("click dispatch with bubbling, capture and stopPropagation", () => {
+  const target = document.getElementById("target");
+  const order = [];
+  const capture = () => order.push("capture");
+  const bubble = () => order.push("bubble");
+  document.body.addEventListener("click", capture, true);
+  document.body.addEventListener("click", bubble);
+  target.addEventListener("click", event => { order.push("target"); event.stopPropagation(); }, { once: true });
+  target.click();
+  target.click();
+  document.body.removeEventListener("click", capture, true);
+  document.body.removeEventListener("click", bubble);
+  return order.join() === "capture,target,capture,bubble" || order.join();
+});
+check("synthetic keyboard and pointer events carry their data", () => {
+  const field = document.getElementById("field");
+  let key = null, pointer = null;
+  field.addEventListener("keydown", event => key = `${event.key}:${event.code}:${event.shiftKey}`, { once: true });
+  field.addEventListener("pointerdown", event => pointer = `${event.pointerType}:${event.clientX}:${event.button}`, { once: true });
+  field.dispatchEvent(new KeyboardEvent("keydown", { key: "A", code: "KeyA", shiftKey: true, bubbles: true }));
+  field.dispatchEvent(new PointerEvent("pointerdown", { pointerType: "mouse", clientX: 12, button: 0, bubbles: true }));
+  return (key === "A:KeyA:true" && pointer === "mouse:12:0") || `${key} ${pointer}`;
+});
+check("preventDefault and passive listeners", () => {
+  const target = new EventTarget();
+  target.addEventListener("go", event => event.preventDefault(), { passive: true });
+  const passiveResult = target.dispatchEvent(new Event("go", { cancelable: true }));
+  const other = new EventTarget();
+  other.addEventListener("go", event => event.preventDefault());
+  const activeResult = other.dispatchEvent(new Event("go", { cancelable: true }));
+  return passiveResult === true && activeResult === false;
+});
+check("AbortSignal removes listeners", () => {
+  const target = new EventTarget();
+  const controller = new AbortController();
+  let calls = 0;
+  target.addEventListener("tick", () => calls++, { signal: controller.signal });
+  target.dispatchEvent(new Event("tick"));
+  controller.abort();
+  target.dispatchEvent(new Event("tick"));
+  return calls === 1;
+});
+check("CustomEvent detail and EventTarget subclasses", () => {
+  class Bus extends EventTarget {}
+  const bus = new Bus();
+  let detail = null;
+  bus.addEventListener("score", event => detail = event.detail);
+  bus.dispatchEvent(new CustomEvent("score", { detail: { points: 7 } }));
+  return detail && detail.points === 7 && bus instanceof EventTarget;
+});
+check("handleEvent objects as listeners", () => {
+  const target = new EventTarget();
+  const listener = { count: 0, handleEvent(event) { this.count += event.type === "x" ? 1 : 0; } };
+  target.addEventListener("x", listener);
+  target.dispatchEvent(new Event("x"));
+  return listener.count === 1;
+});
+check("focus and blur events with relatedTarget", () => {
+  const button = document.getElementById("target"), field = document.getElementById("field");
+  let related = null;
+  field.addEventListener("focus", event => related = event.relatedTarget, { once: true });
+  button.focus();
+  field.focus();
+  return (document.activeElement === field && related === button) || `${document.activeElement && document.activeElement.id} ${related && related.id}`;
+});
+check("input events update the value", () => {
+  const field = document.getElementById("field");
+  let seen = null;
+  field.addEventListener("input", () => seen = field.value, { once: true });
+  field.value = "typed";
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  return seen === "typed";
+});
+check("visibilitychange and document.visibilityState", () => ["visible", "hidden"].includes(document.visibilityState) && typeof document.hidden === "boolean");
+check("MessageChannel delivers as a task, in order", () => new Promise(resolve => {
+  const channel = new MessageChannel();
+  const received = [];
+  channel.port1.onmessage = event => { received.push(event.data); if (received.length === 3) resolve(received.join() === "1,2,3" || received.join()); };
+  [1, 2, 3].forEach(n => channel.port2.postMessage(n));
+}));
+check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
+  requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
+}));
+check("postMessage source is the incumbent: the innermost frame's window", () => new Promise(resolve => {
+  // The iframe's own script enters its realm, then calls a function of this window: the
+  // incumbent is this window (the innermost frame), not the entered iframe.
+  const frame = document.createElement("iframe");
+  window.sendIncumbentProbe = () => window.postMessage("incumbent-probe", "*");
+  addEventListener("message", function listener(event) {
+    if (event.data !== "incumbent-probe") return;
+    removeEventListener("message", listener);
+    resolve(event.source === window || (event.source === frame.contentWindow ? "source is the iframe" : String(event.source)));
+  });
+  frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
+  document.body.append(frame);
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// A listener's callback context is captured by addEventListener and reused at every dispatch.
+// The callback is frame A's postMessage, bound with an empty transfer list (otherwise the Event
+// argument is read as one), so no script frame of its own runs and the posted message's source
+// is the callback context. It is registered by frame B's code and dispatched by frame C's code,
+// then by this page: Chrome 155 reports B as the source. Recapturing the context at dispatch
+// would report C, then this window.
+check("an event listener keeps the callback context of its registration", () => new Promise(resolve => {
+  const frames = [0, 1, 2].map(() => document.createElement("iframe"));
+  let loaded = 0;
+  for (const frame of frames) {
+    frame.onload = () => { if (++loaded === frames.length) run(); };
+    frame.srcdoc = "<p>listener realm</p>";
+    document.body.append(frame);
+  }
+  function run() {
+    const [a, b, c] = frames.map(frame => frame.contentWindow);
+    const sources = [];
+    a.addEventListener("message", function listener(event) {
+      if (event.data !== "listener-callback-context") return;
+      sources.push(event.source === b ? "b" : event.source === c ? "c" : event.source === window ? "parent" : event.source === a ? "a" : String(event.source));
+      if (sources.length < 2) return;
+      a.removeEventListener("message", listener);
+      frames.forEach(frame => frame.remove());
+      resolve(sources.join() === "b,b" || sources.join());
+    });
+    const target = new EventTarget();
+    const callback = a.postMessage.bind(a, "listener-callback-context", "*", []);
+    new b.Function("target", "callback", "target.addEventListener('probe', callback);")(target, callback);
+    new c.Function("target", "target.dispatchEvent(new Event('probe'));")(target);
+    target.dispatchEvent(new Event("probe"));
+  }
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Listener list semantics (DOM): one entry per callback and capture flag, removal by callback and
+// capture, once, handleEvent looked up at each dispatch, a listener removed during a dispatch is
+// not called and one added during it waits for the next dispatch.
+check("event listener list keeps its identity, once and mutation semantics", () => {
+  const target = new EventTarget();
+  const order = [];
+  const counted = () => order.push("counted");
+  target.addEventListener("x", counted);
+  target.addEventListener("x", counted);
+  target.addEventListener("x", counted, true);
+  target.removeEventListener("x", counted, { capture: false });
+  target.removeEventListener("x", counted, { capture: false });
+  target.addEventListener("x", () => order.push("once"), { once: true });
+  const object = { handleEvent() { order.push("old handleEvent"); } };
+  target.addEventListener("x", object);
+  object.handleEvent = () => order.push("new handleEvent");
+  const late = () => order.push("late");
+  const removed = () => order.push("removed");
+  target.addEventListener("x", () => {
+    order.push("mutator");
+    target.removeEventListener("x", removed);
+    target.addEventListener("x", late);
+  }, { once: true });
+  target.addEventListener("x", removed);
+  target.dispatchEvent(new Event("x"));
+  order.push("|");
+  target.dispatchEvent(new Event("x"));
+  // MediaQueryList's legacy addListener/removeListener share the same list.
+  const media = matchMedia("(min-width: 1px)");
+  const change = () => order.push("change");
+  media.addListener(change);
+  media.addListener(change);
+  media.dispatchEvent(new Event("change"));
+  media.removeListener(change);
+  media.dispatchEvent(new Event("change"));
+  const seen = order.join();
+  return seen === "counted,once,new handleEvent,mutator,|,counted,new handleEvent,late,change" || seen;
+});
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Event handler IDL and content attributes (HTML): the getter returns the set function, null
+// clears it, a replaced handler keeps its list position while null plus a new handler moves it
+// to the end, a compiled attribute is cached and `return false` cancels, window.onerror gets the
+// five ErrorEvent arguments (`return true` cancels), and onbeforeunload's returned string
+// cancels only a real BeforeUnloadEvent. Expected values from Chrome 155 (DevTools MCP).
+check("inline event handlers keep identity, position and return semantics", () => {
+  const target = document.createElement("div");
+  target.id = "inline-target";
+  const order = [];
+  const click = () => {
+    const event = new MouseEvent("click", { cancelable: true });
+    target.dispatchEvent(event);
+    return event;
+  };
+  const f = () => order.push("f");
+  target.onclick = f;
+  if (target.onclick !== f) return "getter identity";
+  target.onclick = null;
+  click();
+  if (target.onclick !== null || order.length) return `null clear: ${target.onclick} ${order}`;
+  const listener = () => order.push("L");
+  target.onclick = () => order.push("h1");
+  target.addEventListener("click", listener);
+  target.onclick = () => order.push("h2");
+  click();
+  if (order.join() !== "h2,L") return `replaced position: ${order}`;
+  order.length = 0;
+  target.onclick = null;
+  target.onclick = () => order.push("h3");
+  click();
+  if (order.join() !== "L,h3") return `reinserted position: ${order}`;
+  // A listener before the handler replaces it during the dispatch: the new handler runs.
+  const host = document.createElement("div");
+  const seen = [];
+  host.addEventListener("click", () => { seen.push("L"); host.onclick = () => seen.push("h2"); });
+  host.onclick = () => seen.push("h1");
+  host.dispatchEvent(new MouseEvent("click"));
+  if (seen.join() !== "L,h2") return `replaced during dispatch: ${seen}`;
+  target.removeEventListener("click", listener);
+  target.onclick = null;
+  target.setAttribute("onclick", "event.rovesSeen = this.id; return false");
+  if (typeof target.onclick !== "function") return `attribute compile: ${typeof target.onclick}`;
+  if (target.onclick !== target.onclick) return "compiled attribute not cached";
+  const cancelled = click();
+  if (!cancelled.defaultPrevented || cancelled.rovesSeen !== "inline-target") {
+    return `attribute return false: ${cancelled.defaultPrevented} ${cancelled.rovesSeen}`;
+  }
+  target.removeAttribute("onclick");
+  if (target.onclick !== null) return "removeAttribute keeps the handler";
+  const savedError = window.onerror, savedUnload = window.onbeforeunload;
+  try {
+    let args = null;
+    window.onerror = (message, source, line, column, error) => {
+      args = [message, source, line, column, error];
+      return true;
+    };
+    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: 7 });
+    window.dispatchEvent(error);
+    if (JSON.stringify(args) !== '["probe","probe.js",2,3,7]' || !error.defaultPrevented) {
+      return `window.onerror: ${JSON.stringify(args)} ${error.defaultPrevented}`;
+    }
+    window.onerror = null;
+    if (window.onerror !== null) return "window.onerror null";
+    window.onbeforeunload = () => "msg";
+    const unload = document.createEvent("BeforeUnloadEvent");
+    unload.initEvent("beforeunload", false, true);
+    window.dispatchEvent(unload);
+    if (!unload.defaultPrevented || unload.returnValue !== "msg") {
+      return `BeforeUnloadEvent: ${unload.defaultPrevented} ${unload.returnValue}`;
+    }
+    const plain = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(plain);
+    if (plain.defaultPrevented) return "plain beforeunload Event cancelled";
+  } finally {
+    window.onerror = savedError;
+    window.onbeforeunload = savedUnload;
+  }
+  return true;
+});
+check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
+  // As in browsers, a reference to a browsing context's window outlives its document: after
+  // the iframe navigates, the same object reaches the new document.
+  const frame = document.createElement("iframe");
+  frame.onload = () => {
+    const held = frame.contentWindow;
+    frame.onload = () => {
+      const text = held.document && held.document.body ? held.document.body.textContent : "none";
+      const ok = frame.contentWindow === held && text === "second" && window.unloadSawItsOwnWindow === true;
+      resolve(ok || `same=${frame.contentWindow === held} text=${text} unload=${window.unloadSawItsOwnWindow}`);
+    };
+    frame.srcdoc = "<p>second</p>";
+  };
+  // The old page's unload handlers still see their own window (HTML switches the WindowProxy
+  // when the new document becomes active).
+  frame.srcdoc = "<p>first</p><script>addEventListener('unload', () => { parent.unloadSawItsOwnWindow = window.document === document; });<\/script>";
+  document.body.append(frame);
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("an iframe keeps its WindowProxy across origin changes and back", () => new Promise(resolve => {
+  // Two rounds of: a same-origin srcdoc document, two successive opaque-origin ones
+  // (sandbox="allow-scripts", no allow-same-origin: each document gets its own opaque origin),
+  // then a same-origin one again. The held WindowProxy must stay the frame's window, cross-origin
+  // access must throw a SecurityError DOMException while the cross-origin allowlist keeps
+  // working, and access must come back with the last document. Within one opaque document,
+  // postMessage reads and descriptors give one function, and calling it must reach that current
+  // document (its echo carries the document's own token). The function may or may not be the
+  // one an earlier document returned: Chrome 155 reuses it, so identity is not checked.
+  // Under file:// both origins serialize as "null": the access checks tell them apart.
+  // Every document, ping and echo has its own token: a message of an earlier step fails.
+  const run = `origin-change-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  let serial = 0;
+  const nonce = label => `${run}-${label}-${serial++}`;
+  const issued = new Set();
+  const parentOrigin = self.origin;
+  const frame = document.createElement("iframe");
+  let phase = "same-0", done = false, held = null, expected = null;
+  const end = outcome => {
+    if (done) return;
+    done = true;
+    clearTimeout(timer);
+    removeEventListener("message", onMessage);
+    frame.remove();
+    resolve(outcome);
+  };
+  const timer = setTimeout(() => end(`timeout waiting for ${phase}`), 8000);
+  function onMessage(event) {
+    const data = event.data;
+    if (!data || typeof data.token !== "string" || !issued.has(data.token)) return;
+    if (!expected || data.token !== expected.token) return end(`stale message from ${data.phase} while waiting for ${phase}`);
+    const deliver = expected.deliver;
+    expected = null;
+    deliver(event);
+  }
+  addEventListener("message", onMessage);
+  const message = (name, token) => {
+    issued.add(token);
+    phase = name;
+    return new Promise(deliver => { expected = { token, deliver }; });
+  };
+  const child = (name, body) => `<p id="marker">${name}</p><script>window.rovesOriginPhase = "${name}";${body}<\/script>`;
+  const state = name => `phase: "${name}", marker: document.getElementById("marker").textContent, global: window.rovesOriginPhase, origin: self.origin`;
+  const post = (name, token) => `parent.postMessage({ token: "${token}", ${state(name)}, parentDocument: (() => { try { return parent.document ? "accessible" : "none"; } catch (error) { return error.name; } })() }, "*");`;
+  const securityError = (problems, label, get) => {
+    try { get(); problems.push(`${label} did not throw`); }
+    catch (error) { if (!(error instanceof DOMException && error.name === "SecurityError")) problems.push(`${label} threw ${error && error.name}`); }
+  };
+  const common = (problems, event, origin, name) => {
+    if (frame.contentWindow !== held) problems.push("contentWindow changed");
+    if (event.source !== held) problems.push("source is not the held window");
+    if (event.origin !== origin) problems.push(`origin ${event.origin}`);
+    if (event.data.origin !== origin) problems.push(`child origin ${event.data.origin}`);
+    if (event.data.phase !== name || event.data.marker !== name || event.data.global !== name)
+      problems.push(`child shows ${event.data.phase}/${event.data.marker}/${event.data.global}`);
+  };
+  const report = (name, problems) => { if (problems.length) throw new Error(`${name}: ${problems.join(", ")}`); };
+  const sameOrigin = async name => {
+    const token = nonce(name), load = message(name, token);
+    frame.removeAttribute("sandbox");
+    frame.srcdoc = child(name, post(name, token));
+    if (!frame.isConnected) document.body.append(frame);
+    const event = await load;
+    if (!held) held = frame.contentWindow;
+    const problems = [];
+    common(problems, event, parentOrigin, name);
+    if (event.data.parentDocument !== "accessible") problems.push(`child parent.document ${event.data.parentDocument}`);
+    const marker = held.document.getElementById("marker");
+    if (held.document !== frame.contentDocument) problems.push("document differs from contentDocument");
+    if (!marker || marker.textContent !== name) problems.push(`document shows ${marker && marker.textContent}`);
+    if (held.rovesOriginPhase !== name) problems.push(`global phase ${held.rovesOriginPhase}`);
+    report(name, problems);
+  };
+  const opaque = async name => {
+    const ping = nonce(`${name}-ping`), echoToken = nonce(`${name}-echo`), loadToken = nonce(name);
+    const load = message(name, loadToken);
+    frame.setAttribute("sandbox", "allow-scripts");
+    frame.srcdoc = child(name, `addEventListener("message", event => { if (!event.data || event.data.token !== "${ping}") return; event.source.postMessage({ token: "${echoToken}", ${state(name)}, from: event.origin, fromParent: event.source === parent }, "*"); });` + post(name, loadToken));
+    let event = await load, problems = [];
+    common(problems, event, "null", name);
+    if (event.data.parentDocument !== "SecurityError") problems.push(`child parent.document ${event.data.parentDocument}`);
+    if (frame.contentDocument !== null) problems.push("contentDocument is not null");
+    securityError(problems, "document", () => held.document);
+    securityError(problems, "global", () => held.rovesOriginPhase);
+    if (held.closed !== false || held.window !== held || held.self !== held || held.frames !== held || held.length !== 0 || held.parent !== window || typeof held.postMessage !== "function")
+      problems.push("cross-origin allowlist unusable");
+    const send = held.postMessage;
+    const descriptors = [Object.getOwnPropertyDescriptor(held, "postMessage"), Object.getOwnPropertyDescriptor(held, "postMessage")];
+    if (held.postMessage !== send) problems.push("postMessage reads differ");
+    if (descriptors.some(descriptor => !descriptor || descriptor.value !== send)) problems.push("postMessage descriptor differs from reads");
+    report(name, problems);
+    const echo = message(`${name} echo`, echoToken);
+    send.call(held, { token: ping }, "*");
+    event = await echo;
+    common(problems = [], event, "null", name);
+    if (event.data.from !== parentOrigin || event.data.fromParent !== true) problems.push(`ping seen from ${event.data.from} parent ${event.data.fromParent}`);
+    if (held.postMessage !== send) problems.push("postMessage changed after messaging");
+    report(`${name} echo`, problems);
+  };
+  (async () => {
+    await sameOrigin("same-0");
+    for (const round of [0, 1]) {
+      await opaque(`opaque-a-${round}`);
+      await opaque(`opaque-b-${round}`);
+      await sameOrigin(`same-${round + 1}`);
+    }
+    end(true);
+  })().catch(error => end(String((error && error.message) || error)));
+}));
+// Named property visibility (https://webidl.spec.whatwg.org/#dfn-named-property-visibility):
+// an own property (expando or unforgeable) always wins; then, with [LegacyOverrideBuiltIns]
+// (Document, https://html.spec.whatwg.org/multipage/#the-document-object), a supported name
+// wins over the prototype, otherwise (HTMLFormElement) the prototype hides it. Each check runs
+// in its own iframe and removes its prototype property.
+// The iframe document's reflector is a Document whose prototype is Document.prototype
+// (Window.HTMLDocument is the same interface object, checked separately below).
+// The collision property goes on the document's actual prototype so that it really competes.
+const documentPrototype = (win, doc) => {
+  if (!(doc instanceof win.Document) || doc.contentType !== "text/html")
+    throw new Error(`iframe document is not an HTML Document (${doc.contentType})`);
+  const proto = Object.getPrototypeOf(doc);
+  if (proto !== win.Document.prototype) throw new Error("iframe document prototype is not Document.prototype");
+  return proto;
+};
+const withNamedFrame = (html, body) => new Promise(resolve => {
+  const frame = document.createElement("iframe");
+  frame.onload = () => {
+    const cleanup = [];
+    try {
+      resolve(body(frame.contentWindow, frame.contentDocument, cleanup));
+    } catch (error) {
+      resolve(String((error && error.message) || error));
+    } finally {
+      for (const undo of cleanup.reverse()) { try { undo(); } catch (_) {} }
+      frame.remove();
+    }
+  };
+  frame.srcdoc = html;
+  document.body.append(frame);
+});
+const describeValue = value => value && value.nodeName ? `<${value.nodeName}>` : String(value);
+const describeDescriptor = d => d ? `value=${describeValue(d.value)} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined";
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
+  const problems = [];
+  const key = "rovesNamedOverride", expandoKey = "rovesNamedExpando";
+  let protoReads = 0;
+  Object.defineProperty(proto, key, { configurable: true, get() { protoReads++; return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  if (doc[key] !== "prototype" || Object.hasOwn(doc, key) || Object.getOwnPropertyDescriptor(doc, key) !== undefined)
+    problems.push("prototype property not visible without a supported name");
+  // A supported name: the element wins and the prototype getter is never reached.
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  protoReads = 0;
+  const value = doc[key], own = Object.hasOwn(doc, key), desc = Object.getOwnPropertyDescriptor(doc, key);
+  if (value !== img) problems.push(`get ${describeValue(value)}`);
+  if (!own) problems.push("hasOwn false");
+  if (!desc || desc.value !== img || desc.writable !== false || desc.enumerable !== true || desc.configurable !== true)
+    problems.push(`descriptor ${describeDescriptor(desc)}`);
+  if (protoReads) problems.push(`prototype getter ran ${protoReads} times`);
+  // Removing the element makes the prototype property visible again.
+  img.remove();
+  const after = doc[key];
+  if (after !== "prototype" || Object.hasOwn(doc, key) || Object.getOwnPropertyDescriptor(doc, key) !== undefined)
+    problems.push(`after removal: ${describeValue(after)} own=${Object.hasOwn(doc, key)}`);
+  // An own expando defined before the name became supported still wins.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => delete doc[expandoKey]);
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  const expandoDesc = Object.getOwnPropertyDescriptor(doc, expandoKey);
+  if (doc[expandoKey] !== "expando" || !Object.hasOwn(doc, expandoKey) || !expandoDesc || expandoDesc.value !== "expando" || expandoDesc.writable !== true)
+    problems.push(`expando: ${describeValue(doc[expandoKey])} ${describeDescriptor(expandoDesc)}`);
+  // The unforgeable location accessor is an own property: a named element cannot clobber it.
+  const locationImg = doc.createElement("img");
+  locationImg.name = "location";
+  doc.body.append(locationImg);
+  const locationDesc = Object.getOwnPropertyDescriptor(doc, "location");
+  if (doc.location !== win.location || !locationDesc || typeof locationDesc.get !== "function" || locationDesc.configurable !== false)
+    problems.push(`location: ${describeValue(doc.location)} ${describeDescriptor(locationDesc)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Window.HTMLDocument is a writable, configurable, non-enumerable alias of the Document interface
+// object (https://html.spec.whatwg.org/multipage/#the-window-object). Fresh iframes resolve the
+// alias first by a read, Document first by a read, and the alias first by its own property
+// descriptor (before any read of either name); writing the alias must leave Document untouched.
+check("Window.HTMLDocument is the Document interface object", async () => {
+  const problems = [];
+  for (const first of ["HTMLDocument", "Document", "HTMLDocument descriptor"]) {
+    const result = await withNamedFrame("<p>alias</p>", (win, doc, cleanup) => {
+      const issues = [];
+      const resolved = {};
+      if (first === "HTMLDocument descriptor") {
+        const d = Object.getOwnPropertyDescriptor(win, "HTMLDocument");
+        if (!d || !("value" in d) || d.get !== undefined || d.set !== undefined || typeof d.value !== "function"
+            || d.writable !== true || d.configurable !== true || d.enumerable !== false)
+          issues.push(`first descriptor ${d ? `value=${typeof d.value} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined"}`);
+        resolved.HTMLDocument = d && d.value;
+        resolved.Document = win.Document;
+        if (!d || d.value !== resolved.Document) issues.push("descriptor value is not win.Document");
+      } else {
+        const second = first === "HTMLDocument" ? "Document" : "HTMLDocument";
+        resolved[first] = win[first];
+        resolved[second] = win[second];
+      }
+      const iface = resolved.Document, alias = resolved.HTMLDocument;
+      if (typeof iface !== "function" || alias !== iface) issues.push(`HTMLDocument ${typeof alias} !== Document ${typeof iface}`);
+      if (win.HTMLDocument !== iface || win.Document !== iface) issues.push("repeated reads differ");
+      if (alias && alias.prototype !== iface.prototype) issues.push("prototype differs");
+      if (Object.getPrototypeOf(doc) !== iface.prototype) issues.push("document prototype is not Document.prototype");
+      if (!(doc instanceof alias) || !(doc instanceof iface)) issues.push("document not instanceof both");
+      if (iface.prototype.constructor !== iface) issues.push("Document.prototype.constructor differs");
+      for (const name of ["HTMLDocument", "Document"]) {
+        const d = Object.getOwnPropertyDescriptor(win, name);
+        if (!d || d.value !== iface || d.writable !== true || d.configurable !== true || d.enumerable !== false)
+          issues.push(`${name} descriptor ${d ? `same=${d.value === iface} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined"}`);
+      }
+      // Writing the alias replaces only the alias property.
+      const marker = {};
+      cleanup.push(() => { win.HTMLDocument = iface; });
+      win.HTMLDocument = marker;
+      if (win.HTMLDocument !== marker) issues.push("alias write ignored");
+      if (win.Document !== iface) issues.push("alias write changed Document");
+      win.HTMLDocument = iface;
+      if (win.HTMLDocument !== iface || win.Document !== iface) issues.push("alias not restored");
+      return issues.length ? issues.join(", ") : true;
+    });
+    if (result !== true) problems.push(`${first} first: ${result}`);
+  }
+  return problems.length ? problems.join("; ") : true;
+});
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTMLFormElement has no [LegacyOverrideBuiltIns] in Roves' IDL: the prototype keeps hiding the
+// supported name, while a name without a prototype property stays visible.
+check("HTMLFormElement named properties stay hidden by the prototype", () => withNamedFrame("<p>form</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormOverride", plainKey = "rovesFormPlain";
+  const proto = win.HTMLFormElement.prototype;
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const input = doc.createElement("input"), plain = doc.createElement("input");
+  input.name = key;
+  plain.name = plainKey;
+  form.append(input, plain);
+  doc.body.append(form);
+  if (form[key] !== "prototype") problems.push(`get ${describeValue(form[key])}`);
+  if (Object.hasOwn(form, key)) problems.push("hasOwn true");
+  const desc = Object.getOwnPropertyDescriptor(form, key);
+  if (desc !== undefined) problems.push(`descriptor ${describeDescriptor(desc)}`);
+  if (form[plainKey] !== plain || !Object.hasOwn(form, plainKey)) problems.push(`plain name ${describeValue(form[plainKey])}`);
+  if (form[0] !== input) problems.push(`index 0 ${describeValue(form[0])}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// DOMStringMap (el.dataset) is the other [LegacyOverrideBuiltIns] interface: data-to-string
+// shadows Object.prototype.toString while the attribute exists. Detached element, nothing to undo.
+check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the prototype on reads", () => {
+  const problems = [];
+  const element = document.createElement("div");
+  const map = element.dataset, inherited = Object.prototype.toString;
+  if (map.toString !== inherited || Object.hasOwn(map, "toString") || Object.getOwnPropertyDescriptor(map, "toString") !== undefined)
+    problems.push(`before: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
+  element.setAttribute("data-to-string", "from-attribute");
+  const value = map.toString, own = Object.hasOwn(map, "toString"), desc = Object.getOwnPropertyDescriptor(map, "toString");
+  if (value !== "from-attribute") problems.push(`get ${typeof value === "function" ? "function" : String(value)}`);
+  if (!own) problems.push("hasOwn false");
+  if (!desc || desc.value !== "from-attribute" || desc.writable !== true || desc.enumerable !== true || desc.configurable !== true)
+    problems.push(`descriptor ${describeDescriptor(desc)}`);
+  element.removeAttribute("data-to-string");
+  if (map.toString !== inherited || Object.hasOwn(map, "toString") || Object.getOwnPropertyDescriptor(map, "toString") !== undefined)
+    problems.push(`after removal: ${typeof map.toString} own=${Object.hasOwn(map, "toString")}`);
+  return problems.length ? problems.join("; ") : true;
+});
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Supported names are page-controlled: ownKeys must report them unchanged, including an
+// embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
+check("Document ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
+  const problems = [];
+  const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
+  const images = names.map(name => {
+    const img = doc.createElement("img");
+    img.name = name;
+    doc.body.append(img);
+    return img;
+  });
+  const show = name => JSON.stringify(name);
+  for (const round of [0, 1]) {
+    const keys = Reflect.ownKeys(doc);
+    names.forEach((name, i) => {
+      const count = keys.filter(key => key === name).length;
+      if (count !== 1) problems.push(`round ${round}: ${show(name)} listed ${count} times`);
+      if (doc[name] !== images[i]) problems.push(`round ${round}: get ${show(name)} ${describeValue(doc[name])}`);
+      const desc = Object.getOwnPropertyDescriptor(doc, name);
+      if (!desc || desc.value !== images[i]) problems.push(`round ${round}: descriptor ${show(name)} ${describeDescriptor(desc)}`);
+    });
+    if (keys.includes("rovesNul")) problems.push(`round ${round}: NUL name truncated`);
+  }
+  images.forEach(img => img.remove());
+  const after = Reflect.ownKeys(doc);
+  for (const name of names)
+    if (after.includes(name) || Object.hasOwn(doc, name)) problems.push(`after removal: ${show(name)} still listed`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// ownKeys lists a supported name only when it is visible
+// (https://webidl.spec.whatwg.org/#legacy-platform-object-ownpropertykeys): an own expando or
+// unforgeable property hides it (the own key is still listed once), the prototype does not
+// ([LegacyOverrideBuiltIns]). Only counts are asserted; the key order is not part of this check.
+const countKey = (target, key) => Reflect.ownKeys(target).filter(k => k === key).length;
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("Document ownKeys lists only visible named properties, once", () => withNamedFrame("<p>own keys</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
+  const problems = [];
+  const key = "rovesKeysOverride", expandoKey = "rovesKeysExpando", symbol = Symbol("rovesKeysSymbol");
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  doc[symbol] = "symbol";
+  cleanup.push(() => delete doc[symbol]);
+  // The prototype property is reachable from the document before the name is supported.
+  if (doc[key] !== "prototype" || countKey(doc, key) !== 0 || Object.hasOwn(doc, key))
+    problems.push(`before: get=${describeValue(doc[key])} listed ${countKey(doc, key)} own=${Object.hasOwn(doc, key)}`);
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  const agree = (label, name, expected) => {
+    const count = countKey(doc, name), own = Object.hasOwn(doc, name), desc = Object.getOwnPropertyDescriptor(doc, name);
+    if (count !== 1 || !own || !desc || doc[name] !== expected || (desc.get === undefined && desc.value !== expected))
+      problems.push(`${label}: listed ${count} own=${own} get=${describeValue(doc[name])} ${describeDescriptor(desc)}`);
+  };
+  // The prototype does not hide the name: listed exactly once, and read/hasOwn/GOPD agree.
+  agree("override", key, img);
+  img.remove();
+  if (countKey(doc, key) !== 0 || Object.hasOwn(doc, key) || doc[key] !== "prototype")
+    problems.push(`after removal: listed ${countKey(doc, key)} get=${describeValue(doc[key])}`);
+  // An own expando defined before the name becomes supported hides the named property.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => delete doc[expandoKey]);
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  agree("expando", expandoKey, "expando");
+  if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.writable !== true) problems.push("expando descriptor replaced");
+  // Deleting the expando makes the named property visible again.
+  delete doc[expandoKey];
+  agree("expando deleted", expandoKey, shadowed);
+  // The unforgeable location accessor hides a named "location".
+  const locationImg = doc.createElement("img");
+  locationImg.name = "location";
+  doc.body.append(locationImg);
+  agree("location", "location", win.location);
+  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function") problems.push("location is not the accessor");
+  if (countKey(doc, symbol) !== 1) problems.push(`symbol expando listed ${countKey(doc, symbol)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Without [LegacyOverrideBuiltIns] a prototype property hides the name from ownKeys too. Named
+// form properties are unenumerable, so Reflect.ownKeys (not Object.keys) is the observable list.
+check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withNamedFrame("<p>form keys</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormKeysHidden", plainKey = "rovesFormKeysPlain", symbol = Symbol("rovesFormKeysSymbol");
+  const proto = win.HTMLFormElement.prototype;
+  Object.defineProperty(proto, key, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const hidden = doc.createElement("input"), plain = doc.createElement("input");
+  hidden.name = key;
+  plain.name = plainKey;
+  form.append(hidden, plain);
+  doc.body.append(form);
+  form.rovesFormKeysExpando = "expando";
+  form[symbol] = "symbol";
+  if (countKey(form, key) !== 0 || Object.hasOwn(form, key) || Object.getOwnPropertyDescriptor(form, key) !== undefined || form[key] !== "prototype")
+    problems.push(`hidden name: listed ${countKey(form, key)} own=${Object.hasOwn(form, key)} get=${describeValue(form[key])}`);
+  if (countKey(form, plainKey) !== 1 || !Object.hasOwn(form, plainKey) || form[plainKey] !== plain)
+    problems.push(`plain name: listed ${countKey(form, plainKey)} get=${describeValue(form[plainKey])}`);
+  for (const index of ["0", "1"])
+    if (countKey(form, index) !== 1) problems.push(`index ${index} listed ${countKey(form, index)}`);
+  if (countKey(form, "rovesFormKeysExpando") !== 1 || countKey(form, symbol) !== 1)
+    problems.push(`expando ${countKey(form, "rovesFormKeysExpando")} symbol ${countKey(form, symbol)}`);
+  // Removing the prototype property makes the name visible.
+  delete proto[key];
+  const desc = Object.getOwnPropertyDescriptor(form, key);
+  if (countKey(form, key) !== 1 || !Object.hasOwn(form, key) || !desc || desc.value !== hidden || form[key] !== hidden)
+    problems.push(`after prototype removal: listed ${countKey(form, key)} ${describeDescriptor(desc)}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// A null prototype ends the chain: nothing hides a name any more, and the prototype lookup of
+// ownKeys/getOwnPropertyDescriptor/hasOwn must not fail. Only global functions are used once
+// the prototype is gone.
+check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", () => withNamedFrame("<p>null proto</p>", (win, doc) => {
+  const problems = [];
+  const plainKey = "rovesNullProtoPlain";
+  const form = doc.createElement("form");
+  const action = doc.createElement("input"), plain = doc.createElement("input");
+  action.name = "action";
+  plain.name = plainKey;
+  form.append(action, plain);
+  doc.body.append(form);
+  if (countKey(form, "action") !== 0 || Object.hasOwn(form, "action"))
+    problems.push(`before: "action" listed ${countKey(form, "action")}`);
+  Object.setPrototypeOf(form, null);
+  if (Object.getPrototypeOf(form) !== null) return "prototype not cleared";
+  for (const [name, element] of [["action", action], [plainKey, plain]]) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (countKey(form, name) !== 1 || !Object.hasOwn(form, name) || !desc || desc.value !== element || form[name] !== element)
+      problems.push(`${name}: listed ${countKey(form, name)} own=${Object.hasOwn(form, name)} get=${describeValue(form[name])} ${describeDescriptor(desc)}`);
+  }
+  if (countKey(form, "0") !== 1 || form[0] !== action) problems.push(`index 0 listed ${countKey(form, "0")}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// The visibility walk asks each prototype for an own property ([[GetOwnProperty]]), so a Proxy
+// prototype's `getOwnPropertyDescriptor` trap runs during ownKeys. Here it makes the name an own
+// expando while that name is being checked (remove the control, define the property, put the
+// control back: a supported name cannot be defined directly without a named setter). The key
+// must still be listed exactly once, as the expando that now hides the named property.
+check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
+  const problems = [];
+  const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
+  const append = win.Element.prototype.append, remove = win.Element.prototype.remove;
+  const form = doc.createElement("form");
+  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
+  shadowed.name = key;
+  plain.name = plainKey;
+  form.append(shadowed, plain);
+  doc.body.append(form);
+  let armed = false, listing = false, fired = 0, hasQueries = 0;
+  const proto = new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      if (armed && property === key) {
+        armed = false;
+        fired++;
+        // Only the visibility walk is checked for `has`, not this callback's own operations.
+        listing = false;
+        remove.call(shadowed);
+        Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
+        append.call(form, shadowed);
+        listing = true;
+      }
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      if (listing) hasQueries++;
+      return Reflect.has(target, property);
+    },
+  });
+  Object.setPrototypeOf(form, proto);
+  armed = listing = true;
+  const keys = Reflect.ownKeys(form);
+  armed = listing = false;
+  if (fired !== 1) problems.push(`trap fired ${fired} times`);
+  if (hasQueries) problems.push(`has trap ran ${hasQueries} times`);
+  const count = keys.filter(k => k === key).length, desc = Object.getOwnPropertyDescriptor(form, key);
+  if (count !== 1) problems.push(`shadowed name listed ${count} times`);
+  if (!desc || desc.value !== "own" || !Object.hasOwn(form, key) || form[key] !== "own")
+    problems.push(`shadowed name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
+  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Visibility checks own properties before the prototype: a name hidden by an own expando must
+// never reach the prototype. The Proxy prototype throws if it is queried for that name, through
+// either `getOwnPropertyDescriptor` (the visibility walk) or `has`.
+check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
+  const problems = [];
+  const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
+  const form = doc.createElement("form");
+  doc.body.append(form);
+  // Defined while the name is not supported yet (no named setter), then the control is added.
+  Object.defineProperty(form, key, { configurable: true, writable: true, enumerable: true, value: "own" });
+  const shadowed = doc.createElement("input"), plain = doc.createElement("input");
+  shadowed.name = key;
+  plain.name = plainKey;
+  form.append(shadowed, plain);
+  let queried = 0, plainQueries = 0;
+  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
+      if (property === plainKey) plainQueries++;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      if (property === key) { queried++; throw new Error("prototype queried for an own name"); }
+      return Reflect.has(target, property);
+    },
+  }));
+  let keys;
+  try {
+    keys = Reflect.ownKeys(form);
+  } catch (error) {
+    return `ownKeys threw: ${(error && error.message) || error}`;
+  }
+  // The supported, not-own name does reach the trap: the short circuit is not vacuous.
+  if (plainQueries !== 1) problems.push(`plain name queried ${plainQueries} times`);
+  const count = keys.filter(k => k === key).length;
+  if (count !== 1) problems.push(`own name listed ${count} times`);
+  if (keys.filter(k => k === plainKey).length !== 1) problems.push("plain name not listed once");
+  try {
+    const desc = Object.getOwnPropertyDescriptor(form, key);
+    if (form[key] !== "own" || !Object.hasOwn(form, key) || !desc || desc.value !== "own" || desc.writable !== true)
+      problems.push(`own name: get=${describeValue(form[key])} ${describeDescriptor(desc)}`);
+  } catch (error) {
+    problems.push(`read threw: ${(error && error.message) || error}`);
+  }
+  if (queried) problems.push(`prototype queried ${queried} times`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// On an object with indexed properties an array-index key is never a named property
+// (LegacyPlatformObjectGetOwnProperty ignores named properties for it), so a control named "0"
+// must not be listed again next to index 0 (V8 rejects duplicate proxy keys with a TypeError),
+// and an out-of-range index name is not an own key at all. Non-canonical numeric strings are
+// not array indices and stay named properties. Index names never reach the prototype.
+check("HTMLFormElement ownKeys omits array-index names and keeps other numeric names", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+  const problems = [];
+  const names = ["0", "7", "00", "-1", "4294967295"];
+  const form = doc.createElement("form");
+  const inputs = names.map(name => {
+    const input = doc.createElement("input");
+    input.name = name;
+    form.append(input);
+    return input;
+  });
+  doc.body.append(form);
+  let indexQueries = 0, numericQueries = 0;
+  Object.setPrototypeOf(form, new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      if (property === "0" || property === "7") indexQueries++;
+      else if (property === "00" || property === "-1" || property === "4294967295") numericQueries++;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      if (property === "0" || property === "7") indexQueries++;
+      return Reflect.has(target, property);
+    },
+  }));
+  let keys;
+  try {
+    keys = Reflect.ownKeys(form);
+  } catch (error) {
+    return `ownKeys threw: ${(error && error.name) || error}`;
+  }
+  Object.setPrototypeOf(form, win.HTMLFormElement.prototype);
+  if (indexQueries) problems.push(`prototype queried ${indexQueries} times for index names`);
+  // Non-index numeric names are named properties: each one reaches the visibility walk once.
+  if (numericQueries !== 3) problems.push(`non-index numeric names queried ${numericQueries} times`);
+  if (new Set(keys).size !== keys.length) problems.push(`duplicate keys: ${keys.map(String).join()}`);
+  const count = key => keys.filter(k => k === key).length;
+  for (let i = 0; i < form.length; i++) {
+    const desc = Object.getOwnPropertyDescriptor(form, String(i));
+    if (count(String(i)) !== 1 || !desc || desc.value !== inputs[i] || desc.writable !== false)
+      problems.push(`index ${i}: listed ${count(String(i))} ${describeDescriptor(desc)}`);
+  }
+  if (count("7") !== 0 || Object.hasOwn(form, "7") || Object.getOwnPropertyDescriptor(form, "7") !== undefined || form[7] !== undefined)
+    problems.push(`out-of-range "7": listed ${count("7")} own=${Object.hasOwn(form, "7")} get=${describeValue(form[7])}`);
+  for (const name of ["00", "-1", "4294967295"]) {
+    const input = inputs[names.indexOf(name)];
+    if (count(name) !== 1 || !Object.hasOwn(form, name) || form[name] !== input)
+      problems.push(`${JSON.stringify(name)}: listed ${count(name)} get=${describeValue(form[name])}`);
+  }
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// Document has named but no indexed properties: every numeric name stays a visible own key.
+check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+  const problems = [];
+  for (const name of ["0", "7", "00", "4294967295"]) {
+    const img = doc.createElement("img");
+    img.name = name;
+    doc.body.append(img);
+    const listed = Reflect.ownKeys(doc).filter(k => k === name).length;
+    if (listed !== 1 || !Object.hasOwn(doc, name) || doc[name] !== img)
+      problems.push(`${JSON.stringify(name)}: listed ${listed} get=${describeValue(doc[name])}`);
+    img.remove();
+  }
+  return problems.length ? problems.join("; ") : true;
+}));
+// https://webidl.spec.whatwg.org/#legacy-platform-object-delete: deleting a visible named
+// property of an interface without a named deleter fails (false in sloppy code, TypeError in
+// strict code) and leaves the element in place; otherwise the ordinary own-property delete
+// applies. Array-index keys are not exercised here.
+const sloppyDelete = (target, key) => delete target[key];
+const strictDelete = (target, key) => { "use strict"; try { delete target[key]; return "no error"; } catch (error) { return error && error.name; } };
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+check("Document visible named properties cannot be deleted without a named deleter", () => withNamedFrame("<p>delete</p>", (win, doc, cleanup) => {
+  const proto = documentPrototype(win, doc);
+  const problems = [];
+  const key = "rovesDeleteNamed", overrideKey = "rovesDeleteOverride", expandoKey = "rovesDeleteExpando";
+  const symbol = Symbol("rovesDeleteSymbol");
+  const img = doc.createElement("img");
+  img.name = key;
+  doc.body.append(img);
+  const remains = (label, name, element) => {
+    const desc = Object.getOwnPropertyDescriptor(doc, name);
+    if (doc[name] !== element || !Object.hasOwn(doc, name) || !desc || desc.value !== element || !element.isConnected)
+      problems.push(`${label}: get=${describeValue(doc[name])} own=${Object.hasOwn(doc, name)} ${describeDescriptor(desc)} connected=${element.isConnected}`);
+  };
+  if (Reflect.deleteProperty(doc, key) !== false) problems.push("Reflect.deleteProperty did not return false");
+  if (sloppyDelete(doc, key) !== false) problems.push("sloppy delete did not return false");
+  const strict = strictDelete(doc, key);
+  if (strict !== "TypeError") problems.push(`strict delete: ${strict}`);
+  remains("after delete", key, img);
+  // [LegacyOverrideBuiltIns]: a prototype property does not hide the name, so it stays undeletable.
+  Object.defineProperty(proto, overrideKey, { configurable: true, get() { return "prototype"; } });
+  cleanup.push(() => delete proto[overrideKey]);
+  const overrideImg = doc.createElement("img");
+  overrideImg.name = overrideKey;
+  doc.body.append(overrideImg);
+  if (Reflect.deleteProperty(doc, overrideKey) !== false) problems.push("override name deleted");
+  remains("override", overrideKey, overrideImg);
+  if (typeof Object.getOwnPropertyDescriptor(proto, overrideKey)?.get !== "function") problems.push("prototype property removed");
+  // An own expando defined before the name became supported is deleted; the name then shows.
+  Object.defineProperty(doc, expandoKey, { configurable: true, writable: true, enumerable: true, value: "expando" });
+  cleanup.push(() => { if (Object.getOwnPropertyDescriptor(doc, expandoKey)?.value === "expando") delete doc[expandoKey]; });
+  const shadowed = doc.createElement("img");
+  shadowed.name = expandoKey;
+  doc.body.append(shadowed);
+  if (Reflect.deleteProperty(doc, expandoKey) !== true) problems.push("own expando not deleted");
+  remains("after expando delete", expandoKey, shadowed);
+  if (Reflect.deleteProperty(doc, expandoKey) !== false) problems.push("name visible after the expando deleted");
+  // The unforgeable location accessor is own and non-configurable.
+  if (Reflect.deleteProperty(doc, "location") !== false) problems.push("location deleted");
+  if (typeof Object.getOwnPropertyDescriptor(doc, "location")?.get !== "function" || doc.location !== win.location)
+    problems.push("location accessor changed");
+  // A missing name and an own symbol expando use the ordinary delete.
+  if (Reflect.deleteProperty(doc, "rovesDeleteMissing") !== true) problems.push("missing name delete failed");
+  doc[symbol] = "symbol";
+  if (Reflect.deleteProperty(doc, symbol) !== true || Object.hasOwn(doc, symbol)) problems.push("symbol expando not deleted");
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// HTMLFormElement has no [LegacyOverrideBuiltIns] and no named deleter: a name hidden by the
+// prototype is not visible, so its delete is the ordinary (no-op) one and the prototype stays.
+// Support is read from the supported names, not the named getter: the getter records past names
+// (https://html.spec.whatwg.org/multipage/#past-names-map), so a deletion attempt on a name never
+// read must not keep it reachable after the control is renamed. A real read still does.
+check("HTMLFormElement deletes only hidden named properties and records no read", () => withNamedFrame("<p>form delete</p>", (win, doc, cleanup) => {
+  const problems = [];
+  const key = "rovesFormDeleteHidden";
+  const proto = win.HTMLFormElement.prototype;
+  const getter = () => "prototype";
+  Object.defineProperty(proto, key, { configurable: true, get: getter });
+  cleanup.push(() => delete proto[key]);
+  const form = doc.createElement("form");
+  const hidden = doc.createElement("input");
+  hidden.name = key;
+  form.append(hidden);
+  doc.body.append(form);
+  if (Reflect.deleteProperty(form, key) !== true) problems.push("hidden name delete returned false");
+  if (Object.getOwnPropertyDescriptor(proto, key)?.get !== getter || form[key] !== "prototype")
+    problems.push(`prototype changed: ${describeValue(form[key])}`);
+  if (!hidden.isConnected || hidden.form !== form) problems.push("hidden control removed");
+  delete proto[key];
+  if (Reflect.deleteProperty(form, key) !== false) problems.push("visible name deleted");
+  if (form[key] !== hidden || !Object.hasOwn(form, key)) problems.push(`visible name: ${describeValue(form[key])}`);
+  // Null prototype: nothing hides the name.
+  const nullForm = doc.createElement("form");
+  const action = doc.createElement("input");
+  action.name = "action";
+  nullForm.append(action);
+  doc.body.append(nullForm);
+  Object.setPrototypeOf(nullForm, null);
+  if (Reflect.deleteProperty(nullForm, "action") !== false) problems.push("null prototype: visible name deleted");
+  if (Reflect.deleteProperty(nullForm, "rovesFormDeleteMissing") !== true) problems.push("null prototype: missing name delete failed");
+  if (nullForm.action !== action) problems.push(`null prototype: ${describeValue(nullForm.action)}`);
+  // Past names: a deletion attempt on a never-read name, then a rename.
+  const attempted = doc.createElement("form"), attemptedInput = doc.createElement("input");
+  attemptedInput.name = "rovesPastAttempted";
+  attempted.append(attemptedInput);
+  doc.body.append(attempted);
+  if (Reflect.deleteProperty(attempted, "rovesPastAttempted") !== false) problems.push("past-name form: visible name deleted");
+  attemptedInput.name = "rovesPastRenamed";
+  if (attempted.rovesPastAttempted !== undefined || "rovesPastAttempted" in attempted || Reflect.ownKeys(attempted).includes("rovesPastAttempted"))
+    problems.push(`deletion attempt kept the old name: ${describeValue(attempted.rovesPastAttempted)}`);
+  if (attempted.rovesPastRenamed !== attemptedInput) problems.push("renamed control not reachable");
+  // Control: a real read registers the past name, which survives the rename.
+  const read = doc.createElement("form"), readInput = doc.createElement("input");
+  readInput.name = "rovesPastRead";
+  read.append(readInput);
+  doc.body.append(read);
+  if (read.rovesPastRead !== readInput) problems.push("read form: name not readable");
+  readInput.name = "rovesPastReadRenamed";
+  if (read.rovesPastRead !== readInput) problems.push(`read form: past name not kept (${describeValue(read.rovesPastRead)})`);
+  // Prototype callbacks: own properties and supported names are checked first, so a Proxy
+  // prototype's `getOwnPropertyDescriptor` trap runs once and only for a supported, not-own name;
+  // its exception propagates out of the delete. The `has` trap never runs.
+  const trapped = doc.createElement("form");
+  doc.body.append(trapped);
+  const ownKey = "rovesDeleteTrapOwn", namedKey = "rovesDeleteTrapNamed", throwKey = "rovesDeleteTrapThrow";
+  // Defined before the name is supported (no named setter), then the control is added.
+  Object.defineProperty(trapped, ownKey, { configurable: true, writable: true, enumerable: true, value: "own" });
+  for (const name of [ownKey, namedKey, throwKey]) {
+    const input = doc.createElement("input");
+    input.name = name;
+    trapped.append(input);
+  }
+  const queries = [], hasQueries = [], thrown = new Error("rovesDeleteTrapThrown");
+  Object.setPrototypeOf(trapped, new Proxy(win.HTMLFormElement.prototype, {
+    getOwnPropertyDescriptor(target, property) {
+      queries.push(property);
+      if (property === throwKey) throw thrown;
+      return Reflect.getOwnPropertyDescriptor(target, property);
+    },
+    has(target, property) {
+      hasQueries.push(property);
+      return Reflect.has(target, property);
+    },
+  }));
+  if (Reflect.deleteProperty(trapped, ownKey) !== true) problems.push("trap form: own expando not deleted");
+  if (Reflect.deleteProperty(trapped, "rovesDeleteTrapMissing") !== true) problems.push("trap form: missing name delete failed");
+  if (queries.length !== 0) problems.push(`trap form: prototype queried for own/unsupported names: ${queries.join(",")}`);
+  if (Reflect.deleteProperty(trapped, namedKey) !== false) problems.push("trap form: visible name deleted");
+  if (queries.join(",") !== namedKey) problems.push(`trap form: supported name queries: ${queries.join(",")}`);
+  let caught = "no error";
+  try { Reflect.deleteProperty(trapped, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`trap form: descriptor exception not propagated: ${describeValue(caught)}`);
+  if (queries.join(",") !== `${namedKey},${throwKey}`) problems.push(`trap form: queries after throw: ${queries.join(",")}`);
+  if (hasQueries.length) problems.push(`trap form: has trap ran for ${hasQueries.map(String).join(",")}`);
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// https://webidl.spec.whatwg.org/#dfn-named-property-visibility walks the prototype chain with
+// [[GetPrototypeOf]] and asks each prototype whether it has an *own* property ([[GetOwnProperty]]),
+// so a Proxy on the chain answers through `getOwnPropertyDescriptor`/`getPrototypeOf`, never
+// `has`. Any own descriptor hides the name, including a data property whose value is undefined
+// and an accessor (its getter is not called); a property further up the chain hides it too; a
+// null prototype ends the walk. Trap exceptions propagate unchanged. `has` and
+// `getOwnPropertyDescriptor` deliberately disagree on two names so that the trap actually
+// consulted decides the result. Only delete, hasOwn, getOwnPropertyDescriptor and ownKeys are
+// used on the form: a [[Get]] would consult the prototype on its own (get semantics).
+check("HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor", () => withNamedFrame("<p>visibility</p>", (win, doc) => {
+  const problems = [];
+  const undefinedKey = "rovesVisUndefined", accessorKey = "rovesVisAccessor", deepKey = "rovesVisDeep";
+  const plainKey = "rovesVisPlain", hasOnlyKey = "rovesVisHasOnly", descriptorOnlyKey = "rovesVisDescriptorOnly";
+  const throwKey = "rovesVisThrow";
+  const names = [undefinedKey, accessorKey, deepKey, plainKey, hasOnlyKey, descriptorOnlyKey, throwKey];
+  const form = doc.createElement("form");
+  const inputs = {};
+  for (const name of names) {
+    const input = doc.createElement("input");
+    input.name = name;
+    form.append(input);
+    inputs[name] = input;
+  }
+  doc.body.append(form);
+  let getterCalls = 0;
+  // form -> Proxy(middle) -> deep -> HTMLFormElement.prototype -> ...
+  const deep = Object.create(win.HTMLFormElement.prototype, {
+    [deepKey]: { configurable: true, writable: true, value: "deep" },
+  });
+  const middle = Object.create(deep, {
+    [undefinedKey]: { configurable: true, writable: true, value: undefined },
+    [accessorKey]: { configurable: true, get() { getterCalls++; return "getter"; } },
+  });
+  const queries = [], hasQueries = [], protoThrown = new Error("rovesVisProtoThrown"), thrown = new Error("rovesVisThrown");
+  let protoCalls = 0, throwArmed = false, protoThrowArmed = false;
+  const handler = () => ({
+    getOwnPropertyDescriptor(t, property) {
+      queries.push(property);
+      if (throwArmed && property === throwKey) throw thrown;
+      // Reported own by this trap only: `has` says it is absent.
+      if (property === descriptorOnlyKey) return { configurable: true, writable: true, enumerable: true, value: "descriptor" };
+      return Reflect.getOwnPropertyDescriptor(t, property);
+    },
+    getPrototypeOf(t) {
+      protoCalls++;
+      if (protoThrowArmed) throw protoThrown;
+      return Reflect.getPrototypeOf(t);
+    },
+    has(t, property) {
+      hasQueries.push(property);
+      // Reported present by this trap only: `getOwnPropertyDescriptor` says it is absent.
+      if (property === hasOnlyKey) return true;
+      if (property === descriptorOnlyKey) return false;
+      return Reflect.has(t, property);
+    },
+  });
+  Object.setPrototypeOf(form, new Proxy(middle, handler()));
+  const reset = () => { queries.length = 0; hasQueries.length = 0; protoCalls = 0; };
+  const expectWalk = (label, expectedQueries, expectedProtoCalls) => {
+    if (queries.join(",") !== expectedQueries.join(",")) problems.push(`${label}: descriptor queries [${queries.map(String).join(",")}]`);
+    if (protoCalls !== expectedProtoCalls) problems.push(`${label}: getPrototypeOf ran ${protoCalls} times`);
+  };
+  // Delete: own and unsupported names never reach the prototype; each supported name runs one
+  // walk. getPrototypeOf runs only when the Proxy itself has no own property.
+  const hidden = [[undefinedKey, 0], [accessorKey, 0], [deepKey, 1], [descriptorOnlyKey, 0]];
+  const visible = [plainKey, hasOnlyKey];
+  for (const [name, expectedProtoCalls] of hidden) {
+    reset();
+    if (Reflect.deleteProperty(form, name) !== true) problems.push(`${name}: hidden name delete returned false`);
+    expectWalk(`delete ${name}`, [name], expectedProtoCalls);
+  }
+  for (const name of visible) {
+    reset();
+    if (Reflect.deleteProperty(form, name) !== false) problems.push(`${name}: visible name deleted`);
+    expectWalk(`delete ${name}`, [name], 1);
+  }
+  reset();
+  if (Reflect.deleteProperty(form, "rovesVisMissing") !== true) problems.push("missing name delete failed");
+  expectWalk("delete missing", [], 0);
+  // The prototype chain is unchanged by those deletes.
+  if (!Object.hasOwn(deep, deepKey) || !Object.hasOwn(middle, undefinedKey) || !Object.hasOwn(middle, accessorKey))
+    problems.push("prototype property removed");
+  // Exceptions from either trap propagate unchanged, after exactly the queries made so far.
+  reset();
+  throwArmed = true;
+  let caught = "no error";
+  try { Reflect.deleteProperty(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`delete: descriptor exception not propagated: ${describeValue(caught)}`);
+  expectWalk("delete throw", [throwKey], 0);
+  caught = "no error";
+  try { Object.hasOwn(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`hasOwn: descriptor exception not propagated: ${describeValue(caught)}`);
+  caught = "no error";
+  try { Object.getOwnPropertyDescriptor(form, throwKey); } catch (error) { caught = error; }
+  if (caught !== thrown) problems.push(`getOwnPropertyDescriptor: descriptor exception not propagated: ${describeValue(caught)}`);
+  throwArmed = false;
+  reset();
+  protoThrowArmed = true;
+  caught = "no error";
+  try { Reflect.deleteProperty(form, plainKey); } catch (error) { caught = error; }
+  protoThrowArmed = false;
+  if (caught !== protoThrown) problems.push(`delete: getPrototypeOf exception not propagated: ${describeValue(caught)}`);
+  expectWalk("delete getPrototypeOf throw", [plainKey], 1);
+  // ownKeys: one walk per supported, not-own name; the visible ones are listed once.
+  reset();
+  let keys = [];
+  try { keys = Reflect.ownKeys(form); } catch (error) { problems.push(`ownKeys threw: ${(error && error.message) || error}`); }
+  const sortedQueries = queries.map(String).sort().join(","), sortedNames = [...names].sort().join(",");
+  if (sortedQueries !== sortedNames) problems.push(`ownKeys: descriptor queries [${queries.map(String).join(",")}]`);
+  // Not own on the Proxy: deepKey, plainKey, hasOnlyKey and throwKey (unarmed).
+  if (protoCalls !== 4) problems.push(`ownKeys: getPrototypeOf ran ${protoCalls} times`);
+  for (const name of names) {
+    const expected = visible.includes(name) || name === throwKey ? 1 : 0;
+    const count = keys.filter(k => k === name).length;
+    if (count !== expected) problems.push(`ownKeys: ${name} listed ${count} times`);
+  }
+  // hasOwn and getOwnPropertyDescriptor agree with delete and ownKeys.
+  for (const [name] of hidden) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (Object.hasOwn(form, name) || desc !== undefined) problems.push(`${name}: hidden name own, ${describeDescriptor(desc)}`);
+  }
+  for (const name of visible) {
+    const desc = Object.getOwnPropertyDescriptor(form, name);
+    if (!Object.hasOwn(form, name) || !desc || desc.value !== inputs[name]) problems.push(`${name}: visible name ${describeDescriptor(desc)}`);
+  }
+  if (getterCalls) problems.push(`prototype getter called ${getterCalls} times`);
+  if (hasQueries.length) problems.push(`has trap ran for ${hasQueries.map(String).join(",")}`);
+  // A Proxy whose own prototype is null ends the walk: the name is visible.
+  const nullForm = doc.createElement("form"), nullInput = doc.createElement("input");
+  nullInput.name = plainKey;
+  nullForm.append(nullInput);
+  doc.body.append(nullForm);
+  Object.setPrototypeOf(nullForm, new Proxy(Object.create(null), handler()));
+  reset();
+  if (Reflect.deleteProperty(nullForm, plainKey) !== false) problems.push("null-prototype Proxy: visible name deleted");
+  expectWalk("null-prototype Proxy", [plainKey], 1);
+  if (!Object.hasOwn(nullForm, plainKey) || hasQueries.length) problems.push("null-prototype Proxy: name not visible or has trap ran");
+  return problems.length ? problems.join("; ") : true;
+}));
+// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
+// DOMStringMap keeps its named deleter: deleting a data property removes the attribute.
+check("DOMStringMap named deleter removes the data attribute", () => {
+  const element = document.createElement("div");
+  element.setAttribute("data-roves-delete", "value");
+  const map = element.dataset;
+  if (Reflect.deleteProperty(map, "rovesDelete") !== true) return "delete returned false";
+  if (element.hasAttribute("data-roves-delete") || Object.hasOwn(map, "rovesDelete")) return "attribute kept";
+  return Reflect.deleteProperty(map, "rovesDeleteMissing") === true ? true : "missing name delete failed";
+});
+finish();
+</script>
+</body></html>

@@ -20,6 +20,7 @@ use stylo_dom::ElementState;
 
 use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::HTMLAreaElementBinding::HTMLAreaElementMethods;
+use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
@@ -531,9 +532,9 @@ impl Activatable for HTMLAreaElement {
     fn activation_behavior(
         &self,
         cx: &mut js::context::JSContext,
-        _event: &Event,
+        event: &Event,
         _target: &EventTarget,
     ) {
-        follow_hyperlink(cx, self.as_element(), self.relations.get(), None);
+        follow_hyperlink(cx, self.as_element(), self.relations.get(), None, event.IsTrusted());
     }
 }

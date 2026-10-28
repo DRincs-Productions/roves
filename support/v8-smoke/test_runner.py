@@ -76,9 +76,34 @@ class ResultsTests(unittest.TestCase):
 
 
 def page_scripts(page):
-    # Inline page scripts open and close on their own lines; srcdoc strings hold inline tags.
-    text = (HERE / page).read_text(encoding='utf-8')
-    return re.findall(r'^<script>\n(.*?)^</script>$', text, re.S | re.M)
+    # Use the standard HTML parser so nonce/type attributes and head/body placement
+    # do not silently hide an inline check from the required-check validator.
+    from html.parser import HTMLParser
+
+    class Scripts(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.active = False
+            self.parts = []
+            self.current = []
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "script":
+                self.active = "src" not in dict(attrs)
+                self.current = []
+
+        def handle_data(self, data):
+            if self.active:
+                self.current.append(data)
+
+        def handle_endtag(self, tag):
+            if tag == "script" and self.active:
+                self.parts.append("".join(self.current))
+                self.active = False
+
+    parser = Scripts()
+    parser.feed((HERE / page).read_text(encoding="utf-8"))
+    return parser.parts
 
 
 class EventsPageTests(unittest.TestCase):
@@ -314,7 +339,7 @@ class WorkerFifoCheckTests(unittest.TestCase):
                                  validate('stress.html', '\n'.join(lines)))
 
 
-ORIGIN_CHECK = REQUIRED_CHECKS['events.html'][0]
+ORIGIN_CHECK = "an iframe keeps its WindowProxy across origin changes and back"
 # Mock iframe for the origin-change check: each srcdoc navigation runs the child script in a new
 # Node vm context one task later; a sandbox without allow-same-origin gives the document an
 # opaque origin, so the held proxy then exposes only the cross-origin allowlist and throws a
@@ -443,7 +468,7 @@ class OriginCheckTests(unittest.TestCase):
     STRATEGIES = ('shared', 'fresh')
 
     def run_check(self, fault='', strategy='fresh'):
-        result = run_origin_check(registered_check('events.html', ORIGIN_CHECK), fault, strategy)
+        result = run_origin_check(registered_check('legacy-multidocument/events.html', ORIGIN_CHECK), fault, strategy)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         return result.stdout.split('\n')
 
@@ -477,8 +502,8 @@ class OriginCheckTests(unittest.TestCase):
                     self.assertTrue(validate('events.html', '\n'.join(lines[:2])))
 
 
-def gc_page_script():
-    page = (HERE / 'gc-lifecycle.html').read_text(encoding='utf-8')
+def gc_page_script(name="gc-lifecycle.html"):
+    page = (HERE / name).read_text(encoding="utf-8")
     return page.split('<script>', 1)[1].split('</script>', 1)[0]
 
 
@@ -583,7 +608,7 @@ class GcPageTests(unittest.TestCase):
         # report the missing API, move on to the cleanup check (which fails on the missing Image)
         # and report one result. A missing entry function throws before any marker.
         after = r'''
-const entries = ["main", "checkCleanupEntrySettings", "reportRemovedFrames"];
+const entries = ["main", "checkCleanupEntrySettings", "reportSingleDocumentLifetime"];
 lines.push("entries " + entries.map(name => typeof context[name]).join(" "));
 process.stdout.write(lines.join("\n"));
 '''
@@ -598,7 +623,7 @@ process.stdout.write(lines.join("\n"));
                           'exception ReferenceError Image is not defined'], results)
 
     def test_main_runs_both_frame_groups(self):
-        main = gc_page_script().split('async function main() {', 1)[1].split('\n}\n', 1)[0]
+        main = gc_page_script("legacy-multidocument/gc-lifecycle.html").split('async function main() {', 1)[1].split('\n}\n', 1)[0]
         self.assertLess(main.index('await checkModuleOwners();'), main.index('await checkPlainFrames();'))
         self.assertLess(main.index('await checkPlainFrames();'), main.index('checkKept("retained nodes final");'))
 
@@ -606,7 +631,7 @@ process.stdout.write(lines.join("\n"));
     def test_frame_groups_report(self):
         # Both groups load two frames through one listener pair each (once) and a bounded
         # timeout, keep only WeakRefs and report per-group counts. Collection is not observed.
-        result = run_page_in_node(gc_page_script(), FRAME_MOCK, FRAME_GROUPS_RUN)
+        result = run_page_in_node(gc_page_script("legacy-multidocument/gc-lifecycle.html"), FRAME_MOCK, FRAME_GROUPS_RUN)
         self.assertEqual('', result.stderr)
         lines = result.stdout.splitlines()
         self.assertNotIn('thrown', result.stdout)
@@ -616,7 +641,7 @@ process.stdout.write(lines.join("\n"));
 
     @unittest.skipUnless(shutil.which('node'), 'needs Node')
     def test_frame_group_checks_catch_omissions(self):
-        script = gc_page_script()
+        script = gc_page_script("legacy-multidocument/gc-lifecycle.html")
         mutations = (
             # The no-module group no longer records or removes its frames.
             ('removeFrames(removedFrames.plain, frames);', '',
@@ -726,6 +751,44 @@ class FrameRetentionPageTests(unittest.TestCase):
                 self.assertEqual(1, script.count(original))
                 result = run_retention_page(script.replace(original, replacement))
                 self.assertNotIn(missing, result.stdout.splitlines(), result.stdout)
+
+
+@unittest.skipUnless(shutil.which("node"), "needs Node")
+class DocumentRetentionPageTests(unittest.TestCase):
+    """Exercise the scene protocol with a mock; this does not simulate garbage collection."""
+
+    def test_eight_collections_and_retained_control(self):
+        script = page_scripts("document-retention.html")[0]
+        mock = r'''
+let collections = 0;
+context.WeakRef = WeakRef;
+context.TestUtils = { gc: async () => { collections++; } };
+const control = {};
+context.document = {
+  getElementById: () => control,
+  createElement: () => ({ isConnected: false, addEventListener() {}, remove() { this.isConnected = false; } }),
+  body: { append(node) { node.isConnected = true; } },
+};
+'''
+        after = 'lines.push("collections " + collections); process.stdout.write(lines.join("\\n"));'
+        result = run_page_in_node(script, mock, after)
+        self.assertEqual('', result.stderr)
+        lines = result.stdout.splitlines()
+        for marker in ('collections 8', 'ROVES-V8 document-retention node created true removed true',
+                       'ROVES-V8 document-retention retained control true',
+                       'ROVES-V8 document-retention result pass'):
+            self.assertIn(marker, lines)
+        self.assertTrue(any(line.startswith('ROVES-V8 document-retention diagnostic released element ') for line in lines))
+
+    def test_runner_requires_retained_control(self):
+        runner = (HERE / "run.sh").read_text(encoding="utf-8")
+        line = next(line for line in runner.splitlines() if line.strip().startswith('for expected in "ROVES-V8 document-retention'))
+        self.assertIn('"ROVES-V8 document-retention retained control true"', line)
+
+    def test_missing_gc_reports_failure(self):
+        script = page_scripts("document-retention.html")[0]
+        result = run_page_in_node(script)
+        self.assertIn('ROVES-V8 document-retention result fail exception Error TestUtils.gc unavailable', result.stdout)
 
 
 class HeapSnapshotCheckTests(unittest.TestCase):

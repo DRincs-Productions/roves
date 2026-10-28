@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="script-src 'nonce-roves-module' 'unsafe-eval'; object-src 'none'; base-uri 'none'">
+<title>Module import fetch options and CSP</title>
+<script nonce="roves-module" src="harness.js"></script>
+<body>
+<script nonce="roves-module">
+check("classic script nonce authorizes its dynamic module fetch", async () => {
+  // Distinct URLs prevent a successful direct import from hiding lost eval/Function metadata.
+  const modules = await Promise.all([
+    import("./single-document-fixtures/value.mjs?caller=direct"),
+    eval('import("./single-document-fixtures/value.mjs?caller=eval")'),
+    new Function('return import("./single-document-fixtures/value.mjs?caller=function")')()
+  ]);
+  return modules.every(namespace => namespace.value === 42);
+});
+check("an unnonced classic script remains blocked", () => new Promise(resolve => {
+  globalThis.unnoncedClassicRan = false;
+  const script = document.createElement("script");
+  script.src = "single-document-fixtures/unnonced-classic.js";
+  script.onload = () => { script.remove(); resolve("unnonced script loaded"); };
+  script.onerror = () => { script.remove(); resolve(unnoncedClassicRan === false); };
+  document.head.append(script);
+}));
+finish();
+</script>

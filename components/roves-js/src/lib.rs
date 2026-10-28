@@ -34,7 +34,7 @@ mod runtime_impl;
 mod script_impl;
 mod script_metadata;
 mod values_impl;
-mod modules_impl;
+mod deno_impl;
 mod structured_clone_impl;
 mod typedarray_impl;
 pub mod typedarray;
@@ -42,6 +42,16 @@ mod realm_impl;
 pub mod realm;
 pub mod panic;
 pub mod rust;
+
+/// ES modules and the module/async event loop, owned by deno_core (see `deno_impl`): the
+/// embedder supplies resolution and fetching; scripts get no Deno API.
+pub mod modules {
+    pub use crate::deno_impl::{
+        FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleId,
+        clear_host_module_loader, evaluate_module, has_host_module_loader, install_host_module_loader,
+        load_module_graph, module_namespace, oneshot, poll_module_event_loop,
+    };
+}
 
 pub use crate::jsval::{JS_ARGV, JS_CALLEE};
 pub use crate::object::{

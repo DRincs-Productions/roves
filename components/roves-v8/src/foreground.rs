@@ -329,7 +329,7 @@ mod tests {
     #[test]
     fn removed_registration_reclaims_its_delayed_tasks() {
         // A real delayed V8 task: the timeout of an `Atomics.waitAsync` that never resolves.
-        crate::initialize_engine();
+        crate::initialize_for_tests();
         let mut isolate = v8::Isolate::new(Default::default());
         let key = isolate_key(&isolate);
         set_handler(key, Some(handler()));
@@ -386,7 +386,7 @@ mod tests {
             }
         }
 
-        crate::initialize_engine();
+        crate::initialize_for_tests();
         let mut isolate = v8::Isolate::new(Default::default());
         let key = isolate_key(&isolate);
         let task = real_task(&mut isolate);

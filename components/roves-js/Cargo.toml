@@ -15,8 +15,16 @@ doctest = false
 [dependencies]
 roves-v8 = { path = "../roves-v8" }
 # roves-js is the engine layer (as mozjs is for SpiderMonkey), so it uses V8 directly; no V8
-# type may appear in the DOM or shell APIs built on top of it.
-v8 = "=152.2.0"
+# type may appear in the DOM or shell APIs built on top of it. The same crate deno_core links
+# (deno_v8 0.5.0 -> v8 150.4.0): one V8 in the binary.
+v8 = "=150.4.0"
+# Owns each runtime's isolate, its single script context, the ES module graph and the
+# module/async event loop (see `rust::Runtime` and `deno_impl`). Default features: the V8
+# backend, `reactor-tokio` (required by its realm code) and the prebuilt archives' libc++.
+# No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
+deno_core = "=0.413.0"
+# The current-thread reactor deno_core's futures and blocking static module loads run on.
+tokio = { version = "1", features = ["rt"] }
 # Used by the conversions ported from mozjs.
 encoding_rs = "0.8.35"
 libc = "0.2.189"

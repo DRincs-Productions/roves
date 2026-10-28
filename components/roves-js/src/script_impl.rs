@@ -90,11 +90,10 @@ impl HostPrivate {
     }
 }
 
-/// Balance embedder-owned private references before the live runtime is dismantled:
-/// source metadata (classic scripts and source modules) once, then JSON module privates.
+/// Balance embedder-owned private references before the live runtime is dismantled: source
+/// metadata (classic scripts) once. Modules carry no embedder private (deno_core owns them).
 pub(crate) fn release_runtime_privates(cx: &JSContext) {
     cx.scripts.metadata.release_all();
-    crate::modules_impl::release_json_privates(cx);
 }
 
 pub(crate) fn initialize_metadata(cx: &JSContext, scope: &mut v8::PinScope) -> Option<()> {
@@ -121,22 +120,6 @@ pub(crate) fn register_source(scope: &mut v8::PinScope, script_id: i32, token: v
     JSContext::current().scripts.metadata.register(scope, script_id, token);
 }
 
-/// Anchors a new source module's record under its source's token (see `script_metadata`).
-pub(crate) fn anchor_source_module(scope: &mut v8::PinScope, script_id: i32, record: *mut std::ffi::c_void) -> Option<()> {
-    JSContext::current().scripts.metadata.anchor_module(scope, script_id, record)
-}
-
-/// Makes `namespace` keep a JSON module's `record`, or stop keeping it (see `modules_impl`).
-pub(crate) fn keep_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>, record: Option<*mut std::ffi::c_void>) -> Option<()> {
-    JSContext::current().scripts.metadata.keep_record(scope, namespace, record)
-}
-
-/// Test-only: the JSON module record `namespace` keeps, if any.
-#[cfg(test)]
-pub(crate) fn kept_module_record<'s>(scope: &mut v8::PinScope<'s, '_>, namespace: v8::Local<'s, v8::Value>) -> Option<*mut std::ffi::c_void> {
-    JSContext::current().scripts.metadata.kept_record(scope, namespace)
-}
-
 /// The host token in a source's host options (none for sources compiled without one).
 pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Local<'s, v8::Data>) -> Option<v8::Local<'s, v8::Symbol>> {
     if !options.is_fixed_array() {
@@ -149,13 +132,6 @@ pub(crate) fn source_token<'s>(scope: &mut v8::PinScope<'s, '_>, options: v8::Lo
     }
     let token: v8::Local<v8::Value> = options.get(scope, 0).into();
     v8::Local::<v8::Symbol>::try_from(token).ok()
-}
-
-/// A new private holder and a weak handle on its data (see `ScriptMetadata::new_holder`).
-pub(crate) fn new_private_holder<'s>(
-    scope: &mut v8::PinScope<'s, '_>,
-) -> Option<(v8::Local<'s, v8::Object>, v8::cppgc::WeakPersistent<crate::script_metadata::PrivateData>)> {
-    JSContext::current().scripts.metadata.new_holder(scope)
 }
 
 /// The private of the source whose host token is `token`; undefined if it has none.
@@ -259,7 +235,7 @@ pub(crate) fn compile_script<'s>(
         v8::script_compiler::CompileOptions::NoCompileOptions,
         v8::script_compiler::NoCacheReason::NoReason,
     )?;
-    register_source(scope, script.script_id(), token);
+    register_source(scope, roves_v8::compat::script_id(script), token);
     Some(script)
 }
 
@@ -433,7 +409,7 @@ pub unsafe fn CompileFunction(
 
 fn script_id(scope: &mut v8::PinScope, script: *mut JSScript) -> Option<i32> {
     // SAFETY: callers pass live script cells.
-    unsafe { crate::cell::cell_script(scope, script as *mut c_void) }.map(|script| script.script_id())
+    unsafe { crate::cell::cell_script(scope, script as *mut c_void) }.map(|script| roves_v8::compat::script_id(script))
 }
 
 pub unsafe fn SetScriptPrivate(script: *mut JSScript, value: *const JSVal) {

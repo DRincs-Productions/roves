@@ -1,3 +1,142 @@
+## 2026-10-28 - Consolidate the Deno single-document integration candidate (0403)
+
+Replace the old module graph/runtime ownership with deno_core0.413 and shared v8150.4,
+public C++ shims, Servo fetch/security metadata and one-document policy. Include queued
+preload completion, accepted JSON preload unavailability, internal-module boundary,
+worker/classic metadata corrections and expanded browser fixtures. Root and standalone
+locks are validated; Windows native110normal/109JITless and Python59/8skip pass. Patch0403
+replays81source paths on Windows and WSL after the reconstructed prior series; root
+metadata exceptions remain explicit. Full pristine replay and browser behavior await CI.
+
+Rewrite the current handoff and README/wiki to remove superseded no-go/no-op statuses.
+The code is a complete integration candidate, not a validated browser migration or a
+retention fix. SourceText, performance, visual notice and controlled OS handoff remain
+explicit verification work. Preserve the user's unrelated TODO line while adding only
+the requested JSON backlog. No bundle flag/input changes; action README tracks CI changes.
+
+## 2026-10-28 - Deny runtime-internal module namespaces before Deno cache lookup
+
+The adapter rejects ext/node/npm/jsr/deno URLs at graph entry, resolution/remapping and
+redirected source registration, and applies the same boundary to import.meta.resolve.
+Preserve TypeError classification for static resolution failures. Native tests cover
+static roots, dynamic imports and host remapping without reaching resource fetches.
+Full native suites pass110normal/109JITless before the final error-classification cleanup;
+rerun affected module tests after it. No Deno extension or package capability is exposed.
+
+## 2026-10-28 - Queue modulepreload completion events on the existing network task source
+
+HTMLLinkElement now uses queue_simple_event for modulepreload load/error, preserving
+asynchronous delivery even when JSON preload is immediately unavailable. The JSON
+fixture requires the error after insertion returns, plus normal typed-import behavior.
+Reuse Servo event tasks instead of a new callback queue; browser verification pending.
+
+## 2026-10-28 - Track JSON preload restoration as an explicit optimization backlog
+
+At the user's request, append a detailed TODO item while preserving the existing user
+edit. Explain useful overlap before a route/level, bandwidth and memory costs, the
+rejected root-coercion experiment, maintained-API constraints and acceptance tests.
+Align the migration handoff, README and wiki with the accepted unavailable/error behavior.
+A backlog-only addition requires no engine patch; the runtime change still needs its patch.
+
+## 2026-10-28 - Report unsupported JSON preload honestly under user authorization
+
+The user accepts temporarily unavailable JSON modulepreload. The adapter logs once and
+reports fetch_failed=true, which the existing link callback turns into error rather than
+load. A required browser fixture checks the error, a successful typed JSON import and
+rejection without type json. No JSON root coercion or privileged runtime API is introduced.
+
+## 2026-10-28 - Keep dynamic worker imports on the script fetch destination
+
+The module loader now uses Destination::Script for dynamic JavaScript imports, including
+classic workers, instead of reusing the worker startup destination. Static worker graph
+loads preserve their existing destination. Browser worker CSP coverage remains pending.
+
+## 2026-10-28 - Preserve classic source fetch options in dynamic imports
+
+The module resolver reads the existing scripted-caller private while import() is on the
+stack, then records inherited fetch options for the resolved URL before async fetching.
+This preserves nonce, credentials and referrer metadata for classic scripts sharing URLs.
+A real native regression verifies caller-private availability in Deno resolution; new
+module-csp smoke requires a nonced classic import and denies an unnonced classic element.
+Browser CSP execution remains pending; no new parser, graph or dependency is introduced.
+
+## 2026-10-28 - Require CORS enforcement for cross-origin module imports
+
+The smoke HTTP fixture provides allowed and denied cross-origin module responses.
+module-order requires the explicitly allowed module and rejects the response without
+ACAO with TypeError. Required-check registration prevents silent omission. Browser
+execution remains pending; these endpoints reuse the standard-library server.
+
+## 2026-10-28 - Add observable runtime module-pause scenarios
+
+module-order and the standard-library HTTP fixture now cover cold, warm and controlled
+slow runtime module insertion. Diagnostics record elapsed time and timer gaps; required
+checks await a subsequent timer tick and animation frame without a performance threshold.
+Browser execution remains pending. The attempted JSON side-module preload is rejected:
+its negative test accepts an untyped import, so it is isolated outside production sources.
+
+## 2026-10-28 - Preserve the module worker root request client and referrer
+
+The loader retains the caller RequestClient and Referrer for the initial worker module
+fetch, instead of reconstructing them from the new global. Descendant fetches still use
+the worker global and importing module base. Browser CSP/referrer coverage is pending;
+this correction must be included in the next candidate replay.
+
+## 2026-10-28 - Cancel queued static graphs during loader shutdown
+
+clear_module_loader now clears PENDING_GRAPHS before releasing the host loader, dropping
+queued callbacks and DOM roots while their runtime is still alive. Already queued graph
+tasks find no entry and do nothing. Browser shutdown verification is still required;
+this is not evidence that overall retention is resolved.
+
+## 2026-10-28 - Preserve importing module referrers in descendant fetches
+
+script_module.rs now passes the importing script base as the descendant fetch referrer,
+including the original HTML base for inline identities. Servo fetch continues to apply
+the inherited referrer policy. Network header browser verification remains pending; the
+previous candidate replay predates this correction and must be regenerated.
+
+## 2026-10-28 - Verify the candidate cutover source replay
+
+Collect49 tracked and27 new source paths into the unapproved candidate under target/task-0385.
+Windows dry-run and application succeed; all76 paths match after LF normalization, including
+removals. Root metadata/lock are excluded: this is not a full-tree replay or browser proof.
+The scratch tree now contains this candidate; do not blindly apply it again.
+
+## 2026-10-28 - Authorize a single Codex five-hour quota restart
+
+AGENTS and AGENT_WORKFLOW now require a live quota check at10% or less remaining in the
+five-hour window, an accurate saved handoff, and one thread retry at the reported reset
+plus two minutes. Disable after the attempt; no chained retries, invented reset time,
+weekly-limit bypass, model change or subscription-reset redemption. Patch0402 records
+this process-only addition; no new reminder is needed without an observed near-limit event.
+
+## 2026-10-28 - Release module error fixture timers and align the action CI note
+
+The module-order failure helper clears its timeout on settlement along with its event
+listener and script element. Align roves-action documentation with the broader engine
+V8 CI triggers and renamed document-retention snapshot. Browser execution and complete
+source replay remain pending with the cutover.
+
+## 2026-10-28 - Cover synthetic external hyperlink activation
+
+The pending single-document smoke now requires the game document to survive synthetic
+click() and dispatched mouse events on an external link. This fixture is not yet browser
+verified; a controlled real-click OS handoff test remains necessary. Source patch pending
+with the incomplete Deno cutover.
+
+## 2026-10-28 - Trigger V8 coverage for the full single-document integration
+
+The V8 workflow now runs when script, constellation, embedder, Servo or shell sources change,
+and names its snapshot artifact after the document-retention scene. These CI changes remain
+part of the incomplete Deno cutover; matching source patch and browser validation are pending.
+
+## 2026-10-28 - Require the retained DOM control in the pending snapshot smoke
+
+The single-document snapshot runner now requires its retained-control marker. Node tests
+exercise the scene protocol and missing-GC failure without claiming real collection; browser
+verification and the source patch remain pending with the incomplete Deno cutover.
+
 ## 2026-10-28 - Provide a standalone operational migration handoff and defer Claude
 
 Before further implementation, rewrite the current section of docs/V8_MIGRATION.md

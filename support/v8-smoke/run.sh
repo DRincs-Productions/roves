@@ -18,16 +18,16 @@ STATUS=0
 # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
 TOTALS=""
 HTTP_PORT=18765
-# Native heap snapshot settings reach only the dedicated frame-retention process (PAGE_ENV).
+# Native heap snapshot settings reach only the dedicated document-retention process (PAGE_ENV).
 unset ROVES_V8_HEAP_SNAPSHOT_PATH ROVES_V8_HEAP_SNAPSHOT_GC
 PAGE_ENV=()
 PAGE_ENV_COUNT=0
 HTTP_CROSS_ORIGIN_PORT=18766
 HTTP_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-$$.log"
-"$PYTHON" -m http.server "$HTTP_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_LOG" 2>&1 &
+"$PYTHON" "$DIR/http_server.py" "$HTTP_PORT" "$DIR" >"$HTTP_LOG" 2>&1 &
 HTTP_PID=$!
 HTTP_CROSS_ORIGIN_LOG="${TMPDIR:-/tmp}/roves-v8-smoke-http-cross-origin-$$.log"
-"$PYTHON" -m http.server "$HTTP_CROSS_ORIGIN_PORT" --bind 127.0.0.1 --directory "$DIR" >"$HTTP_CROSS_ORIGIN_LOG" 2>&1 &
+"$PYTHON" "$DIR/http_server.py" "$HTTP_CROSS_ORIGIN_PORT" "$DIR" >"$HTTP_CROSS_ORIGIN_LOG" 2>&1 &
 HTTP_CROSS_ORIGIN_PID=$!
 cleanup_http_server() {
   kill "$HTTP_PID" 2>/dev/null || true
@@ -91,8 +91,8 @@ run_page() {
 }
 
 run_suite() {
-  local page="$1" log="$2" seconds="${3:-60}"
-  run_page "$page" "$seconds" "$log" "" '^SUITE TOTAL '
+  local page="$1" log="$2" seconds="${3:-60}" url="${4:-}"
+  run_page "$page" "$seconds" "$log" "$url" '^SUITE TOTAL '
   # GitHub shows at most 10 annotations of a kind per step: one summary carries every failure.
   local total
   total=$(grep -a "^SUITE TOTAL " "$log" | head -1)
@@ -117,6 +117,18 @@ run_suite games.html games.log
 run_suite modules.html modules.log
 run_suite errors.html errors.log
 run_suite events.html events.log
+run_suite single-document.html single-document.log 60 "http://127.0.0.1:$HTTP_PORT/single-document.html"
+run_suite module-order.html module-order.log 60 "http://127.0.0.1:$HTTP_PORT/module-order.html"
+run_suite module-csp.html module-csp.log 60 "http://127.0.0.1:$HTTP_PORT/module-csp.html"
+# Each alias resolution order requires a fresh process; the active document is never reloaded.
+for first in Document HTMLDocument descriptor; do
+  run_suite document-interface-alias.html "document-interface-alias-$first.log" 30 "http://127.0.0.1:$HTTP_PORT/document-interface-alias.html?first=$first"
+done
+# Refused navigation/frame targets must not reach either HTTP fixture server.
+if grep -aFq 'blocked-single-document-target.html' "$HTTP_LOG" "$HTTP_CROSS_ORIGIN_LOG"; then
+  echo "::error::a blocked document operation fetched its target"
+  STATUS=1
+fi
 run_suite graphics.html graphics.log
 run_suite stress.html stress.log 240
 run_suite saves.html saves.log 120
@@ -130,10 +142,7 @@ if grep -aFxq 'ROVES-V8 class 2 {"a":[1,2]} true true' test.log; then echo "::no
 if grep -aFxq 'ROVES-V8 testutils default undefined' test.log; then echo "::notice::test.html: TestUtils hidden by default"; else echo "::error::test.html: TestUtils exposed without dom_testutils_enabled ($(grep -aF 'ROVES-V8 testutils ' test.log | tr '\n' ' '))"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 ordinary prototype mutation true' test.log; then echo "::notice::test.html: ordinary prototype mutation"; else echo "::error::test.html: ordinary prototype mutation failed"; STATUS=1; fi
 if grep -aFxq 'ROVES-V8 immutable Window prototype true true true true' test.log; then echo "::notice::test.html: immutable Window prototype"; else echo "::error::test.html: immutable Window prototype not confirmed"; STATUS=1; fi
-if grep -aFxq 'ROVES-V8 cross-origin WindowProxy prototype true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy prototype"; else echo "::error::test.html: cross-origin WindowProxy prototype not confirmed ($(grep -aF 'ROVES-V8 cross-origin iframe ' test.log | tr '\n' ' '))"; STATUS=1; fi
-if grep -aFxq 'ROVES-V8 cross-origin WindowProxy properties true true' test.log; then echo "::notice::test.html: cross-origin WindowProxy properties"; else echo "::error::test.html: cross-origin WindowProxy properties not confirmed ($(grep -aF 'ROVES-V8 cross-origin ' test.log | tr '\n' ' '))"; STATUS=1; fi
-if grep -aFq 'ROVES-V8 cross-origin iframe timeout' test.log; then echo "::error::test.html: cross-origin iframe did not load"; STATUS=1; fi
-if grep -aFq 'ROVES-V8 cross-origin iframe error' test.log; then echo "::error::test.html: cross-origin iframe load failed"; STATUS=1; fi
+if grep -aFxq 'ROVES-V8 cross-origin iframe refused true true' test.log; then echo "::notice::test.html: cross-origin iframe refused"; else echo "::error::test.html: cross-origin iframe created a child document"; STATUS=1; fi
 
 run_page csp.html 30 csp.log
 for expected in "ROVES-V8 csp eval EvalError" "ROVES-V8 csp function EvalError" "ROVES-V8 csp trusted eval 42" "ROVES-V8 csp trusted function 42" "ROVES-V8 csp trusted function guards true" "ROVES-V8 csp trusted function matrix true true true" "ROVES-V8 csp constructor graph true true true" "ROVES-V8 csp ordinary eval unchanged true" "ROVES-V8 csp attribute allowed true true"; do
@@ -186,10 +195,8 @@ else
   fi
 fi
 
-run_page nav1.html 30 nav.log
-for expected in "ROVES-V8 nav2 loaded nav2.html true second page" "ROVES-V8 nav1 pageshow persisted=false"; do
-  if grep -aFxq "$expected" nav.log; then echo "::notice::navigation: $expected"; else echo "::error::navigation: missing '$expected'"; STATUS=1; fi
-done
+# The former full-document navigation positives remain in legacy-multidocument/.
+# single-document.html now requires refusal plus functioning History/hash routes.
 
 # V8 flags are process-wide and fixed before the first isolate: the preference needs its own
 # fresh process. Wasm stays required in the normal pages above, so a build that is jitless
@@ -203,27 +210,16 @@ else
 fi
 
 # Servo's TestUtils.gc() is exposed only with dom_testutils_enabled (default false, checked
-# hidden in test.html), so it gets its own process. HTTP lets the page import a module and
-# its same-origin frames import the same module URL, each owning its own dynamic imports,
-# including those of direct eval code in that module. Two more frames never use modules; both
-# frame groups must be recorded and removed. Detached nodes whose listeners capture them must be
-# collected (also with an AbortSignal), while a kept node's listeners keep working; the same for
-# inline event handlers (IDL closures and compiled content attributes) and window's
-# onerror/onbeforeunload.
+# hidden in test.html), so it gets its own process. The single-document scene preserves
+# DOM/closure/handler/importer collection controls and module/eval/resolve behavior across GC.
+# The old removed-frame groups are archived, not claimed as passing under the new policy.
 run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc module owners left right" "ROVES-V8 gc module owners after collection left right" "ROVES-V8 gc eval module owners left right" "ROVES-V8 gc eval module owners after collection left right" "ROVES-V8 gc module resolve true" "ROVES-V8 gc module resolve after collection true" "ROVES-V8 gc removed frame group module elements 2 documents 2 globals 2" "ROVES-V8 gc no-module frames loaded true" "ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc result pass"; do
+for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
-# Whether removed frames are released is diagnostic only (not required yet), but each group
-# must report its released counts out of its two frames.
-for group in module no-module; do
-  diagnostic=$(grep -aE "^ROVES-V8 gc diagnostic removed frames released $group elements [0-9]+/2 documents [0-9]+/2 globals [0-9]+/2\$" gc-lifecycle.log | head -1)
-  if [ -n "$diagnostic" ]; then echo "::notice::gc-lifecycle.html: $diagnostic"; else STATUS=1; echo "::error::gc-lifecycle.html: missing removed frame diagnostic for $group ($(grep -aF 'ROVES-V8 gc diagnostic ' gc-lifecycle.log | tr '\n' ' '))"; fi
-done
-
 # Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
-# native V8 heap snapshot at the last of frame-retention.html's 8 explicit collections, for
-# reading the retainers of a removed blank frame. A requested snapshot must exist and be valid.
+# native V8 heap snapshot at the last of document-retention.html's 8 explicit collections, for
+# reading the retainers of detached DOM wrappers with a live control. A requested snapshot must exist and be valid.
 HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
 HEAP_SNAPSHOT_COLLECTION=8
 SNAPSHOT_LOGS=""
@@ -241,22 +237,22 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
   if [ "$snapshot_ok" -eq 1 ]; then
     PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=$HEAP_SNAPSHOT_COLLECTION")
     PAGE_ENV_COUNT=2
-    SNAPSHOT_LOGS="frame-retention.log"
-    run_page frame-retention.html 60 frame-retention.log "http://127.0.0.1:$HTTP_PORT/frame-retention.html" '^ROVES-V8 frame-retention result ' --pref dom_testutils_enabled=true
+    SNAPSHOT_LOGS="document-retention.log"
+    run_page document-retention.html 60 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
     PAGE_ENV=()
     PAGE_ENV_COUNT=0
-    for expected in "ROVES-V8 frame-retention api true" "ROVES-V8 frame-retention frame created true removed true" "ROVES-V8 frame-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 frame-retention result pass" "[roves-heap-snapshot] wrote " ; do
-      if grep -aFq "$expected" frame-retention.log; then echo "::notice::frame-retention.html: $(grep -aF "$expected" frame-retention.log | head -1)"; else snapshot_ok=0; echo "::error::frame-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 frame-retention ' -e '[roves-heap-snapshot]' frame-retention.log | tr '\n' ' '))"; fi
+    for expected in "ROVES-V8 document-retention api true" "ROVES-V8 document-retention node created true removed true" "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true" "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote " ; do
+      if grep -aFq "$expected" document-retention.log; then echo "::notice::document-retention.html: $(grep -aF "$expected" document-retention.log | head -1)"; else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
     done
-    if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" frame-retention.log; then
-      snapshot_ok=0; echo "::error::frame-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
+    if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" document-retention.log; then
+      snapshot_ok=0; echo "::error::document-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
     fi
     # Released counts are diagnostic only, but must be reported.
-    diagnostic=$(grep -aE '^ROVES-V8 frame-retention diagnostic released element (true|false) document (true|false) probe (true|false)$' frame-retention.log | head -1)
-    if [ -n "$diagnostic" ]; then echo "::notice::frame-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::frame-retention.html: missing released diagnostic"; fi
+    diagnostic=$(grep -aE '^ROVES-V8 document-retention diagnostic released element (true|false) probe (true|false)$' document-retention.log | head -1)
+    if [ -n "$diagnostic" ]; then echo "::notice::document-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::document-retention.html: missing released diagnostic"; fi
     if [ ! -s "$HEAP_SNAPSHOT" ]; then
-      snapshot_ok=0; echo "::error::frame-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
-    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesFrameRetentionProbe roves-frame-retention-probe; then
+      snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
+    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesDocumentRetentionProbe roves-document-retention-probe; then
       snapshot_ok=0
     fi
   fi
@@ -266,7 +262,7 @@ fi
 if [ "$STATUS" -ne 0 ]; then
   # Marker summaries alone hide exceptions thrown between setup and a callback's result.
   # Keep bounded raw diagnostics as ordinary log lines, outside GitHub's annotation quota.
-  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log csp-attr-no-unsafe-hashes.log wasm-csp.log nav.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
+  for page_log in test.log csp.log csp-attr.log csp-attr-hash.log csp-attr-fallback.log csp-attr-no-unsafe-hashes.log wasm-csp.log pref-jitless.log gc-lifecycle.log $SNAPSHOT_LOGS; do
     echo "V8 smoke diagnostics: $page_log"
     tail -80 "$page_log"
   done

@@ -16,6 +16,8 @@ pub enum ConstellationToEmbedderMsg {
     /// Required because the constellation can have pending calls to make
     /// (e.g. SetFrameTree) at the time that we send it an ExitMsg.
     ShutdownComplete,
+    /// A native single-document product policy refused an operation.
+    GameDocumentOperationBlocked(WebViewId, embedder_traits::GameDocumentOperation),
     /// Report a complete sampled profile
     ReportProfile(Vec<u8>),
     /// All `WebView`s lost focus for keyboard events.

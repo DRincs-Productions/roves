@@ -9,6 +9,8 @@
 //! on other parts of Servo.
 
 mod from_script_message;
+mod game_document_policy;
+pub use game_document_policy::{GameDocumentOperation, report_blocked_document_operation};
 mod structured_data;
 
 use std::collections::VecDeque;

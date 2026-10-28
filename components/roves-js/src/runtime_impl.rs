@@ -302,16 +302,17 @@ fn isolate<'i>(cx: *mut JSContext) -> &'i mut v8::Isolate {
     unsafe { &mut *(*cx).isolate }
 }
 
-/// Configures a new runtime's isolate for the JSAPI's model.
+/// Configures deno_core's new isolate for the JSAPI's model. deno_core keeps its module host
+/// callbacks (dynamic `import()`, `import.meta`) and its explicit microtask policy; promise
+/// rejections go to the embedder's tracker instead of deno_core's (whose unhandled rejections
+/// would end its event loop): see `deno_impl`.
 pub(crate) fn configure_isolate(isolate: &mut v8::Isolate) {
     isolate.set_microtasks_policy(v8::MicrotasksPolicy::Explicit);
-    isolate.set_promise_hook(promise_hook);
     isolate.set_promise_reject_callback(promise_reject_callback);
     let full = v8::GCType::kGCTypeMarkSweepCompact;
     isolate.add_gc_prologue_callback(gc_prologue, std::ptr::null_mut(), full);
     isolate.add_gc_epilogue_callback(gc_epilogue, std::ptr::null_mut(), full);
-    crate::modules_impl::configure_isolate(isolate);
-    isolate.set_modify_code_generation_from_strings_callback(code_generation_from_strings);
+    roves_v8::codegen::set_callback(isolate, code_generation_from_strings);
     isolate.set_allow_wasm_code_generation_callback(wasm_code_generation);
     configure_wasm_streaming(isolate);
 }
@@ -488,17 +489,6 @@ pub unsafe fn SetJobQueue(cx: *mut JSContext, queue: *mut JobQueue) {
 }
 
 pub unsafe fn JobQueueIsEmpty(_cx: *mut JSContext) {}
-
-/// V8's promise hook. V8's private property API executes no user code. A pending import's
-/// metadata must not remain rooted by an already-resolved promise.
-unsafe extern "C" fn promise_hook(kind: v8::PromiseHookType, promise: v8::Local<v8::Promise>, _parent: v8::Local<v8::Value>) {
-    if matches!(kind, v8::PromiseHookType::Resolve) && crate::rust::Runtime::get().is_some() {
-        // SAFETY: V8 calls the hook on the isolate's thread, inside a handle scope.
-        v8::callback_scope!(unsafe scope, promise);
-        let key = crate::jsapi_impl::private_key(scope, crate::jsapi_impl::PrivateKey::SourceToken);
-        promise.delete_private(scope, key);
-    }
-}
 
 /// The embedder queued a microtask: queues its turn in V8's microtask queue, after the promise
 /// jobs and embedder microtasks already there. On that turn the job queue's `runJobs` trap runs
@@ -690,44 +680,46 @@ fn csp_allows(
     ok && allowed
 }
 
+/// The string compilation decision (`roves_v8::codegen`): `None` blocks, `Some(None)` compiles
+/// the original source, `Some(Some(source))` compiles `source`.
 fn code_generation_from_strings<'s>(
     scope: &mut v8::PinScope<'s, '_>,
     source: v8::Local<'s, v8::Value>,
     _is_code_like: bool,
-) -> v8::ModifyCodeGenerationFromStringsResult<'s> {
+) -> roves_v8::codegen::Decision<'s> {
     let source_value = crate::jsval::from_v8(scope, source);
     if let Ok(string) = v8::Local::<v8::String>::try_from(source) {
         let authorized = crate::rust::Runtime::get().and_then(|cx| hooks(cx.as_ptr()).function_authorization.borrow_mut().take())
             .is_some_and(|expected| source.strict_equals(v8::Local::new(scope, &expected).into()));
         let allowed = authorized || csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value, None);
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) };
+        return allowed.then_some(Some(string));
     }
 
     // V8 passes eval's original non-string operand here. Servo's codeForEvalGets hook
     // recognizes TrustedScript and supplies its source; ordinary objects keep eval's
     // specified identity-return behavior.
     let Some(cx) = crate::rust::Runtime::get().map(|cx| cx.as_ptr()) else {
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+        return Some(None);
     };
     let Some(extract) = (unsafe { hooks(cx).security_callbacks.get().as_ref() }).and_then(|callbacks| callbacks.codeForEvalGets) else {
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+        return Some(None);
     };
     let source_object = crate::jsval::from_v8(scope, source).to_object();
     crate::rooted!(in(cx) let source_object = source_object);
     crate::rooted!(in(cx) let mut extracted = std::ptr::null_mut::<crate::jsapi::JSString>());
     let ok = unsafe { extract(cx, source_object.handle().into(), extracted.handle_mut().into()) };
     if !ok {
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: false, modified_source: None };
+        return None;
     }
     let Some(extracted) = std::ptr::NonNull::new(extracted.get()) else {
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: true, modified_source: None };
+        return Some(None);
     };
     let extracted_value = unsafe { crate::jsval::to_v8(scope, crate::jsval::StringValue(unsafe { extracted.as_ref() })) };
     let Ok(string) = v8::Local::<v8::String>::try_from(extracted_value) else {
-        return v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: false, modified_source: None };
+        return None;
     };
     let allowed = csp_allows(scope, crate::jsapi::RuntimeCode::JS, Some(string), source_value, None);
-    v8::ModifyCodeGenerationFromStringsResult { codegen_allowed: allowed, modified_source: allowed.then_some(string) }
+    allowed.then_some(Some(string))
 }
 
 unsafe extern "C" fn wasm_code_generation(context: v8::Local<v8::Context>, _source: v8::Local<v8::String>) -> bool {

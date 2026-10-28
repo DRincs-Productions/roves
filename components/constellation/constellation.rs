@@ -3429,165 +3429,18 @@ where
     // the result of a page navigation.
     #[servo_tracing::instrument(skip_all)]
     fn handle_script_loaded_url_in_iframe_msg(&mut self, load_info: IFrameLoadInfoWithData) {
-        let IFrameLoadInfo {
-            parent_pipeline_id,
-            browsing_context_id,
-            webview_id,
-            new_pipeline_id,
-            is_private,
-            mut history_handling,
-            target_snapshot_params,
-            ..
-        } = load_info.info;
-
-        // If no url is specified, reload.
-        let old_pipeline = load_info
-            .old_pipeline_id
-            .and_then(|id| self.pipelines.get(&id));
-
-        // Replacement enabled also takes into account whether the document is "completely loaded",
-        // see https://html.spec.whatwg.org/multipage/#the-iframe-element:completely-loaded
-        if let Some(old_pipeline) = old_pipeline {
-            if !old_pipeline.completely_loaded {
-                history_handling = NavigationHistoryBehavior::Replace;
-            }
-            debug!(
-                "{:?}: Old pipeline is {}completely loaded",
-                load_info.old_pipeline_id,
-                if old_pipeline.completely_loaded {
-                    ""
-                } else {
-                    "not "
-                }
-            );
-        }
-
-        let is_parent_private = {
-            let parent_browsing_context_id = match self.pipelines.get(&parent_pipeline_id) {
-                Some(pipeline) => pipeline.browsing_context_id,
-                None => {
-                    return warn!(
-                        "{parent_pipeline_id}: Script loaded url in iframe \
-                        {browsing_context_id} in closed parent pipeline",
-                    );
-                },
-            };
-
-            let Some(ctx) = self.browsing_contexts.get(&parent_browsing_context_id) else {
-                return warn!(
-                    "{parent_browsing_context_id}: Script loaded url in \
-                     iframe {browsing_context_id} in closed parent browsing context",
-                );
-            };
-            ctx.is_private
-        };
-        let is_private = is_private || is_parent_private;
-
-        let Some(browsing_context) = self.browsing_contexts.get(&browsing_context_id) else {
-            return warn!(
-                "{browsing_context_id}: Script loaded url in iframe with closed browsing context",
-            );
-        };
-
-        let replace = if history_handling == NavigationHistoryBehavior::Replace {
-            Some(NeedsToReload::No(browsing_context.pipeline_id))
-        } else {
-            None
-        };
-
-        let browsing_context_size = browsing_context.viewport_details;
-        let browsing_context_throttled = browsing_context.throttled;
-        // TODO(servo#30571) revert to debug_assert_eq!() once underlying bug is fixed
-        #[cfg(debug_assertions)]
-        if !(browsing_context_size == load_info.viewport_details) {
-            log::warn!(
-                "debug assertion failed! browsing_context_size == load_info.viewport_details.initial_viewport"
-            );
-        }
-
-        // Create the new pipeline, attached to the parent and push to pending changes
-        self.new_pipeline(
-            new_pipeline_id,
-            browsing_context_id,
-            webview_id,
-            Some(parent_pipeline_id),
-            None,
-            browsing_context_size,
-            load_info.load_data,
-            is_private,
-            browsing_context_throttled,
-            target_snapshot_params,
+        // Product boundary: reject before queueing or mutating pipeline/document state.
+        self.report_blocked_document_operation(load_info.info.webview_id,
+            servo_constellation_traits::GameDocumentOperation::Frame,
         );
-        self.add_pending_change(SessionHistoryChange {
-            webview_id,
-            browsing_context_id,
-            new_pipeline_id,
-            replace,
-            // Browsing context for iframe already exists.
-            new_browsing_context_info: None,
-            viewport_details: load_info.viewport_details,
-        });
     }
 
     #[servo_tracing::instrument(skip_all)]
     fn handle_script_new_iframe(&mut self, load_info: IFrameLoadInfoWithData) {
-        let IFrameLoadInfo {
-            parent_pipeline_id,
-            new_pipeline_id,
-            browsing_context_id,
-            webview_id,
-            is_private,
-            ..
-        } = load_info.info;
-
-        let (script_sender, parent_browsing_context_id) =
-            match self.pipelines.get(&parent_pipeline_id) {
-                Some(pipeline) => (pipeline.event_loop.clone(), pipeline.browsing_context_id),
-                None => {
-                    return warn!(
-                        "{}: Script loaded url in closed iframe pipeline",
-                        parent_pipeline_id
-                    );
-                },
-            };
-        let (is_parent_private, is_parent_throttled, is_parent_secure) =
-            match self.browsing_contexts.get(&parent_browsing_context_id) {
-                Some(ctx) => (ctx.is_private, ctx.throttled, ctx.inherited_secure_context),
-                None => {
-                    return warn!(
-                        "{}: New iframe {} loaded in closed parent browsing context",
-                        parent_browsing_context_id, browsing_context_id,
-                    );
-                },
-            };
-        let is_private = is_private || is_parent_private;
-        let pipeline = Pipeline::new_already_spawned(
-            new_pipeline_id,
-            browsing_context_id,
-            webview_id,
-            None,
-            script_sender,
-            self.paint_proxy.clone(),
-            is_parent_throttled,
-            load_info.load_data,
+        // Product boundary: reject before queueing or mutating pipeline/document state.
+        self.report_blocked_document_operation(load_info.info.webview_id,
+            servo_constellation_traits::GameDocumentOperation::Frame,
         );
-
-        assert!(!self.pipelines.contains_key(&new_pipeline_id));
-        self.pipelines.insert(new_pipeline_id, pipeline);
-        self.add_pending_change(SessionHistoryChange {
-            webview_id,
-            browsing_context_id,
-            new_pipeline_id,
-            replace: None,
-            // Browsing context for iframe doesn't exist yet.
-            new_browsing_context_info: Some(NewBrowsingContextInfo {
-                parent_pipeline_id: Some(parent_pipeline_id),
-                is_private,
-                inherited_secure_context: is_parent_secure,
-                throttled: is_parent_throttled,
-            }),
-            viewport_details: load_info.viewport_details,
-        });
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -3771,6 +3624,14 @@ where
     /// Schedule a navigation(via load_url).
     /// 1: Ask the embedder for permission.
     /// 2: Store the details of the navigation, pending approval from the embedder.
+    fn report_blocked_document_operation(&self, webview_id: WebViewId, operation: embedder_traits::GameDocumentOperation) {
+        if servo_constellation_traits::report_blocked_document_operation(operation) {
+            self.constellation_to_embedder_proxy.send(
+                ConstellationToEmbedderMsg::GameDocumentOperationBlocked(webview_id, operation),
+            );
+        }
+    }
+
     #[servo_tracing::instrument(skip_all)]
     fn schedule_navigation(
         &mut self,
@@ -3780,28 +3641,9 @@ where
         history_handling: NavigationHistoryBehavior,
         target_snapshot_params: TargetSnapshotParams,
     ) {
-        match self.pending_approval_navigations.entry(source_id) {
-            Entry::Occupied(_) => {
-                return warn!(
-                    "{}: Tried to schedule a navigation while one is already pending",
-                    source_id
-                );
-            },
-            Entry::Vacant(entry) => {
-                let _ = entry.insert(PendingApprovalNavigation {
-                    load_data: load_data.clone(),
-                    history_behaviour: history_handling,
-                    target_snapshot_params,
-                });
-            },
-        };
-        // Allow the embedder to handle the url itself
-        self.constellation_to_embedder_proxy.send(
-            ConstellationToEmbedderMsg::AllowNavigationRequest(
-                webview_id,
-                source_id,
-                load_data.url,
-            ),
+        // Product boundary: reject before queueing or mutating pipeline/document state.
+        self.report_blocked_document_operation(webview_id,
+            servo_constellation_traits::GameDocumentOperation::Navigation,
         );
     }
 
@@ -3814,130 +3656,11 @@ where
         history_handling: NavigationHistoryBehavior,
         target_snapshot_params: TargetSnapshotParams,
     ) -> Option<PipelineId> {
-        debug!(
-            "{}: Loading ({}replacing): {}",
-            source_id,
-            match history_handling {
-                NavigationHistoryBehavior::Push => "not ",
-                NavigationHistoryBehavior::Replace => "",
-                NavigationHistoryBehavior::Auto => "unsure if ",
-            },
-            load_data.url,
+        // Product boundary: reject before queueing or mutating pipeline/document state.
+        self.report_blocked_document_operation(webview_id,
+            servo_constellation_traits::GameDocumentOperation::Navigation,
         );
-        // If this load targets an iframe, its framing element may exist
-        // in a separate script thread than the framed document that initiated
-        // the new load. The framing element must be notified about the
-        // requested change so it can update its internal state.
-        //
-        // If replace is true, the current entry is replaced instead of a new entry being added.
-        let (browsing_context_id, opener) = match self.pipelines.get(&source_id) {
-            Some(pipeline) => (pipeline.browsing_context_id, pipeline.opener),
-            None => {
-                warn!("{}: Loaded after closure", source_id);
-                return None;
-            },
-        };
-        let (viewport_details, pipeline_id, parent_pipeline_id, is_private, is_throttled) =
-            match self.browsing_contexts.get(&browsing_context_id) {
-                Some(ctx) => (
-                    ctx.viewport_details,
-                    ctx.pipeline_id,
-                    ctx.parent_pipeline_id,
-                    ctx.is_private,
-                    ctx.throttled,
-                ),
-                None => {
-                    // This should technically never happen (since `load_url` is
-                    // only called on existing browsing contexts), but we prefer to
-                    // avoid `expect`s or `unwrap`s in `Constellation` to ward
-                    // against future changes that might break things.
-                    warn!(
-                        "{}: Loaded url in closed {}",
-                        source_id, browsing_context_id,
-                    );
-                    return None;
-                },
-            };
-
-        match parent_pipeline_id {
-            Some(parent_pipeline_id) => {
-                // Find the script thread for the pipeline containing the iframe
-                // and issue an iframe load through there.
-                let msg = ScriptThreadMessage::NavigateIframe(
-                    parent_pipeline_id,
-                    browsing_context_id,
-                    load_data,
-                    history_handling,
-                    target_snapshot_params,
-                );
-                let result = match self.pipelines.get(&parent_pipeline_id) {
-                    Some(parent_pipeline) => parent_pipeline.event_loop.send(msg),
-                    None => {
-                        warn!("{}: Child loaded after closure", parent_pipeline_id);
-                        return None;
-                    },
-                };
-                if let Err(e) = result {
-                    self.handle_send_error(parent_pipeline_id, e);
-                }
-
-                None
-            },
-            None => {
-                // Make sure no pending page would be overridden.
-                for change in &self.pending_changes {
-                    if change.browsing_context_id == browsing_context_id {
-                        // id that sent load msg is being changed already; abort
-                        return None;
-                    }
-                }
-
-                if self.get_activity(source_id) == DocumentActivity::Inactive {
-                    // Disregard this load if the navigating pipeline is not actually
-                    // active. This could be caused by a delayed navigation (eg. from
-                    // a timer) or a race between multiple navigations (such as an
-                    // onclick handler on an anchor element).
-                    return None;
-                }
-
-                // Being here means either there are no pending changes, or none of the pending
-                // changes would be overridden by changing the subframe associated with source_id.
-
-                // Create the new pipeline
-
-                let replace = if history_handling == NavigationHistoryBehavior::Replace {
-                    Some(NeedsToReload::No(pipeline_id))
-                } else {
-                    None
-                };
-
-                let new_pipeline_id = PipelineId::new();
-                self.new_pipeline(
-                    new_pipeline_id,
-                    browsing_context_id,
-                    webview_id,
-                    None,
-                    opener,
-                    viewport_details,
-                    load_data,
-                    is_private,
-                    is_throttled,
-                    target_snapshot_params,
-                );
-                self.add_pending_change(SessionHistoryChange {
-                    webview_id,
-                    browsing_context_id,
-                    new_pipeline_id,
-                    replace,
-                    // `load_url` is always invoked on an existing browsing context.
-                    new_browsing_context_info: None,
-                    viewport_details,
-                });
-                self.paint_proxy
-                    .send(PaintMessage::EnableLCPCalculation(webview_id));
-                Some(new_pipeline_id)
-            },
-        }
+        None
     }
 
     #[servo_tracing::instrument(skip_all)]
@@ -4022,6 +3745,29 @@ where
         webview_id: WebViewId,
         direction: TraversalDirection,
     ) {
+        // Validate the requested range before drain() changes either history stack.
+        if let Some(webview) = self.webviews.get(&webview_id) {
+            let (entries, count) = match direction {
+                TraversalDirection::Forward(count) => (&webview.session_history.future, count),
+                TraversalDirection::Back(count) => (&webview.session_history.past, count),
+            };
+            let current = self.browsing_contexts.get(&BrowsingContextId::from(webview_id))
+                .map(|context| context.pipeline_id);
+            let replaces_document = entries.iter().rev().take(count).any(|entry| match entry {
+                SessionHistoryDiff::BrowsingContext { .. } => true,
+                SessionHistoryDiff::Pipeline { pipeline_reloader, .. } |
+                SessionHistoryDiff::Hash { pipeline_reloader, .. } => match pipeline_reloader {
+                    NeedsToReload::No(pipeline) => Some(*pipeline) != current,
+                    NeedsToReload::Yes(..) => true,
+                },
+            });
+            if replaces_document {
+                self.report_blocked_document_operation(webview_id,
+                    servo_constellation_traits::GameDocumentOperation::HistoryDocument,
+                );
+                return;
+            }
+        }
         let mut browsing_context_changes = FxHashMap::<BrowsingContextId, NeedsToReload>::default();
         let mut pipeline_changes =
             FxHashMap::<PipelineId, (Option<HistoryStateId>, ServoUrl)>::default();
@@ -4379,20 +4125,10 @@ where
 
     #[servo_tracing::instrument(skip_all)]
     fn handle_reload_msg(&mut self, webview_id: WebViewId) {
-        let browsing_context_id = BrowsingContextId::from(webview_id);
-        let pipeline_id = match self.browsing_contexts.get(&browsing_context_id) {
-            Some(browsing_context) => browsing_context.pipeline_id,
-            None => {
-                return warn!("{}: Got reload event after closure", browsing_context_id);
-            },
-        };
-        self.send_message_to_pipeline(
-            pipeline_id,
-            ScriptThreadMessage::Reload(pipeline_id),
-            "Got reload event after closure",
+        // Product boundary: reject before queueing or mutating pipeline/document state.
+        self.report_blocked_document_operation(webview_id,
+            servo_constellation_traits::GameDocumentOperation::Reload,
         );
-        self.paint_proxy
-            .send(PaintMessage::EnableLCPCalculation(webview_id));
     }
 
     /// <https://html.spec.whatwg.org/multipage/#window-post-message-steps>

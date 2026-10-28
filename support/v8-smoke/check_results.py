@@ -19,10 +19,24 @@ WASM_SKIPS = {
 }
 # Checks a page must report: a page that drops one still reports a consistent total.
 REQUIRED_CHECKS = {
+    "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+    "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work'),
+    "single-document.html": (
+        "reload preserves the live game document",
+        "same-origin assignment preserves the live game document",
+        "cross-origin assignment preserves the live game document",
+        "location replacement preserves the live game document",
+        "iframes cannot create a document or execute child script",
+        "synthetic external link activation preserves the game",
+        "auxiliary windows are refused without replacing the game",
+        "History routes replace push back and forward without a new document",
+        "hash routing preserves document and state",
+    ),
     "events.html": (
-        "an iframe keeps its WindowProxy across origin changes and back",
+        "postMessage preserves the single document source and origin",
         "promise jobs and queueMicrotask callbacks share one FIFO microtask queue",
-        "an event listener keeps the callback context of its registration",
+        "an event listener preserves the document callback across route changes",
         "event listener list keeps its identity, once and mutation semantics",
         "inline event handlers keep identity, position and return semantics",
         "Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads",

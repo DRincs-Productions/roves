@@ -93,7 +93,7 @@ use crate::dom::trustedtypes::trustedscript::TrustedScript;
 use crate::messaging::{CommonScriptMsg, ScriptEventLoopSender};
 use crate::microtask::MicrotaskQueue;
 use crate::realms::enter_auto_realm;
-use crate::script_module::EnsureModuleHooksInitialized;
+use crate::script_module::EnsureScriptPrivateHooksInitialized;
 use crate::task_source::TaskSourceName;
 use crate::{DomTypeHolder, ScriptThread};
 
@@ -573,7 +573,14 @@ impl Runtime {
     /// This, like many calls to SpiderMoney API, is unsafe.
     #[expect(unsafe_code)]
     pub(crate) fn new(main_thread_sender: Option<ScriptEventLoopSender>) -> Runtime {
-        unsafe { Self::new_with_parent(None, main_thread_sender) }
+        unsafe { Self::create(None, main_thread_sender, false) }
+    }
+
+    /// The runtime of the script thread's one game document: its script context is a Window
+    /// (single-document runtime, see `js::rust::Runtime::new_document`).
+    #[expect(unsafe_code)]
+    pub(crate) fn new_document(main_thread_sender: ScriptEventLoopSender) -> Runtime {
+        unsafe { Self::create(None, Some(main_thread_sender), true) }
     }
 
     #[allow(unsafe_code)]
@@ -601,8 +608,19 @@ impl Runtime {
         parent: Option<ParentRuntime>,
         script_event_loop_sender: Option<ScriptEventLoopSender>,
     ) -> Runtime {
+        unsafe { Self::create(parent, script_event_loop_sender, false) }
+    }
+
+    #[expect(unsafe_code)]
+    unsafe fn create(
+        parent: Option<ParentRuntime>,
+        script_event_loop_sender: Option<ScriptEventLoopSender>,
+        document: bool,
+    ) -> Runtime {
         let mut runtime = if let Some(parent) = parent {
             unsafe { RustRuntime::create_with_parent(parent) }
+        } else if document {
+            RustRuntime::new_document(JS_ENGINE.lock().unwrap().as_ref().unwrap().clone())
         } else {
             RustRuntime::new(JS_ENGINE.lock().unwrap().as_ref().unwrap().clone())
         };
@@ -722,7 +740,9 @@ impl Runtime {
                 Some(invoke_script_environment_preparer),
             );
 
-            EnsureModuleHooksInitialized(runtime.rt());
+            // Script privates of classic scripts (`ModuleScript`); modules and dynamic imports
+            // belong to deno_core (see `script_module::install_module_loader`).
+            EnsureScriptPrivateHooksInitialized(runtime.rt());
 
             let cx = runtime.cx();
 
@@ -823,6 +843,9 @@ impl Runtime {
 impl Drop for Runtime {
     #[expect(unsafe_code)]
     fn drop(&mut self) {
+        // The module loader holds DOM references: drop it while they are still valid.
+        crate::script_module::clear_module_loader(self.rt.cx_no_gc());
+
         // Clear our main microtask_queue.
         self.microtask_queue.clear();
 

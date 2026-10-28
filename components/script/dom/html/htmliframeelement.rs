@@ -156,21 +156,10 @@ impl HTMLIFrameElement {
         target_snapshot_params: TargetSnapshotParams,
         cx: &mut JSContext,
     ) {
-        // In case we fired a synchronous load event, but navigate away
-        // in the event listener of that event, then we should still
-        // fire a second asynchronous load event when that navigation
-        // finishes. Therefore, on any navigation (but not the initial
-        // about blank), we should always set this to false, regardless
-        // of whether we synchronously fired a load in the same microtask.
-        self.already_fired_synchronous_load_event.set(false);
-
-        self.start_new_pipeline(
-            cx,
-            load_data,
-            PipelineType::Navigation,
-            history_handling,
-            mode,
-            target_snapshot_params,
+        // Reject before allocating browsing-context IDs, a synchronous Window or a pipeline.
+        crate::navigation::report_blocked_document_operation(
+            &self.owner_window(),
+            servo_constellation_traits::GameDocumentOperation::Frame,
         );
     }
 
@@ -430,148 +419,10 @@ impl HTMLIFrameElement {
 
     /// <https://html.spec.whatwg.org/multipage/#process-the-iframe-attributes>
     fn process_the_iframe_attributes(&self, mode: ProcessingMode, cx: &mut JSContext) {
-        let element = self.upcast::<Element>();
-
-        // Step 1. If `element`'s `srcdoc` attribute is specified, then:
-        //
-        // Note that this also includes the empty string
-        if element.has_attribute(&local_name!("srcdoc")) {
-            // Step 1.1. Set element's current navigation was lazy loaded boolean to false.
-            self.current_navigation_was_lazy_loaded.set(false);
-            // Step 1.2. If the will lazy load element steps given element return true, then:
-            if self.will_lazy_load_element_steps() {
-                // Step 1.2.1. Set element's lazy load resumption steps to the rest of this algorithm
-                // starting with the step labeled navigate to the srcdoc resource.
-                self.lazy_load_resumption_steps
-                    .set(LazyLoadResumptionSteps::SrcDoc);
-                // Step 1.2.2. Set element's current navigation was lazy loaded boolean to true.
-                self.mark_navigation_as_lazy_loaded(cx);
-                // Step 1.2.3. Start intersection-observing a lazy loading element for element.
-                // TODO
-                // Step 1.2.4. Return.
-                return;
-            }
-            // Step 1.3. Navigate to the srcdoc resource: Navigate an iframe or frame given element,
-            // about:srcdoc, the empty string, and the value of element's srcdoc attribute.
-            self.navigate_to_the_srcdoc_resource(mode, cx);
-            return;
-        }
-
-        let window = self.owner_window();
-
-        // https://html.spec.whatwg.org/multipage/#attr-iframe-name
-        // Note: the spec says to set the name 'when the nested browsing context is created'.
-        // The current implementation sets the name on the window,
-        // when the iframe attributes are first processed.
-        if mode == ProcessingMode::FirstTime &&
-            let Some(window) = self.GetContentWindow()
-        {
-            window.set_name(
-                element
-                    .get_name()
-                    .map_or(DOMString::from(""), |n| DOMString::from(&*n)),
-            );
-        }
-
-        // Step 2.1. Let url be the result of running the shared attribute processing steps
-        // for iframe and frame elements given element and initialInsertion.
-        let Some(url) = self.shared_attribute_processing_steps_for_iframe_and_frame_elements(mode)
-        else {
-            // Step 2.2. If url is null, then return.
-            return;
-        };
-
-        // Step 2.3. If url matches about:blank and initialInsertion is true, then:
-        if url.matches_about_blank() && mode == ProcessingMode::FirstTime {
-            // We should **not** send a load event in `iframe_load_event_steps`.
-            self.already_fired_synchronous_load_event.set(true);
-            // Step 2.3.1. Run the iframe load event steps given element.
-            self.run_iframe_load_event_steps(cx);
-            // Step 2.3.2. Return.
-            return;
-        }
-
-        // Step 2.4: Let referrerPolicy be the current state of element's referrerpolicy content
-        // attribute.
-        let document = self.owner_document();
-        let referrer_policy_token = self.ReferrerPolicy();
-
-        // Note: despite not being explicitly stated in the spec steps, this falls back to
-        // document's referrer policy here because it satisfies the expectations that when unset,
-        // the iframe should inherit the referrer policy of its parent
-        let referrer_policy = match ReferrerPolicy::from(&*referrer_policy_token.str()) {
-            ReferrerPolicy::EmptyString => document.get_referrer_policy(),
-            policy => policy,
-        };
-
-        // TODO(#25748):
-        // By spec, we return early if there's an ancestor browsing context
-        // "whose active document's url, ignoring fragments, is equal".
-        // However, asking about ancestor browsing contexts is more nuanced than
-        // it sounds and not implemented here.
-        // Within a single origin, we can do it by walking window proxies,
-        // and this check covers only that single-origin case, protecting
-        // against simple typo self-includes but nothing more elaborate.
-        let mut ancestor = window.GetParent();
-        while let Some(a) = ancestor {
-            if let Some(ancestor_url) = a.document().map(|d| d.url()) &&
-                ancestor_url.scheme() == url.scheme() &&
-                ancestor_url.username() == url.username() &&
-                ancestor_url.password() == url.password() &&
-                ancestor_url.host() == url.host() &&
-                ancestor_url.port() == url.port() &&
-                ancestor_url.path() == url.path() &&
-                ancestor_url.query() == url.query()
-            {
-                return;
-            }
-            ancestor = a.parent().map(DomRoot::from_ref);
-        }
-
-        let (creator_pipeline_id, about_base_url) = if url.matches_about_blank() {
-            (Some(window.pipeline_id()), Some(document.base_url()))
-        } else {
-            (None, document.about_base_url())
-        };
-
-        let propagate_encoding_to_child_document = url.origin().same_origin(&window.origin());
-        let mut load_data = LoadData::new(
-            LoadOrigin::Script(document.origin().snapshot()),
-            url,
-            about_base_url,
-            creator_pipeline_id,
-            window.as_global_scope().get_referrer(),
-            referrer_policy,
-            Some(window.as_global_scope().is_secure_context()),
-            Some(document.insecure_requests_policy()),
-            document.has_trustworthy_ancestor_or_current_origin(),
-            self.sandboxing_flag_set(),
-        );
-        load_data.destination = Destination::IFrame;
-        load_data.policy_container = Some(window.as_global_scope().policy_container());
-        if propagate_encoding_to_child_document {
-            load_data.container_document_encoding = Some(document.encoding());
-        }
-
-        let pipeline_id = self.pipeline_id();
-        // If the initial `about:blank` page is the current page, load with replacement enabled,
-        // see https://html.spec.whatwg.org/multipage/#the-iframe-element:about:blank-3
-        let is_about_blank =
-            pipeline_id.is_some() && pipeline_id == self.about_blank_pipeline_id.get();
-
-        let history_handling = if is_about_blank {
-            NavigationHistoryBehavior::Replace
-        } else {
-            NavigationHistoryBehavior::Push
-        };
-
-        let target_snapshot_params = snapshot_self(self);
-        self.navigate_or_reload_child_browsing_context(
-            load_data,
-            history_handling,
-            mode,
-            target_snapshot_params,
-            cx,
+        // Reject before allocating browsing-context IDs, a synchronous Window or a pipeline.
+        crate::navigation::report_blocked_document_operation(
+            &self.owner_window(),
+            servo_constellation_traits::GameDocumentOperation::Frame,
         );
     }
 
@@ -583,38 +434,10 @@ impl HTMLIFrameElement {
     /// and we still fire load and pageshow events as part of `maybe_queue_document_completion`.
     /// Also, some controversy spec-wise remains: <https://github.com/whatwg/html/issues/4965>
     fn create_nested_browsing_context(&self, cx: &mut JSContext) {
-        let url = ServoUrl::parse("about:blank").unwrap();
-        let document = self.owner_document();
-        let window = self.owner_window();
-        let pipeline_id = Some(window.pipeline_id());
-        let mut load_data = LoadData::new(
-            LoadOrigin::Script(document.origin().snapshot()),
-            url,
-            Some(document.base_url()),
-            pipeline_id,
-            window.as_global_scope().get_referrer(),
-            document.get_referrer_policy(),
-            Some(window.as_global_scope().is_secure_context()),
-            Some(document.insecure_requests_policy()),
-            document.has_trustworthy_ancestor_or_current_origin(),
-            self.sandboxing_flag_set(),
-        );
-        load_data.destination = Destination::IFrame;
-        load_data.policy_container = Some(window.as_global_scope().policy_container());
-
-        let browsing_context_id = BrowsingContextId::new();
-        let webview_id = window.window_proxy().webview_id();
-        self.pipeline_id.set(None);
-        self.pending_pipeline_id.set(None);
-        self.webview_id.set(Some(webview_id));
-        self.browsing_context_id.set(Some(browsing_context_id));
-        self.start_new_pipeline(
-            cx,
-            load_data,
-            PipelineType::InitialAboutBlank,
-            NavigationHistoryBehavior::Push,
-            ProcessingMode::FirstTime,
-            snapshot_self(self),
+        // Reject before allocating browsing-context IDs, a synchronous Window or a pipeline.
+        crate::navigation::report_blocked_document_operation(
+            &self.owner_window(),
+            servo_constellation_traits::GameDocumentOperation::Frame,
         );
     }
 

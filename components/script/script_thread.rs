@@ -845,8 +845,9 @@ impl ScriptThread {
         background_hang_monitor_register: Box<dyn BackgroundHangMonitorRegister>,
     ) -> (Rc<ScriptThread>, js::context::JSContext) {
         let (self_sender, self_receiver) = unbounded();
+        // Roves: one game document per script thread (single-document runtime).
         let mut runtime =
-            Runtime::new(Some(ScriptEventLoopSender::MainThread(self_sender.clone())));
+            Runtime::new_document(ScriptEventLoopSender::MainThread(self_sender.clone()));
 
         // SAFETY: We ensure that only one JSContext exists in this thread.
         // This is the first one and the only one
@@ -2862,29 +2863,8 @@ impl ScriptThread {
             embedder_chan: self.senders.pipeline_to_embedder_sender.clone(),
         };
 
-        // Roves (V8): keep the browsing context's WindowProxy identity across navigations. V8
-        // keeps one global proxy per context, so the new Window's global takes over the proxy of
-        // the window it replaces in this thread; references scripts hold to the old window then
-        // reach the new one, as in browsers. The replaced document cannot get the proxy back:
-        // session history reloads it instead of resuming it (`session_history_max_length` is 0).
-        // Rooted until `Window::new` below has created the global that consumes it.
-        let replaced_window = self
-            .window_proxies
-            .find_window_proxy(incomplete.browsing_context_id)
-            .and_then(|proxy| proxy.currently_active())
-            .and_then(|pipeline| self.documents.borrow().find_window(pipeline));
-        if let Some(previous) = &replaced_window {
-            // Unload the replaced document first, while `window` in its handlers still reaches
-            // it: HTML switches the WindowProxy only when the new document becomes active. The
-            // constellation's later UnloadDocument finds the events already fired.
-            previous.Document().unload(cx, false);
-            unsafe {
-                js::jsapi::RovesReuseWindowProxyForNextGlobal(
-                    cx.raw_cx(),
-                    previous.reflector().get_jsobject().get(),
-                );
-            }
-        }
+        // Roves: this thread's runtime has one script context, which this Window adopts
+        // (script navigation and Constellation refuse replacement documents before loading).
 
         // Create the window and document objects.
         let window = Window::new(
@@ -2926,6 +2906,10 @@ impl ScriptThread {
             incomplete.theme,
             self.this.clone(),
         );
+
+        // ES modules and dynamic imports of this document go through deno_core, with Servo's
+        // resolution and fetch (import maps, CSP, SRI, credentials, referrer policy).
+        crate::script_module::install_module_loader(cx, window.upcast::<GlobalScope>());
 
         let mut realm = enter_auto_realm(cx, &*window);
         let cx = &mut realm;

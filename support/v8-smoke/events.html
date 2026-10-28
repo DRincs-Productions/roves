@@ -138,51 +138,39 @@ check("MessageChannel delivers as a task, in order", () => new Promise(resolve =
 check("requestAnimationFrame timestamps increase", () => new Promise(resolve => {
   requestAnimationFrame(first => requestAnimationFrame(second => resolve((second >= first && first > 0) || `${first} ${second}`)));
 }));
-check("postMessage source is the incumbent: the innermost frame's window", () => new Promise(resolve => {
-  // The iframe's own script enters its realm, then calls a function of this window: the
-  // incumbent is this window (the innermost frame), not the entered iframe.
-  const frame = document.createElement("iframe");
-  window.sendIncumbentProbe = () => window.postMessage("incumbent-probe", "*");
+// Multi-realm incumbent probes are archived in legacy-multidocument/events.html.
+// The product has one realm: retain task ordering, source and callback delivery checks.
+check("postMessage preserves the single document source and origin", () => new Promise(resolve => {
+  const token = "single-document-source";
+  let returned = false;
   addEventListener("message", function listener(event) {
-    if (event.data !== "incumbent-probe") return;
+    if (event.data !== token) return;
     removeEventListener("message", listener);
-    resolve(event.source === window || (event.source === frame.contentWindow ? "source is the iframe" : String(event.source)));
+    resolve(returned && event.source === window && event.origin === self.origin);
   });
-  frame.srcdoc = "<script>parent.sendIncumbentProbe()<\/script>";
-  document.body.append(frame);
+  window.postMessage(token, "*");
+  returned = true;
 }));
-// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-// A listener's callback context is captured by addEventListener and reused at every dispatch.
-// The callback is frame A's postMessage, bound with an empty transfer list (otherwise the Event
-// argument is read as one), so no script frame of its own runs and the posted message's source
-// is the callback context. It is registered by frame B's code and dispatched by frame C's code,
-// then by this page: Chrome 155 reports B as the source. Recapturing the context at dispatch
-// would report C, then this window.
-check("an event listener keeps the callback context of its registration", () => new Promise(resolve => {
-  const frames = [0, 1, 2].map(() => document.createElement("iframe"));
-  let loaded = 0;
-  for (const frame of frames) {
-    frame.onload = () => { if (++loaded === frames.length) run(); };
-    frame.srcdoc = "<p>listener realm</p>";
-    document.body.append(frame);
-  }
-  function run() {
-    const [a, b, c] = frames.map(frame => frame.contentWindow);
-    const sources = [];
-    a.addEventListener("message", function listener(event) {
-      if (event.data !== "listener-callback-context") return;
-      sources.push(event.source === b ? "b" : event.source === c ? "c" : event.source === window ? "parent" : event.source === a ? "a" : String(event.source));
-      if (sources.length < 2) return;
-      a.removeEventListener("message", listener);
-      frames.forEach(frame => frame.remove());
-      resolve(sources.join() === "b,b" || sources.join());
-    });
-    const target = new EventTarget();
-    const callback = a.postMessage.bind(a, "listener-callback-context", "*", []);
-    new b.Function("target", "callback", "target.addEventListener('probe', callback);")(target, callback);
-    new c.Function("target", "target.dispatchEvent(new Event('probe'));")(target);
-    target.dispatchEvent(new Event("probe"));
-  }
+check("an event listener preserves the document callback across route changes", () => new Promise(resolve => {
+  const original = location.href, state = history.state;
+  const target = new EventTarget();
+  const sources = [];
+  const token = "single-document-callback";
+  const callback = window.postMessage.bind(window, token, "*", []);
+  const listener = event => {
+    if (event.data !== token) return;
+    sources.push(event.source);
+    if (sources.length !== 2) return;
+    removeEventListener("message", listener);
+    target.removeEventListener("probe", callback);
+    history.replaceState(state, "", original);
+    resolve(sources.every(source => source === window));
+  };
+  addEventListener("message", listener);
+  target.addEventListener("probe", callback);
+  history.replaceState({ route: "callback" }, "", "#callback-route");
+  target.dispatchEvent(new Event("probe"));
+  queueMicrotask(() => target.dispatchEvent(new Event("probe")));
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Listener list semantics (DOM): one entry per callback and capture flag, removal by callback and
@@ -303,169 +291,46 @@ check("inline event handlers keep identity, position and return semantics", () =
   }
   return true;
 });
-check("an iframe keeps its WindowProxy across a navigation", () => new Promise(resolve => {
-  // As in browsers, a reference to a browsing context's window outlives its document: after
-  // the iframe navigates, the same object reaches the new document.
-  const frame = document.createElement("iframe");
-  frame.onload = () => {
-    const held = frame.contentWindow;
-    frame.onload = () => {
-      const text = held.document && held.document.body ? held.document.body.textContent : "none";
-      const ok = frame.contentWindow === held && text === "second" && window.unloadSawItsOwnWindow === true;
-      resolve(ok || `same=${frame.contentWindow === held} text=${text} unload=${window.unloadSawItsOwnWindow}`);
-    };
-    frame.srcdoc = "<p>second</p>";
-  };
-  // The old page's unload handlers still see their own window (HTML switches the WindowProxy
-  // when the new document becomes active).
-  frame.srcdoc = "<p>first</p><script>addEventListener('unload', () => { parent.unloadSawItsOwnWindow = window.document === document; });<\/script>";
-  document.body.append(frame);
-}));
-// Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-check("an iframe keeps its WindowProxy across origin changes and back", () => new Promise(resolve => {
-  // Two rounds of: a same-origin srcdoc document, two successive opaque-origin ones
-  // (sandbox="allow-scripts", no allow-same-origin: each document gets its own opaque origin),
-  // then a same-origin one again. The held WindowProxy must stay the frame's window, cross-origin
-  // access must throw a SecurityError DOMException while the cross-origin allowlist keeps
-  // working, and access must come back with the last document. Within one opaque document,
-  // postMessage reads and descriptors give one function, and calling it must reach that current
-  // document (its echo carries the document's own token). The function may or may not be the
-  // one an earlier document returned: Chrome 155 reuses it, so identity is not checked.
-  // Under file:// both origins serialize as "null": the access checks tell them apart.
-  // Every document, ping and echo has its own token: a message of an earlier step fails.
-  const run = `origin-change-${Date.now()}-${Math.random().toString(36).slice(2)}`;
-  let serial = 0;
-  const nonce = label => `${run}-${label}-${serial++}`;
-  const issued = new Set();
-  const parentOrigin = self.origin;
-  const frame = document.createElement("iframe");
-  let phase = "same-0", done = false, held = null, expected = null;
-  const end = outcome => {
-    if (done) return;
-    done = true;
-    clearTimeout(timer);
-    removeEventListener("message", onMessage);
-    frame.remove();
-    resolve(outcome);
-  };
-  const timer = setTimeout(() => end(`timeout waiting for ${phase}`), 8000);
-  function onMessage(event) {
-    const data = event.data;
-    if (!data || typeof data.token !== "string" || !issued.has(data.token)) return;
-    if (!expected || data.token !== expected.token) return end(`stale message from ${data.phase} while waiting for ${phase}`);
-    const deliver = expected.deliver;
-    expected = null;
-    deliver(event);
-  }
-  addEventListener("message", onMessage);
-  const message = (name, token) => {
-    issued.add(token);
-    phase = name;
-    return new Promise(deliver => { expected = { token, deliver }; });
-  };
-  const child = (name, body) => `<p id="marker">${name}</p><script>window.rovesOriginPhase = "${name}";${body}<\/script>`;
-  const state = name => `phase: "${name}", marker: document.getElementById("marker").textContent, global: window.rovesOriginPhase, origin: self.origin`;
-  const post = (name, token) => `parent.postMessage({ token: "${token}", ${state(name)}, parentDocument: (() => { try { return parent.document ? "accessible" : "none"; } catch (error) { return error.name; } })() }, "*");`;
-  const securityError = (problems, label, get) => {
-    try { get(); problems.push(`${label} did not throw`); }
-    catch (error) { if (!(error instanceof DOMException && error.name === "SecurityError")) problems.push(`${label} threw ${error && error.name}`); }
-  };
-  const common = (problems, event, origin, name) => {
-    if (frame.contentWindow !== held) problems.push("contentWindow changed");
-    if (event.source !== held) problems.push("source is not the held window");
-    if (event.origin !== origin) problems.push(`origin ${event.origin}`);
-    if (event.data.origin !== origin) problems.push(`child origin ${event.data.origin}`);
-    if (event.data.phase !== name || event.data.marker !== name || event.data.global !== name)
-      problems.push(`child shows ${event.data.phase}/${event.data.marker}/${event.data.global}`);
-  };
-  const report = (name, problems) => { if (problems.length) throw new Error(`${name}: ${problems.join(", ")}`); };
-  const sameOrigin = async name => {
-    const token = nonce(name), load = message(name, token);
-    frame.removeAttribute("sandbox");
-    frame.srcdoc = child(name, post(name, token));
-    if (!frame.isConnected) document.body.append(frame);
-    const event = await load;
-    if (!held) held = frame.contentWindow;
-    const problems = [];
-    common(problems, event, parentOrigin, name);
-    if (event.data.parentDocument !== "accessible") problems.push(`child parent.document ${event.data.parentDocument}`);
-    const marker = held.document.getElementById("marker");
-    if (held.document !== frame.contentDocument) problems.push("document differs from contentDocument");
-    if (!marker || marker.textContent !== name) problems.push(`document shows ${marker && marker.textContent}`);
-    if (held.rovesOriginPhase !== name) problems.push(`global phase ${held.rovesOriginPhase}`);
-    report(name, problems);
-  };
-  const opaque = async name => {
-    const ping = nonce(`${name}-ping`), echoToken = nonce(`${name}-echo`), loadToken = nonce(name);
-    const load = message(name, loadToken);
-    frame.setAttribute("sandbox", "allow-scripts");
-    frame.srcdoc = child(name, `addEventListener("message", event => { if (!event.data || event.data.token !== "${ping}") return; event.source.postMessage({ token: "${echoToken}", ${state(name)}, from: event.origin, fromParent: event.source === parent }, "*"); });` + post(name, loadToken));
-    let event = await load, problems = [];
-    common(problems, event, "null", name);
-    if (event.data.parentDocument !== "SecurityError") problems.push(`child parent.document ${event.data.parentDocument}`);
-    if (frame.contentDocument !== null) problems.push("contentDocument is not null");
-    securityError(problems, "document", () => held.document);
-    securityError(problems, "global", () => held.rovesOriginPhase);
-    if (held.closed !== false || held.window !== held || held.self !== held || held.frames !== held || held.length !== 0 || held.parent !== window || typeof held.postMessage !== "function")
-      problems.push("cross-origin allowlist unusable");
-    const send = held.postMessage;
-    const descriptors = [Object.getOwnPropertyDescriptor(held, "postMessage"), Object.getOwnPropertyDescriptor(held, "postMessage")];
-    if (held.postMessage !== send) problems.push("postMessage reads differ");
-    if (descriptors.some(descriptor => !descriptor || descriptor.value !== send)) problems.push("postMessage descriptor differs from reads");
-    report(name, problems);
-    const echo = message(`${name} echo`, echoToken);
-    send.call(held, { token: ping }, "*");
-    event = await echo;
-    common(problems = [], event, "null", name);
-    if (event.data.from !== parentOrigin || event.data.fromParent !== true) problems.push(`ping seen from ${event.data.from} parent ${event.data.fromParent}`);
-    if (held.postMessage !== send) problems.push("postMessage changed after messaging");
-    report(`${name} echo`, problems);
-  };
-  (async () => {
-    await sameOrigin("same-0");
-    for (const round of [0, 1]) {
-      await opaque(`opaque-a-${round}`);
-      await opaque(`opaque-b-${round}`);
-      await sameOrigin(`same-${round + 1}`);
-    }
-    end(true);
-  })().catch(error => end(String((error && error.message) || error)));
-}));
+// Full navigation and cross-origin WindowProxy positives are archived. The active
+// single-document.html fixture requires refusal before a child document can exist.
 // Named property visibility (https://webidl.spec.whatwg.org/#dfn-named-property-visibility):
 // an own property (expando or unforgeable) always wins; then, with [LegacyOverrideBuiltIns]
 // (Document, https://html.spec.whatwg.org/multipage/#the-document-object), a supported name
 // wins over the prototype, otherwise (HTMLFormElement) the prototype hides it. Each check runs
-// in its own iframe and removes its prototype property.
-// The iframe document's reflector is a Document whose prototype is Document.prototype
+// serially in the game document and restores prototype/expando properties and nodes.
+// The game document's reflector is a Document whose prototype is Document.prototype
 // (Window.HTMLDocument is the same interface object, checked separately below).
 // The collision property goes on the document's actual prototype so that it really competes.
 const documentPrototype = (win, doc) => {
   if (!(doc instanceof win.Document) || doc.contentType !== "text/html")
-    throw new Error(`iframe document is not an HTML Document (${doc.contentType})`);
+    throw new Error(`game document is not an HTML Document (${doc.contentType})`);
   const proto = Object.getPrototypeOf(doc);
-  if (proto !== win.Document.prototype) throw new Error("iframe document prototype is not Document.prototype");
+  if (proto !== win.Document.prototype) throw new Error("game document prototype is not Document.prototype");
   return proto;
 };
-const withNamedFrame = (html, body) => new Promise(resolve => {
-  const frame = document.createElement("iframe");
-  frame.onload = () => {
-    const cleanup = [];
-    try {
-      resolve(body(frame.contentWindow, frame.contentDocument, cleanup));
-    } catch (error) {
-      resolve(String((error && error.message) || error));
-    } finally {
-      for (const undo of cleanup.reverse()) { try { undo(); } catch (_) {} }
-      frame.remove();
-    }
-  };
-  frame.srcdoc = html;
-  document.body.append(frame);
+// The harness serializes checks. Each callback is synchronous: restore all touched
+// properties and every newly appended body node before another check can observe them.
+const withNamedDocument = (html, body) => new Promise(resolve => {
+  const originals = new Set(document.body.childNodes);
+  const container = document.createElement("section");
+  const cleanup = [];
+  try {
+    container.innerHTML = html;
+    document.body.append(container);
+    const result = body(window, document, cleanup);
+    if (result && typeof result.then === "function") throw new Error("named-property checks must be synchronous");
+    resolve(result);
+  } catch (error) {
+    resolve(String((error && error.message) || error));
+  } finally {
+    for (const undo of cleanup.reverse()) { try { undo(); } catch (_) {} }
+    for (const node of Array.from(document.body.childNodes)) if (!originals.has(node)) node.remove();
+  }
 });
 const describeValue = value => value && value.nodeName ? `<${value.nodeName}>` : String(value);
 const describeDescriptor = d => d ? `value=${describeValue(d.value)} get=${typeof d.get} w=${d.writable} e=${d.enumerable} c=${d.configurable}` : "undefined";
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-check("Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedFrame("<p>named</p>", (win, doc, cleanup) => {
+check("Document [LegacyOverrideBuiltIns] named properties win over the prototype on reads", () => withNamedDocument("<p>named</p>", (win, doc, cleanup) => {
   const proto = documentPrototype(win, doc);
   const problems = [];
   const key = "rovesNamedOverride", expandoKey = "rovesNamedExpando";
@@ -510,13 +375,13 @@ check("Document [LegacyOverrideBuiltIns] named properties win over the prototype
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Window.HTMLDocument is a writable, configurable, non-enumerable alias of the Document interface
-// object (https://html.spec.whatwg.org/multipage/#the-window-object). Fresh iframes resolve the
-// alias first by a read, Document first by a read, and the alias first by its own property
-// descriptor (before any read of either name); writing the alias must leave Document untouched.
+// object (https://html.spec.whatwg.org/multipage/#the-window-object). This checks repeated
+// reads/descriptors and write isolation in the active realm. Fresh resolution order is
+// checked in three fresh processes by document-interface-alias.html, not by this loop.
 check("Window.HTMLDocument is the Document interface object", async () => {
   const problems = [];
   for (const first of ["HTMLDocument", "Document", "HTMLDocument descriptor"]) {
-    const result = await withNamedFrame("<p>alias</p>", (win, doc, cleanup) => {
+    const result = await withNamedDocument("<p>alias</p>", (win, doc, cleanup) => {
       const issues = [];
       const resolved = {};
       if (first === "HTMLDocument descriptor") {
@@ -561,7 +426,7 @@ check("Window.HTMLDocument is the Document interface object", async () => {
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // HTMLFormElement has no [LegacyOverrideBuiltIns] in Roves' IDL: the prototype keeps hiding the
 // supported name, while a name without a prototype property stays visible.
-check("HTMLFormElement named properties stay hidden by the prototype", () => withNamedFrame("<p>form</p>", (win, doc, cleanup) => {
+check("HTMLFormElement named properties stay hidden by the prototype", () => withNamedDocument("<p>form</p>", (win, doc, cleanup) => {
   const problems = [];
   const key = "rovesFormOverride", plainKey = "rovesFormPlain";
   const proto = win.HTMLFormElement.prototype;
@@ -604,7 +469,7 @@ check("DOMStringMap [LegacyOverrideBuiltIns] data attributes win over the protot
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Supported names are page-controlled: ownKeys must report them unchanged, including an
 // embedded NUL and non-ASCII/supplementary characters, and they must stay readable.
-check("Document ownKeys keeps supported names with NUL and Unicode exact", () => withNamedFrame("<p>keys</p>", (win, doc) => {
+check("Document ownKeys keeps supported names with NUL and Unicode exact", () => withNamedDocument("<p>keys</p>", (win, doc) => {
   const problems = [];
   const names = ["rovesNul\u0000Name", "rovesUnié中\u{1F600}"];
   const images = names.map(name => {
@@ -637,7 +502,7 @@ check("Document ownKeys keeps supported names with NUL and Unicode exact", () =>
 // ([LegacyOverrideBuiltIns]). Only counts are asserted; the key order is not part of this check.
 const countKey = (target, key) => Reflect.ownKeys(target).filter(k => k === key).length;
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-check("Document ownKeys lists only visible named properties, once", () => withNamedFrame("<p>own keys</p>", (win, doc, cleanup) => {
+check("Document ownKeys lists only visible named properties, once", () => withNamedDocument("<p>own keys</p>", (win, doc, cleanup) => {
   const proto = documentPrototype(win, doc);
   const problems = [];
   const key = "rovesKeysOverride", expandoKey = "rovesKeysExpando", symbol = Symbol("rovesKeysSymbol");
@@ -684,7 +549,7 @@ check("Document ownKeys lists only visible named properties, once", () => withNa
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Without [LegacyOverrideBuiltIns] a prototype property hides the name from ownKeys too. Named
 // form properties are unenumerable, so Reflect.ownKeys (not Object.keys) is the observable list.
-check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withNamedFrame("<p>form keys</p>", (win, doc, cleanup) => {
+check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withNamedDocument("<p>form keys</p>", (win, doc, cleanup) => {
   const problems = [];
   const key = "rovesFormKeysHidden", plainKey = "rovesFormKeysPlain", symbol = Symbol("rovesFormKeysSymbol");
   const proto = win.HTMLFormElement.prototype;
@@ -717,7 +582,7 @@ check("HTMLFormElement ownKeys omits names hidden by the prototype", () => withN
 // A null prototype ends the chain: nothing hides a name any more, and the prototype lookup of
 // ownKeys/getOwnPropertyDescriptor/hasOwn must not fail. Only global functions are used once
 // the prototype is gone.
-check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", () => withNamedFrame("<p>null proto</p>", (win, doc) => {
+check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", () => withNamedDocument("<p>null proto</p>", (win, doc) => {
   const problems = [];
   const plainKey = "rovesNullProtoPlain";
   const form = doc.createElement("form");
@@ -744,7 +609,7 @@ check("HTMLFormElement ownKeys, reads and hasOwn work with a null prototype", ()
 // expando while that name is being checked (remove the control, define the property, put the
 // control back: a supported name cannot be defined directly without a named setter). The key
 // must still be listed exactly once, as the expando that now hides the named property.
-check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedFrame("<p>trap</p>", (win, doc) => {
+check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows it", () => withNamedDocument("<p>trap</p>", (win, doc) => {
   const problems = [];
   const key = "rovesTrapShadowed", plainKey = "rovesTrapPlain";
   const append = win.Element.prototype.append, remove = win.Element.prototype.remove;
@@ -791,7 +656,7 @@ check("HTMLFormElement ownKeys lists a name once when a prototype trap shadows i
 // Visibility checks own properties before the prototype: a name hidden by an own expando must
 // never reach the prototype. The Proxy prototype throws if it is queried for that name, through
 // either `getOwnPropertyDescriptor` (the visibility walk) or `has`.
-check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedFrame("<p>short circuit</p>", (win, doc) => {
+check("HTMLFormElement ownKeys does not query the prototype for a name hidden by an own property", () => withNamedDocument("<p>short circuit</p>", (win, doc) => {
   const problems = [];
   const key = "rovesShortCircuit", plainKey = "rovesShortCircuitPlain";
   const form = doc.createElement("form");
@@ -841,7 +706,7 @@ check("HTMLFormElement ownKeys does not query the prototype for a name hidden by
 // must not be listed again next to index 0 (V8 rejects duplicate proxy keys with a TypeError),
 // and an out-of-range index name is not an own key at all. Non-canonical numeric strings are
 // not array indices and stay named properties. Index names never reach the prototype.
-check("HTMLFormElement ownKeys omits array-index names and keeps other numeric names", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+check("HTMLFormElement ownKeys omits array-index names and keeps other numeric names", () => withNamedDocument("<p>numeric</p>", (win, doc) => {
   const problems = [];
   const names = ["0", "7", "00", "-1", "4294967295"];
   const form = doc.createElement("form");
@@ -892,7 +757,7 @@ check("HTMLFormElement ownKeys omits array-index names and keeps other numeric n
 }));
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
 // Document has named but no indexed properties: every numeric name stays a visible own key.
-check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<p>numeric</p>", (win, doc) => {
+check("Document ownKeys keeps numeric named properties", () => withNamedDocument("<p>numeric</p>", (win, doc) => {
   const problems = [];
   for (const name of ["0", "7", "00", "4294967295"]) {
     const img = doc.createElement("img");
@@ -912,7 +777,7 @@ check("Document ownKeys keeps numeric named properties", () => withNamedFrame("<
 const sloppyDelete = (target, key) => delete target[key];
 const strictDelete = (target, key) => { "use strict"; try { delete target[key]; return "no error"; } catch (error) { return error && error.name; } };
 // Required by check_results.py (REQUIRED_CHECKS): keep the name in sync.
-check("Document visible named properties cannot be deleted without a named deleter", () => withNamedFrame("<p>delete</p>", (win, doc, cleanup) => {
+check("Document visible named properties cannot be deleted without a named deleter", () => withNamedDocument("<p>delete</p>", (win, doc, cleanup) => {
   const proto = documentPrototype(win, doc);
   const problems = [];
   const key = "rovesDeleteNamed", overrideKey = "rovesDeleteOverride", expandoKey = "rovesDeleteExpando";
@@ -964,7 +829,7 @@ check("Document visible named properties cannot be deleted without a named delet
 // Support is read from the supported names, not the named getter: the getter records past names
 // (https://html.spec.whatwg.org/multipage/#past-names-map), so a deletion attempt on a name never
 // read must not keep it reachable after the control is renamed. A real read still does.
-check("HTMLFormElement deletes only hidden named properties and records no read", () => withNamedFrame("<p>form delete</p>", (win, doc, cleanup) => {
+check("HTMLFormElement deletes only hidden named properties and records no read", () => withNamedDocument("<p>form delete</p>", (win, doc, cleanup) => {
   const problems = [];
   const key = "rovesFormDeleteHidden";
   const proto = win.HTMLFormElement.prototype;
@@ -1058,7 +923,7 @@ check("HTMLFormElement deletes only hidden named properties and records no read"
 // `getOwnPropertyDescriptor` deliberately disagree on two names so that the trap actually
 // consulted decides the result. Only delete, hasOwn, getOwnPropertyDescriptor and ownKeys are
 // used on the form: a [[Get]] would consult the prototype on its own (get semantics).
-check("HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor", () => withNamedFrame("<p>visibility</p>", (win, doc) => {
+check("HTMLFormElement named visibility queries prototypes through getOwnPropertyDescriptor", () => withNamedDocument("<p>visibility</p>", (win, doc) => {
   const problems = [];
   const undefinedKey = "rovesVisUndefined", accessorKey = "rovesVisAccessor", deepKey = "rovesVisDeep";
   const plainKey = "rovesVisPlain", hasOnlyKey = "rovesVisHasOnly", descriptorOnlyKey = "rovesVisDescriptorOnly";

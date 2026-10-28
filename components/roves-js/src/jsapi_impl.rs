@@ -438,12 +438,12 @@ pub unsafe fn JS_LinkConstructorAndPrototype(cx: *mut JSContext, ctor: HandleObj
 }
 
 pub unsafe fn IsCallable(obj: *mut JSObject) -> bool {
-    JSContext::current().with_scope(|scope| object(scope, obj).is_some_and(|target| target.is_callable()))
+    JSContext::current().with_scope(|scope| object(scope, obj).is_some_and(|target| roves_v8::compat::is_callable(target)))
 }
 
 pub unsafe fn IsConstructor(obj: *mut JSObject) -> bool {
     JSContext::current().with_scope(|scope| {
-        object(scope, obj).is_some_and(|target| v8::Local::<v8::Function>::try_from(target).is_ok_and(|f| f.is_constructor()))
+        object(scope, obj).is_some_and(|target| v8::Local::<v8::Function>::try_from(target).is_ok_and(|f| roves_v8::compat::is_constructor(f.into())))
     })
 }
 

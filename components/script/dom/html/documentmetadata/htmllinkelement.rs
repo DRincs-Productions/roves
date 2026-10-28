@@ -1032,7 +1032,7 @@ impl HTMLLinkElement {
             destination,
             &global,
             options,
-            move |cx, fetch_failed| {
+            move |_cx, fetch_failed| {
                 // Step 1. If result is null, then fire an event named error at el, and return.
                 // Step 2. Fire an event named load at el.
                 let event = match fetch_failed {
@@ -1040,7 +1040,10 @@ impl HTMLLinkElement {
                     false => atom!("load"),
                 };
 
-                link.upcast::<EventTarget>().fire_event(cx, event);
+                // Use the existing networking event task even for an immediately
+                // unavailable preload: listeners installed after insertion must see it.
+                link.owner_document().global().task_manager().networking_task_source()
+                    .queue_simple_event(link.upcast(), event);
             },
         );
     }

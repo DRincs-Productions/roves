@@ -148,9 +148,7 @@ use crate::messaging::{CommonScriptMsg, ScriptEventLoopReceiver, ScriptEventLoop
 use crate::microtask::MicrotaskRunnable;
 use crate::network_listener::{FetchResponseListener, NetworkListener};
 use crate::realms::enter_auto_realm;
-use crate::script_module::{
-    ImportMap, ModuleRequest, ModuleStatus, ModuleTree, ResolvedModule, ScriptFetchOptions,
-};
+use crate::script_module::{ImportMap, ResolvedModule, ScriptFetchOptions};
 use crate::script_runtime::ThreadSafeJSContext;
 use crate::script_thread::{ScriptThread, with_script_thread};
 use crate::task_manager::TaskManager;
@@ -249,10 +247,6 @@ pub(crate) struct GlobalScope {
     console_timers: DomRefCell<HashMap<DOMString, Instant>>,
 
     /// module map is used when importing JavaScript modules
-    /// <https://html.spec.whatwg.org/multipage/#concept-settings-object-module-map>
-    #[ignore_malloc_size_of = "mozjs"]
-    module_map: DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>>,
-
     /// For sending messages to the memory profiler.
     #[no_trace]
     mem_profiler_chan: profile_mem::ProfilerChan,
@@ -797,7 +791,6 @@ impl GlobalScope {
             indexeddb: Default::default(),
             worker_map: DomRefCell::new(HashMapTracedValues::new_fx()),
             console_timers: DomRefCell::new(Default::default()),
-            module_map: DomRefCell::new(Default::default()),
             mem_profiler_chan,
             time_profiler_chan,
             script_to_constellation_sender,
@@ -2428,27 +2421,6 @@ impl GlobalScope {
     #[allow(clippy::vec_box)]
     pub(crate) fn get_consumed_rejections(&self) -> &DomRefCell<Vec<Box<Heap<*mut JSObject>>>> {
         &self.consumed_rejections
-    }
-
-    pub(crate) fn module_map(
-        &self,
-    ) -> &DomRefCell<HashMapTracedValues<ModuleRequest, ModuleStatus>> {
-        &self.module_map
-    }
-
-    /// Return the [`ModuleTree`] for a given [`ModuleRequest`] or `None` if there is no
-    /// tree for the request or if that tree is still being fetched.
-    pub(crate) fn module_tree_for_request_if_loaded(
-        &self,
-        request: &ModuleRequest,
-    ) -> Option<Rc<ModuleTree>> {
-        self.module_map
-            .borrow()
-            .get(request)
-            .and_then(|status| match status {
-                ModuleStatus::Fetching(_) => None,
-                ModuleStatus::Loaded(module_tree) => Some(module_tree.clone()),
-            })
     }
 
     pub(crate) fn time(&self, label: DOMString) -> Result<(), ()> {

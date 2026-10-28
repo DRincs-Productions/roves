@@ -2862,6 +2862,9 @@ mod scripts {
         assert_eq!(unsafe { (*report)._base.column._base }, 0);
     }
 
+    // Archived by task 0385 (source kept until replacement coverage): drives the removed
+    // JSAPI dynamic-import hook; deno_core settles `import()` now (`deno_modules` below).
+    #[cfg(any())]
     #[test]
     fn pending_classic_import_retains_source_metadata_only_until_resolution() {
         use std::rc::Rc;
@@ -3033,6 +3036,9 @@ mod scripts {
         assert_eq!(Rc::strong_count(&owners[0]), 1, "no duplicate release at shutdown");
     }
 
+    // Archived by task 0385 (source kept until replacement coverage): compiles JSAPI module
+    // records, removed with the module service (modules carry no embedder private now).
+    #[cfg(any())]
     #[test]
     fn script_and_module_private_references_balance_replacement_and_shutdown() {
         use std::cell::Cell;
@@ -3537,6 +3543,13 @@ mod traced_privates {
         drop(runtime);
         assert_eq!((count(&RETAINS), count(&RELEASES)), (1, 1));
     }
+
+    // Archived by task 0385, kept as source until its replacement coverage exists: module and
+    // JSON records, their privates and the `import.meta.resolve` holder of the removed JSAPI
+    // module service (deno_core owns modules and `import.meta` now).
+    #[cfg(any())]
+    mod archived_module_records {
+    use super::*;
 
     #[test]
     fn module_and_json_privates_trace_only_their_current_owner() {
@@ -4560,6 +4573,7 @@ mod traced_privates {
         drop(runtime);
         assert_eq!((count(&RETAINS), count(&RELEASES)), (0, 0), "nothing released that was never retained");
     }
+    }
 }
 
 mod values {
@@ -4737,6 +4751,10 @@ mod values {
     }
 }
 
+// Archived by task 0385, kept as source until its replacement coverage exists: the removed
+// JSAPI module records and hooks. Replaced by `deno_modules` below for static graphs, JSON,
+// cycles, top-level await and dynamic imports.
+#[cfg(any())]
 mod modules {
     use std::cell::RefCell;
     use std::collections::HashMap;
@@ -5018,6 +5036,10 @@ mod modules {
 
 /// The private of the running classic script or source module (SpiderMonkey's source-object
 /// private), as seen by natives and by dynamic `import()`.
+// Archived by task 0385, kept as source until its replacement coverage exists: these tests
+// compile module records and drive the removed JSAPI module hooks (`CompileModule1`,
+// `SetModuleDynamicImportHook`, ...). deno_core owns modules now (see `deno_modules` below).
+#[cfg(any())]
 mod caller_privates {
     use std::cell::RefCell;
     use std::ffi::{CStr, CString};
@@ -5731,6 +5753,11 @@ mod structured_clone {
     }
 }
 
+// Archived by task 0385, kept as source until its replacement coverage exists: these tests
+// replace a Window global in the same runtime (navigation keeping the WindowProxy). The
+// single-document runtime refuses a second Window global (`realm_impl::JS_NewGlobalObject`;
+// see `single_document` below) and no longer has WindowProxy reuse.
+#[cfg(any())]
 mod window_proxies {
     use std::ptr;
 
@@ -6898,6 +6925,7 @@ mod embedder_job_queue {
         }
     }
 
+    #[cfg(any())]
     static WINDOW: JSClass = JSClass {
         name: c"Window".as_ptr(),
         flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
@@ -6910,6 +6938,9 @@ mod embedder_job_queue {
     /// A navigation shuts the old Window's context down (V8 detaches its global): V8 skips its
     /// promise jobs, but the turns of its embedder microtasks belong to the initial realm, so
     /// none is lost and the embedder still decides about each queued callback.
+    // Archived by task 0385 (source kept until replacement coverage): replaces a Window global
+    // in the same runtime, which the single-document runtime refuses.
+    #[cfg(any())]
     #[test]
     fn a_shut_down_realms_microtasks_keep_their_turns() {
         let (mut runtime, queue) = new_runtime_with_job_queue();
@@ -6960,6 +6991,402 @@ unsafe extern "C" fn record_gc_slice(
     _: *const crate::jsapi::GCDescription,
 ) {
     GC_EVENTS.with(|events| events.borrow_mut().push(format!("{progress:?}")));
+}
+
+/// deno_core's module graph and event loop behind `js::modules` (task 0385): an in-memory host
+/// loader stands in for Servo's fetch; ready futures model a completed network response.
+mod deno_modules {
+    use std::string::String;
+    use std::result::Result;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::{describe, eval};
+    use crate::jsapi::*;
+    use crate::jsval::*;
+    use crate::modules::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    const ORIGIN: &str = "https://game.invalid/";
+
+    #[derive(Default)]
+    struct MemoryLoader {
+        modules: HashMap<String, (HostModuleKind, &'static str)>,
+        fetched: RefCell<Vec<String>>,
+    }
+
+    impl HostModuleLoader for MemoryLoader {
+        fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
+            let relative = specifier.starts_with("./") || specifier.starts_with("../") || specifier.starts_with('/');
+            if !relative && !specifier.starts_with("https:") {
+                return Err(format!("bare specifier {specifier}"));
+            }
+            let base = deno_core::ModuleSpecifier::parse(referrer)
+                .or_else(|_| deno_core::ModuleSpecifier::parse(ORIGIN))
+                .map_err(|error| error.to_string())?;
+            base.join(specifier).map(String::from).map_err(|error| error.to_string())
+        }
+
+        fn fetch(&self, url: &str, _referrer: Option<&str>, kind: HostModuleKind, _dynamic: bool) -> HostModuleFetch {
+            self.fetched.borrow_mut().push(url.to_owned());
+            let found = self.modules.get(url).filter(|(served, _)| *served == kind).map(|(served, source)| (*served, *source));
+            let url = url.to_owned();
+            Box::pin(async move {
+                match found {
+                    Some((kind, source)) => Ok(FetchedModule { url, kind, source: source.to_owned() }),
+                    None => Err(format!("no module of that type at {url}")),
+                }
+            })
+        }
+    }
+
+    fn runtime_with(modules: &[(&str, HostModuleKind, &'static str)]) -> (Runtime, Rc<MemoryLoader>, Arc<AtomicUsize>) {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let loader = Rc::new(MemoryLoader {
+            modules: modules.iter().map(|(path, kind, source)| (format!("{ORIGIN}{path}"), (*kind, *source))).collect(),
+            fetched: Default::default(),
+        });
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let counter = wakes.clone();
+        install_host_module_loader(runtime.cx_no_gc(), loader.clone(), Arc::new(move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+        }));
+        eval(&runtime, "globalThis.log = []; 0");
+        (runtime, loader, wakes)
+    }
+
+    fn log(runtime: &Runtime) -> String {
+        describe(runtime, eval(runtime, "log.join()"))
+    }
+
+    fn checkpoint(runtime: &mut Runtime) {
+        unsafe { PerformMicrotaskCheckpoint(runtime.raw_cx()) };
+    }
+
+    /// Polls the module event loop (as Servo's wake task does) until `done` or a bound.
+    fn drive(runtime: &mut Runtime, done: impl Fn(&Runtime) -> bool) -> bool {
+        for _ in 0..64 {
+            poll_module_event_loop(runtime.cx());
+            checkpoint(runtime);
+            if done(runtime) {
+                return true;
+            }
+        }
+        false
+    }
+
+    #[test]
+    fn bootstrap_namespace_is_absent_and_standard_globals_work() {
+        let (runtime, _, _) = runtime_with(&[]);
+        let names = describe(&runtime, eval(&runtime,
+            "['Deno', '__bootstrap', '__infra', 'queueMicrotask', 'console'].filter(name => Object.hasOwn(globalThis, name)).join()"));
+        assert_eq!(names, "", "deno_core's namespace and V8's own queueMicrotask/console are removed");
+        assert_eq!(eval(&runtime, "Object.keys({ a: 1 }).length + [1, 2].map(x => x * 2)[1]").to_int32(), 5);
+    }
+
+    #[test]
+    fn static_graph_with_json_and_cycle_loads_then_evaluates_at_the_call() {
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("main.js", HostModuleKind::JavaScript, r#"import { a } from "./a.js"; import data from "./data.json" with { type: "json" }; log.push("main:" + a + ":" + data.answer);"#),
+            ("a.js", HostModuleKind::JavaScript, r#"import { b } from "./b.js"; export const a = "A"; log.push("a:" + b());"#),
+            ("b.js", HostModuleKind::JavaScript, r#"import { a } from "./a.js"; export function b() { return typeof a; } log.push("b");"#),
+            ("data.json", HostModuleKind::Json, r#"{ "answer": 42 }"#),
+        ]);
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), None).expect("the graph loads");
+        assert_eq!(log(&runtime), "", "loading evaluates nothing");
+        assert_eq!(loader.fetched.borrow().len(), 4);
+        evaluate_module(runtime.cx(), id).unwrap();
+        checkpoint(&mut runtime);
+        assert_eq!(log(&runtime), "b,a:string,main:A:42");
+        // A second script with the same graph evaluates nothing again.
+        let again = load_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), None).unwrap();
+        evaluate_module(runtime.cx(), again).unwrap();
+        assert_eq!(log(&runtime), "b,a:string,main:A:42");
+        assert_eq!(loader.fetched.borrow().len(), 4, "no refetch of a loaded graph");
+    }
+
+    #[test]
+    fn top_level_await_never_blocks_evaluation_or_the_event_loop() {
+        let (mut runtime, _, wakes) = runtime_with(&[
+            ("main.js", HostModuleKind::JavaScript, r#"import "./slow.js"; log.push("main");"#),
+            ("slow.js", HostModuleKind::JavaScript, r#"log.push("slow:start"); await new Promise(r => globalThis.release = r); log.push("slow:end");"#),
+        ]);
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap();
+        checkpoint(&mut runtime);
+        assert_eq!(log(&runtime), "slow:start", "evaluation returned at the await");
+        // The awaited promise belongs to the host: polling must neither fail nor spin.
+        let before = wakes.load(Ordering::SeqCst);
+        for _ in 0..4 {
+            poll_module_event_loop(runtime.cx());
+        }
+        assert!(wakes.load(Ordering::SeqCst) - before <= 1, "an idle event loop does not keep waking the thread");
+        eval(&runtime, "release(); 0");
+        assert!(drive(&mut runtime, |runtime| log(runtime) == "slow:start,slow:end,main"));
+    }
+
+    #[test]
+    fn inline_modules_have_distinct_fragment_urls_and_preserve_relative_imports() {
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("nested/dep.js", HostModuleKind::JavaScript,
+                "export const v = 3; export const url = import.meta.url;"),
+        ]);
+        for number in 1..=2 {
+            let name = format!("{ORIGIN}nested/index.html#roves-inline-module-{number}");
+            let id = load_module_graph(runtime.cx(), &name, Some(
+                r#"import { v, url } from "./dep.js"; log.push(import.meta.url, v, url, import.meta.resolve("./dep.js"));"#.to_owned()
+            )).unwrap();
+            evaluate_module(runtime.cx(), id).unwrap();
+            checkpoint(&mut runtime);
+        }
+        assert_eq!(log(&runtime), format!(
+            "{ORIGIN}nested/index.html#roves-inline-module-1,3,{ORIGIN}nested/dep.js,{ORIGIN}nested/dep.js,{ORIGIN}nested/index.html#roves-inline-module-2,3,{ORIGIN}nested/dep.js,{ORIGIN}nested/dep.js"
+        ));
+        assert_eq!(&*loader.fetched.borrow(), &[format!("{ORIGIN}nested/dep.js")],
+            "relative imports of distinct inline records share the external module cache");
+    }
+
+    #[test]
+    fn dynamic_imports_settle_through_the_polled_event_loop() {
+        let (mut runtime, _, wakes) = runtime_with(&[
+            ("dyn.js", HostModuleKind::JavaScript, r#"log.push("dyn:evaluated"); export const value = 7;"#),
+            ("data.json", HostModuleKind::Json, r#"{ "answer": 42 }"#),
+        ]);
+        eval(&runtime, r#"import("./dyn.js").then(m => log.push("dyn:" + m.value));
+            import("./data.json", { with: { type: "json" } }).then(m => log.push("json:" + m.default.answer));
+            import("./missing.js").catch(e => log.push("missing:" + e.name));
+            import("bare").catch(e => log.push("bare:" + e.name));
+            log.push("after-calls"); 0"#);
+        assert!(wakes.load(Ordering::SeqCst) >= 1, "a new import() asks for a poll");
+        assert_eq!(log(&runtime), "after-calls", "nothing settles synchronously");
+        assert!(drive(&mut runtime, |runtime| log(runtime).split(',').count() == 6), "{}", log(&runtime));
+        let log = log(&runtime);
+        for entry in ["dyn:evaluated", "dyn:7", "json:42", "missing:TypeError", "bare:TypeError"] {
+            assert!(log.contains(entry), "{log}");
+        }
+    }
+
+    #[test]
+    fn classic_eval_and_constructed_functions_keep_their_import_referrer() {
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("left/owner.js", HostModuleKind::JavaScript, "export const owner = 'left';"),
+            ("right/owner.js", HostModuleKind::JavaScript, "export const owner = 'right';"),
+        ]);
+        eval(&runtime, "globalThis.importers = []; 0");
+        for directory in ["left", "right"] {
+            let filename = std::ffi::CString::new(format!("{ORIGIN}{directory}/classic.js")).unwrap();
+            let cx = runtime.raw_cx();
+            let options = unsafe { crate::script_impl::NewCompileOptions(cx, filename.as_ptr(), 1) };
+            let raw = unsafe { &*cx };
+            raw.with_scope(|scope| {
+                let source = v8::String::new(scope, r#"
+                    importers.push(() => import('./owner.js'),
+                        () => eval("import('./owner.js')"),
+                        new Function("return import('./owner.js')"));
+                "#).unwrap();
+                let script = crate::script_impl::compile_script(scope, unsafe { &*options }, source).unwrap();
+                let bound = script.bind_to_current_context(scope);
+                bound.run(scope).unwrap();
+            });
+            unsafe { crate::script_impl::DeleteCompileOptions(options) };
+        }
+        eval(&runtime, "Promise.all(importers.map(f => f())).then(values => log.push(values.map(m => m.owner).join(':'))); 0");
+        assert!(drive(&mut runtime, |runtime| !log(runtime).is_empty()), "imports did not settle");
+        assert_eq!(log(&runtime), "left:left:left:right:right:right");
+        let fetched = loader.fetched.borrow();
+        assert!(fetched.iter().all(|url| url == &format!("{ORIGIN}left/owner.js") || url == &format!("{ORIGIN}right/owner.js")), "{fetched:?}");
+    }
+
+    #[test]
+    fn dynamic_resolver_keeps_classic_source_private() {
+        struct Inspect(Rc<MemoryLoader>, Rc<RefCell<Vec<i32>>>);
+        impl HostModuleLoader for Inspect {
+            fn resolve(&self, s: &str, r: &str) -> Result<String, String> {
+                let raw = unsafe { &*Runtime::get().unwrap().as_ptr() };
+                let value = raw.with_scope(crate::script_impl::caller_private);
+                self.1.borrow_mut().push(if value.is_int32() { value.to_int32() } else { 0 });
+                self.0.resolve(s, r)
+            }
+            fn fetch(&self, u: &str, r: Option<&str>, k: HostModuleKind, d: bool) -> HostModuleFetch { self.0.fetch(u,r,k,d) }
+        }
+        let (mut runtime, loader, _) = runtime_with(&[("owner.js", HostModuleKind::JavaScript, "export const owner=42;")]);
+        let seen = Rc::new(RefCell::new(Vec::new()));
+        install_host_module_loader(runtime.cx_no_gc(), Rc::new(Inspect(loader, seen.clone())), Arc::new(|| {}));
+        let cx = runtime.raw_cx();
+        let options = unsafe { crate::script_impl::NewCompileOptions(cx, c"https://game.invalid/classic.js".as_ptr(), 1) };
+        unsafe { &*cx }.with_scope(|scope| {
+            let code = v8::String::new(scope, "import('./owner.js').then(m=>log.push(m.owner));").unwrap();
+            let script = crate::script_impl::compile_script(scope, unsafe { &*options }, code).unwrap();
+            crate::script_impl::set_script_private(unsafe { &*cx }, roves_v8::compat::script_id(script), Int32Value(42));
+            let bound = script.bind_to_current_context(scope); bound.run(scope).unwrap();
+        });
+        unsafe { crate::script_impl::DeleteCompileOptions(options) };
+        assert!(drive(&mut runtime, |runtime| log(runtime)=="42"));
+        assert!(seen.borrow().contains(&42), "{:?}", seen.borrow());
+    }
+
+    #[test]
+    fn runtime_internal_modules_are_denied_before_cache_and_after_host_resolution() {
+        struct Redirect(Rc<MemoryLoader>);
+        impl HostModuleLoader for Redirect {
+            fn resolve(&self, s: &str, _r: &str) -> Result<String, String> {
+                Ok(if s.ends_with("escape.js") { "ext:core/01_core.js".to_owned() } else { s.to_owned() })
+            }
+            fn fetch(&self, u: &str, r: Option<&str>, k: HostModuleKind, d: bool) -> HostModuleFetch { self.0.fetch(u,r,k,d) }
+        }
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("blocked.js", HostModuleKind::JavaScript, "import 'ext:core/01_core.js';"),
+            ("mapped.js", HostModuleKind::JavaScript, "import 'https://game.invalid/escape.js';"),
+        ]);
+        install_host_module_loader(runtime.cx_no_gc(), Rc::new(Redirect(loader.clone())), Arc::new(|| {}));
+        for url in ["ext:core/01_core.js", "ext:core/00_infra.js", "node:fs", "npm:package", "jsr:package", "deno:core"] {
+            assert_eq!(load_module_graph(runtime.cx(), url, None), Err(ModuleGraphError::Rethrow));
+            unsafe { crate::api::JS_ClearPendingException(runtime.raw_cx()) };
+        }
+        for path in ["blocked.js", "mapped.js"] {
+            assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), None), Err(ModuleGraphError::Rethrow));
+            let cx = runtime.raw_cx();
+            rooted!(in(cx) let mut error = UndefinedValue());
+            assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) });
+            unsafe { crate::api::JS_ClearPendingException(cx) };
+            assert!(describe(&runtime, error.get()).starts_with("TypeError"));
+        }
+        eval(&runtime, r#"Promise.all(['ext:core/01_core.js','ext:core/00_infra.js','node:fs','npm:package','jsr:package','deno:core','https://game.invalid/escape.js'].map(url => import(url).then(()=> 'exposed',error=>error.name))).then(values=>log.push(values.join(':'))); 0"#);
+        assert!(drive(&mut runtime, |runtime| !log(runtime).is_empty()));
+        assert_eq!(log(&runtime), "TypeError:TypeError:TypeError:TypeError:TypeError:TypeError:TypeError");
+        assert!(loader.fetched.borrow().iter().all(|url| url.ends_with("blocked.js") || url.ends_with("mapped.js")),
+            "only the two allowed root modules reach resource fetching");
+    }
+
+    #[test]
+    fn graph_failures_keep_their_contracts() {
+        let (mut runtime, _, _) = runtime_with(&[
+            ("broken.js", HostModuleKind::JavaScript, "export const = ;"),
+            ("uses-missing.js", HostModuleKind::JavaScript, r#"import "./missing.js";"#),
+            ("uses-bare.js", HostModuleKind::JavaScript, r#"import "lodash";"#),
+        ]);
+        assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}uses-missing.js"), None), Err(ModuleGraphError::Fetch));
+        assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) }, "a fetch failure has no error to rethrow");
+        for (path, name) in [("broken.js", "SyntaxError"), ("uses-bare.js", "TypeError")] {
+            assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), None), Err(ModuleGraphError::Rethrow));
+            let cx = runtime.raw_cx();
+            rooted!(in(cx) let mut error = UndefinedValue());
+            assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) });
+            unsafe { crate::api::JS_ClearPendingException(cx) };
+            let described = describe(&runtime, error.get());
+            assert!(described.starts_with(name), "{path}: {described}");
+        }
+    }
+
+    thread_local! {
+        static REJECTIONS: RefCell<Vec<PromiseRejectionHandlingState>> = const { RefCell::new(Vec::new()) };
+    }
+
+    unsafe extern "C" fn track(_cx: *mut JSContext, _muted: bool, _promise: HandleObject, state: PromiseRejectionHandlingState, _data: *mut std::ffi::c_void) {
+        REJECTIONS.with(|rejections| rejections.borrow_mut().push(state));
+    }
+
+    /// Accepted deviation (2026-10-28): a module evaluation error reaches the embedder's
+    /// rejection tracker (as `unhandledrejection` with deno_core's internal promise), not
+    /// `error`; the event loop keeps running.
+    #[test]
+    fn evaluation_errors_are_reported_as_unhandled_rejections_without_ending_the_loop() {
+        let (mut runtime, _, _) = runtime_with(&[
+            ("throws.js", HostModuleKind::JavaScript, r#"log.push("before"); throw new Error("boom");"#),
+            ("later.js", HostModuleKind::JavaScript, r#"log.push("later");"#),
+        ]);
+        unsafe { SetPromiseRejectionTrackerCallback(runtime.raw_cx(), Some(track), std::ptr::null_mut()) };
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}throws.js"), None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap();
+        assert!(drive(&mut runtime, |_| REJECTIONS.with(|rejections| {
+            let rejections = rejections.borrow();
+            rejections.iter().filter(|state| matches!(state, PromiseRejectionHandlingState::Unhandled)).count() >
+                rejections.iter().filter(|state| matches!(state, PromiseRejectionHandlingState::Handled)).count()
+        })), "an unhandled rejection is left for the embedder");
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}later.js"), None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap();
+        checkpoint(&mut runtime);
+        assert_eq!(log(&runtime), "before,later", "later modules still run");
+    }
+
+    #[test]
+    fn shutdown_with_pending_top_level_await_and_imports_is_clean() {
+        let (mut runtime, _, _) = runtime_with(&[
+            ("forever.js", HostModuleKind::JavaScript, "await new Promise(() => {});"),
+        ]);
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}forever.js"), None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap();
+        eval(&runtime, r#"import("./forever.js"); 0"#);
+        poll_module_event_loop(runtime.cx());
+        drop(runtime);
+    }
+}
+
+/// One script context per runtime (task 0385): the first global adopts deno_core's context,
+/// later ones are refused before anything is allocated.
+mod single_document {
+    use std::ptr;
+
+    use crate::jsapi::*;
+    use crate::rust::{JSEngineHandle, Runtime};
+
+    static PLAIN: JSClass = JSClass {
+        name: c"WorkerGlobal".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    static WINDOW: JSClass = JSClass {
+        name: c"Window".as_ptr(),
+        flags: crate::object::JSCLASS_IS_GLOBAL | (crate::object::JSCLASS_GLOBAL_SLOT_COUNT << crate::object::JSCLASS_RESERVED_SLOTS_SHIFT),
+        cOps: ptr::null(),
+        spec: ptr::null(),
+        ext: ptr::null(),
+        oOps: ptr::null(),
+    };
+
+    fn new_global(cx: *mut JSContext, class: &'static JSClass) -> *mut JSObject {
+        unsafe { JS_NewGlobalObject(cx, class, ptr::null_mut(), OnNewGlobalHookOption::DontFireOnNewGlobalHook, ptr::null()) }
+    }
+
+    #[test]
+    fn the_first_global_adopts_the_script_context_and_later_ones_are_refused() {
+        crate::realm_impl::ADOPT_PLAIN_GLOBALS_FOR_TESTING.with(|flag| flag.set(true));
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        let initial = crate::realm_impl::get_context_realm(cx);
+        rooted!(in(cx) let global = new_global(cx, &PLAIN));
+        assert!(!global.get().is_null());
+        assert_eq!(crate::realm_impl::get_object_realm(global.get()), initial, "the runtime's realm");
+        assert_eq!(unsafe { GetRealmGlobalOrNull(initial) }, global.get());
+        assert!(new_global(cx, &PLAIN).is_null(), "a second global is refused");
+        assert!(new_global(cx, &WINDOW).is_null());
+        drop(runtime);
+        crate::realm_impl::ADOPT_PLAIN_GLOBALS_FOR_TESTING.with(|flag| flag.set(false));
+    }
+
+    #[test]
+    fn a_document_runtime_adopts_one_window_and_refuses_another() {
+        let runtime = Runtime::new_document(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let window = new_global(cx, &WINDOW));
+        assert!(!window.get().is_null());
+        assert_eq!(crate::realm_impl::get_object_realm(window.get()), crate::realm_impl::get_context_realm(cx));
+        assert_eq!(super::describe(&runtime, super::eval(&runtime, "Object.getPrototypeOf(globalThis) !== null")), "true");
+        assert!(new_global(cx, &WINDOW).is_null(), "a second document is refused");
+    }
+
+    #[test]
+    fn a_window_needs_a_document_runtime() {
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        assert!(new_global(runtime.raw_cx(), &WINDOW).is_null());
+    }
 }
 
 #[test]

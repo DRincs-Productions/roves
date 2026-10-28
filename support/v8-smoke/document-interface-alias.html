@@ -1,0 +1,30 @@
+<!doctype html>
+<meta charset="utf-8"><title>Fresh Document interface alias resolution</title>
+<script>
+// Resolve the chosen interface before any test harness or body script can read it.
+const first = new URL(location.href).searchParams.get("first");
+const initialDescriptor = first === "descriptor" ? Object.getOwnPropertyDescriptor(window, "HTMLDocument") : null;
+const firstValue = first === "descriptor" ? initialDescriptor?.value : window[first];
+const otherValue = window[first === "Document" ? "HTMLDocument" : "Document"];
+</script>
+<script src="harness.js"></script>
+<body>
+<script>
+check("fresh interface resolution preserves the Document alias", () => {
+  if (!["Document", "HTMLDocument", "descriptor"].includes(first)) return "unknown first access";
+  if (typeof firstValue !== "function" || firstValue !== otherValue) return "different interface objects";
+  if (initialDescriptor && (initialDescriptor.writable !== true || initialDescriptor.enumerable !== false || initialDescriptor.configurable !== true)) return "wrong initial descriptor";
+  const iface = window.Document;
+  if (!(document instanceof iface) || !(document instanceof window.HTMLDocument) || Object.getPrototypeOf(document) !== iface.prototype) return "wrong prototype";
+  for (const name of ["Document", "HTMLDocument"]) {
+    const descriptor = Object.getOwnPropertyDescriptor(window, name);
+    if (!descriptor || descriptor.value !== iface || !descriptor.writable || !descriptor.configurable || descriptor.enumerable) return name + " descriptor";
+  }
+  try {
+    const marker = {};
+    window.HTMLDocument = marker;
+    return window.HTMLDocument === marker && window.Document === iface;
+  } finally { window.HTMLDocument = iface; }
+});
+finish();
+</script>

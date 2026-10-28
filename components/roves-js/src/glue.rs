@@ -33,7 +33,6 @@ pub use crate::script_impl::{
     RUST_js_GetErrorMessage,
 };
 pub use crate::values_impl::JS_GetPromiseResult;
-pub use crate::modules_impl::JS_GetModulePrivate;
 pub use crate::structured_clone_impl::{
     DeleteJSAutoStructuredCloneBuffer, NewJSAutoStructuredCloneBuffer,
 };

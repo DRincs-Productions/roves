@@ -273,7 +273,7 @@ pub(crate) fn new_cell_with_class(
 
 /// A cell for a compiled script (`*mut JSScript`); its value is the script's id.
 pub(crate) fn new_script_cell(scope: &mut v8::PinScope, script: v8::Local<v8::UnboundScript>) -> *mut c_void {
-    let id = v8::Integer::new(scope, script.script_id());
+    let id = v8::Integer::new(scope, roves_v8::compat::script_id(script));
     let reference = TracedReference::new(scope, id.into());
     let script = TracedReference::new(scope, script);
     let heap = scope.get_cpp_heap().expect("roves-js isolates carry a cppgc heap");

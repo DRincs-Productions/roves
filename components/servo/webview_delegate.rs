@@ -916,6 +916,12 @@ impl CreateNewWebViewRequest {
 /// instance. A [`WebView`]'s delegate needs to be set at the time of creation using
 /// [`WebViewBuilder::delegate`].
 pub trait WebViewDelegate {
+    /// A native single-document policy refused an operation. The engine has already logged it.
+    /// Open a trusted user-activated HTTP(S) hyperlink outside the game document.
+    fn open_external_game_link(&self, _webview: WebView, _url: Url) {}
+
+    fn notify_game_operation_blocked(&self, _webview: WebView, _operation: embedder_traits::GameDocumentOperation) {}
+
     /// Get the [`ScreenGeometry`] for this [`WebView`]. If this is unimplemented or returns `None`
     /// the screen will have the size of the [`WebView`]'s `RenderingContext` and `WebView` will be
     /// considered to be positioned at the screen's origin.

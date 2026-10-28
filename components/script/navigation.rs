@@ -438,94 +438,14 @@ pub(crate) fn navigate(
         return;
     }
 
-    // Step 15. If navigable's parent is non-null, then set navigable's is delaying load events to true.
-    let window_proxy = window.window_proxy();
-    if window_proxy.parent().is_some() {
-        window_proxy.start_delaying_load_events_mode();
-    }
+    // Roves permits the fragment path above, but never starts a replacement document.
+    // This preflight runs before unload, load-event delays or navigation messages.
+    report_blocked_document_operation(window, if force_reload {
+        servo_constellation_traits::GameDocumentOperation::Reload
+    } else {
+        servo_constellation_traits::GameDocumentOperation::Navigation
+    });
 
-    // Step 16. Let targetSnapshotParams be the result of snapshotting target
-    // snapshot params given navigable.
-    let target_snapshot_params = snapshot_target_snapshot_params(&window_proxy);
-
-    // Step 17. Invoke WebDriver BiDi navigation started with navigable
-    // and a new WebDriver BiDi navigation status whose id is navigationId,
-    // status is "pending", and url is url.
-    // TODO
-
-    // Step 18. If navigable's ongoing navigation is "traversal", then:
-    // TODO
-    // Step 19. Set the ongoing navigation for navigable to navigationId.
-    // TODO
-
-    // Step 20. If url's scheme is "javascript", then:
-    if load_data.url.scheme() == "javascript" {
-        // Step 20.1. Queue a global task on the navigation and traversal task source given
-        // navigable's active window to navigate to a javascript: URL given navigable, url,
-        // historyHandling, sourceSnapshotParams, initiatorOriginSnapshot, userInvolvement,
-        // cspNavigationType, initialInsertion, and navigationId.
-
-        let Some(initiator_pipeline_id) = load_data.creator_pipeline_id else {
-            unreachable!("javascript: URL navigations must have a creator pipeline");
-        };
-        let Some(initiator_window) = ScriptThread::find_window(initiator_pipeline_id) else {
-            warn!("Can't find global for navigation initiator");
-            return;
-        };
-
-        let target_window = Trusted::new(window);
-        let mut load_data = load_data;
-        let initiator_window = Trusted::new(&*initiator_window);
-        let task = task!(navigate_javascript: move |cx| {
-            // Important re security. See https://github.com/servo/servo/issues/23373
-            let target_window = target_window.root();
-            let initiator_window = initiator_window.root();
-            if ScriptThread::navigate_to_javascript_url(cx, initiator_window.upcast(), target_window.upcast(), &mut load_data, None, None) {
-                target_window
-                    .as_global_scope()
-                    .script_to_constellation_chan()
-                    .send(ScriptToConstellationMessage::LoadUrl(load_data, history_handling, target_snapshot_params))
-                    .unwrap();
-            }
-        });
-        window
-            .as_global_scope()
-            .task_manager()
-            .navigation_and_traversal_task_source()
-            .queue(task);
-        // Step 20.2. Return.
-        return;
-    }
-
-    // Step 23. In parallel, run these steps:
-    //
-    // TODO: in parallel
-
-    // Step 23.1. Let unloadPromptCanceled be the result of checking if unloading
-    // is canceled for navigable's active document's inclusive descendant navigables.
-    let unload_prompt_canceled = doc.check_if_unloading_is_cancelled(cx, false);
-    // Step 23.2. If unloadPromptCanceled is not "continue",
-    // or navigable's ongoing navigation is no longer navigationId:
-    //
-    // TODO: Check for ongoing navigation
-    if !unload_prompt_canceled {
-        // Step 23.2.1. Invoke WebDriver BiDi navigation failed with navigable
-        // and a new WebDriver BiDi navigation status whose id is navigationId,
-        // status is "canceled", and url is url.
-        // TODO
-        // Step 23.2.2. Abort these steps.
-        return;
-    }
-
-    // Step 23.9. Attempt to populate the history entry's document for historyEntry,
-    // given navigable, "navigate", sourceSnapshotParams, targetSnapshotParams,
-    // userInvolvement, navigationId, navigationParams, cspNavigationType,
-    // with allowPOST set to true and completionSteps set to the following step:
-    window.send_to_constellation(ScriptToConstellationMessage::LoadUrl(
-        load_data,
-        history_handling,
-        target_snapshot_params,
-    ));
 }
 
 /// <https://html.spec.whatwg.org/multipage/#determining-the-creation-sandboxing-flags>
@@ -586,5 +506,14 @@ pub(crate) fn snapshot_target_snapshot_params(navigable: &WindowProxy) -> Target
     TargetSnapshotParams {
         sandboxing_flags,
         iframe_element_referrer_policy,
+    }
+}
+
+/// Forward a typed native diagnostic only once per category; game text cannot spoof it.
+pub(crate) fn report_blocked_document_operation(window: &Window, operation: servo_constellation_traits::GameDocumentOperation) {
+    if servo_constellation_traits::report_blocked_document_operation(operation) {
+        window.as_global_scope().send_to_embedder(
+            embedder_traits::EmbedderMsg::GameDocumentOperationBlocked(window.window_proxy().webview_id(), operation),
+        );
     }
 }

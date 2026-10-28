@@ -1,0 +1,476 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>roves-js GC lifecycle smoke page</title></head>
+<body><div id="kept"></div>
+<script>
+// Loaded over loopback HTTP in a fresh servoshell process started with
+// `--pref dom_testutils_enabled=true`, which exposes Servo's TestUtils.gc(): a full V8
+// collection queued as its own task. Retained DOM nodes, expandos and closures must survive
+// repeated collections; known unreachable targets, observed only through WeakRefs, must really
+// be collected. This checks reachability from script only: it does not count native
+// finalizers and does not cover realm, module-map or navigation retention. Two same-origin
+// frames import the same module URL (identical code and name); a dynamic import from each
+// copy, directly or from its direct eval code, must stay owned by its own frame, before and
+// after a collection; so must each copy's escaped import.meta.resolve. Module collection itself
+// is not observed. Two more same-origin frames, a blank one and a classic-script-only one, never
+// use modules: removed-frame diagnostics are reported per group, so retention without module
+// ownership can be told apart from the module frames'.
+"use strict";
+const MAX_COLLECTIONS = 8;
+const FRAME_TIMEOUT_MS = 5000;
+const KEPT_ATTACHED = 50;
+const KEPT_DETACHED = 20;
+const failures = [];
+const report = (...parts) => console.log("ROVES-V8 gc " + parts.join(" "));
+const fail = reason => { failures.push(reason); report("failure", reason); };
+const check = (name, ok, detail) => { report(name, ok ? "true" : "false " + detail); if (!ok) fail(name); };
+// The synthetic ErrorEvent of checkInlineHandlerOwnership carries this value: not a failure.
+const INLINE_PROBE = { probe: "inline window.onerror" };
+addEventListener("error", event => { if (event.error !== INLINE_PROBE) fail("error " + event.message); });
+addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+const consoleError = console.error.bind(console);
+console.error = (...args) => { fail("console.error " + args.join(" ")); consoleError(...args); };
+
+// TestUtils.gc() resolves after its collection task. The timer adds another task boundary, so
+// the next collection starts after the job that created or dereferenced a WeakRef: V8 keeps
+// such targets alive only until the end of that job.
+async function collectOnce() {
+  await TestUtils.gc();
+  await new Promise(resolve => setTimeout(resolve, 0));
+}
+
+// FONT_READY_CONTRACT_BEGIN: also executed in isolation for the Chrome reference.
+async function checkFontReady(collect) {
+  const fonts = document.fonts;
+  let ready = fonts.ready;
+  check("font ready promise identity", ready === fonts.ready, "changed before settlement");
+  let timer;
+  try {
+    const result = await Promise.race([ready, new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error("font ready timed out")), 5000);
+    })]);
+    check("font ready resolves to its set", result === fonts, "wrong fulfillment value");
+  } finally { clearTimeout(timer); }
+  const weakReady = new WeakRef(ready);
+  ready = null; // The DOM must trace the cached promise without a native permanent root.
+  await collect();
+  const after = fonts.ready;
+  check("font ready DOM edge survives collection", weakReady.deref() === after,
+        "cached promise was lost or replaced");
+  check("font ready retained result survives collection", await after === fonts,
+        "fulfillment changed");
+}
+// FONT_READY_CONTRACT_END
+
+// deref() keeps a live target for the current job only; no target is stored.
+function aliveCount(refs) {
+  let alive = 0;
+  for (const ref of refs) if (ref.deref() !== undefined) alive++;
+  return alive;
+}
+
+// Collects until every target is gone, at most MAX_COLLECTIONS times. Survivors fail the page.
+async function expectCollected(name, refs) {
+  let alive = refs.length, rounds = 0;
+  while (alive > 0 && rounds < MAX_COLLECTIONS) {
+    await collectOnce();
+    rounds++;
+    alive = aliveCount(refs);
+  }
+  check(name + " collected", alive === 0, `${alive}/${refs.length} alive after ${rounds} collections`);
+}
+
+// The helpers below return only WeakRefs: their targets are unreachable once they return.
+const keptDetached = [];
+function keepNodes() {
+  const container = document.getElementById("kept");
+  for (let i = 0; i < KEPT_ATTACHED; i++) {
+    const node = document.createElement("div");
+    node.className = "kept";
+    node.rovesExpando = { index: i, double: () => i * 2 };
+    node.rovesFired = 0;
+    node.addEventListener("roves-gc", () => { node.rovesFired++; });
+    container.appendChild(node);
+  }
+  for (let i = 0; i < KEPT_DETACHED; i++) {
+    const node = document.createElement("span");
+    node.rovesExpando = { index: i, double: () => i * 2 };
+    node.appendChild(document.createTextNode("kept " + i));
+    keptDetached.push(node);
+  }
+}
+
+function expandoIntact(node, i) {
+  return node.rovesExpando !== undefined && node.rovesExpando.index === i && node.rovesExpando.double() === i * 2;
+}
+
+// Attached nodes are looked up again through the DOM, so their expandos prove the wrappers
+// were preserved rather than recreated; listener closures must still run.
+function checkKept(name) {
+  const attached = Array.from(document.querySelectorAll("#kept > div.kept"));
+  const expandos = attached.length === KEPT_ATTACHED && attached.every(expandoIntact);
+  let closures = attached.length === KEPT_ATTACHED;
+  for (const node of attached) {
+    const before = node.rovesFired;
+    node.dispatchEvent(new Event("roves-gc"));
+    if (node.rovesFired !== before + 1) closures = false;
+  }
+  const detached = keptDetached.length === KEPT_DETACHED &&
+    keptDetached.every((node, i) => expandoIntact(node, i) && node.textContent === "kept " + i);
+  report(name, expandos, closures, detached);
+  if (!(expandos && closures && detached)) fail(name);
+}
+
+function dropNodeBatch(size) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const node = document.createElement("div");
+    node.appendChild(document.createElement("span")).textContent = "dropped " + i;
+    node.rovesSelf = { node, index: i };
+    refs.push(new WeakRef(node));
+  }
+  return refs;
+}
+
+function dropCycleBatch(size) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const a = { index: i };
+    const b = { a };
+    a.b = b;
+    a.next = () => b;
+    refs.push(new WeakRef(a), new WeakRef(b));
+  }
+  return refs;
+}
+
+// A real classic script element compiles the retained importer; the element is then removed.
+function compileImporter() {
+  const script = document.createElement("script");
+  script.textContent = 'globalThis.rovesGcImport = () => import("./gc-module.js");';
+  document.head.appendChild(script);
+  script.remove();
+  return typeof globalThis.rovesGcImport === "function";
+}
+
+async function importThroughRetainedFunction() {
+  const namespace = await globalThis.rovesGcImport();
+  return namespace.default;
+}
+
+function dropImporter() {
+  const ref = new WeakRef(globalThis.rovesGcImport);
+  delete globalThis.rovesGcImport;
+  return [ref];
+}
+
+function withTimeout(promise, what) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(what + " timed out")), FRAME_TIMEOUT_MS);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+// A same-origin srcdoc frame; resolves with the frame element once it has loaded.
+function loadFrame(html, what) {
+  const frame = document.createElement("iframe");
+  frame.srcdoc = html;
+  const loaded = new Promise((resolve, reject) => {
+    frame.addEventListener("load", () => resolve(frame), { once: true });
+    frame.addEventListener("error", () => reject(new Error(what + " failed to load")), { once: true });
+  });
+  document.body.appendChild(frame);
+  return withTimeout(loaded, what + " load");
+}
+
+// A same-origin frame whose classic script sets its token and imports gc-module.js. Its base
+// URL has no gc-owner.js: an import that lost its module referrer would resolve against it.
+function loadOwnerFrame(token) {
+  const url = new URL("gc-module.js", location.href).href;
+  const base = new URL("missing-base/", location.href).href;
+  return loadFrame(`<base href="${base}"><script>globalThis.rovesOwnerToken = ${JSON.stringify(token)};` +
+    `globalThis.rovesModule = import(${JSON.stringify(url)});<\/script>`, token + " frame");
+}
+
+// Diagnostic groups (see reportRemovedFrames), each filled by removeFrames.
+const removedFrames = {
+  module: { label: "module", elements: [], documents: [], globals: [] },
+  plain: { label: "no-module", elements: [], documents: [], globals: [] },
+};
+
+// Keeps only WeakRefs to the iframe element (kept by the parent page), the frame's document
+// (kept by its Window) and an object only the frame's global holds, then removes the frames.
+function removeFrames(group, frames) {
+  for (const frame of frames) {
+    group.elements.push(new WeakRef(frame));
+    if (frame.contentDocument) group.documents.push(new WeakRef(frame.contentDocument));
+    if (frame.contentWindow) {
+      const probe = new frame.contentWindow.Object();
+      frame.contentWindow.rovesGlobalProbe = probe;
+      group.globals.push(new WeakRef(probe));
+    }
+    frame.remove();
+  }
+  report("removed frame group", group.label, "elements", group.elements.length,
+    "documents", group.documents.length, "globals", group.globals.length);
+}
+
+// Each frame's copy of gc-module.js imports gc-owner.js, which reads its realm's token.
+async function moduleOwners(namespaces, importer) {
+  const owners = [];
+  for (const namespace of namespaces) {
+    const owner = await withTimeout(namespace[importer](), importer);
+    owners.push(owner.ownerToken);
+  }
+  return owners;
+}
+
+async function checkOwners(name, namespaces, importer, expected) {
+  const owners = await moduleOwners(namespaces, importer);
+  report(name, ...owners.map(String));
+  if (owners.join() !== expected.join()) fail(name);
+}
+
+// Each frame's escaped import.meta.resolve belongs to that frame's realm and resolves against
+// gc-module.js's URL. The specifier object's toString() runs script during the conversion.
+function checkResolve(name, frames, namespaces) {
+  const expected = new URL("gc-owner.js", location.href).href;
+  const specifier = { toString() { return "./gc-owner.js"; } };
+  const resolved = namespaces.map(namespace => namespace.resolveOwner(specifier));
+  const realms = namespaces.every((namespace, i) => namespace.resolveOwner instanceof frames[i].contentWindow.Function);
+  check(name, realms && resolved.every(url => url === expected), `realms ${realms} ${resolved.join(" ")}`);
+}
+
+async function checkModuleOwners() {
+  const tokens = ["left", "right"];
+  const frames = [];
+  try {
+    for (const token of tokens) frames.push(await loadOwnerFrame(token));
+    const pending = frames.map(frame => frame.contentWindow.rovesModule);
+    // Each frame's promise belongs to that frame's realm: no instanceof check.
+    if (!pending.every(module => typeof module?.then === "function")) {
+      fail("frame module import did not start");
+      return;
+    }
+    const namespaces = await withTimeout(Promise.all(pending), "frame module imports");
+    await checkOwners("module owners", namespaces, "importOwner", tokens);
+    await checkOwners("eval module owners", namespaces, "evalImportOwner", tokens);
+    checkResolve("module resolve", frames, namespaces);
+    await collectOnce();
+    await checkOwners("module owners after collection", namespaces, "importOwner", tokens);
+    await checkOwners("eval module owners after collection", namespaces, "evalImportOwner", tokens);
+    checkResolve("module resolve after collection", frames, namespaces);
+  } finally {
+    removeFrames(removedFrames.module, frames);
+  }
+}
+
+// Two same-origin frames that never use the module map: a blank document and one whose only
+// content is a classic script setting a global. Both must load; their release is diagnostic.
+async function checkPlainFrames() {
+  const frames = [];
+  try {
+    frames.push(await loadFrame("<!doctype html><title>blank</title>", "blank frame"));
+    frames.push(await loadFrame('<script>globalThis.rovesPlainToken = "script";<\/script>', "script frame"));
+    const tokens = frames.map(frame => String(frame.contentWindow.rovesPlainToken));
+    check("no-module frames loaded", tokens.join() === "undefined,script", tokens.join(" "));
+  } finally {
+    removeFrames(removedFrames.plain, frames);
+  }
+}
+
+// Additive listeners are traced through their EventTarget (and AbortSignal), not rooted: a
+// detached node whose listener captures the node must be collectable, with an unreachable
+// unaborted signal too, and after an abort while the controller stays alive. Returns WeakRefs.
+function dropListenerNodes(size, signalFor) {
+  const refs = [];
+  for (let i = 0; i < size; i++) {
+    const node = document.createElement("div");
+    const options = signalFor ? { signal: signalFor() } : {};
+    node.addEventListener("roves-listener", () => { node.rovesHits = (node.rovesHits || 0) + 1; }, options);
+    refs.push(new WeakRef(node));
+  }
+  return refs;
+}
+
+// Control: listeners referenced only by a kept node (a closure, a handleEvent object, a once
+// listener and one with a live signal) survive collections and keep their behavior.
+function keepListenerNode() {
+  const node = document.createElement("div");
+  node.rovesCalls = { closure: 0, object: 0, once: 0, signal: 0 };
+  node.addEventListener("roves-listener", () => { node.rovesCalls.closure++; });
+  node.addEventListener("roves-listener", { handleEvent() { node.rovesCalls.object++; } });
+  node.addEventListener("roves-listener", () => { node.rovesCalls.once++; }, { once: true });
+  node.rovesController = new AbortController();
+  node.addEventListener("roves-listener", () => { node.rovesCalls.signal++; }, { signal: node.rovesController.signal });
+  return node;
+}
+
+async function checkListenerOwnership() {
+  const kept = keepListenerNode();
+  await expectCollected("self-capturing listener nodes", dropListenerNodes(20));
+  await expectCollected("signal listener nodes", dropListenerNodes(20, () => new AbortController().signal));
+  const controller = new AbortController();
+  const aborted = dropListenerNodes(20, () => controller.signal);
+  controller.abort();
+  await expectCollected("aborted signal listener nodes", aborted);
+  kept.dispatchEvent(new Event("roves-listener"));
+  await collectOnce();
+  await collectOnce();
+  kept.dispatchEvent(new Event("roves-listener"));
+  const calls = kept.rovesCalls;
+  check("listener control after collection",
+    calls.closure === 2 && calls.object === 2 && calls.once === 1 && calls.signal === 2 && controller.signal.aborted,
+    JSON.stringify(calls));
+}
+
+// Inline event handlers are traced through their EventTarget like additive listeners: detached
+// nodes whose handler is a self-capturing closure, or a content attribute compiled by reading
+// the IDL attribute (its scope chain holds the element), must be collectable. Nodes with a
+// never-compiled attribute only check the fixture itself. Returns WeakRefs per kind.
+function dropInlineHandlerNodes(size) {
+  const refs = { closure: [], compiled: [], uncompiled: [] };
+  for (let i = 0; i < size; i++) {
+    const closure = document.createElement("div");
+    closure.onclick = () => { closure.rovesHits = (closure.rovesHits || 0) + 1; };
+    refs.closure.push(new WeakRef(closure));
+    const compiled = document.createElement("div");
+    compiled.setAttribute("onclick", "this.rovesHits = 1");
+    if (typeof compiled.onclick !== "function") fail("inline handler attribute did not compile");
+    refs.compiled.push(new WeakRef(compiled));
+    const uncompiled = document.createElement("div");
+    uncompiled.setAttribute("onclick", "this.rovesHits = 1");
+    refs.uncompiled.push(new WeakRef(uncompiled));
+  }
+  return refs;
+}
+
+// A WeakRef to the compiled attribute handler, or null after failing the page (a compile
+// error is also reported by the window error listener above). No strong reference outlives
+// this call, so the caller's async frame does not keep the function alive.
+function weakCompiledHandler(element, attribute) {
+  const handler = element[attribute];
+  if (typeof handler === "function") return new WeakRef(handler);
+  fail(`inline handler attribute did not compile: ${attribute} ${typeof handler} ${String(handler)}`);
+  return null;
+}
+
+// Control: handlers referenced only by a kept node (an IDL closure and a compiled attribute)
+// and the window's onerror/onbeforeunload closures survive collections and keep their
+// behavior; the compiled function is the same object, neither recompiled nor collected.
+// An attribute that does not compile fails the page with a diagnostic, not a WeakRef error,
+// and the rest of the group still runs.
+async function checkInlineHandlerOwnership() {
+  const kept = document.createElement("div");
+  kept.rovesCalls = { click: 0, focus: 0 };
+  const onclick = () => { kept.rovesCalls.click++; };
+  kept.onclick = onclick;
+  kept.setAttribute("onfocus", "this.rovesCalls.focus++");
+  const compiledRef = weakCompiledHandler(kept, "onfocus");
+  const savedError = window.onerror, savedUnload = window.onbeforeunload;
+  const global = { error: null, unload: 0 };
+  window.onerror = (message, source, line, column, error) => {
+    global.error = [message, source, line, column, error === INLINE_PROBE];
+    return true;
+  };
+  window.onbeforeunload = () => { global.unload++; return "msg"; };
+  try {
+    const refs = dropInlineHandlerNodes(10);
+    await expectCollected("self-capturing inline handler nodes",
+      [...refs.closure, ...refs.compiled, ...refs.uncompiled]);
+    report("diagnostic inline handler nodes alive", `closure ${aliveCount(refs.closure)}`,
+      `compiled ${aliveCount(refs.compiled)}`, `uncompiled ${aliveCount(refs.uncompiled)}`);
+    await collectOnce();
+    await collectOnce();
+    const sameCompiled = compiledRef !== null && compiledRef.deref() === kept.onfocus;
+    kept.dispatchEvent(new MouseEvent("click"));
+    kept.dispatchEvent(new FocusEvent("focus"));
+    check("inline handler control after collection",
+      sameCompiled && kept.onclick === onclick && kept.rovesCalls.click === 1 && kept.rovesCalls.focus === 1,
+      `same=${sameCompiled} identity=${kept.onclick === onclick} ${JSON.stringify(kept.rovesCalls)}`);
+    const error = new ErrorEvent("error", { cancelable: true, message: "probe", filename: "probe.js", lineno: 2, colno: 3, error: INLINE_PROBE });
+    dispatchEvent(error);
+    const unload = new Event("beforeunload", { cancelable: true });
+    dispatchEvent(unload);
+    check("window inline handlers after collection",
+      JSON.stringify(global.error) === '["probe","probe.js",2,3,true]' && error.defaultPrevented &&
+        global.unload === 1 && !unload.defaultPrevented,
+      `${JSON.stringify(global)} error=${error.defaultPrevented} unload=${unload.defaultPrevented}`);
+  } finally {
+    window.onerror = savedError;
+    window.onbeforeunload = savedUnload;
+  }
+}
+
+// Not a pass/fail check yet: reports, per group, which parts of removed frames are released,
+// so CI shows the current behavior before it becomes a requirement. Frame pipelines close
+// asynchronously, so collections are spaced out.
+async function reportRemovedFrames() {
+  for (let round = 0; round < MAX_COLLECTIONS; round++) {
+    await collectOnce();
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  const released = refs => `${refs.length - aliveCount(refs)}/${refs.length}`;
+  for (const group of Object.values(removedFrames)) {
+    report("diagnostic removed frames released", group.label, `elements ${released(group.elements)}`,
+      `documents ${released(group.documents)}`, `globals ${released(group.globals)}`);
+  }
+}
+
+async function main() {
+  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+  report("api", api);
+  if (!api) {
+    fail("TestUtils.gc unavailable");
+    return;
+  }
+  await checkFontReady(collectOnce);
+  keepNodes();
+  const nodeRefs = [];
+  const cycleRefs = [];
+  for (let batch = 0; batch < 4; batch++) {
+    nodeRefs.push(...dropNodeBatch(60));
+    cycleRefs.push(...dropCycleBatch(100));
+    await collectOnce();
+  }
+  await expectCollected("unreachable dom", nodeRefs);
+  await expectCollected("unreachable cycles", cycleRefs);
+  checkKept("retained nodes");
+
+  check("importer compiled", compileImporter(), "classic script did not define the importer");
+  await collectOnce();
+  await collectOnce();
+  const value = await importThroughRetainedFunction();
+  report("dynamic import after collection", value);
+  if (value !== 42) fail("dynamic import");
+  await expectCollected("dropped importer", dropImporter());
+  await checkModuleOwners();
+  await checkPlainFrames();
+  await checkListenerOwnership();
+  await checkInlineHandlerOwnership();
+  checkKept("retained nodes final");
+}
+
+// FinalizationRegistry cleanup runs from a V8 task that no Servo code prepared. An API that
+// reads the entry settings object (drawImage's origin check for an image) must still work.
+async function checkCleanupEntrySettings() {
+  const image = new Image();
+  image.src = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+  await image.decode();
+  const context = document.createElement("canvas").getContext("2d");
+  let outcome;
+  const registry = new FinalizationRegistry(() => {
+    try { context.drawImage(image, 0, 0); outcome = "drawn"; } catch (error) { outcome = String(error); }
+  });
+  (() => { registry.register({}, 0); })();
+  for (let round = 0; round < MAX_COLLECTIONS && outcome === undefined; round++) await collectOnce();
+  check("cleanup callback entry settings", outcome === "drawn", String(outcome));
+}
+
+main()
+  .then(checkCleanupEntrySettings)
+  .then(reportRemovedFrames)
+  .catch(error => fail("exception " + error.name + " " + error.message))
+  .finally(() => report("result", failures.length === 0 ? "pass" : "fail " + failures.join("; ")));
+</script>
+</body></html>

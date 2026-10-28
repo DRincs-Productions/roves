@@ -644,6 +644,16 @@ impl ServoInner {
                         .handle_haptic_effect_request(request);
                 }
             },
+            EmbedderMsg::OpenExternalGameLink(webview_id, url) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.delegate().open_external_game_link(webview, url);
+                }
+            },
+            EmbedderMsg::GameDocumentOperationBlocked(webview_id, operation) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.delegate().notify_game_operation_blocked(webview, operation);
+                }
+            },
             EmbedderMsg::ShowNotification(webview_id, notification) => {
                 match webview_id.and_then(|webview_id| self.get_webview_handle(webview_id)) {
                     Some(webview) => webview.delegate().show_notification(webview, notification),
@@ -722,6 +732,11 @@ impl ServoInner {
 
     fn handle_constellation_embedder_message(&self, message: ConstellationToEmbedderMsg) {
         match message {
+            ConstellationToEmbedderMsg::GameDocumentOperationBlocked(webview_id, operation) => {
+                if let Some(webview) = self.get_webview_handle(webview_id) {
+                    webview.delegate().notify_game_operation_blocked(webview, operation);
+                }
+            },
             ConstellationToEmbedderMsg::ShutdownComplete => self.finish_shutting_down(),
             ConstellationToEmbedderMsg::AllowNavigationRequest(
                 webview_id,

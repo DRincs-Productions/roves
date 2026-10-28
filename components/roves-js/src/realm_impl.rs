@@ -28,13 +28,17 @@ use v8::cppgc::{GarbageCollected, Member, Persistent, UnsafePtr, Visitor, WeakPe
 
 use crate::jsapi::{JSContext, JSObject, JSPrincipals, Realm};
 
-/// Embedder-data slot of a context holding its `RealmData` pointer (untraced: the holder in
-/// [`HOLDER_SLOT`] keeps the data alive as long as the context).
-const REALM_SLOT: i32 = 2;
+// Embedder-data slots of a context. V8 reserves slot 0 and deno_core uses its public
+// `CONTEXT_STATE_SLOT_INDEX` (1) and `MODULE_MAP_SLOT_INDEX` (2) on its main context, the
+// runtime's script context: roves-js's own slots follow them.
+const _: () = assert!(deno_core::CONTEXT_STATE_SLOT_INDEX < CACHE_SLOT && deno_core::MODULE_MAP_SLOT_INDEX < CACHE_SLOT);
 /// Embedder-data slot of a context holding its cache object (see [`realm_cached`]).
 const CACHE_SLOT: i32 = 3;
 /// Embedder-data slot of a context holding the object that owns its `RealmData`.
 const HOLDER_SLOT: i32 = 4;
+/// Embedder-data slot of a context holding its `RealmData` pointer (untraced: the holder in
+/// [`HOLDER_SLOT`] keeps the data alive as long as the context).
+const REALM_SLOT: i32 = 5;
 /// `Object::wrap` tag of realm data (class boxes use 1, script privates 2).
 const REALM_WRAP_TAG: u16 = 3;
 /// Registry size before the first sweep of the entries of collected realms.
@@ -61,6 +65,9 @@ thread_local! {
     /// Realm data finalized on this thread (tests observe collection through it).
     pub(crate) static REALMS_FINALIZED: Cell<usize> = const { Cell::new(0) };
     pub(crate) static STRONG_REALMS_FOR_TESTING: Cell<bool> = const { Cell::new(false) };
+    /// Non-Window globals adopt the runtime's script context, as in production (see
+    /// `JS_NewGlobalObject`).
+    pub(crate) static ADOPT_PLAIN_GLOBALS_FOR_TESTING: Cell<bool> = const { Cell::new(false) };
     pub(crate) static UNROOTED_SAVED_REALMS_FOR_TESTING: Cell<bool> = const { Cell::new(false) };
 }
 
@@ -420,8 +427,10 @@ pub unsafe fn CurrentGlobal(cx: *mut JSContext) -> *const *mut JSObject {
     realm_data(get_context_realm(cx)).map_or(std::ptr::null(), |data| data.global.as_ptr() as *const *mut JSObject)
 }
 
-/// A new global object of `clasp` in a new realm (a new V8 context whose global proxy is the
-/// class object). The new realm is not entered.
+/// The global object of `clasp`. A runtime has one script context, deno_core's main context
+/// (see `deno_impl`): the first global adopts it (its realm is the runtime's realm, already
+/// registered) and later requests are refused with a warning before anything is allocated
+/// (single-document runtime, task 0385). The realm is not entered.
 pub unsafe fn JS_NewGlobalObject(
     cx: *mut JSContext,
     clasp: *const crate::jsapi::JSClass,
@@ -431,72 +440,55 @@ pub unsafe fn JS_NewGlobalObject(
 ) -> *mut JSObject {
     // SAFETY: callers pass a live context.
     let raw = unsafe { &*cx };
-    let previous = raw.next_window_proxy_reuse.replace(std::ptr::null_mut());
-    if !previous.is_null() && crate::object::is_window_global_class(clasp) {
-        // SAFETY: forwarded; `previous` is a live Window global (the caller's contract).
-        let global = unsafe { new_global(cx, clasp, principals, options, previous) };
-        if !global.is_null() {
-            return global;
-        }
+    // The roves-js unit tests exercise the JSAPI adapter with several realms per runtime (their
+    // contexts never run modules); `ADOPT_PLAIN_GLOBALS_FOR_TESTING` selects the production
+    // path for non-Window globals. Production runtimes have exactly one script context.
+    #[cfg(test)]
+    if !crate::object::is_window_global_class(clasp) && !ADOPT_PLAIN_GLOBALS_FOR_TESTING.with(Cell::get) {
+        // SAFETY: forwarded.
+        return unsafe { new_test_global(raw, clasp, principals, options) };
     }
-    // SAFETY: forwarded.
-    unsafe { new_global(cx, clasp, principals, options, std::ptr::null_mut()) }
+    if !raw.global_adopted.get() {
+        // SAFETY: forwarded.
+        return unsafe { adopt_script_context(raw, clasp, principals, options) };
+    }
+    let refused = raw.refused_globals.get().saturating_add(1);
+    raw.refused_globals.set(refused);
+    if refused.is_power_of_two() {
+        // SAFETY: classes are static binding tables with a name.
+        let name = unsafe { std::ffi::CStr::from_ptr((*clasp).name) }.to_string_lossy();
+        log::warn!(
+            "[roves] refused to create another {name} global (#{refused}): Roves runs one game document per runtime, \
+             so additional documents, frames and windows are not supported"
+        );
+    }
+    std::ptr::null_mut()
 }
 
-/// Roves extension: the next Window global `JS_NewGlobalObject` creates takes over the global
-/// proxy of `previous` (see `RovesNewWindowGlobalReusingProxy`), so a navigation keeps its
-/// browsing context's WindowProxy identity without changing how bindings create globals.
-/// `previous` must stay alive until then; a mismatch falls back to a fresh global.
-pub unsafe fn RovesReuseWindowProxyForNextGlobal(cx: *mut JSContext, previous: *mut JSObject) {
-    // SAFETY: callers pass a live context.
-    unsafe { &*cx }.next_window_proxy_reuse.set(previous);
-}
-
-/// Roves extension: like `JS_NewGlobalObject`, but the new realm takes over the global proxy of
-/// `previous`, a global of the same class (V8 keeps one proxy per browsing context, and scripts'
-/// references to the old window then reach the new one, as in browsers). `previous` keeps its
-/// box and slots on a hidden object; its realm's script no longer reaches it through the proxy.
-/// Null when `previous` is not a registered global of `clasp`.
-pub unsafe fn RovesNewWindowGlobalReusingProxy(
-    cx: *mut JSContext,
+/// Makes the runtime's script context the realm of a new global object of `clasp`: the
+/// context's global proxy becomes the class object (its box and cell), as `JS_NewGlobalObject`
+/// would give a new context.
+unsafe fn adopt_script_context(
+    raw: &JSContext,
     clasp: *const crate::jsapi::JSClass,
     principals: *mut JSPrincipals,
     options: *const crate::jsapi::RealmOptions,
-    previous: *mut JSObject,
 ) -> *mut JSObject {
-    if previous.is_null() {
-        return std::ptr::null_mut();
+    if crate::object::is_window_global_class(clasp) {
+        // The context was created from this template (`deno_impl::GlobalKind::Document`).
+        let Some(template) = raw.document_template.borrow_mut().take() else {
+            log::error!("[roves] a Window global needs a document runtime (js::rust::Runtime::new_document)");
+            return std::ptr::null_mut();
+        };
+        raw.class_templates.adopt(clasp, template);
     }
-    // SAFETY: forwarded.
-    unsafe { new_global(cx, clasp, principals, options, previous) }
-}
-
-unsafe fn new_global(
-    cx: *mut JSContext,
-    clasp: *const crate::jsapi::JSClass,
-    principals: *mut JSPrincipals,
-    options: *const crate::jsapi::RealmOptions,
-    previous: *mut JSObject,
-) -> *mut JSObject {
-    // SAFETY: callers pass a live context.
-    let raw = unsafe { &*cx };
+    let realm = raw.with_scope(|scope| {
+        let context = v8::Local::new(scope, &*raw.context.borrow());
+        realm_of_context(context)
+    });
     let created = raw.catching(|scope| {
-        let template = raw.class_templates.template(scope, clasp);
-        let mut reused = None;
-        if !previous.is_null() {
-            let data = realm_data(realm_of_object(raw, previous))?;
-            let same_class = crate::object::class_box(previous).is_some_and(|class_box| class_box.class == clasp);
-            if data.global.get() != previous || !same_class {
-                return None;
-            }
-            // SAFETY: a live global cell; its value is the old context's global proxy.
-            let proxy = unsafe { crate::cell::cell_value(scope, previous as *mut c_void) };
-            let old_context = data.context(scope);
-            crate::object::rehome_global_cell(scope, previous, old_context)?;
-            roves_v8::global_proxy::detach_global(&old_context);
-            reused = Some(proxy);
-        }
-        let context = v8::Context::new(scope, v8::ContextOptions { global_template: Some(template), global_object: reused, ..Default::default() });
+        let context = realm_data(realm)?.context(scope);
+        let scope = &mut v8::ContextScope::new(scope, context);
         // The class box goes on the global proxy (what scripts see as `globalThis`) before
         // anything converts it.
         let global = context.global(scope);
@@ -508,14 +500,46 @@ unsafe fn new_global(
                 class_box.global_trace.set(options.creationOptions_.traceGlobal_);
             }
         }
-        // The `context` local keeps the realm alive until the caller roots the global.
+        let data = realm_data(realm)?;
+        data.global.set(cell);
+        // Last: a failed adoption holds no principals.
+        if !principals.is_null() {
+            data.hold_principals(principals);
+        }
+        Some(cell)
+    });
+    match created {
+        Some(cell) => {
+            raw.global_adopted.set(true);
+            cell
+        },
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// Test-only: a global in a context of its own, as `JS_NewGlobalObject` made before task 0385
+/// (such a context has no deno_core state: no modules or dynamic imports in it).
+#[cfg(test)]
+unsafe fn new_test_global(
+    raw: &JSContext,
+    clasp: *const crate::jsapi::JSClass,
+    principals: *mut JSPrincipals,
+    options: *const crate::jsapi::RealmOptions,
+) -> *mut JSObject {
+    let created = raw.catching(|scope| {
+        let template = raw.class_templates.template(scope, clasp);
+        let context = v8::Context::new(scope, v8::ContextOptions { global_template: Some(template), ..Default::default() });
+        let global = context.global(scope);
+        let cell = crate::object::attach_class_box(scope, global, clasp);
+        // SAFETY: callers pass valid options (or null).
+        if let Some(options) = unsafe { options.as_ref() } {
+            if let Some(class_box) = crate::object::class_box(cell) {
+                class_box.global_trace.set(options.creationOptions_.traceGlobal_);
+            }
+        }
         let realm = register_realm(raw, scope, context, cell);
-        // V8 gives every context a built-in `console` (silent without an inspector), which
-        // would shadow the embedder's (Servo defines `console` lazily, like its interfaces).
-        // After registration: the realm's shared security token allows the access.
         let console = v8::String::new(scope, "console")?;
         global.delete(scope, console.into())?;
-        // Last: a failed creation holds no principals (its realm is simply collected).
         if !principals.is_null() {
             realm_data(realm)?.hold_principals(principals);
         }

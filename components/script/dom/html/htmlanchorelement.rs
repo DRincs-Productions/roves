@@ -20,6 +20,7 @@ use crate::dom::activation::Activatable;
 use crate::dom::bindings::codegen::Bindings::HTMLAnchorElementBinding::HTMLAnchorElementMethods;
 use crate::dom::bindings::codegen::Bindings::MouseEventBinding::MouseEventMethods;
 use crate::dom::bindings::codegen::Bindings::NodeBinding::NodeMethods;
+use crate::dom::bindings::codegen::Bindings::EventBinding::EventMethods;
 use crate::dom::bindings::inheritance::Castable;
 use crate::dom::bindings::root::{DomRoot, MutNullableDom};
 use crate::dom::bindings::str::{DOMString, USVString};
@@ -373,6 +374,6 @@ impl Activatable for HTMLAnchorElement {
 
         // Step 2.
         // TODO: Download the link is `download` attribute is set.
-        follow_hyperlink(cx, element, self.relations.get(), ismap_suffix);
+        follow_hyperlink(cx, element, self.relations.get(), ismap_suffix, event.IsTrusted());
     }
 }

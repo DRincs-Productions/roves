@@ -1,0 +1,45 @@
+<!doctype html>
+<meta charset="utf-8"><title>Single-document native heap snapshot scene</title>
+<body><main id="kept"></main>
+<script>
+"use strict";
+// A real native snapshot after eight explicit collections. Keep one control DOM wrapper
+// with a searchable tag; release another wrapper/closure cycle and report it diagnostically.
+// This replaces the out-of-scope removed-frame scene; it does not establish overall retention.
+const COLLECTIONS = 8;
+const PROBE_TAG = "roves-document-retention-probe";
+const failures = [];
+const report = (...parts) => console.log("ROVES-V8 document-retention " + parts.join(" "));
+const fail = reason => { failures.push(reason); report("failure", reason); };
+addEventListener("error", event => fail("error " + event.message));
+addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+function createAndRemoveNode() {
+  const node = document.createElement("div");
+  const probe = { rovesProbeTag: PROBE_TAG, node };
+  node.rovesDocumentRetentionProbe = probe;
+  node.addEventListener("probe", () => { node.rovesHits = (node.rovesHits || 0) + 1; });
+  document.body.append(node);
+  const refs = { element: new WeakRef(node), probe: new WeakRef(probe) };
+  node.remove();
+  report("node created true removed", String(!node.isConnected));
+  return refs;
+}
+async function main() {
+  const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+  report("api", String(api));
+  if (!api) throw new Error("TestUtils.gc unavailable");
+  const control = document.getElementById("kept");
+  control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true };
+  const refs = createAndRemoveNode();
+  await nextTask();
+  for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
+  report("collections complete", String(COLLECTIONS));
+  await nextTask();
+  if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe.retained) throw new Error("retained control lost");
+  report("retained control", "true");
+  report("diagnostic released element", String(refs.element.deref() === undefined), "probe", String(refs.probe.deref() === undefined));
+}
+main().catch(error => fail("exception " + error.name + " " + error.message))
+  .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));
+</script>

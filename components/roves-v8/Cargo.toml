@@ -4,14 +4,22 @@ version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
 publish = false
-description = "Process-wide V8 setup for roves-js: platform initialization, foreground tasks and V8 APIs rusty_v8 does not bind (see ../../docs/V8_MIGRATION.md)."
+description = "Process-wide V8 setup for roves-js: flags, the foreground-task platform deno_core initializes V8 with, and the public V8 APIs rusty_v8 does not bind (see ../../docs/V8_MIGRATION.md)."
+build = "build.rs"
 
 [lib]
 name = "roves_v8"
 path = "src/lib.rs"
 
 [dependencies]
-v8 = "=152.2.0"
+# The V8 line deno_core 0.413 builds on (deno_v8 0.5.0 -> v8 150.4.0): one V8 in the binary.
+# `src/shim.cc` is compiled against this exact version's public headers (see build.rs).
+v8 = "=150.4.0"
+
+[build-dependencies]
+# Compiles `src/shim.cc` against the pinned crate's public V8 headers, so the C++ compiler,
+# not hand-written symbol names, decides each declaration's ABI.
+cc = "1.2"
 
 [features]
 # See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a first-class

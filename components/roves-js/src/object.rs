@@ -367,6 +367,12 @@ pub(crate) struct ClassTemplates {
 }
 
 impl ClassTemplates {
+    /// Records `template` (the Window template deno_core created the script context from,
+    /// see `deno_impl`) as `class`'s.
+    pub(crate) fn adopt(&self, class: *const JSClass, template: v8::Global<v8::ObjectTemplate>) {
+        self.templates.borrow_mut().insert(class as usize, template);
+    }
+
     pub(crate) fn template<'s>(&self, scope: &mut v8::PinScope<'s, '_>, class: *const JSClass) -> v8::Local<'s, v8::ObjectTemplate> {
         if let Some(template) = self.templates.borrow().get(&(class as usize)) {
             return v8::Local::new(scope, template);
@@ -387,7 +393,7 @@ impl ClassTemplates {
         let ops = unsafe { (*class).cOps.as_ref() };
         if ops.is_some_and(|ops| ops.call.is_some() || ops.construct.is_some()) {
             let data = v8::External::new(scope, class as *mut c_void);
-            template.set_call_as_function_handler(call_class_hook, Some(data.into()));
+            roves_v8::compat::set_call_as_function_handler(template, call_class_hook, data.into());
         }
         if ops.is_some_and(|ops| ops.resolve.is_some() || ops.newEnumerate.is_some()) &&
             !uses_native_global_properties(class) {
@@ -432,6 +438,23 @@ pub(crate) fn initialize_window_prototype(scope: &mut v8::PinScope, global: v8::
         let prototype = v8::Local::<v8::Object>::try_from(prototype).ok()?;
         // The Window template reserves this field and no class box is attached yet.
         prototype.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), CLASS_BOX_TAG);
+    }
+    Some(())
+}
+
+/// Marks the class-box field of deno_core's new script-context global (and, for a Window
+/// template, of its canonical prototype) as empty before anything converts them: V8
+/// initializes API-object fields as JavaScript values, and the global is converted (its realm
+/// registered) before a class box is attached (`realm_impl::adopt_script_context`).
+pub(crate) fn prepare_script_context_global(scope: &mut v8::PinScope, global: v8::Local<v8::Object>, document: bool) -> Option<()> {
+    if global.internal_field_count() >= 1 {
+        global.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), CLASS_BOX_TAG);
+    }
+    if document {
+        let prototype = v8::Local::<v8::Object>::try_from(global.get_prototype(scope)?).ok()?;
+        if prototype.internal_field_count() >= 1 {
+            prototype.set_aligned_pointer_in_internal_field(0, std::ptr::null_mut(), CLASS_BOX_TAG);
+        }
     }
     Some(())
 }

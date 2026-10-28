@@ -3,49 +3,23 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 //! V8's incumbent realm API (HTML's incumbent settings object): `Isolate::GetIncumbentContext`
-//! and `Context::BackupIncumbentScope`. rusty_v8 152 does not bind them, but its prebuilt V8
-//! library exports both, so these declare the exported C++ symbols directly. The crate pins
-//! `v8 = "=152.2.0"`; a V8 update must recheck these names and the layout below.
-//!
-//! ABI notes: `Local<T>` is one pointer and `V8_TRIVIAL_ABI`, so it travels in a register.
-//! The Microsoft C++ ABI returns any class from an instance method through a hidden pointer
-//! passed after `this`, and returns that pointer.
+//! and `Context::BackupIncumbentScope`. rusty_v8 150 does not bind them; `src/shim.cc` calls
+//! them through the pinned public headers, so no symbol name or layout is written by hand.
 
+use std::alloc::Layout;
 use std::ffi::c_void;
-use std::mem::MaybeUninit;
 use std::ptr::NonNull;
 
-/// `v8::Context::BackupIncumbentScope`'s fields.
-#[repr(C)]
-struct RawScope {
-    backup_incumbent_context: *const v8::Context,
-    js_stack_comparable_address: usize,
-    prev: *const c_void,
-}
-
 unsafe extern "C" {
-    #[cfg_attr(not(target_env = "msvc"), link_name = "_ZN2v87Context20BackupIncumbentScopeC1ENS_5LocalIS0_EE")]
-    #[cfg_attr(target_env = "msvc", link_name = "??0BackupIncumbentScope@Context@v8@@QEAA@V?$Local@VContext@v8@@@2@@Z")]
-    fn backup_incumbent_scope_construct(this: *mut RawScope, context: *mut v8::Context);
-
-    #[cfg_attr(not(target_env = "msvc"), link_name = "_ZN2v87Context20BackupIncumbentScopeD1Ev")]
-    #[cfg_attr(target_env = "msvc", link_name = "??1BackupIncumbentScope@Context@v8@@QEAA@XZ")]
-    fn backup_incumbent_scope_destruct(this: *mut RawScope);
+    fn roves_v8_incumbent_context(isolate: *mut c_void) -> *const v8::Context;
+    fn roves_v8_backup_incumbent_scope_size() -> usize;
+    fn roves_v8_backup_incumbent_scope_align() -> usize;
+    fn roves_v8_backup_incumbent_scope_enter(storage: *mut c_void, context: *const v8::Context);
+    fn roves_v8_backup_incumbent_scope_exit(storage: *mut c_void);
 }
 
-#[cfg(not(target_env = "msvc"))]
-unsafe extern "C" {
-    #[link_name = "_ZN2v87Isolate19GetIncumbentContextEv"]
-    fn isolate_get_incumbent_context(isolate: *mut c_void) -> *const v8::Context;
-}
-
-#[cfg(target_env = "msvc")]
-unsafe extern "C" {
-    #[link_name = "?GetIncumbentContext@Isolate@v8@@QEAA?AV?$Local@VContext@v8@@@2@XZ"]
-    fn isolate_get_incumbent_context(isolate: *mut c_void, result: *mut *const v8::Context) -> *mut *const v8::Context;
-}
-
-fn raw_isolate(isolate: &v8::Isolate) -> *mut c_void {
+/// The C++ `v8::Isolate*` of `isolate`.
+pub(crate) fn raw_isolate(isolate: &v8::Isolate) -> *mut c_void {
     // SAFETY: `UnsafeRawIsolatePtr` is one pointer, the C++ `v8::Isolate*`.
     unsafe { std::mem::transmute::<v8::UnsafeRawIsolatePtr, *mut c_void>(isolate.as_raw_isolate_ptr()) }
 }
@@ -53,65 +27,53 @@ fn raw_isolate(isolate: &v8::Isolate) -> *mut c_void {
 /// The incumbent context: the context of the innermost JS frame when it is newer than the
 /// innermost [`BackupIncumbentScope`], else that scope's context, else the entered context.
 pub fn incumbent_context<'s>(scope: &mut v8::PinScope<'s, '_>) -> v8::Local<'s, v8::Context> {
-    let isolate = raw_isolate(scope);
     // SAFETY: a live isolate, current on this thread; the handle lands in `scope`.
-    let slot = unsafe {
-        #[cfg(not(target_env = "msvc"))]
-        let slot = isolate_get_incumbent_context(isolate);
-        #[cfg(target_env = "msvc")]
-        let slot = {
-            let mut slot = std::ptr::null();
-            isolate_get_incumbent_context(isolate, &mut slot);
-            slot
-        };
-        slot
-    };
+    let slot = unsafe { roves_v8_incumbent_context(raw_isolate(scope)) };
     // SAFETY: `Local` is a non-null handle slot pointer, which V8 always returns here.
     unsafe { std::mem::transmute::<*const v8::Context, v8::Local<'s, v8::Context>>(slot) }
+}
+
+fn scope_layout() -> Layout {
+    // SAFETY: plain queries of the compiled header's type.
+    let (size, align) = unsafe { (roves_v8_backup_incumbent_scope_size(), roves_v8_backup_incumbent_scope_align()) };
+    Layout::from_size_align(size, align).expect("BackupIncumbentScope's layout")
 }
 
 /// A `Context::BackupIncumbentScope`: while it is the innermost one, it supplies `context`
 /// as the incumbent unless a newer JS frame runs. Scopes of an isolate must be exited in
 /// reverse order of entry, with [`BackupIncumbentScope::exit`], before the isolate is disposed.
+/// A scope dropped without `exit` is still linked into the isolate: its storage and slot leak.
 pub struct BackupIncumbentScope {
-    // Boxed: V8 links scopes by address.
-    raw: Box<MaybeUninit<RawScope>>,
+    // Heap storage: V8 links scopes by address.
+    storage: NonNull<u8>,
     // The global handle V8 holds in the scope, as a local: a stable pointer to its slot.
     slot: NonNull<v8::Context>,
-    exited: bool,
 }
 
 impl BackupIncumbentScope {
     pub fn enter(isolate: &v8::Isolate, context: v8::Global<v8::Context>) -> Self {
-        let mut raw = Box::new(MaybeUninit::<RawScope>::uninit());
+        let layout = scope_layout();
+        // SAFETY: a non-zero size (the scope has fields).
+        let storage = NonNull::new(unsafe { std::alloc::alloc(layout) }).expect("BackupIncumbentScope storage");
         let slot = context.into_raw();
         // SAFETY: the constructor reads `Isolate::Current()`; enter ours for the call.
         unsafe {
             isolate.enter();
-            backup_incumbent_scope_construct(raw.as_mut_ptr(), slot.as_ptr());
+            roves_v8_backup_incumbent_scope_enter(storage.as_ptr().cast(), slot.as_ptr());
             isolate.exit();
         }
-        BackupIncumbentScope { raw, slot, exited: false }
+        BackupIncumbentScope { storage, slot }
     }
 
     /// Exits the scope. It must be `isolate`'s innermost one.
-    pub fn exit(mut self, isolate: &mut v8::Isolate) {
+    pub fn exit(self, isolate: &mut v8::Isolate) {
         // SAFETY: constructed by `enter` on this isolate, innermost (the caller's contract).
         unsafe {
             isolate.enter();
-            backup_incumbent_scope_destruct(self.raw.as_mut_ptr().cast());
+            roves_v8_backup_incumbent_scope_exit(self.storage.as_ptr().cast());
             isolate.exit();
             drop(v8::Global::from_raw(isolate, self.slot));
-        }
-        self.exited = true;
-    }
-}
-
-impl Drop for BackupIncumbentScope {
-    fn drop(&mut self) {
-        if !self.exited {
-            // Still linked into the isolate: leak the memory and slot V8 may read.
-            std::mem::forget(std::mem::replace(&mut self.raw, Box::new(MaybeUninit::uninit())));
+            std::alloc::dealloc(self.storage.as_ptr(), scope_layout());
         }
     }
 }
@@ -133,7 +95,7 @@ mod tests {
 
     #[test]
     fn incumbent_follows_js_frames_and_backup_scopes() {
-        crate::initialize_engine();
+        crate::initialize_for_tests();
         let mut isolate = v8::Isolate::new(Default::default());
         let (a, b, sentinel) = {
             v8::scope!(let scope, &mut isolate);

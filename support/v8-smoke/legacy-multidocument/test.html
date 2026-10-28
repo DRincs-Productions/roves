@@ -1,0 +1,77 @@
+<!doctype html>
+<html><head><title>v8 test</title></head>
+<body><div id="out">initial</div>
+<script>
+window.addEventListener("error", event => console.log("ROVES-V8 script error", event.message, event.filename, event.lineno));
+console.log("ROVES-V8 URL", typeof URL, typeof URLSearchParams, typeof HTMLDivElement);
+console.log("ROVES-V8 script start, engine typeof window:", typeof window);
+const div = document.getElementById("out");
+div.textContent = "changed by js";
+console.log("ROVES-V8 dom:", div.textContent, document.title, document.querySelectorAll("div").length);
+const el = document.createElement("span"); el.className = "x"; document.body.appendChild(el);
+console.log("ROVES-V8 children:", document.body.children.length, el instanceof HTMLElement, el.tagName);
+el.addEventListener("click", (e) => console.log("ROVES-V8 click event", e.type, e.target === el));
+el.click();
+Promise.resolve(5).then(v => console.log("ROVES-V8 promise", v));
+setTimeout(() => console.log("ROVES-V8 timeout fired"), 10);
+class A { constructor(){ this.x = 1 } get y(){ return this.x + 1 } }
+console.log("ROVES-V8 class", new A().y, JSON.stringify({a:[1,2]}), window === globalThis, window.document === document);
+// TestUtils is exposed only with the dom_testutils_enabled preference (gc-lifecycle.html).
+console.log("ROVES-V8 testutils default", typeof TestUtils);
+const immutableProbe = {};
+Object.setPrototypeOf(immutableProbe, {});
+console.log("ROVES-V8 ordinary prototype mutation", Object.getPrototypeOf(immutableProbe) !== null);
+const windowPrototype = Object.getPrototypeOf(window);
+const acceptsCurrentWindowPrototype = Reflect.setPrototypeOf(window, windowPrototype);
+const rejectsNewWindowPrototype = !Reflect.setPrototypeOf(window, {});
+let throwsForNewWindowPrototype = false;
+try { Object.setPrototypeOf(window, {}); } catch (error) { throwsForNewWindowPrototype = error instanceof TypeError; }
+window.mutableWindowProperty = 42;
+console.log("ROVES-V8 immutable Window prototype", acceptsCurrentWindowPrototype, rejectsNewWindowPrototype, throwsForNewWindowPrototype, window.mutableWindowProperty === 42);
+const crossOriginFrame = document.createElement("iframe");
+crossOriginFrame.src = "http://127.0.0.1:18766/cross-origin.html";
+const crossOriginTimeout = setTimeout(() => console.log("ROVES-V8 cross-origin iframe timeout"), 5000);
+crossOriginFrame.addEventListener("load", () => {
+  console.log("ROVES-V8 cross-origin iframe load");
+  clearTimeout(crossOriginTimeout);
+  const otherWindow = crossOriginFrame.contentWindow;
+  console.log("ROVES-V8 cross-origin iframe contentWindow", otherWindow !== null);
+  let prototypeIsNull = false;
+  let prototypeReplacementRejected = false;
+  try { prototypeIsNull = Object.getPrototypeOf(otherWindow) === null; } catch (_) {}
+  try { prototypeReplacementRejected = Reflect.setPrototypeOf(otherWindow, {}) === false; } catch (_) { prototypeReplacementRejected = true; }
+  console.log("ROVES-V8 cross-origin WindowProxy prototype", prototypeIsNull, prototypeReplacementRejected);
+  const denied = action => {
+    try { action(); return false; } catch (error) { return error.name === "SecurityError"; }
+  };
+  const forbidden = [
+    () => otherWindow.document,
+    () => "document" in otherWindow,
+    () => Object.getOwnPropertyDescriptor(otherWindow, "document"),
+    () => Reflect.defineProperty(otherWindow, "probe", { value: 1 }),
+    () => Reflect.deleteProperty(otherWindow, "document"),
+    () => Reflect.set(otherWindow, "probe", 1),
+    () => Reflect.set(otherWindow, "opener", null),
+    () => Reflect.preventExtensions(otherWindow),
+  ];
+  const deniedCount = forbidden.filter(denied).length;
+  let allowed = false;
+  try {
+    const keys = Reflect.ownKeys(otherWindow);
+    allowed = otherWindow.self === otherWindow && otherWindow.window === otherWindow &&
+      typeof otherWindow.closed === "boolean" && typeof otherWindow.postMessage === "function" &&
+      otherWindow.postMessage === otherWindow.postMessage &&
+      otherWindow.then === undefined && "closed" in otherWindow &&
+      keys.includes("location") && keys.includes("postMessage") && !keys.includes("document") &&
+      Object.getOwnPropertyDescriptor(otherWindow, "closed").get instanceof Function;
+  } catch (error) { console.log("ROVES-V8 cross-origin allowed error", error.name, error.message); }
+  console.log("ROVES-V8 cross-origin WindowProxy properties", deniedCount === forbidden.length, allowed);
+});
+crossOriginFrame.addEventListener("error", () => {
+  clearTimeout(crossOriginTimeout);
+  console.log("ROVES-V8 cross-origin iframe error");
+});
+console.log("ROVES-V8 cross-origin iframe append");
+document.body.appendChild(crossOriginFrame);
+console.log("ROVES-V8 cross-origin iframe appended");
+</script></body></html>

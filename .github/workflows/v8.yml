@@ -8,11 +8,12 @@ on:
       - 'components/roves-v8/**'
       - 'components/roves-js/**'
       - 'components/script_bindings/**'
-      - 'components/script/task_queue.rs'
-      - 'components/script/dom/css/fontfaceset.rs'
-      - 'components/script/dom/event/**'
-      - 'components/script/dom/abort/**'
-      - 'components/script/script_thread.rs'
+      - 'components/script/**'
+      - 'components/constellation/**'
+      - 'components/shared/constellation/**'
+      - 'components/shared/embedder/**'
+      - 'components/servo/**'
+      - 'ports/servoshell/**'
       - 'support/task-queue-tests/**'
       - 'support/v8_cutover_check.py'
       - 'support/v8-smoke/**'
@@ -41,9 +42,8 @@ jobs:
       - name: isolate the runtime crate from unrelated Servo dependencies
         shell: bash
         run: |
-          mkdir -p "$RUNNER_TEMP/roves-v8/src"
-          cp components/roves-v8/Cargo.toml components/roves-v8/Cargo.lock "$RUNNER_TEMP/roves-v8/"
-          cp -R components/roves-v8/src/. "$RUNNER_TEMP/roves-v8/src/"
+          # Keep the native crate self-contained, including its public-V8 C++ build script.
+          cp -R components/roves-v8 "$RUNNER_TEMP/roves-v8"
           # roves-js (the mozjs API on V8) builds next to roves-v8, with its own lockfile.
           cp -R components/roves-js "$RUNNER_TEMP/roves-js"
       - name: test smoke runner failure contracts
@@ -217,7 +217,7 @@ jobs:
           python support/v8_cutover_check.py servoshell --build --online --top 40 $features
           ls target/v8-cutover/debug/servoshell*
       # Linux normal only: one extra debug servoshell process (one page, bounded by its 60 s
-      # timeout) loads frame-retention.html and writes one native V8 heap snapshot of a removed
+      # timeout) loads document-retention.html and writes one native V8 heap snapshot of a detached
       # blank frame; its size follows the page's JS heap. Kept 3 days, for reading retainers in
       # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.
       - name: run the V8 smoke pages headlessly
@@ -225,7 +225,7 @@ jobs:
         env:
           V8_SMOKE_MODE: ${{ matrix.mode }}
           V8_SMOKE_ALLOW_MISSING_DEVICES: '1'
-          V8_SMOKE_HEAP_SNAPSHOT: ${{ matrix.mode == 'normal' && format('{0}/target/v8-heap-snapshot/frame-retention.heapsnapshot', github.workspace) || '' }}
+          V8_SMOKE_HEAP_SNAPSHOT: ${{ matrix.mode == 'normal' && format('{0}/target/v8-heap-snapshot/document-retention.heapsnapshot', github.workspace) || '' }}
         run: |
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh
@@ -234,7 +234,7 @@ jobs:
         if: always() && runner.os == 'Linux' && matrix.mode == 'normal'
         uses: actions/upload-artifact@v4
         with:
-          name: v8-heap-snapshot-frame-retention
-          path: target/v8-heap-snapshot/frame-retention.heapsnapshot
+          name: v8-heap-snapshot-document-retention
+          path: target/v8-heap-snapshot/document-retention.heapsnapshot
           retention-days: 3
           if-no-files-found: warn

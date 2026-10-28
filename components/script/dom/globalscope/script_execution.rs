@@ -166,6 +166,9 @@ impl GlobalScope {
         let mut realm = enter_auto_realm(cx, self);
         let cx = &mut realm.current_realm();
 
+        // Classic workers also support import(); their loader must exist before startup JS.
+        crate::script_module::install_module_loader(cx, self);
+
         // Step 4. Prepare to run script given settings.
         // Once dropped this will run "Step 9. Clean up after running script" steps
         run_a_script::<DomTypeHolder, _, _>(cx, self, |cx| {
@@ -287,20 +290,13 @@ impl GlobalScope {
             }
 
             // Step 7.1. Otherwise: Let record be script's record.
-            let record = module_tree.get_record().map(|record| record.handle());
-
-            if let Some(record) = record {
-                // Step 7.2. Set evaluationPromise to record.Evaluate().
-                rooted!(&in(cx) let mut rval = UndefinedValue());
-                let evaluated = module_tree.execute_module(cx, self, record, rval.handle_mut());
-
-                // Step 8. If preventErrorReporting is false, then upon rejection of evaluationPromise
-                // with reason, report an exception given by reason for script's settings object's
-                // global object.
-                if let Err(exception) = evaluated {
-                    module_tree.set_rethrow_error(exception);
-                    module_tree.report_error(cx, self);
-                }
+            // Step 7.2. Set evaluationPromise to record.Evaluate().
+            // Step 8. Upon rejection of evaluationPromise: Roves (deno_core) reports it through
+            // the promise rejection tracker as `unhandledrejection`, not as `error` (accepted
+            // deviation, see `ModuleTree::execute_module`).
+            if let Err(exception) = module_tree.execute_module(cx, self) {
+                module_tree.set_rethrow_error(exception);
+                module_tree.report_error(cx, self);
             }
         });
     }

@@ -388,6 +388,7 @@ pub(crate) fn follow_hyperlink(
     subject: &Element,
     relations: LinkRelations,
     hyperlink_suffix: Option<String>,
+    trusted_click: bool,
 ) {
     // Step 1: If subject cannot navigate, then return.
     if subject.cannot_navigate() {
@@ -403,6 +404,26 @@ pub(crate) fn follow_hyperlink(
     // Also allow the user to open links in a new WebView by pressing either the meta or
     // control key (depending on the platform).
     let document = subject.owner_document();
+    // Resolve external HTTP(S) links before choosing a target: _blank must not create a
+    // second game WebView. Only the native event's trust bit authorizes an OS handoff;
+    // .click(), dispatchEvent and automatic Location/window.open paths cannot set it.
+    let mut external_href = subject.get_attribute_string_value(&local_name!("href")).unwrap_or_default();
+    if let Some(suffix) = hyperlink_suffix.as_ref() { external_href.push_str(suffix); }
+    if let Ok(url) = document.encoding_parse_a_url(&external_href) {
+        if matches!(url.scheme(), "http" | "https") && url.origin() != document.url().origin() {
+            let window = document.window();
+            if trusted_click {
+                window.as_global_scope().send_to_embedder(embedder_traits::EmbedderMsg::OpenExternalGameLink(
+                    window.window_proxy().webview_id(), url.into_url(),
+                ));
+            } else {
+                crate::navigation::report_blocked_document_operation(window,
+                    servo_constellation_traits::GameDocumentOperation::Navigation);
+            }
+            return;
+        }
+    }
+
     let target_attribute_value =
         if subject.is::<HTMLAreaElement>() || subject.is::<HTMLAnchorElement>() {
             if document

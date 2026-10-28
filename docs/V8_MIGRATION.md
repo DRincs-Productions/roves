@@ -1,16 +1,12 @@
-# Migrazione V8 / deno_core — istruzioni operative di ripresa
+# Migrazione V8 / deno_core — punto operativo autorevole
 
-## Leggere prima di modificare — checkpoint del 28 ottobre 2026
+## Checkpoint di integrazione del 28 ottobre 2026
 
-Questo blocco operativo, prima dello storico, è il punto autorevole. È scritto per
-un agente che non conosce la chat. Non leggere tutto lo storico per ricostruire lo stato.
-Le sezioni storiche sotto possono descrivere scelte superate: non sono istruzioni correnti.
-Leggere anche `AGENTS.md`. Se Git differisce dai riferimenti sotto, prevalgono i file reali:
-controllare il diff, non ripristinare automaticamente una vecchia versione.
-
-**Risultato reale:** il backend V8 diretto è pubblicato; il passaggio produttivo a deno_core
-è INCOMPLETO e nel worktree. Esistono test nativi Windows verdi, ma NON una build/browser
-Servo del port corrente già verde. Non dichiarare completata l'adozione o risolta la retention.
+Leggere questo blocco e AGENTS prima di modificare. Lo storico dopo FINE DEL PUNTO OPERATIVO
+contiene scelte e backup superati; consultarlo solo per un problema concreto.
+Il candidato sorgente adotta Deno e la policy documento unico in un cambiamento atomico.
+La validazione browser/cross-platform NON e ancora conclusa: non dichiarare migrazione o
+retention risolte. Il prossimo passo e la CI completa, seguita dalle correzioni necessarie.
 
 ### 1. Vincoli e decisioni già approvate: non richiederle di nuovo
 
@@ -41,247 +37,152 @@ Servo del port corrente già verde. Non dichiarare completata l'adozione o risol
 - Nessuna API Deno privilegiata ai giochi, fork Deno/V8, parser JS nostro, layout V8 privato
   o secondo grafo permanente. Non togliere test senza copertura sostitutiva motivata.
 
-### 2. Claude, proprietà del lavoro e promemoria
+### 2. Ultime decisioni, proprieta e quota
 
-L'utente ha chiesto a Codex di sviluppare DIRETTAMENTE mentre Claude ha poca quota.
-**Non usare Claude prima del 30 ottobre 2026 alle 17:30 Europe/Rome (16:30 UTC).**
-Promemoria unico creato: `ripresa-claude-il-30-ottobre-alle-17-30`; nessuna automazione
-periodica. Il retry del28ottobre13:21 è stato eliminato: non ricrearlo.
-Alla scadenza usare `/usage` senza richiesta al modello; l'orario è una nuova autorizzazione,
-NON prova che i crediti si siano ripristinati. Se indisponibile, registrare e fermare il
-retry senza cambiare modello o concatenare pianificazioni. Prima di delegare ripartire
-l'ownership: nessuna implementazione contemporanea sugli stessi file.
+- Preload JSON temporaneamente NON disponibile, scelta esplicita utente: warning limitato
+  e link error asincrono, niente falso load o interruzione del gioco. Import JSON tipizzati
+  funzionanti; senza type json respinti. Ripristino documentato in TODO.md con criteri.
+- L'utente autorizza lo sviluppo diretto Codex. Nessun Claude attivo; non usarlo prima del
+  30ottobre2026 alle17:30 Europe/Rome. Promemoria unico ripresa-claude-il-30-ottobre-alle-17-30.
+  Verificare /usage alla scadenza, non assumere reset settimanale. Nessun retry concatenato.
+- Codex vicino al limite5ore (<=10% rimanente): get_usage_limits, handoff aggiornato e un
+  solo tentativo al reset reale piu2minuti; disattivarlo dopo. Nessuna pianificazione stimata,
+  polling, cambio modello, riscatto reset o aggiramento del limite settimanale.
+- Non ricreare CLAUDE_RESUME.md. TODO.md contiene una riga utente preesistente: preservarla;
+  l'utente ha autorizzato esplicitamente SOLO l'aggiunta del nuovo backlog JSON.
+- Continuare il loop: implementazione completa/revisione/verifiche, commit locale, controllo
+  aggregato del batch precedente; push solo se nessuna run richiesta attiva o errore irrisolto.
+  Apple esclusa dal gate ma non disabilitata. Build browser pesanti solo online.
 
-Nessun incarico Claude attivo al checkpoint. La sessione precedente0385 è
-`ab3e2eb3-6c0f-44ee-9277-de12c954a202`, solo riferimento storico, non avviarla ora.
-Prima di ulteriore codice l'utente ha chiesto questo handoff dettagliato. Non ricreare
-`CLAUDE_RESUME.md`. `TODO.md` contiene modifiche dell'utente: non toccare/stagiare/ripristinare.
+### 3. Git, CI e significato dei riferimenti
 
-### 3. Git e CI: distinguere pubblicato e locale
+Prima del nuovo commit di integrazione: rootHEAD1f0bdebb1e8, pubblicato54ae32b3dae;
+wikiHEAD062490f (locale), pubblicatab919c94; roves-actionHEAD0964874 (locale), pubblicato4b2a67f.
+Controllare SEMPRE Git reale: il commit di questo checkpoint avra uno SHA successivo.
+Batch54ae verificato nuovamente: generale40655538314 verde13/13 (10nonApple richiesti),
+Android40655538288 verde, iOS40655538256 verde/esclusa dal gate. Non verificano il nuovo port.
+ProbeDeno40564575701 verde4/4 e una prova isolata precedente, NON Servo+DOM.
+Dopo il push identificare le nuove run in un'unica lettura aggregata e iniziare il prossimo
+lavoro utile. Non pushare altro con run richieste attive; non usare polling periodico.
 
-| Oggetto | Riferimento al checkpoint | Significato |
+### 4. Cosa cambia nel candidato sorgente
+
+| Area | File | Stato e intento |
 | --- | --- | --- |
-| Root pubblicato | `54ae32b3daed3ae94efd73a7c03704e226201af0` | Vecchio backend + docs; NON port Deno corrente |
-| Root HEAD prima del presente handoff | `07dd273da07c0b428dc5959ea5e783c9567fa32f` | Commit locali documentali; anche `ed91ae425d1` locale |
-| Wiki pubblicata | `b919c94` | Stato precedente |
-| Wiki locale prima del presente handoff | `03f32df8aced25e013bcb949f231d37b3e081f08` | Detached HEAD; ulteriori modifiche documentali locali |
-| roves-action HEAD | `4b2a67fec7e6dcf57131708d1653a52a3dbb10dd` | README mirror modificato localmente; niente nuovi input |
+| Deno runtime | roves-js/src/deno_impl.rs, rust.rs, runtime_impl.rs, realm_impl.rs | Deno possiede isolate/context/grafo/event loop; primo global adotta il context; altri rifiutati |
+| V8 pubblico | roves-v8/build.rs, src/shim.cc, compat.rs, codegen.rs, incumbent.rs | v8=150.4.0 condiviso con deno_core0.413.0; shim compilato contro header pubblici, niente layout privati |
+| HTML/fetch | script/script_module.rs | Servo import map, CSP, MIME, SRI, credenziali, referrer, timing; callback rete -> oneshot senza pump JS durante il fetch statico |
+| Classici/worker | globalscope/script_execution.rs, script_runtime.rs | Loader prima dei classici; source private conserva fetch options; worker iniziale conserva RequestClient/Referrer; dinamici usano destinazione Script |
+| Chiusura | script_module clear_module_loader | PENDING_GRAPHS svuotato prima della distruzione runtime; task residue senza entry diventano no-op |
+| Documento unico | script/navigation.rs, htmliframeelement.rs, constellation.rs | Rifiuto precoce full nav/reload/iframe; preflight History prima dei drain; iniziale shell usa NewWebView/new_pipeline |
+| Warning/UI | shared/constellation/game_document_policy.rs, shared/embedder, servo, servoshell | Warning per categoria/processo; messaggio nativo tipizzato; avviso solo sviluppo |
+| Link esterni | links.rs, anchor/area, EmbedderMsg, WebViewDelegate, running_app_state | isTrusted nativo, HTTP(S) cross-origin prima scelta target, SDL3 open_url; headless non avvia OS; window.open resta rifiutato |
+| Preload JSON | script_module.rs, html/documentmetadata/htmllinkelement.rs | Non disponibile; callback errore e queue_simple_event della task source networking |
+| Rimozioni | roves-js/modules_impl.rs, roves-v8/global_proxy.rs, script/module_loading.rs | Vecchio grafo scollegato/eliminato; gen_wrappers2 adattato |
+| CI | v8.yml, roves-action README | Copia build.rs e crate interi, trigger su script/constellation/embedder/servo/shell, snapshot document-retention |
 
-Prima azione di un nuovo agente: `git status --short`, `git log -3 --oneline`, poi gli stessi
-controlli nei due repository. I riferimenti sopra sono checkpoint, non valori da forzare.
-Il commit di questo handoff avrà necessariamente uno SHA successivo: usare Git reale.
+Nessuna API Deno privilegiata esposta: bootstrap globals rimossi; namespace ext/node/npm/
+jsr/deno respinti prima di cache, dopo remap/redirect e in import.meta.resolve. Errori di
+risoluzione restano TypeError. Nessun parser JS o secondo grafo permanente.
 
-Batch54ae verificato concluso: generale **40655538314 VERDE13/13**, inclusi tutti i10 job
-non Apple richiesti; Android **40655538288 VERDE**. iOS **40655538256 verde**, esclusa dal
-gate insieme a macOS per istruzione utente. Queste run verificano54ae, NON il nuovo worktree.
-Probe isolato Deno40564575701 verde4/4 Windows/Linux normal/JITless: non è Servo+DOM.
+V8 Function puo riutilizzare il referrer della prima compilazione per una funzione uguale
+in un altro script. Riprodotto left:left:left:right:right:left invece di ultimo right.
+Guard pubblico --no-compilation-cache risolve; cache moduli Deno resta attiva. Costo avvio/
+compilazione NON misurato. Non rimuovere senza prova negativa/positiva alla versione nuova.
 
-Il gate non è ora bloccato dalle vecchie run, ma il codice locale è ancora WIP e non va
-pubblicato. Non fare push per cancellare vecchie run. Dopo una modifica completa: controllare
-aggregatamente il batch precedente; correggere ogni fallimento non Apple e non pushare con
-run richieste attive. Si possono sviluppare e committare modifiche COMPLETE durante la CI.
-Build complete Servo solo online. Nessun polling continuo.
+### 5. Prove reali, comandi e limiti
 
-### 4. Dove si trova il lavoro: NON ripristinare il backup vecchio
+Log sotto target/task-0385, locali/ignorati da Git. Su un clone nuovo vanno rigenerati.
 
-Il lavoro attuale è nei sorgenti modificati/non tracciati. Non è sparito perché non è
-committato. Non fare `reset --hard`, `clean`, checkout/restore massivi o `git add -A`.
-
-- Backup vecchio `target/task-0385/incomplete-cutover-2026-10-28/incomplete.patch`, base
-  b8fb2eb4904, SHA256 `b81d31d495be7492d596aba6ce05e02f57f052f0c660d738b30ec9df9039bdbc`:
-  PRECEDE le correzioni Codex. NON applicarlo sopra i sorgenti correnti.
-- Snapshot prima del presente aggiornamento documentale:
-  `target/task-0385/handoff-2026-10-28/manifest.json`, `status.txt`, `worktree.patch`,
-  `new-files/`. Include hash dei nuovi file e del diff, esclude TODO.md e modifiche ai
-  subrepository. È un backup WIP, non una patch approvata per la pubblicazione.
-- `IMPLEMENTATION.md`, `MANIFEST_READY.md`, `NATIVE_REVIEW.md` in target/task-0385 sono
-  consegne/diagnosi storiche della bozza: consultarle solo per dettagli concreti. NON
-  seguire vecchie istruzioni di restore o vecchie dichiarazioni di completamento.
-- Nuovi file non tracciati devono essere inclusi nel futuro commit completo; controllare
-  esplicitamente `git ls-files --others --exclude-standard`. Un diff dei soli tracked li perde.
-
-### 5. Architettura implementata nella bozza e file da leggere
-
-| Area | File principali | Comportamento / stato |
+| Prova | Esito | Log |
 | --- | --- | --- |
-| Runtime | `components/roves-js/src/deno_impl.rs`, `rust.rs`, `runtime_impl.rs`, `realm_impl.rs` | Deno possiede isolate/context/grafo/event loop; un documento; native suite Windows verde |
-| V8 pubblico | `components/roves-v8/build.rs`, `src/shim.cc`, `compat.rs`, `codegen.rs`, `incumbent.rs` | Shim C++ compilato contro header pubblici150; niente simboli C++ inventati |
-| Versioni | Cargo.toml/lock root e dei2crate | deno_core0.413.0 + un solo v8=150.4.0; standalone lock rigenerati offline |
-| HTML/fetch | `components/script/script_module.rs` | Adapter Servo: import map, CSP, MIME, credenziali, referrer, SRI, resource timing; da verificare nel browser |
-| Worker/classici | globalscope/script_execution.rs, script_runtime.rs | Loader installato anche prima dei classici per preservare import() nei worker; browser ancora pendente |
-| Policy precoce | `components/script/navigation.rs`, htmliframeelement.rs | Blocca full navigation/reload prima unload; iframe prima della creazione sincrona di context/pipeline |
-| Difesa centrale | `components/constellation/constellation.rs` | Blocca load/reload/iframe; preflight storia prima dei drain; History/hash solo pipeline corrente |
-| Diagnostica | shared/constellation/game_document_policy.rs, shared/embedder/lib.rs, servo/{servo,webview_delegate}.rs | Warning per categoria/processo + messaggio nativo tipizzato; niente parsing log del gioco |
-| Avviso sviluppo | `ports/servoshell/running_app_state.rs` | Riusa policy_notice/egui, development-only; rendering ancora da verificare |
-| Link esterni | script/links.rs, htmlanchor/area, EmbedderMsg, WebViewDelegate, running_app_state.rs | Bozza RECENTE non compilata: event.IsTrusted nativo, solo HTTP(S) cross-origin, SDL3 open_url; headless rifiuta e Android warning |
-| Rimozioni | modules_impl.rs, roves-v8/global_proxy.rs, script/module_loading.rs | Eliminati e scollegati; grafo sostituito da Deno; gen_wrappers2.py aggiornato al nuovo modulo |
+| Suite nativa Windows, sorgenti attuali | 110pass,2benchmarkignore normale | pre-ci-native-normal.log |
+| Stessa suite con VERA feature JITless | 109pass,3ignore (benchmark+Wasm) | pre-ci-native-jitless.log |
+| Contratti moduli dopo ultime correzioni | 11/11 normale e JITless | final-module-contracts-*.log |
+| Python/Node e codegen | 59test/8skip passati | pre-ci-python-checks.log |
+| Root e2standalone Cargo metadata | --locked --offline validi | root-metadata.json e output locale |
+| Rust e Bash | sintassi modifiche verificata, non typecheck browser | *-syntax.rs / bash -n |
+| HTTP fixture | Referer presente/assente e file statico verificati | esecuzione locale stdlibserver |
+| Browser/Servo attuale, clic reale, noticeUI, misure pausa | NON verificati | nuove CI/manuale necessari |
 
-Le ultime modifiche link esterni sono state fatte PRIMA della richiesta di aggiornare il
-handoff e non vanno considerate concluse. Rivedere in particolare: url.into_url/trait import,
-match esaustivi EmbedderMsg, gestione _blank prima della creazione WebView, .click()/eventi
-sintetici non fidati, URL same-origin (full navigation bloccata), schemi nonHTTP, fallimento
-OS. Per ora il canale è per anchor/area; window.open resta rifiutato, non dedurre una sua
-provenienza fidata. Non dichiarare apertura esterna mobile o verifica visiva già funzionanti.
-SDL3 già presente offre `sdl3::url::open_url`: nessuna nuova dipendenza o shell command.
-
-Deno bootstrap elimina Deno/__bootstrap/__infra/console/queueMicrotask prima del gioco;
-Servo installa le proprie API. slot realm5 per evitare collisioni. Primo global adotta il
-main context Deno, altri global rifiutati. Non ripristinare WindowProxy multi-frame come
-requisito. Le valutazioni partono al punto HTML; static fetch usa oneshot dal thread rete,
-non un task JS rientrante durante borrow esclusivo di JsRuntime. Non fare pump di task JS
-nel block_on. `external_ops_tracker` resta ref per vita documento per TLA che aspetta eventi
-host; unref in Drop. Verificare chiusura e wake senza spin, non inventare un event loop parallelo.
-
-### 6. Difetto cache Function scoperto e protezione corrente
-
-Test reale `classic_eval_and_constructed_functions_keep_their_import_referrer`:
-2 script identici in `/left/classic.js` e `/right/classic.js`; ognuno produce closure,
-direct-eval e new Function con import relativo `./owner.js`. Senza protezione V8 restituisce
-`left:left:left:right:right:left`, atteso `left:left:left:right:right:right`.
-Log negativo `target/task-0385/direct-referrer-normal.log` (1 fallimento reale).
-
-Il flag pubblico V8 **`--no-compilation-cache`** risolve il caso. Inserito in
-roves-v8/src/lib.rs prima dell'inizializzazione. Non riscrive sorgenti e NON disattiva la
-cache dei moduli Deno. Costo compilazione/avvio NON misurato: tenerlo come protezione di
-correttezza e tema da rivalutare alla prossima versione condivisa Deno/V8. Non togliere il
-flag per "ottimizzazione" senza il test negativo/positivo equivalente.
-Nessun fix della retention complessiva è deducibile da questo risultato.
-
-### 7. Verifiche effettive e limiti delle prove
-
-Tutti i log qui sotto sono in `target/task-0385/` (artefatti locali, non presenti su un clone
-nuovo). Le prove native usano copie isolate di sorgenti: sincronizzarle quando cambiano.
-
-| Prova | Esito verificato | Log |
-| --- | --- | --- |
-| Native complete, ultime modifiche runtime/cache, Windows normale | 108 pass, 2 benchmark ignorati | direct-cache-guard-all-normal.log |
-| Native complete, VERA feature JITless compilata | 107 pass, 3 ignorati (2 benchmark+Wasm) | direct-cache-guard-feature-jitless.log |
-| Deno specifici con C3/referrer/JSON/cicli/TLA/dinamici/errori/Drop | 9/9 normale; inclusi anche nei107 JITless sopra | direct-referrer-fixed-normal.log |
-| Regressione cache prima del fix | riprodotta, 1 test fallito | direct-referrer-normal.log |
-| Helper smoke/codegen Python+Node | 56 test, 8 skip dichiarati, pass | direct-smoke-runner-final.log |
-| Sintassi inline JS delle7 pagine nuove/modificate | pass prima delle ultime fixture referrer | da rigenerare se si modifica JS |
-| Port Servo/browser e link esterni del worktree corrente | NON eseguito | build pesante da fare online |
-| Pausa input/timer e prestazioni / avviso grafico | NON misurati | non inventare numeri |
-
-ATTENZIONE: `V8_TEST_MODE=jitless` DA SOLO non abilita JITless nei test Cargo.
-La CI interpreta la variabile passando `--features jitless`; il comando locale deve farlo.
-I log direct-inline-jitless.log, direct-referrer-fixed-jitless.log e
- direct-cache-guard-all-jitless.log prodotti in questa ripresa senza feature sono esecuzioni
-NORMALI nonostante il nome. Non citarli come prova JITless; usare esclusivamente
-`direct-cache-guard-feature-jitless.log` per la prova attuale. Le prove precedenti con
-feature107/106 nello storico riguardano un set precedente e non sostituiscono quella attuale.
-
-Ambiente native locale (non è una build del browser):
+V8_TEST_MODE DA SOLO NON abilita JITless. Usare --features roves-js/jitless nella workspace
+isolata o --features jitless nel crate standalone, come fa CI. Non citare come provaJITless
+i vecchi log *jitless che omettevano la feature (specificati nel checkpoint storico).
 
 ```powershell
 $env:CARGO_TARGET_DIR='C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js/target'
-# Prima sincronizzare i sorgenti modificati in target/task-0385/native-workspace/.
+# Prima sincronizzare i file modificati in target/task-0385/native-workspace/.
 cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js -j1 -- --test-threads=1
 cargo test --manifest-path target/task-0385/native-workspace/Cargo.toml -p roves-js --features roves-js/jitless -j1 -- --test-threads=1
 python -m unittest discover -s support/v8-smoke -p 'test_*.py'
 ```
 
-Salvare stdout/stderr estesi in file, leggere solo esito/errori. Non riversare730warning
-legacy o JSON GitHub completi nel contesto. In PowerShell controllare LASTEXITCODE dopo
-ogni comando: un successivo comando riuscito può mascherare un fallimento Python/Cargo.
-Non rifare una suite già valida senza modifica o dubbio concreto.
+Controllare LASTEXITCODE dopo ogni comando PowerShell. Salvare output ampi nei log; non
+riversare warning legacy, JSON API o interi storici. Non ripetere prove senza modifica/dubbio.
 
-### 8. Smoke browser adattati: cosa c'è e cosa NON è verificato
+### 6. Fixture browser e copertura da verificare in CI
 
-- `single-document.html`: stato/documento/Window conservati dopo reload/assign/replace,
-  cross-origin, iframe srcdoc/src, window.open; History push/replace/back/forward e hash.
-  Runner richiede assenza di richieste al target vietato nei due serverHTTP.
-- `module-order.html`: body già parsato, moduli deferred, TLA che aspetta DOMContentLoaded
-  senza bloccarlo, C2rejection e prosecuzione gioco, C3inline distinti/base/URL esterni,
-  classicierror, parse/link/fetch statici distinti, dynamic rejection e referrer Function.
-- `single-document-fixtures/`: moduli value/order/evaluation/parse/link e cartelle left/right
-  per referrer. JSON è già coperto dalla suite modules e da quella nativa. parse-error.mjs è
-  INTENZIONALMENTE invalido: non "correggerlo" perché node --check fallisce.
-- `events.html`: conserva named-property/descriptors/deleter/ownKeys. Helper
-  withNamedDocument sostituisce iframe: harness seriale, callback SOLO sincrona, cleanup
-  proprietà/prototipi e nodi nuovi prima del caso successivo. Non trasformarlo in async.
-- `document-interface-alias.html`: tre PROCESSI FRESCHI via query first=Document,
-  HTMLDocument,descriptor. Un loop nello stesso documento NON prova il primo accesso.
-- `gc-lifecycle.html`: conserva controlli reali DOM/weakref/cicli/listener/signal/inlinehandler,
-  importer classico e cleanup entry-settings; nuovi importOwner/evalImportOwner e resolver
-  prima/dopo GC nel documento unico. Le vecchie2coppie di frame non sono più attive.
-- `document-retention.html`: nuova scena snapshot nativo dopo8GC; controlloDOM vivo +
-  wrapper/ciclo staccato osservato con WeakRef. Conteggi di rilascio diagnostici, non prova
-  retention risolta. Runner continua a validare file snapshot e stringhe scena.
-- `legacy-multidocument/`: copie originali prima della modifica; non suite autonoma eseguibile.
-  I mock storici iframe/GC in test_runner leggono copie archiviate. Mantenerli distinti
-  dalle prove browser del nuovo prodotto, non spacciarli per test di frame supportati.
-- run.sh e REQUIRED_CHECKS aggiornati per i nuovi casi. Ultima scena snapshot nuova ha
-  bisogno di verifiche runner/negative specifiche; vecchi mock snapshot ancora riguardano
-  frame-retention.html e NON validano la nuova scena. Non considerare la sostituzione coperta
-  solo perché i56 test storici passano.
+- single-document: reload/assign/replace/iframe/open non cambiano gioco; History/hash
+  funzionano. Due serverHTTP devono non ricevere il target vietato. Clic sintetici negati.
+- module-order: ordineHTML/body/TLA/DOMContentLoaded, C2rejection, C3inline URL/base, classici
+  e statici parse/link/fetch distinti, JSON typed/untyped/preloaderror asincrono, referrer
+  classici/eval/Function, Referer del modulo importatore e CORS consentito/negato.
+- module-csp: nonce dello script classico autorizza il suo import; script senza nonce negato.
+- cold/warm/slow inserimento module runtime: log durata/gap timer e ripresa tick/frame;
+  delay250ms del server e solo una condizione controllata, NON soglia accettata di prodotto.
+- events: named-property/ownKeys/deleter invariati su documento unico con cleanup sincrono;
+  document-interface-alias eseguito in3processi freschi per distinguere il primo accesso.
+- gc-lifecycle mantiene controlli DOM/cicli/listener/signal/inlinehandler/importer/cleanup
+  settings, moduli/eval/resolver prima/dopo GC. Non conclude raccolta del grafo.
+- document-retention:8GC, controlloDOM conservato obbligatorio, WeakRef diagnostici e vero
+  snapshotJSON V8 validato. Mock Node non prova raccolta reale. Vecchie prove frame sono
+  archiviate in legacy-multidocument e i loro mock restano distinguibili da test attivi.
+- http_server.py riusa stdlib SimpleHTTPRequestHandler/ThreadingHTTPServer su loopback;
+  aggiunge solo endpoint Referer, CORS e ritardo. Nessun nuovo servizio o dipendenza prodotto.
 
-### 9. Prossimi incarichi, in ordine, con criteri di uscita
+### 7. Patch, backup e attenzione al replay
 
-**A. Consolidare le ultime modifiche e copertura, senza altra ricerca generale.**
-1. Leggere solo i diff recenti sopra, verificare sintassi Rust dei file non nativi toccati
-   (rustfmt --emit stdout come parser, senza riformattare massivamente il repository).
-2. Finire revisione del canale link esterni e testare rifiuto di richieste sintetiche e
-   schemi nonHTTP. Prova positiva nativa clic reale con OS handoff controllato; non aprire
-   browser dal runner headless. Se impossibile verificarla localmente, documentare esattamente
-   la prova online/manuale mancante, senza dichiararla riuscita.
-3. Cercare iframe/full navigation rimasti negli smoke ATTIVI e relativi helper/assertioni.
-   Non basta aver modificato events/gc; games/modules/errors/stress possono avere dipendenze.
-   Conservare copertura valida di worker/moduli/CSP e sostituire i vecchi positivi fuori scope.
-4. Aggiungere controllo nuova scena document-retention (8GC esatti, controllo vivo, errori,
-   snapshot mancante/corrotto e stringhe corrette) senza fingere vere raccolte con mock Node.
-5. Verificare run.sh con bash -n, JS valido con node --check; fixture parse-error esclusa.
-   Eseguire Python/Node e negative mirate dopo le modifiche. Aggiornare validatore senza
-   consentire skip arbitrari o rimuovere REQUIRED_CHECKS per ottenere verde.
+Patch0402 processo/quota+policy JSON; patch0403 sorgente del port. Candidato in
+ target/task-0385/cutover-review-candidate.patch. Windows+WSL tail replay verificati su81
+percorsi sorgente dopo la serie gia ricostruita; normalizzazioneLF ed eliminazioni verificate.
+NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno eccezioni
+metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
+Ricontrollare numero file e rigenerare0403 se il codice cambia. Scratch Windows gia applicato:
+ C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
+Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
+nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
 
-**B. Riesame runtime e sicurezza.**
-1. Conservare test referrer per classici/directeval/Function e C3; un solo v8 nella lock.
-   Testare worker classico import(), worker module, import map, redirect/MIME/CSP/SRI/referrer
-   e credenziali con le fixture esistenti; completare le lacune senza duplicare grafo/fetch.
-2. Verificare HTML ordine/defer/async, TLA su timer/eventi, rejection non fatale e shutdown
-   mentre fetch/TLA/import sono pendenti. Non reintrodurre catch_unwind generici per nascondere
-   errori; evaluate_module usa il namespace pubblico per un modulo già errored.
-3. Verificare lifetime host loader/global e Drop, wake senza polling continuo; nessun
-   NoHeapPointers nel GC di produzione. Retention generale, SourceText0361 e precedenti
-   problemi aperti rimangono aperti finché una prova concreta non li chiude.
+NON ripristinare target/task-0385/incomplete-cutover-2026-10-28/incomplete.patch sul codice
+corrente: precede molte correzioni. Anche handoff-2026-10-28/manifest.json e un backup WIP
+precedente, non il sorgente attuale. Usare Git reale e diff correnti, niente reset/clean.
+Esperimento JSON root SCARTATO: json-root-rejected-experiment.rs + log
+json-root-diagnostic-negative-fixed.log. Accettava import senza type json, quindi non e una
+soluzione pubblicabile. La copia native-workspace e stata ripulita da quel test sperimentale.
 
-**C. Rendere il cambiamento completo, applicabile e pubblicabile.**
-1. CI v8.yml: includere build.rs nelle copie native (già fatto), ampliare i path trigger per
-   script/policy/constellation/servo/shell interessati. Rivedere nome artifact snapshot
-   frame-retention residuo rispetto alla nuova scena; allineare note roves-action nello
-   stesso turno. Nessun input build/bundle nuovo attualmente richiesto.
-2. Verificare standalone crate lock con --locked e metadata; il lock generato in una cartella
-   sotto il workspace richiede workspace isolato/temporaneo. Non aggiungere [workspace] ai
-   manifest produttivi solo per questo. Root lock e2standalone già aggiornati ma da rivedere.
-3. Generare patch SORGENTE completa dalla base effettiva: tracked+nuovi+eliminati. Non usare
-   il tag v0.4.0 come baseline e non usare il backupWIP come patch approvata. Ultimo patch
-   documentale0401; prossimo numero libero da ricontrollare prima di generare la sorgente.
-4. Replay contro pristine v0.5.0 + serie, Windows e percorsoLinux disponibile. Confrontare
-   i file realmente applicati con i sorgenti (LF); dichiarare le eccezioni metadata esistenti
-   Cargo.lock/README/vecchio gamepad-probe, non dire full tree identico se non lo è.
-5. Allineare CUSTOMIZATIONS, README, wiki e questo handoff una volta con l'esito completo.
-   Commit root/wiki/action ESPLICITI per i file propri; lasciare TODO.md intatto. Nessun
-   backend parziale pubblicato solo per far compilare alla CI una bozza incompleta.
-6. Quando il port è coerente/revisionato e le verifiche leggere necessarie passano, pubblicare
-   secondo gate e identificare nuove run in una lettura aggregata. Buildbrowser pesanti
-   online; analizzare/fixare i fallimenti, continuare lavoro utile senza push concorrenti.
+### 8. Prossimo ciclo operativo e criteri di completamento
 
-**D. Misure e chiusura.**
-Misurare pausa statica e impatto di no-compilation-cache nelle condizioni del punto1;
-confrontare codice rimosso/aggiunto, avvio e RAM senza promettere risparmi. Controllare avviso
-sviluppo e distribuito logs-only, external link su input reale, History e chiusura. Per
-riferimento Chrome usare DevTools MCP quando disponibile e dichiarare se manca/bloccato.
-Non presentare Node, sintassi, native crate o mock come misure browser/MCP.
+1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
+   root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
+2. Batch precedente54ae e verde. Pubblicare il candidato completo per la prima CI di
+   integrazione, identificare nuove run e salvare SHA/ID nel handoff. Non dire verificato.
+3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
+   pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
+   senza errori, continuare lavoro utile/commit locali senza push; niente polling continuo.
+4. Verificare browser Windows/Linux normal/JITless, Android e controlli condivisi. Appena
+   compila, raccogliere risultati di tutte le fixture nuove e correggere contratti mancanti.
+5. Verifica controllata di clic reale e OS handoff (mai browserOS nel runner headless),
+   rendering avviso sviluppo/logs-only bundle, chiusura con fetch/TLA/import pendenti.
+6. Misurare startup e runtime inserimento moduli, freddo/caldo/rete lenta, input/timer/frame,
+   errori e chiusura. Usare DevTools MCP per confronto Chrome se disponibile; dichiarare
+   indisponibilita/blocco. Nessun risultato MCP o numero prestazionale e stato ottenuto qui.
+7. Confrontare codice rimosso/aggiunto, avvio/RAM senza promettere risparmi; rivalutare pausa
+   e guard no-compilation-cache con dati. Nessun obbligo di attendere preload JSON futuro.
 
-### 10. Quando poter dire «integrazione Deno completata»
-
-Servono: implementazione coerente senza doppio backend/grafo; patch replay valida; suite
-native e browser richieste Windows/Linux normal/JITless verdi; Android e controlli condivisi
-verdi; policy documento unico preserva gioco e routing; nessuna API Deno privilegiata;
-errori distinti verificati; dati e limiti delle pause dichiarati; documentazione coerente.
-Le verifiche Apple escluse non vanno segnate verdi per finta. Un probe isolato o i108test
-Windows non soddisfano da soli questi criteri. I problemi storici non pertinenti al port
-non diventano automaticamente risolti quando il port compila.
+Dire integrazione completata SOLO con codice coerente senza doppio grafo/backend, patch
+pristine valida e verifiche necessarie browser/native/nonApple verdi, policy/documento e
+sicurezza confermate, limiti/misure documentati. Retention complessiva e SourceText0361
+restano problemi distinti aperti: non chiuderli solo perche Deno compila. Le CI Apple escluse
+non vanno segnate verdi o eseguite per finta. No automazioni periodiche o polling continuo.
 
 **FINE DEL PUNTO OPERATIVO — sotto solo storico, leggere per un problema concreto.**
 

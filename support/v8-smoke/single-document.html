@@ -1,0 +1,88 @@
+<!doctype html>
+<meta charset="utf-8"><title>Roves single-document policy</title>
+<script src="harness.js"></script>
+<body><main id="game-root">game remains alive</main>
+<script>
+const originalDocument = document, originalWindow = window, originalURL = location.href;
+const gameState = globalThis.rovesGameState = { score: 42 };
+let unloads = 0, pagehides = 0;
+addEventListener("unload", () => unloads++);
+addEventListener("pagehide", () => pagehides++);
+const delay = () => new Promise(resolve => setTimeout(resolve, 40));
+const target = new URL("/blocked-single-document-target.html", originalURL);
+const crossTarget = new URL(target); crossTarget.port = "18766";
+async function preservesGame(action) {
+  action();
+  await delay();
+  return document === originalDocument && window === originalWindow && location.href === originalURL
+    && globalThis.rovesGameState === gameState && gameState.score === 42
+    && document.getElementById("game-root").textContent === "game remains alive"
+    && unloads === 0 && pagehides === 0;
+}
+check("reload preserves the live game document", () => preservesGame(() => location.reload()));
+check("same-origin assignment preserves the live game document", () => preservesGame(() => location.assign(target.href)));
+check("cross-origin assignment preserves the live game document", () => preservesGame(() => location.assign(crossTarget.href)));
+check("location replacement preserves the live game document", () => preservesGame(() => location.replace(target.href)));
+check("iframes cannot create a document or execute child script", async () => {
+  globalThis.rovesChildExecuted = false;
+  const frame = document.createElement("iframe");
+  frame.srcdoc = "<script>parent.rovesChildExecuted = true;<" + "/script>";
+  document.body.append(frame);
+  await delay();
+  const noInline = frame.contentWindow === null && frame.contentDocument === null && !rovesChildExecuted;
+  frame.src = crossTarget.href;
+  await delay();
+  const noNavigation = frame.contentWindow === null && frame.contentDocument === null;
+  frame.remove(); delete globalThis.rovesChildExecuted;
+  return noInline && noNavigation && document === originalDocument;
+});
+check("synthetic external link activation preserves the game", async () => {
+  const link = document.createElement("a");
+  link.href = crossTarget.href;
+  link.target = "_blank";
+  document.body.append(link);
+  try {
+    return await preservesGame(() => {
+      link.click();
+      link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+  } finally { link.remove(); }
+});
+check("auxiliary windows are refused without replacing the game", async () => {
+  let returned;
+  const alive = await preservesGame(() => { returned = window.open(target.href, "_blank"); });
+  return returned === null && alive;
+});
+function traverse(method) {
+  return new Promise(resolve => {
+    const timer = setTimeout(() => { removeEventListener("popstate", done); resolve(false); }, 2000);
+    function done() { clearTimeout(timer); resolve(true); }
+    addEventListener("popstate", done, { once: true });
+    history[method]();
+  });
+}
+check("History routes replace push back and forward without a new document", async () => {
+  const saved = history.state;
+  try {
+    history.replaceState({ route: 0 }, "", originalURL);
+    const route = new URL(originalURL); route.searchParams.set("route", "one");
+    history.pushState({ route: 1 }, "", route);
+    route.searchParams.set("route", "two");
+    history.replaceState({ route: 2 }, "", route);
+    if (history.state.route !== 2 || location.search !== route.search) return "push/replace failed";
+    if (!await traverse("back") || history.state.route !== 0) return "back failed";
+    if (!await traverse("forward") || history.state.route !== 2) return "forward failed";
+    return document === originalDocument && window === originalWindow && globalThis.rovesGameState === gameState;
+  } finally { history.replaceState(saved, "", originalURL); }
+});
+check("hash routing preserves document and state", async () => {
+  const saved = history.state;
+  try {
+    location.hash = "chapter-two";
+    await delay();
+    return location.hash === "#chapter-two" && document === originalDocument
+      && globalThis.rovesGameState === gameState && unloads === 0 && pagehides === 0;
+  } finally { history.replaceState(saved, "", originalURL); }
+});
+finish();
+</script>

@@ -207,8 +207,6 @@ unsafe impl GarbageCollected for RootSet {
             crate::object::trace_resolving(visitor);
             // SAFETY: as above. The embedder's roots (Servo's DOM root lists).
             crate::runtime_impl::trace_extra_roots(unsafe { cx.as_ref() }, visitor);
-            // SAFETY: as above.
-            crate::modules_impl::trace_modules(unsafe { cx.as_ref() }, visitor);
         }
         // RootedVec / RootedTraceableBox contents.
         // SAFETY: the tracer is this GC's visitor.
@@ -262,19 +260,18 @@ impl Drop for JSEngineHandle {
     }
 }
 
+/// Initializes V8 once per process, through deno_core (which owns every isolate): the Roves
+/// flags first, then deno_core's platform initialization with the Roves foreground platform.
+/// Later calls cannot change flags.
 fn initialize_v8(extra_flags: &str) {
-    #[cfg(not(test))]
-    if extra_flags.is_empty() {
-        roves_v8::initialize_engine();
-    } else {
-        roves_v8::initialize_engine_with_flags(extra_flags);
-    }
-    // Tests force collections, which V8 only allows with --expose-gc.
-    #[cfg(test)]
-    {
-        let flags = format!("--expose-gc {extra_flags}");
-        roves_v8::initialize_engine_with_flags(&flags);
-    }
+    static V8_INIT: std::sync::Once = std::sync::Once::new();
+    V8_INIT.call_once(|| {
+        // Tests force collections, which V8 only allows with --expose-gc.
+        #[cfg(test)]
+        let extra_flags = format!("--expose-gc {extra_flags}");
+        roves_v8::set_flags(&extra_flags);
+        deno_core::JsRuntime::init_platform(Some(roves_v8::platform()));
+    });
 }
 
 impl JSEngine {
@@ -356,15 +353,16 @@ impl ThreadSafeJSContext {
 
 }
 
-/// One V8 isolate with its initial realm: the `JSRuntime`/`JSContext` pair of mozjs.
+/// One V8 isolate with its script context: the `JSRuntime`/`JSContext` pair of mozjs. The
+/// isolate and its only script context belong to deno_core (see `deno_impl`); the context's
+/// global becomes the first global object the embedder creates (`JS_NewGlobalObject`).
 pub struct Runtime {
-    // Field order matters: the root and context must drop before the isolate.
+    // Field order matters: the root and the raw context (V8 handles) drop before deno_core's
+    // runtime, which owns the isolate.
     cx: crate::context::JSContext,
     root_set: Persistent<RootSet>,
     raw: Box<RawJSContext>,
-    /// Boxed: the raw context points at the `Isolate` value, which lives inside the
-    /// `OwnedIsolate` and must not move.
-    isolate: Box<v8::OwnedIsolate>,
+    deno: Box<crate::deno_impl::DenoOwner>,
     engine: JSEngineHandle,
     _parent_child_count: Option<std::sync::Arc<()>>,
     outstanding_children: std::sync::Arc<()>,
@@ -372,8 +370,14 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// A runtime whose first global is not a Window (workers).
     pub fn new(engine: JSEngineHandle) -> Runtime {
-        Self::create(engine, None)
+        Self::create(engine, None, crate::deno_impl::GlobalKind::Plain)
+    }
+
+    /// A runtime for one document: its script context is created from the Window template.
+    pub fn new_document(engine: JSEngineHandle) -> Runtime {
+        Self::create(engine, None, crate::deno_impl::GlobalKind::Document)
     }
 
     pub fn prepare_for_new_child(&self) -> ParentRuntime {
@@ -383,23 +387,33 @@ impl Runtime {
     /// # Safety
     /// As in mozjs (the parent runtime must outlive this one).
     pub unsafe fn create_with_parent(parent: ParentRuntime) -> Runtime {
-        Self::create(parent.engine.clone(), Some(parent))
+        Self::create(parent.engine.clone(), Some(parent), crate::deno_impl::GlobalKind::Plain)
     }
 
-    fn create(engine: JSEngineHandle, parent: Option<ParentRuntime>) -> Runtime {
-        let mut isolate = Box::new(v8::Isolate::new(v8::CreateParams::default()));
-        crate::runtime_impl::configure_isolate(&mut isolate);
-        let (context, root_set) = {
-            v8::scope!(let scope, &mut **isolate);
-            let context = v8::Context::new(scope, Default::default());
+    fn create(engine: JSEngineHandle, parent: Option<ParentRuntime>, kind: crate::deno_impl::GlobalKind) -> Runtime {
+        let deno = crate::deno_impl::DenoOwner::new(kind);
+        let document_template = match kind {
+            crate::deno_impl::GlobalKind::Document => crate::deno_impl::take_document_template(),
+            crate::deno_impl::GlobalKind::Plain => None,
+        };
+        let isolate_ptr = deno.isolate();
+        // SAFETY: deno_core's isolate, alive as long as `deno`, used only from this thread.
+        let isolate = unsafe { &mut *isolate_ptr };
+        crate::runtime_impl::configure_isolate(isolate);
+        let root_set = {
+            v8::scope!(let scope, isolate);
             let heap = scope.get_cpp_heap().expect("V8 isolates carry a cppgc heap");
             // SAFETY: moved straight into a Persistent.
             let root_set = unsafe { v8::cppgc::make_garbage_collected(heap, RootSet) };
-            (v8::Global::new(scope, context), Persistent::new(&root_set))
+            Persistent::new(&root_set)
         };
-        let mut raw = Box::new(RawJSContext {
-            isolate: std::ptr::null_mut(),
-            context: RefCell::new(context),
+        let raw = Box::new(RawJSContext {
+            isolate: isolate_ptr,
+            context: RefCell::new(deno.main_context()),
+            deno: Cell::new(&*deno as *const crate::deno_impl::DenoOwner),
+            document_template: RefCell::new(document_template),
+            global_adopted: Cell::new(false),
+            refused_globals: Cell::new(0),
             pending_exception: RefCell::new(None),
             class_templates: Default::default(),
             native_functions: RefCell::new(Vec::new()),
@@ -409,25 +423,27 @@ impl Runtime {
             atoms: Default::default(),
             hooks: Default::default(),
             scripts: Default::default(),
-            modules: Default::default(),
             current_realm: std::cell::Cell::new(std::ptr::null_mut()),
             saved_realms: RefCell::new(Vec::new()),
-            next_window_proxy_reuse: std::cell::Cell::new(std::ptr::null_mut()),
             realms: RefCell::new(Vec::new()),
             realm_sweep: std::cell::Cell::new(0),
         });
-        raw.isolate = &mut **isolate as *mut v8::Isolate;
         CURRENT.with(|current| {
             assert!(current.get().is_none(), "one roves-js runtime per thread");
             current.set(Some(NonNull::from(&*raw)));
         });
-        // The initial context is the runtime's first realm.
+        // deno_core's main context is the runtime's first realm, stripped of deno_core's
+        // bootstrap namespace before any script can run in it.
         let realm = raw.with_scope(|scope| {
+            deno.remove_bootstrap_globals(scope);
             let context = scope.get_current_context();
+            let global = context.global(scope);
+            let document = kind == crate::deno_impl::GlobalKind::Document;
+            crate::object::prepare_script_context_global(scope, global, document).expect("prepare the script context's global");
             crate::realm_impl::register_realm(&raw, scope, context, std::ptr::null_mut())
         });
         raw.current_realm.set(realm);
-        crate::runtime_impl::register_foreground(&raw, &isolate);
+        crate::runtime_impl::register_foreground(&raw, isolate);
         let thread_safe_handle = std::sync::Arc::new(std::sync::RwLock::new(Some(isolate.thread_safe_handle())));
         // SAFETY: the raw context lives (boxed) as long as the runtime.
         let cx = unsafe { crate::context::JSContext::from_ptr(NonNull::from(&*raw)) };
@@ -435,7 +451,7 @@ impl Runtime {
             cx,
             root_set,
             raw,
-            isolate,
+            deno,
             engine,
             _parent_child_count: parent.map(|parent| parent.children_of_parent),
             outstanding_children: std::sync::Arc::new(()),
@@ -473,7 +489,8 @@ impl Runtime {
     /// Forces a full, precise garbage collection (tests only: no stack scanning).
     #[doc(hidden)]
     pub fn gc_for_testing(&mut self) {
-        let isolate: &mut v8::Isolate = &mut self.isolate;
+        // SAFETY: deno_core's live isolate, on its own thread.
+        let isolate: &mut v8::Isolate = unsafe { &mut *self.raw.isolate };
         if let Some(heap) = isolate.get_cpp_heap() {
             // SAFETY: called outside any native frame that holds unrooted cell pointers it
             // still needs.
@@ -485,7 +502,10 @@ impl Runtime {
 impl Drop for Runtime {
     fn drop(&mut self) {
         self.thread_safe_handle.write().unwrap().take();
-        crate::runtime_impl::unregister_foreground(&self.raw, &self.isolate);
+        // The embedder's module loader may refer to embedder objects: drop it first.
+        self.deno.clear_host_loader();
+        // SAFETY: deno_core's live isolate (dropped with `self.deno`, after this).
+        crate::runtime_impl::unregister_foreground(&self.raw, unsafe { &*self.raw.isolate });
         crate::runtime_impl::release_hidden_callers(&self.raw);
         assert!(std::sync::Arc::get_mut(&mut self.outstanding_children).is_some(), "This runtime still has live children.");
         // Release embedder references while Runtime::get(), realms and the isolate

@@ -50,18 +50,6 @@ wrap!(jsapi: pub fn NewDateObject(cx: &mut JSContext, time: ClippedTime) -> *mut
 wrap!(jsapi: pub fn ObjectIsDate(cx: &mut JSContext, obj: Handle<*mut JSObject>, isDate: *mut bool) -> bool);
 wrap!(jsapi: pub fn SameValue(cx: &JSContext, v1: Handle<Value>, v2: Handle<Value>, same: *mut bool) -> bool);
 wrap!(jsapi: pub fn ToJSON(cx: &mut JSContext, value: Handle<Value>, replacer: Handle<*mut JSObject>, space: Handle<Value>, callback: JSONWriteCallback, data: *mut ::std::os::raw::c_void) -> bool);
-wrap!(jsapi: pub fn FinishDynamicModuleImport(cx: &mut JSContext, evaluationPromise: Handle<*mut JSObject>, referencingPrivate: Handle<Value>, moduleRequest: Handle<*mut JSObject>, promise: Handle<*mut JSObject>) -> bool);
-wrap!(jsapi: pub fn CompileModule1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSObject);
-wrap!(jsapi: pub fn CompileJsonModule1(cx: &mut JSContext, options: *const ReadOnlyCompileOptions, srcBuf: *mut SourceText<Utf8Unit>) -> *mut JSObject);
-wrap!(jsapi: pub fn ModuleLink(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>) -> bool);
-wrap!(jsapi: pub fn ModuleEvaluate(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>, rval: MutableHandleValue) -> bool);
-wrap!(jsapi: pub fn ThrowOnModuleEvaluationFailure(cx: &mut JSContext, evaluationPromise: Handle<*mut JSObject>, errorBehaviour: ModuleErrorBehaviour) -> bool);
-wrap!(jsapi: pub fn GetRequestedModulesCount(cx: &JSContext, moduleRecord: Handle<*mut JSObject>) -> u32);
-wrap!(jsapi: pub fn GetRequestedModuleSpecifier(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>, index: u32) -> *mut JSString);
-wrap!(jsapi: pub fn GetRequestedModuleType(cx: &JSContext, moduleRecord: Handle<*mut JSObject>, index: u32) -> ModuleType);
-wrap!(jsapi: pub fn GetModuleRequestSpecifier(cx: &JSContext, moduleRequestArg: Handle<*mut JSObject>) -> *mut JSString);
-wrap!(jsapi: pub fn GetModuleRequestType(cx: &JSContext, moduleRequestArg: Handle<*mut JSObject>) -> ModuleType);
-wrap!(jsapi: pub fn GetModuleNamespace(cx: &mut JSContext, moduleRecord: Handle<*mut JSObject>) -> *mut JSObject);
 wrap!(jsapi: pub fn GetBuiltinClass(cx: &mut JSContext, obj: Handle<*mut JSObject>, cls: *mut ESClass) -> bool);
 wrap!(jsapi: pub fn SetJobQueue(cx: &JSContext, queue: *mut JobQueue));
 wrap!(jsapi: pub fn SetPromiseRejectionTrackerCallback(cx: &JSContext, callback: PromiseRejectionTrackerCallback, data: *mut ::std::os::raw::c_void));
@@ -209,7 +197,6 @@ wrap!(glue: pub fn AppendToIdVector(v: MutableHandleIdVector, id: HandleId) -> b
 wrap!(glue: pub fn CollectServoSizes(cx: &mut JSContext, sizes: *mut ServoSizes, gs: GetSize) -> bool);
 wrap!(glue: pub fn JS_GetPromiseResult(promise: HandleObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptPrivate(script: *mut JSScript, dest: MutableHandleValue));
-wrap!(glue: pub fn JS_GetModulePrivate(module: *mut JSObject, dest: MutableHandleValue));
 wrap!(glue: pub fn JS_GetScriptedCallerPrivate(cx: &mut JSContext, dest: MutableHandleValue));
 wrap!(glue: pub fn SetUpEventLoopDispatch(cx: &mut JSContext, callback: RustDispatchToEventLoopCallback, closure: *mut ::std::os::raw::c_void));
 wrap!(glue: pub fn DispatchableRun(cx: &mut JSContext, ptr: *mut DispatchablePointer, mb: Dispatchable_MaybeShuttingDown));

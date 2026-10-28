@@ -13,7 +13,7 @@ pub use crate::gc::Heap;
 pub use crate::realm_impl::{
     CurrentGlobal, CurrentGlobalOrNull, EnterRealm, GetCurrentRealmOrNull, GetObjectRealmOrNull,
     GetRealmGlobalOrNull, GetRealmPrincipals, JS_FireOnNewGlobalObject, JS_GlobalObjectTraceHook,
-    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject, RovesNewWindowGlobalReusingProxy, RovesReuseWindowProxyForNextGlobal,
+    JS_InitGlobalInterfaceProperties, JS_MayResolveStandardClass, JS_NewEnumerateStandardClasses, JS_NewGlobalObject,
     JS_ResolveStandardClass, LeaveRealm,
 };
 pub use crate::binding::{CallJitGetterOp, CallJitMethodOp, CallJitSetterOp, JS_DefineFunctions, JS_DefineProperties};
@@ -22,7 +22,6 @@ pub use crate::typedarray_impl::*;
 pub use crate::runtime_impl::*;
 pub use crate::script_impl::*;
 pub use crate::values_impl::*;
-pub use crate::modules_impl::*;
 pub use crate::structured_clone_impl::{
     JS_ReadBytes, JS_ReadStructuredClone, JS_ReadUint32Pair, JS_WriteBytes, JS_WriteStructuredClone,
     JS_WriteUint32Pair, JSAutoStructuredCloneBuffer, JSStructuredCloneData,
@@ -117,20 +116,27 @@ opaque!(JSObject, JSString, JSFunction, Symbol, BigInt, JSScript);
 /// The raw context behind [`crate::context::JSContext`]: one V8 isolate entered in one realm,
 /// plus this thread's root stack (see `gc`).
 pub struct JSContext {
+    /// deno_core's isolate (see `deno_impl`).
     pub(crate) isolate: *mut v8::Isolate,
-    /// The runtime's initial V8 context, used before the first realm is registered (afterwards
-    /// the current realm's context comes from its realm data). This strong root keeps the
-    /// initial realm alive for the runtime's whole life.
+    /// The runtime's script context (deno_core's main context), used before its realm is
+    /// registered (afterwards the current realm's context comes from its realm data). This
+    /// strong root keeps the runtime's realm alive for the runtime's whole life.
     pub(crate) context: RefCell<v8::Global<v8::Context>>,
+    /// The runtime's deno_core side, owned by `rust::Runtime` for the runtime's whole life.
+    pub(crate) deno: std::cell::Cell<*const crate::deno_impl::DenoOwner>,
+    /// A document runtime's Window template (the template of its script context), handed to
+    /// the class templates when the Window global adopts that context.
+    pub(crate) document_template: RefCell<Option<v8::Global<v8::ObjectTemplate>>>,
+    /// Whether a global object has adopted the script context (`JS_NewGlobalObject`).
+    pub(crate) global_adopted: std::cell::Cell<bool>,
+    /// Refused requests for further global objects (logged with bounded repetition).
+    pub(crate) refused_globals: std::cell::Cell<u32>,
     /// The current realm (see `realm_impl`), a GC root.
     pub(crate) current_realm: std::cell::Cell<*mut Realm>,
     /// The realms that were current when `EnterRealm` or a [`RealmSwitch`] began, innermost
     /// last: GC roots until the matching leave restores them. Borrowed only for a push, a pop
     /// or a trace, never across a V8 call.
     pub(crate) saved_realms: RefCell<Vec<*mut Realm>>,
-    /// The Window global whose proxy the next Window global takes over
-    /// (`RovesReuseWindowProxyForNextGlobal`), or null.
-    pub(crate) next_window_proxy_reuse: std::cell::Cell<*mut JSObject>,
     /// Weak registry of this runtime's realms (see `realm_impl::RealmEntry`).
     pub(crate) realms: RefCell<Vec<crate::realm_impl::RealmEntry>>,
     /// The registry size at which the entries of collected realms are dropped.
@@ -155,8 +161,6 @@ pub struct JSContext {
     pub(crate) hooks: crate::runtime_impl::RuntimeHooks,
     /// Script privates and error reports (see `script_impl`).
     pub(crate) scripts: crate::script_impl::Scripts,
-    /// Module records and module hooks (see `modules_impl`).
-    pub(crate) modules: crate::modules_impl::Modules,
 }
 
 impl JSContext {

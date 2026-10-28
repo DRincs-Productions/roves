@@ -1,0 +1,6 @@
+<!doctype html><html><body><div id="d">second page</div>
+<script>
+console.log("ROVES-V8 nav2 loaded", location.pathname.split("/").pop(), window === globalThis, document.getElementById("d").textContent);
+history.back();
+setTimeout(() => console.log("ROVES-V8 nav2 still here"), 500);
+</script></body></html>

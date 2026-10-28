@@ -147,3 +147,5 @@ pub mod protocol_handler {
 // We need to reference this crate, in order for the linker not to remove it.
 #[cfg(feature = "baked-in-resources")]
 use servo_default_resources as _;
+
+pub use embedder_traits::GameDocumentOperation;

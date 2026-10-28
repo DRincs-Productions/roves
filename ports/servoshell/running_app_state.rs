@@ -469,6 +469,30 @@ impl RunningAppState {
 }
 
 impl WebViewDelegate for RunningAppState {
+    fn open_external_game_link(&self, _webview: WebView, url: Url) {
+        // Defense in depth: this bridge never launches file/custom protocol handlers.
+        if !matches!(url.scheme(), "http" | "https") || self.servoshell_preferences.headless {
+            log::warn!("[roves] external browser handoff unavailable for this scheme or headless launch");
+            return;
+        }
+        #[cfg(not(target_os = "android"))]
+        if let Err(error) = sdl3::url::open_url(url.as_str()) {
+            log::warn!("[roves] external browser handoff failed: {error}");
+        }
+        #[cfg(target_os = "android")]
+        log::warn!("[roves] external browser handoff is not available in this shell backend");
+    }
+
+    fn notify_game_operation_blocked(&self, webview: WebView, operation: servo::GameDocumentOperation) {
+        #[cfg(not(target_os = "android"))]
+        if self.development_mode.get() {
+            self.policy_notice.set(Some(operation.message()));
+            self.window_for_webview(&webview).set_needs_update();
+        }
+        #[cfg(target_os = "android")]
+        let _ = (webview, operation);
+    }
+
     fn screen_geometry(&self, webview: WebView) -> Option<servo::ScreenGeometry> {
         Some(self.platform_window_for_webview(&webview).screen_geometry())
     }

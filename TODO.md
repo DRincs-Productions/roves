@@ -210,6 +210,32 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 - [ ] **Console:** definire priorità e feasibility per i target roadmap prima di considerarli supportati; implementazioni e validazione richiedono gli SDK e ambienti appropriati.
 - [ ] **APK signing — `roves-action`:** nuovi input `android-keystore-*` (verosimilmente un keystore base64-encoded via GitHub Secret, decodificato in un file temporaneo, con le 4 variabili d'ambiente `APK_SIGNING_KEY_STORE_PATH`/`_STORE_PASS`/`_ALIAS`/`_PASS` impostate prima di invocare `mach bundle`). Lato motore e Packmaster già fatto (vedi `CUSTOMIZATIONS.md`, voce "`mach bundle --android-release`").
 
+## Runtime Deno: ripristinare il preload JSON — ottimizzazione futura
+
+- [ ] **Implementare `link rel="modulepreload" as="json"` senza alterare gli import JSON.**
+  Serve ad anticipare rete e preparazione di dati che il gioco importera in seguito,
+  per esempio configurazioni di una route o dati del prossimo livello. Puo ridurre
+  l'attesa al primo utilizzo se il caricamento si sovrappone ad altro lavoro; non e
+  necessario per la correttezza del gioco. Anticipare dati inutilizzati costa rete e RAM:
+  misurare prima di raccomandarlo e non promettere risparmi o tempi migliori.
+- **Stato temporaneo autorizzato il28ottobre2026:** il preload JSON emette un warning
+  limitato e l'evento `error` sul link; non deve notificare un falso `load` o interrompere
+  il gioco. `import(url, { with: { type: "json" } })` resta supportato. L'import senza
+  l'attributo richiesto deve continuare a rigettare con TypeError, anche dopo un preload.
+- **Vincolo architetturale:** preferire API pubbliche mantenute di deno_core, riusando
+  fetch Servo per CSP/CORS, MIME, credenziali, referrer, integrity e redirect. Nessun fork,
+  grafo duplicato permanente o namespace Deno privilegiato ai giochi. Il primo esperimento
+  con JSON come radice side-module e SCARTATO: rendeva accettabile un import senza type json.
+  Prova negativa locale: target/task-0385/json-root-diagnostic-negative-fixed.log; il
+  percorso e ignorato da Git, quindi su un nuovo checkout occorre riprodurre il difetto.
+- **Completamento:** eventi load/error corretti per successo, JSON invalido, MIME errato,
+  fetch negato e cancellazione; typed import successivo riusa la registrazione/cache
+  senza nuovo download evitabile; untyped import resta negato; nessuna esecuzione di JS
+  arbitrario per precaricare JSON; rispetto delle policy e chiusura senza riferimenti
+  pendenti. Verificare Windows/Linux normal/JITless e confrontare caricamenti freddi,
+  caldi, rete lenta e dati mai utilizzati (avvio, attesa al primo uso, richieste e memoria).
+  Non chiudere il punto con un mock o con la sola prova isolata dell'API.
+
 ## Regola per chiudere i punti
 
 Distinguere sempre **implementato**, **verificato** e **proposto in PR**. Un punto

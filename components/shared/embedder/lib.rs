@@ -528,6 +528,10 @@ pub enum EmbedderMsg {
     StopGamepadHapticEffect(WebViewId, usize, GenericCallback<bool>),
     /// Request to display a notification.
     ShowNotification(Option<WebViewId>, Notification),
+    /// Native product-policy diagnostic, not a web notification.
+    GameDocumentOperationBlocked(WebViewId, GameDocumentOperation),
+    /// Native trusted hyperlink activation; never emitted by automatic navigation.
+    OpenExternalGameLink(WebViewId, Url),
     /// Let the embedder process a DOM Console API message.
     /// <https://developer.mozilla.org/en-US/docs/Web/API/Console_API>
     ShowConsoleApiMessage(Option<WebViewId>, ConsoleLogLevel, String),
@@ -1202,4 +1206,18 @@ pub trait WakeLockDelegate: Send + Sync {
     /// the resource to sleep. Called when the aggregate lock count transitions
     /// from N to 0.
     fn release(&self, type_: WakeLockType) -> Result<(), Box<dyn std::error::Error>>;
+}
+
+/// Unsupported operations of Roves' single-document game runtime.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize)]
+pub enum GameDocumentOperation { Navigation, Reload, Frame, HistoryDocument }
+impl GameDocumentOperation {
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Navigation => "A page change was blocked. Use History or hash routes inside the game.",
+            Self::Reload => "Reload was blocked to preserve the running game.",
+            Self::Frame => "An iframe document was blocked. Roves runs one game document.",
+            Self::HistoryDocument => "A history page change was blocked. Same-document routes remain available.",
+        }
+    }
 }

@@ -1,0 +1,156 @@
+<!doctype html>
+<meta charset="utf-8"><title>Single-document HTML module scheduling</title>
+<script src="harness.js"></script>
+<script>
+globalThis.order = [];
+globalThis.inlineModuleURLs = [];
+globalThis.staticOnErrors = 0;
+globalThis.domReady = new Promise(resolve => document.addEventListener("DOMContentLoaded", () => {
+  order.push("domcontentloaded"); resolve();
+}, { once: true }));
+globalThis.staticRejection = new Promise(resolve => addEventListener("unhandledrejection", event => {
+  if (event.reason?.message === "roves-static-evaluation-failure") {
+    event.preventDefault(); resolve(true);
+  }
+}));
+addEventListener("error", event => {
+  if (String(event.message).includes("roves-static-evaluation-failure")) staticOnErrors++;
+});
+</script>
+<script type="module" src="single-document-fixtures/order-a.mjs"></script>
+<script type="module" src="single-document-fixtures/order-b.mjs"></script>
+<script type="module" src="single-document-fixtures/evaluation-error.mjs"></script>
+<script type="module">inlineModuleURLs.push(import.meta.url);</script>
+<script type="module">inlineModuleURLs.push(import.meta.url);</script>
+<body><main id="game-root">ready after parsing</main>
+<script>
+const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+check("deferred modules see the parsed body and TLA does not block DOMContentLoaded", async () => {
+  await domReady; await tick();
+  return order.join() === "a:42,b:42,domcontentloaded,a:after-domcontentloaded" || order.join();
+});
+check("static evaluation errors are rejection events and the game continues", async () => {
+  await staticRejection;
+  return staticOnErrors === 0 && document.getElementById("game-root").textContent === "ready after parsing";
+});
+check("inline module URLs are distinct and preserve the relative asset base", async () => {
+  await domReady;
+  if (inlineModuleURLs.length !== 2 || inlineModuleURLs[0] === inlineModuleURLs[1]) return String(inlineModuleURLs);
+  for (const raw of inlineModuleURLs) {
+    const url = new URL(raw);
+    if (!/^#roves-inline-module-[0-9]+$/.test(url.hash)) return raw;
+    if (new URL("single-document-fixtures/value.mjs", url).href !== new URL("single-document-fixtures/value.mjs", document.baseURI).href) return "asset base changed";
+  }
+  return externalModuleURL === new URL("single-document-fixtures/order-b.mjs", document.baseURI).href;
+});
+check("classic errors still use error events", () => new Promise(resolve => {
+  function listener(event) {
+    if (!String(event.message).includes("roves-classic-error")) return;
+    event.preventDefault(); removeEventListener("error", listener);
+    resolve(event.error instanceof Error);
+  }
+  addEventListener("error", listener);
+  setTimeout(() => { throw new Error("roves-classic-error"); }, 0);
+}));
+async function failingStatic(path, expectsFetchError) {
+  const script = document.createElement("script"); script.type = "module";
+  const observed = new Promise(resolve => {
+    let timer;
+    function error(event) {
+      if (expectsFetchError || !(event.error instanceof SyntaxError)) return;
+      event.preventDefault(); cleanup(); resolve(true);
+    }
+    function cleanup() { clearTimeout(timer); removeEventListener("error", error); script.remove(); }
+    script.onerror = () => { cleanup(); resolve(expectsFetchError); };
+    addEventListener("error", error);
+    timer = setTimeout(() => { cleanup(); resolve(false); }, 3000);
+  });
+  script.src = path; document.head.append(script);
+  return observed;
+}
+check("static parse failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/parse-error.mjs", false));
+check("static link failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/link-error.mjs", false));
+check("static fetch failure remains a script loading failure", () => failingStatic("single-document-fixtures/absent-static.mjs", true));
+check("dynamic fetch failure rejects the importing promise", async () => {
+  try { await import("./single-document-fixtures/absent-dynamic.mjs"); return false; }
+  catch (error) { return error instanceof TypeError || String(error); }
+});
+check("classic eval and Function imports preserve each source directory", async () => {
+  globalThis.referrerImporters = [];
+  try {
+    for (const side of ["left", "right"]) {
+      await new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = "single-document-fixtures/" + side + "/classic.js";
+        script.onload = () => { script.remove(); resolve(); };
+        script.onerror = () => { script.remove(); reject(new Error("classic fixture failed")); };
+        document.head.append(script);
+      });
+    }
+    const values = await Promise.all(referrerImporters.map(importer => importer()));
+    return values.map(value => value.owner).join() === "left,left,left,right,right,right" || values.map(value => value.owner).join();
+  } finally { delete globalThis.referrerImporters; }
+});
+check("descendant module fetch uses its importing module referrer", async () => {
+  const value = await import("./single-document-fixtures/referrer-parent.mjs");
+  const expected = new URL("single-document-fixtures/referrer-parent.mjs", document.baseURI).href;
+  return value.default === expected || "Referer=" + value.default + " expected=" + expected;
+});
+check("runtime static module loading resumes timers and frames", async () => {
+  for (const [scene, path] of [
+    ["cold", "single-document-fixtures/value.mjs?pause-probe"],
+    ["warm", "single-document-fixtures/value.mjs?pause-probe"],
+    ["slow", "slow-module.mjs"]
+  ]) {
+    let ticks = 0, largestGap = 0, previous = performance.now(), waitForTick = null;
+    const timer = setInterval(() => {
+      const now = performance.now(); largestGap = Math.max(largestGap, now - previous);
+      previous = now; ticks++;
+      if (waitForTick) { const resolve = waitForTick; waitForTick = null; resolve(); }
+    }, 5);
+    const script = document.createElement("script"); script.type = "module";
+    const started = performance.now();
+    try {
+      await new Promise((resolve, reject) => {
+        script.onload = resolve;
+        script.onerror = () => reject(new Error("pause fixture loading failed: " + scene));
+        script.src = path; document.head.append(script);
+      });
+      const elapsed = performance.now() - started;
+      await new Promise(resolve => { waitForTick = resolve; });
+      await new Promise(resolve => requestAnimationFrame(() => resolve()));
+      console.log("ROVES-V8 module-pause diagnostic", scene, "elapsed-ms", elapsed,
+        "max-timer-gap-ms", largestGap, "timer-ticks", ticks, "visibility", document.visibilityState);
+      if (ticks === 0) return "timer did not resume: " + scene;
+    } finally { clearInterval(timer); script.remove(); }
+  }
+  return true;
+});
+check("cross-origin modules require a matching CORS response", async () => {
+  const allowed = new URL("/cors-module.mjs", location.href); allowed.port = "18766";
+  const denied = new URL("/no-cors-module.mjs", allowed);
+  const namespace = await import(allowed.href);
+  if (namespace.ready !== true) return "allowed module failed";
+  try { await import(denied.href); return "module without CORS was accepted"; }
+  catch (error) { return error instanceof TypeError || String(error); }
+});
+check("JSON preload reports unavailable while typed imports still work", async () => {
+  const link = document.createElement("link");
+  link.rel = "modulepreload"; link.as = "json"; link.href = "modules/data.json";
+  try {
+    let appended = false;
+    const unavailable = await new Promise(resolve => {
+      link.onload = () => resolve(false);
+      link.onerror = () => resolve(appended);
+      document.head.append(link);
+      appended = true;
+    });
+    if (!unavailable) return "JSON preload incorrectly reported success";
+    const data = await import("./modules/data.json", { with: { type: "json" } });
+    if (data.default.level !== 4) return "typed JSON import failed";
+    try { await import("./modules/data.json"); return "untyped JSON import accepted"; }
+    catch (error) { return error instanceof TypeError || String(error); }
+  } finally { link.remove(); }
+});
+finish();
+</script>

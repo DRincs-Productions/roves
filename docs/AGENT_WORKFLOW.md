@@ -1,3 +1,30 @@
+### Preload JSON temporaneamente non disponibile — scelta28ottobre2026
+
+L'utente accetta che solo modulepreload JSON sia temporaneamente non disponibile:
+warning limitato ed evento error del link, nessuna falsa notifica load o interruzione del
+gioco. Gli import JSON ordinari con type json restano funzionanti; quelli senza attributo
+restano respinti. Non riproporre il workaround side-module che altera questo controllo.
+
+### Ripresa Codex vicino al limite delle cinque ore
+
+Quando Codex sta implementando direttamente ed e vicino al limite della finestra di cinque
+ore, verificare i limiti reali con get_usage_limits, senza stimare il reset dalla durata
+della chat. Considerare vicino il limite quando resta al massimo il10% della finestra5ore.
+Salvare prima un handoff aggiornato con Git reale, WIP, verifiche e prossimo passo concreto.
+Programmare nella stessa conversazione un SOLO tentativo al reset restituito dal servizio
+piu2minuti, tramite scheduler dell'app; riusare un ricontrollo equivalente gia esistente.
+L'utente autorizza questa ripresa una tantum: non occorre una nuova conferma ogni volta.
+
+Il promemoria deve leggere AGENTS e il solo handoff corrente, controllare Git e quota, poi
+riprendere il lavoro autorizzato se disponibile rispettando ownership, patch e gate CI.
+Disattivarlo dopo il tentativo. Se lo stesso limite persiste, salvare l'esito e fermarsi:
+nessuna catena di retry, polling, cambio modello o consumo di reset dell'abbonamento.
+Se reset/quota non sono disponibili o ambigui, non inventare un orario; se lo scheduler
+non e disponibile, dichiararlo senza promettere la ripresa. Il tentativo non supera uno
+stop esplicito, limiti settimanali o altre restrizioni dell'utente (incluso lo stop Claude).
+Nessuna automazione periodica. Una nuova finestra esaurita dopo una ripresa riuscita e un
+nuovo evento, da valutare con dati aggiornati.
+
 ### Sospensione Claude fino al 30 ottobre 2026, 17:30 Europe/Rome
 
 Per richiesta esplicita dell'utente del28ottobre, non usare Claude prima del30ottobre2026
