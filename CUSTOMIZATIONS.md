@@ -1,3 +1,9 @@
+## 2026-10-28 - Record the post-push verification boundary
+
+Record published6efa versus complete local0407/root/action/wiki commits and pending CI.
+Document the inline HTML line-offset diagnostic gap with public Deno API constraints;
+no speculative parser, source rewriting or runtime fix is shipped for that finding.
+
 ## 2026-10-28 - Preserve each smoke process's runtime log (0407)
 
 Reuse the existing env_logger file destination and XDG cache override to keep one roves.log

@@ -2,6 +2,13 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Local complete checkpoint:** cc0f2b0e8da (0407 runtime-log preservation), with
+local action57d710e and wikifac0dbb; none of these three commits is published. Publish
+siblings before the root gitlinks only after the required6efa batch permits it. Working
+tree retains the unrelated user TODO blank line; do not stage it. Last aggregate check:
+required V8 native/browser jobs active, general pristine replay and windowing contracts
+already green, other general/Android checks active. No required failure seen at that check.
+
 **Published correction batch:** root6efa696f176, actiona1eaa70, wikic2ff1b6.
 V840752923347 and general40752923425 queued; Android40752923374 in progress;
 iOS40752923453 excluded. Do not push while required runs are active. Local next task0407
@@ -15,7 +22,7 @@ Keep this complete change local until the published batch permits another push.
 **Current correction checkpoint:** root f8efd5c35ee, action0964874 and wiki062490f
 are published. Required batch is terminal: V8 40719636766 and general40719636661 failed;
 Android40719636685, action40719590816 and wiki40719601745 passed. Apple is excluded.
-Linux/Windows browser and packaging logs share two compiler errors: redundant no_trace
+Historical f8 Linux/Windows browser and packaging logs share two compiler errors: redundant no_trace
 on Option<ModuleId> and the task macro hiding poll_module_event_loop. Both are corrected
 locally, with the latter explicitly qualified to the module function. New build proof
 requires CI; no local browser build was run.
@@ -191,6 +198,19 @@ precedente, non il sorgente attuale. Usare Git reale e diff correnti, niente res
 Esperimento JSON root SCARTATO: json-root-rejected-experiment.rs + log
 json-root-diagnostic-negative-fixed.log. Accettava import senza type json, quindi non e una
 soluzione pubblicabile. La copia native-workspace e stata ripulita da quel test sperimentale.
+
+### Diagnostica inline: problema circoscritto da verificare
+
+Il port ignora attualmente line_number in fetch_inline_module_script (circa1112):
+le posizioni iniziano dalla prima riga del modulo invece della riga HTML. Il chiamante
+HTMLScriptElement passa ancora la riga originale. Deno0.413 ModuleSource e
+load_side_es_module_from_code non espongono un offset; modules/map.rs script_origin
+usa offset0. ModuleLoader.get_source_map e pubblico ma dichiarato prossimo a deprecazione:
+valutare una soluzione mantenuta e verificare insieme error.stack, parse/link e gli
+attributi degli eventi. Non assumere che una mappa dello stack corregga v8::Message.
+Non introdurre parser, fork o una semplice aggiunta di righe senza verificare hashbang,
+sourcemap preesistenti, righe/colonne e sorgenti esterne. Nessuna correzione e stata fatta.
+Prima raccogliere la prima esecuzione browser della CI; la raccolta0407 non risolve questo.
 
 ### 8. Prossimo ciclo operativo e criteri di completamento
 
