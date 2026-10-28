@@ -1,3 +1,15 @@
+## 2026-10-28 - Continue the unverified Deno cutover directly under user authorization
+
+User authorizes direct Codex implementation; cancel13:21 Claude retry to avoid competing
+work. Restore saved draft, add compiler-checked public150 bindings for script IDs/callable/
+constructor/template callbacks and fix native test type imports/constant-cycle expectation.
+Isolated Windows native tests107normal/106JITless pass, with documented benchmark/Wasm
+exclusions; actual Servo/browser still unverified. Replace unsafe per-thread navigation
+gate with early script/constellation policy and preserve classic-worker loader setup.
+These runtime/policy changes remain UNCOMMITTED WIP pending browser coverage/review; shared
+source patch and action mirror belong with complete integration. Patch0400 records only
+current process/handoff updates so agents do not restore obsolete WIP over current work.
+
 ## 2026-10-28 - Preserve the incomplete Deno cutover at the next verified quota reset
 
 Published docs checkpoint54ae32b3dae/wiki b919c94 after required c660 general10/10 and

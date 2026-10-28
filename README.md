@@ -779,8 +779,9 @@ games keep logs only. Required Linux/Windows build and packaging checks pass. Vi
 behavior, full navigation/reload refusal and trusted-click external links still need work.
 
 The production Deno cutover is drafted but incomplete and kept outside publishable sources.
-An isolated native compilation check found compatibility errors to correct, and the engine
-navigation gate needs revision. The current shipped backend remains active. No partial
+Direct Codex corrections pass the isolated Windows native suite:107tests normal,106JITless
+(two benchmarks excluded, plus one Wasm test in JITless). The revised navigation gate and
+full Servo/browser integration still need verification. The current shipped backend remains active. No partial
 runtime dependency change is published.
 
 Two tradeoffs are accepted for that integration: static module loading may temporarily

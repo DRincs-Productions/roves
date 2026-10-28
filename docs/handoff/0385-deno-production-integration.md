@@ -1,3 +1,32 @@
+# Current direct Codex continuation - 28 October 2026
+
+User explicitly authorized direct Codex implementation after Claude quota. Retry13:21 deleted;
+no Claude active. Restored cutover draft is NOW in the worktree with further Codex corrections.
+Do NOT overwrite it with the older saved patch. No partial source committed or published.
+
+Actual Windows isolated results: cargo check --tests passes; full roves-js suite107passed,
+2benchmarks ignored normal;106passed,3ignored JITless (2benchmarks+Wasm). Deno modules8/8 both
+modes, document-adoption3/3 normal. Public C++ bindings added for UnboundScript::GetId,
+Object::IsCallable/IsConstructor and ObjectTemplate::SetCallAsFunctionHandler; exact150
+headers, no mangled-symbol guesses/private object layout. Actual linking/runtime now tested
+by these native tests, not full Servo/browser or Linux.
+
+Engine policy replaced the per-thread late guard with script-side preflight and constellation
+defenses before navigation/iframe pipeline mutation; history range checked before drain.
+Same-document fragment path preserved. Shared bounded category logging added. Syntax parses;
+actual Servo browser execution remains CI. Development notice for new categories still to
+wire. Classic-script entry now installs the Deno loader, including classic workers.
+
+Next work/constraints are at the top of docs/V8_MIGRATION.md. In particular convert old
+frame-dependent browser coverage without losing named-property/GC/referrer/error checks;
+add actual single-document/HTML scheduling regression fixtures, update standalone locks,
+complete native warning bridge and review source/compiler/module semantics. Heavy browser
+builds online. No WIP publication, dependency/API benefits or overall retention claim.
+
+---
+
+Historical checkpoint below, superseded where it describes a parked draft or pending retry.
+
 # 0385 - Current resume: unverified Deno cutover, native and policy corrections required
 
 Latest28October2026 state: the runtime/module/async cutover was written but remains WIP.

@@ -32,40 +32,42 @@ Non fare push mentre richiesti attivi o errori irrisolti; nessun polling periodi
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
 
-0385: cutover produttivo SCRITTO ma INCOMPLETO, NON PUBBLICATO. Entrambi i compromessi sono
-accettati: pausa statica PROVVISORIA da misurare/rivedere; errori di VALUTAZIONE statica tramite
-unhandledrejection invece di error/onerror. Non riaprire le stesse scelte; nessuna eccezione
-per errori classici/fetch/parse/link/import dinamici. Handoff:0385-deno-production-integration.md.
+0385 IN CORSO direttamente con CODEX, autorizzazione esplicita28ottobre dopo quotaClaude.
+Il retry13:21 ripresa-unica-claude-0385-alle-13-21 e stato ELIMINATO per evitare sovrapposizioni.
+Nessun Claude attivo. Agenti/workflow aggiornati con ownership diretta temporanea.
 
-Bozza completa salvata FUORI sorgenti pubblicabili in
- target/task-0385/incomplete-cutover-2026-10-28/incomplete.patch, manifest.json e copie30file
-(26tracciati+4nuovi), base b8fb2eb4904. SHA256patch:
- b81d31d495be7492d596aba6ce05e02f57f052f0c660d738b30ec9df9039bdbc.
-Git apply --check passa dopo ripristino; includesource, rootlock e correzionecopiaCIbuild.rs.
-Mirrorroves-action README salvato separatamente in action-readme.patch; nessun cambio pin/input.
-Sorgenti e CI ripristinati al backend verificato; TODO.md intatto. Nessun WIP committato.
+Bozza30file ripristinata e migliorata nel WORKTREE, non committata/pubblicata. NON ripristinare
+sopra il lavoro attuale la vecchia incomplete-cutover-2026-10-28/incomplete.patch: e backup
+PRECEDENTE alle correzioni Codex. TODO.md intatto. Mainpub resta backend152/c660+docs54ae.
+Compromessi accettati invariati: pausa statica PROVVISORIA con test impatto; C2unhandledrejection
+per solaVALUTAZIONEstatica. Nessuna nuova domanda sulle stesse scelte.
 
-Prove REALI di revisione: rootlock della bozza risolveUNv8=150.4.0; pacchetto ufficiale ha
-4headerCpp necessari; shimCpp COMPILAWindows nel check isolato, link/ABI/esecuzione da provare.
-Native cargo check --tests -j1 iniziale34errori; nella SOLA copia diagnostica aggiunte importstd
-String/Result -> restano6errori per4APIpubbliche assentiRusty150(script_id usatotrevolte,
-is_callable,is_constructor,set_call_as_function_handler). NATIVE_REVIEW.md/logsalvati, nessun
-native test normale/JITless o browser dichiarato passato sul port. Standalonelock da aggiornare.
+Correzioni Codex REALI: quattro bindingV8pubblici mancanti150 nel nuovo compat.rs/shim.cc,
+tipi stdString/Result dei test, attesa ciclo corretta (typeof costante =string). Isolato
+cargo check --tests passa. Test Deno8/8 NORMAL+JITless; single_document3/3 normale;
+SUITE NATIVA COMPLETA107passati/2benchmarkignorati normale,106passati/3ignorati JITless
+(2benchmark+Wasm). Log direct-all-normal.log/direct-all-jitless.log. NON e testbrowserServo.
 
-Blocco navigazioni INSUFFICIENTE: pre_page_load thread_local non blocca nuoviScriptThread/
-crossorigin e puo rifiutare troppo tardi. Correzione e fixture vere ancora da implementare,
-non soltanto getterglobalnull che causerebbeassert. Primo prossimo incarico: fix6errorinativi;
-poi review-policy.txt pergateprima dimutarepipeline/documento/storia, History/hashintatti,
-e fixtureHTML/TLA/errori. Consegna: IMPLEMENTATION.md; nuova correzione POLICY_REVIEW.md.
-Usare stessa sessioneClaude ab3e2eb3-6c0f-44ee-9277-de12c954a202, unincaricoallavolta.
+Policy engine modificata (sintassiRustverde, esecuzione ancoraCI): navigazione conserva
+frammenti e blocca sostituzioni prima di unload/messaggi; iframe fermati prima di contesti
+sincroni/pipeline; Constellation difende load/reload/iframe e preflight storia PRIMA dei drain
+consentendo solo pipelinecorrente. Rimosso DOCUMENT_STARTED thread_local in pre_page_load.
+Warnuna volta per categoria tramite shared/constellation/game_document_policy.rs. Avviso
+sviluppo per queste nuove categorie ancora da collegare; aux-windowgiaimplementato.
+Loader installato anche prima dei classici per preservare import() nei worker; prova browser
+ancora necessaria. NON pubblicare finche mancano fixture/correzioni sotto.
 
-NUOVO limite sessione rilevato nella correzione successiva, dopo ripresa00:02 riuscita e
-implementazione reale. /usage28ottobre09:08 Europe/Rome: sessione100%, resetLIVE13:19
-(valorecached13:20 aggiornato dal refresh), settimana95%usata. Unico tentativo programmato
-28ottobre13:21, automazione ripresa-unica-claude-0385-alle-13-21. Se persiste stesso limite,
-salvare esito/fermare senza retryconcatenati, cambi modello o nuova pianificazione. Eliminarla
-quando il tentativo termina. Vecchio ricontrollo00:02 ELIMINATO. Nessun taskClaude attivo,
-nessuna automazione periodica. Pausa statica e impatto restano aperti per test e documentazione.
+Prossimi passi: adattare events.html helper13testnamed-property daiframes a documentounico
+con cleanup sincrono; conservare prove di risoluzione alias Document/HTMLDocument in processi
+separati; sostituire positivi di navigazione/frame con negativi singolodocumento+History,
+preservando fixture legacy e coperturaGC locale/retention non risolta. run.sh e v8.yml hanno
+ancora nav1/gc-lifecycle/frame-retention dipendenti daframe da convertire con copertura reale.
+Aggiungere moduloHTML/TLA/C2 fetch/parse/link fixtures e warningUI native; rivedere referrer,
+inlineimport.meta.url e testcaller-private archiviati. Rigenerare standalone lockcrate.
+Poi verifiche leggere/replay/fullpatch/docs/actionmirror, commit/pushsoloportcompleto.
+BuildServo pesantiSOLOCI. Nativeharness target/task-0385/native-workspace, buildcache
+ C:/Users/simon/AppData/Local/Temp/roves-0337-ws-aR1C/roves-js/target, -j1, V8_TEST_MODE corretto.
+SnapshotNATIVO dopo modifiche non coincide automaticamente con root: sincronizzare prima test.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:

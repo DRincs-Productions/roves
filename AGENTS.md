@@ -102,6 +102,16 @@ Claude implementa incarichi circoscritti via terminale. L'eccezione del22ottobre
 Codex diretto per quota Claude) è terminata. Il file temporaneo docs/CLAUDE_RESUME.md
 è stato rimosso su richiesta; il punto di ripresa unico è docs/V8_MIGRATION.md.
 
+### Eccezione corrente: implementazione diretta Codex (28 ottobre 2026)
+
+Dopo il nuovo limite Claude, l'utente ha chiesto esplicitamente a Codex di continuare
+DIRETTAMENTE nel frattempo. Codex prende runtime/adapter/policy0385 e relative verifiche;
+questa autorizzazione prevale sulla precedente divisione dei file per la prosecuzione
+corrente. Nessun incarico Claude attivo. Il retry13:21 e stato eliminato per evitare due
+implementazioni concorrenti. Riprendere la delega solo coordinando nuovamente lo scope;
+nessun cambio modello per aggirare quote. CI, patch, revisione, test e divieto di pubblicare
+WIP restano invariati; le build complete del browser restano online.
+
 ### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
 
 L'utente autorizza anche Codex a implementare pezzi indipendenti per accelerare l'integrazione.
