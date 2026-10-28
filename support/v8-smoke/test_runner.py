@@ -12,7 +12,7 @@ import time
 import unittest
 
 from check_heap_snapshot import problems as snapshot_problems
-from check_results import REQUIRED_CHECKS, validate
+from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, validate
 
 HERE = Path(__file__).resolve().parent
 
@@ -20,6 +20,29 @@ HERE = Path(__file__).resolve().parent
 class ResultsTests(unittest.TestCase):
     def test_complete(self):
         self.assertEqual([], validate('suite.html', 'noise\nSUITE PASS example\nSUITE TOTAL 1/1\n'))
+
+    def test_pause_observations_are_required_without_latency_thresholds(self):
+        rows = [dict(scene=scene, elapsed_ms=100000.5, max_timer_gap_ms=0,
+                     max_frame_gap_ms=100000, timer_ticks=1, frame_samples=1,
+                     visibility='hidden') for scene in ('cold', 'warm', 'slow')]
+        def report(values):
+            return ''.join('ROVES-V8 module-pause diagnostic ' + json.dumps(row) + '\n' for row in values)
+        self.assertEqual([], pause_diagnostic_problems(report(rows)))
+        self.assertTrue(pause_diagnostic_problems(report(rows[:2])))
+        self.assertTrue(pause_diagnostic_problems(report(rows + rows[:1])))
+        for field, value in (('elapsed_ms', -1), ('max_frame_gap_ms', float('nan')),
+                             ('max_timer_gap_ms', float('inf')), ('elapsed_ms', True),
+                             ('frame_samples', 0), ('timer_ticks', 1.5), ('visibility', 'unknown')):
+            with self.subTest(field=field, value=value):
+                bad = [dict(row) for row in rows]; bad[0][field] = value
+                self.assertTrue(pause_diagnostic_problems(report(bad)))
+        self.assertTrue(pause_diagnostic_problems('ROVES-V8 module-pause diagnostic {broken'))
+        passes = ''.join(f'SUITE PASS {name}\n' for name in REQUIRED_CHECKS['module-order.html'])
+        total = len(REQUIRED_CHECKS['module-order.html'])
+        claimed = passes + f'SUITE TOTAL {total}/{total}\n'
+        self.assertTrue(validate('module-order.html', claimed))
+        self.assertEqual([], validate('module-order.html', report(rows) + claimed))
+        self.assertTrue(validate('module-order.html', claimed + report(rows)))
 
     def test_rejects_false_green(self):
         for output in (
@@ -1269,6 +1292,11 @@ else:
         names = required[page]
         if scenario == 'missing:' + page or (scenario == 'navigation' and page == 'single-document.html'):
             names = names[1:]
+        if page == 'module-order.html':
+            for scene in ('cold', 'warm', 'slow'):
+                print('ROVES-V8 module-pause diagnostic ' + json.dumps(dict(
+                    scene=scene, elapsed_ms=250, max_timer_gap_ms=250, timer_ticks=1,
+                    max_frame_gap_ms=250, frame_samples=1, visibility='hidden')))
         print('SUITE PASS example')
         for name in names:
             print('SUITE PASS ' + name)

@@ -2,6 +2,21 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Pubblicato0aa2a55040e**, actionb001464, wikifc6cbd1. Nuovo batch:
+V840760300642, generale40760300801, Android40760300574; iOS40760300584 esclusa.
+Identificati in coda dopo il push. Nessun altro push finche richiesti attivi o errori irrisolti.
+
+**0410 completo locale:** diagnostica pausa in JSON con tre scene cold/warm/slow,
+intervalli timer e frame e contatori; richiesta la presenza di dati finiti/non negativi,
+contatori interi positivi e visibility valida. Rifiutati rapporti mancanti, duplicati,
+malformati o dopo il totale finale; nessuna soglia di latenza inventata. Prove Linux9/9,
+poi6/6 dopo il controllo negativo aggiuntivo; sintassi Node e replay3file verdi.
+Chrome DevTools MCP ora disponibile: riferimento reale Chrome156 su Windows, tab attiva
+visibility visible, viewport929x861, modalita headed/headless non verificata. Caricamenti
+cold10.9ms/warm0.6ms/slow261.4ms con250ms di ritardo server. Tre rapporti reali validati;
+fixture14/17 per le3differenze Deno attese. Nessuna misura Roves ancora. Dati e limiti in
+docs/ROVES_PERFORMANCE.md, log locale target/task-0385/chrome-pause-0410.log.
+
 **Miglioramento0409 completo locale:** il runner V8 passa l'opzione Servo esistente
 --hard-fail a ogni processo usa-e-getta; i panic script devono terminare il processo e
 non lasciare finestre vuote fino al timeout. Il simulatore richiede il flag; prove Linux
@@ -186,7 +201,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0409:
+Scratch Windows gia applicato fino0410:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

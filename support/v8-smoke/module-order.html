@@ -103,14 +103,24 @@ check("runtime static module loading resumes timers and frames", async () => {
     ["slow", "slow-module.mjs"]
   ]) {
     let ticks = 0, largestGap = 0, previous = performance.now(), waitForTick = null;
+    let frames = 0, largestFrameGap = 0, previousFrame = null, frameRequest = null;
+    function observeFrame(timestamp) {
+      if (previousFrame !== null) largestFrameGap = Math.max(largestFrameGap, timestamp - previousFrame);
+      previousFrame = timestamp; frames++;
+      frameRequest = requestAnimationFrame(observeFrame);
+    }
     const timer = setInterval(() => {
       const now = performance.now(); largestGap = Math.max(largestGap, now - previous);
       previous = now; ticks++;
       if (waitForTick) { const resolve = waitForTick; waitForTick = null; resolve(); }
     }, 5);
     const script = document.createElement("script"); script.type = "module";
-    const started = performance.now();
     try {
+      // Establish a frame before fetching, so the next sample spans the static-load pause.
+      await new Promise(resolve => requestAnimationFrame(timestamp => {
+        previousFrame = timestamp; frameRequest = requestAnimationFrame(observeFrame); resolve();
+      }));
+      const started = performance.now();
       await new Promise((resolve, reject) => {
         script.onload = resolve;
         script.onerror = () => reject(new Error("pause fixture loading failed: " + scene));
@@ -119,10 +129,14 @@ check("runtime static module loading resumes timers and frames", async () => {
       const elapsed = performance.now() - started;
       await new Promise(resolve => { waitForTick = resolve; });
       await new Promise(resolve => requestAnimationFrame(() => resolve()));
-      console.log("ROVES-V8 module-pause diagnostic", scene, "elapsed-ms", elapsed,
-        "max-timer-gap-ms", largestGap, "timer-ticks", ticks, "visibility", document.visibilityState);
-      if (ticks === 0) return "timer did not resume: " + scene;
-    } finally { clearInterval(timer); script.remove(); }
+      console.log("ROVES-V8 module-pause diagnostic " + JSON.stringify({
+        scene, elapsed_ms: elapsed, max_timer_gap_ms: largestGap, timer_ticks: ticks,
+        max_frame_gap_ms: largestFrameGap, frame_samples: frames, visibility: document.visibilityState
+      }));
+      if (ticks === 0 || frames === 0) return "timer/frame did not resume: " + scene;
+    } finally {
+      clearInterval(timer); if (frameRequest !== null) cancelAnimationFrame(frameRequest); script.remove();
+    }
   }
   return true;
 });

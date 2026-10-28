@@ -2,6 +2,8 @@
 """Validate the smoke harness protocol; no browser or third-party packages required."""
 
 import argparse
+import json
+import math
 from collections import Counter
 from pathlib import Path
 import re
@@ -63,6 +65,45 @@ REQUIRED_CHECKS = {
 TOTAL = re.compile(r"SUITE TOTAL (\d+)/(\d+)(?: \((\d+) skipped\))?")
 
 
+def pause_diagnostic_problems(output):
+    """Require observations, not a performance threshold or a claimed suite pass."""
+    prefix = "ROVES-V8 module-pause diagnostic "
+    scenes = set()
+    errors = []
+    finished = False
+    for line in output.splitlines():
+        if line.startswith("SUITE TOTAL "):
+            finished = True
+        if not line.startswith(prefix):
+            continue
+        try:
+            if finished:
+                raise ValueError("diagnostic after suite completion")
+            row = json.loads(line[len(prefix):])
+            if not isinstance(row, dict):
+                raise ValueError("expected object")
+            scene = row.get("scene")
+            if scene not in ("cold", "warm", "slow") or scene in scenes:
+                raise ValueError("unknown or duplicate scene")
+            for name in ("elapsed_ms", "max_timer_gap_ms", "max_frame_gap_ms"):
+                value = row.get(name)
+                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                    raise ValueError("invalid duration")
+            for name in ("timer_ticks", "frame_samples"):
+                value = row.get(name)
+                if type(value) is not int or value < 1:
+                    raise ValueError("missing resumed timer/frame")
+            if row.get("visibility") not in ("visible", "hidden"):
+                raise ValueError("invalid visibility")
+            scenes.add(scene)
+        except (ValueError, TypeError, OverflowError):
+            errors.append("invalid module-pause diagnostic")
+    for scene in ("cold", "warm", "slow"):
+        if scene not in scenes:
+            errors.append(f"missing module-pause diagnostic: {scene}")
+    return errors
+
+
 def validate(page, output, mode="normal", allow_missing_devices=False):
     errors = []
     counts = Counter()
@@ -118,6 +159,8 @@ def validate(page, output, mode="normal", allow_missing_devices=False):
     for name in REQUIRED_CHECKS.get(page, ()):
         if name not in names:
             errors.append(f"missing required check: {name}")
+    if page == "module-order.html":
+        errors.extend(pause_diagnostic_problems(output))
     return errors
 
 

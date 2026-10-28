@@ -805,3 +805,7 @@ browser startup and module behavior still require successful CI with this correc
 
 Disposable V8 smoke processes use Servo hard-fail mode so native thread panics cannot
 leave blank windows running until each page timeout. This does not change packaged games.
+
+Static-load diagnostics require complete cold/warm/controlled-slow timer and frame reports,
+without imposing a latency threshold. The Chrome MCP reference and its measurement limits
+are recorded in docs/ROVES_PERFORMANCE.md; Roves comparison remains pending browser CI.

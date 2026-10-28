@@ -1,3 +1,16 @@
+## 2026-10-28 - Validate static pause observations and record a Chrome reference (0410)
+
+Extend the existing cold/warm/250ms-controlled-server scenes with frame-gap sampling.
+Emit JSON using built-in JS JSON and validate with Python stdlib json/math: require all
+three scenes, finite nonnegative durations, positive timer/frame counts and visibility;
+reject duplicates, malformed or post-total data. Do not impose a latency threshold.
+Focused Linux checks9/9 and final negative6/6 pass; Node syntax and three-file patch replay
+match. Real Chrome DevTools MCP156/Windows reports validate:10.9/0.6/261.4ms, active visible
+tab929x861; launch headed/headless mode unknown. Full Chrome fixture14/17 reflects three
+intentional Deno-specific expectations, not a complete migration result. Record conditions,
+rounded timing/frame data and limits in ROVES_PERFORMANCE; Roves still needs CI startup proof.
+No third-party parser, dependency, CPU/RAM/GPU profile or savings claim is introduced.
+
 ## 2026-10-28 - Complete the prior CI failure audit before publication
 
 The final required Linux portable job ended with the same Document-before-initialization

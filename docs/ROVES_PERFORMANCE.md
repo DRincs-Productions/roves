@@ -1,3 +1,25 @@
+## 28 ottobre 2026 — riferimento Chrome MCP per la pausa statica (0410)
+
+Chrome156.0.0.0, user agent Windows NT10.0 Win64 x64, DevTools MCP; tab attiva,
+visibilityState visible, viewport929x861. Modalita di avvio headed/headless non verificata:
+non equiparare visibilityState alla modalita del processo. Una sola esecuzione locale HTTP
+loopback con lo stdlib server; freddo/caldo indicano il registro moduli nello stesso documento,
+non una pulizia certificata di tutte le cache del sistema. Slow usa250ms di ritardo server.
+
+| Scena | Tempo caricamento ms | Max intervallo timer ms | Tick timer | Max intervallo frame ms | Campioni frame |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| cold | 10.9 | 15.7 | 5 | 19.9 | 2 |
+| warm | 0.6 | 14.4 | 3 | 17.5 | 1 |
+| slow | 261.4 | 16.8 | 32 | 18.4 | 16 |
+
+Nessuna soglia prestazionale accettata, media o confronto Roves ottenuto. I tre rapporti
+JSON reali superano il nuovo validatore. Log locale target/task-0385/chrome-pause-0410.log;
+la tabella conserva i dati arrotondati nel repository. La fixture completa Chrome14/17:
+i tre scostamenti sono attesi dalle condizioni specifiche Deno (rejection statica, frammento
+inline, preload JSON indisponibile); non dichiarare Chrome o Roves completamente verdi.
+Il controllo timer/frame della pausa passa. Misure Roves dipendono dal superamento del
+panic di inizializzazione e dagli artifact del nuovo batch; niente profilo CPU/RAM/GPU.
+
 ## 26 ottobre 2026 — evidenza GC0353/0355 dal batch36abe
 
 Linux normal: frame-retention rilascia elemento/documento/probe dopo8collezioni. I4checkGC
