@@ -7,7 +7,7 @@
 non lasciare finestre vuote fino al timeout. Il simulatore richiede il flag; prove Linux
 mirate3/3 verdi (log, timeout dopo completamento, snapshot con/senza wrapper), Bash syntax
 e replay2file verdi. Log target/task-0385/linux-hard-fail-review.log. Nessuna modifica alla
-policy di crash dei giochi. Pubblicare insieme a0408 solo dopo la fine del batch precedente.
+policy di crash dei giochi. Batch precedente ora terminale;0408/0409 e0407 sono pronti per il push coordinato.
 
 **Checkpoint corrente: correzione avvio0408 pronta localmente.** Root pubblicata6efa696f176;
 locali completi0407 cc0f2b0e8da e handoff89ec77ca418, action57d710e e wikifac0dbb.
@@ -18,7 +18,8 @@ browser Windows VERDE. Browser Linux normal/JITless compilano ma gli smoke FALLI
 Document accessed before initialization (window.rs1447). Non attribuire questo ai warning
 libEGL: lo stesso panic compare nei bundle Windows portable/MSI, Linux deb e Steam.
 Generale40752923425: pristine replay e contratti condivisi verdi; bundle sopra falliti;
-Linux portable123046390802 ancora attivo all'ultimo controllo. Android40752923374 verde.
+Linux portable123046390802 terminata FALLITA: stesso panic di inizializzazione, seguito
+da assenza input DOM. Non sono emerse altre cause nel log. Android40752923374 verde.
 Apple esclusa. Non pushare con run richieste ancora attive o ulteriori errori irrisolti.
 
 Causa0408: script_thread installava il loader appena creato Window, prima di init_document.
@@ -34,9 +35,8 @@ includendo la directory nascosta. Focus Linux runner/snapshot2/2 verdi; replay3f
 La suite Linux completa precedente0404/0405 passa59/59 senza skip. I runtime nativi CI ora
 sono verdi; questo NON prova che il browser avvii o che le nuove fixture moduli passino.
 
-Prossimo: completare revisione0408, aggiornare commit/patch/wiki; al punto motivato controllare
-la run Linux portable rimasta, analizzare ogni errore ulteriore e solo dopo pubblicare tutti
-i cambiamenti completi (siblings prima dei gitlink root). Identificare nuove run una volta,
+Batch precedente interamente terminale: revisione0408/0409 completa, tutte le cause richieste
+analizzate e correzione pronta. Pubblicare i cambiamenti completi (siblings prima dei gitlink root). Identificare nuove run una volta,
 poi continuare il lavoro utile senza polling. JSON preload temporaneamente indisponibile;
 misure pausa, diagnostica inline, click reale/avviso, SourceText0361 e retention aperti.
 
@@ -209,7 +209,7 @@ valutare una soluzione mantenuta e verificare insieme error.stack, parse/link e 
 attributi degli eventi. Non assumere che una mappa dello stack corregga v8::Message.
 Non introdurre parser, fork o una semplice aggiunta di righe senza verificare hashbang,
 sourcemap preesistenti, righe/colonne e sorgenti esterne. Nessuna correzione e stata fatta.
-Prima raccogliere la prima esecuzione browser della CI; la raccolta0407 non risolve questo.
+Prima superare il panic di avvio nella CI browser; la raccolta0407 non risolve questo.
 
 ### 8. Prossimo ciclo operativo e criteri di completamento
 

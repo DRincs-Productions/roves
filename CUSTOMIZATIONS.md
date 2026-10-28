@@ -1,3 +1,10 @@
+## 2026-10-28 - Complete the prior CI failure audit before publication
+
+The final required Linux portable job ended with the same Document-before-initialization
+panic and resulting missing DOM input. All required prior jobs are terminal;0408 addresses
+the demonstrated common startup cause. Native runtime and pristine replay evidence remains
+separate from browser smoke, which must rerun online after publication.
+
 ## 2026-10-28 - Use Servo hard-fail mode in the V8 smoke runner (0409)
 
 Pass the existing --hard-fail CLI option to each disposable smoke process. A script-thread
