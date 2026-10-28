@@ -20,11 +20,13 @@ non nuovi push; restano validi stop, quote e condizioni di blocco documentate.
 
 ## Stato corrente — 28 ottobre 2026
 
-Checkpoint pubblicato: `c660cbf58816d14ca9cbf57be893fb6e9c754c6c`, wiki `001c058`,
+Checkpoint pubblicato: `54ae32b3daed3ae94efd73a7c03704e226201af0`, wiki `b919c94`,
 roves-action `4b2a67f`. Include bootstrap0382, classe0383 e async0384 della prova isolata.
 Batch precedente b520: generale40588014903 VERDE10/10 richiesti, Android40588015577 VERDE.
 Shell0386/0387 compilata/pacchettizzata Linux/Windows; comportamento visivo non verificato.
-Nuovo batch c660: generale40599426163, Android40599426266; iOS40599426187 esclusa.
+Batch c660 concluso: generale40599426163 VERDE10/10richiesti e Android40599426266 VERDE.
+Nuovo batch54ae: generale40655538314 in coda, Android40655538288 attiva; iOS40655538256
+esclusa. Pubblicati SOLO docs/patchdocumentali; nessun sorgente del port incompleto.
 Non fare push mentre richiesti attivi o errori irrisolti; nessun polling periodico.
 
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e

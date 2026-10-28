@@ -1,5 +1,9 @@
 ## 2026-10-28 - Preserve the incomplete Deno cutover at the next verified quota reset
 
+Published docs checkpoint54ae32b3dae/wiki b919c94 after required c660 general10/10 and
+Android success. Next batch general40655538314/Android40655538288 pending; Apple excluded.
+Record these real IDs locally without another push while required checks are active.
+
 0385 produced an unverified owner/context/module/async cutover. Isolated Windows native
 check compiled its public C++ shim but found34errors; diagnostic-only std type imports
 reduce them to6 missing-method errors (four Rusty150 bindings). Header package availability
