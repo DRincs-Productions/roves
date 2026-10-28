@@ -490,7 +490,14 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
                 Err(ModuleGraphError::Rethrow)
             },
             None => {
-                set_pending_error(raw, true, &error.to_string());
+                log::warn!("[roves-modules] loading the module graph of {url} failed: {error}");
+                // Deno already classifies parse/link and import-attribute failures. Its
+                // public conversion preserves that class instead of turning every error
+                // into SyntaxError (in particular, invalid attributes are TypeError).
+                raw.with_scope(|scope| {
+                    let error = deno_core::error::to_v8_error(scope, &error);
+                    raw.set_pending(scope, error);
+                });
                 Err(ModuleGraphError::Rethrow)
             },
         },

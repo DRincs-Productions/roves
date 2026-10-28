@@ -7262,6 +7262,30 @@ mod deno_modules {
     }
 
     #[test]
+    fn static_import_attribute_errors_keep_type_error() {
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("data.json", HostModuleKind::Json, r#"{ "answer": 42 }"#),
+        ]);
+        for (index, attributes) in [r#"type: "css""#, r#"unsupported: "json""#,
+                                    r#"type: "json", unsupported: "json""#].iter().enumerate() {
+            let source = format!("import './data.json' with {{ {attributes} }};");
+            let name = format!("{ORIGIN}attributes.html#roves-inline-module-{index}");
+            assert_eq!(load_module_graph(runtime.cx(), &name, Some(source)), Err(ModuleGraphError::Rethrow));
+            let cx = runtime.raw_cx();
+            rooted!(in(cx) let mut error = UndefinedValue());
+            assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) });
+            unsafe { crate::api::JS_ClearPendingException(cx) };
+            let described = describe(&runtime, error.get());
+            assert!(described.starts_with("TypeError"), "{attributes}: {described}");
+        }
+        assert!(loader.fetched.borrow().is_empty(), "invalid attributes must not fetch a resource");
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}valid.html#roves-inline-module-1"),
+            Some(r#"import data from './data.json' with { type: "json" }; log.push(data.answer);"#.to_owned())).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+        assert_eq!(log(&runtime), "42", "typed JSON still loads after rejected attributes");
+    }
+
+    #[test]
     fn graph_failures_keep_their_contracts() {
         let (mut runtime, _, _) = runtime_with(&[
             ("broken.js", HostModuleKind::JavaScript, "export const = ;"),

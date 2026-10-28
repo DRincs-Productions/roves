@@ -2,6 +2,19 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**0411 completa locale:** regressione negativa riprodotta: attributo statico type css
+veniva ricreato come SyntaxError: Uncaught TypeError. Ora la conversione pubblica
+`deno_core::error::to_v8_error` mantiene la classe; non usare CoreError::to_v8_error,
+che nella versione0.413 ricrea sempre TypeError e rompe il test SyntaxError gia esistente.
+Deno modulo12/12 normal e12/12 JITless verdi: tre combinazioni attributi illegali non fanno
+fetch; JSON tipizzato valido funziona dopo gli errori. Parse SyntaxError e risoluzione
+TypeError restano verdi. La conversione avviene dopo il rilascio del prestito esclusivo
+JsRuntime. Log originale Deno conservato per URL/posizioni, diagnostica inline resta aperta.
+Fixture browser aggiunta e richiesta: static import attribute failures retain TypeError.
+Syntax Node e helper Linux7/7 verdi; patch0411 dry-run/replay e5file identici LF.
+Log target/task-0385/static-attributes-{negative,normal,jitless}.log. Nessuna nuova dipendenza.
+Conservare localmente insieme a0410 (root039aa80685b, wiki97c3bcd) durante la CI0aa2.
+
 **Pubblicato0aa2a55040e**, actionb001464, wikifc6cbd1. Nuovo batch:
 V840760300642, generale40760300801, Android40760300574; iOS40760300584 esclusa.
 Identificati in coda dopo il push. Nessun altro push finche richiesti attivi o errori irrisolti.
@@ -201,7 +214,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0410:
+Scratch Windows gia applicato fino0411:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

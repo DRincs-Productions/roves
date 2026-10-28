@@ -1,3 +1,18 @@
+## 2026-10-28 - Preserve static module import-attribute error classes (0411)
+
+A negative native regression proves invalid type css becomes SyntaxError: Uncaught TypeError
+under the port's unconditional SyntaxError conversion. Reuse public deno_core::error::to_v8_error
+instead, after releasing the runtime borrow. Do not use CoreError::to_v8_error: its0.413
+implementation always creates TypeError and breaks existing syntax-error coverage. Retain
+the original Deno diagnostic in logs for source URLs/positions; inline location mapping is
+still open. No new dependency or hand-maintained exception class table.
+Native module12/12 normal and12/12 compiled JITless pass, including three invalid attribute
+combinations rejected before fetch and successful typed JSON afterward. Existing parse,
+resolution, rejection, boundary and shutdown contracts remain green. Add a required browser
+TypeError fixture; Node syntax/helper7/7 and five-file incremental replay pass. Browser
+execution remains pending CI. Keep the proven negative log and the public helper limitation
+in the handoff; no private Deno API, graph or source parser is introduced.
+
 ## 2026-10-28 - Validate static pause observations and record a Chrome reference (0410)
 
 Extend the existing cold/warm/250ms-controlled-server scenes with frame-gap sampling.

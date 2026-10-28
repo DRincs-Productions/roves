@@ -809,3 +809,7 @@ leave blank windows running until each page timeout. This does not change packag
 Static-load diagnostics require complete cold/warm/controlled-slow timer and frame reports,
 without imposing a latency threshold. The Chrome MCP reference and its measurement limits
 are recorded in docs/ROVES_PERFORMANCE.md; Roves comparison remains pending browser CI.
+
+Static import-attribute errors preserve TypeError through Deno public error conversion;
+parse failures retain SyntaxError. Native module checks pass in normal and JITless modes;
+the corresponding browser fixture remains subject to CI.

@@ -1,0 +1,104 @@
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index 9337980e049..bb12d87e12c 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -490,7 +490,14 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
+                 Err(ModuleGraphError::Rethrow)
+             },
+             None => {
+-                set_pending_error(raw, true, &error.to_string());
++                log::warn!("[roves-modules] loading the module graph of {url} failed: {error}");
++                // Deno already classifies parse/link and import-attribute failures. Its
++                // public conversion preserves that class instead of turning every error
++                // into SyntaxError (in particular, invalid attributes are TypeError).
++                raw.with_scope(|scope| {
++                    let error = deno_core::error::to_v8_error(scope, &error);
++                    raw.set_pending(scope, error);
++                });
+                 Err(ModuleGraphError::Rethrow)
+             },
+         },
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 2aefad54ecf..db5fb3bf307 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7261,6 +7261,30 @@ mod deno_modules {
+             "only the two allowed root modules reach resource fetching");
+     }
+ 
++    #[test]
++    fn static_import_attribute_errors_keep_type_error() {
++        let (mut runtime, loader, _) = runtime_with(&[
++            ("data.json", HostModuleKind::Json, r#"{ "answer": 42 }"#),
++        ]);
++        for (index, attributes) in [r#"type: "css""#, r#"unsupported: "json""#,
++                                    r#"type: "json", unsupported: "json""#].iter().enumerate() {
++            let source = format!("import './data.json' with {{ {attributes} }};");
++            let name = format!("{ORIGIN}attributes.html#roves-inline-module-{index}");
++            assert_eq!(load_module_graph(runtime.cx(), &name, Some(source)), Err(ModuleGraphError::Rethrow));
++            let cx = runtime.raw_cx();
++            rooted!(in(cx) let mut error = UndefinedValue());
++            assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) });
++            unsafe { crate::api::JS_ClearPendingException(cx) };
++            let described = describe(&runtime, error.get());
++            assert!(described.starts_with("TypeError"), "{attributes}: {described}");
++        }
++        assert!(loader.fetched.borrow().is_empty(), "invalid attributes must not fetch a resource");
++        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}valid.html#roves-inline-module-1"),
++            Some(r#"import data from './data.json' with { type: "json" }; log.push(data.answer);"#.to_owned())).unwrap();
++        evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
++        assert_eq!(log(&runtime), "42", "typed JSON still loads after rejected attributes");
++    }
++
+     #[test]
+     fn graph_failures_keep_their_contracts() {
+         let (mut runtime, _, _) = runtime_with(&[
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index c17a79aaa31..a92384a0935 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -23,7 +23,7 @@ WASM_SKIPS = {
+ REQUIRED_CHECKS = {
+     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches'),
++    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError'),
+     "single-document.html": (
+         "reload preserves the live game document",
+         "same-origin assignment preserves the live game document",
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index 9a0a7f5e4fb..7d8b2d3a9c1 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -52,12 +52,12 @@ check("classic errors still use error events", () => new Promise(resolve => {
+   addEventListener("error", listener);
+   setTimeout(() => { throw new Error("roves-classic-error"); }, 0);
+ }));
+-async function failingStatic(path, expectsFetchError) {
++async function failingStatic(path, expectsFetchError, expectedError = SyntaxError) {
+   const script = document.createElement("script"); script.type = "module";
+   const observed = new Promise(resolve => {
+     let timer;
+     function error(event) {
+-      if (expectsFetchError || !(event.error instanceof SyntaxError)) return;
++      if (expectsFetchError || !(event.error instanceof expectedError)) return;
+       event.preventDefault(); cleanup(); resolve(true);
+     }
+     function cleanup() { clearTimeout(timer); removeEventListener("error", error); script.remove(); }
+@@ -71,6 +71,8 @@ async function failingStatic(path, expectsFetchError) {
+ check("static parse failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/parse-error.mjs", false));
+ check("static link failure preserves its syntax error contract", () => failingStatic("single-document-fixtures/link-error.mjs", false));
+ check("static fetch failure remains a script loading failure", () => failingStatic("single-document-fixtures/absent-static.mjs", true));
++check("static import attribute failures retain TypeError", () =>
++  failingStatic("single-document-fixtures/invalid-attributes.mjs", false, TypeError));
+ check("dynamic fetch failure rejects the importing promise", async () => {
+   try { await import("./single-document-fixtures/absent-dynamic.mjs"); return false; }
+   catch (error) { return error instanceof TypeError || String(error); }
+diff --git a/support/v8-smoke/single-document-fixtures/invalid-attributes.mjs b/support/v8-smoke/single-document-fixtures/invalid-attributes.mjs
+new file mode 100644
+index 00000000000..c52a08daa13
+--- /dev/null
++++ b/support/v8-smoke/single-document-fixtures/invalid-attributes.mjs
+@@ -0,0 +1,2 @@
++import data from "../modules/data.json" with { type: "css" };
++export default data;
