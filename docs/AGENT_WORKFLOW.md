@@ -1,3 +1,15 @@
+### Errori dei moduli statici deno_core: deviazione autorizzata (28 ottobre 2026)
+
+L'utente accetta esplicitamente che gli errori di VALUTAZIONE dei moduli statici arrivino
+tramite unhandledrejection anziche error/window.onerror nel percorso deno_core. Il gapC2
+non richiede nuove conferme. Documentare che gli overlay che ascoltano solo window.onerror
+potrebbero non mostrarli. Non estendere questa eccezione agli errori classici, di fetch,
+parse/link o agli import dinamici; conservarne i contratti distinti e verificarli. Evitare
+terminazione del runtime per un reject non gestito: notificare il gioco tramite il normale
+percorso degli eventi di rejection. Non fingere una promise appartenente al gioco se e
+interna alla libreria. La pausa statica provvisoria e i suoi test restano un tema separato.
+Nessun fork, layout privato o grafo duplicato autorizzato; adozione ancora da completare.
+
 ### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
 
 L'utente autorizza anche Codex a implementare pezzi indipendenti per accelerare l'integrazione.

@@ -1,3 +1,14 @@
+## 2026-10-28 - Accept Deno static evaluation errors through unhandledrejection
+
+The user explicitly accepts C2: static module evaluation failures may surface through
+unhandledrejection rather than error/window.onerror in the future Deno backend. Document
+onerror-only overlay impact and internal promise identity. Do not broaden this exception
+to classic scripts, fetch/parse/link or dynamic imports; preserve normal rejection events
+without terminating the runtime. Static-load pause remains separately provisional and
+subject to impact review. Update AGENTS/workflow/current and0385 handoffs, README/wiki;
+patch0398 captures durable authorization. Resume same Claude session to avoid re-research.
+No completed production dependency/runtime adoption is claimed by these docs.
+
 ## 2026-10-28 - Record the post-reset module-evaluation reporting gap
 
 The single0385 retry completed with Claude available and no source/dependency/test changes.

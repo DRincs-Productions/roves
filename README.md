@@ -810,5 +810,7 @@ Deno integration; the provisional module-loading impact review remains open.
 
 Production Deno integration also has a reviewed module-error reporting gap: its public static
 evaluation API exposes failures through an internal unhandled rejection rather than the
-current error/onerror path. That separate behavior change has not been accepted or
-implemented; the provisional static-loading pause decision remains unchanged.
+current error/onerror path. This deviation is now explicitly
+accepted for the pending integration: onerror-only crash overlays may miss those module
+evaluation errors. Classic errors, fetch/parse/link failures and dynamic imports retain
+their separate contracts. The provisional static-loading pause remains a separate review.

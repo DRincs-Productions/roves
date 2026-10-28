@@ -63,7 +63,7 @@ Reuse it after review rather than redoing research; it is not a completed cutove
 The earlier choice2 was briefly recorded in local a9d055b06bd and is now superseded.
 Claude resumes with reapproved-provisional.txt. Current backend remains until atomic
 implementation and review; no partial source/dependency change may be published.
-## Post-reset result: new evaluation-error API gap (C2), decision pending
+## Post-reset result: evaluation-error deviation (C2) explicitly ACCEPTED
 
 The single28October00:02 retry completed normally and Claude is available, not quota-blocked.
 No production source, manifest, lockfile or test was changed. Deliverable:
@@ -80,11 +80,18 @@ checks its rejected reason (components/roves-js/src/modules_impl.rs:818-849), pr
 synchronous error path used by Servo. Do not silently replace error/window.onerror with
 unhandledrejection or identify internal promises through unreliable origin heuristics.
 
-An asynchronous question asks the user to choose: preserve error/onerror and pause adoption
-on C2, or explicitly accept unhandledrejection for static module evaluation errors. This
-is SEPARATE from the already-approved provisional static-loading pause; keep that approval
-and its performance review requirements intact. No answer means no permission for the new
-error-reporting deviation. No fork or upstream communication has been authorized/performed.
+The user explicitly ACCEPTED unhandledrejection instead of error/window.onerror for STATIC
+MODULE EVALUATION errors. This unblocks C2; do not ask again or invent heuristic promise
+classification to preserve the old error event. Overlays listening only to window.onerror
+may miss these errors. Do not extend acceptance to classic-script errors, fetch/parse/link
+failures or dynamic imports. Keep their distinct existing contracts and test them.
+
+Preserve normal unhandledrejection/rejectionhandled dispatch and cancellation behavior;
+Deno's internal rejection must not terminate the runtime. The promise may be internal to
+Deno, not one the game created; do not claim otherwise. This is separate from the accepted
+PROVISIONAL static-loading pause and its performance review. No fork was authorized.
+Resume the completed Claude session with the accepted direction, reuse existing findings
+and the saved seven-file preparation instead of repeating research. Deliver actual code.
 
 C1 has a public candidate solution: external_ops_tracker.ref_op for the document lifetime
 prevents Deno from declaring a TLA awaiting Servo timers/fetch/events stalled; unref before

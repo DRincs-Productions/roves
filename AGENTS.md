@@ -51,6 +51,18 @@ Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisi
 nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
 la decisione e rivalutare un'API pubblica interamente asincrona.
 
+### Errori dei moduli statici deno_core: deviazione autorizzata (28 ottobre 2026)
+
+L'utente accetta esplicitamente che gli errori di VALUTAZIONE dei moduli statici arrivino
+tramite unhandledrejection anziche error/window.onerror nel percorso deno_core. Il gapC2
+non richiede nuove conferme. Documentare che gli overlay che ascoltano solo window.onerror
+potrebbero non mostrarli. Non estendere questa eccezione agli errori classici, di fetch,
+parse/link o agli import dinamici; conservarne i contratti distinti e verificarli. Evitare
+terminazione del runtime per un reject non gestito: notificare il gioco tramite il normale
+percorso degli eventi di rejection. Non fingere una promise appartenente al gioco se e
+interna alla libreria. La pausa statica provvisoria e i suoi test restano un tema separato.
+Nessun fork, layout privato o grafo duplicato autorizzato; adozione ancora da completare.
+
 ### Valutazione obbligatoria prima di ogni modifica
 
 Prima di iniziare qualsiasi modifica, valuta se librerie esterne mantenute, incluse quelle

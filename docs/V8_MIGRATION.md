@@ -45,14 +45,17 @@ consegna attesa IMPLEMENTATION.md. B1 shim/header e B2 documento unico restano n
 Ripresa UNICA28ottobre00:02 completata: Claude disponibile, nessuna quota corrente, ma
 nuovo gapC2 nella valutazione: mod_evaluate pubblico non espone ragione del reject e la
 rilancia comeunhandledrejection interna, invece del percorso error/onerror esistente.
-Analisi sorgente revisionata, NON prova browser eseguita. Domanda utente pendente: mantenere
-onerror e sospendere adozione sul gap, oppure accettare esplicitamente nuova deviazione.
-Non assumere consenso. Pausa statica PROVVISORIA gia autorizzata resta un compromesso SEPARATO.
+Analisi sorgente revisionata, NON prova browser eseguita. L'utente ha ACCETTATO C2:
+unhandledrejection per errori di VALUTAZIONE dei moduli statici al posto di error/onerror.
+Documentare overlay onerror-only e promise interna; non estendere a classici, fetch/parse/link
+o import dinamici. Nessuna nuova conferma sullo stesso compromesso. Pausa statica PROVVISORIA
+resta SEPARATA con verifica impatto richiesta. Riprendere implementazione senza fork.
 C1 stalloTLA suasyncServo: soluzione pubblica candidata external_ops_tracker.ref_op/unref_op,
 non implementata/verificata. Deliverable target/task-0385/IMPLEMENTATION.md, reset-result.json;
 sessione ab3e2eb3-6c0f-44ee-9277-de12c954a202 da riusare per evitare ricerche duplicate.
-Nessun sorgente/dependency/lockfile/test cambiato; bozza7file resta separata. Nessun taskClaude
-attivo. Automazione ripresa-unica-claude-0385-dopo-reset ELIMINATA; nessun retry programmato.
+Prima della ripresa nessun sorgente/dependency/lockfile/test cambiato; bozza7file separata.
+Claude ripreso nella stessa sessione dal prompt target/task-0385/c2-accepted.txt; consegna
+attesa IMPLEMENTATION.md, risultato c2-result.json. Automazione ripresa-unica-claude-0385-dopo-reset ELIMINATA; nessun retry programmato.
 TODO.md resta modifica separata. Nessuna adozione o retentioncomplessiva dichiarata risolta.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
