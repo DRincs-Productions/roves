@@ -30,33 +30,40 @@ Non fare push mentre richiesti attivi o errori irrisolti; nessun polling periodi
 Bootstrap0382 verificato online Linux/Windows normal/JITless. Classe0383 patch0387 e
 async0384 patch0388: verifiche leggere passate, nuove asserzioni native VERDI4/4 nel probe40564575701 (Linux/Windows normal/JITless). Sono esperimenti, non integrazione produttiva né prova di retention risolta.
 
-0385 consegnata e revisionata: [gap API del caricamento statico](handoff/0385-deno-production-integration.md).
-Nessun port produttivo o cambio Cargo/lockfile lasciato. Deno load-without-evaluate mantiene
-&mut runtime durante il fetch; import()/import.defer() non sono equivalenti per HTML+TLA.
-Sono controesempi da analisi sorgente, non prove browser eseguite. L'ULTIMA istruzione utente
-AUTORIZZA di nuovo opzione1: pausa durante fetch/istanziamento statico, import dinamici
-asincroni. Sostituisce scelta2. Compromesso PROVVISORIO DA RIVEDERE NEI TEST: documentare
-avvio e script module aggiunti durante il gioco, file locali/rete, durata, input/timer/frame,
-errori/chiusura, freddo/caldo e rete lenta controllata. Nessuna durata o soglia gia provata.
-Conservare HTML/TLA e sicurezza; nessun rientro JS durante prestito esclusivo del runtime.
-Ripresa0385 da target/task-0385/superseded-option1-wip, bozza incompleta da revisionare,
-non codice verificato. Nuovo incarico target/task-0385/reapproved-provisional.txt;
-consegna attesa IMPLEMENTATION.md. B1 shim/header e B2 documento unico restano necessari.
-Ripresa UNICA28ottobre00:02 completata: Claude disponibile, nessuna quota corrente, ma
-nuovo gapC2 nella valutazione: mod_evaluate pubblico non espone ragione del reject e la
-rilancia comeunhandledrejection interna, invece del percorso error/onerror esistente.
-Analisi sorgente revisionata, NON prova browser eseguita. L'utente ha ACCETTATO C2:
-unhandledrejection per errori di VALUTAZIONE dei moduli statici al posto di error/onerror.
-Documentare overlay onerror-only e promise interna; non estendere a classici, fetch/parse/link
-o import dinamici. Nessuna nuova conferma sullo stesso compromesso. Pausa statica PROVVISORIA
-resta SEPARATA con verifica impatto richiesta. Riprendere implementazione senza fork.
-C1 stalloTLA suasyncServo: soluzione pubblica candidata external_ops_tracker.ref_op/unref_op,
-non implementata/verificata. Deliverable target/task-0385/IMPLEMENTATION.md, reset-result.json;
-sessione ab3e2eb3-6c0f-44ee-9277-de12c954a202 da riusare per evitare ricerche duplicate.
-Prima della ripresa nessun sorgente/dependency/lockfile/test cambiato; bozza7file separata.
-Claude ripreso nella stessa sessione dal prompt target/task-0385/c2-accepted.txt; consegna
-attesa IMPLEMENTATION.md, risultato c2-result.json. Automazione ripresa-unica-claude-0385-dopo-reset ELIMINATA; nessun retry programmato.
-TODO.md resta modifica separata. Nessuna adozione o retentioncomplessiva dichiarata risolta.
+0385: cutover produttivo SCRITTO ma INCOMPLETO, NON PUBBLICATO. Entrambi i compromessi sono
+accettati: pausa statica PROVVISORIA da misurare/rivedere; errori di VALUTAZIONE statica tramite
+unhandledrejection invece di error/onerror. Non riaprire le stesse scelte; nessuna eccezione
+per errori classici/fetch/parse/link/import dinamici. Handoff:0385-deno-production-integration.md.
+
+Bozza completa salvata FUORI sorgenti pubblicabili in
+ target/task-0385/incomplete-cutover-2026-10-28/incomplete.patch, manifest.json e copie30file
+(26tracciati+4nuovi), base b8fb2eb4904. SHA256patch:
+ b81d31d495be7492d596aba6ce05e02f57f052f0c660d738b30ec9df9039bdbc.
+Git apply --check passa dopo ripristino; includesource, rootlock e correzionecopiaCIbuild.rs.
+Mirrorroves-action README salvato separatamente in action-readme.patch; nessun cambio pin/input.
+Sorgenti e CI ripristinati al backend verificato; TODO.md intatto. Nessun WIP committato.
+
+Prove REALI di revisione: rootlock della bozza risolveUNv8=150.4.0; pacchetto ufficiale ha
+4headerCpp necessari; shimCpp COMPILAWindows nel check isolato, link/ABI/esecuzione da provare.
+Native cargo check --tests -j1 iniziale34errori; nella SOLA copia diagnostica aggiunte importstd
+String/Result -> restano6errori per4APIpubbliche assentiRusty150(script_id usatotrevolte,
+is_callable,is_constructor,set_call_as_function_handler). NATIVE_REVIEW.md/logsalvati, nessun
+native test normale/JITless o browser dichiarato passato sul port. Standalonelock da aggiornare.
+
+Blocco navigazioni INSUFFICIENTE: pre_page_load thread_local non blocca nuoviScriptThread/
+crossorigin e puo rifiutare troppo tardi. Correzione e fixture vere ancora da implementare,
+non soltanto getterglobalnull che causerebbeassert. Primo prossimo incarico: fix6errorinativi;
+poi review-policy.txt pergateprima dimutarepipeline/documento/storia, History/hashintatti,
+e fixtureHTML/TLA/errori. Consegna: IMPLEMENTATION.md; nuova correzione POLICY_REVIEW.md.
+Usare stessa sessioneClaude ab3e2eb3-6c0f-44ee-9277-de12c954a202, unincaricoallavolta.
+
+NUOVO limite sessione rilevato nella correzione successiva, dopo ripresa00:02 riuscita e
+implementazione reale. /usage28ottobre09:08 Europe/Rome: sessione100%, resetLIVE13:19
+(valorecached13:20 aggiornato dal refresh), settimana95%usata. Unico tentativo programmato
+28ottobre13:21, automazione ripresa-unica-claude-0385-alle-13-21. Se persiste stesso limite,
+salvare esito/fermare senza retryconcatenati, cambi modello o nuova pianificazione. Eliminarla
+quando il tentativo termina. Vecchio ricontrollo00:02 ELIMINATO. Nessun taskClaude attivo,
+nessuna automazione periodica. Pausa statica e impatto restano aperti per test e documentazione.
 Ricontrollo19:02 già eliminato. Nessun polling o automazione periodica.
 
 L'utente autorizza Codex a implementare in parallelo pezzi indipendenti in questa sessione:

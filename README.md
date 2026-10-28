@@ -758,7 +758,7 @@ the system browser only after a real user click; automatic attempts are blocked 
 without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
 First evaluate deno_core for this scope, then implement the policy with the selected runtime.
 
-This policy is planned, not yet implemented by this documentation update. deno_core is to
+The complete navigation policy is pending; auxiliary-window refusal is described below. deno_core is to
 be re-evaluated for the single-document scope: the previous multi-frame/WindowProxy NO-GO
 does not decide it. DOM/events, security, HTML microtasks, module loading, GC and JITless
 still require proof. No Deno production dependency or runtime/performance benefit is claimed;
@@ -768,49 +768,27 @@ The macOS gamepad probe runs independently from the required Windows/Linux probe
 so its cancellation/failure no longer skips their packaging and Steam checks. Apple checks
 remain enabled and visible; required non-Apple failures still block dependent jobs.
 
-An isolated deno_core single-document experiment now has its own Linux/Windows normal and
-JITless CI workflow (`deno-core-probe.yml`). It tests module/async scenarios using maintained
-APIs, without integrating Servo DOM or changing the game runtime. Local metadata/syntax
-checks and online CI pass: Linux/Windows normal and JITless, four jobs, two Rust tests per
-job covering ten logical scenarios. This does not prove Servo DOM/CSP/routing integration. Navigation policy and warnings
-remain planned. Details: [probe README](support/deno-core-probe/README.md).
+An isolated deno_core probe passes Linux/Windows normal and JITless CI (four jobs, two Rust
+tests with twelve logical scenarios). It covers modules, bootstrap namespace removal,
+native cppgc class ownership and a native Rust async operation. This is not Servo DOM
+integration or evidence that overall retention/performance is solved.
 
-The isolated deno_core probe now removes its bootstrap namespaces before any game code
-and exercises module/async scenarios plus direct/aliased internal-import refusal afterwards.
-Bootstrap CI now passes four jobs (Linux/Windows normal/JITless). Namespace
-absence is a bounded check, not general capability isolation or production DOM integration.
+The shell rejects auxiliary windows before allocating another WebView, logs once per
+application and shows a dismissible non-modal notice in CLI development launches; bundled
+games keep logs only. Required Linux/Windows build and packaging checks pass. Visual notice
+behavior, full navigation/reload refusal and trusted-click external links still need work.
 
-The isolated experiment also contains a native class/owned-metadata/cppgc fixture using
-maintained op2, Member/Persistent and SameObject APIs. Local syntax/metadata checks pass;
-new class assertions await CI. It tests native lifetime/identity boundaries, not real Servo
-DOM integration, arbitrary-cycle collection or measured performance improvements.
+The production Deno cutover is drafted but incomplete and kept outside publishable sources.
+An isolated native compilation check found compatibility errors to correct, and the engine
+navigation gate needs revision. The current shipped backend remains active. No partial
+runtime dependency change is published.
 
-The isolated deno_core experiment now also tests a real native Rust async op: owned results,
-error propagation and cancellation/payload cleanup at runtime shutdown. It reuses Deno's
-driver and Tokio instead of adding a job queue. New class/async assertions await CI; this
-does not establish production DOM integration or cancellation of real game resources.
+Two tradeoffs are accepted for that integration: static module loading may temporarily
+pause game input/timers (dynamic imports remain asynchronous), and static module evaluation
+errors may arrive as unhandledrejection instead of error/window.onerror. Onerror-only crash
+overlays may miss them; classic errors and fetch/parse/link/dynamic-import contracts remain
+separate. The pause is PROVISIONAL: its duration and impact at startup and when adding
+modules during gameplay, with local/cold/warm/slow-network loads, input/timers/frame behavior,
+errors and closing must be measured and reviewed. No latency threshold or benefit is proved.
 
-The shell now rejects auxiliary-window creation before allocating a WebView and logs the
-reason once per application, using Servo's existing rejection responder. This implements
-only the extra-window rule: navigation/reload blocking and trusted external-link handling
-remain pending. CLI development launches also show a dismissible non-modal notice; real
-bundles keep log-only diagnostics. Repeated requests do not reopen the notice. The production deno_core port is in progress;
-the isolated native class/async checks are now published for CI, not proof of adoption.
-
-Production deno_core adoption remains pending: the reviewed public API cannot independently
-load and instantiate an HTML module graph while Servo continues using the runtime. The latest product decision provisionally accepts pausing game input/timers during static
-module loading; dynamic imports remain asynchronous. Pause timing and effects at startup
-and during gameplay are an open test/review item, with no measured latency claim.
-No runtime dependency was added and the current backend remains active. The isolated
-native class/async suite passes Linux/Windows normal/JITless (four CI jobs).
-
-The auxiliary-window denial and development notice changes pass the required Linux/Windows
-build and packaging checks. This does not establish visual notice behavior or production
-Deno integration; the provisional module-loading impact review remains open.
-
-Production Deno integration also has a reviewed module-error reporting gap: its public static
-evaluation API exposes failures through an internal unhandled rejection rather than the
-current error/onerror path. This deviation is now explicitly
-accepted for the pending integration: onerror-only crash overlays may miss those module
-evaluation errors. Classic errors, fetch/parse/link failures and dynamic imports retain
-their separate contracts. The provisional static-loading pause remains a separate review.
+Current implementation status: [migration handoff](docs/V8_MIGRATION.md).

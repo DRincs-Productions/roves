@@ -1,3 +1,18 @@
+## 2026-10-28 - Preserve the incomplete Deno cutover at the next verified quota reset
+
+0385 produced an unverified owner/context/module/async cutover. Isolated Windows native
+check compiled its public C++ shim but found34errors; diagnostic-only std type imports
+reduce them to6 missing-method errors (four Rusty150 bindings). Header package availability
+and a single V8 lock are verified, not linked/runtime behavior. Review also found the
+per-thread navigation gate insufficient; browser replacement coverage is missing.
+Save26tracked+4new draft files and action CI mirror outside publishable sources with exact
+patch/hash/manifest, verify git apply --check, and restore only task-owned code/CI/locks.
+TODO.md remains untouched. Consolidate README/wiki status to remove stale probe-awaits-CI
+claims; update current/0385 handoffs (patch0399). Public backend unchanged, no WIP commit.
+New session limit /usage09:08 shows100%, live reset13:19 Europe/Rome, week95%used; schedule
+one28October13:21 retry, native fixes first then engine policy, in the same Claude context.
+Static pause and C2 rejection tradeoffs remain authorized; no new behavior exceptions.
+
 ## 2026-10-28 - Accept Deno static evaluation errors through unhandledrejection
 
 The user explicitly accepts C2: static module evaluation failures may surface through

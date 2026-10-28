@@ -1,3 +1,72 @@
+# 0385 - Current resume: unverified Deno cutover, native and policy corrections required
+
+Latest28October2026 state: the runtime/module/async cutover was written but remains WIP.
+Static-load pause and static evaluation unhandledrejection are BOTH ACCEPTED, with the
+pause explicitly provisional and requiring the test review detailed below. No new fork,
+public-layout shortcut, duplicate graph or general error-contract deviation was authorized.
+
+## Saved implementation and exact scope
+
+Production/CI sources restored to the verified backend after saving30 task-owned files
+(26tracked+4new) to target/task-0385/incomplete-cutover-2026-10-28. Base b8fb2eb4904;
+manifest.json records every file. incomplete.patch SHA256:
+ b81d31d495be7492d596aba6ce05e02f57f052f0c660d738b30ec9df9039bdbc.
+Git apply --check succeeds against restored source. Action README mirror saved separately
+as action-readme.patch; its live checkout was restored. TODO.md is external and untouched.
+Do not publish the saved patch as a completed integration or silently lose its work.
+
+Code includes Deno owner/main-context adoption, public C++ API shim, module/async adapter,
+static-load duration logging and provisional per-thread document refusal. The old module
+source files are emptied, not yet removed; remove them only when actual replacement works.
+Existing legacy tests were archived under cfg(any()); review replacement coverage rather
+than accepting disabled tests as evidence of compatibility.
+
+## Evidence already obtained - do not duplicate it
+
+- Mechanical root lock resolved exactly one v8 package150.4.0, saved with the draft.
+- Published v8 crate contains all four C++ headers; V8_PACKAGE_HEADERS.md records this.
+- Actual isolated Windows cargo check --tests -j1 compiled the C++ shim, then failed34errors.
+- A diagnostic COPY of tests.rs added explicit std::string::String/std::result::Result to
+  deno_modules (jsapi glob imports shadowed them). This reduces errors to6: four public
+  methods unbound by Rusty150, script_id used three times, is_callable, is_constructor and
+  set_call_as_function_handler. native-check-types-fixed.log and NATIVE_REVIEW.md are exact
+  evidence. These diagnostic test imports are NOT in the saved production source yet.
+- Bind missing maintained PUBLIC V8 APIs through the shim or use truly equivalent public
+  Rusty150 APIs; do not approximate callable objects as functions or guess mangled symbols.
+- Native check is not a linked test, normal/JITless run, browser proof or performance result.
+
+## Next assignments, one at a time
+
+1. Restore the draft after checking base/manifest/hash. Resume same Claude context
+   ab3e2eb3-6c0f-44ee-9277-de12c954a202 for the narrow native compatibility/test-name fixes.
+   Codex verifies native check/tests normal/JITless in the existing isolated workspace;
+   update copied source deliberately. Regenerate standalone crate locks (not only root).
+2. Correct engine policy from target/task-0385/review-policy.txt. Current thread-local
+   pre_page_load gate can be bypassed by newScriptThread/cross-origin navigation and can
+   return after pipeline/history changes, leaving pending work. Enforce denial before
+   fetch/pipeline/global creation/state mutation, with proper completion and bounded logs.
+   Preserve initial load/necessary redirects/close, same-document History/hash/back-forward;
+   no panic via a late null global. Add actual browser module/order/error/policy fixtures.
+3. Review inline import.meta.url, classic-worker dynamic imports, source/referrer coverage,
+   rejection callback integration, wake/spin and shutdown. Unapproved behavior regressions
+   remain corrections to do; C2 does not authorize losing other game APIs.
+4. Only after complete review/tests: remove dead services/files, generate real source patch,
+   replay, update shared docs/README/wiki/action mirror and commit/push under required CI gate.
+   Heavy browser builds online. No WIP publication.
+
+## Actual quota and one-shot restart
+
+New five-hour-session limit hit during the subsequent policy-correction request after the
+successful00:02 restart and real implementation. /usage28October09:08 Europe/Rome:
+session100%, LIVE reset13:19 (cached13:20 refreshed), week95% used. One retry28October13:21,
+automation ripresa-unica-claude-0385-alle-13-21. No active Claude process. Delete that retry
+after its attempt; if the same limit persists, save/stop without chained retries, model
+change or another schedule for this block. No periodic polling. Old00:02 retry was deleted.
+
+---
+
+The design evidence below is retained for context; current execution status is ABOVE.
+
 # 0385 - Production deno_core integration: reviewed loading API gap
 
 No production runtime/Cargo/lockfile edits were made. Existing rusty_v8 backend remains
