@@ -1,3 +1,10 @@
+## 2026-10-28 - Save the published0413 CI and quota checkpoint
+
+Publish32d4e01e370/wikiacb6a50 after the required prior batch is terminal and the proven
+SRI cause is corrected. Record new CI40766445604/40766445574/40766445563; positive browser
+verification remains pending. Save verified Codex reset23:47:14 Europe/Rome plus2minute retry.
+Leave the unrelated TODO edit and no runtime WIP; temporary servers/probes are stopped.
+
 ## 2026-10-28 - Retain body chunks delivered before SRI metadata (0413)
 
 CI normal/JITless fails only SRI. The0aa2 Windows CI binary reproduces valid load with

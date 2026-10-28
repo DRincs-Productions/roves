@@ -2,6 +2,14 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Pubblicazione finale prima della quota:** root32d4e01e370 e wikiacb6a50 pubblicati.
+Nuovo batch V840766445604, generale40766445574, Android40766445563; iOS40766445619
+esclusa. Alla prima lettura V8/general in coda e Android attiva. Nessun ulteriore push.
+Tutte0410–0413 sono pubblicate; positiva browser dei fix attende questa CI. Nessun WIP
+runtime rimasto; sola riga vuota utente in TODO fuori dai commit. Server/probe locali chiusi.
+QuotaCodex96% usata, reset reale28ottobre23:47:14 Europe/Rome, unico retry23:49:14.
+Al risveglio controllare quota e riprendere l'intero loop, senza Claude o polling.
+
 **0413 completa: fix dell'unico fallimento SRI.** Batch0aa2 ora tutto terminale:
 generale tutti i10nonApple verdi; Android verde; V8 runtime e buildWindows verdi,
 solo smokeLinux normal/JITless rossi sul SRI. Sourcecollector conservava solo chunk dopo
