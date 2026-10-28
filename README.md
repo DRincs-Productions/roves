@@ -795,3 +795,6 @@ one verified-reset retry, saved handoff, no periodic polling or chained attempts
 The first integration CI identified two compiler errors and stale Linux runner simulations;
 corrections include failure-log artifacts and redirect/MIME/referrer/SRI browser checks.
 Their browser execution remains pending the next successful CI batch.
+
+Smoke runtime logs are retained per fresh process for provisional static-load pause review;
+isolated CI caches represent cold scenes, not a complete latency or memory benchmark.

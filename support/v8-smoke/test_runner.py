@@ -1079,6 +1079,13 @@ assert sys.argv[-2] == '-z', sys.argv
 options = sys.argv[browser + 1:-2]
 page = sys.argv[-1].rsplit('/', 1)[-1].split('?', 1)[0]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
+if scenario == 'runtime-logs':
+    from pathlib import Path
+    cache = Path(os.environ['XDG_CACHE_HOME'])
+    assert cache.is_absolute() and cache.parent == Path.cwd() / '.v8-smoke-runtime', cache
+    log = cache / 'roves' / 'roves.log'
+    log.parent.mkdir(parents=True)
+    log.write_text(sys.argv[-1])
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
 snapshot_env = {name: os.environ[name] for name in ('ROVES_V8_HEAP_SNAPSHOT_PATH', 'ROVES_V8_HEAP_SNAPSHOT_GC') if name in os.environ}
@@ -1311,7 +1318,19 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             result.snapshot = written.read_text() if written.exists() else None
             existing = directory / 'existing' / 'scene.heapsnapshot'
             result.existing = existing.read_text() if existing.exists() else None
+            result.runtime_logs = [path.read_text() for path in
+                                   (directory / '.v8-smoke-runtime').glob('*/roves/roves.log')]
             return result
+
+    def test_runtime_logs_survive_fresh_process_restarts(self):
+        result = self.run_fixture('runtime-logs', wrapped=True,
+                                  extra_env={'XDG_CACHE_HOME': '/unused-parent-cache'})
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        alias_logs = [url for url in result.runtime_logs if 'document-interface-alias.html' in url]
+        self.assertEqual(3, len(alias_logs))
+        self.assertEqual(3, len(set(alias_logs)))
+        self.assertTrue(any('module-order.html' in url for url in result.runtime_logs))
+        self.assertTrue(any('gc-lifecycle.html' in url for url in result.runtime_logs))
 
     def test_heap_snapshot_is_opt_in(self):
         # Unset: the snapshot page does not run, even when the job's environment carries the

@@ -54,7 +54,11 @@ fi
 # run_page PAGE SECONDS LOG [URL] [COMPLETION-REGEX] [BROWSER ARGS...]
 run_page() {
   local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}" done_pattern="${5:-}"
-  local completed=0 pid code
+  local completed=0 pid code runtime_cache
+  # Keep each process's existing file logger, which otherwise truncates roves.log at restart.
+  # An isolated cache makes these CI scenes cold-cache observations, not warm-load benchmarks.
+  mkdir -p "$PWD/.v8-smoke-runtime" || { STATUS=1; return 1; }
+  runtime_cache=$(mktemp -d "$PWD/.v8-smoke-runtime/${log%.log}.XXXXXX") || { STATUS=1; return 1; }
   # Bash 3.2 treats an empty array as unset under nounset. Only expand non-empty arrays.
   local argv=()
   if [ "$RUNNER_COUNT" -gt 0 ]; then argv=("${RUNNER[@]}"); fi
@@ -62,9 +66,9 @@ run_page() {
   if [ $# -gt 5 ]; then shift 5; argv+=("$@"); fi
   argv+=(-z "$url")
   if [ "$PAGE_ENV_COUNT" -gt 0 ]; then
-    env "${PAGE_ENV[@]}" timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+    env XDG_CACHE_HOME="$runtime_cache" "${PAGE_ENV[@]}" timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
   else
-    timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
+    env XDG_CACHE_HOME="$runtime_cache" timeout "$seconds" "${argv[@]}" > "$log" 2>&1 &
   fi
   pid=$!
   if [ -n "$done_pattern" ]; then

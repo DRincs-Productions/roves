@@ -230,6 +230,15 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh
           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
+      - name: upload per-process V8 runtime logs
+        if: always() && runner.os == 'Linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-runtime-logs-${{ matrix.os }}-${{ matrix.mode }}
+          path: .v8-smoke-runtime/**/roves.log
+          include-hidden-files: true
+          retention-days: 3
+          if-no-files-found: warn
       - name: upload failed V8 diagnostics
         if: failure()
         uses: actions/upload-artifact@v4

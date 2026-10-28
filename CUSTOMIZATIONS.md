@@ -1,3 +1,14 @@
+## 2026-10-28 - Preserve each smoke process's runtime log (0407)
+
+Reuse the existing env_logger file destination and XDG cache override to keep one roves.log
+per browser process under .v8-smoke-runtime. Previously each restart truncated the shared
+file, losing static-module pause observations. Upload logs even on successful Linux smoke
+jobs with the existing artifact action, including its hidden parent directory. Isolated
+caches make these cold-cache scenes, not a warm/slow-network performance comparison.
+A focused runner regression checks all three fresh alias logs survive and parent XDG
+configuration does not cause shared-file overwrite; snapshot environment isolation remains.
+No runtime logging API, bundle input or dependency is added. Browser proof remains in CI.
+
 ## 2026-10-28 - Validate incremental integration corrections (0404-0406)
 
 The final full Linux LF/WSL helper suite passes59/59 with no skips. All three incremental

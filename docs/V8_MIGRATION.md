@@ -2,6 +2,16 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Published correction batch:** root6efa696f176, actiona1eaa70, wikic2ff1b6.
+V840752923347 and general40752923425 queued; Android40752923374 in progress;
+iOS40752923453 excluded. Do not push while required runs are active. Local next task0407
+preserves existing runtime file logs per fresh smoke process, including static pause
+measurements. Each process uses an isolated XDG cache; these are cold-cache CI scenes,
+not warm-load/slow-network/frame-latency measurements. Dedicated artifacts include hidden
+paths and survive successful jobs. Focused Linux runner and snapshot tests pass2/2 (three wrapped/unwrapped scenarios);
+0407 dry-run/replay and3file comparisons pass. Log: target/task-0385/linux-runtime-log-review.log.
+Keep this complete change local until the published batch permits another push.
+
 **Current correction checkpoint:** root f8efd5c35ee, action0964874 and wiki062490f
 are published. Required batch is terminal: V8 40719636766 and general40719636661 failed;
 Android40719636685, action40719590816 and wiki40719601745 passed. Apple is excluded.
