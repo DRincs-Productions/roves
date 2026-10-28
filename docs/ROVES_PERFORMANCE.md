@@ -1,3 +1,13 @@
+## 28 ottobre — Roves Windows0aa2 headless, osservazione singola
+
+Binario Windows portable CI0aa2, roves-js/Deno0.413/V8150.4, --hard-fail -z,
+HTTP loopback locale, visibility visible nonostante headless; viewport non raccolto.
+Un run: cold6.57ms/warm1.22ms/slow255.44ms; slow timer-gap256.03ms e frame-gap256.11ms
+con ritardo server250ms. La pausa blocca realmente timer/frame in questa scena. Condizioni
+diverse da Chrome, non un benchmark comparabile o una soglia accettata. Nessun profilo
+CPU/RAM/GPU. Log ci-windows-0aa2-sri-probe.log locale; nuove verifiche0411/0412 ancora
+negative sul vecchio binario. Osservazioni conservate senza dichiarare adozione conclusa.
+
 ## 28 ottobre 2026 — riferimento Chrome MCP per la pausa statica (0410)
 
 Chrome156.0.0.0, user agent Windows NT10.0 Win64 x64, DevTools MCP; tab attiva,

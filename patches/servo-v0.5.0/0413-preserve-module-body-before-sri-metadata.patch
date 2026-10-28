@@ -1,0 +1,41 @@
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index 79b9e79d953..83f36dbc14c 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -511,7 +511,10 @@ fn collect_module_response(sender: js::modules::oneshot::Sender<ModuleResponse>)
+                 });
+             },
+             FetchResponseMsg::ProcessResponseChunk(_, chunk) => {
+-                if matches!(response.status, Some(Ok(()))) {
++                // SRI makes fetch consume/verify the body before ProcessResponse sends
++                // metadata. Keep those early bytes; finish_module_fetch still requires
++                // successful metadata/EOF before any source can reach deno_core.
++                if !matches!(response.status, Some(Err(_))) {
+                     response.data.extend_from_slice(&chunk.0);
+                 }
+             },
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index 3219fef1dd0..5d1fd578968 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -195,8 +195,8 @@ check("static module integrity permits matching bytes and denies mismatches", as
+     script.integrity = integrity; script.src = "sri-module.mjs?" + label;
+     try {
+       return await new Promise(resolve => {
+-        script.onload = () => resolve(true);
+-        script.onerror = () => resolve(false);
++        script.onload = () => resolve({ loaded: true, globalCount: globalThis.rovesSriExecuted });
++        script.onerror = () => resolve({ loaded: false, globalCount: globalThis.rovesSriExecuted });
+         document.head.append(script);
+       });
+     } finally { script.remove(); }
+@@ -204,7 +204,8 @@ check("static module integrity permits matching bytes and denies mismatches", as
+   try {
+     const matching = await load("matching", "sha256-nLqEm71HDrWcfC/jNcKr9EqBibmBe5+qTPmlSjhrBXE=");
+     const mismatching = await load("mismatching", "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+-    return matching && !mismatching && rovesSriExecuted === 1;
++    return (matching.loaded && !mismatching.loaded && rovesSriExecuted === 1 && globalThis.rovesSriExecuted === 1) ||
++      JSON.stringify({ matching, mismatching, bareCount: rovesSriExecuted, globalCount: globalThis.rovesSriExecuted });
+   } finally { delete globalThis.rovesSriExecuted; }
+ });
+ finish();

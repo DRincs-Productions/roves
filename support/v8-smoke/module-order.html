@@ -195,8 +195,8 @@ check("static module integrity permits matching bytes and denies mismatches", as
     script.integrity = integrity; script.src = "sri-module.mjs?" + label;
     try {
       return await new Promise(resolve => {
-        script.onload = () => resolve(true);
-        script.onerror = () => resolve(false);
+        script.onload = () => resolve({ loaded: true, globalCount: globalThis.rovesSriExecuted });
+        script.onerror = () => resolve({ loaded: false, globalCount: globalThis.rovesSriExecuted });
         document.head.append(script);
       });
     } finally { script.remove(); }
@@ -204,7 +204,8 @@ check("static module integrity permits matching bytes and denies mismatches", as
   try {
     const matching = await load("matching", "sha256-nLqEm71HDrWcfC/jNcKr9EqBibmBe5+qTPmlSjhrBXE=");
     const mismatching = await load("mismatching", "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
-    return matching && !mismatching && rovesSriExecuted === 1;
+    return (matching.loaded && !mismatching.loaded && rovesSriExecuted === 1 && globalThis.rovesSriExecuted === 1) ||
+      JSON.stringify({ matching, mismatching, bareCount: rovesSriExecuted, globalCount: globalThis.rovesSriExecuted });
   } finally { delete globalThis.rovesSriExecuted; }
 });
 finish();

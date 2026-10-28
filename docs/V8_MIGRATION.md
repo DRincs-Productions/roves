@@ -2,6 +2,18 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**0413 completa: fix dell'unico fallimento SRI.** Batch0aa2 ora tutto terminale:
+generale tutti i10nonApple verdi; Android verde; V8 runtime e buildWindows verdi,
+solo smokeLinux normal/JITless rossi sul SRI. Sourcecollector conservava solo chunk dopo
+metadata; per SRI fetch manda body prima di metadata e veniva perso. Corretto per bufferizzare
+anche con stato ancora ignoto; finish_module_fetch continua a richiedere metadata/EOF validi.
+Negativa riprodotta sul binario Windows CI scaricato (124981837byte), percorso in
+ target/task-0385/ci-windows-0aa2-path.txt. Load valido=true, contatore0; mismatch respinto;
+modulo ordinario incrementa. Rust/Node syntax e replay2file0413 verdi. Positiva richiede CI.
+Log ci-0aa2-module-order-runtime.log e ci-windows-0aa2-{sri-probe,isolated}.log.
+Pubblicare0410-0413 e wiki; poi identificare run e sospendere per quotaCodex96% consumata,
+con unico retry al reset reale+2min. Non usare Claude. Al risveglio riprendere tutto il loop.
+
 **Git e CI correnti:** pubblicati root0aa2a55040e, actionb001464, wikifc6cbd1.
 Locali completi0410 root039aa80685b (metriche),0411 rootfb7f2820acd (classi errori)
 e0412 nel commit di questo checkpoint (posizioni errori); wiki locale2f26015.
@@ -193,7 +205,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0412:
+Scratch Windows gia applicato fino0413:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

@@ -1,3 +1,13 @@
+## 2026-10-28 - Retain body chunks delivered before SRI metadata (0413)
+
+CI normal/JITless fails only SRI. The0aa2 Windows CI binary reproduces valid load with
+execution count0; an ordinary module executes. Fetch consumes SRI bodies before metadata,
+while the collector discarded chunks with status None. Buffer early chunks; final metadata,
+EOF and security success remain mandatory before compiling. Keep detailed event/count
+failure diagnostics. Negative browser proof, Rust/Node syntax and two-file patch replay
+pass; corrected browser execution awaits CI. No new SRI implementation or security bypass.
+Codex session96% consumed: handoff and one real-reset-plus2minute retry, without Claude.
+
 ## 2026-10-28 - Retain Deno module source positions in Servo error reports (0412)
 
 A native negative proves a parse error at located.js3:14 reports undefined:0:0 after

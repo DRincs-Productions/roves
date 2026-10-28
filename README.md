@@ -816,3 +816,6 @@ the corresponding browser fixture remains subject to CI.
 
 Module error reports retain Deno source URLs, coordinates and formatted stacks through
 error-owned metadata. The separate inline HTML line offset remains an open diagnostic gap.
+
+SRI module loading retains body chunks received before metadata; final security checks
+remain mandatory. The correction awaits browser CI confirmation.

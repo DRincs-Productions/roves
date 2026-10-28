@@ -511,7 +511,10 @@ fn collect_module_response(sender: js::modules::oneshot::Sender<ModuleResponse>)
                 });
             },
             FetchResponseMsg::ProcessResponseChunk(_, chunk) => {
-                if matches!(response.status, Some(Ok(()))) {
+                // SRI makes fetch consume/verify the body before ProcessResponse sends
+                // metadata. Keep those early bytes; finish_module_fetch still requires
+                // successful metadata/EOF before any source can reach deno_core.
+                if !matches!(response.status, Some(Err(_))) {
                     response.data.extend_from_slice(&chunk.0);
                 }
             },
