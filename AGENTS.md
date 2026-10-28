@@ -1,3 +1,15 @@
+### Ricontrollo periodico autorizzato ogni cinque ore — 28 ottobre 2026
+
+L'utente autorizza esplicitamente il trigger periodico
+continua-migrazione-v8-ogni-cinque-ore. Questa eccezione supera il precedente divieto di
+periodicita soltanto per questo trigger. A ogni ripresa eseguire il loop completo di
+AGENTS: sviluppo/revisione/verifiche/commit, analisi CI, fix dei fallimenti e push solo
+quando le run richieste precedenti sono concluse e le correzioni complete. Con CI attiva
+continuare lavoro e commit locali senza push. Nessun polling continuo durante il turno.
+Se il lavoro e gia attivo, proseguirlo senza duplicare implementazioni o ricontrolli.
+Rispettare quote effettive, stop espliciti e sospensione Claude. Disattivare il trigger
+quando la migrazione e completata o su richiesta dell'utente. Non creare altri periodici.
+
 ### Preload JSON temporaneamente non disponibile — scelta28ottobre2026
 
 L'utente accetta che solo modulepreload JSON sia temporaneamente non disponibile:

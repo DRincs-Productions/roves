@@ -154,7 +154,6 @@ impl ModuleScript {
 pub(crate) struct ModuleTree {
     #[no_trace]
     url: ServoUrl,
-    #[no_trace]
     id: Option<ModuleId>,
     #[ignore_malloc_size_of = "mozjs"]
     rethrow_error: DomRefCell<Option<RethrowError>>,
@@ -899,7 +898,7 @@ pub(crate) fn install_module_loader(cx: &JSContext, global: &GlobalScope) {
             let global = target.1.clone();
             target.0.queue(task!(poll_module_event_loop: move |cx| {
                 let global = global.root();
-                poll_module_event_loop(cx, &global);
+                crate::script_module::poll_module_event_loop(cx, &global);
             }));
         }),
     );

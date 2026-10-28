@@ -756,7 +756,7 @@ blocking alert. Repeated attempts must not flood logs. The confirmed behavior is
 non-modal notice in development and logs only in distributed games. External links may open
 the system browser only after a real user click; automatic attempts are blocked and logged,
 without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
-First evaluate deno_core for this scope, then implement the policy with the selected runtime.
+The source integration follows the single-document scope; browser validation remains required.
 
 The source candidate integrates deno_core with the existing Servo DOM, layout and shell,
 using one V8 version and replacing the old Roves module graph. Cross-platform browser
@@ -791,3 +791,7 @@ The isolated probe previously passed Linux/Windows normal/JITless; it is not pro
 complete Servo integration. Current checks, remaining tasks and publication status are in
 the [migration handoff](docs/V8_MIGRATION.md). Contributor quota restarts follow AGENTS:
 one verified-reset retry, saved handoff, no periodic polling or chained attempts.
+
+The first integration CI identified two compiler errors and stale Linux runner simulations;
+corrections include failure-log artifacts and redirect/MIME/referrer/SRI browser checks.
+Their browser execution remains pending the next successful CI batch.

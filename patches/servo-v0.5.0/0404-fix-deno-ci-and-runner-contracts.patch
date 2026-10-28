@@ -1,0 +1,330 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index 45fa3d52cb3..3c5a895c8f9 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -218,7 +218,7 @@ jobs:
+           ls target/v8-cutover/debug/servoshell*
+       # Linux normal only: one extra debug servoshell process (one page, bounded by its 60 s
+       # timeout) loads document-retention.html and writes one native V8 heap snapshot of a detached
+-      # blank frame; its size follows the page's JS heap. Kept 3 days, for reading retainers in
++      # DOM wrapper; its size follows the page's JS heap. Kept 3 days, for reading retainers in
+       # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.
+       - name: run the V8 smoke pages headlessly
+         if: runner.os == 'Linux'
+@@ -230,7 +230,17 @@ jobs:
+           sudo apt-get install -y --no-install-recommends xvfb
+           chmod +x support/v8-smoke/run.sh
+           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
+-      - name: upload the removed-frame heap snapshot
++      - name: upload failed V8 diagnostics
++        if: failure()
++        uses: actions/upload-artifact@v4
++        with:
++          name: v8-build-diagnostics-${{ matrix.os }}-${{ matrix.mode }}
++          path: |
++            target/v8-cutover/*.log
++            *.log
++          retention-days: 3
++          if-no-files-found: ignore
++      - name: upload the document-retention heap snapshot
+         if: always() && runner.os == 'Linux' && matrix.mode == 'normal'
+         uses: actions/upload-artifact@v4
+         with:
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index b2ce7fba7c9..79b9e79d953 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -154,7 +154,6 @@ impl ModuleScript {
+ pub(crate) struct ModuleTree {
+     #[no_trace]
+     url: ServoUrl,
+-    #[no_trace]
+     id: Option<ModuleId>,
+     #[ignore_malloc_size_of = "mozjs"]
+     rethrow_error: DomRefCell<Option<RethrowError>>,
+@@ -899,7 +898,7 @@ pub(crate) fn install_module_loader(cx: &JSContext, global: &GlobalScope) {
+             let global = target.1.clone();
+             target.0.queue(task!(poll_module_event_loop: move |cx| {
+                 let global = global.root();
+-                poll_module_event_loop(cx, &global);
++                crate::script_module::poll_module_event_loop(cx, &global);
+             }));
+         }),
+     );
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 90fc487afb5..17ae9929514 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1057,7 +1057,7 @@ class RunnerTests(unittest.TestCase):
+             python_stub.write_text(f'''#!{sys.executable}
+ import os, sys, time
+ args = sys.argv[1:]
+-if args[:2] == ['-m', 'http.server']:
++if args[:2] == ['-m', 'http.server'] or (args and args[0].endswith('http_server.py')):
+     time.sleep(120)
+ elif args[:1] == ['-c']:
+     raise SystemExit(0)
+@@ -1077,23 +1077,23 @@ else:
+ assert sys.argv[browser] == 'unused-browser', sys.argv
+ assert sys.argv[-2] == '-z', sys.argv
+ options = sys.argv[browser + 1:-2]
+-page = sys.argv[-1].rsplit('/', 1)[-1]
++page = sys.argv[-1].rsplit('/', 1)[-1].split('?', 1)[0]
+ scenario = os.environ['SMOKE_TEST_SCENARIO']
+ if scenario == 'crash' and page == 'suite.html':
+     raise SystemExit(139)
+ snapshot_env = {name: os.environ[name] for name in ('ROVES_V8_HEAP_SNAPSHOT_PATH', 'ROVES_V8_HEAP_SNAPSHOT_GC') if name in os.environ}
+-if page == 'frame-retention.html':
++if page == 'document-retention.html':
+     with open('snapshot-env.txt', 'w') as received:
+         received.write(json.dumps([snapshot_env, options]))
+ else:
+     # Only the dedicated snapshot process gets the native settings.
+     assert snapshot_env == {}, (page, snapshot_env)
+-if page not in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
++if page not in ('pref-jitless.html', 'gc-lifecycle.html', 'document-retention.html'):
+     # Only the dedicated fresh processes may change a preference.
+     assert options == [], sys.argv
+ prefs = {}
+-if page in ('pref-jitless.html', 'gc-lifecycle.html', 'frame-retention.html'):
+-    if page != 'frame-retention.html':
++if page in ('pref-jitless.html', 'gc-lifecycle.html', 'document-retention.html'):
++    if page != 'document-retention.html':
+         with open(('pref' if page == 'pref-jitless.html' else 'gc') + '-args.txt', 'w') as received:
+             received.write('\\n'.join(sys.argv[2:browser + 1] + options))
+     # Like servoshell: each `--pref name[=value]` must name a real preference.
+@@ -1120,12 +1120,9 @@ if page == 'gc-lifecycle.html':
+         for line in ('unreachable dom collected true', 'unreachable cycles collected true',
+                      'retained nodes true true true', 'importer compiled true',
+                      'dynamic import after collection 42', 'dropped importer collected true',
+-                     'module owners left right', 'module owners after collection left right',
+-                     'eval module owners left right', 'eval module owners after collection left right',
+-                     'module resolve true', 'module resolve after collection true',
+-                     'removed frame group module elements 2 documents 2 globals 2',
+-                     'no-module frames loaded true',
+-                     'removed frame group no-module elements 2 documents 2 globals 2',
++                     'single document module owner before true', 'single document module owner after true',
++                     'single document module resolve before true', 'single document module resolve after true',
++                     'single document remains live true',
+                      'self-capturing listener nodes collected true',
+                      'signal listener nodes collected true',
+                      'aborted signal listener nodes collected true',
+@@ -1141,33 +1138,33 @@ if page == 'gc-lifecycle.html':
+                      'diagnostic removed frames released no-module elements 0/2 documents 0/2 globals 0/2',
+                      'result pass'):
+             # A page that skips the no-module group or its diagnostic and still claims success.
+-            if scenario == 'gc-plain-missing' and 'no-module' in line and 'diagnostic' not in line:
++            if scenario == 'gc-document-missing' and line == 'single document remains live true':
+                 continue
+-            if scenario == 'gc-diagnostic-missing' and line.startswith('diagnostic') and 'no-module' in line:
++            if scenario == 'gc-resolve-before-missing' and line == 'single document module resolve before true':
+                 continue
+-            if scenario == 'gc-diagnostic-count' and line.startswith('diagnostic') and ' module' in line:
+-                line = line.replace('/2', '/1')
++            if scenario == 'gc-document-replaced' and line == 'single document remains live true':
++                line = line.replace('true', 'false')
+             if scenario == 'gc-import' and line.startswith('dynamic import'):
+                 line = 'dynamic import after collection undefined'
+             if scenario == 'gc-import' and line == 'result pass':
+                 line = 'result fail dynamic import'
+             # A module import resolved through the other frame's module owner.
+-            if scenario == 'gc-owner' and line.startswith('module owners'):
+-                line = line.replace('left right', 'right right')
++            if scenario == 'gc-owner' and line.startswith('single document module owner'):
++                line = line.replace('true', 'false')
+             if scenario == 'gc-owner' and line == 'result pass':
+                 line = 'result fail module owners; module owners after collection'
+             # A page that claims success without reporting the owner check.
+-            if scenario == 'gc-owner-missing' and line.startswith('module owners'):
++            if scenario == 'gc-owner-missing' and line.startswith('single document module owner'):
+                 continue
+             # Eval code whose import() took the other frame's module owner; the page claims success.
+-            if scenario == 'gc-eval-owner' and line.startswith('eval module owners'):
+-                line = line.replace('left right', 'left left')
+-            if scenario == 'gc-eval-owner-missing' and line.startswith('eval module owners'):
++            if scenario == 'gc-eval-owner' and line.startswith('single document module owner'):
++                line = line.replace('true', 'false')
++            if scenario == 'gc-eval-owner-missing' and line.startswith('single document module owner'):
+                 continue
+             # import.meta.resolve against the frame's base URL; the page claims success.
+-            if scenario == 'gc-resolve' and line.startswith('module resolve'):
++            if scenario == 'gc-resolve' and line.startswith('single document module resolve'):
+                 line = line.replace('true', 'false realms true http://127.0.0.1/missing-base/gc-owner.js')
+-            if scenario == 'gc-resolve-missing' and line == 'module resolve after collection true':
++            if scenario == 'gc-resolve-missing' and line == 'single document module resolve after true':
+                 continue
+             # Listener callbacks permanently rooted: nodes captured by their listeners survive.
+             if scenario == 'gc-listener' and line == 'self-capturing listener nodes collected true':
+@@ -1183,27 +1180,29 @@ if page == 'gc-lifecycle.html':
+             if scenario == 'gc-inline' and line == 'result pass':
+                 line = 'result fail self-capturing inline handler nodes collected'
+             print('ROVES-V8 gc ' + line)
+-elif page == 'frame-retention.html':
++elif page == 'document-retention.html':
+     # Like a debug servoshell: the snapshot is written at the requested explicit collection.
+     path = snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_PATH')
+     api = prefs.get('dom_testutils_enabled', False)
+-    print('ROVES-V8 frame-retention api ' + str(api).lower())
++    print('ROVES-V8 document-retention api ' + str(api).lower())
+     if api and scenario != 'snapshot-scene':
+-        print('ROVES-V8 frame-retention frame created true removed true')
++        print('ROVES-V8 document-retention node created true removed true')
+     if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '8' and scenario != 'snapshot-dump-failed':
+         if scenario != 'snapshot-file-missing':
+             with open(path, 'x') as written:
+                 written.write('{"broken"' if scenario == 'snapshot-invalid' else json.dumps(
+                     {'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 1}, 'nodes': [0, 0],
+-                     'strings': ['rovesFrameRetentionProbe', 'roves-frame-retention-probe']}))
++                     'strings': ['rovesDocumentRetentionProbe', 'roves-document-retention-probe']}))
+         print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 8', file=sys.stderr)
+     elif scenario == 'snapshot-dump-failed':
+         print(f'[roves-heap-snapshot] failed at explicit collection 8: {path}: No space left on device', file=sys.stderr)
+     if api:
+-        print('ROVES-V8 frame-retention collections complete 8')
++        if scenario != 'snapshot-control':
++            print('ROVES-V8 document-retention retained control true')
++        print('ROVES-V8 document-retention collections complete 8')
+         if scenario != 'snapshot-diagnostic':
+-            print('ROVES-V8 frame-retention diagnostic released element false document false probe false')
+-    print('ROVES-V8 frame-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
++            print('ROVES-V8 document-retention diagnostic released element false probe false')
++    print('ROVES-V8 document-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
+ elif page == 'pref-jitless.html':
+     if scenario == 'pref-cli' and '--pref' in options:
+         print('error: --pref is not expected in this context', file=sys.stderr)
+@@ -1224,9 +1223,7 @@ elif page == 'test.html':
+     print('ROVES-V8 testutils default ' + ('object' if scenario == 'testutils-default' else 'undefined'))
+     if scenario != 'immutable-prototype': print('ROVES-V8 ordinary prototype mutation true')
+     if scenario != 'window-prototype': print('ROVES-V8 immutable Window prototype true true true true')
+-    if scenario != 'cross-origin-prototype': print('ROVES-V8 cross-origin WindowProxy prototype true true')
+-    if scenario != 'cross-origin-properties': print('ROVES-V8 cross-origin WindowProxy properties true true')
+-    if scenario == 'cross-origin-timeout': print('ROVES-V8 cross-origin iframe timeout true')
++    if scenario not in ('cross-origin-prototype', 'cross-origin-properties', 'cross-origin-timeout'): print('ROVES-V8 cross-origin iframe refused true true')
+ elif page == 'csp.html':
+     if scenario != 'csp': print('ROVES-V8 csp eval EvalError')
+     print('ROVES-V8 csp function EvalError')
+@@ -1261,7 +1258,7 @@ else:
+     if page in required:
+         # Every required check of the page; the scenario drops the first one with a consistent total.
+         names = required[page]
+-        if scenario == 'missing:' + page:
++        if scenario == 'missing:' + page or (scenario == 'navigation' and page == 'single-document.html'):
+             names = names[1:]
+         print('SUITE PASS example')
+         for name in names:
+@@ -1323,7 +1320,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                                                      'ROVES_V8_HEAP_SNAPSHOT_GC': '1'})
+         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+         self.assertIsNone(result.snapshot_env)
+-        self.assertNotIn('frame-retention', result.stdout)
++        self.assertNotIn('document-retention', result.stdout)
+ 
+     def test_requested_heap_snapshot(self):
+         for wrapped in (False, True):
+@@ -1336,8 +1333,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
+                 self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
+                 self.assertIsNotNone(result.snapshot)
+-                self.assertIn('::notice::frame-retention.html: ROVES-V8 frame-retention diagnostic released element false', result.stdout)
+-                self.assertIn("valid V8 snapshot with 'rovesFrameRetentionProbe', 'roves-frame-retention-probe'", result.stdout)
++                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released element false', result.stdout)
++                self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'", result.stdout)
+                 wrapper = ['wrapper with spaces', '--option'] if wrapped else []
+                 self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
+ 
+@@ -1346,8 +1343,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('snapshot-dump-failed', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
+             ('snapshot-file-missing', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
+             ('snapshot-invalid', 'out/scene.heapsnapshot', '::error::heap snapshot '),
+-            ('snapshot-scene', 'out/scene.heapsnapshot', "missing 'ROVES-V8 frame-retention frame created true removed true'"),
++            ('snapshot-scene', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention node created true removed true'"),
+             ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
++            ('snapshot-control', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention retained control true'"),
+             ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
+             ('pass', 'relative', 'must be an absolute path'),
+         )
+@@ -1362,7 +1360,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     if snapshot.startswith('existing/'):
+                         self.assertEqual('kept', result.existing)
+                 else:
+-                    self.assertIn('V8 smoke diagnostics: frame-retention.log', result.stdout)
++                    self.assertIn('V8 smoke diagnostics: document-retention.log', result.stdout)
+ 
+     def test_complete_and_post_completion_timeout(self):
+         for wrapped in (False, True):
+@@ -1375,14 +1373,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     self.assertIn('::notice::pref-jitless.html: --pref js_disable_jit=true started V8 without WebAssembly', result.stdout)
+                     self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
+                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+-                    for group in ('module', 'no-module'):
+-                        self.assertIn(f'::notice::gc-lifecycle.html: ROVES-V8 gc diagnostic removed frames released '
+-                                      f'{group} elements 0/2 documents 0/2 globals 0/2', result.stdout)
+-                    self.assertIn('::notice::test.html: TestUtils hidden by default', result.stdout)
+-                    # Each page with required checks reports all of them plus its example check.
+-                    totals = re.search(r'::notice title=V8 smoke suites::(.*)', result.stdout).group(1).split('%0A')
+-                    for page, names in REQUIRED_CHECKS.items():
+-                        self.assertIn(f'{page} {len(names) + 1}/{len(names) + 1}', totals)
++                    self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc single document remains live true', result.stdout)
+ 
+     def test_gc_lifecycle_failures(self):
+         cases = (
+@@ -1392,17 +1383,17 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+             ('gc-api', None, "missing 'ROVES-V8 gc api true'"),
+             ('gc-retention', None, "missing 'ROVES-V8 gc unreachable dom collected true' (ROVES-V8 gc api true ROVES-V8 gc unreachable dom collected false 12/240"),
+             ('gc-import', None, "missing 'ROVES-V8 gc dynamic import after collection 42'"),
+-            ('gc-owner', None, "missing 'ROVES-V8 gc module owners left right' (ROVES-V8 gc api true"),
+-            ('gc-owner-missing', None, "missing 'ROVES-V8 gc module owners after collection left right'"),
+-            ('gc-eval-owner', None, "missing 'ROVES-V8 gc eval module owners left right' (ROVES-V8 gc api true"),
+-            ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc eval module owners after collection left right'"),
+-            ('gc-resolve', None, "missing 'ROVES-V8 gc module resolve true' (ROVES-V8 gc api true"),
+-            ('gc-resolve-missing', None, "missing 'ROVES-V8 gc module resolve after collection true'"),
+-            ('gc-plain-missing', None, "missing 'ROVES-V8 gc removed frame group no-module elements 2 documents 2 globals 2'"),
++            ('gc-owner', None, "missing 'ROVES-V8 gc single document module owner before true' (ROVES-V8 gc api true"),
++            ('gc-owner-missing', None, "missing 'ROVES-V8 gc single document module owner after true'"),
++            ('gc-eval-owner', None, "missing 'ROVES-V8 gc single document module owner before true' (ROVES-V8 gc api true"),
++            ('gc-eval-owner-missing', None, "missing 'ROVES-V8 gc single document module owner after true'"),
++            ('gc-resolve', None, "missing 'ROVES-V8 gc single document module resolve before true' (ROVES-V8 gc api true"),
++            ('gc-resolve-missing', None, "missing 'ROVES-V8 gc single document module resolve after true'"),
++            ('gc-document-missing', None, "missing 'ROVES-V8 gc single document remains live true'"),
+             ('gc-listener', None, "missing 'ROVES-V8 gc self-capturing listener nodes collected true' (ROVES-V8 gc api true"),
+             ('gc-inline', None, "missing 'ROVES-V8 gc self-capturing inline handler nodes collected true' (ROVES-V8 gc api true"),
+-            ('gc-diagnostic-missing', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for no-module'),
+-            ('gc-diagnostic-count', None, '::error::gc-lifecycle.html: missing removed frame diagnostic for module'),
++            ('gc-resolve-before-missing', None, "missing 'ROVES-V8 gc single document module resolve before true'"),
++            ('gc-document-replaced', None, "missing 'ROVES-V8 gc single document remains live true'"),
+             ('gc-result', None, "missing 'ROVES-V8 gc result pass'"),
+             ('gc-crash', None, 'gc-lifecycle.html: servoshell exited with 139'),
+         )
+@@ -1411,8 +1402,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 result = self.run_fixture(scenario, gc_flag=gc_flag)
+                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                 if scenario in ('gc-owner-missing', 'gc-eval-owner', 'gc-eval-owner-missing', 'gc-resolve',
+-                                'gc-resolve-missing', 'gc-plain-missing', 'gc-diagnostic-missing',
+-                                'gc-diagnostic-count'):
++                                'gc-resolve-missing', 'gc-document-missing', 'gc-resolve-before-missing',
++                                'gc-document-replaced'):
+                     # A reported pass cannot replace a missing or wrong required marker.
+                     self.assertIn('::notice::gc-lifecycle.html: ROVES-V8 gc result pass', result.stdout)
+                 else:
+@@ -1450,9 +1441,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 if scenario == 'window-prototype':
+                     self.assertIn('immutable Window prototype not confirmed', result.stdout)
+                 if scenario == 'cross-origin-prototype':
+-                    self.assertIn('cross-origin WindowProxy prototype not confirmed', result.stdout)
++                    self.assertIn('cross-origin iframe created a child document', result.stdout)
+                 if scenario == 'cross-origin-properties':
+-                    self.assertIn('cross-origin WindowProxy properties not confirmed', result.stdout)
++                    self.assertIn('cross-origin iframe created a child document', result.stdout)
+                 if scenario == 'constructor-graph':
+                     self.assertIn("missing 'ROVES-V8 csp constructor graph true true true'", result.stdout)
+                 if scenario == 'csp-attribute':
+@@ -1474,7 +1465,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                     # Only the dropped check fails: the page's other required checks are reported.
+                     page = scenario.partition(':')[2]
+                     errors = [line for line in result.stdout.splitlines() if 'missing required check' in line]
+-                    self.assertEqual([f'::error::{page}: missing required check: {REQUIRED_CHECKS[page][0]}'], errors)
++                    processes = 3 if page == 'document-interface-alias.html' else 1
++                    self.assertEqual([f'::error::{page}: missing required check: {REQUIRED_CHECKS[page][0]}'] * processes, errors)
+                 if scenario == 'testutils-default':
+                     self.assertIn('TestUtils exposed without dom_testutils_enabled (ROVES-V8 testutils default object', result.stdout)
+ 

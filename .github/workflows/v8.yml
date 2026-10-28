@@ -218,7 +218,7 @@ jobs:
           ls target/v8-cutover/debug/servoshell*
       # Linux normal only: one extra debug servoshell process (one page, bounded by its 60 s
       # timeout) loads document-retention.html and writes one native V8 heap snapshot of a detached
-      # blank frame; its size follows the page's JS heap. Kept 3 days, for reading retainers in
+      # DOM wrapper; its size follows the page's JS heap. Kept 3 days, for reading retainers in
       # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.
       - name: run the V8 smoke pages headlessly
         if: runner.os == 'Linux'
@@ -230,7 +230,17 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh
           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
-      - name: upload the removed-frame heap snapshot
+      - name: upload failed V8 diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: v8-build-diagnostics-${{ matrix.os }}-${{ matrix.mode }}
+          path: |
+            target/v8-cutover/*.log
+            *.log
+          retention-days: 3
+          if-no-files-found: ignore
+      - name: upload the document-retention heap snapshot
         if: always() && runner.os == 'Linux' && matrix.mode == 'normal'
         uses: actions/upload-artifact@v4
         with:

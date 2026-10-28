@@ -2,6 +2,28 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Current correction checkpoint:** root f8efd5c35ee, action0964874 and wiki062490f
+are published. Required batch is terminal: V8 40719636766 and general40719636661 failed;
+Android40719636685, action40719590816 and wiki40719601745 passed. Apple is excluded.
+Linux/Windows browser and packaging logs share two compiler errors: redundant no_trace
+on Option<ModuleId> and the task macro hiding poll_module_event_loop. Both are corrected
+locally, with the latter explicitly qualified to the module function. New build proof
+requires CI; no local browser build was run.
+
+Linux runner simulation now uses the single-document GC/snapshot protocol, recognizes
+query-bearing alias runs and the stdlib server, and retains negative failure checks.
+The final complete LF/WSL run passes59/59 tests with no skips, including the corrected
+three-process alias assertion and negative snapshot-control case. Log:
+`target/task-0385/linux-runner-complete.log`. Code-generator ResourceWarnings remain
+non-fatal and are not browser behavior evidence.
+
+Patches0404 (CI/compiler/runner),0405 (redirect/MIME/referrer/SRI fixtures) and0406
+(periodic-loop authorization) are the incremental changes. Network fixtures use existing
+stdlib HTTP support; endpoint/syntax checks passed, actual browser behavior awaits CI.
+The five-hour user-requested trigger resumes the whole AGENTS loop without concurrent
+work or continuous polling. Claude remains suspended. JSON preload, static-pause
+measurement, visual/trusted-click checks, SourceText0361 and overall retention remain open.
+
 Leggere questo blocco e AGENTS prima di modificare. Lo storico dopo FINE DEL PUNTO OPERATIVO
 contiene scelte e backup superati; consultarlo solo per un problema concreto.
 Il candidato sorgente adotta Deno e la policy documento unico in un cambiamento atomico.
@@ -56,14 +78,13 @@ retention risolte. Il prossimo passo e la CI completa, seguita dalle correzioni 
 
 ### 3. Git, CI e significato dei riferimenti
 
-Prima del nuovo commit di integrazione: rootHEAD1f0bdebb1e8, pubblicato54ae32b3dae;
-wikiHEAD062490f (locale), pubblicatab919c94; roves-actionHEAD0964874 (locale), pubblicato4b2a67f.
-Controllare SEMPRE Git reale: il commit di questo checkpoint avra uno SHA successivo.
-Batch54ae verificato nuovamente: generale40655538314 verde13/13 (10nonApple richiesti),
-Android40655538288 verde, iOS40655538256 verde/esclusa dal gate. Non verificano il nuovo port.
-ProbeDeno40564575701 verde4/4 e una prova isolata precedente, NON Servo+DOM.
-Dopo il push identificare le nuove run in un'unica lettura aggregata e iniziare il prossimo
-lavoro utile. Non pushare altro con run richieste attive; non usare polling periodico.
+Pubblicati root f8efd5c35ee, wiki062490f e action0964874. Il batch associato e
+concluso: V8/general falliti per gli errori descritti nel checkpoint iniziale; Android,
+action e wiki verdi. La precedente serie pristine e verde in validate-servo-patches.
+Controllare Git reale prima di riprendere; i nuovi commit avranno SHA successivi.
+ProbeDeno40564575701 verde4/4 resta una prova isolata, NON Servo+DOM.
+Dopo il prossimo push identificare le run una volta e continuare sviluppo/commit locali
+mentre procedono; nessun nuovo push con verifiche richieste attive.
 
 ### 4. Cosa cambia nel candidato sorgente
 
@@ -147,7 +168,9 @@ Patch0402 processo/quota+policy JSON; patch0403 sorgente del port. Candidato in
 percorsi sorgente dopo la serie gia ricostruita; normalizzazioneLF ed eliminazioni verificate.
 NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno eccezioni
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
-Ricontrollare numero file e rigenerare0403 se il codice cambia. Scratch Windows gia applicato:
+Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
+0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
+Scratch Windows gia applicato fino0406:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
@@ -163,8 +186,8 @@ soluzione pubblicabile. La copia native-workspace e stata ripulita da quel test 
 
 1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
    root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
-2. Batch precedente54ae e verde. Pubblicare il candidato completo per la prima CI di
-   integrazione, identificare nuove run e salvare SHA/ID nel handoff. Non dire verificato.
+2. Batch f8 e terminale con errori: completare le correzioni compiler/runner, registrare
+   verifiche e pubblicarle insieme. Identificare nuove run e SHA; non dire verificato.
 3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
    pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
    senza errori, continuare lavoro utile/commit locali senza push; niente polling continuo.

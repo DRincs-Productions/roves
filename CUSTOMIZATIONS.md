@@ -1,3 +1,33 @@
+## 2026-10-28 - Validate incremental integration corrections (0404-0406)
+
+The final full Linux LF/WSL helper suite passes59/59 with no skips. All three incremental
+patches pass dry-run, replay and LF-normalized source comparison. Browser compilation and
+network fixture behavior still need the next CI batch; no local heavy build was run.
+
+## 2026-10-28 - Complete the Linux runner contract corrections
+
+Align the simulated browser with single-document results and snapshot naming, recognize
+query URLs and the stdlib HTTP server, and preserve missing/wrong-result failure scenarios.
+The59-test LF/Linux run had one failing alias diagnostic multiplicity assertion; correct
+it to exactly three fresh processes and verify that case independently. Add a negative
+snapshot-control case: a valid snapshot plus claimed pass must not replace the retained DOM
+control. Both targeted Linux cases pass. Use the existing Node installation via login PATH.
+Failed V8 compiler/smoke logs are uploaded after smoke execution, so either failure is retained.
+
+## 2026-10-28 - Fix the first Deno integration CI failures
+
+Linux/Windows compiler logs identify two script_module errors: remove redundant no_trace
+from Option<ModuleId> (usize already has tracing support), and qualify the module event-loop
+function to avoid the task macro's local tuple-struct name. Update the Linux smoke simulator
+for single-document GC/snapshot results, query-bearing alias URLs and the HTTP server stub;
+retain negative protocol cases. Upload failed V8 build logs with the existing artifact action.
+Linux LF tests exercise Unix runner cases; keep full-suite and targeted evidence distinct.
+
+The user explicitly authorizes one five-hour recurring migration heartbeat, superseding
+the old no-periodic rule for that trigger only. Align AGENTS/workflow without creating
+parallel work or duplicate periodic schedules. Additional network fixture checks cover
+redirects, MIME, Referrer-Policy and exact-byte SRI using the maintained stdlib HTTP server.
+
 ## 2026-10-28 - Consolidate the Deno single-document integration candidate (0403)
 
 Replace the old module graph/runtime ownership with deno_core0.413 and shared v8150.4,

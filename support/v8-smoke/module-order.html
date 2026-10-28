@@ -152,5 +152,36 @@ check("JSON preload reports unavailable while typed imports still work", async (
     catch (error) { return error instanceof TypeError || String(error); }
   } finally { link.remove(); }
 });
+check("module redirects preserve final URL and relative imports", async () => {
+  const namespace = await import("./redirect-module.mjs");
+  return namespace.value === 42 && namespace.actualURL === new URL("single-document-fixtures/redirect/entry.mjs", document.baseURI).href;
+});
+check("module fetch rejects a non-JavaScript MIME type", async () => {
+  try { await import("./wrong-mime-module.mjs"); return "text/plain module accepted"; }
+  catch (error) { return error instanceof TypeError || String(error); }
+});
+check("module response referrer policy controls descendant requests", async () => {
+  const namespace = await import("./no-referrer-parent.mjs");
+  return namespace.default === null || "Referer leaked: " + namespace.default;
+});
+check("static module integrity permits matching bytes and denies mismatches", async () => {
+  globalThis.rovesSriExecuted = 0;
+  async function load(label, integrity) {
+    const script = document.createElement("script"); script.type = "module";
+    script.integrity = integrity; script.src = "sri-module.mjs?" + label;
+    try {
+      return await new Promise(resolve => {
+        script.onload = () => resolve(true);
+        script.onerror = () => resolve(false);
+        document.head.append(script);
+      });
+    } finally { script.remove(); }
+  }
+  try {
+    const matching = await load("matching", "sha256-nLqEm71HDrWcfC/jNcKr9EqBibmBe5+qTPmlSjhrBXE=");
+    const mismatching = await load("mismatching", "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=");
+    return matching && !mismatching && rovesSriExecuted === 1;
+  } finally { delete globalThis.rovesSriExecuted; }
+});
 finish();
 </script>
