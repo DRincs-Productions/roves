@@ -13,6 +13,7 @@ import SavesButton from "./SavesButton.tsx";
 import StorageButton from "./StorageButton.tsx";
 import ThreePanel from "./ThreePanel.tsx";
 import ToneButton from "./ToneButton.tsx";
+import type { PerformanceFixtureMode } from "./PerformanceFixture.tsx";
 
 type RenderTest = "none" | "pixi" | "three";
 
@@ -92,7 +93,9 @@ function downloadBlob(content: BlobPart, filename: string, type = "application/o
  * in-game diagnostics report shape — see that file for why it's a plain
  * toggled view rather than a native `<dialog>`.
  */
-export default function App() {
+export default function App({ onPerformanceNavigate }: {
+  onPerformanceNavigate: (mode: PerformanceFixtureMode) => void;
+}) {
   const [steamResult, setSteamResult] = useState("Click a button above.");
   const [exitStatus, setExitStatus] = useState<string | null>(null);
   const [renderTest, setRenderTest] = useState<RenderTest>("none");
@@ -272,13 +275,18 @@ export default function App() {
       {/* Repeatable workloads for [roves-perf]/[roves-perf-time] measurements (PerformanceFixture). */}
       <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", justifyContent: "center" }}>
         <span>Performance fixtures:</span>
-        <a href="?perf=blank" style={{ color: "#8ab4f8" }}>blank</a>
-        <a href="?perf=pixi-static" style={{ color: "#8ab4f8" }}>pixi-static</a>
-        <a href="?perf=pixi-animated" style={{ color: "#8ab4f8" }}>pixi-animated</a>
-        <a href="?perf=typewriter-pixi" style={{ color: "#8ab4f8" }}>typewriter + pixi</a>
-        <a href="?perf=typewriter-three" style={{ color: "#8ab4f8" }}>typewriter + three</a>
-        <a href="?perf=gsap-pixi" style={{ color: "#8ab4f8" }}>gsap + pixi</a>
-        <a href="?perf=motion-pixi" style={{ color: "#8ab4f8" }}>motion + pixi</a>
+        {([
+          ["blank", "blank"], ["pixi-static", "pixi-static"],
+          ["pixi-animated", "pixi-animated"], ["typewriter-pixi", "typewriter + pixi"],
+          ["typewriter-three", "typewriter + three"], ["gsap-pixi", "gsap + pixi"],
+          ["motion-pixi", "motion + pixi"],
+        ] as const).map(([mode, label]) => (
+          <a key={mode} href={`?perf=${mode}`} style={{ color: "#8ab4f8" }} onClick={event => {
+            if (event.button !== 0 || event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+            event.preventDefault();
+            onPerformanceNavigate(mode);
+          }}>{label}</a>
+        ))}
       </div>
 
       <GpuInfoPanel />

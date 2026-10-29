@@ -2,70 +2,43 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
-### Consegna prima dello spegnimento — 0432
+### Punto corrente: prove desktop e correzione delle scene0434
 
-Ultimo pubblicato prima di questa consegna:23864d3cb1a (documentazione0431).
-Batch Android40924404008 concluso3/3verde; nessuna runV8/generale rilevata dopo quel push
-solo documentale. Nessun runtime WIP. Modifiche esterne TODO.md preservate.
+Pubblicato410876e6b7d, wiki e37eb90; batch Android40925904418 concluso3/3verde.
+Il precedente batch V8/generale del checkpoint9f8d e verde per tutte le verifiche richieste.
+118 test normali/117JITless; moduli browser23/23 Linux/Windows normale/JITless.
 
-0432 documenta una prova positiva della scena DOM documento unico nel batch9f8d:
-elemento rimosso e probe raccolti dopo8GC, controllo connesso preservato. MemLab2.0.5
-conferma che l'unico probe rimasto è il controllo retained=true. Dati verificabili in
-[misura0432](measurements/0432-document-retention.json), dettaglio in ROVES_PERFORMANCE.
-Non dichiarare risolta la retention generale o il vecchio scenario frame.
+Desktop sbloccato e test manuali autorizzati. Build portatile scaricata dall'asset689320123,
+SHA256fb73a342595e17af1790d696354a6c64360538f735ed1e5dbb206574f27664c4 verificato.
+PixiJS mostrato animato dopo clic reale; il test completo dell'utente e ancora in corso.
+Non segnare audio, fullscreen, gamepad, handoff esterno o chiusura come verificati.
 
-Alla ripresa: leggere questo punto, controllare Git e il batch dell'ultimo push, poi
-proseguire con uno studio concreto SourceText0361 o regressioni di lifetime motivate.
-Non ripetere facade0363, esperimenti JSON scartati o ricerca dei vecchi frame fuori scope.
-Niente build pesanti locali, Claude o prove desktop finché non autorizzate/disponibili.
+I link performance usavano cambi documento, bloccati correttamente dalla policy Roves.
+0434 li converte a route interne React/History API, con ritorno al menu e popstate.
+Avvio diretto ?perf= mantiene la scena senza toolbar; il ritorno compare solo per accessi
+manuali dal menu. Build TypeScript/Vite verde; Chrome MCP conferma stesso documento,
+una sola navigation entry, menu/blank/indietro/avanti. Finestra locale "Roves - scene corrette"
+aperta per prova nativa, non ancora una nuova release. Successivamente clic reali nella finestra Roves hanno aperto blank e riportato al menu;
+le altre scene e la build distribuita restano da verificare in CI.
 
-### Checkpoint verificato: 9f8d1c8a936, passi 0428–0430
+### Criteri residui e fuori perimetro
 
-Wiki **66e15ef**, action **a3d5f1c**. Il batch del commit9f8d1c8a936 è concluso:
+Finire la verifica delle scene corrette, diagnostica non modale in sviluppo/solo log nel
+bundle, link esterni dopo clic reale e blocco degli automatici, chiusura con fetch/TLA
+pendenti. Pausa statica provvisoria misurata: ritardo server250ms comporta intervalli
+circa255–261ms, non soglia accettata. Valutare casi reali/input/chiusura separatamente.
+La scena DOM0432 rilascia il ciclo rimosso e preserva il controllo; non prova assenza
+generale di leak. I vecchi frame non sono requisito del documento unico.
 
-- V8 **40915577759**: otto job Linux/Windows verdi, normale e JITless.
-- Generale **40915577791**: dieci job non Apple verdi, inclusi replay patch e pacchetti.
-- Android **40915577947**: tutti e tre i job verdi.
-- macOS/iOS esclusi dal gate per scelta utente; le cancellazioni Apple non sono successi.
+Anche la compatibilita generale dei link/router e un approfondimento nel TODO: il fix
+delle fixture non risolve tutti gli usi di href/query/path/target; non cambiare la policy
+prodotto sulla base del solo test.
 
-Il checkpoint include il fix temporaneo Deno0428, il gate build0429 e la regressione0430.
-Suite native locali: **118 normali / 117 JITless**; negativa0430 fallisce nel punto atteso.
-Browser moduli **23/23** su Linux/Windows normale/JITless confermati nel batch precedente
-3cee4b8602b, e verifiche browser ancora verdi nel batch9f8d. Nessun errore richiesto aperto.
-
-### 0431 — misure integrate conservate, senza nuovo codice runtime
-
-Documentazione completa e dataset di12 campioni recuperati dagli artifact3cee prima della
-scadenza, in [ROVES_PERFORMANCE.md](ROVES_PERFORMANCE.md) e
-[0431-static-module-pause.json](measurements/0431-static-module-pause.json).
-Con ritardo server deliberato250ms, timer/frame mostrano intervalli di circa255–261ms.
-Sono campioni singoli headless: nessuna soglia accettata, prova input reale o confronto A/B.
-La pausa statica resta provvisoria. Il batch verde sopra consente di pubblicare questi
-commit documentali completi; identificare una volta eventuali nuove run dopo il push.
-
-### Prossimi punti e vincoli
-
-- SourceText0361 resta aperto: non ripetere il candidato facade0363, che altera il receiver.
-  Leggere docs/handoff/0361-source-text-gap.md solo per un nuovo studio concreto delle API.
-- Retention complessiva non risolta: i test isolati GC/teardown non provano il rilascio DOM.
-- Prove desktop di avvisi/clic/chiusura e input durante fetch sospesi rimangono da eseguire.
-  L'utente non può sbloccare Windows: non richiedere nuovamente lo sblocco né inviare input.
-- JSON modulepreload resta esplicitamente indisponibile. API pubbliche di caricamento ES
-  senza tipo radice; vietato il workaround che rende validi gli import JSON senza type.
-- Nessun Claude. Conservare tutte le modifiche esterne a TODO.md senza aggiungerle ai commit.
-
-L'utente ha autorizzato patch minime per difetti delle librerie che bloccano i giochi,
-issue/PR upstream e TODO di rimozione. Deno0.413.0 MIT: snapshot con una sola correzione
-semantica al fast path async, stesso override root/standalone e un solo V8 150.4.0.
-[Issue37097](https://github.com/denoland/deno/issues/37097) e
-[PR37098](https://github.com/denoland/deno/pull/37098) aperte; PR ancora in bozza, nessun
-commento/revisione al controllo29ottobre17:44UTC. Non dichiarare fix ufficialmente rilasciato.
-Il vecchio denoland/deno_core è archiviato dopo la confluenza in denoland/deno/libs/core,
-che rimane il progetto mantenuto. Dettagli: handoff0428 e handoff0430.
-
-La segnalazione di processo terminato non è un crash Roves dimostrato; nessun evento
-ApplicationError1000 nelle sei ore prima del controllo29ottobre17:03 locale. Report kernel
-con vecchi dump non permettono attribuzioni. Non riprodurre alla cieca l'azione sconosciuta.
+I due punti rinviati dall'utente sono nel TODO e non bloccano il completamento V8;
+le menzioni nello storico sotto non sono piu incarichi attivi. Nessun Claude.
+Conservare la modifica utente MCP/skill in TODO.md: nell'indice solo le aggiunte del task.
+Versionare per i test di domani solo lavoro completo, con gate CI e note oneste sulle
+prove ancora pendenti; seguire la procedura release e aggiornare i consumer previsti.
 
 ### Checkpoint precedenti (storico, superato dal punto corrente sopra)
 

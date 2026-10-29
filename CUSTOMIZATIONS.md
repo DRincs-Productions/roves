@@ -1,3 +1,25 @@
+## 2026-10-29 - Route diagnostic fixtures inside the game document (0434)
+
+The performance-menu anchors navigated to a new query URL, correctly blocked by the
+single-document policy. Use existing React state and History API for scene selection,
+back/forward and a return-to-diagnostics control. Preserve other URL parameters and keep
+direct ?perf= benchmark launches free of the manual toolbar. No new routing dependency,
+public game API change or relaxation of engine navigation policy. TypeScript/Vite build
+passes; Chrome MCP verifies document identity and one navigation entry across selection,
+return and history traversal. A real Roves click opened the blank fixture and returned to the menu; other scenes and
+the distributed build remain subject to CI.
+
+## 2026-10-29 - Defer optional reflection and JSON preload work (0436)
+
+User moves scoped HTML-handler SourceText0361 and JSON modulepreload to TODO, outside V8
+migration completion criteria. Preserve evidence and existing behavior; do not report
+these features fixed. Ordinary handlers and typed JSON imports remain usable. Align
+AGENTS, authoritative migration handoff, old0361 handoff and README/wiki. Preserve the
+user's independent MCP/skills TODO edit outside the staged task changes. Also record the
+requested general anchor/router compatibility investigation: query/path versus fragments,
+trusted activation, keyboard/modifiers/targets and diagnostics. Fixture-only SPA handling
+is not a general engine anchor fix; do not relax navigation security. No runtime change.
+
 ## 2026-10-29 - Verify the single-document detached DOM cycle (0432)
 
 Analyze the existing0430 Linux normal CI snapshot with maintained MemLab2.0.5 APIs,

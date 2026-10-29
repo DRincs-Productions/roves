@@ -881,3 +881,7 @@ Linux/Windows normale/JITless. Le prove desktop e la retention complessiva resta
 La verifica0432 dello snapshot CI conferma il rilascio del ciclo DOM/listener rimosso nella
 scena documento unico, preservando il controllo connesso. È una prova circoscritta,
 non una dichiarazione di retention complessivamente risolta; dati in ROVES_PERFORMANCE.
+
+Decisione29ottobre2026: compatibilita SourceText degli handler e preload JSON sono nel
+TODO, fuori dai criteri di completamento della migrazione V8. Non risultano implementati;
+gli handler ordinari e gli import JSON con type json restano utilizzabili.

@@ -248,3 +248,35 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 - [ ] A ogni aggiornamento Deno e prima del rilascio stabile, ricontrollare [issue37097](https://github.com/denoland/deno/issues/37097) e [PR37098](https://github.com/denoland/deno/pull/37098). Il vecchio repository deno_core e archiviato dopo la confluenza in denoland/deno; usare il repository attivo.
 - [ ] Quando una crate ufficiale contiene il fix (non basta che l'issue sia chiusa), verificarla senza patch con regressioni TLA radice/discendente, resolve/reject, identita cache/eccezioni e fetch/esecuzione una volta, in normale e JITless.
 - [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS/handoff. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
+
+## Compatibilita HTML rinviata: SourceText
+
+- [ ] Correggere il testo restituito da Function.prototype.toString per handler HTML inline
+  con scope DOM (0361), conservando lookup, receiver, nome, lunghezza e ciclo di vita.
+  Il codice degli handler funziona; nessun gioco o libreria concretamente incompatibile
+  e stato identificato. Preferire API pubbliche mantenute V8; niente formatter, override
+  globale di toString o facade che cambia this. Evidenze: docs/handoff/0361-source-text-gap.md.
+- **Scelta utente29ottobre2026:** lavoro non essenziale, fuori dai criteri di completamento
+  della migrazione V8. Riprenderlo solo come compatibilita futura motivata.
+- **Anche il preload JSON e fuori dalla migrazione V8**, per scelta utente29ottobre2026:
+  resta il TODO dettagliato "Runtime Deno: ripristinare il preload JSON". Import JSON
+  normali funzionanti; preload esplicitamente indisponibile. Il prototipo futuro dovra
+  conservare type json, cache e sicurezza; non estendere per ora il fork TLA a questo scopo.
+
+## Link e navigazione: approfondire la compatibilita nel documento unico
+
+- [ ] Valutare come giochi e librerie usano link HTML ordinari e router: frammenti,
+  query, path relativi/assoluti, link dello stesso origin e link esterni. Un href che
+  cambia query/path senza intercettazione SPA normalmente carica un nuovo documento,
+  operazione bloccata da Roves. Il fix delle sole fixture non dimostra compatibilita
+  generale e non autorizza una conversione automatica di tutti gli anchor nel motore.
+- [ ] Definire contratti e prove per clic reale/sintetico, tastiera (Enter), Ctrl/Shift,
+  tasto centrale, target=_blank, preventDefault e handler/router annidati. Distinguere
+  History API, popstate e hashchange, ritorno avanti/indietro, stato e documento preservati.
+- [ ] Documentare per gli sviluppatori quando usare un router/History API o un frammento,
+  e che cosa viene bloccato. Valutare diagnostica piu chiara per i link interni bloccati
+  senza alert modali, falsi successi o reset dello stato del gioco. Per gli esterni resta
+  il browser di sistema solo dopo attivazione utente affidabile, mai apertura automatica.
+- [ ] Confrontare librerie/router mantenuti e casi reali prima di introdurre un adattatore
+  condiviso. Preservare sicurezza, document lifetime e policy prodotto; non allentare il
+  blocco delle navigazioni complete solo per fare funzionare un link di prova.

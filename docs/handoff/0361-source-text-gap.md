@@ -1,6 +1,11 @@
 # 0361 — lacuna sourceText e punto di ripresa
 
-## Riesame corrente 29 ottobre 2026 (analisi0422)
+## Rinviato al TODO per scelta utente29ottobre2026
+
+Fuori dai criteri della migrazione V8; non e un blocco alla sua conclusione.
+Conservare le prove sotto per un eventuale futuro intervento di compatibilita.
+
+## Riesame storico 29 ottobre 2026 (analisi0422)
 
 Il punto autorevole Git/CI/quota e docs/V8_MIGRATION.md. Blocchi disco/CI/quote sotto
 sono storico del26ottobre: non applicarli al checkout attuale. Al riesame sono disponibili
