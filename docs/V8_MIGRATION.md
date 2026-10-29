@@ -217,7 +217,22 @@ valutare una soluzione mantenuta e verificare insieme error.stack, parse/link e 
 attributi degli eventi. Non assumere che una mappa dello stack corregga v8::Message.
 Non introdurre parser, fork o una semplice aggiunta di righe senza verificare hashbang,
 sourcemap preesistenti, righe/colonne e sorgenti esterne. Nessuna correzione e stata fatta.
-Prima superare il panic di avvio nella CI browser; la raccolta0407 non risolve questo.
+Il panic di avvio e superato dal batch32d4 verde; il difetto diagnostico resta distinto.
+
+Valutazione0417 isolata: sourcemap9.3.2 (gia transitiva Deno, BSD-3-Clause/pure Rust)
+con SourceMapBuilder.add(...,is_range=true), una mappatura per riga e offset41. Il
+round-trip to_writer/decode_slice conserva i due casi sulla riga0, ma perde le colonne
+sulle righe successive: attesi(42,7),(43,13),(43,1000), ottenuti(42,0),(43,0),(43,0).
+Log target/task-0417/range-map-probe.log; negativa intenzionale exit101, NON un testverde.
+Il decoder generale supporta mappe indicizzate, ma SourceMap::from_slice usato dal loader
+Deno0.413 le rifiuta: non adottare quell'alternativa senza un'API Deno adatta.
+Release ufficiale9.3.2 e master controllati riportano lo stesso ordine encoder (range bit
+prima del cambio riga): https://github.com/getsentry/rust-sourcemap/blob/9.3.2/src/encoder.rs .
+Nessun fork, modifica registry o dependency aggiunta alla produzione. Il solo Cargo probe
+resta ignorato in target. Questo boccia il candidato provato, non Deno in generale o tutte
+le alternative di source mapping. Prossimo studio: encoder mantenuto corretto/API diversa,
+con prova anche in Deno, hashbang/BOM/line terminator/sourcemap preesistenti. Non usare
+padding ingenuo o duplicare il grafo per aggirare il limite.
 
 ### 8. Prossimo ciclo operativo e criteri di completamento
 

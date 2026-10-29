@@ -1,3 +1,13 @@
+## 2026-10-29 - Reject the tested inline range-map candidate (analysis0417)
+
+An isolated sourcemap9.3.2 builder/codec probe preserves columns on its first line but loses
+three later-line columns to zero. The official9.3.2 release and master encoder use the same
+range-bit/line-boundary ordering. Indexed decoding works generally, but the regular-map
+entry point used by Deno0.413 rejects indexed maps. Record this narrow negative evidence,
+not a general Deno no-go. No production dependency, registry patch, source rewrite or fork
+is introduced; the ignored probe is not part of the source overlay and needs no runtime
+patch. Keep the inline HTML offset issue open and avoid repeating this failed candidate.
+
 ## 2026-10-29 - Verify cached imports progress without blind runtime polling (0416)
 
 Exercise eight repeated dynamic imports after static loading. The native driver performs
