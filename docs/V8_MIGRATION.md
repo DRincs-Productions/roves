@@ -4,6 +4,15 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**Pubblicato6992e6c2c36 / wiki472db7c**, include0421 e analisi0422 oltre ai checkpoint.
+Nuovo batch: V840823903252 e generale40823903239 in coda; Android40823903247 attiva,
+iOS40823903248 attiva/esclusa. Identificato una volta dopo il push. Nessun nuovo push
+mentre queste run richieste restano attive. Solo questo handoff successivo rimane locale;
+nessun WIP runtime. TODO utente preservato. Alla ripresa08:42:48 leggere Git/CI correnti,
+non i riferimenti obsoleti del prompt promemoria. Proseguire loop da UI/clic/chiusura e
+misure; correggere eventuali erroriCI prima. Non rifare prove gia verdi senza un motivo.
+
+
 **29ottobre06:31 — batchdd653 TUTTO VERDE.** V840820698282 tutti11job verdi,
 compresi browserLinux/Windows normal/JITless con fixture21check richiesta dal gate;
 generale40820698271 tutti13job verdi (10nonApple), Android40820698291 verde.
