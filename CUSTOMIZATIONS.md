@@ -1,3 +1,14 @@
+## 2026-10-29 - Reuse deno_core's public source-map codec re-export (0426)
+
+Use deno_core::sourcemap rather than a separately pinned direct sourcemap dependency.
+The maintained public re-export uses the same encoder/decoder version Deno consumes;
+remove the duplicate manifest pin and direct dependency edges from root/standalone locks.
+The transitive codec remains, so no package removal, resource saving or behavior change is
+claimed. Existing inline coordinates, UTF-16 columns, line endings, embedded-map priority,
+BOM/hashbang and source-identity regression passes normal/JITless; locked offline metadata
+passes. Four-file incremental dry-run/replay equality passes. No library fork or new API.
+The separate cached TLA gap and proposed temporary exception remain unresolved.
+
 ## 2026-10-29 - Prepare an isolated deno_core async fast-path proposal (0425)
 
 Validate a one-condition upstream proposal: skip the already-evaluated shortcut for async

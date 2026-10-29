@@ -859,3 +859,8 @@ importing a module already under static top-level await can settle too early, in
 an async descendant. The prior green CI did not cover this case. The partial evaluation
 prototype was rejected; no production fork or workaround is shipped. See the migration
 handoff0424. Host-loader release under pending TLA is independently tested in both modes.
+
+Inline diagnostic mapping reuses deno_core's public sourcemap re-export, removing a duplicate
+direct version pin while retaining the same transitive codec. Native normal/JITless mapping
+checks pass. The cached-static-TLA correctness gap remains open; its proposed library patch
+has not been adopted.

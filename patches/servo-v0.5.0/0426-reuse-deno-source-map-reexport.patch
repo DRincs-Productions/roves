@@ -1,0 +1,51 @@
+diff --git a/components/roves-js/Cargo.lock b/components/roves-js/Cargo.lock
+index e1622e16e57..edeb69f9c6d 100644
+--- a/components/roves-js/Cargo.lock
++++ b/components/roves-js/Cargo.lock
+@@ -1094,7 +1094,6 @@ dependencies = [
+  "roves-v8",
+  "rustc-hash 2.1.3",
+  "smallvec",
+- "sourcemap",
+  "tokio",
+  "v8",
+ ]
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+index de3f20b89cf..710bb73f008 100644
+--- a/components/roves-js/Cargo.toml
++++ b/components/roves-js/Cargo.toml
+@@ -23,8 +23,6 @@ v8 = "=150.4.0"
+ # backend, `reactor-tokio` (required by its realm code) and the prebuilt archives' libc++.
+ # No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
+ deno_core = "=0.413.0"
+-# Already used by Deno; public source-map generation for inline HTML diagnostics.
+-sourcemap = "=9.3.2"
+ # The current-thread reactor deno_core's futures and blocking static module loads run on.
+ tokio = { version = "1", features = ["rt"] }
+ # Used by the conversions ported from mozjs.
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index 5d75a300501..59098eb2333 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -105,7 +105,7 @@ impl ModuleSourcePosition {
+     }
+     fn to_source_map(&self) -> Option<Vec<u8>> {
+         let offset = self.first_line.checked_sub(1)?;
+-        let mut builder = sourcemap::SourceMapBuilder::new(None);
++        let mut builder = deno_core::sourcemap::SourceMapBuilder::new(None);
+         for line in 0..self.lines {
+             let original = offset.checked_add(line)?;
+             // Distinct valid anchors preserve columns through the maintained range codec.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 6390f405aa1..ab549396fbb 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7426,7 +7426,7 @@ mod deno_modules {
+             let html = format!("{ORIGIN}document.html");
+             let mut source = "try { null.boom } catch(error) { log.push(error.stack); }".to_owned();
+             if explicit_map {
+-                let mut builder = sourcemap::SourceMapBuilder::new(None);
++                let mut builder = deno_core::sourcemap::SourceMapBuilder::new(None);
+                 builder.add(0,0,6,0,Some("https://game.invalid/authored.ts"),None,false);
+                 builder.add(0,1,6,1,Some("https://game.invalid/authored.ts"),None,true);
+                 source.push_str(&format!("\n//# sourceMappingURL={}\n",builder.into_sourcemap().to_data_url().unwrap()));

@@ -105,7 +105,7 @@ impl ModuleSourcePosition {
     }
     fn to_source_map(&self) -> Option<Vec<u8>> {
         let offset = self.first_line.checked_sub(1)?;
-        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        let mut builder = deno_core::sourcemap::SourceMapBuilder::new(None);
         for line in 0..self.lines {
             let original = offset.checked_add(line)?;
             // Distinct valid anchors preserve columns through the maintained range codec.

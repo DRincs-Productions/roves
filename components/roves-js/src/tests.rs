@@ -7426,7 +7426,7 @@ mod deno_modules {
             let html = format!("{ORIGIN}document.html");
             let mut source = "try { null.boom } catch(error) { log.push(error.stack); }".to_owned();
             if explicit_map {
-                let mut builder = sourcemap::SourceMapBuilder::new(None);
+                let mut builder = deno_core::sourcemap::SourceMapBuilder::new(None);
                 builder.add(0,0,6,0,Some("https://game.invalid/authored.ts"),None,false);
                 builder.add(0,1,6,1,Some("https://game.invalid/authored.ts"),None,true);
                 source.push_str(&format!("\n//# sourceMappingURL={}\n",builder.into_sourcemap().to_data_url().unwrap()));

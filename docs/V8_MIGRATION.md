@@ -4,6 +4,19 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**0426 completa locale:** sorgenti e test mappe usano deno_core::sourcemap pubblico;
+rimosso il pin diretto duplicato9.3.2 e relativi edge lockroot/standalone. Stessa libreria
+transitiva, nessun pacchetto risparmiato o comportamento cambiato. Targeted normal/JITless
+1/1 verdi, metadata --locked --offline valido, patch0426 dry-run/replay4file identiciLF.
+Nativeworkspace attuale: Deno originale, nessun override, sorgenti sincronizzati a0426.
+NON ripristinare le vecchie backup-lock0425 o copiare tutto proposed-tests.rs: ripristinerebbero
+lo stato precedente al reexport. Per la matrice TLA porta soltanto i test nuovi sull'HEAD.
+Decisione fork temporaneo0425 chiesta via domanda asincrona e ANCORA PENDENTE; nessuna
+modifica della dipendenza produzione e nessun tentativo di pubblicare fixparziali0424.
+I due server fixture e le tre tabChrome creati dalla prova sono stati chiusi, nessun processo
+GUI di prova lasciato aperto. SbloccoWindows ancora richiesto per clic/notice/chiusuraUI.
+
+
 **0425 proposta nativa verificata, NON ADOTTATA:** una guardia !module.is_graph_async()
 nel fast path di deno_core0.413 corregge il casoTLA radice/discendente in prova separata.
 Suite117normal/116JITless verdi, matrice resolve/reject/cache/namespace/fetchuna volta;
