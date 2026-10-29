@@ -2,6 +2,18 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0430 pronta: regressione sui fetch statici sospesi
+
+118 test normali e117 JITless verdi; la negativa con pumping del loop durante il fetch
+fallisce nel punto previsto. Nessun cambiamento produttivo o nuova dipendenza.
+Patch0430 verificata; [dettaglio e log](handoff/0430-static-load-job-isolation.md).
+Batch3cee4b8602b concluso positivo per tutte le verifiche richieste: V8 Linux/Windows8/8,
+generale non Apple10/10, Android3/3. Moduli browser23/23 in tutte e quattro le combinazioni.
+Pubblicare il lavoro completo e identificare il nuovo batch una volta. Nessun Claude.
+L'utente non può sbloccare Windows: continuare senza input desktop. Restano SourceText0361,
+misure della pausa, retention complessiva e prove UI. JSONpreload rimane nel TODO: le API
+pubbliche attuali non espongono il tipo della radice e il workaround scartato resta vietato.
+
 ### Pubblicato: 0428 correzione Deno e 0429 controllo degli errori di build
 
 Commit Roves **3cee4b8602b**, wiki **90e328d**, action **a3d5f1c**.

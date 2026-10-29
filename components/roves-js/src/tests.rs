@@ -7514,6 +7514,57 @@ mod deno_modules {
     }
 
     #[test]
+    fn suspended_static_fetch_does_not_run_queued_game_jobs() {
+        use std::task::Poll;
+
+        struct SuspendedLoader {
+            inner: Rc<MemoryLoader>,
+            polls: Rc<AtomicUsize>,
+        }
+        impl HostModuleLoader for SuspendedLoader {
+            fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
+                self.inner.resolve(specifier, referrer)
+            }
+            fn fetch(&self, url: &str, referrer: Option<&str>, kind: HostModuleKind, dynamic: bool) -> HostModuleFetch {
+                let mut response = self.inner.fetch(url, referrer, kind, dynamic);
+                let polls = self.polls.clone();
+                let mut suspended = false;
+                Box::pin(std::future::poll_fn(move |cx| {
+                    polls.fetch_add(1, Ordering::SeqCst);
+                    if !suspended {
+                        suspended = true;
+                        cx.waker().wake_by_ref();
+                        return Poll::Pending;
+                    }
+                    response.as_mut().poll(cx)
+                }))
+            }
+        }
+        for success in [true, false] {
+            let (mut runtime, inner, wakes) = runtime_with(&[
+                ("static.js", HostModuleKind::JavaScript, "log.push('module');"),
+            ]);
+            let polls = Rc::new(AtomicUsize::new(0));
+            install_host_module_loader(runtime.cx_no_gc(), Rc::new(SuspendedLoader {
+                inner, polls: polls.clone(),
+            }), Arc::new(move || { wakes.fetch_add(1, Ordering::SeqCst); }));
+            eval(&runtime, "Promise.resolve().then(() => log.push('job')); 0");
+            let url = format!("{ORIGIN}{}", if success { "static.js" } else { "missing.js" });
+            let loaded = load_module_graph(runtime.cx(), &url, None);
+            assert!(polls.load(Ordering::SeqCst) >= 2, "the fetch must actually suspend");
+            assert_eq!(log(&runtime), "", "no queued JS may run inside a suspended static load");
+            if success {
+                evaluate_module(runtime.cx(), loaded.expect("static graph loads")).unwrap();
+            } else {
+                assert!(matches!(loaded, Err(ModuleGraphError::Fetch)));
+            }
+            checkpoint(&mut runtime);
+            assert_eq!(log(&runtime), if success { "module,job" } else { "job" },
+                "queued work resumes after either successful or failed static fetch");
+        }
+    }
+
+    #[test]
     fn static_evaluation_keeps_loaded_root_but_game_imports_use_host_mapping() {
         struct RemappedRoot(Rc<MemoryLoader>, String);
         impl HostModuleLoader for RemappedRoot {

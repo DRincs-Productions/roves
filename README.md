@@ -872,3 +872,8 @@ Upstream: [issue37097](https://github.com/denoland/deno/issues/37097),
 116 JITless. Browser coverage now requires23 module checks; integrated CI is still needed.
 CI --build checks propagate Cargo failures, preventing use of a stale cached binary.
 No action inputs, bundle format or privileged game APIs are introduced.
+
+La regressione0430 verifica che un fetch statico sospeso non esegua job JavaScript già
+accodati mentre il runtime è occupato:118 test normali e117 JITless verdi, con controllo
+negativo. Il batch precedente conferma23/23 controlli dei moduli nel browser Servo su
+Linux/Windows normale/JITless. Le prove desktop e la retention complessiva restano aperte.

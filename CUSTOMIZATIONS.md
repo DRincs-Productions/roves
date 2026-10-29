@@ -1,3 +1,19 @@
+## 2026-10-29 - Guard static-load isolation across suspended fetches (0430)
+
+Add a native regression using the existing host-loader interface and standard-library
+poll_fn: a genuinely pending fetch must not run queued game promise jobs while the
+static load exclusively borrows JsRuntime. Cover successful and failed fetches, explicit
+module evaluation, and resumed jobs after returning to the embedder. No production or
+public API change, dependency, custom event loop or timing threshold. A diagnostic-only
+loader override enabling Deno's public pump_event_loop_during_load switch fails exactly
+at the isolation assertion; it is not retained. Restore native source byte-for-byte and
+refresh its timestamp before the positive run to avoid stale incremental artifacts.
+Normal suite118 passed/2 ignored; real JITless117 passed/3 ignored. Patch0430 dry-run,
+application and normalized source equality pass. This proves the adapter contract only,
+not DOM shutdown, real input latency or overall memory release. JSON modulepreload stays
+unavailable: the current public ES-root loading APIs have no requested-type parameter;
+do not revive the rejected untyped side-module shortcut or fork for this optional feature.
+
 ## 2026-10-29 - Adopt the authorized temporary deno_core TLA fix (0428)
 
 The user authorizes minimal library forks for game-blocking defects, upstream issue/PR
