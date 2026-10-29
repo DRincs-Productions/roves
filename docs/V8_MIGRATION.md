@@ -2,35 +2,46 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
-### Stato corrente: 0428 fix TLA autorizzato e 0429 gate build
+### Pubblicato: 0428 correzione Deno e 0429 controllo degli errori di build
 
-**AUTORIZZAZIONE RISOLTA:** l'utente consente fork/patch per problemi che bloccano giochi,
-issue e PR upstream, TODO di ricontrollo. AGENTS aggiornato. Non ripetere la domanda0425.
-Vecchio denoland/deno_core archiviato dopo confluenza; sviluppoattivo in denoland/deno/libs/core.
-Fork BlackRam-oss/deno, commit49a03aaf1ae59c864539c88f510ef0582073826e;
-issue37097 e draftPR37098 pubbliche, PR collegata alla chat. DisclosureAI inclusa.
+Commit Roves **3cee4b8602b**, wiki **90e328d**, action **a3d5f1c**.
+Il batch precedente f240 è terminato positivamente: V8 40849058198,
+generale 40849058225, Android 40849058319. Apple rimane esclusa dal gate.
 
-**0428 completa nei sorgenti, CIbrowser da confermare:** snapshotcrate0.413.0 MIT sotto
-components/roves-js/vendor/deno_core; un'unica condizione esclude grafiasync dal fastpath.
-Override Cargo root e standalone riproducibili, unDeno/unV8150.4; nessuna registry modificata,
-installazione DenoCLI/Chromium o API privilegiata ai giochi. Adaptermod_evaluate originale,
-non il candidato parziale0424. Packaging e provenienza in ROVES_PATCHES.md nello snapshot.
-Native117normal/116JITless verdi, nuova matrice23check browser: ChromeMCP passa il nuovo
-casoTLA; provaServo online necessaria. Corpo nuova regressioneupstream eseguito standalone.
-TODOaggiunto permonitorareissue/PR e rimuovereoverride quando releaseufficialecorretta e
-native/browsergreen. Solo appendTODOstaged; blanklineutente rimaneunstaged.
+Nuovo batch identificato dopo il push:
 
-**0429 completa:** helpercutover --build propagastatusCargo; negativa vecchiogate2fallimenti,
-nuovo gate1test/4casi verde, fixture/validator/gateLinux10verdi. Evita potenziale vecchiobinario
-in cache dopo buildfallita; non invalida senza evidenza le vecchieCI verdi.
-Dettaglio autorevole: docs/handoff/0428-deno-core-upstream-fix.md.
-Patch0428/0429: dry-run e applicazione riusciti,126file identici con LF normalizzati.
-Il batch precedente f240 e concluso verde: V840849058198, generale40849058225, Android40849058319.
-Prossimi: commit/pubblicazione del lavoro completo;
-identificare nuoveCI una volta, correggereeventuali fallimenti e continuare loop. UIWindows
-ancorainattesaunlockesplicito; SourceText0361, pausa e retentioncomplessiva non risolti.
-Le note sotto su consenso ancora pendente e mancataadozione0425 sono STORICHE superate.
+- V8: **40907083551**, in coda al primo controllo.
+- Generale: **40907083508**, in coda al primo controllo.
+- Android: **40907083580**, in esecuzione al primo controllo.
+- iOS: **40907083476**, esclusa dal gate.
 
+Non pubblicare altri commit mentre le verifiche richieste sono attive. Continuare con
+revisioni, sviluppo e commit locali; controllare insieme il batch al termine di una modifica,
+senza polling continuo. Correggere tutti i fallimenti richiesti prima del prossimo push.
+
+L'utente ha autorizzato patch temporanee per difetti delle librerie che bloccano i giochi,
+con segnalazione upstream e TODO di rimozione: non ripetere la domanda 0425.
+Lo snapshot MIT deno_core 0.413.0 applica una sola correzione semantica al fast path dei
+moduli async. Usa il percorso di valutazione Deno esistente, senza un grafo Roves duplicato.
+Override Cargo root e standalone verificati; un solo Deno e V8 150.4.0.
+
+Il vecchio repository denoland/deno_core è archiviato dopo la confluenza nel repository
+attivo denoland/deno, sotto libs/core. [Issue 37097](https://github.com/denoland/deno/issues/37097)
+e [PR in bozza 37098](https://github.com/denoland/deno/pull/37098) sono pubbliche;
+il TODO richiede una release ufficiale corretta e regressioni verdi prima della rimozione.
+
+Prove locali: **117 normali / 116 JITless**, replay delle patch 0428–0429 riuscito e
+**126 file identici** con LF normalizzati. La matrice browser richiede ora 23 controlli:
+Chrome MCP supera il nuovo caso TLA; il risultato integrato Servo resta da confermare in CI.
+Il controllo build ora propaga gli errori Cargo, evitando l'uso di un eseguibile in cache
+dopo una compilazione fallita. Dettagli: [handoff 0428](handoff/0428-deno-core-upstream-fix.md).
+
+**Prossimo lavoro:** verificare il batch pubblicato a un checkpoint motivato e completare
+le prove integrate mancanti. Windows sarà sbloccato più tardi: niente prove di clic reali
+finché resta bloccato. L'utente segnala inoltre un'azione che potrebbe provocare un crash;
+è stata chiesta l'azione precisa e quale applicazione si chiude. Non riprodurla alla cieca.
+SourceText 0361, durata della pausa statica provvisoria e retention complessiva restano aperti.
+Nessun Claude. Conservare ogni modifica esterna a TODO.md; non includerla nei commit del task.
 
 ### Checkpoint precedenti (storico, superato dal punto corrente sopra)
 
