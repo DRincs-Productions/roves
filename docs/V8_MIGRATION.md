@@ -2,6 +2,15 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**0415 completa locale — chiusura con fetch dinamico pendente.** Test nativo lascia
+un vero canale host oneshot in attesa durante import(); dopo drop Runtime la futura e
+rilasciata, ricevitore chiuso e success/failure tardivi non risvegliano il runtime.
+Passa1/1 normal e1/1 con featureJITless, due scenari per esecuzione. Log
+ target/task-0385/pending-fetch-shutdown-{normal,jitless}.log. Patch0415 replay/dry-run
+/fileidenticoLF verdi. Nessuna modifica produzione/dipendenza. Non prova chiusura UI
+Servo durante fetch statico bloccante; quel requisito rimane separato.
+Non pubblicare questo commit durante le run0414 richieste attive. Claude sospeso.
+
 **Pubblicato0414:** rootb1c82b7aa8b, action70e56b5, wiki7e31543.
 Nuove run: V840808835290, generale40808835275, Android40808835246; iOS40808835247
 esclusa. Alla prima lettura V8/generale in coda, Android attiva. Non pushare durante queste run.
@@ -176,7 +185,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0414:
+Scratch Windows gia applicato fino0415:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

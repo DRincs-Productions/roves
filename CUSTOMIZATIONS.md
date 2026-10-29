@@ -1,3 +1,13 @@
+## 2026-10-29 - Verify shutdown with an actual pending network import (0415)
+
+Use the existing Deno host loader and oneshot channel to leave a dynamic import awaiting
+its network reply. Dropping Runtime must drop the host fetch future, close its receiver
+and prevent later success or failure replies from waking the closed runtime. Both variants
+pass the targeted test in normal and compiled JITless modes. No production change, new
+dependency, registry or simulated DOM is needed. Patch dry-run/replay/source equality pass.
+This proves the native Deno/host-future boundary, not graceful Servo window shutdown during
+a blocking static fetch. Preserve that separate test requirement in the migration handoff.
+
 ## 2026-10-29 - Save the published Windows module CI checkpoint
 
 Record rootb1c82b7aa8b/action70e56b5/wiki7e31543 after a green required32d4 batch.

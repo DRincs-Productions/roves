@@ -1,0 +1,60 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index e74bc6b018d..222f7f6c461 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7363,6 +7363,55 @@ mod deno_modules {
+         assert_eq!(log(&runtime), "before,later", "later modules still run");
+     }
+ 
++    #[test]
++    fn shutdown_cancels_pending_network_imports_and_ignores_late_responses() {
++        use std::cell::Cell;
++        type Reply = Result<FetchedModule, String>;
++        struct FetchDrop(Rc<Cell<usize>>);
++        impl Drop for FetchDrop { fn drop(&mut self) { self.0.set(self.0.get() + 1); } }
++        struct PendingLoader {
++            resolver: Rc<MemoryLoader>,
++            senders: Rc<RefCell<Vec<oneshot::Sender<Reply>>>>,
++            dropped: Rc<Cell<usize>>,
++        }
++        impl HostModuleLoader for PendingLoader {
++            fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
++                self.resolver.resolve(specifier, referrer)
++            }
++            fn fetch(&self, _: &str, _: Option<&str>, _: HostModuleKind, _: bool) -> HostModuleFetch {
++                let (sender, receiver) = oneshot::channel();
++                self.senders.borrow_mut().push(sender);
++                let guard = FetchDrop(self.dropped.clone());
++                Box::pin(async move {
++                    let _guard = guard;
++                    receiver.await.unwrap_or_else(|_| Err("cancelled".to_owned()))
++                })
++            }
++        }
++        for success in [true, false] {
++            let (mut runtime, resolver, wakes) = runtime_with(&[]);
++            let senders = Rc::new(RefCell::new(Vec::new()));
++            let dropped = Rc::new(Cell::new(0));
++            let counter = wakes.clone();
++            install_host_module_loader(runtime.cx_no_gc(), Rc::new(PendingLoader {
++                resolver, senders: senders.clone(), dropped: dropped.clone(),
++            }), Arc::new(move || { counter.fetch_add(1, Ordering::SeqCst); }));
++            eval(&runtime, "import('./pending.js').then(() => log.push('loaded'), () => log.push('failed')); 0");
++            assert!(drive(&mut runtime, |_| !senders.borrow().is_empty()), "network fetch did not start");
++            assert_eq!(log(&runtime), "", "pending imports do not resolve early");
++            assert_eq!(dropped.get(), 0);
++            drop(runtime);
++            assert_eq!(dropped.get(), 1, "runtime shutdown drops the host fetch future");
++            let before = wakes.load(Ordering::SeqCst);
++            let reply = if success { Ok(FetchedModule {
++                url: format!("{ORIGIN}pending.js"), kind: HostModuleKind::JavaScript,
++                source: "log.push('late source must not run');".to_owned(),
++            }) } else { Err("late network failure".to_owned()) };
++            assert!(senders.borrow_mut().pop().unwrap().send(reply).is_err(), "the receiver must be closed");
++            assert_eq!(wakes.load(Ordering::SeqCst), before, "late responses cannot wake a closed runtime");
++        }
++    }
++
+     #[test]
+     fn shutdown_with_pending_top_level_await_and_imports_is_clean() {
+         let (mut runtime, _, _) = runtime_with(&[

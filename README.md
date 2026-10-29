@@ -824,3 +824,6 @@ The32d4 required CI batch is green, including Linux module19/19 normal/JITless a
 Windows/Linux bundles. Windows module runtime coverage now reuses the same smoke runner
 in both modes; its new CI execution is pending. Manual shell checks and inline HTML source
 offsets remain open, along with the separate retention/SourceText investigation.
+
+Native shutdown coverage includes pending network imports and late success/failure replies
+in both modes. It does not establish graceful window shutdown during a blocking static fetch.
