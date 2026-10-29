@@ -2,6 +2,15 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**Pubblicato0414:** rootb1c82b7aa8b, action70e56b5, wiki7e31543.
+Nuove run: V840808835290, generale40808835275, Android40808835246; iOS40808835247
+esclusa. Alla prima lettura V8/generale in coda, Android attiva. Non pushare durante queste run.
+Il batch32d4 precedente richiesto e tutto verde; la nuova copertura Windows moduli e
+pubblicata ma attende la propria CI. Nessun WIP, sola modifica TODO utente fuori dai commit.
+Il download locale32d4 e fallito per DNS, senza eseguire quel nuovo binario; provaWindows
+negativa16/19 fatta solo su0aa2. Non confondere queste evidenze. RetryCodex0413 eliminato;
+resta attivo il trigger5ore. Riprendere al prossimo punto utile senza polling continuo.
+
 **29 ottobre: primo batch integrato richiesto tutto verde.** Pubblicato32d4e01e370,
 wikiacb6a50; locale bf2300ccabe era il solo handoff successivo, nessun WIP runtime.
 V840766445604:7job nonApple verdi (runtime Linux/Windows normal/JITless, browser Linux

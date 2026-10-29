@@ -1,3 +1,9 @@
+## 2026-10-29 - Save the published Windows module CI checkpoint
+
+Record rootb1c82b7aa8b/action70e56b5/wiki7e31543 after a green required32d4 batch.
+Windows module verification is newly published, not yet green. Preserve the local DNS
+failure and old-binary negative evidence separately; no runtime WIP or extra quota retry.
+
 ## 2026-10-29 - Run Windows module contracts in normal and JITless CI (0414)
 
 The required32d4 batch is green: Linux module smoke19/19 in both modes, all shared checks,
