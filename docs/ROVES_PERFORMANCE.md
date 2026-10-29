@@ -1,3 +1,11 @@
+## Conferma CI della fixture finale0423
+
+Batchde071: V840842446640 tutti11job verdi, inclusi Linux/Windows normal/JITless con
+fixture22check e validazione startup obbligatoria. Questo conferma la versione finale
+che misura la callback con performance.now; non fornisce qui un nuovo valore numerico o
+una prova visiva/clic. Dati grezzi nel riepilogo dei job, nessuna soglia prestazionale imposta.
+Le note pending del prototipo sotto sono superate da questa confermaCI.
+
 ## 29 ottobre 2026 — binario6992 e avvio statico (0423)
 
 Binario portable Windows CI asset687537401,125045525byte, CRCZIP verificato;

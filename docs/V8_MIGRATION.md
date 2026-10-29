@@ -4,6 +4,15 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**Gate pubblicazione aggiornato:** batchde071 TUTTO VERDE (V811/11, generale13/13,
+Androidverde). Conferma inCI della fixture22check e misura finale callbackclock0423 su
+Linux/Windows normal/JITless, non solo del prototipo. Pronti locali f2e860b812a (0424),
+2164191b076 (proposta0425, non adozione) e56bead1088b (0426); wikif7677af locale.
+Pubblicare questi passi completi e documentazione; patchDeno non viene applicata.
+Decisione temporanea0425 e desktopunlock ancora pendenti. Dopo push registrare nuove run
+una volta e mantenere gate per i successivi; nessun polling continuo.
+
+
 **0426 completa locale:** sorgenti e test mappe usano deno_core::sourcemap pubblico;
 rimosso il pin diretto duplicato9.3.2 e relativi edge lockroot/standalone. Stessa libreria
 transitiva, nessun pacchetto risparmiato o comportamento cambiato. Targeted normal/JITless
