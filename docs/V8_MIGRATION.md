@@ -2,71 +2,53 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
-### Ultima pubblicazione e lavoro successivo
+### Checkpoint verificato: 9f8d1c8a936, passi 0428–0430
 
-Pubblicato **9f8d1c8a936**, wiki **66e15ef**: include0430. Nuovo batch identificato:
-V8 **40915577759**, generale **40915577791**, Android **40915577947**;
-iOS40915577836 esclusa. In coda al primo controllo; nessun nuovo push finché le run
-richieste non sono concluse e gli eventuali errori corretti.
+Wiki **66e15ef**, action **a3d5f1c**. Il batch del commit9f8d1c8a936 è concluso:
 
-0431 completa come analisi documentata: recuperati12 campioni dai log del batch3cee.
-Con ritardo server deliberato250ms, timer/frame mostrano intervalli di circa255–261ms;
-nessuna soglia accettata o prova di input reale. Dataset conservato prima della scadenza
-degli artifact in docs/measurements/0431-static-module-pause.json, dettagli in
-[ROVES_PERFORMANCE.md](ROVES_PERFORMANCE.md). Pausa ancora provvisoria, non punto chiuso.
+- V8 **40915577759**: otto job Linux/Windows verdi, normale e JITless.
+- Generale **40915577791**: dieci job non Apple verdi, inclusi replay patch e pacchetti.
+- Android **40915577947**: tutti e tre i job verdi.
+- macOS/iOS esclusi dal gate per scelta utente; le cancellazioni Apple non sono successi.
 
-### 0430 completata e pubblicata: regressione sui fetch statici sospesi
+Il checkpoint include il fix temporaneo Deno0428, il gate build0429 e la regressione0430.
+Suite native locali: **118 normali / 117 JITless**; negativa0430 fallisce nel punto atteso.
+Browser moduli **23/23** su Linux/Windows normale/JITless confermati nel batch precedente
+3cee4b8602b, e verifiche browser ancora verdi nel batch9f8d. Nessun errore richiesto aperto.
 
-118 test normali e117 JITless verdi; la negativa con pumping del loop durante il fetch
-fallisce nel punto previsto. Nessun cambiamento produttivo o nuova dipendenza.
-Patch0430 verificata; [dettaglio e log](handoff/0430-static-load-job-isolation.md).
-Batch3cee4b8602b concluso positivo per tutte le verifiche richieste: V8 Linux/Windows8/8,
-generale non Apple10/10, Android3/3. Moduli browser23/23 in tutte e quattro le combinazioni.
-Pubblicazione completata, nuovo batch indicato sopra. Nessun Claude.
-L'utente non può sbloccare Windows: continuare senza input desktop. Restano SourceText0361,
-misure della pausa, retention complessiva e prove UI. JSONpreload rimane nel TODO: le API
-pubbliche attuali non espongono il tipo della radice e il workaround scartato resta vietato.
+### 0431 — misure integrate conservate, senza nuovo codice runtime
 
-### Pubblicato: 0428 correzione Deno e 0429 controllo degli errori di build
+Documentazione completa e dataset di12 campioni recuperati dagli artifact3cee prima della
+scadenza, in [ROVES_PERFORMANCE.md](ROVES_PERFORMANCE.md) e
+[0431-static-module-pause.json](measurements/0431-static-module-pause.json).
+Con ritardo server deliberato250ms, timer/frame mostrano intervalli di circa255–261ms.
+Sono campioni singoli headless: nessuna soglia accettata, prova input reale o confronto A/B.
+La pausa statica resta provvisoria. Il batch verde sopra consente di pubblicare questi
+commit documentali completi; identificare una volta eventuali nuove run dopo il push.
 
-Commit Roves **3cee4b8602b**, wiki **90e328d**, action **a3d5f1c**.
-Il batch precedente f240 è terminato positivamente: V8 40849058198,
-generale 40849058225, Android 40849058319. Apple rimane esclusa dal gate.
+### Prossimi punti e vincoli
 
-Nuovo batch identificato dopo il push:
+- SourceText0361 resta aperto: non ripetere il candidato facade0363, che altera il receiver.
+  Leggere docs/handoff/0361-source-text-gap.md solo per un nuovo studio concreto delle API.
+- Retention complessiva non risolta: i test isolati GC/teardown non provano il rilascio DOM.
+- Prove desktop di avvisi/clic/chiusura e input durante fetch sospesi rimangono da eseguire.
+  L'utente non può sbloccare Windows: non richiedere nuovamente lo sblocco né inviare input.
+- JSON modulepreload resta esplicitamente indisponibile. API pubbliche di caricamento ES
+  senza tipo radice; vietato il workaround che rende validi gli import JSON senza type.
+- Nessun Claude. Conservare tutte le modifiche esterne a TODO.md senza aggiungerle ai commit.
 
-- V8: **40907083551**, in coda al primo controllo.
-- Generale: **40907083508**, in coda al primo controllo.
-- Android: **40907083580**, in esecuzione al primo controllo.
-- iOS: **40907083476**, esclusa dal gate.
+L'utente ha autorizzato patch minime per difetti delle librerie che bloccano i giochi,
+issue/PR upstream e TODO di rimozione. Deno0.413.0 MIT: snapshot con una sola correzione
+semantica al fast path async, stesso override root/standalone e un solo V8 150.4.0.
+[Issue37097](https://github.com/denoland/deno/issues/37097) e
+[PR37098](https://github.com/denoland/deno/pull/37098) aperte; PR ancora in bozza, nessun
+commento/revisione al controllo29ottobre17:44UTC. Non dichiarare fix ufficialmente rilasciato.
+Il vecchio denoland/deno_core è archiviato dopo la confluenza in denoland/deno/libs/core,
+che rimane il progetto mantenuto. Dettagli: handoff0428 e handoff0430.
 
-Non pubblicare altri commit mentre le verifiche richieste sono attive. Continuare con
-revisioni, sviluppo e commit locali; controllare insieme il batch al termine di una modifica,
-senza polling continuo. Correggere tutti i fallimenti richiesti prima del prossimo push.
-
-L'utente ha autorizzato patch temporanee per difetti delle librerie che bloccano i giochi,
-con segnalazione upstream e TODO di rimozione: non ripetere la domanda 0425.
-Lo snapshot MIT deno_core 0.413.0 applica una sola correzione semantica al fast path dei
-moduli async. Usa il percorso di valutazione Deno esistente, senza un grafo Roves duplicato.
-Override Cargo root e standalone verificati; un solo Deno e V8 150.4.0.
-
-Il vecchio repository denoland/deno_core è archiviato dopo la confluenza nel repository
-attivo denoland/deno, sotto libs/core. [Issue 37097](https://github.com/denoland/deno/issues/37097)
-e [PR in bozza 37098](https://github.com/denoland/deno/pull/37098) sono pubbliche;
-il TODO richiede una release ufficiale corretta e regressioni verdi prima della rimozione.
-
-Prove locali: **117 normali / 116 JITless**, replay delle patch 0428–0429 riuscito e
-**126 file identici** con LF normalizzati. La matrice browser richiede ora 23 controlli:
-Chrome MCP supera il nuovo caso TLA; il risultato integrato Servo resta da confermare in CI.
-Il controllo build ora propaga gli errori Cargo, evitando l'uso di un eseguibile in cache
-dopo una compilazione fallita. Dettagli: [handoff 0428](handoff/0428-deno-core-upstream-fix.md).
-
-**Prossimo lavoro:** verificare il batch pubblicato a un checkpoint motivato e completare
-le prove integrate mancanti. Windows sarà sbloccato più tardi: niente prove di clic reali
-finché resta bloccato. L'utente segnala inoltre un'azione che potrebbe provocare un crash;
-è stata chiesta l'azione precisa e quale applicazione si chiude. Non riprodurla alla cieca.
-SourceText 0361, durata della pausa statica provvisoria e retention complessiva restano aperti.
-Nessun Claude. Conservare ogni modifica esterna a TODO.md; non includerla nei commit del task.
+La segnalazione di processo terminato non è un crash Roves dimostrato; nessun evento
+ApplicationError1000 nelle sei ore prima del controllo29ottobre17:03 locale. Report kernel
+con vecchi dump non permettono attribuzioni. Non riprodurre alla cieca l'azione sconosciuta.
 
 ### Checkpoint precedenti (storico, superato dal punto corrente sopra)
 

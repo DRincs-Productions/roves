@@ -5,7 +5,9 @@ Record all12 observations and artifact provenance before log expiry, distinguish
 headless execution from document visibility. Slow loopback response intentionally waits
 250ms; observed timer/frame gaps confirm the provisional blocking pause. No new browser
 run, benchmark average, accepted latency threshold or overall performance claim. Keep
-manual input, remote network, shutdown and retention checks open. Documentation/data only;
+manual input, remote network, shutdown and retention checks open. Required0430 CI now
+complete:8 V8,10 general and3 Android jobs green; Apple excluded. Upstream PR remains
+a draft without reviews/comments, not an official released correction. Documentation/data only;
 no production source or Servo overlay change. New0430 batch remains the publication gate.
 
 ## 2026-10-29 - Guard static-load isolation across suspended fetches (0430)
