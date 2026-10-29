@@ -833,3 +833,8 @@ blind native event-loop polling; the new twentieth browser contract awaits its o
 
 Windows V8 browser CI stages the Cargo-built ANGLE DLLs through the same helper as mach
 before launching; a missing EGL/GLES library fails preparation explicitly. No bundle option changes.
+
+Inline HTML diagnostics now use Deno's public source-map fallback and the maintained
+sourcemap codec, preserving document rows and existing embedded maps without rewriting
+JavaScript. Native normal/JITless suites pass; the new required browser check (21 total)
+awaits CI. This does not close the separate retention or manual shell verification work.

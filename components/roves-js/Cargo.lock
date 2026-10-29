@@ -1094,6 +1094,7 @@ dependencies = [
  "roves-v8",
  "rustc-hash 2.1.3",
  "smallvec",
+ "sourcemap",
  "tokio",
  "v8",
 ]

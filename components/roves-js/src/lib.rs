@@ -48,6 +48,7 @@ pub mod rust;
 pub mod modules {
     pub use crate::deno_impl::{
         FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleId,
+        ModuleSourcePosition,
         clear_host_module_loader, evaluate_module, has_host_module_loader, install_host_module_loader,
         load_module_graph, module_namespace, oneshot, poll_module_event_loop,
     };

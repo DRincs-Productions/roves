@@ -584,6 +584,12 @@ fn queue_fetch_reports(
         }));
 }
 
+/// Inline import base and diagnostic location; no source copy or additional DOM roots.
+struct InlineModule {
+    base_url: ServoUrl,
+    source_position: js::modules::ModuleSourcePosition,
+}
+
 /// Servo's half of deno_core's module loading for one global (one per runtime).
 pub(crate) struct ServoModuleLoader {
     global: Trusted<GlobalScope>,
@@ -592,8 +598,8 @@ pub(crate) struct ServoModuleLoader {
     /// The fetch options of each module, by its URL: given by its script for a graph's root,
     /// else derived from its referrer's (HTML's descendant script fetch options).
     options: Rc<RefCell<HashMap<String, ScriptFetchOptions>>>,
-    /// The base URL of each inline module script, by the name it was loaded under.
-    inline_bases: RefCell<HashMap<String, ServoUrl>>,
+    /// Inline metadata by the unique name used in Deno's existing module graph.
+    inline_modules: RefCell<HashMap<String, InlineModule>>,
     /// The root of a module worker's graph and its fetch client's policy container: fetched
     /// same-origin, its response initializes the worker's policies.
     worker_root: RefCell<Option<(String, RequestClient, Referrer)>>,
@@ -621,10 +627,10 @@ impl ServoModuleLoader {
     /// module's base URL, else the referrer's URL) and fetch options.
     fn referencing_script(&self, referrer: &str) -> Option<ModuleScript> {
         let base_url = self
-            .inline_bases
+            .inline_modules
             .borrow()
             .get(referrer)
-            .cloned()
+            .map(|inline| inline.base_url.clone())
             .or_else(|| ServoUrl::parse(referrer).ok())?;
         let options = self
             .options
@@ -652,6 +658,13 @@ fn active_classic_module_script() -> Option<ModuleScript> {
 }
 
 impl HostModuleLoader for ServoModuleLoader {
+    fn source_position(&self, specifier: &str) -> Option<js::modules::ModuleSourcePosition> {
+        self.inline_modules
+            .borrow()
+            .get(specifier)
+            .map(|inline| inline.source_position.clone())
+    }
+
     fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
         let global = self.global.root();
         let classic = active_classic_module_script();
@@ -884,7 +897,7 @@ pub(crate) fn install_module_loader(cx: &JSContext, global: &GlobalScope) {
         global: Trusted::new(global),
         destination: Cell::new(destination),
         options: Default::default(),
-        inline_bases: Default::default(),
+        inline_modules: Default::default(),
         worker_root: Default::default(),
         next_inline: Cell::new(0),
     });
@@ -1104,15 +1117,15 @@ pub(crate) fn fetch_a_modulepreload_module(
 /// <https://html.spec.whatwg.org/multipage/#fetch-an-inline-module-script-graph>
 ///
 /// Roves: deno_core loads the inline source under a unique name derived from `url` (its
-/// fragment replaced), which is also what `import.meta.url` reports; source positions start
-/// at the module's first line.
+/// fragment replaced), which is also what `import.meta.url` reports. Diagnostic source maps
+/// retain the original document URL and HTML line without rewriting the module source.
 pub(crate) fn fetch_inline_module_script(
     cx: &mut JSContext,
     global: &GlobalScope,
     module_script_text: Cow<'_, str>,
     url: ServoUrl,
     options: ScriptFetchOptions,
-    _line_number: u32,
+    line_number: u32,
     _introduction_type: Option<&'static CStr>,
     on_complete: impl FnOnce(&mut JSContext, Option<Rc<ModuleTree>>) + Clone + 'static,
 ) {
@@ -1124,10 +1137,6 @@ pub(crate) fn fetch_inline_module_script(
     loader.next_inline.set(index + 1);
     let base = url.as_str().split('#').next().unwrap_or_default();
     let name = format!("{base}#roves-inline-module-{index}");
-    loader
-        .inline_bases
-        .borrow_mut()
-        .insert(name.clone(), url.clone());
     let source = if global.unminified_js_dir().is_some() {
         let mut module_source = ModuleSource {
             source: module_script_text,
@@ -1140,6 +1149,12 @@ pub(crate) fn fetch_inline_module_script(
     } else {
         module_script_text.into_owned()
     };
+    loader.inline_modules.borrow_mut().insert(name.clone(), InlineModule {
+        base_url: url.clone(),
+        source_position: js::modules::ModuleSourcePosition::new(
+            global.get_url().into_string(), line_number, &source,
+        ),
+    });
     load_graph(global, url, name, Some(source), options, on_complete);
 }
 

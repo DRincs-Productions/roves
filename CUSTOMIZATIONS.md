@@ -1,3 +1,20 @@
+## 2026-10-29 - Map inline module diagnostics back to their HTML document (0419)
+
+Use Deno's public ModuleLoader.get_source_map and the already-transitive BSD3 sourcemap
+9.3.2 crate directly. Keep original document URL, first line and physical line count in
+Servo's existing inline metadata; no source rewrite/copy, duplicate graph or DOM roots.
+Two distinct valid anchors per line preserve columns through the maintained codec, unlike
+the single range anchor rejected in0417. Existing embedded data maps take precedence.
+Import bases and C3 import.meta.url identities remain unchanged. Parser rows are preserved;
+programmatic scripts retain Servo's existing row1, without claiming physical HTML rows.
+Full native115 normal/114 JITless pass (existing2/3ignored), covering all JS line endings,
+coordinates, explicit-map priority, BOM/hashbang and module identity. Disabling the fallback
+reproduces the wrong internal URL/row3 instead of document row44/column14. Browser fixture
+adds a required21st check for parser errors and caught stacks; execution awaits online CI.
+Eight-file incremental patch dry-run/replay and LF-normalized equality pass. Root workspace
+lock metadata is updated alongside the standalone lock, as in the existing overlay workflow.
+No new crate in the graph, fork, privileged API or public game API is introduced.
+
 ## 2026-10-29 - Stage ANGLE before Windows V8 browser execution (0418)
 
 Both newly enabled Windows module jobs fail before JS: egl function was not loaded. Direct

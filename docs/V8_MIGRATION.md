@@ -2,6 +2,38 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+### Punto corrente — 29 ottobre, 0419
+
+Pubblicati root3cd6240e326, actione96945f, wiki1eef3b2: includono0415/0416 e fixANGLE0418.
+Batch attuale V840813495735, generale40813495682, Android40813495710; Apple esclusa.
+Ultimo controllo aggregato: Android verde, quattro runtime Linux/Windows verdi, browser
+Linux normal verde; browserWindows normal/JITless eLinuxJITless e alcuni packaging ancora
+attivi, nessun fallimento. NON pushare durante queste run. I checkpoint sotto sono storico.
+
+0419 completa locale: coordinate HTML dei moduli inline tramite ModuleLoader.get_source_map
+pubblico Deno e sourcemap9.3.2 gia transitiva (ora uso diretto BSD3, nessun nuovo crate nel
+grafo). Metadati URL documento/prima riga/conteggio righe nello stesso registro inline;
+nessuna copia sorgente, parser JS, fork o nuovo root DOM. Base import e import.meta.url C3
+restano distinti dalle coordinate diagnostiche. Non riscrivere/prefissare il sorgente.
+Due ancore distinte per riga (col0 normale/col1 range) superano il difetto della prova0417;
+la vecchia conclusione negativa vale SOLO per l'ancora range unica. Mappe data esplicite
+vincono sul fallback. LF/CRLF/CR/LS/PS, colonne, BOM/hashbang e URL import.meta invariati
+verificati nativamente. Riga0 non genera mappa; Servo fornisce la riga parser o1 per script
+creati da JS, senza pretendere una posizione HTML fisica per questi ultimi.
+
+Suite completa115normal/114JITless verdi (2/3ignored preesistenti). Negativa disabilitando
+il fallback fallisce con URL interno/riga3 anziche documento/riga44/col14. Log in
+ target/task-0419/{full-normal,full-jitless,native-negative}.log. Fixture browser ora21check,
+nuovo controllo HTML parse e stack con riga attesa ricavata dal documento: NON ancora
+confermato browser; build completa online. Node6script validi e un errore intenzionale;
+fixture/gate2/2 verdi. Patch0419 dry-run/replay8/8file identici LF verdi.
+
+Prossimo: CIWindows corretta20/20 e poi nuova verifica21/21, eventuali errori da correggere;
+verifiche UI/clic nativo/chiusura durante fetch statico e TLA, pausa provvisoria, retention
+complessiva/SourceText0361 ancora aperti. Nessun Claude, nessun WIP da pubblicare, TODO
+utente preservato. Continuare sviluppo/commit locali finche il batch impedisce il push.
+
+
 **0418 completa locale — fix preparazione Windows.** Batch0414 ora tutto terminale:
 generale40808835275 tutti10nonApple verdi, Android40808835246 verde, V840808835290
 runtime e Linux browser verdi. Windows normal123234085657/JITless123234085811 falliti

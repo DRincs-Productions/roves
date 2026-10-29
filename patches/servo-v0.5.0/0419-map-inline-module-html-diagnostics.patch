@@ -1,0 +1,339 @@
+diff --git a/components/roves-js/Cargo.lock b/components/roves-js/Cargo.lock
+index edeb69f9c6d..e1622e16e57 100644
+--- a/components/roves-js/Cargo.lock
++++ b/components/roves-js/Cargo.lock
+@@ -1094,6 +1094,7 @@ dependencies = [
+  "roves-v8",
+  "rustc-hash 2.1.3",
+  "smallvec",
++ "sourcemap",
+  "tokio",
+  "v8",
+ ]
+diff --git a/components/roves-js/Cargo.toml b/components/roves-js/Cargo.toml
+index 710bb73f008..de3f20b89cf 100644
+--- a/components/roves-js/Cargo.toml
++++ b/components/roves-js/Cargo.toml
+@@ -23,6 +23,8 @@ v8 = "=150.4.0"
+ # backend, `reactor-tokio` (required by its realm code) and the prebuilt archives' libc++.
+ # No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
+ deno_core = "=0.413.0"
++# Already used by Deno; public source-map generation for inline HTML diagnostics.
++sourcemap = "=9.3.2"
+ # The current-thread reactor deno_core's futures and blocking static module loads run on.
+ tokio = { version = "1", features = ["rt"] }
+ # Used by the conversions ported from mozjs.
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index ac397690b7a..5d75a300501 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -79,13 +79,57 @@ pub type HostModuleFetch = Pin<Box<dyn Future<Output = Result<FetchedModule, Str
+ /// The channel a module fetch receives its network result through.
+ pub use tokio::sync::oneshot;
+ 
++/// Original location of an inline module. Only line metadata is kept; source is unchanged.
++#[derive(Clone)]
++pub struct ModuleSourcePosition {
++    source_url: String,
++    first_line: u32,
++    lines: u32,
++}
++impl ModuleSourcePosition {
++    /// `first_line` is one-based; zero leaves the generated position unchanged.
++    pub fn new(source_url: String, first_line: u32, source: &str) -> Self {
++        let mut lines = 1u32;
++        let mut after_cr = false;
++        for ch in source.chars() {
++            if ch == '\n' && after_cr {
++                after_cr = false;
++                continue;
++            }
++            if matches!(ch, '\r' | '\n' | '\u{2028}' | '\u{2029}') {
++                lines = lines.saturating_add(1);
++            }
++            after_cr = ch == '\r';
++        }
++        Self { source_url, first_line, lines }
++    }
++    fn to_source_map(&self) -> Option<Vec<u8>> {
++        let offset = self.first_line.checked_sub(1)?;
++        let mut builder = sourcemap::SourceMapBuilder::new(None);
++        for line in 0..self.lines {
++            let original = offset.checked_add(line)?;
++            // Distinct valid anchors preserve columns through the maintained range codec.
++            // A column-zero range alone loses later-line columns in sourcemap 9.3.2.
++            builder.add(line, 0, original, 0, Some(&self.source_url), None, false);
++            builder.add(line, 1, original, 1, Some(&self.source_url), None, true);
++        }
++        let mut bytes = Vec::new();
++        builder.into_sourcemap().to_writer(&mut bytes).ok()?;
++        Some(bytes)
++    }
++}
++
+ /// The embedder's module resolution and fetching (HTML's "resolve a module specifier" and
+-/// "fetch a single module script"). Called on the runtime's thread, outside script.
++/// "fetch a single module script"). Called on the runtime's thread; callbacks must not run JS.
+ pub trait HostModuleLoader {
+     /// Resolves `specifier` imported by the script or module named `referrer` (its URL, or the
+     /// name an inline module was loaded under) to an absolute URL, or a TypeError message.
+     fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String>;
+ 
++    /// Optional original inline location. May run during stack formatting: metadata only,
++    /// with no JS entry, network access or DOM rooting.
++    fn source_position(&self, _specifier: &str) -> Option<ModuleSourcePosition> { None }
++
+     /// Starts fetching the module at `url`, imported by `referrer` (none for a graph's root).
+     fn fetch(&self, url: &str, referrer: Option<&str>, kind: HostModuleKind, dynamic_import: bool) -> HostModuleFetch;
+ }
+@@ -151,6 +195,10 @@ fn web_module_url(url: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
+ struct Loader(Rc<LoaderState>);
+ 
+ impl ModuleLoader for Loader {
++    fn get_source_map(&self, file_name: &str) -> Option<std::borrow::Cow<'_, [u8]>> {
++        self.0.host().ok()?.source_position(file_name)?.to_source_map().map(std::borrow::Cow::Owned)
++    }
++
+     fn resolve(&self, specifier: &str, referrer: &str, kind: ResolutionKind) -> ModuleResolveResponse {
+         let result = (|| {
+             if ModuleSpecifier::parse(specifier).is_ok() {
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index eebc2e3f6d2..aca0b9eea56 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -48,6 +48,7 @@ pub mod rust;
+ pub mod modules {
+     pub use crate::deno_impl::{
+         FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleId,
++        ModuleSourcePosition,
+         clear_host_module_loader, evaluate_module, has_host_module_loader, install_host_module_loader,
+         load_module_graph, module_namespace, oneshot, poll_module_event_loop,
+     };
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7ee4b43aab8..25bf083ec56 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7363,6 +7363,57 @@ mod deno_modules {
+         assert_eq!(log(&runtime), "before,later", "later modules still run");
+     }
+ 
++    #[test]
++    fn inline_source_maps_keep_document_rows_columns_and_existing_data_maps() {
++        struct Mapped(Rc<MemoryLoader>, String, ModuleSourcePosition);
++        impl HostModuleLoader for Mapped {
++            fn resolve(&self, s: &str, r: &str) -> Result<String, String> { self.0.resolve(s, r) }
++            fn fetch(&self, u: &str, r: Option<&str>, k: HostModuleKind, d: bool) -> HostModuleFetch { self.0.fetch(u,r,k,d) }
++            fn source_position(&self, u: &str) -> Option<ModuleSourcePosition> { (u == self.1).then(|| self.2.clone()) }
++        }
++        for (index, ending) in ["\n", "\r\n", "\r", "\u{2028}", "\u{2029}"].iter().enumerate() {
++            let (mut runtime, loader, _) = runtime_with(&[]);
++            let url = format!("{ORIGIN}base/index.html#roves-inline-module-{index}");
++            let html = format!("{ORIGIN}document.html");
++            let source = format!("{ending}{ending}export const = ;");
++            let position = ModuleSourcePosition::new(html.clone(), 42, &source);
++            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
++            assert_eq!(load_module_graph(runtime.cx(), &url, Some(source)), Err(ModuleGraphError::Rethrow));
++            let cx = runtime.raw_cx(); rooted!(in(cx) let mut exception = UndefinedValue());
++            let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
++            assert_eq!((info.filename, info.line, info.col), (html, 44, 14), "{ending:?}");
++        }
++        // Programmatic scripts have no physical HTML line: retain the generated URL.
++        // Hashbang/BOM and import.meta.url must remain untouched by diagnostic mapping.
++        for source in ["#!/usr/bin/env js\nlog.push(import.meta.url);", "\u{feff}log.push(import.meta.url);"] {
++            let (mut runtime, loader, _) = runtime_with(&[]);
++            let url = format!("{ORIGIN}inline.html#roves-inline-module-unknown");
++            let position = ModuleSourcePosition::new(format!("{ORIGIN}document.html"), 0, source);
++            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
++            let id = load_module_graph(runtime.cx(), &url, Some(source.to_owned())).unwrap();
++            evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
++            assert_eq!(log(&runtime), url);
++        }
++        for explicit_map in [false, true] {
++            let (mut runtime, loader, _) = runtime_with(&[]);
++            let url = format!("{ORIGIN}inline.html#roves-inline-module-0");
++            let html = format!("{ORIGIN}document.html");
++            let mut source = "try { null.boom } catch(error) { log.push(error.stack); }".to_owned();
++            if explicit_map {
++                let mut builder = sourcemap::SourceMapBuilder::new(None);
++                builder.add(0,0,6,0,Some("https://game.invalid/authored.ts"),None,false);
++                builder.add(0,1,6,1,Some("https://game.invalid/authored.ts"),None,true);
++                source.push_str(&format!("\n//# sourceMappingURL={}\n",builder.into_sourcemap().to_data_url().unwrap()));
++            }
++            let position = ModuleSourcePosition::new(html.clone(), 42, &source);
++            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
++            let id = load_module_graph(runtime.cx(), &url, Some(source)).unwrap();
++            evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
++            let expected = if explicit_map { format!("{ORIGIN}authored.ts:7:") } else { format!("{html}:42:") };
++            assert!(log(&runtime).contains(&expected), "{}",log(&runtime));
++        }
++    }
++
+     #[test]
+     fn cached_dynamic_imports_settle_using_only_host_wake_requests() {
+         let (mut runtime, loader, _) = runtime_with(&[
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index 83f36dbc14c..18965cc1aeb 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -584,6 +584,12 @@ fn queue_fetch_reports(
+         }));
+ }
+ 
++/// Inline import base and diagnostic location; no source copy or additional DOM roots.
++struct InlineModule {
++    base_url: ServoUrl,
++    source_position: js::modules::ModuleSourcePosition,
++}
++
+ /// Servo's half of deno_core's module loading for one global (one per runtime).
+ pub(crate) struct ServoModuleLoader {
+     global: Trusted<GlobalScope>,
+@@ -592,8 +598,8 @@ pub(crate) struct ServoModuleLoader {
+     /// The fetch options of each module, by its URL: given by its script for a graph's root,
+     /// else derived from its referrer's (HTML's descendant script fetch options).
+     options: Rc<RefCell<HashMap<String, ScriptFetchOptions>>>,
+-    /// The base URL of each inline module script, by the name it was loaded under.
+-    inline_bases: RefCell<HashMap<String, ServoUrl>>,
++    /// Inline metadata by the unique name used in Deno's existing module graph.
++    inline_modules: RefCell<HashMap<String, InlineModule>>,
+     /// The root of a module worker's graph and its fetch client's policy container: fetched
+     /// same-origin, its response initializes the worker's policies.
+     worker_root: RefCell<Option<(String, RequestClient, Referrer)>>,
+@@ -621,10 +627,10 @@ impl ServoModuleLoader {
+     /// module's base URL, else the referrer's URL) and fetch options.
+     fn referencing_script(&self, referrer: &str) -> Option<ModuleScript> {
+         let base_url = self
+-            .inline_bases
++            .inline_modules
+             .borrow()
+             .get(referrer)
+-            .cloned()
++            .map(|inline| inline.base_url.clone())
+             .or_else(|| ServoUrl::parse(referrer).ok())?;
+         let options = self
+             .options
+@@ -652,6 +658,13 @@ fn active_classic_module_script() -> Option<ModuleScript> {
+ }
+ 
+ impl HostModuleLoader for ServoModuleLoader {
++    fn source_position(&self, specifier: &str) -> Option<js::modules::ModuleSourcePosition> {
++        self.inline_modules
++            .borrow()
++            .get(specifier)
++            .map(|inline| inline.source_position.clone())
++    }
++
+     fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
+         let global = self.global.root();
+         let classic = active_classic_module_script();
+@@ -884,7 +897,7 @@ pub(crate) fn install_module_loader(cx: &JSContext, global: &GlobalScope) {
+         global: Trusted::new(global),
+         destination: Cell::new(destination),
+         options: Default::default(),
+-        inline_bases: Default::default(),
++        inline_modules: Default::default(),
+         worker_root: Default::default(),
+         next_inline: Cell::new(0),
+     });
+@@ -1104,15 +1117,15 @@ pub(crate) fn fetch_a_modulepreload_module(
+ /// <https://html.spec.whatwg.org/multipage/#fetch-an-inline-module-script-graph>
+ ///
+ /// Roves: deno_core loads the inline source under a unique name derived from `url` (its
+-/// fragment replaced), which is also what `import.meta.url` reports; source positions start
+-/// at the module's first line.
++/// fragment replaced), which is also what `import.meta.url` reports. Diagnostic source maps
++/// retain the original document URL and HTML line without rewriting the module source.
+ pub(crate) fn fetch_inline_module_script(
+     cx: &mut JSContext,
+     global: &GlobalScope,
+     module_script_text: Cow<'_, str>,
+     url: ServoUrl,
+     options: ScriptFetchOptions,
+-    _line_number: u32,
++    line_number: u32,
+     _introduction_type: Option<&'static CStr>,
+     on_complete: impl FnOnce(&mut JSContext, Option<Rc<ModuleTree>>) + Clone + 'static,
+ ) {
+@@ -1124,10 +1137,6 @@ pub(crate) fn fetch_inline_module_script(
+     loader.next_inline.set(index + 1);
+     let base = url.as_str().split('#').next().unwrap_or_default();
+     let name = format!("{base}#roves-inline-module-{index}");
+-    loader
+-        .inline_bases
+-        .borrow_mut()
+-        .insert(name.clone(), url.clone());
+     let source = if global.unminified_js_dir().is_some() {
+         let mut module_source = ModuleSource {
+             source: module_script_text,
+@@ -1140,6 +1149,12 @@ pub(crate) fn fetch_inline_module_script(
+     } else {
+         module_script_text.into_owned()
+     };
++    loader.inline_modules.borrow_mut().insert(name.clone(), InlineModule {
++        base_url: url.clone(),
++        source_position: js::modules::ModuleSourcePosition::new(
++            global.get_url().into_string(), line_number, &source,
++        ),
++    });
+     load_graph(global, url, name, Some(source), options, on_complete);
+ }
+ 
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 1c306905c77..9122c361656 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -23,7 +23,7 @@ WASM_SKIPS = {
+ REQUIRED_CHECKS = {
+     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity'),
++    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
+     "single-document.html": (
+         "reload preserves the live game document",
+         "same-origin assignment preserves the live game document",
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index 3824dd4371f..b1b2d84d38e 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -22,6 +22,22 @@ addEventListener("error", event => {
+ <script type="module" src="single-document-fixtures/evaluation-error.mjs"></script>
+ <script type="module">inlineModuleURLs.push(import.meta.url);</script>
+ <script type="module">inlineModuleURLs.push(import.meta.url);</script>
++<script>
++globalThis.inlineParseLocation = new Promise(resolve => {
++  function listener(event) {
++    if (!(event.error instanceof SyntaxError)) return;
++    event.preventDefault(); removeEventListener("error", listener);
++    resolve({ url: event.filename, line: event.lineno, column: event.colno });
++  }
++  addEventListener("error", listener);
++});
++</script>
++<script type="module">
++export const = ; // roves-inline-parse-location
++</script>
++<script type="module">
++try { null.boom; } catch (error) { globalThis.inlineCaughtStack = error.stack; } // roves-inline-stack-location
++</script>
+ <body><main id="game-root">ready after parsing</main>
+ <script>
+ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+@@ -43,6 +59,18 @@ check("inline module URLs are distinct and preserve the relative asset base", as
+   }
+   return externalModuleURL === new URL("single-document-fixtures/order-b.mjs", document.baseURI).href;
+ });
++check("inline module diagnostics retain document rows and source identity", async () => {
++  await domReady;
++  const source = await (await fetch(location.href)).text();
++  const lines = source.split(/\r\n|[\n\r\u2028\u2029]/);
++  const parseLine = lines.findIndex(line => line.startsWith("export const = ; // roves-inline-parse-location")) + 1;
++  const stackLine = lines.findIndex(line => line.startsWith("try { null.boom; } catch (error)")) + 1;
++  const actual = await inlineParseLocation;
++  const documentURL = new URL(location.href); documentURL.hash = "";
++  return (actual.url === documentURL.href && actual.line === parseLine && actual.column === 14 &&
++    String(inlineCaughtStack).includes(documentURL.href + ":" + stackLine + ":")) ||
++    JSON.stringify({ actual, parseLine, stackLine, stack: inlineCaughtStack });
++});
+ check("classic errors still use error events", () => new Promise(resolve => {
+   function listener(event) {
+     if (!String(event.message).includes("roves-classic-error")) return;

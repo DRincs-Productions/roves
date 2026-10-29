@@ -79,12 +79,56 @@ pub type HostModuleFetch = Pin<Box<dyn Future<Output = Result<FetchedModule, Str
 /// The channel a module fetch receives its network result through.
 pub use tokio::sync::oneshot;
 
+/// Original location of an inline module. Only line metadata is kept; source is unchanged.
+#[derive(Clone)]
+pub struct ModuleSourcePosition {
+    source_url: String,
+    first_line: u32,
+    lines: u32,
+}
+impl ModuleSourcePosition {
+    /// `first_line` is one-based; zero leaves the generated position unchanged.
+    pub fn new(source_url: String, first_line: u32, source: &str) -> Self {
+        let mut lines = 1u32;
+        let mut after_cr = false;
+        for ch in source.chars() {
+            if ch == '\n' && after_cr {
+                after_cr = false;
+                continue;
+            }
+            if matches!(ch, '\r' | '\n' | '\u{2028}' | '\u{2029}') {
+                lines = lines.saturating_add(1);
+            }
+            after_cr = ch == '\r';
+        }
+        Self { source_url, first_line, lines }
+    }
+    fn to_source_map(&self) -> Option<Vec<u8>> {
+        let offset = self.first_line.checked_sub(1)?;
+        let mut builder = sourcemap::SourceMapBuilder::new(None);
+        for line in 0..self.lines {
+            let original = offset.checked_add(line)?;
+            // Distinct valid anchors preserve columns through the maintained range codec.
+            // A column-zero range alone loses later-line columns in sourcemap 9.3.2.
+            builder.add(line, 0, original, 0, Some(&self.source_url), None, false);
+            builder.add(line, 1, original, 1, Some(&self.source_url), None, true);
+        }
+        let mut bytes = Vec::new();
+        builder.into_sourcemap().to_writer(&mut bytes).ok()?;
+        Some(bytes)
+    }
+}
+
 /// The embedder's module resolution and fetching (HTML's "resolve a module specifier" and
-/// "fetch a single module script"). Called on the runtime's thread, outside script.
+/// "fetch a single module script"). Called on the runtime's thread; callbacks must not run JS.
 pub trait HostModuleLoader {
     /// Resolves `specifier` imported by the script or module named `referrer` (its URL, or the
     /// name an inline module was loaded under) to an absolute URL, or a TypeError message.
     fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String>;
+
+    /// Optional original inline location. May run during stack formatting: metadata only,
+    /// with no JS entry, network access or DOM rooting.
+    fn source_position(&self, _specifier: &str) -> Option<ModuleSourcePosition> { None }
 
     /// Starts fetching the module at `url`, imported by `referrer` (none for a graph's root).
     fn fetch(&self, url: &str, referrer: Option<&str>, kind: HostModuleKind, dynamic_import: bool) -> HostModuleFetch;
@@ -151,6 +195,10 @@ fn web_module_url(url: &str) -> Result<ModuleSpecifier, ModuleLoaderError> {
 struct Loader(Rc<LoaderState>);
 
 impl ModuleLoader for Loader {
+    fn get_source_map(&self, file_name: &str) -> Option<std::borrow::Cow<'_, [u8]>> {
+        self.0.host().ok()?.source_position(file_name)?.to_source_map().map(std::borrow::Cow::Owned)
+    }
+
     fn resolve(&self, specifier: &str, referrer: &str, kind: ResolutionKind) -> ModuleResolveResponse {
         let result = (|| {
             if ModuleSpecifier::parse(specifier).is_ok() {

@@ -23,6 +23,8 @@ v8 = "=150.4.0"
 # backend, `reactor-tokio` (required by its realm code) and the prebuilt archives' libc++.
 # No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
 deno_core = "=0.413.0"
+# Already used by Deno; public source-map generation for inline HTML diagnostics.
+sourcemap = "=9.3.2"
 # The current-thread reactor deno_core's futures and blocking static module loads run on.
 tokio = { version = "1", features = ["rt"] }
 # Used by the conversions ported from mozjs.

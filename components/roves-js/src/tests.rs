@@ -7364,6 +7364,57 @@ mod deno_modules {
     }
 
     #[test]
+    fn inline_source_maps_keep_document_rows_columns_and_existing_data_maps() {
+        struct Mapped(Rc<MemoryLoader>, String, ModuleSourcePosition);
+        impl HostModuleLoader for Mapped {
+            fn resolve(&self, s: &str, r: &str) -> Result<String, String> { self.0.resolve(s, r) }
+            fn fetch(&self, u: &str, r: Option<&str>, k: HostModuleKind, d: bool) -> HostModuleFetch { self.0.fetch(u,r,k,d) }
+            fn source_position(&self, u: &str) -> Option<ModuleSourcePosition> { (u == self.1).then(|| self.2.clone()) }
+        }
+        for (index, ending) in ["\n", "\r\n", "\r", "\u{2028}", "\u{2029}"].iter().enumerate() {
+            let (mut runtime, loader, _) = runtime_with(&[]);
+            let url = format!("{ORIGIN}base/index.html#roves-inline-module-{index}");
+            let html = format!("{ORIGIN}document.html");
+            let source = format!("{ending}{ending}export const = ;");
+            let position = ModuleSourcePosition::new(html.clone(), 42, &source);
+            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
+            assert_eq!(load_module_graph(runtime.cx(), &url, Some(source)), Err(ModuleGraphError::Rethrow));
+            let cx = runtime.raw_cx(); rooted!(in(cx) let mut exception = UndefinedValue());
+            let info = crate::rust::error_info_from_exception_stack_safe(runtime.cx(), exception.handle_mut()).unwrap();
+            assert_eq!((info.filename, info.line, info.col), (html, 44, 14), "{ending:?}");
+        }
+        // Programmatic scripts have no physical HTML line: retain the generated URL.
+        // Hashbang/BOM and import.meta.url must remain untouched by diagnostic mapping.
+        for source in ["#!/usr/bin/env js\nlog.push(import.meta.url);", "\u{feff}log.push(import.meta.url);"] {
+            let (mut runtime, loader, _) = runtime_with(&[]);
+            let url = format!("{ORIGIN}inline.html#roves-inline-module-unknown");
+            let position = ModuleSourcePosition::new(format!("{ORIGIN}document.html"), 0, source);
+            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
+            let id = load_module_graph(runtime.cx(), &url, Some(source.to_owned())).unwrap();
+            evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+            assert_eq!(log(&runtime), url);
+        }
+        for explicit_map in [false, true] {
+            let (mut runtime, loader, _) = runtime_with(&[]);
+            let url = format!("{ORIGIN}inline.html#roves-inline-module-0");
+            let html = format!("{ORIGIN}document.html");
+            let mut source = "try { null.boom } catch(error) { log.push(error.stack); }".to_owned();
+            if explicit_map {
+                let mut builder = sourcemap::SourceMapBuilder::new(None);
+                builder.add(0,0,6,0,Some("https://game.invalid/authored.ts"),None,false);
+                builder.add(0,1,6,1,Some("https://game.invalid/authored.ts"),None,true);
+                source.push_str(&format!("\n//# sourceMappingURL={}\n",builder.into_sourcemap().to_data_url().unwrap()));
+            }
+            let position = ModuleSourcePosition::new(html.clone(), 42, &source);
+            install_host_module_loader(runtime.cx_no_gc(), Rc::new(Mapped(loader, url.clone(), position)), Arc::new(|| {}));
+            let id = load_module_graph(runtime.cx(), &url, Some(source)).unwrap();
+            evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+            let expected = if explicit_map { format!("{ORIGIN}authored.ts:7:") } else { format!("{html}:42:") };
+            assert!(log(&runtime).contains(&expected), "{}",log(&runtime));
+        }
+    }
+
+    #[test]
     fn cached_dynamic_imports_settle_using_only_host_wake_requests() {
         let (mut runtime, loader, _) = runtime_with(&[
             ("cached.js", HostModuleKind::JavaScript, "globalThis.executions = (globalThis.executions || 0) + 1; export const value = 42;"),

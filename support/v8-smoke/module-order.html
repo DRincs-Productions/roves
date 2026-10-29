@@ -22,6 +22,22 @@ addEventListener("error", event => {
 <script type="module" src="single-document-fixtures/evaluation-error.mjs"></script>
 <script type="module">inlineModuleURLs.push(import.meta.url);</script>
 <script type="module">inlineModuleURLs.push(import.meta.url);</script>
+<script>
+globalThis.inlineParseLocation = new Promise(resolve => {
+  function listener(event) {
+    if (!(event.error instanceof SyntaxError)) return;
+    event.preventDefault(); removeEventListener("error", listener);
+    resolve({ url: event.filename, line: event.lineno, column: event.colno });
+  }
+  addEventListener("error", listener);
+});
+</script>
+<script type="module">
+export const = ; // roves-inline-parse-location
+</script>
+<script type="module">
+try { null.boom; } catch (error) { globalThis.inlineCaughtStack = error.stack; } // roves-inline-stack-location
+</script>
 <body><main id="game-root">ready after parsing</main>
 <script>
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -42,6 +58,18 @@ check("inline module URLs are distinct and preserve the relative asset base", as
     if (new URL("single-document-fixtures/value.mjs", url).href !== new URL("single-document-fixtures/value.mjs", document.baseURI).href) return "asset base changed";
   }
   return externalModuleURL === new URL("single-document-fixtures/order-b.mjs", document.baseURI).href;
+});
+check("inline module diagnostics retain document rows and source identity", async () => {
+  await domReady;
+  const source = await (await fetch(location.href)).text();
+  const lines = source.split(/\r\n|[\n\r\u2028\u2029]/);
+  const parseLine = lines.findIndex(line => line.startsWith("export const = ; // roves-inline-parse-location")) + 1;
+  const stackLine = lines.findIndex(line => line.startsWith("try { null.boom; } catch (error)")) + 1;
+  const actual = await inlineParseLocation;
+  const documentURL = new URL(location.href); documentURL.hash = "";
+  return (actual.url === documentURL.href && actual.line === parseLine && actual.column === 14 &&
+    String(inlineCaughtStack).includes(documentURL.href + ":" + stackLine + ":")) ||
+    JSON.stringify({ actual, parseLine, stackLine, stack: inlineCaughtStack });
 });
 check("classic errors still use error events", () => new Promise(resolve => {
   function listener(event) {
