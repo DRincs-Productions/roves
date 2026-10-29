@@ -1,0 +1,78 @@
+diff --git a/support/v8-smoke/http_server.py b/support/v8-smoke/http_server.py
+index b4e9719246d..d14b96e4dae 100644
+--- a/support/v8-smoke/http_server.py
++++ b/support/v8-smoke/http_server.py
+@@ -8,6 +8,15 @@ import time
+ from urllib.parse import urlsplit
+ 
+ class Handler(http.server.SimpleHTTPRequestHandler):
++    # Explicit fixture types precede mimetypes' platform/Windows registry database.
++    # Keep the wrong-MIME route below deliberate; do not relax engine MIME validation.
++    extensions_map = {
++        **http.server.SimpleHTTPRequestHandler.extensions_map,
++        ".js": "text/javascript",
++        ".mjs": "text/javascript",
++        ".json": "application/json",
++    }
++
+     def do_GET(self):
+         route = urlsplit(self.path).path
+         if route == "/redirect-module.mjs":
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index e43e8dcb7ec..1806d3b4373 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -98,6 +98,53 @@ class ResultsTests(unittest.TestCase):
+         self.assertTrue(validate('stress.html', f'SUITE SKIP {worker}\nSUITE TOTAL 0/0 (1 skipped)\n'))
+ 
+ 
++class FixtureMimeTests(unittest.TestCase):
++    """The HTTP fixtures must not inherit Windows registry MIME associations."""
++
++    def test_module_json_and_classic_mime_types_override_host_associations(self):
++        import functools
++        import http.client
++        import http.server
++        import mimetypes
++        import threading
++        from unittest.mock import patch
++        from http_server import Handler
++
++        class QuietHandler(Handler):
++            def log_message(self, *args):
++                pass
++
++        # Initialize the platform database before simulating hostile registry entries.
++        mimetypes.init()
++        with tempfile.TemporaryDirectory() as directory:
++            for name in ('entry.mjs', 'classic.js', 'data.json', 'upper.MJS'):
++                Path(directory, name).write_text('{}', encoding='utf-8')
++            handler = functools.partial(QuietHandler, directory=directory)
++            with patch.dict(mimetypes.types_map, {'.mjs': 'text/plain', '.js': 'text/plain', '.json': 'text/plain'}):
++                with http.server.ThreadingHTTPServer(('127.0.0.1', 0), handler) as server:
++                    thread = threading.Thread(target=server.serve_forever, daemon=True)
++                    thread.start()
++                    try:
++                        for path, expected in [('/entry.mjs?cache=1', 'text/javascript'),
++                                               ('/classic.js', 'text/javascript'),
++                                               ('/data.json', 'application/json'),
++                                               ('/upper.MJS', 'text/javascript'),
++                                               ('/wrong-mime-module.mjs', 'text/plain')]:
++                            with self.subTest(path=path):
++                                connection = http.client.HTTPConnection(*server.server_address, timeout=5)
++                                try:
++                                    connection.request('GET', path)
++                                    response = connection.getresponse()
++                                    self.assertEqual(200, response.status)
++                                    self.assertEqual(expected, response.getheader('Content-Type'))
++                                    self.assertTrue(response.read())
++                                finally:
++                                    connection.close()
++                    finally:
++                        server.shutdown()
++                        thread.join(timeout=5)
++
++
+ def page_scripts(page):
+     # Use the standard HTML parser so nonce/type attributes and head/body placement
+     # do not silently hide an inline check from the required-check validator.

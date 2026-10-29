@@ -1,3 +1,18 @@
+## 2026-10-29 - Make smoke fixture MIME types independent of host associations (0420)
+
+Windows now starts after ANGLE staging, but both browser jobs reject ordinary .mjs fixtures
+served as text/plain by Python's Windows MIME database. Override only .js/.mjs/.json in the
+standard SimpleHTTPRequestHandler.extensions_map; preserve the deliberate wrong-MIME route
+and engine security validation. No custom MIME resolver or dependency is introduced.
+A real loopback HTTP regression poisons platform associations: before the fix all four
+normal-file cases fail; after it lowercase/query/uppercase JS and JSON return canonical
+types while the negative route remains text/plain. Windows targeted test passes; Linux
+runner contracts pass49/49 without skips; two-file incremental dry-run/replay is LF-identical.
+The preceding required engine batch is terminal: only these two Windows smoke jobs fail;
+all shared/Linux/packaging/Android checks pass. Action Windows bundle separately hit an
+upstream rcedit download timeout (WinError10060); all its other required jobs pass. The
+next reviewed action documentation push provides one justified transient retry.
+
 ## 2026-10-29 - Map inline module diagnostics back to their HTML document (0419)
 
 Use Deno's public ModuleLoader.get_source_map and the already-transitive BSD3 sourcemap

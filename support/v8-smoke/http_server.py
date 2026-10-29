@@ -8,6 +8,15 @@ import time
 from urllib.parse import urlsplit
 
 class Handler(http.server.SimpleHTTPRequestHandler):
+    # Explicit fixture types precede mimetypes' platform/Windows registry database.
+    # Keep the wrong-MIME route below deliberate; do not relax engine MIME validation.
+    extensions_map = {
+        **http.server.SimpleHTTPRequestHandler.extensions_map,
+        ".js": "text/javascript",
+        ".mjs": "text/javascript",
+        ".json": "application/json",
+    }
+
     def do_GET(self):
         route = urlsplit(self.path).path
         if route == "/redirect-module.mjs":

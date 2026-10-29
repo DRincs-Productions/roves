@@ -2,15 +2,25 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
-### Punto corrente — 29 ottobre, 0419
+### Punto corrente — 29 ottobre, 0420 e 0419
 
 Pubblicati root3cd6240e326, actione96945f, wiki1eef3b2: includono0415/0416 e fixANGLE0418.
 Batch attuale V840813495735, generale40813495682, Android40813495710; Apple esclusa.
-Ultimo controllo aggregato: Android verde, quattro runtime Linux/Windows verdi, browser
-Linux normal verde; browserWindows normal/JITless eLinuxJITless e alcuni packaging ancora
-attivi, nessun fallimento. NON pushare durante queste run. I checkpoint sotto sono storico.
+Batch3cd TUTTO terminale: V8 tutti runtime e browserLinux normal/JITless verdi;
+Windows normal123249064963/JITless123249064968 falliti per MIME .mjs text/plain, non ANGLE.
+Generale tutti10nonApple e Android verdi. 0420 corregge il server fixture con extensions_map
+standard per .js/.mjs/.json: nessun controllo MIME del motore allentato. RegressioneHTTP
+con associazioni host avverse: negativa4fallimenti prima, positivaWindows1/1 dopo,
+wrong-mime continua text/plain. Suite Linux test_runner49/49 verde (nessuno skip),
+log target/task-0419/smoke-contracts-linux.log; patch0420 dry-run/replay2/2file identiciLF.
+Log negativi/positivi MIME nella stessa cartella. Rootb73e95f9bda, wiki425dcc5 e actionaa8ea47
+completi locali prima della pubblicazione coordinata. Prossimo push puo includere il fix e0419 completo dopo
+verifiche/replay. Wiki1eef CI40813488242verde. Actione969 CI40813479605 terminale: solo
+Windows bundle123249034373 fallito per timeout download rcedit2.0.0 WinError10060;
+nessun difetto packaging dimostrato. Un retry motivato con prossimo commit documentale.
+I checkpoint sotto sono storico; nessuna run richiesta precedente ancora attiva.
 
-0419 completa locale: coordinate HTML dei moduli inline tramite ModuleLoader.get_source_map
+0419 completa locale nel commitb73e95f9bda, wikif2387e6 ancora locali: coordinate HTML dei moduli inline tramite ModuleLoader.get_source_map
 pubblico Deno e sourcemap9.3.2 gia transitiva (ora uso diretto BSD3, nessun nuovo crate nel
 grafo). Metadati URL documento/prima riga/conteggio righe nello stesso registro inline;
 nessuna copia sorgente, parser JS, fork o nuovo root DOM. Base import e import.meta.url C3
@@ -28,7 +38,7 @@ nuovo controllo HTML parse e stack con riga attesa ricavata dal documento: NON a
 confermato browser; build completa online. Node6script validi e un errore intenzionale;
 fixture/gate2/2 verdi. Patch0419 dry-run/replay8/8file identici LF verdi.
 
-Prossimo: CIWindows corretta20/20 e poi nuova verifica21/21, eventuali errori da correggere;
+Prossimo: pubblicare0419+0420 completi e confermareWindows/Linux21/21, eventuali errori da correggere;
 verifiche UI/clic nativo/chiusura durante fetch statico e TLA, pausa provvisoria, retention
 complessiva/SourceText0361 ancora aperti. Nessun Claude, nessun WIP da pubblicare, TODO
 utente preservato. Continuare sviluppo/commit locali finche il batch impedisce il push.
@@ -145,8 +155,8 @@ Non dichiarare migrazione completata prima di chiudere i criteri sottostanti.
 
 ### 3. Git, CI e significato dei riferimenti
 
-Il checkpoint corrente iniziale e il riferimento autorevole: pubblicato0aa2a55040e e
-serie locale0410–0412. Controllare Git reale: il commit di questo handoff ha uno SHA nuovo.
+Il riferimento autorevole e il punto corrente in apertura (0420/0419). Il paragrafo
+seguente descrive lo stato storico iniziale0aa2/0410–0412, non il gate attuale.
 Batch precedente6efa terminato: compilazione e runtime verdi, startup browser/bundle
 fallito per Document prima di init, fix0408 pubblicata. Batch0aa2 ancora da concludere;
 pristine replay verde fino0409. Non pushare0410–0412 durante le run richieste attive.
@@ -237,7 +247,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0418 (0417 e analisi senza patch runtime):
+Scratch Windows gia applicato fino0420 (0417 e analisi senza patch runtime):
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
@@ -262,7 +272,8 @@ Non introdurre parser, fork o una semplice aggiunta di righe senza verificare ha
 sourcemap preesistenti, righe/colonne e sorgenti esterne. Nessuna correzione e stata fatta.
 Il panic di avvio e superato dal batch32d4 verde; il difetto diagnostico resta distinto.
 
-Valutazione0417 isolata: sourcemap9.3.2 (gia transitiva Deno, BSD-3-Clause/pure Rust)
+Valutazione0417 isolata, SUPERATA dalla soluzione a due ancore0419 descritta in apertura:
+sourcemap9.3.2 (gia transitiva Deno, BSD-3-Clause/pure Rust)
 con SourceMapBuilder.add(...,is_range=true), una mappatura per riga e offset41. Il
 round-trip to_writer/decode_slice conserva i due casi sulla riga0, ma perde le colonne
 sulle righe successive: attesi(42,7),(43,13),(43,1000), ottenuti(42,0),(43,0),(43,0).
@@ -281,8 +292,8 @@ padding ingenuo o duplicare il grafo per aggirare il limite.
 
 1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
    root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
-2. Batch32d4 verde: pubblicare0414 completa e verificare Windows moduli nei due modi.
-   Identificare nuove run e SHA una volta; continuare sviluppo mentre procedono.
+2. Batch3cd terminale con i due erroriMIME Windows: pubblicare0419 e correzione0420
+   complete. Identificare nuove run e SHA una volta; continuare sviluppo mentre procedono.
 3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
    pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
    senza errori, continuare lavoro utile/commit locali senza push; niente polling continuo.

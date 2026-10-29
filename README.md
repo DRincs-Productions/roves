@@ -838,3 +838,8 @@ Inline HTML diagnostics now use Deno's public source-map fallback and the mainta
 sourcemap codec, preserving document rows and existing embedded maps without rewriting
 JavaScript. Native normal/JITless suites pass; the new required browser check (21 total)
 awaits CI. This does not close the separate retention or manual shell verification work.
+
+The Windows browser jobs now start correctly. Smoke fixture JavaScript/JSON MIME types are
+explicitly defined through Python's standard server extension map, preventing host registry
+associations from serving .mjs as text/plain. The deliberate wrong-MIME rejection remains.
+The actual browser result still awaits corrected CI; Linux and native checks are green.
