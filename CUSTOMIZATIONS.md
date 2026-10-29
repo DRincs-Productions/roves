@@ -1,3 +1,17 @@
+## 2026-10-29 - Verify host release with pending TLA and record a cached-import gap (0424)
+
+Strengthen and accurately rename the shutdown test: prove TLA entered and remains pending,
+keep a Weak control for the host loader, and check release after direct runtime drop or
+explicit idempotent clear followed by drop. Targeted normal/JITless pass, two paths each.
+Keep existing network-import shutdown coverage unchanged. One-file incremental patch dry-run
+and replay match after LF normalization. No production change or dependency.
+The stronger investigation uncovers early import settlement for modules under static TLA,
+reproduced with plain deno_core0.413 public APIs and contrasted with Chrome MCP. A public
+import-based evaluation prototype fixes only roots, fails for descendants and is excluded
+from publishable sources. Document the reproducer and rejected candidate separately; do
+not call this correctness gap resolved or an accepted deviation. Further library-level
+experiments require maintained/public APIs; no production fork or registry patch is added.
+
 ## 2026-10-29 - Observe initial static loading separately from runtime insertion (0423)
 
 Add a delayed initial module with its own cache key to the existing module fixture. Record

@@ -853,3 +853,9 @@ Module smoke coverage now also records initial static loading separately from mo
 inserted at runtime (22 required checks). Validated startup/timer observations are retained
 in CI summaries without a performance threshold. The preceding6992 CI batch is green;
 new startup coverage awaits its own CI. No action input or bundle format changes.
+
+A stricter lifecycle investigation found an outstanding deno_core0.413 correctness gap:
+importing a module already under static top-level await can settle too early, including
+an async descendant. The prior green CI did not cover this case. The partial evaluation
+prototype was rejected; no production fork or workaround is shipped. See the migration
+handoff0424. Host-loader release under pending TLA is independently tested in both modes.

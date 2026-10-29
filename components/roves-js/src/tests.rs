@@ -7514,16 +7514,30 @@ mod deno_modules {
     }
 
     #[test]
-    fn shutdown_with_pending_top_level_await_and_imports_is_clean() {
-        let (mut runtime, _, _) = runtime_with(&[
-            ("forever.js", HostModuleKind::JavaScript, "await new Promise(() => {});"),
-        ]);
-        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}forever.js"), None).unwrap();
-        evaluate_module(runtime.cx(), id).unwrap();
-        eval(&runtime, r#"import("./forever.js"); 0"#);
-        poll_module_event_loop(runtime.cx());
-        drop(runtime);
+    fn shutdown_releases_host_loader_with_pending_top_level_await() {
+        for clear_first in [false, true] {
+            let (mut runtime, loader, _) = runtime_with(&[
+                ("forever.js", HostModuleKind::JavaScript, "globalThis.pendingTlaEntered = true; await new Promise(() => {}); globalThis.pendingTlaCompleted = true;"),
+            ]);
+            let owner = Rc::downgrade(&loader);
+            drop(loader);
+            let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}forever.js"), None).unwrap();
+            evaluate_module(runtime.cx(), id).unwrap();
+            eval(&runtime, r#"import("./forever.js"); 0"#);
+            poll_module_event_loop(runtime.cx()); checkpoint(&mut runtime);
+            assert_eq!(describe(&runtime, eval(&runtime, "pendingTlaEntered === true && typeof pendingTlaCompleted === 'undefined'")), "true", "evaluation remains pending before teardown");
+            assert!(owner.upgrade().is_some(), "the live runtime owns its host loader");
+            if clear_first {
+                clear_host_module_loader(runtime.cx_no_gc());
+                assert!(owner.upgrade().is_none(), "explicit teardown releases the host despite pending TLA");
+                clear_host_module_loader(runtime.cx_no_gc());
+                assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "teardown is idempotent and does not destroy the context");
+            }
+            drop(runtime);
+            assert!(owner.upgrade().is_none(), "runtime shutdown releases the host despite pending TLA");
+        }
     }
+
 }
 
 /// One script context per runtime (task 0385): the first global adopts deno_core's context,

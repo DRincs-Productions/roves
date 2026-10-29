@@ -4,6 +4,25 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**0424 completa locale, NUOVO GAP DI CORRETTEZZA:** test host-release con TLA pendente
+normal/JITless1/1 verdi, due percorsi e controlloWeak; patch0424 dry-run/replay1file
+identicoLF verde. Runtime produzione invariato.
+La ricerca ha riprodotto con deno_core0.413 puro import() risolto PRIMA del TLA statico;
+ChromeMCP mantiene pending e risolve solo dopo release. Candidato viaimportDeno pubblico
+passava116normal/115JITless ma fallisce sui DISCENDENTI: rifiutato e salvato FUORI dai
+sorgenti pubblicabili, deno_impl ripristinato esattamente a de071. Non ripubblicare il WIP.
+Handoff dettagliato docs/handoff/0424-static-tla-cached-import.md e log target/task-0424.
+Questo e un requisito ancora aperto, NON coperto dalla CI verde e non deviazione autorizzata.
+Prossimo studio: fix mantenuto del fast path async, senza fork/registry modificato in
+produzione. Un esperimento separato puo validare una proposta, senza adottarla implicitamente.
+
+Pubblicato de071bab11d, wiki80f036d, action1f1a1bf. Nuove run identificate una volta:
+V840842446640, generale40842446649, Android40842446672, iOS40842446804 esclusa.
+Al primo controllo in coda; non pushare0424 finche il batch richiesto non lo consente.
+Test/probe manuali e server propri solo sotto target/task-0423; desktopbloccato, nessuna
+prova clic/notice/chiusuraUI ottenuta. Domanda sblocco pendente, nessun nuovo inputUI.
+
+
 **29ottobre ripresa dopo reset — 0423 completa locale:** quota ripristinata, eliminato
 ricontrollo una tantum0420 ormai superato; resta trigger5ore, Claude sospeso.
 Batch6992 TUTTO VERDE: V811/11, generale13/13, Androidverde. Nessun bloccoCI al momento.
