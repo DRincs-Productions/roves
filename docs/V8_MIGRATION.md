@@ -4,6 +4,25 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**Pubblicazione confermata:** rootdd653a39bf2, wiki425dcc5, actionaa8ea47. Nuove run:
+V840820698282, generale40820698271, Android40820698291; iOS40820698138 esclusa.
+Action40820675997 e wiki40820672179 attive. Prima lettura: V8/generale in coda,
+Android/action/wiki attive. Nessun ulteriore polling; prossimo controllo al punto utile.
+Nessun nuovo push mentre il batch richiesto e attivo. 0419/0420 sono pubblicate, non WIP.
+I riferimenti a commit locali nelle righe sotto descrivono il momento prima del push.
+
+**Quota verificata05:59circa:** Codex finestra5ore91%usata/9%rimanente, settimanale61%usata;
+reset servizio29ottobre08:40:48 Europe/Rome, ripresa unica autorizzata08:42:48 (reset+2min).
+Conservare il trigger5ore esistente, senza creare altri periodici o duplicare questa ripresa.
+Al risveglio leggere questo punto, Git reale e quota; se disponibile controllare il batch e
+proseguire il loop. Claude resta sospeso. Non usare crediti di reset dell'abbonamento.
+Handoff successivo a dd653 resta commit locale per il gate CI, nessun sorgente incompleto.
+Prossimo concreto: verificare browser21/21 Windows/Linux nei due modi; se rosso leggere i
+log mirati e correggere, con particolare attenzione ai nuovi offsetHTML. Poi verifiche
+nativeUI/clic reale/chiusura pending fetch-TLA e misure pausa; non duplicare testTLA/shutdown
+nativi gia presenti. Retention complessiva/SourceText0361 restano separati aperti.
+
+
 Pubblicati root3cd6240e326, actione96945f, wiki1eef3b2: includono0415/0416 e fixANGLE0418.
 Batch attuale V840813495735, generale40813495682, Android40813495710; Apple esclusa.
 Batch3cd TUTTO terminale: V8 tutti runtime e browserLinux normal/JITless verdi;
