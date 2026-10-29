@@ -16,6 +16,9 @@ Browser fixture adds the real static-root/descendant matrix (23 required checks)
 MCP passes the new case, integrated Servo CI remains required. TODO addition is staged
 separately from the user's existing blank line. AGENTS/workflow/library docs aligned.
 Do not claim overall retention, SourceText or manual desktop checks resolved.
+Published3cee4b8602b; preserve external TODO edits. A reported process termination was
+checked read-only: no Application Error1000 in the prior six hours; queued kernel reports
+include an older dump and do not establish a current Roves crash. Details in handoff0428.
 
 ## 2026-10-29 - Propagate build failure before browser smoke checks (0429)
 

@@ -73,7 +73,7 @@ certamente stale: e un rischio del gate corretto, non un falsoverde osservato in
 
 ## Pubblicazione e seguito
 
-Conservare TODOutente preesistente (blankline non staged): solo nuova sezione fork e staged.
+Conservare le modifiche TODO esterne al task: solo la nuova sezione fork appartiene al commit0428.
 Aggiornare patch Servo applicabili con snapshottesto e license, replay da copia pulita,
 documenti e linkwiki/action. Prima push verificare batch f240 richiesto terminale positivo;
 poi identificare nuove run una volta e continuare loop senza pollingcontinuo. Apple esclusa.
@@ -87,3 +87,12 @@ Patch0428 e0429 applicate dopo dry-run al replay upstream esistente;126 file ugu
 con LF normalizzati, TODO confrontato con indice preservando la riga utente non staged.
 Root Cargo.lock resta metadata del progetto, fuori overlay Servo come nei checkpoint precedenti.
 Una whitespace preesistente nel sorgente upstream unique_arena.rs:50 e conservata nello snapshot.
+
+## Segnalazione di possibile arresto — 29 ottobre, circa 17:03
+
+L'utente ha visto terminare un processo dopo l'ultima operazione, senza identificare
+con certezza applicazione o causa. Ispezione Windows in sola lettura: nessun evento
+Application Error 1000 nelle ultime sei ore; presenti report LiveKernelEvent 1001,
+ma almeno uno allega un dump NDIS del 2025. Non interpretarli come prova di crash
+corrente o attribuirli a Roves/Codex senza ulteriori evidenze. Non riprodurre alla cieca.
+Il push root e terminato normalmente. Nessuna prova desktop aggiuntiva effettuata.
