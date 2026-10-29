@@ -1,3 +1,31 @@
+## 29 ottobre — confronto sorgenti prima/dopo adozione Deno (0427)
+
+Confronto Git reale tra1f0bdebb1e8 (padre del commit introduttivoDeno f8efd5c35ee) e
+f2400510edd. Set dichiarato di sette file runtime/caricamento; righe fisiche incluse righe
+vuote/commenti. Esclude test, binding generati, manifest/lock, CI, documenti e copie patch.
+Non e il totale del prodotto e non separa causalmente Deno da tutti i fix successivi.
+
+| File | Prima | Dopo | Aggiunte diff | Rimosse diff |
+| --- | ---: | ---: | ---: | ---: |
+| components/roves-js/src/modules_impl.rs | 1007 | 0 | 0 | 1007 |
+| components/roves-js/src/deno_impl.rs | 0 | 624 | 624 | 0 |
+| components/roves-js/src/runtime_impl.rs | 1090 | 1082 | 15 | 23 |
+| components/roves-js/src/rust.rs | 895 | 915 | 59 | 39 |
+| components/roves-v8/src/global_proxy.rs | 64 | 0 | 0 | 64 |
+| components/script/script_module.rs | 2263 | 1779 | 647 | 1131 |
+| components/script/module_loading.rs | 595 | 0 | 0 | 595 |
+| Totale del set | 5914 | 4400 | 1345 | 2859 |
+
+Il set ha1514righe fisiche nette in meno. Il vecchio grafo modules_impl e module_loading
+sono rimossi, sostituiti dall'adapter deno_impl e dalla gestione Deno mantenuta esternamente.
+Non tutte le righe precedenti erano originariamente scritte da Roves (script_module include
+Servo): non presentare1514come puro codice nostro eliminato. Il codice della dipendenza
+Deno/V8 resta nel binario e non e incluso qui. Nessuna inferenza su RAM/CPU/GPU o crediti.
+Dataset verificato target/task-0427/code-delta.json, con SHA completi e conteggi per file;
+comando riproducibile git diff --numstat BASE HEAD -- FILE sui sette percorsi in tabella.
+Nuove prove di memoria/avvio A/B non sono state eseguite; restano distinte dal conteggio.
+La proposta Deno0425 non e adottata e non entra in questi conteggi.
+
 ## Conferma CI della fixture finale0423
 
 Batchde071: V840842446640 tutti11job verdi, inclusi Linux/Windows normal/JITless con

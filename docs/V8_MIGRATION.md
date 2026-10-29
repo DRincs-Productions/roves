@@ -4,6 +4,17 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**Pubblicato f2400510edd / wikif7677af**, include0424, proposta0425 NON applicata e0426.
+Batch identificato una volta: V840849058198, generale40849058225, Android40849058319;
+iOS40849058179 esclusa. Al primo controllo Androidverde, V8/generaleattive senza esito.
+Non pushare altri commit mentre richiesteattive. TODO utente unica modifica esterna.
+0427 confronto sorgenti completo: sette percorsi dichiarati tra1f0bdebb1e8 e f240,
+5914->4400righe fisiche (1345aggiunte/2859rimosse). Dettagli/esclusioni in ROVES_PERFORMANCE;
+nessun risparmio RAM/CPU/crediti inferito. Propostaforktemporaneo e unlockWindows ancora
+in attesa di risposta: non procedere sulle parti dipendenti dal consenso/sblocco.
+Nessun Claude, nessun override Deno nella workspace nativa corrente, esperimenti salvati.
+
+
 **Gate pubblicazione aggiornato:** batchde071 TUTTO VERDE (V811/11, generale13/13,
 Androidverde). Conferma inCI della fixture22check e misura finale callbackclock0423 su
 Linux/Windows normal/JITless, non solo del prototipo. Pronti locali f2e860b812a (0424),

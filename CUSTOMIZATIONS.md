@@ -1,3 +1,11 @@
+## 2026-10-29 - Record an explicit-scope runtime source comparison (analysis0427)
+
+Compare the seven named runtime/loading files between1f0bdebb1e8 (before Deno introduction)
+and publishedf2400510edd:5914 to4400 physical lines,1345 added/2859 removed. Document the
+exact paths, commits and exclusions in ROVES_PERFORMANCE. This is not total product code,
+pure Roves-authored code or a RAM/CPU/token saving; intervening fixes also affect the delta.
+No production source change or runtime patch. The unadopted upstream0425 proposal is excluded.
+
 ## 2026-10-29 - Reuse deno_core's public source-map codec re-export (0426)
 
 Use deno_core::sourcemap rather than a separately pinned direct sourcemap dependency.
