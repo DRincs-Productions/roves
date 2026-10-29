@@ -830,3 +830,6 @@ in both modes. It does not establish graceful window shutdown during a blocking 
 
 Cached-import coverage verifies namespace identity and single fetch/evaluation without
 blind native event-loop polling; the new twentieth browser contract awaits its own CI.
+
+Windows V8 browser CI stages the Cargo-built ANGLE DLLs through the same helper as mach
+before launching; a missing EGL/GLES library fails preparation explicitly. No bundle option changes.

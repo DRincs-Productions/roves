@@ -2,6 +2,17 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**0418 completa locale — fix preparazione Windows.** Batch0414 ora tutto terminale:
+generale40808835275 tutti10nonApple verdi, Android40808835246 verde, V840808835290
+runtime e Linux browser verdi. Windows normal123234085657/JITless123234085811 falliti
+PRIMA del JS: egl function was not loaded. Non sono19fallimenti moduli indipendenti.
+Cargo diretto non copiava le DLL ANGLE che mach build prepara. Nuovo helper condiviso
+python/servo/angle_runtime.py riusato dal vecchio build_commands e dalla CI V8; nessun
+algoritmo packaging duplicato, dependency o flag bundle. Mach mantiene warning preesistenti;
+CLI CI fallisce se manca EGL o GLES. Test Windows3/3 (missing EGL/GLES), syntaxPython e
+patch0418 replay/dry-run/4file identiciLF verdi. Positiva browser attesa prossimo batch.
+Log angle-staging-tests.log. Pubblicare la correzione con0415/0416 e analisi0417 completa.
+
 **0416 completa locale:** otto dynamic import da cache, namespace identico, fetch ed
 esecuzione una volta. Il test nativo guida Deno solo su host wake tramite std mpsc, con
 normali checkpointmicrotask, evitando polling che possa mascherare risvegli mancanti.
@@ -194,7 +205,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0416:
+Scratch Windows gia applicato fino0418 (0417 e analisi senza patch runtime):
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

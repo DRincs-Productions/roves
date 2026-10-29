@@ -1,0 +1,144 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index 4de55a8808d..e291e119bff 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -16,6 +16,7 @@ on:
+       - 'ports/servoshell/**'
+       - 'support/task-queue-tests/**'
+       - 'support/v8_cutover_check.py'
++      - 'python/servo/angle_runtime.py'
+       - 'support/v8-smoke/**'
+       - '.github/workflows/v8.yml'
+   workflow_dispatch: {}
+@@ -232,6 +233,9 @@ jobs:
+           sudo apt-get install -y --no-install-recommends xvfb
+           chmod +x support/v8-smoke/run.sh
+           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
++      - name: stage Windows ANGLE runtime dependencies
++        if: runner.os == 'Windows'
++        run: python python/servo/angle_runtime.py target/v8-cutover/debug
+       - name: run Windows module contracts headlessly
+         if: runner.os == 'Windows'
+         shell: bash
+diff --git a/python/servo/build_commands.py b/python/servo/build_commands.py
+index 1a48c0b8987..3bcf2ac859f 100644
+--- a/python/servo/build_commands.py
++++ b/python/servo/build_commands.py
+@@ -27,6 +27,7 @@ from mach.decorators import (
+ )
+ 
+ import servo.platform
++from servo.angle_runtime import copy_built_angle_dlls
+ import servo.platform.macos
+ import servo.util
+ import servo.visual_studio
+@@ -313,18 +314,8 @@ def copy_windows_dlls_to_build_directory(servo_binary: str, target: BuildTarget,
+     build_path = path.join(servo_exe_dir, "build")
+     assert os.path.exists(build_path)
+ 
+-    # Copy in the built EGL and GLES libraries from where they were built to
+-    # the final build dirctory
+-    def find_and_copy_built_dll(dll_name: str) -> None:
+-        try:
+-            file_to_copy = next(pathlib.Path(build_path).rglob(dll_name))
+-            shutil.copy(file_to_copy, servo_exe_dir)
+-        except StopIteration:
+-            print(f"WARNING: could not find {dll_name}")
+-
+-    print(" • Copying ANGLE DLLs to binary directory...")
+-    find_and_copy_built_dll("libEGL.dll")
+-    find_and_copy_built_dll("libGLESv2.dll")
++    # Shared with the direct-Cargo V8 CI path; retain mach's warning-only ANGLE behavior.
++    copy_built_angle_dlls(servo_exe_dir)
+ 
+     if enable_media:
+         print(" • Copying GStreamer DLLs to binary directory...")
+diff --git a/python/servo/angle_runtime.py b/python/servo/angle_runtime.py
+new file mode 100644
+index 00000000000..f0fe7f7256f
+--- /dev/null
++++ b/python/servo/angle_runtime.py
+@@ -0,0 +1,31 @@
++# Copyright 2026 The Servo Project Developers. See the COPYRIGHT file.
++# Licensed under the Apache License, Version 2.0 or the MIT license, at your option.
++"""Stage Cargo-built ANGLE DLLs for Windows browser execution (no build or download)."""
++import argparse
++from pathlib import Path
++import shutil
++
++
++def copy_built_angle_dlls(binary_directory: str | Path) -> bool:
++    destination = Path(binary_directory)
++    build = destination / "build"
++    complete = True
++    print(" • Copying ANGLE DLLs to binary directory...")
++    for name in ("libEGL.dll", "libGLESv2.dll"):
++        source = next(build.rglob(name), None)
++        if source is None:
++            print(f"WARNING: could not find {name}")
++            complete = False
++        else:
++            shutil.copy(source, destination)
++    return complete
++
++
++def main() -> int:
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("binary_directory", type=Path)
++    return 0 if copy_built_angle_dlls(parser.parse_args().binary_directory) else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/support/v8-smoke/test_angle_runtime.py b/support/v8-smoke/test_angle_runtime.py
+new file mode 100644
+index 00000000000..cd73aab6649
+--- /dev/null
++++ b/support/v8-smoke/test_angle_runtime.py
+@@ -0,0 +1,46 @@
++"""Check actual DLL staging and its fail-closed CLI, without loading native libraries."""
++from contextlib import redirect_stdout
++import importlib.util
++import io
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++
++HELPER = Path(__file__).resolve().parents[2] / "python/servo/angle_runtime.py"
++spec = importlib.util.spec_from_file_location("angle_runtime", HELPER)
++module = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(module)
++
++
++class AngleRuntimeTests(unittest.TestCase):
++    def test_stages_both_built_libraries_without_moving_them(self):
++        with tempfile.TemporaryDirectory(prefix="angle runtime ") as directory:
++            root = Path(directory)
++            built = root / "build/angle/out"
++            built.mkdir(parents=True)
++            for name in ("libEGL.dll", "libGLESv2.dll"):
++                (built / name).write_bytes(name.encode())
++            with redirect_stdout(io.StringIO()):
++                self.assertTrue(module.copy_built_angle_dlls(root))
++            for name in ("libEGL.dll", "libGLESv2.dll"):
++                self.assertEqual((root / name).read_bytes(), (built / name).read_bytes())
++            result = subprocess.run([sys.executable, str(HELPER), str(root)], capture_output=True)
++            self.assertEqual(0, result.returncode, result.stderr)
++
++    def test_missing_either_library_fails_the_cli(self):
++        for missing in ("libEGL.dll", "libGLESv2.dll"):
++            with self.subTest(missing=missing), tempfile.TemporaryDirectory() as directory:
++                root = Path(directory)
++                built = root / "build/angle/out"
++                built.mkdir(parents=True)
++                for name in ("libEGL.dll", "libGLESv2.dll"):
++                    if name != missing: (built / name).write_bytes(b"library")
++                result = subprocess.run([sys.executable, str(HELPER), str(root)], capture_output=True, text=True)
++                self.assertEqual(1, result.returncode)
++                self.assertIn(missing, result.stdout)
++
++    def test_absent_build_directory_is_not_success(self):
++        with tempfile.TemporaryDirectory() as directory, redirect_stdout(io.StringIO()):
++            self.assertFalse(module.copy_built_angle_dlls(directory))

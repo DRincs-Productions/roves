@@ -27,6 +27,7 @@ from mach.decorators import (
 )
 
 import servo.platform
+from servo.angle_runtime import copy_built_angle_dlls
 import servo.platform.macos
 import servo.util
 import servo.visual_studio
@@ -313,18 +314,8 @@ def copy_windows_dlls_to_build_directory(servo_binary: str, target: BuildTarget,
     build_path = path.join(servo_exe_dir, "build")
     assert os.path.exists(build_path)
 
-    # Copy in the built EGL and GLES libraries from where they were built to
-    # the final build dirctory
-    def find_and_copy_built_dll(dll_name: str) -> None:
-        try:
-            file_to_copy = next(pathlib.Path(build_path).rglob(dll_name))
-            shutil.copy(file_to_copy, servo_exe_dir)
-        except StopIteration:
-            print(f"WARNING: could not find {dll_name}")
-
-    print(" • Copying ANGLE DLLs to binary directory...")
-    find_and_copy_built_dll("libEGL.dll")
-    find_and_copy_built_dll("libGLESv2.dll")
+    # Shared with the direct-Cargo V8 CI path; retain mach's warning-only ANGLE behavior.
+    copy_built_angle_dlls(servo_exe_dir)
 
     if enable_media:
         print(" • Copying GStreamer DLLs to binary directory...")

@@ -1,3 +1,16 @@
+## 2026-10-29 - Stage ANGLE before Windows V8 browser execution (0418)
+
+Both newly enabled Windows module jobs fail before JS: egl function was not loaded. Direct
+Cargo builds omitted the ANGLE staging already performed by mach build; all Linux/browser,
+packaging, Steam, native and Android checks are green. Extract the existing DLL-copy logic
+into stdlib-only python/servo/angle_runtime.py and reuse it from build_commands.py and V8 CI.
+Keep mach's warning-only behavior; the standalone CI entry point fails if either EGL/GLES
+DLL is missing. Add the helper to V8 workflow path filters. No second packaging algorithm,
+download, dependency or public bundle input. Sync action README/wiki with the CI change.
+Windows filesystem/CLI tests3/3 (both missing-library variants included), Python syntax and
+four-file incremental dry-run/replay equality pass. Browser confirmation remains pending CI.
+The prior required batch is terminal; publish the fix with complete local0415/0416 coverage.
+
 ## 2026-10-29 - Reject the tested inline range-map candidate (analysis0417)
 
 An isolated sourcemap9.3.2 builder/codec probe preserves columns on its first line but loses

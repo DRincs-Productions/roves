@@ -16,6 +16,7 @@ on:
       - 'ports/servoshell/**'
       - 'support/task-queue-tests/**'
       - 'support/v8_cutover_check.py'
+      - 'python/servo/angle_runtime.py'
       - 'support/v8-smoke/**'
       - '.github/workflows/v8.yml'
   workflow_dispatch: {}
@@ -232,6 +233,9 @@ jobs:
           sudo apt-get install -y --no-install-recommends xvfb
           chmod +x support/v8-smoke/run.sh
           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
+      - name: stage Windows ANGLE runtime dependencies
+        if: runner.os == 'Windows'
+        run: python python/servo/angle_runtime.py target/v8-cutover/debug
       - name: run Windows module contracts headlessly
         if: runner.os == 'Windows'
         shell: bash
