@@ -819,3 +819,8 @@ error-owned metadata. The separate inline HTML line offset remains an open diagn
 
 SRI module loading retains body chunks received before metadata; final security checks
 remain mandatory. The correction awaits browser CI confirmation.
+
+The32d4 required CI batch is green, including Linux module19/19 normal/JITless and
+Windows/Linux bundles. Windows module runtime coverage now reuses the same smoke runner
+in both modes; its new CI execution is pending. Manual shell checks and inline HTML source
+offsets remain open, along with the separate retention/SourceText investigation.

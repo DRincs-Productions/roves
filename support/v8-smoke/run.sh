@@ -117,6 +117,13 @@ run_suite() {
   fi
 }
 
+# Windows CI reuses the same real-browser module checks without Unix graphics tooling.
+if [ "${V8_SMOKE_MODULE_ORDER_ONLY:-0}" = 1 ]; then
+  run_suite module-order.html module-order.log 60 "http://127.0.0.1:$HTTP_PORT/module-order.html"
+  echo "::notice::V8 module order smoke:$TOTALS"
+  exit "$STATUS"
+fi
+
 run_suite suite.html suite.log
 run_suite suite2.html suite2.log
 run_suite games.html games.log

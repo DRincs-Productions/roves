@@ -1,0 +1,70 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index 26ed62a6cf5..4de55a8808d 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -93,6 +93,8 @@ jobs:
+           # V8 without its JIT, the console configuration (docs/V8_MIGRATION.md, "JIT-less").
+           - os: ubuntu-24.04
+             mode: jitless
++          - os: windows-latest
++            mode: jitless
+     runs-on: ${{ matrix.os }}
+     timeout-minutes: 180
+     steps:
+@@ -230,8 +232,16 @@ jobs:
+           sudo apt-get install -y --no-install-recommends xvfb
+           chmod +x support/v8-smoke/run.sh
+           support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell" xvfb-run -a --server-args="-screen 0 1280x720x24"
++      - name: run Windows module contracts headlessly
++        if: runner.os == 'Windows'
++        shell: bash
++        env:
++          PYTHON3: python
++          V8_SMOKE_MODE: ${{ matrix.mode }}
++          V8_SMOKE_MODULE_ORDER_ONLY: '1'
++        run: bash support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell.exe"
+       - name: upload per-process V8 runtime logs
+-        if: always() && runner.os == 'Linux'
++        if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
+         uses: actions/upload-artifact@v4
+         with:
+           name: v8-runtime-logs-${{ matrix.os }}-${{ matrix.mode }}
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 906135b53b6..130044cfe6e 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -117,6 +117,13 @@ run_suite() {
+   fi
+ }
+ 
++# Windows CI reuses the same real-browser module checks without Unix graphics tooling.
++if [ "${V8_SMOKE_MODULE_ORDER_ONLY:-0}" = 1 ]; then
++  run_suite module-order.html module-order.log 60 "http://127.0.0.1:$HTTP_PORT/module-order.html"
++  echo "::notice::V8 module order smoke:$TOTALS"
++  exit "$STATUS"
++fi
++
+ run_suite suite.html suite.log
+ run_suite suite2.html suite2.log
+ run_suite games.html games.log
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index d1fe7508a94..e43e8dcb7ec 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -1352,6 +1352,16 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                                    (directory / '.v8-smoke-runtime').glob('*/roves/roves.log')]
+             return result
+ 
++    def test_module_order_only_preserves_the_validation_gate(self):
++        for scenario in ('pass', 'missing:module-order.html'):
++            with self.subTest(scenario=scenario):
++                result = self.run_fixture(scenario, extra_env={'V8_SMOKE_MODULE_ORDER_ONLY': '1'})
++                self.assertEqual(scenario == 'pass', result.returncode == 0, result.stdout + result.stderr)
++                self.assertIn('module-order.html', result.stdout)
++                self.assertNotIn('suite.html', result.stdout)
++                self.assertIsNone(result.gc_args)
++                if scenario != 'pass': self.assertIn('missing required check', result.stdout)
++
+     def test_runtime_logs_survive_fresh_process_restarts(self):
+         result = self.run_fixture('runtime-logs', wrapped=True,
+                                   extra_env={'XDG_CACHE_HOME': '/unused-parent-cache'})

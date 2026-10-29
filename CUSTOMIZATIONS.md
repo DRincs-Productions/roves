@@ -1,3 +1,17 @@
+## 2026-10-29 - Run Windows module contracts in normal and JITless CI (0414)
+
+The required32d4 batch is green: Linux module smoke19/19 in both modes, all shared checks,
+Windows/Linux packaging, Steam and Android. Close the Windows browser coverage gap by
+reusing run.sh with an opt-in module-order-only branch; Python is explicitly selected on
+Windows and the browser matrix adds Windows JITless. Preserve full Linux coverage and
+upload per-process runtime logs on both platforms. No new framework or bundle API.
+Positive/missing-required-check runner cases, Bash syntax and three-file replay pass. Real
+Git Bash execution against the old Windows0aa2 binary reproduces its three known failures,
+16/19; positive current Windows execution awaits CI because local download failed DNS.
+Sync the action README and wiki. Remove the obsolete one-shot Codex quota retry; retain
+the user-authorized five-hour trigger. Retention, inline HTML offsets and manual shell
+checks remain open despite this green integration checkpoint.
+
 ## 2026-10-28 - Save the published0413 CI and quota checkpoint
 
 Publish32d4e01e370/wikiacb6a50 after the required prior batch is terminal and the proven

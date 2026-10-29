@@ -2,76 +2,30 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
-**Pubblicazione finale prima della quota:** root32d4e01e370 e wikiacb6a50 pubblicati.
-Nuovo batch V840766445604, generale40766445574, Android40766445563; iOS40766445619
-esclusa. Alla prima lettura V8/general in coda e Android attiva. Nessun ulteriore push.
-Tutte0410–0413 sono pubblicate; positiva browser dei fix attende questa CI. Nessun WIP
-runtime rimasto; sola riga vuota utente in TODO fuori dai commit. Server/probe locali chiusi.
-QuotaCodex96% usata, reset reale28ottobre23:47:14 Europe/Rome, unico retry23:49:14.
-Al risveglio controllare quota e riprendere l'intero loop, senza Claude o polling.
+**29 ottobre: primo batch integrato richiesto tutto verde.** Pubblicato32d4e01e370,
+wikiacb6a50; locale bf2300ccabe era il solo handoff successivo, nessun WIP runtime.
+V840766445604:7job nonApple verdi (runtime Linux/Windows normal/JITless, browser Linux
+normal/JITless e buildWindows). Entrambi smokeLinux module-order19/19, GC pass e snapshot
+normal valido con controllo conservato. Generale40766445574:10/10nonApple verdi, inclusi
+bundle Windows portable/MSI, Linux portable/deb e Steam. Android40766445563 verde.
+Apple esclusa dal gate. Questo conferma0410–0413 (SRI, classi e coordinate errori), non
+chiude retention globale/SourceText0361 o le verifiche manuali della shell.
 
-**0413 completa: fix dell'unico fallimento SRI.** Batch0aa2 ora tutto terminale:
-generale tutti i10nonApple verdi; Android verde; V8 runtime e buildWindows verdi,
-solo smokeLinux normal/JITless rossi sul SRI. Sourcecollector conservava solo chunk dopo
-metadata; per SRI fetch manda body prima di metadata e veniva perso. Corretto per bufferizzare
-anche con stato ancora ignoto; finish_module_fetch continua a richiedere metadata/EOF validi.
-Negativa riprodotta sul binario Windows CI scaricato (124981837byte), percorso in
- target/task-0385/ci-windows-0aa2-path.txt. Load valido=true, contatore0; mismatch respinto;
-modulo ordinario incrementa. Rust/Node syntax e replay2file0413 verdi. Positiva richiede CI.
-Log ci-0aa2-module-order-runtime.log e ci-windows-0aa2-{sri-probe,isolated}.log.
-Pubblicare0410-0413 e wiki; poi identificare run e sospendere per quotaCodex96% consumata,
-con unico retry al reset reale+2min. Non usare Claude. Al risveglio riprendere tutto il loop.
+**0414 completa locale:** nuova verifica Windows moduli normal/JITless in CI. Riusa
+run.sh con V8_SMOKE_MODULE_ORDER_ONLY=1 e Python configurato esplicitamente; nessun nuovo
+runner/servizio/dependency. Linux conserva suite completa. Artifact log runtime ancheWindows.
+Testgate POSIX positivo/negativo verdi, Bash syntax e replay3file identici LF. Esecuzione
+reale tramite Git Bash sul vecchio binario Windows0aa2 riproduce16/19, precisamente i tre
+errori gia corretti0411–0413: prova che la strada Windows esegue/valida realmente la pagina.
+Il download Windows32d4 e bloccato da DNS locale; nessuna falsa prova positivaWindows19/19.
+Il nuovo job CI deve confermarla. Log windows-module-runner-{gate,negative}.log in target/task-0385.
 
-**Git e CI correnti:** pubblicati root0aa2a55040e, actionb001464, wikifc6cbd1.
-Locali completi0410 root039aa80685b (metriche),0411 rootfb7f2820acd (classi errori)
-e0412 nel commit di questo checkpoint (posizioni errori); wiki locale2f26015.
-La riga vuota utente TODO resta fuori dai commit. Non usare Claude. Il trigger5ore riprende
-il loop completo; nessun polling continuo o implementazioni duplicate.
-
-Batch pubblicato: V840760300642, generale40760300801, Android40760300574;
-iOS40760300584/Apple escluse. Ultimo controllo: runtime Linux/Windows normal/JITless,
-Android, pristine replay e controlli condivisi VERDI; browser e packaging richiesti ATTIVI,
-nessuna rossa. Niente push finche tutti i richiesti terminano e gli errori sono corretti.
-
-**0412 verificata localmente:** il report di un parse error Deno in located.js3:14 prima
-restituiva undefined:0:0 (negativa riprodotta). Ora dati pubblici JsError (frame e formatter)
-sono conservati sull'oggetto errore: posizione in proprieta privata V8, stack originale non
-enumerabile. Nessun registro/root aggiuntivo, parser o grafo duplicato. I report Servo
-PendingExceptionStackInfo/JS_ErrorFromException leggono quei dati; errori classici invariati.
-Suite nativa completa112normal/2ignore e111JITless/3ignore verdi (benchmark, piu Wasm
-in JITless). Browser fixture obbligatoria verifica filename/line3/column14/stack. Helper
-Linux8/8, Node syntax e patch0412 dry-run/replay/confronto6file verdi. Log
-static-location-{negative,all-normal,all-jitless,fixture-checks}.log sotto target/task-0385.
-Non risolve l'offset della riga HTML dei moduli inline ne retention/SourceText0361.
-
-**0411 verificata:** type css veniva ricreato SyntaxError: Uncaught TypeError. Usare
-la conversione pubblica deno_core::error::to_v8_error; NON CoreError::to_v8_error, che in
-0.413 crea sempre TypeError e rompe SyntaxError. Tre combinazioni attributi illegali non
-fanno fetch; JSON tipizzato successivo valido. Contratti moduli12/12 normal e JITless verdi
-prima0412, ora13/13 nella suite completa. Browser TypeError fixture obbligatoria aggiunta.
-
-**0410 verificata:** rapporti JSON cold/warm/slow richiedono durate finite non negative,
-contatori timer/frame interi positivi e visibility valida. Mancanti/duplicati/malformati/
-post-total falliscono; nessuna soglia prestazionale. Chrome DevTools MCP156 su Windows:
-tab attiva visible929x861; avvio headed/headless non verificato. Un run10.9/0.6/261.4ms,
-slow server250ms, con campioni timer/frame continuati. Fixture0410 Chrome14/17 per le tre
-aspettative Deno differenti; non prova le fixture successive. Dati/limiti in
-ROVES_PERFORMANCE.md, log locale chrome-pause-0410.log. Nessuna misura Roves ottenuta.
-
-**Gia pubblicati0407–0409:** log per processo/cold cache e artifact anche su successo;
-loader installato dopo init_document e prima delle interfacce (fix panic comune browser/
-bundle del batch6efa); --hard-fail solo per smoke usa-e-getta. La nuova CI deve confermare
-avvio e contratti browser. Le vecchie CI verdi native non equivalgono a browser funzionante.
-Prossimo: analizzare eventuali nuovi errori CI al termine di un incarico, completarli;
-quando il batch richiesto e terminale e le correzioni complete, pubblicare wiki prima dei
-gitlink root, identificare le run una volta e continuare il loop. Restano policy UI/clic
-reale/chiusura con fetch-TLA pendenti, misure Roves pausa, inline HTML offset e retention.
-
-Leggere questo blocco e AGENTS prima di modificare. Lo storico dopo FINE DEL PUNTO OPERATIVO
-contiene scelte e backup superati; consultarlo solo per un problema concreto.
-Il candidato sorgente adotta Deno e la policy documento unico in un cambiamento atomico.
-La validazione browser/cross-platform NON e ancora conclusa: non dichiarare migrazione o
-retention risolte. Il prossimo passo e la CI completa, seguita dalle correzioni necessarie.
+QuotaCodex ripristinata (1% usata alla ripresa). Eliminato il retry una tantum0413 ormai
+superato; resta solo il trigger5ore autorizzato e lo stopClaude. Nessuna modifica a TODO
+utente. Dopo pubblicazione0414 identificare nuove run una volta e continuare il loop;
+nessun push durante run richieste attive. Prossimi: confermaWindows19/19, offsetHTMLinline,
+verificaUI/clic reale/chiusura pending fetch-TLA. Misure pausa e limiti in ROVES_PERFORMANCE.
+Non dichiarare migrazione completata prima di chiudere i criteri sottostanti.
 
 ### 1. Vincoli e decisioni già approvate: non richiederle di nuovo
 
@@ -213,7 +167,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0413:
+Scratch Windows gia applicato fino0414:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.
@@ -242,7 +196,7 @@ Prima superare il panic di avvio nella CI browser; la raccolta0407 non risolve q
 
 1. Revisionare lo staged set esplicito e preservare la riga utente in TODO. Commit coordinati
    root/wiki/action delle modifiche complete; nessun riferimento gitlink non pubblicato.
-2. Concludere batch0aa2 e correggere i nuovi errori prima del push locale0410–0412.
+2. Batch32d4 verde: pubblicare0414 completa e verificare Windows moduli nei due modi.
    Identificare nuove run e SHA una volta; continuare sviluppo mentre procedono.
 3. Se una run nonApple fallisce: leggere log bounded, correggere causa e ripetere verifiche
    pertinenti; aspettare conclusione altre richieste prima del push successivo. Se attive
@@ -253,7 +207,7 @@ Prima superare il panic di avvio nella CI browser; la raccolta0407 non risolve q
    rendering avviso sviluppo/logs-only bundle, chiusura con fetch/TLA/import pendenti.
 6. Misurare startup e runtime inserimento moduli, freddo/caldo/rete lenta, input/timer/frame,
    errori e chiusura. Usare DevTools MCP per confronto Chrome se disponibile; dichiarare
-   indisponibilita/blocco. Nessun risultato MCP o numero prestazionale e stato ottenuto qui.
+   indisponibilita/blocco. Riferimenti MCP e Roves singoli sono in ROVES_PERFORMANCE; non sono benchmark equivalenti.
 7. Confrontare codice rimosso/aggiunto, avvio/RAM senza promettere risparmi; rivalutare pausa
    e guard no-compilation-cache con dati. Nessun obbligo di attendere preload JSON futuro.
 

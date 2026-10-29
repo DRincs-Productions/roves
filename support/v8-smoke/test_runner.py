@@ -1352,6 +1352,16 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                                    (directory / '.v8-smoke-runtime').glob('*/roves/roves.log')]
             return result
 
+    def test_module_order_only_preserves_the_validation_gate(self):
+        for scenario in ('pass', 'missing:module-order.html'):
+            with self.subTest(scenario=scenario):
+                result = self.run_fixture(scenario, extra_env={'V8_SMOKE_MODULE_ORDER_ONLY': '1'})
+                self.assertEqual(scenario == 'pass', result.returncode == 0, result.stdout + result.stderr)
+                self.assertIn('module-order.html', result.stdout)
+                self.assertNotIn('suite.html', result.stdout)
+                self.assertIsNone(result.gc_args)
+                if scenario != 'pass': self.assertIn('missing required check', result.stdout)
+
     def test_runtime_logs_survive_fresh_process_restarts(self):
         result = self.run_fixture('runtime-logs', wrapped=True,
                                   extra_env={'XDG_CACHE_HOME': '/unused-parent-cache'})
