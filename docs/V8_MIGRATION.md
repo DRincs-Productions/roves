@@ -2,6 +2,15 @@
 
 ## Checkpoint di integrazione del 28 ottobre 2026
 
+**0416 completa locale:** otto dynamic import da cache, namespace identico, fetch ed
+esecuzione una volta. Il test nativo guida Deno solo su host wake tramite std mpsc, con
+normali checkpointmicrotask, evitando polling che possa mascherare risvegli mancanti.
+Passa1/1 normal e1/1 JITless. Fixture browser ora20check con import su turni distinti:
+quello nuovo NON e ancora verificato dalla CI19/19 precedente. Helper2/2 e Node syntax
+verdi, replay3file0416 identici LF. Log cached-import-wakes-{normal,jitless}.log e
+cached-import-fixture-checks.log sotto target/task-0385. Nessuna modifica produzione o
+dipendenza. Conservare i commit0415/0416 locali mentre le run0414 sono attive.
+
 **0415 completa locale — chiusura con fetch dinamico pendente.** Test nativo lascia
 un vero canale host oneshot in attesa durante import(); dopo drop Runtime la futura e
 rilasciata, ricevitore chiuso e success/failure tardivi non risvegliano il runtime.
@@ -185,7 +194,7 @@ NON e un full-tree pristine replay: Cargo.lock root/README/vecchio probe hanno e
 metadata storiche. La CI validate-servo-patches applica l'intera serie da pristine v0.5.0.
 Conservare0403 pubblicata; aggiungere patch incrementali per i successivi cambiamenti.
 0404/0405/0406 superano dry-run/replay e confronto LF con tutti i file correnti.
-Scratch Windows gia applicato fino0415:
+Scratch Windows gia applicato fino0416:
  C:/Users/simon/AppData/Local/Temp/roves-0315-replay-gAXo/w/src
 Non riapplicare il candidato senza controllare lo stato; fare reverse verificato o usare
 nuova copia. Root lock e i lock standalone aggiornati sono controllati separatamente.

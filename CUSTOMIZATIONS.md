@@ -1,3 +1,14 @@
+## 2026-10-29 - Verify cached imports progress without blind runtime polling (0416)
+
+Exercise eight repeated dynamic imports after static loading. The native driver performs
+normal microtask checkpoints and polls Deno only after a host wake arrives through std
+mpsc; it must preserve namespace identity, fetch once and evaluate once. Targeted normal
+and compiled JITless tests pass. Reuse Deno and standard channels; no production code or
+new dependency is needed. Add the corresponding required browser check across timer turns,
+raising module-order coverage to20; its browser execution awaits the next published CI.
+Node syntax, required-check/runner gate2/2 and three-file incremental replay pass. Do not
+claim the current19-check CI run covers the newly added check.
+
 ## 2026-10-29 - Verify shutdown with an actual pending network import (0415)
 
 Use the existing Deno host loader and oneshot channel to leave a dynamic import awaiting

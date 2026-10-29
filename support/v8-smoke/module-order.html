@@ -150,6 +150,15 @@ check("runtime static module loading resumes timers and frames", async () => {
   }
   return true;
 });
+check("cached dynamic imports settle across turns and preserve namespace identity", async () => {
+  const first = await import("./single-document-fixtures/value.mjs");
+  for (let round = 0; round < 8; round++) {
+    await tick();
+    const next = await import("./single-document-fixtures/value.mjs");
+    if (next !== first || next.value !== 42) return "cached namespace changed at round " + round;
+  }
+  return true;
+});
 check("cross-origin modules require a matching CORS response", async () => {
   const allowed = new URL("/cors-module.mjs", location.href); allowed.port = "18766";
   const denied = new URL("/no-cors-module.mjs", allowed);

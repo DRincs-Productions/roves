@@ -7364,6 +7364,30 @@ mod deno_modules {
     }
 
     #[test]
+    fn cached_dynamic_imports_settle_using_only_host_wake_requests() {
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("cached.js", HostModuleKind::JavaScript, "globalThis.executions = (globalThis.executions || 0) + 1; export const value = 42;"),
+        ]);
+        let (sender, receiver) = std::sync::mpsc::channel();
+        install_host_module_loader(runtime.cx_no_gc(), loader.clone(), Arc::new(move || { let _ = sender.send(()); }));
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}cached.js"), None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+        eval(&runtime, "globalThis.namespaces = []; 0");
+        for round in 1..=8 {
+            eval(&runtime, "import('./cached.js').then(m => { namespaces.push(m); log.push(m.value); }); 0");
+            for _ in 0..100 {
+                checkpoint(&mut runtime);
+                if log(&runtime).split(',').filter(|v| !v.is_empty()).count() == round { break; }
+                receiver.recv_timeout(std::time::Duration::from_secs(1)).expect("pending import requested no host wake");
+                poll_module_event_loop(runtime.cx());
+            }
+            assert_eq!(log(&runtime).split(',').count(), round, "cached import did not finish");
+        }
+        assert_eq!(describe(&runtime, eval(&runtime, "executions === 1 && namespaces.every(m => m === namespaces[0] && m.value === 42)")), "true");
+        assert_eq!(loader.fetched.borrow().len(), 1, "cached imports neither fetch nor evaluate again");
+    }
+
+    #[test]
     fn shutdown_cancels_pending_network_imports_and_ignores_late_responses() {
         use std::cell::Cell;
         type Reply = Result<FetchedModule, String>;

@@ -827,3 +827,6 @@ offsets remain open, along with the separate retention/SourceText investigation.
 
 Native shutdown coverage includes pending network imports and late success/failure replies
 in both modes. It does not establish graceful window shutdown during a blocking static fetch.
+
+Cached-import coverage verifies namespace identity and single fetch/evaluation without
+blind native event-loop polling; the new twentieth browser contract awaits its own CI.

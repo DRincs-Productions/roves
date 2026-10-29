@@ -1,0 +1,68 @@
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 222f7f6c461..7ee4b43aab8 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7363,6 +7363,30 @@ mod deno_modules {
+         assert_eq!(log(&runtime), "before,later", "later modules still run");
+     }
+ 
++    #[test]
++    fn cached_dynamic_imports_settle_using_only_host_wake_requests() {
++        let (mut runtime, loader, _) = runtime_with(&[
++            ("cached.js", HostModuleKind::JavaScript, "globalThis.executions = (globalThis.executions || 0) + 1; export const value = 42;"),
++        ]);
++        let (sender, receiver) = std::sync::mpsc::channel();
++        install_host_module_loader(runtime.cx_no_gc(), loader.clone(), Arc::new(move || { let _ = sender.send(()); }));
++        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}cached.js"), None).unwrap();
++        evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
++        eval(&runtime, "globalThis.namespaces = []; 0");
++        for round in 1..=8 {
++            eval(&runtime, "import('./cached.js').then(m => { namespaces.push(m); log.push(m.value); }); 0");
++            for _ in 0..100 {
++                checkpoint(&mut runtime);
++                if log(&runtime).split(',').filter(|v| !v.is_empty()).count() == round { break; }
++                receiver.recv_timeout(std::time::Duration::from_secs(1)).expect("pending import requested no host wake");
++                poll_module_event_loop(runtime.cx());
++            }
++            assert_eq!(log(&runtime).split(',').count(), round, "cached import did not finish");
++        }
++        assert_eq!(describe(&runtime, eval(&runtime, "executions === 1 && namespaces.every(m => m === namespaces[0] && m.value === 42)")), "true");
++        assert_eq!(loader.fetched.borrow().len(), 1, "cached imports neither fetch nor evaluate again");
++    }
++
+     #[test]
+     fn shutdown_cancels_pending_network_imports_and_ignores_late_responses() {
+         use std::cell::Cell;
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 6425830a81d..1c306905c77 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -23,7 +23,7 @@ WASM_SKIPS = {
+ REQUIRED_CHECKS = {
+     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source'),
++    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity'),
+     "single-document.html": (
+         "reload preserves the live game document",
+         "same-origin assignment preserves the live game document",
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index 5d1fd578968..3824dd4371f 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -150,6 +150,15 @@ check("runtime static module loading resumes timers and frames", async () => {
+   }
+   return true;
+ });
++check("cached dynamic imports settle across turns and preserve namespace identity", async () => {
++  const first = await import("./single-document-fixtures/value.mjs");
++  for (let round = 0; round < 8; round++) {
++    await tick();
++    const next = await import("./single-document-fixtures/value.mjs");
++    if (next !== first || next.value !== 42) return "cached namespace changed at round " + round;
++  }
++  return true;
++});
+ check("cross-origin modules require a matching CORS response", async () => {
+   const allowed = new URL("/cors-module.mjs", location.href); allowed.port = "18766";
+   const denied = new URL("/no-cors-module.mjs", allowed);
