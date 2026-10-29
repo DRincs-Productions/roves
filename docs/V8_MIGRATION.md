@@ -4,6 +4,20 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**29ottobre06:31 — batchdd653 TUTTO VERDE.** V840820698282 tutti11job verdi,
+compresi browserLinux/Windows normal/JITless con fixture21check richiesta dal gate;
+generale40820698271 tutti13job verdi (10nonApple), Android40820698291 verde.
+Action40820675997 e wiki40820672179 verdi: il timeout downloadrcedit precedente non si
+ripresenta. Verifica runtimeWindows e correzioniANGLE/MIME/offsetHTML ora confermate dalla
+CI integrata; LinuxGC pass. Apple effettivamente verde in questo batch, ma resta esclusa
+dal gate per la prosecuzione. Nessuna conclusione di retention complessiva risolta.
+Pubblicare bc14/0421/analisi0422 completi e questo handoff; identificare nuove run una volta.
+Quota ultima verifica98%usata/2%rimanente: non ancora esaurita, conservare la ripresa unica
+08:42:48 al reset verificato, senza duplicati. Prossimo blocco utile: prove UI/clic reale,
+chiusura durante fetch/TLA e misure pausa; SourceText0361 distinto e aperto. Le indicazioni
+CI ancora attiva sotto sono checkpoint storici superati da questo esito.
+
+
 **Ultima ripresa richiesta dall'utente:** completo locale0421 commitbecb49de85e dopo
 handoffbc14d949b86; nessun WIP. Secondo controllo CI al termine: Android verde; tutti
 runtime verdi, quattro browserLinux/Windows e packaging ancora attivi senza errori.

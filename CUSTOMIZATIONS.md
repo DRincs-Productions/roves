@@ -1,3 +1,11 @@
+## 2026-10-29 - Confirm the integrated Linux/Windows migration checkpoint
+
+The dd653 V8 batch passes all11 jobs, including Linux/Windows browser module contracts
+in normal/JITless with21 required checks. General13/13, Android, action and wiki also pass.
+Record confirmation of0418 ANGLE staging,0419 inline source positions and0420 fixture MIME
+mapping. Local0421 coverage remains separately tested. No production change or additional
+source patch is introduced; manual UI/shutdown/pauses and overall retention remain open.
+
 ## 2026-10-29 - Distinguish the remaining handler source-text gap from module diagnostics (analysis0422)
 
 Review the current CompileFunction path and the saved0363 receiver-negative proof. Deno's

@@ -843,3 +843,8 @@ The Windows browser jobs now start correctly. Smoke fixture JavaScript/JSON MIME
 explicitly defined through Python's standard server extension map, preventing host registry
 associations from serving .mjs as text/plain. The deliberate wrong-MIME rejection remains.
 The actual browser result still awaits corrected CI; Linux and native checks are green.
+
+The dd653 required CI batch is green, including the 21-check module contract fixture in
+Linux/Windows normal and JITless browser jobs, Android, packaging and patch replay. This
+confirms inline HTML diagnostics and the Windows ANGLE/MIME test infrastructure fixes.
+Manual shell verification, provisional static-load pauses and overall retention remain open.
