@@ -120,6 +120,23 @@ fn tags(log: &Log) -> Vec<usize> {
 }
 
 #[test]
+fn stale_wake_after_pipeline_discard_has_no_task_but_later_control_survives() {
+    let (q, sender) = queue();
+    let log = Log::default();
+    let active = [CLOSED, LIVE].into_iter().collect();
+    q.take_tasks(message(Some(CLOSED), TaskSourceName::Timer, 1, &log, false), &active);
+    q.discard_tasks_for_pipeline(CLOSED);
+    q.select();
+    q.take_tasks(Message::Wake, &active);
+    assert!(q.recv().is_err(), "a stale wake need not carry a runnable task");
+    sender.send(Message::Control(LIVE)).unwrap();
+    let next = q.select().recv().unwrap();
+    q.take_tasks(next, &active);
+    assert!(matches!(q.recv(), Ok(Message::Control(LIVE))));
+    assert_eq!(tags(&log), [1]);
+}
+
+#[test]
 fn discarded_pipeline_releases_inactive_throttled_and_ready_captures_once() {
     let (q, _) = queue();
     let log = Log::default();

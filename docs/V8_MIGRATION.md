@@ -2,6 +2,22 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0437 — chiusura durante fetch statico: correzione locale da verificare
+
+Desktop Windows: reload bloccato con avviso sviluppo, link automatico bloccato e link
+esterno con clic reale aperto nel browser di sistema; stesso documento mantenuto. La
+chiusura con top-level await pendente ha terminato il processo senza panic osservato.
+Con risposta HTTP ritardata5s e chiusura durante il fetch, il binario pubblicato ha
+invece registrato panic Script#1: spurious wake-up in messaging.rs:447, dopo il fetch.
+Log target/task-0437/{tla-close,roves}.log e cache/roves/roves.log. Non dire che e risolto.
+
+Correzione locale: un wake senza task riavvia la selezione, rispettando deadline timer e
+resettando il budget della coda; regression harness coda5/5, sintassi Rust e patch replay
+passati. Il test isolato non copre l'intero loop: occorrono build browser CI e nuova prova
+reale con fetch in corso, errori, TLA e chiusura. Patch0437 presente, nessuna build pesante
+locale. Batch precedente 3f6ae10f720: generale40945534864 e Android40945534919 in corso
+all'ultimo controllo; Apple esclusa. Non pushare finche le run richieste non sono verdi.
+
 ### Punto corrente: prove desktop e correzione delle scene0434
 
 Pubblicato410876e6b7d, wiki e37eb90; batch Android40925904418 concluso3/3verde.

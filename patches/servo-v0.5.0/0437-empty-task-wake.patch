@@ -1,0 +1,95 @@
+diff --git a/components/script/messaging.rs b/components/script/messaging.rs
+index ed93f3ebd11..0eed50b2579 100644
+--- a/components/script/messaging.rs
++++ b/components/script/messaging.rs
+@@ -444,39 +444,46 @@ impl ScriptThreadReceivers {
+             if index == task_index {
+                 let msg = operation.recv(task_recv).unwrap();
+                 task_queue.take_tasks(msg, fully_active);
+-                let event = task_queue.recv().expect(
+-                    "Spurious wake-up of the event-loop, task-queue has no tasks available",
+-                );
+-                MixedMessage::FromScript(event)
++                // A wake can outlive the task it announced, for example when a
++                // pipeline closes while a static module fetch is pending.
++                task_queue.recv().ok().map(MixedMessage::FromScript)
+             } else if index == constellation_index {
+-                MixedMessage::FromConstellation(
++                Some(MixedMessage::FromConstellation(
+                     operation
+                         .recv(&self.constellation_receiver)
+                         .unwrap()
+                         .unwrap(),
+-                )
++                ))
+             } else if index == image_cache_index {
+-                MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap())
++                Some(MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap()))
+             } else {
+                 #[cfg(feature = "webgpu")]
+                 {
+                     debug_assert_eq!(index, webgpu_index);
+-                    MixedMessage::FromWebGPUServer(
++                    Some(MixedMessage::FromWebGPUServer(
+                         operation.recv(&*webgpu_receiver).unwrap().unwrap(),
+-                    )
++                    ))
+                 }
+                 #[cfg(not(feature = "webgpu"))]
+                 unreachable!("select returned an unknown index {index}")
+             }
+         };
+ 
+-        if let Some(deadline) = timer_scheduler.next_deadline() {
+-            select
+-                .select_deadline(deadline)
+-                .map(message_from_operation)
+-                .unwrap_or(MixedMessage::TimerFired)
+-        } else {
+-            message_from_operation(select.select())
++        loop {
++            let message = if let Some(deadline) = timer_scheduler.next_deadline() {
++                match select.select_deadline(deadline) {
++                    Ok(operation) => message_from_operation(operation),
++                    Err(_) => return MixedMessage::TimerFired,
++                }
++            } else {
++                message_from_operation(select.select())
++            };
++            if let Some(message) = message {
++                return message;
++            }
++            // A new selection is a new queue iteration; reset its throttling
++            // budget so held-back work can make progress after an empty wake.
++            task_queue.select();
+         }
+     }
+ 
+diff --git a/support/task-queue-tests/tests.rs b/support/task-queue-tests/tests.rs
+index d59247ea6be..0a39c37d3c3 100644
+--- a/support/task-queue-tests/tests.rs
++++ b/support/task-queue-tests/tests.rs
+@@ -119,6 +119,23 @@ fn tags(log: &Log) -> Vec<usize> {
+     tags
+ }
+ 
++#[test]
++fn stale_wake_after_pipeline_discard_has_no_task_but_later_control_survives() {
++    let (q, sender) = queue();
++    let log = Log::default();
++    let active = [CLOSED, LIVE].into_iter().collect();
++    q.take_tasks(message(Some(CLOSED), TaskSourceName::Timer, 1, &log, false), &active);
++    q.discard_tasks_for_pipeline(CLOSED);
++    q.select();
++    q.take_tasks(Message::Wake, &active);
++    assert!(q.recv().is_err(), "a stale wake need not carry a runnable task");
++    sender.send(Message::Control(LIVE)).unwrap();
++    let next = q.select().recv().unwrap();
++    q.take_tasks(next, &active);
++    assert!(matches!(q.recv(), Ok(Message::Control(LIVE))));
++    assert_eq!(tags(&log), [1]);
++}
++
+ #[test]
+ fn discarded_pipeline_releases_inactive_throttled_and_ready_captures_once() {
+     let (q, _) = queue();

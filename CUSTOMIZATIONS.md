@@ -1,3 +1,15 @@
+## 2026-10-29 - Handle empty main-thread task wakes after shutdown (0437)
+
+On Windows a real window close during a five-second static module fetch reproduced a
+Script thread panic at messaging.rs:447 after fetch completion. A selected task wake can
+have no runnable task after its pipeline is discarded. Resume selection instead of
+panicking, retaining timer deadlines and resetting the task queue iteration budget so
+throttled work can advance. A queue contract regression covers an empty stale wake and
+a later live control message;5 tests pass locally. Rust syntax and overlay replay pass.
+The test does not exercise the complete ScriptThreadReceivers loop: browser build, CI,
+and a repeat of the real shutdown scenario on the fixed binary remain mandatory.
+No heavy local build; do not claim the runtime crash resolved until verified.
+
 ## 2026-10-29 - Route diagnostic fixtures inside the game document (0434)
 
 The performance-menu anchors navigated to a new query URL, correctly blocked by the

@@ -444,39 +444,46 @@ impl ScriptThreadReceivers {
             if index == task_index {
                 let msg = operation.recv(task_recv).unwrap();
                 task_queue.take_tasks(msg, fully_active);
-                let event = task_queue.recv().expect(
-                    "Spurious wake-up of the event-loop, task-queue has no tasks available",
-                );
-                MixedMessage::FromScript(event)
+                // A wake can outlive the task it announced, for example when a
+                // pipeline closes while a static module fetch is pending.
+                task_queue.recv().ok().map(MixedMessage::FromScript)
             } else if index == constellation_index {
-                MixedMessage::FromConstellation(
+                Some(MixedMessage::FromConstellation(
                     operation
                         .recv(&self.constellation_receiver)
                         .unwrap()
                         .unwrap(),
-                )
+                ))
             } else if index == image_cache_index {
-                MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap())
+                Some(MixedMessage::FromImageCache(operation.recv(&self.image_cache_receiver).unwrap()))
             } else {
                 #[cfg(feature = "webgpu")]
                 {
                     debug_assert_eq!(index, webgpu_index);
-                    MixedMessage::FromWebGPUServer(
+                    Some(MixedMessage::FromWebGPUServer(
                         operation.recv(&*webgpu_receiver).unwrap().unwrap(),
-                    )
+                    ))
                 }
                 #[cfg(not(feature = "webgpu"))]
                 unreachable!("select returned an unknown index {index}")
             }
         };
 
-        if let Some(deadline) = timer_scheduler.next_deadline() {
-            select
-                .select_deadline(deadline)
-                .map(message_from_operation)
-                .unwrap_or(MixedMessage::TimerFired)
-        } else {
-            message_from_operation(select.select())
+        loop {
+            let message = if let Some(deadline) = timer_scheduler.next_deadline() {
+                match select.select_deadline(deadline) {
+                    Ok(operation) => message_from_operation(operation),
+                    Err(_) => return MixedMessage::TimerFired,
+                }
+            } else {
+                message_from_operation(select.select())
+            };
+            if let Some(message) = message {
+                return message;
+            }
+            // A new selection is a new queue iteration; reset its throttling
+            // budget so held-back work can make progress after an empty wake.
+            task_queue.select();
         }
     }
 
