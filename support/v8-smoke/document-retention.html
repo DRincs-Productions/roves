@@ -31,14 +31,18 @@ async function main() {
   if (!api) throw new Error("TestUtils.gc unavailable");
   const control = document.getElementById("kept");
   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true };
-  const refs = createAndRemoveNode();
+  // Repeated cycles exercise listener/closure teardown beyond a single lucky GC.
+  const refs = Array.from({ length: 32 }, createAndRemoveNode);
   await nextTask();
   for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
   report("collections complete", String(COLLECTIONS));
   await nextTask();
   if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe.retained) throw new Error("retained control lost");
   report("retained control", "true");
-  report("diagnostic released element", String(refs.element.deref() === undefined), "probe", String(refs.probe.deref() === undefined));
+  const elementsReleased = refs.filter(ref => ref.element.deref() === undefined).length;
+  const probesReleased = refs.filter(ref => ref.probe.deref() === undefined).length;
+  report("diagnostic released element", String(elementsReleased === refs.length), "probe", String(probesReleased === refs.length));
+  report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", refs.length);
 }
 main().catch(error => fail("exception " + error.name + " " + error.message))
   .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));

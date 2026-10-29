@@ -2,6 +2,16 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0438 — ampliamento della prova di memoria, locale
+
+La scena document-retention ora crea/rimuove32 cicli DOM con listener e probe, conserva
+il controllo connesso e riporta conteggi raccolti dopo8GC. Sintassi JS e replay patch0438
+verificati. I risultati runtime devono ancora arrivare dalla CI: non chiudere memoria.
+0437 resta il fix locale del panic da verificare su browser compilato; il batch precedente
+3f6ae10f720 ha Android verde e packaging/Steam ancora attivi senza errori al controllo.
+Nessun push durante quelle run. Le prove di pausa su giochi reali e modalita bundle
+rimangono da completare. SourceText, JSONpreload e compatibilita generale anchor nel TODO.
+
 ### 0437 — chiusura durante fetch statico: correzione locale da verificare
 
 Desktop Windows: reload bloccato con avviso sviluppo, link automatico bloccato e link

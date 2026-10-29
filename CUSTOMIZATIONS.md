@@ -1,3 +1,13 @@
+## 2026-10-29 - Exercise repeated detached DOM/listener cycles (0438)
+
+Expand the existing single-document retention scene from one removed div/probe/listener
+cycle to32 cycles before eight explicit collections. Preserve the connected positive
+control and report exact released element/probe counts as well as the existing all-released
+diagnostic. Reuse native WeakRef/GC and the existing CI snapshot path; no dependency or
+production GC change. JavaScript syntax, patch dry-run/application and source equality pass.
+Runtime counts await integrated CI; collection remains diagnostic rather than a universal
+leak-free guarantee. This is not a measured memory plateau or a completed retention audit.
+
 ## 2026-10-29 - Handle empty main-thread task wakes after shutdown (0437)
 
 On Windows a real window close during a five-second static module fetch reproduced a
