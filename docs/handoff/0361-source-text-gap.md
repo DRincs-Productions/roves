@@ -1,5 +1,25 @@
 # 0361 — lacuna sourceText e punto di ripresa
 
+## Riesame corrente 29 ottobre 2026 (analisi0422)
+
+Il punto autorevole Git/CI/quota e docs/V8_MIGRATION.md. Blocchi disco/CI/quote sotto
+sono storico del26ottobre: non applicarli al checkout attuale. Al riesame sono disponibili
+circa8.95GiB suC:, non81MiB. Non ripetere cleanup o ricostruzioni sulla base di quelle note.
+
+Deno possiede il grafo moduli, ma gli handler HTML chiamano ancora script_impl::CompileFunction
+(components/roves-js/src/script_impl.rs): compile_function senza extension per validare il
+corpo; catena non vuota -> outer with + inner function anonima; set_name finale. Il port
+Deno e le mappe inline0419 NON sostituiscono questo percorso e non chiudono0361.
+La prova facade0363 e gia eseguita: normal-review.log registra testverde che dimostra il
+receiver errato della chiamata nuda, NON una soluzione pronta. Non ripeterla come candidato
+nuovo e non pubblicare il test sperimentale come prova di conformita risolta.
+
+Resta necessario uno studio circoscritto delle API pubbliche V8 e dei reflector reali,
+con identita del receiver e tutti i contratti preservati prima di modificare produzione.
+Nessuna nuova via dimostrata da questo riesame; nessun workaround toString/nome sintattico,
+fork o duplicazione Deno introdotto. Nessuna implementazione parziale lasciata nei sorgenti.
+
+
 Nessuna modifica di produzione. I test sperimentali sono fuori dai sorgenti pubblicabili:
 `target/task-0361/incomplete-source-text-tests.patch`,4041byte,
 SHA256167cf52d7c3a555c6a1f10b5bb7d143e0d33c1b58ffd027dbbae149f67e4ff86.

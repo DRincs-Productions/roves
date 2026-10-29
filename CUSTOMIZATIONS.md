@@ -1,3 +1,14 @@
+## 2026-10-29 - Distinguish the remaining handler source-text gap from module diagnostics (analysis0422)
+
+Review the current CompileFunction path and the saved0363 receiver-negative proof. Deno's
+module graph and0419 inline maps do not replace HTML handler compilation; the anonymous
+inner function for scoped handlers remains the separate0361 conformity gap. Mark stale
+resource/CI notes in its handoff as historical (current free disk approximately8.95GiB),
+so a resumed agent does not repeat cleanup or the rejected facade experiment. No new
+production solution or source change is claimed; this documentation review needs no
+runtime patch. The next candidate must preserve actual DOM receiver identity through
+public maintained V8 APIs before production changes.
+
 ## 2026-10-29 - Verify UTF-16 inline columns and unknown source positions (0421)
 
 Extend the existing public-loader source-map regression with an astral character before

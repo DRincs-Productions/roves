@@ -4,6 +4,20 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**Ultima ripresa richiesta dall'utente:** completo locale0421 commitbecb49de85e dopo
+handoffbc14d949b86; nessun WIP. Secondo controllo CI al termine: Android verde; tutti
+runtime verdi, quattro browserLinux/Windows e packaging ancora attivi senza errori.
+NON pushare bc14/0421/documentazione finche il batchdd653 non consente la pubblicazione.
+Quota verificata alla chiusura di questo intervento96%usata/4%rimanente, settimanale62%usata;
+reset invariato08:40:48 e tentativo unico08:42:48 gia attivo, non crearne un secondo.
+Analisi0422 distingue gli handler SourceText0361 dai moduli Deno: percorsoCompileFunction
+ancora invariato; facade0363 gia provata ma receivererrato, nessun nuovo fix di produzione.
+Aggiornato docs/handoff/0361-source-text-gap.md per evitare uso di vecchi blocchi disco/CI.
+Alla ripresa verificare prima CI21check/quote, poi prossima prova concreta; non ripetere
+studi/prove negativi senza un nuovo candidato mantenuto. TODO utente ancora unica modifica
+esterna ai commit. Nessun Claude. Nessuna nuova run e stata avviata durante questo turno.
+
+
 **0421 completa locale:** test coordinate inline esteso a errore dopo carattere astrale
 (UTF16, non byte/char) su righe LF/CRLF/LS e metadati riga0 senza falsa posizione HTML.
 Targeted normal1/1 e JITless1/1 verdi, patch0421 dry-run/replay1file identicoLF. Nessuna
