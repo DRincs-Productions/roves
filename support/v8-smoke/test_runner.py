@@ -12,9 +12,17 @@ import time
 import unittest
 
 from check_heap_snapshot import problems as snapshot_problems
-from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, validate
+from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, startup_diagnostic_problems, validate
 
 HERE = Path(__file__).resolve().parent
+
+
+def startup_report(**changes):
+    row = dict(parser_span_ms=1, dom_ready_ms=250, first_frame_ms=250,
+               max_timer_gap_ms=250, timer_ticks=2, ticks_before_dom_ready=0,
+               visibility='hidden')
+    row.update(changes)
+    return 'ROVES-V8 module-startup diagnostic ' + json.dumps(row) + '\n'
 
 
 class ResultsTests(unittest.TestCase):
@@ -41,8 +49,22 @@ class ResultsTests(unittest.TestCase):
         total = len(REQUIRED_CHECKS['module-order.html'])
         claimed = passes + f'SUITE TOTAL {total}/{total}\n'
         self.assertTrue(validate('module-order.html', claimed))
-        self.assertEqual([], validate('module-order.html', report(rows) + claimed))
+        self.assertEqual([], validate('module-order.html', startup_report() + report(rows) + claimed))
         self.assertTrue(validate('module-order.html', claimed + report(rows)))
+
+    def test_startup_observations_reject_missing_invalid_and_late_reports(self):
+        self.assertEqual([], startup_diagnostic_problems(startup_report(dom_ready_ms=1000000)))
+        self.assertTrue(startup_diagnostic_problems(''))
+        self.assertTrue(startup_diagnostic_problems(startup_report() * 2))
+        self.assertTrue(startup_diagnostic_problems('SUITE TOTAL 1/1\n' + startup_report()))
+        self.assertTrue(startup_diagnostic_problems('ROVES-V8 module-startup diagnostic {broken'))
+        for key, value in [('parser_span_ms', -1), ('first_frame_ms', float('nan')),
+                           ('max_timer_gap_ms', float('inf')), ('dom_ready_ms', True),
+                           ('dom_ready_ms', 0.5),
+                           ('timer_ticks', 0), ('ticks_before_dom_ready', 3),
+                           ('ticks_before_dom_ready', 0.5), ('visibility', 'unknown')]:
+            with self.subTest(key=key):
+                self.assertTrue(startup_diagnostic_problems(startup_report(**{key: value})))
 
     def test_rejects_false_green(self):
         for output in (
@@ -1340,6 +1362,9 @@ else:
         if scenario == 'missing:' + page or (scenario == 'navigation' and page == 'single-document.html'):
             names = names[1:]
         if page == 'module-order.html':
+            print('ROVES-V8 module-startup diagnostic ' + json.dumps(dict(
+                parser_span_ms=1, dom_ready_ms=250, first_frame_ms=250, max_timer_gap_ms=250,
+                timer_ticks=2, ticks_before_dom_ready=0, visibility='hidden')))
             for scene in ('cold', 'warm', 'slow'):
                 print('ROVES-V8 module-pause diagnostic ' + json.dumps(dict(
                     scene=scene, elapsed_ms=250, max_timer_gap_ms=250, timer_ticks=1,
@@ -1408,6 +1433,16 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertNotIn('suite.html', result.stdout)
                 self.assertIsNone(result.gc_args)
                 if scenario != 'pass': self.assertIn('missing required check', result.stdout)
+
+    def test_module_summary_keeps_startup_and_runtime_observations(self):
+        with tempfile.TemporaryDirectory() as directory:
+            summary = Path(directory) / 'summary.md'
+            result = self.run_fixture('pass', extra_env={
+                'V8_SMOKE_MODULE_ORDER_ONLY': '1', 'GITHUB_STEP_SUMMARY': str(summary)})
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            text = summary.read_text()
+            self.assertEqual(1, text.count('ROVES-V8 module-startup diagnostic '))
+            self.assertEqual(3, text.count('ROVES-V8 module-pause diagnostic '))
 
     def test_runtime_logs_survive_fresh_process_restarts(self):
         result = self.run_fixture('runtime-logs', wrapped=True,

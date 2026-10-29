@@ -16,9 +16,36 @@ globalThis.staticRejection = new Promise(resolve => addEventListener("unhandledr
 addEventListener("error", event => {
   if (String(event.message).includes("roves-static-evaluation-failure")) staticOnErrors++;
 });
+
+// Observe parsing separately from modules inserted after DOMContentLoaded. The server's
+// 250 ms delay is a controlled condition, never a product latency threshold.
+const startupStarted = performance.now();
+let startupPrevious = startupStarted, startupGap = 0, startupTicks = 0;
+let startupParserSpan = null, startupFirstFrame = null;
+const startupFrame = new Promise(resolve => requestAnimationFrame(() => {
+  // Frame-start timestamps may precede this script; measure callback latency instead.
+  startupFirstFrame = performance.now() - startupStarted; resolve();
+}));
+const startupTimer = setInterval(() => {
+  const now = performance.now(); startupGap = Math.max(startupGap, now - startupPrevious);
+  startupPrevious = now; startupTicks++;
+}, 5);
+globalThis.startupObservation = new Promise(resolve => {
+  addEventListener("DOMContentLoaded", async () => {
+    const ready = performance.now() - startupStarted, beforeReady = startupTicks;
+    await Promise.all([startupFrame, new Promise(done => setTimeout(done, 20))]);
+    clearInterval(startupTimer);
+    resolve({parser_span_ms: startupParserSpan, dom_ready_ms: ready,
+      first_frame_ms: startupFirstFrame, max_timer_gap_ms: startupGap,
+      timer_ticks: startupTicks, ticks_before_dom_ready: beforeReady,
+      visibility: document.visibilityState});
+  }, {once:true});
+});
 </script>
 <script type="module" src="single-document-fixtures/order-a.mjs"></script>
 <script type="module" src="single-document-fixtures/order-b.mjs"></script>
+<script type="module" src="slow-module.mjs?startup-observation"></script>
+<script>startupParserSpan = performance.now() - startupStarted;</script>
 <script type="module" src="single-document-fixtures/evaluation-error.mjs"></script>
 <script type="module">inlineModuleURLs.push(import.meta.url);</script>
 <script type="module">inlineModuleURLs.push(import.meta.url);</script>
@@ -41,6 +68,16 @@ try { null.boom; } catch (error) { globalThis.inlineCaughtStack = error.stack; }
 <body><main id="game-root">ready after parsing</main>
 <script>
 const tick = () => new Promise(resolve => setTimeout(resolve, 0));
+check("initial static module loading reports parser and timer observations", async () => {
+  const observation = await startupObservation;
+  console.log("ROVES-V8 module-startup diagnostic " + JSON.stringify(observation));
+  const measurements = [observation.parser_span_ms, observation.dom_ready_ms,
+    observation.first_frame_ms, observation.max_timer_gap_ms];
+  return (measurements.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0) &&
+    observation.dom_ready_ms >= observation.parser_span_ms && observation.timer_ticks > 0 &&
+    observation.ticks_before_dom_ready >= 0 && observation.ticks_before_dom_ready <= observation.timer_ticks) ||
+    JSON.stringify(observation);
+});
 check("deferred modules see the parsed body and TLA does not block DOMContentLoaded", async () => {
   await domReady; await tick();
   return order.join() === "a:42,b:42,domcontentloaded,a:after-domcontentloaded" || order.join();

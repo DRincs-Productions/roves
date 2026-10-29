@@ -4,6 +4,24 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**29ottobre ripresa dopo reset — 0423 completa locale:** quota ripristinata, eliminato
+ricontrollo una tantum0420 ormai superato; resta trigger5ore, Claude sospeso.
+Batch6992 TUTTO VERDE: V811/11, generale13/13, Androidverde. Nessun bloccoCI al momento.
+Scaricato portable6992, asset687537401/CRCvalido/versione confermata; provaWindowslocale
+fixture pubblicata21/21. Nuova copertura startup con modulo lento distinto dal runtimeslow,
+fixture ora22check. Prototipo locale22/22, versione finale callbackclock confermataChromeMCP
+ma deve essere confermataWindows/LinuxCI. Corretto il timestampframe iniziale dopo negativa
+Chrome(-5.1ms): misurare performance.now nella callback, non il timestampinizioframe.
+Validator severo per dati mancanti/duplicati/tardivi/nonfiniti/incoerenti, test pertinenti10/10
+verdi, compresa conservazione reale delle quattro osservazioni nel riepilogo. Tempi startup/runtime in ROVES_PERFORMANCE; non sono benchmark o soglie accettate.
+Comando combinato edit/run rifiutato blocked by policy; edit viaapply_patch e verificaMCP
+consentiti, nessun retry equivalente di quel comando. Conservare prova finale nativa inCI.
+ComputerUse ha rilevato Windowsbloccato: avviso/clic/chiusuraUI NON verificati. Richiesto
+sblocco utente tramite domanda asincrona; continuare lavoro indipendente senza inputUI.
+Patch0423 dry-run/replay4/4file identiciLF verdi; JavaScript/Bashsyntax verdi.
+Documentazione aggiornata, nessun cambiamento produzione o API pubbliche. TODO preservato.
+
+
 **Pubblicato6992e6c2c36 / wiki472db7c**, include0421 e analisi0422 oltre ai checkpoint.
 Nuovo batch: V840823903252 e generale40823903239 in coda; Android40823903247 attiva,
 iOS40823903248 attiva/esclusa. Identificato una volta dopo il push. Nessun nuovo push

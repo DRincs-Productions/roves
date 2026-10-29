@@ -1,3 +1,44 @@
+## 29 ottobre 2026 — binario6992 e avvio statico (0423)
+
+Binario portable Windows CI asset687537401,125045525byte, CRCZIP verificato;
+play.exe --version restituisce Servo0.5.0-6992e6c. Avvio locale --hard-fail -z,
+HTTP loopback stdlib, nessun profilo CPU/RAM/GPU. DesktopWindows bloccato: nessun clic
+nativo, avviso visivo o chiusura UI verificati. ComputerUse rileva la schermata di accesso;
+non confondere una finestra enumerata con una finestra interagibile.
+
+Prima esecuzione sulla fixture pubblicata:21/21. Una osservazione per scena:
+
+| Scena runtime | Caricamento ms | Max gap timer ms | Max gap frame ms |
+| --- | ---: | ---: | ---: |
+| cold | 13.13 | 14.33 | 30.43 |
+| warm | 1.27 | 6.99 | 31.00 |
+| slow, server250ms | 254.40 | 254.85 | 254.90 |
+
+Cold/warm indicano il registro moduli del documento, non tutte le cache di processo/OS.
+Roves headless riporta visibility visible; viewport non raccolto. Il processo di prova viene
+terminato dal runner DOPO SUITE TOTAL: exit1 non prova una chiusura naturale o un crash.
+Log locali target/task-0423/{probe-summary,ci-windows-6992-sri-probe}.log.
+
+Nuova fixture0423 aggiunge modulo statico iniziale con URLslow distinto dal caso runtime.
+Il prototipo locale passa22/22; parser_span1.72ms, DOMready313.31ms, max gap timer310.39ms,
+un tick prima diDOMready. Il marker del parser precede quindi la pausa osservata nelle
+attivita della pagina: non chiamare parser_span la durata dell'intero caricamento statico.
+Log startup-fresh-summary.log/ci-windows-6992-isolated.log. La prima versione usava il
+frame-start timestamp di rAF come latenza iniziale: Chrome ha restituito-5.1ms, mostrando
+che quel timestamp puo precedere lo script. Versione finale corretta a performance.now()
+nel callback; NON riportare il vecchio numero Roves come misura della latenza callback.
+La versione finale Roves richiede conferma online; comando combinato locale rifiutato
+con blocked by policy, non ripetuto. Nessun risultato inventato per quella riesecuzione.
+
+Riferimento Chrome156 Windows tramite DevTools MCP, context isolato, tab background,
+viewport929x861, visibility visible; modalita headed/headless del processo non verificata.
+Stesso server250ms, una osservazione: parser_span0.80ms, DOMready246.60ms,
+prima callbackframe3.40ms, max gap timer10.90ms,48tick prima diDOMready (52totali).
+Il nuovo check iniziale passa; non significa che tutta la suite Roves debba passare Chrome
+(C2/C3 e preloadJSON sono differenze autorizzate). Dati non equivalenti per viewport,
+avvio/cache e modalita processo: nessun benchmark, soglia concordata o risparmio promesso.
+I dati finali startup/runtime saranno conservati anche nel riepilogo CI dei moduli.
+
 ## 28 ottobre — Roves Windows0aa2 headless, osservazione singola
 
 Binario Windows portable CI0aa2, roves-js/Deno0.413/V8150.4, --hard-fail -z,

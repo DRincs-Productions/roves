@@ -23,7 +23,7 @@ WASM_SKIPS = {
 REQUIRED_CHECKS = {
     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
+    "module-order.html": ('initial static module loading reports parser and timer observations', 'deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
     "single-document.html": (
         "reload preserves the live game document",
         "same-origin assignment preserves the live game document",
@@ -104,6 +104,34 @@ def pause_diagnostic_problems(output):
     return errors
 
 
+def startup_diagnostic_problems(output):
+    """Validate one startup observation without inventing a latency requirement."""
+    prefix = "ROVES-V8 module-startup diagnostic "
+    rows, finished = 0, False
+    for line in output.splitlines():
+        if line.startswith("SUITE TOTAL "):
+            finished = True
+        if not line.startswith(prefix):
+            continue
+        rows += 1
+        try:
+            row = json.loads(line[len(prefix):])
+            if finished or rows != 1 or not isinstance(row, dict):
+                raise ValueError("late, duplicate or non-object observation")
+            for key in ("parser_span_ms", "dom_ready_ms", "first_frame_ms", "max_timer_gap_ms"):
+                value = row.get(key)
+                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
+                    raise ValueError("invalid duration")
+            ticks, before = row.get("timer_ticks"), row.get("ticks_before_dom_ready")
+            if type(ticks) is not int or ticks < 1 or type(before) is not int or not 0 <= before <= ticks:
+                raise ValueError("invalid timer observations")
+            if row["dom_ready_ms"] < row["parser_span_ms"] or row.get("visibility") not in ("visible", "hidden"):
+                raise ValueError("inconsistent startup observation")
+        except (ValueError, TypeError, OverflowError):
+            return ["invalid module-startup diagnostic"]
+    return [] if rows == 1 else ["missing module-startup diagnostic"]
+
+
 def validate(page, output, mode="normal", allow_missing_devices=False):
     errors = []
     counts = Counter()
@@ -161,6 +189,7 @@ def validate(page, output, mode="normal", allow_missing_devices=False):
             errors.append(f"missing required check: {name}")
     if page == "module-order.html":
         errors.extend(pause_diagnostic_problems(output))
+        errors.extend(startup_diagnostic_problems(output))
     return errors
 
 

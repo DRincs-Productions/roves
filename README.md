@@ -848,3 +848,8 @@ The dd653 required CI batch is green, including the 21-check module contract fix
 Linux/Windows normal and JITless browser jobs, Android, packaging and patch replay. This
 confirms inline HTML diagnostics and the Windows ANGLE/MIME test infrastructure fixes.
 Manual shell verification, provisional static-load pauses and overall retention remain open.
+
+Module smoke coverage now also records initial static loading separately from modules
+inserted at runtime (22 required checks). Validated startup/timer observations are retained
+in CI summaries without a performance threshold. The preceding6992 CI batch is green;
+new startup coverage awaits its own CI. No action input or bundle format changes.

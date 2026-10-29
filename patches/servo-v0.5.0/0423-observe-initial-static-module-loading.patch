@@ -1,0 +1,207 @@
+diff --git a/support/v8-smoke/check_results.py b/support/v8-smoke/check_results.py
+index 9122c361656..4c8e733a979 100644
+--- a/support/v8-smoke/check_results.py
++++ b/support/v8-smoke/check_results.py
+@@ -23,7 +23,7 @@ WASM_SKIPS = {
+ REQUIRED_CHECKS = {
+     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
+     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
+-    "module-order.html": ('deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
++    "module-order.html": ('initial static module loading reports parser and timer observations', 'deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
+     "single-document.html": (
+         "reload preserves the live game document",
+         "same-origin assignment preserves the live game document",
+@@ -104,6 +104,34 @@ def pause_diagnostic_problems(output):
+     return errors
+ 
+ 
++def startup_diagnostic_problems(output):
++    """Validate one startup observation without inventing a latency requirement."""
++    prefix = "ROVES-V8 module-startup diagnostic "
++    rows, finished = 0, False
++    for line in output.splitlines():
++        if line.startswith("SUITE TOTAL "):
++            finished = True
++        if not line.startswith(prefix):
++            continue
++        rows += 1
++        try:
++            row = json.loads(line[len(prefix):])
++            if finished or rows != 1 or not isinstance(row, dict):
++                raise ValueError("late, duplicate or non-object observation")
++            for key in ("parser_span_ms", "dom_ready_ms", "first_frame_ms", "max_timer_gap_ms"):
++                value = row.get(key)
++                if type(value) not in (int, float) or not math.isfinite(value) or value < 0:
++                    raise ValueError("invalid duration")
++            ticks, before = row.get("timer_ticks"), row.get("ticks_before_dom_ready")
++            if type(ticks) is not int or ticks < 1 or type(before) is not int or not 0 <= before <= ticks:
++                raise ValueError("invalid timer observations")
++            if row["dom_ready_ms"] < row["parser_span_ms"] or row.get("visibility") not in ("visible", "hidden"):
++                raise ValueError("inconsistent startup observation")
++        except (ValueError, TypeError, OverflowError):
++            return ["invalid module-startup diagnostic"]
++    return [] if rows == 1 else ["missing module-startup diagnostic"]
++
++
+ def validate(page, output, mode="normal", allow_missing_devices=False):
+     errors = []
+     counts = Counter()
+@@ -161,6 +189,7 @@ def validate(page, output, mode="normal", allow_missing_devices=False):
+             errors.append(f"missing required check: {name}")
+     if page == "module-order.html":
+         errors.extend(pause_diagnostic_problems(output))
++        errors.extend(startup_diagnostic_problems(output))
+     return errors
+ 
+ 
+diff --git a/support/v8-smoke/module-order.html b/support/v8-smoke/module-order.html
+index b1b2d84d38e..2356151e1fb 100644
+--- a/support/v8-smoke/module-order.html
++++ b/support/v8-smoke/module-order.html
+@@ -16,9 +16,36 @@ globalThis.staticRejection = new Promise(resolve => addEventListener("unhandledr
+ addEventListener("error", event => {
+   if (String(event.message).includes("roves-static-evaluation-failure")) staticOnErrors++;
+ });
++
++// Observe parsing separately from modules inserted after DOMContentLoaded. The server's
++// 250 ms delay is a controlled condition, never a product latency threshold.
++const startupStarted = performance.now();
++let startupPrevious = startupStarted, startupGap = 0, startupTicks = 0;
++let startupParserSpan = null, startupFirstFrame = null;
++const startupFrame = new Promise(resolve => requestAnimationFrame(() => {
++  // Frame-start timestamps may precede this script; measure callback latency instead.
++  startupFirstFrame = performance.now() - startupStarted; resolve();
++}));
++const startupTimer = setInterval(() => {
++  const now = performance.now(); startupGap = Math.max(startupGap, now - startupPrevious);
++  startupPrevious = now; startupTicks++;
++}, 5);
++globalThis.startupObservation = new Promise(resolve => {
++  addEventListener("DOMContentLoaded", async () => {
++    const ready = performance.now() - startupStarted, beforeReady = startupTicks;
++    await Promise.all([startupFrame, new Promise(done => setTimeout(done, 20))]);
++    clearInterval(startupTimer);
++    resolve({parser_span_ms: startupParserSpan, dom_ready_ms: ready,
++      first_frame_ms: startupFirstFrame, max_timer_gap_ms: startupGap,
++      timer_ticks: startupTicks, ticks_before_dom_ready: beforeReady,
++      visibility: document.visibilityState});
++  }, {once:true});
++});
+ </script>
+ <script type="module" src="single-document-fixtures/order-a.mjs"></script>
+ <script type="module" src="single-document-fixtures/order-b.mjs"></script>
++<script type="module" src="slow-module.mjs?startup-observation"></script>
++<script>startupParserSpan = performance.now() - startupStarted;</script>
+ <script type="module" src="single-document-fixtures/evaluation-error.mjs"></script>
+ <script type="module">inlineModuleURLs.push(import.meta.url);</script>
+ <script type="module">inlineModuleURLs.push(import.meta.url);</script>
+@@ -41,6 +68,16 @@ try { null.boom; } catch (error) { globalThis.inlineCaughtStack = error.stack; }
+ <body><main id="game-root">ready after parsing</main>
+ <script>
+ const tick = () => new Promise(resolve => setTimeout(resolve, 0));
++check("initial static module loading reports parser and timer observations", async () => {
++  const observation = await startupObservation;
++  console.log("ROVES-V8 module-startup diagnostic " + JSON.stringify(observation));
++  const measurements = [observation.parser_span_ms, observation.dom_ready_ms,
++    observation.first_frame_ms, observation.max_timer_gap_ms];
++  return (measurements.every(value => typeof value === "number" && Number.isFinite(value) && value >= 0) &&
++    observation.dom_ready_ms >= observation.parser_span_ms && observation.timer_ticks > 0 &&
++    observation.ticks_before_dom_ready >= 0 && observation.ticks_before_dom_ready <= observation.timer_ticks) ||
++    JSON.stringify(observation);
++});
+ check("deferred modules see the parsed body and TLA does not block DOMContentLoaded", async () => {
+   await domReady; await tick();
+   return order.join() === "a:42,b:42,domcontentloaded,a:after-domcontentloaded" || order.join();
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 130044cfe6e..113ff500264 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -107,6 +107,11 @@ run_suite() {
+   if ! "$PYTHON" "$DIR/check_results.py" "$page" "$log" "${validator_args[@]}"; then STATUS=1; fi
+   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
++    if [ "$page" = module-order.html ]; then
++      { echo; echo '### Module timing observations'; echo '```text';
++        grep -a '^ROVES-V8 module-.* diagnostic ' "$log" || true
++        echo '```'; } >> "$GITHUB_STEP_SUMMARY"
++    fi
+   fi
+   if [ -n "$total" ]; then
+     TOTALS="$TOTALS%0A$page ${total#SUITE TOTAL }"
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index 1806d3b4373..ff74a4e2d26 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -12,11 +12,19 @@ import time
+ import unittest
+ 
+ from check_heap_snapshot import problems as snapshot_problems
+-from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, validate
++from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, startup_diagnostic_problems, validate
+ 
+ HERE = Path(__file__).resolve().parent
+ 
+ 
++def startup_report(**changes):
++    row = dict(parser_span_ms=1, dom_ready_ms=250, first_frame_ms=250,
++               max_timer_gap_ms=250, timer_ticks=2, ticks_before_dom_ready=0,
++               visibility='hidden')
++    row.update(changes)
++    return 'ROVES-V8 module-startup diagnostic ' + json.dumps(row) + '\n'
++
++
+ class ResultsTests(unittest.TestCase):
+     def test_complete(self):
+         self.assertEqual([], validate('suite.html', 'noise\nSUITE PASS example\nSUITE TOTAL 1/1\n'))
+@@ -41,9 +49,23 @@ class ResultsTests(unittest.TestCase):
+         total = len(REQUIRED_CHECKS['module-order.html'])
+         claimed = passes + f'SUITE TOTAL {total}/{total}\n'
+         self.assertTrue(validate('module-order.html', claimed))
+-        self.assertEqual([], validate('module-order.html', report(rows) + claimed))
++        self.assertEqual([], validate('module-order.html', startup_report() + report(rows) + claimed))
+         self.assertTrue(validate('module-order.html', claimed + report(rows)))
+ 
++    def test_startup_observations_reject_missing_invalid_and_late_reports(self):
++        self.assertEqual([], startup_diagnostic_problems(startup_report(dom_ready_ms=1000000)))
++        self.assertTrue(startup_diagnostic_problems(''))
++        self.assertTrue(startup_diagnostic_problems(startup_report() * 2))
++        self.assertTrue(startup_diagnostic_problems('SUITE TOTAL 1/1\n' + startup_report()))
++        self.assertTrue(startup_diagnostic_problems('ROVES-V8 module-startup diagnostic {broken'))
++        for key, value in [('parser_span_ms', -1), ('first_frame_ms', float('nan')),
++                           ('max_timer_gap_ms', float('inf')), ('dom_ready_ms', True),
++                           ('dom_ready_ms', 0.5),
++                           ('timer_ticks', 0), ('ticks_before_dom_ready', 3),
++                           ('ticks_before_dom_ready', 0.5), ('visibility', 'unknown')]:
++            with self.subTest(key=key):
++                self.assertTrue(startup_diagnostic_problems(startup_report(**{key: value})))
++
+     def test_rejects_false_green(self):
+         for output in (
+             '',
+@@ -1340,6 +1362,9 @@ else:
+         if scenario == 'missing:' + page or (scenario == 'navigation' and page == 'single-document.html'):
+             names = names[1:]
+         if page == 'module-order.html':
++            print('ROVES-V8 module-startup diagnostic ' + json.dumps(dict(
++                parser_span_ms=1, dom_ready_ms=250, first_frame_ms=250, max_timer_gap_ms=250,
++                timer_ticks=2, ticks_before_dom_ready=0, visibility='hidden')))
+             for scene in ('cold', 'warm', 'slow'):
+                 print('ROVES-V8 module-pause diagnostic ' + json.dumps(dict(
+                     scene=scene, elapsed_ms=250, max_timer_gap_ms=250, timer_ticks=1,
+@@ -1409,6 +1434,16 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
+                 self.assertIsNone(result.gc_args)
+                 if scenario != 'pass': self.assertIn('missing required check', result.stdout)
+ 
++    def test_module_summary_keeps_startup_and_runtime_observations(self):
++        with tempfile.TemporaryDirectory() as directory:
++            summary = Path(directory) / 'summary.md'
++            result = self.run_fixture('pass', extra_env={
++                'V8_SMOKE_MODULE_ORDER_ONLY': '1', 'GITHUB_STEP_SUMMARY': str(summary)})
++            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
++            text = summary.read_text()
++            self.assertEqual(1, text.count('ROVES-V8 module-startup diagnostic '))
++            self.assertEqual(3, text.count('ROVES-V8 module-pause diagnostic '))
++
+     def test_runtime_logs_survive_fresh_process_restarts(self):
+         result = self.run_fixture('runtime-logs', wrapped=True,
+                                   extra_env={'XDG_CACHE_HOME': '/unused-parent-cache'})

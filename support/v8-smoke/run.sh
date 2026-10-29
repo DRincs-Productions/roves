@@ -107,6 +107,11 @@ run_suite() {
   if ! "$PYTHON" "$DIR/check_results.py" "$page" "$log" "${validator_args[@]}"; then STATUS=1; fi
   if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
     { echo "## $page: ${total#SUITE TOTAL }"; echo; grep -a "^SUITE " "$log" | sed 's/^/- /'; } >> "$GITHUB_STEP_SUMMARY"
+    if [ "$page" = module-order.html ]; then
+      { echo; echo '### Module timing observations'; echo '```text';
+        grep -a '^ROVES-V8 module-.* diagnostic ' "$log" || true
+        echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+    fi
   fi
   if [ -n "$total" ]; then
     TOTALS="$TOTALS%0A$page ${total#SUITE TOTAL }"

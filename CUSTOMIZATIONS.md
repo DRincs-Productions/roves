@@ -1,3 +1,21 @@
+## 2026-10-29 - Observe initial static loading separately from runtime insertion (0423)
+
+Add a delayed initial module with its own cache key to the existing module fixture. Record
+parser span, DOMContentLoaded, first frame callback latency, timer gap/count and visibility;
+require finite consistent observations without a latency threshold. Reuse performance,
+requestAnimationFrame and the existing250ms stdlib fixture; no dependency or product API.
+Retain startup/runtime JSON observations in the existing CI step summary. A strict stdlib
+validator rejects missing, duplicate, late, malformed and inconsistent startup reports;
+tests include nonfinite/boolean durations and impossible tick counts.
+The6992 Windows portable binary passes the published21-check fixture and prototype22/22.
+Chrome MCP exposes negative frame-start latency in the prototype; use performance.now at
+the callback rather than rAF's earlier frame timestamp. Final Chrome startup check passes;
+final native confirmation awaits CI after a combined edit/run command was policy-blocked,
+without an equivalent retry. Targeted validation/runner checks10/10 pass, including actual summary retention; final
+JavaScript/Bash syntax and four-file incremental dry-run/replay equality pass. No heavy local browser build is performed.
+Desktop lock blocks manual UI/click/shutdown confirmation; preserve that outstanding work.
+Measurements and limitations are in docs/ROVES_PERFORMANCE.md; overall retention remains open.
+
 ## 2026-10-29 - Confirm the integrated Linux/Windows migration checkpoint
 
 The dd653 V8 batch passes all11 jobs, including Linux/Windows browser module contracts
