@@ -1,0 +1,199 @@
+{
+  "commit": "9f8d1c8a9365bd2ff12ef2f1266bc48128e515ff",
+  "run": 40915577759,
+  "job": 123594773143,
+  "artifact": 12916483019,
+  "snapshot_bytes": 3098531,
+  "snapshot_sha256": "d7fd9e7fa4938ca14537251d7b82ee88d2671530171fd99bdc3a8c238d02a6da",
+  "explicit_collection": 8,
+  "single_document": true,
+  "released_element": true,
+  "released_probe": true,
+  "retained_control": true,
+  "memlab_version": "2.0.5",
+  "probe_selection": {
+    "file": "target/task-0432/document.heapsnapshot",
+    "mode": "--edge",
+    "value": "rovesDocumentRetentionProbe",
+    "count": 1,
+    "matches": [
+      {
+        "id": 24633,
+        "type": "object",
+        "name": "Object",
+        "self_size": 40,
+        "retained_size": 320,
+        "referrers": [
+          {
+            "edge": 0,
+            "edge_type": "hidden",
+            "from_id": 24635,
+            "from_type": "native",
+            "from_name": "system / PropertyArray"
+          },
+          {
+            "edge": "rovesDocumentRetentionProbe",
+            "edge_type": "property",
+            "from_id": 24631,
+            "from_type": "object",
+            "from_name": "HTMLElement"
+          }
+        ]
+      }
+    ]
+  },
+  "control_query": {
+    "nodes": [
+      {
+        "id": 24633,
+        "type": "object",
+        "name": "Object",
+        "found": true,
+        "on_native_stack": false,
+        "referrers": [
+          {
+            "edge": 0,
+            "edge_type": "hidden",
+            "from": {
+              "id": 24635,
+              "type": "native",
+              "name": "system / PropertyArray"
+            }
+          },
+          {
+            "edge": "rovesDocumentRetentionProbe",
+            "edge_type": "property",
+            "from": {
+              "id": 24631,
+              "type": "object",
+              "name": "HTMLElement"
+            }
+          }
+        ],
+        "references": [
+          {
+            "edge": "rovesProbeTag",
+            "edge_type": "property",
+            "to": {
+              "id": 11879,
+              "type": "string",
+              "name": "roves-document-retention-probe"
+            }
+          },
+          {
+            "edge": "retained",
+            "edge_type": "property",
+            "to": {
+              "id": 67,
+              "type": "native",
+              "name": "true"
+            }
+          },
+          {
+            "edge": "__proto__",
+            "edge_type": "property",
+            "to": {
+              "id": 24509,
+              "type": "object",
+              "name": "Object"
+            }
+          },
+          {
+            "edge": "map",
+            "edge_type": "internal",
+            "to": {
+              "id": 29251,
+              "type": "object shape",
+              "name": "system / Map"
+            }
+          }
+        ],
+        "reference_count": 4
+      },
+      {
+        "id": 24631,
+        "type": "object",
+        "name": "HTMLElement",
+        "found": true,
+        "on_native_stack": false,
+        "referrers": [
+          {
+            "edge": 1,
+            "edge_type": "element",
+            "from": {
+              "id": 192,
+              "type": "native",
+              "name": "RovesJsCell"
+            }
+          },
+          {
+            "edge": "2",
+            "edge_type": "internal",
+            "from": {
+              "id": 49865,
+              "type": "array",
+              "name": ""
+            }
+          }
+        ],
+        "references": [
+          {
+            "edge": "rovesDocumentRetentionProbe",
+            "edge_type": "property",
+            "to": {
+              "id": 24633,
+              "type": "object",
+              "name": "Object"
+            }
+          },
+          {
+            "edge": "__proto__",
+            "edge_type": "property",
+            "to": {
+              "id": 24603,
+              "type": "object",
+              "name": "HTMLElement"
+            }
+          },
+          {
+            "edge": "properties",
+            "edge_type": "internal",
+            "to": {
+              "id": 24635,
+              "type": "native",
+              "name": "system / PropertyArray"
+            }
+          },
+          {
+            "edge": "map",
+            "edge_type": "internal",
+            "to": {
+              "id": 24637,
+              "type": "object shape",
+              "name": "system / Map"
+            }
+          },
+          {
+            "edge": "cppgc_object",
+            "edge_type": "internal",
+            "to": {
+              "id": 194,
+              "type": "native",
+              "name": "HTMLElement"
+            }
+          }
+        ],
+        "reference_count": 5
+      }
+    ]
+  },
+  "limits": "One Linux normal headless run of one detached DOM/listener cycle; not general retention or former removed-frame coverage.",
+  "corroborating_diagnostic": {
+    "run": 40907083551,
+    "job": 123564694842,
+    "released_element": true,
+    "released_probe": true,
+    "retained_control": true,
+    "source": "completed job annotations, no second snapshot analysis"
+  }
+}

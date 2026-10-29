@@ -1,3 +1,31 @@
+## 29 ottobre — rilascio del ciclo DOM nella scena documento unico (0432)
+
+Commit9f8d1c8a936, run V840915577759, job Linux normale123594773143,
+artifact12916483019. Snapshot3098531byte, SHA256
+`d7fd9e7fa4938ca14537251d7b82ee88d2671530171fd99bdc3a8c238d02a6da`.
+Servo debug headless (-z, Xvfb), V8150.4.0/Deno0.413.0 con fix0428, GC esplicita8.
+Nessun nuovo avvio browser, profilo pesante o prova Chrome MCP.
+
+La scena document-retention.html rimuove un div che mantiene un probe e un listener
+con closure sul nodo; un secondo elemento resta connesso come controllo positivo.
+Le annotazioni del job confermano: collections complete8, retained control true,
+diagnostic released element true probe true, result pass. Il file roves.log nell'artifact
+si ferma prima di queste righe: non confondere quel log incompleto con fallimento della scena.
+
+MemLab2.0.5, parser mantenuto getFullHeapFromFile e query di un livello già disponibili:
+un solo arco rovesDocumentRetentionProbe rimane, verso Object@24633 da HTMLElement@24631.
+Il probe ha retained=true e il tag corretto: è il controllo, non il ciclo rimosso.
+Le annotazioni del precedente job123564694842 (run40907083551) riportano anch’esse
+released element true probe true e retained control true; non è una seconda analisi snapshot.
+Nessun parser/grafo/BFS nostro o modifica al GC di produzione. Query/dati conservati in
+[0432-document-retention.json](measurements/0432-document-retention.json);
+snapshot e log temporanei sotto target/task-0432.
+
+**Conclusione limitata:** questa singola scena DOM documento unico rilascia entrambi
+WeakRef osservati e preserva il controllo. Non dimostra assenza generale di leak,
+comportamento dei vecchi frame rimossi, teardown della finestra o memoria stabile dopo
+sessioni lunghe. Non chiudere la retention complessiva sulla base di questa prova.
+
 ## 29 ottobre — pausa statica dopo il fix Deno, CI 3cee4b8602b (0431)
 
 Dati dai quattro artifact runtime del workflow V8 **40907083551**, commit

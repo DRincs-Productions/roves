@@ -877,3 +877,7 @@ La regressione0430 verifica che un fetch statico sospeso non esegua job JavaScri
 accodati mentre il runtime è occupato:118 test normali e117 JITless verdi, con controllo
 negativo. Il batch precedente conferma23/23 controlli dei moduli nel browser Servo su
 Linux/Windows normale/JITless. Le prove desktop e la retention complessiva restano aperte.
+
+La verifica0432 dello snapshot CI conferma il rilascio del ciclo DOM/listener rimosso nella
+scena documento unico, preservando il controllo connesso. È una prova circoscritta,
+non una dichiarazione di retention complessivamente risolta; dati in ROVES_PERFORMANCE.

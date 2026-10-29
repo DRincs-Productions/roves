@@ -2,6 +2,23 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### Consegna prima dello spegnimento — 0432
+
+Ultimo pubblicato prima di questa consegna:23864d3cb1a (documentazione0431).
+Batch Android40924404008 concluso3/3verde; nessuna runV8/generale rilevata dopo quel push
+solo documentale. Nessun runtime WIP. Modifiche esterne TODO.md preservate.
+
+0432 documenta una prova positiva della scena DOM documento unico nel batch9f8d:
+elemento rimosso e probe raccolti dopo8GC, controllo connesso preservato. MemLab2.0.5
+conferma che l'unico probe rimasto è il controllo retained=true. Dati verificabili in
+[misura0432](measurements/0432-document-retention.json), dettaglio in ROVES_PERFORMANCE.
+Non dichiarare risolta la retention generale o il vecchio scenario frame.
+
+Alla ripresa: leggere questo punto, controllare Git e il batch dell'ultimo push, poi
+proseguire con uno studio concreto SourceText0361 o regressioni di lifetime motivate.
+Non ripetere facade0363, esperimenti JSON scartati o ricerca dei vecchi frame fuori scope.
+Niente build pesanti locali, Claude o prove desktop finché non autorizzate/disponibili.
+
 ### Checkpoint verificato: 9f8d1c8a936, passi 0428–0430
 
 Wiki **66e15ef**, action **a3d5f1c**. Il batch del commit9f8d1c8a936 è concluso:

@@ -1,3 +1,15 @@
+## 2026-10-29 - Verify the single-document detached DOM cycle (0432)
+
+Analyze the existing0430 Linux normal CI snapshot with maintained MemLab2.0.5 APIs,
+not a custom heap parser/path search. Job annotations report the detached element and
+its probe released after eight explicit collections, with the retained control intact.
+One probe property remains in the snapshot, confirmed retained=true on the control.
+Preserve provenance, hash and compact queries in docs/measurements. The runtime artifact
+log ends before final diagnostics; job annotations supply the complete scene result.
+No new browser build/run or production GC change. This proves only the single-document
+DOM/listener cycle in this sample, not overall retention or former frame scenarios.
+Documentation/data change only; no Servo overlay patch required.
+
 ## 2026-10-29 - Preserve integrated static-load timing evidence (0431)
 
 Read the four completed Linux/Windows normal/JITless runtime-log artifacts for3cee4b8602b.
