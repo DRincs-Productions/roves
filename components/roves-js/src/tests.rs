@@ -7514,6 +7514,61 @@ mod deno_modules {
     }
 
     #[test]
+    fn static_evaluation_keeps_loaded_root_but_game_imports_use_host_mapping() {
+        struct RemappedRoot(Rc<MemoryLoader>, String);
+        impl HostModuleLoader for RemappedRoot {
+            fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
+                if specifier == self.1 { return Ok(format!("{ORIGIN}mapped.js")); }
+                self.0.resolve(specifier, referrer)
+            }
+            fn fetch(&self, url: &str, referrer: Option<&str>, kind: HostModuleKind, dynamic: bool) -> HostModuleFetch {
+                self.0.fetch(url, referrer, kind, dynamic)
+            }
+        }
+        let (mut runtime, loader, _) = runtime_with(&[
+            ("root.js", HostModuleKind::JavaScript, "log.push('root'); export const value = 'root-value';"),
+            ("mapped.js", HostModuleKind::JavaScript, "log.push('mapped'); export const value = 'mapped-value';"),
+        ]);
+        let url = format!("{ORIGIN}root.js");
+        install_host_module_loader(runtime.cx_no_gc(), Rc::new(RemappedRoot(loader.clone(), url.clone())), Arc::new(|| {}));
+        let id = load_module_graph(runtime.cx(), &url, None).unwrap();
+        evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+        assert_eq!(log(&runtime), "root", "the fetched HTML root is not remapped during evaluation");
+        eval(&runtime, &format!("import({url:?}).then(m => log.push(m.value)); 0"));
+        assert!(drive(&mut runtime, |r| log(r) == "root,mapped,mapped-value"), "ordinary game imports still apply host resolution");
+        assert_eq!(loader.fetched.borrow().len(), 2, "the internal entry reuses the fetched graph");
+    }
+
+    #[test]
+    fn cached_static_tla_import_waits_for_resolution_and_rejection() {
+        for dependency in [false, true] {
+            for reject in [false, true] {
+                let (mut runtime, loader, _) = runtime_with(&[
+                    ("main.js", HostModuleKind::JavaScript, "import './dep.js'; export const value = 42;"),
+                    ("dep.js", HostModuleKind::JavaScript, "globalThis.tlaEvaluations = (globalThis.tlaEvaluations || 0) + 1; await new Promise((resolve,reject) => { globalThis.finishTla = fail => fail ? reject(globalThis.tlaFailure) : resolve(); }); export const value = 42;"),
+                ]);
+                eval(&runtime, "globalThis.tlaFailure = new Error('tla-failure'); globalThis.settlements = []; 0");
+                let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), None).unwrap();
+                evaluate_module(runtime.cx(), id).unwrap(); checkpoint(&mut runtime);
+                let target = format!("{ORIGIN}{}", if dependency { "dep.js" } else { "main.js" });
+                let import = format!("import({target:?}).then(m => {{ if (globalThis.firstModule) settlements.push(m === firstModule ? 'resolve:same' : 'resolve:wrong'); else {{ globalThis.firstModule=m; settlements.push('resolve:first'); }} }}, e => settlements.push(e === tlaFailure ? 'reject:same' : 'reject:wrong')); 0");
+                eval(&runtime, &import);
+                poll_module_event_loop(runtime.cx()); checkpoint(&mut runtime);
+                assert_eq!(describe(&runtime, eval(&runtime, "settlements.length")), "0", "premature import: dependency={dependency} reject={reject}");
+                eval(&runtime, if reject { "finishTla(true); 0" } else { "finishTla(false); 0" });
+                assert!(drive(&mut runtime, |r| describe(r, eval(r, "settlements.length")) == "1"));
+                assert_eq!(describe(&runtime, eval(&runtime, "settlements.join()")), if reject { "reject:same" } else { "resolve:first" });
+                if !reject { assert_eq!(describe(&runtime, eval(&runtime, "firstModule.value")), "42"); }
+                eval(&runtime, &import);
+                assert!(drive(&mut runtime, |r| describe(r, eval(r, "settlements.length")) == "2"));
+                assert_eq!(describe(&runtime, eval(&runtime, "settlements[1]")), if reject { "reject:same" } else { "resolve:same" });
+                assert_eq!(describe(&runtime, eval(&runtime, "tlaEvaluations")), "1");
+                assert_eq!(loader.fetched.borrow().len(), 2, "cache reuses both module fetches");
+            }
+        }
+    }
+
+    #[test]
     fn shutdown_releases_host_loader_with_pending_top_level_await() {
         for clear_first in [false, true] {
             let (mut runtime, loader, _) = runtime_with(&[

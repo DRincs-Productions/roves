@@ -1,8 +1,38 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Checkpoint di integrazione del 28 ottobre 2026
+## Punto operativo aggiornato — 29 ottobre 2026
 
-### Punto corrente — 29 ottobre, 0420 e 0419
+### Stato corrente: 0428 fix TLA autorizzato e 0429 gate build
+
+**AUTORIZZAZIONE RISOLTA:** l'utente consente fork/patch per problemi che bloccano giochi,
+issue e PR upstream, TODO di ricontrollo. AGENTS aggiornato. Non ripetere la domanda0425.
+Vecchio denoland/deno_core archiviato dopo confluenza; sviluppoattivo in denoland/deno/libs/core.
+Fork BlackRam-oss/deno, commit49a03aaf1ae59c864539c88f510ef0582073826e;
+issue37097 e draftPR37098 pubbliche, PR collegata alla chat. DisclosureAI inclusa.
+
+**0428 completa nei sorgenti, CIbrowser da confermare:** snapshotcrate0.413.0 MIT sotto
+components/roves-js/vendor/deno_core; un'unica condizione esclude grafiasync dal fastpath.
+Override Cargo root e standalone riproducibili, unDeno/unV8150.4; nessuna registry modificata,
+installazione DenoCLI/Chromium o API privilegiata ai giochi. Adaptermod_evaluate originale,
+non il candidato parziale0424. Packaging e provenienza in ROVES_PATCHES.md nello snapshot.
+Native117normal/116JITless verdi, nuova matrice23check browser: ChromeMCP passa il nuovo
+casoTLA; provaServo online necessaria. Corpo nuova regressioneupstream eseguito standalone.
+TODOaggiunto permonitorareissue/PR e rimuovereoverride quando releaseufficialecorretta e
+native/browsergreen. Solo appendTODOstaged; blanklineutente rimaneunstaged.
+
+**0429 completa:** helpercutover --build propagastatusCargo; negativa vecchiogate2fallimenti,
+nuovo gate1test/4casi verde, fixture/validator/gateLinux10verdi. Evita potenziale vecchiobinario
+in cache dopo buildfallita; non invalida senza evidenza le vecchieCI verdi.
+Dettaglio autorevole: docs/handoff/0428-deno-core-upstream-fix.md.
+Patch0428/0429: dry-run e applicazione riusciti,126file identici con LF normalizzati.
+Il batch precedente f240 e concluso verde: V840849058198, generale40849058225, Android40849058319.
+Prossimi: commit/pubblicazione del lavoro completo;
+identificare nuoveCI una volta, correggereeventuali fallimenti e continuare loop. UIWindows
+ancorainattesaunlockesplicito; SourceText0361, pausa e retentioncomplessiva non risolti.
+Le note sotto su consenso ancora pendente e mancataadozione0425 sono STORICHE superate.
+
+
+### Checkpoint precedenti (storico, superato dal punto corrente sopra)
 
 **Pubblicato f2400510edd / wikif7677af**, include0424, proposta0425 NON applicata e0426.
 Batch identificato una volta: V840849058198, generale40849058225, Android40849058319;

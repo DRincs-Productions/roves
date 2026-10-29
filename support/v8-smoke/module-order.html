@@ -215,6 +215,45 @@ check("runtime static module loading resumes timers and frames", async () => {
   }
   return true;
 });
+check("cached imports await static TLA roots and dependencies", async () => {
+  globalThis.rovesTlaCases = {};
+  for (const dependency of [false, true]) for (const reject of [false, true]) {
+    const key = (dependency ? "dependency" : "root") + (reject ? "-reject" : "-resolve");
+    let entered;
+    const ready = new Promise(resolve => { entered = resolve; });
+    const state = rovesTlaCases[key] = { executions: 0, failure: new Error("roves-tla-" + key), entered };
+    const script = document.createElement("script"); script.type = "module";
+    const dependencyURL = new URL("single-document-fixtures/static-tla-pending.mjs?case=" + key, document.baseURI).href;
+    script.src = dependency ? new URL("single-document-fixtures/static-tla-dependency-" +
+      (reject ? "reject" : "resolve") + ".mjs", document.baseURI).href : dependencyURL;
+    function suppressExpectedFailure(event) {
+      if (event.reason === state.failure || event.error === state.failure) event.preventDefault();
+    }
+    addEventListener("unhandledrejection", suppressExpectedFailure);
+    addEventListener("error", suppressExpectedFailure);
+    try {
+      document.head.append(script); await ready;
+      const target = dependencyURL;
+      let status = "pending";
+      const importing = import(target).then(module => { status = "resolved"; return { module }; }, error => { status = "rejected"; return { error }; });
+      await tick(); await tick();
+      if (status !== "pending") return key + " import settled before TLA: " + status;
+      state.release(reject);
+      const first = await importing;
+      const second = await import(target).then(module => ({ module }), error => ({ error }));
+      if (reject ? first.error !== state.failure || second.error !== state.failure :
+          !state.completed || first.module.value !== 42 || second.module !== first.module) return key + " settlement/cache mismatch";
+      if (state.executions !== 1) return key + " evaluated more than once";
+    } finally {
+      state.release?.(reject); script.remove(); await tick(); await tick();
+      removeEventListener("unhandledrejection", suppressExpectedFailure);
+      removeEventListener("error", suppressExpectedFailure);
+      delete rovesTlaCases[key];
+    }
+  }
+  delete globalThis.rovesTlaCases;
+  return true;
+});
 check("cached dynamic imports settle across turns and preserve namespace identity", async () => {
   const first = await import("./single-document-fixtures/value.mjs");
   for (let round = 0; round < 8; round++) {

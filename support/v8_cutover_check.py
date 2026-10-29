@@ -102,7 +102,9 @@ def main() -> int:
             print(f"{count:6}  {name}")
     if not errors and result.returncode != 0:
         print(result.stderr[-4000:])
-    return 0
+    # CI must not run a cached browser after a failed build. Check-only mode is an
+    # error-counting diagnostic; --build is an authoritative compiler gate.
+    return result.returncode if args.build else 0
 
 
 if __name__ == "__main__":

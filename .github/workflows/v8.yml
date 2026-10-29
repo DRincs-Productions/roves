@@ -50,6 +50,9 @@ jobs:
       - name: test smoke runner failure contracts
         shell: bash
         run: python -m unittest discover -s support/v8-smoke -p test_runner.py
+      - name: test cutover build failure gate
+        shell: bash
+        run: python -m unittest discover -s support/v8-smoke -p test_cutover_build_gate.py
       # Runs the real WebIDL parser and binding generator on a small IDL: no build needed.
       - name: test generated named-property visibility
         if: matrix.mode == 'normal'

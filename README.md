@@ -864,3 +864,11 @@ Inline diagnostic mapping reuses deno_core's public sourcemap re-export, removin
 direct version pin while retaining the same transitive codec. Native normal/JITless mapping
 checks pass. The cached-static-TLA correctness gap remains open; its proposed library patch
 has not been adopted.
+
+The game-blocking cached-static-TLA bug now has an authorized temporary deno_core0.413
+snapshot with the minimal async-graph guard, preserved MIT license and removal TODO.
+Upstream: [issue37097](https://github.com/denoland/deno/issues/37097),
+[draft PR37098](https://github.com/denoland/deno/pull/37098). Native suites pass117 normal/
+116 JITless. Browser coverage now requires23 module checks; integrated CI is still needed.
+CI --build checks propagate Cargo failures, preventing use of a stale cached binary.
+No action inputs, bundle format or privileged game APIs are introduced.

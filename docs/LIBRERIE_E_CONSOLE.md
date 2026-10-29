@@ -118,3 +118,15 @@ Percorso a tappe:
    piattaforme.
 
 Le tappe 3 e 4 sono lavori di mesi; le tappe 1 e 2 si possono iniziare subito.
+
+
+### Eccezione confermata29ottobre: difetti delle librerie che bloccano giochi
+
+L'utente autorizza fork e patch minime con prova negativa/positiva, issue/PR upstream e
+TODO di ricontrollo/rimozione dopo releaseufficiale corretta. Caso attuale: snapshotMIT
+deno_core0.413, issue37097/draftPR37098 in denoland/deno (libs/core). Il vecchio repository
+deno_core e archiviato dopo il trasferimento; il progetto resta mantenuto nel monorepo.
+La priorita al riuso rimane: niente grafo duplicato, API private o manutenzione permanente
+non necessaria. Native117/116verdi; copertura browser23check da confermare inCI.
+Dettagli, provenienza e criteri di rimozione: handoff0428 e ROVES_PATCHES.md nello snapshot.
+Windows sara sbloccato piu tardi: non simulare prove manuali o interagire col blocco accesso.

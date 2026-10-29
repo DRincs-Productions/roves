@@ -1,3 +1,17 @@
+### Eccezione autorizzata: fix di librerie che bloccano i giochi — 29 ottobre 2026
+
+L'utente autorizza fork e patch minime per difetti che impediscono il funzionamento di
+un gioco, a partire dal cached-import/TLA di deno_core0.413.0. Questa eccezione supera
+il divieto di fork per tali correzioni necessarie; non autorizza una riscrittura generale
+ne un grafo runtime duplicato. Preferire aggiornamenti mantenuti quando gia corretti.
+Preparare riproduzione negativa/positiva, mantenere licenze e pin riproducibili, aprire
+issue e pull request upstream quando possibile e aggiungere TODO per ricontrollare la
+correzione e rimuovere il fork appena una release ufficiale supera le regressioni.
+L'utente autorizza esplicitamente la pubblicazione upstream di issue/PR relative al fix.
+Non chiedere nuovamente questa autorizzazione per l'incarico0428. Build pesanti online,
+revisione, patch e gate CI restano validi. Windows verra sbloccato piu tardi: nessun input
+alla schermata di accesso e nessuna falsa verifica di clic/notice/chiusura UI.
+
 ### Ricontrollo periodico autorizzato ogni cinque ore — 28 ottobre 2026
 
 L'utente autorizza esplicitamente il trigger periodico

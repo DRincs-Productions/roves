@@ -1,3 +1,31 @@
+## 2026-10-29 - Adopt the authorized temporary deno_core TLA fix (0428)
+
+The user authorizes minimal library forks for game-blocking defects, upstream issue/PR
+and a removal TODO. Vendor the published0.413.0 library snapshot under roves-js, preserving
+MIT licensing/provenance. One semantic change excludes async graphs from the Evaluated
+shortcut; Deno's normal promise evaluation handles them. Root/standalone Cargo patches
+select the same snapshot, keeping one Deno and one V8150.4.0. Packaging omits non-library
+examples/benchmarks and cache markers; library sources/features/dependencies stay intact.
+Keep the original mod_evaluate adapter, no rejected0424 shim or duplicate graph.
+Fork BlackRam-oss/deno, commit49a03aaf1ae59c864539c88f510ef0582073826e;
+issue37097 and draftPR37098 submitted, with required AI disclosure. New upstream regression
+body executed standalone; full upstream monorepo checks not claimed. Native117normal/
+116JITless pass, root/descendant resolution/rejection, identity, cache and fetch-once checks.
+CI-style standalone metadata confirms one runtime/backend and unchanged lock resolution.
+Browser fixture adds the real static-root/descendant matrix (23 required checks); Chrome
+MCP passes the new case, integrated Servo CI remains required. TODO addition is staged
+separately from the user's existing blank line. AGENTS/workflow/library docs aligned.
+Do not claim overall retention, SourceText or manual desktop checks resolved.
+
+## 2026-10-29 - Propagate build failure before browser smoke checks (0429)
+
+The cutover helper previously returned0 after Cargo failed. Make --build return Cargo's
+status so CI cannot test an old cached browser after a failed compilation; preserve the
+check-only diagnostic mode. Tests assert build success, Rust diagnostic failure and
+infrastructure failure, plus exact manifest/lock restoration. The previous helper fails
+two negative cases; the new table test passes all four. Add the test to V8 CI. This fixes
+a potential gate weakness, not proof that a past green batch used stale code.
+
 ## 2026-10-29 - Record an explicit-scope runtime source comparison (analysis0427)
 
 Compare the seven named runtime/loading files between1f0bdebb1e8 (before Deno introduction)

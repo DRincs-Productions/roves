@@ -1,0 +1,80 @@
+diff --git a/.github/workflows/v8.yml b/.github/workflows/v8.yml
+index e291e119bff..6a25462978c 100644
+--- a/.github/workflows/v8.yml
++++ b/.github/workflows/v8.yml
+@@ -50,6 +50,9 @@ jobs:
+       - name: test smoke runner failure contracts
+         shell: bash
+         run: python -m unittest discover -s support/v8-smoke -p test_runner.py
++      - name: test cutover build failure gate
++        shell: bash
++        run: python -m unittest discover -s support/v8-smoke -p test_cutover_build_gate.py
+       # Runs the real WebIDL parser and binding generator on a small IDL: no build needed.
+       - name: test generated named-property visibility
+         if: matrix.mode == 'normal'
+diff --git a/support/v8-smoke/test_cutover_build_gate.py b/support/v8-smoke/test_cutover_build_gate.py
+new file mode 100644
+index 00000000000..12e92093947
+--- /dev/null
++++ b/support/v8-smoke/test_cutover_build_gate.py
+@@ -0,0 +1,45 @@
++"""A failed Cargo build must stop CI before a cached browser can be tested."""
++import contextlib
++import importlib.util
++import io
++from pathlib import Path
++import subprocess
++import sys
++import tempfile
++import unittest
++from unittest.mock import patch
++
++
++class CutoverBuildGateTests(unittest.TestCase):
++    def test_build_status_and_manifest_restoration(self):
++        source = Path(__file__).resolve().parents[1] / "v8_cutover_check.py"
++        spec = importlib.util.spec_from_file_location("cutover_gate", source)
++        module = importlib.util.module_from_spec(spec)
++        spec.loader.exec_module(module)
++        cases = [(True, 101, "file.rs:1: error: controlled failure", 101),
++                 (True, 101, "dependency download failed", 101),
++                 (True, 0, "", 0), (False, 101, "file.rs:1: error: controlled failure", 0)]
++        for build, status, diagnostic, expected in cases:
++            with self.subTest(build=build, status=status, diagnostic=diagnostic), tempfile.TemporaryDirectory() as directory:
++                root = Path(directory)
++                manifest = b'[workspace.dependencies]\njs = { package = "mozjs", version = "0.0.0" }\n'
++                lock = b'original lock contents\n'
++                (root / "Cargo.toml").write_bytes(manifest)
++                (root / "Cargo.lock").write_bytes(lock)
++
++                def cargo(command, **kwargs):
++                    self.assertIn("build" if build else "check", command)
++                    self.assertIn(module.ROVES_JS_LINE, (root / "Cargo.toml").read_text())
++                    return subprocess.CompletedProcess(command, status, "", diagnostic)
++
++                args = ["cutover", "servoshell"] + (["--build"] if build else [])
++                with patch.object(module, "ROOT", root), patch.object(sys, "argv", args), \
++                        patch.object(module.subprocess, "run", side_effect=cargo), contextlib.redirect_stdout(io.StringIO()):
++                    self.assertEqual(expected, module.main())
++                self.assertEqual(manifest, (root / "Cargo.toml").read_bytes())
++                self.assertEqual(lock, (root / "Cargo.lock").read_bytes())
++                self.assertEqual(diagnostic, (root / "target/v8-cutover/servoshell.log").read_text())
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/support/v8_cutover_check.py b/support/v8_cutover_check.py
+index 4f4bb4290f8..cd09563120b 100644
+--- a/support/v8_cutover_check.py
++++ b/support/v8_cutover_check.py
+@@ -102,7 +102,9 @@ def main() -> int:
+             print(f"{count:6}  {name}")
+     if not errors and result.returncode != 0:
+         print(result.stderr[-4000:])
+-    return 0
++    # CI must not run a cached browser after a failed build. Check-only mode is an
++    # error-counting diagnostic; --build is an authoritative compiler gate.
++    return result.returncode if args.build else 0
+ 
+ 
+ if __name__ == "__main__":

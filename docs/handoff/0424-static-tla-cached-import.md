@@ -1,6 +1,11 @@
 # 0424 — rilascio host e import di TLA gia in valutazione
 
-## Stato
+## Stato aggiornato
+
+La mitigazione temporanea e autorizzata e implementata in0428, con issue37097/PR37098
+nel repositoryattivo denoland/deno. La crateufficiale nonpatchata resta difettosa; il
+candidato import-interno rifiutato sotto NON e stato adottato. Vedi handoff0428 per CI.
+
 
 Il test di rilascio host e completo su deno_core originale0.413: normal1/1 e JITless1/1,
 due percorsi per esecuzione (drop diretto e clear esplicito/idempotente prima del drop).

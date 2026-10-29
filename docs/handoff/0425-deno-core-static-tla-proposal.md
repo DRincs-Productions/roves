@@ -1,12 +1,11 @@
 # 0425 — proposta verificata per il fast path TLA di deno_core
 
-## Decisione richiesta prima dell'adozione
+## Decisione risolta il29ottobre2026
 
-AGENTS e la direzione approvata vietano un fork nostro permanente della libreria.
-La proposta modifica deno_core0.413.0, non il solo collegamento Roves. Non e adottata:
-Cargo.toml/Cargo.lock di produzione e registry restano invariati. Serve una scelta esplicita
-per un'eventuale eccezione TEMPORANEA di dipendenza, da rimuovere con una release upstream
-corretta. Nessuna autorizzazione a inviare issue/PR pubbliche upstream e stata richiesta.
+L'utente ha autorizzato la patch temporanea per difetti che bloccano giochi, fork, issue/PR
+upstream e TODO di ricontrollo. Vedi handoff0428 per l'integrazione attuale. Forkcreato in
+BlackRam-oss/deno, issue37097 e draftPR37098. Le condizioni sotto conservano evidenze e
+limiti della proposta originale; non chiedere nuovamente l'autorizzazione gia ricevuta.
 
 Diff portabile: 0425-deno-core-static-tla-proposal.patch, una condizione:
 

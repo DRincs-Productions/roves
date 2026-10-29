@@ -22,6 +22,7 @@ v8 = "=150.4.0"
 # module/async event loop (see `rust::Runtime` and `deno_impl`). Default features: the V8
 # backend, `reactor-tokio` (required by its realm code) and the prebuilt archives' libc++.
 # No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
+# Temporary TLA fix; provenance and removal criteria: vendor/deno_core/ROVES_PATCHES.md.
 deno_core = "=0.413.0"
 # The current-thread reactor deno_core's futures and blocking static module loads run on.
 tokio = { version = "1", features = ["rt"] }
@@ -46,3 +47,7 @@ libz-sys = []
 # V8 without its JIT compilers (see ../../docs/V8_MIGRATION.md, "JIT-less"): servoshell
 # builds it with `--features roves-js/jitless`.
 jitless = ["roves-v8/jitless"]
+
+# Standalone native checks use the same reviewed snapshot as the Servo workspace.
+[patch.crates-io]
+deno_core = { path = "vendor/deno_core" }

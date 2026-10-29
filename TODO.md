@@ -241,3 +241,10 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
 Distinguere sempre **implementato**, **verificato** e **proposto in PR**. Un punto
 si chiude con evidenza pertinente al comportamento finale, poi va rimosso da questo file
 (il dettaglio va in `CUSTOMIZATIONS.md`).
+
+
+## Deno Core: ricontrollo patch temporanea TLA
+
+- [ ] A ogni aggiornamento Deno e prima del rilascio stabile, ricontrollare [issue37097](https://github.com/denoland/deno/issues/37097) e [PR37098](https://github.com/denoland/deno/pull/37098). Il vecchio repository deno_core e archiviato dopo la confluenza in denoland/deno; usare il repository attivo.
+- [ ] Quando una crate ufficiale contiene il fix (non basta che l'issue sia chiusa), verificarla senza patch con regressioni TLA radice/discendente, resolve/reject, identita cache/eccezioni e fetch/esecuzione una volta, in normale e JITless.
+- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS/handoff. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
