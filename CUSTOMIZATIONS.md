@@ -1,3 +1,14 @@
+## 2026-10-29 - Verify UTF-16 inline columns and unknown source positions (0421)
+
+Extend the existing public-loader source-map regression with an astral character before
+an error on a later line (LF, CRLF and Unicode line separator). Assert the original HTML
+row and UTF-16 column, not UTF-8 bytes or Unicode scalar count. Also verify that row0
+metadata preserves the internal module URL and actual generated parse coordinates rather
+than inventing an HTML position. Reuse Deno, sourcemap and standard encode_utf16; no new
+implementation, dependency or production change is needed. Targeted normal/JITless1/1
+pass with all cases; one-file incremental dry-run/replay is LF-identical. Browser results
+for0419/0420 remain a separate pending CI requirement.
+
 ## 2026-10-29 - Make smoke fixture MIME types independent of host associations (0420)
 
 Windows now starts after ANGLE staging, but both browser jobs reject ordinary .mjs fixtures

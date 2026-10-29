@@ -4,6 +4,14 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**0421 completa locale:** test coordinate inline esteso a errore dopo carattere astrale
+(UTF16, non byte/char) su righe LF/CRLF/LS e metadati riga0 senza falsa posizione HTML.
+Targeted normal1/1 e JITless1/1 verdi, patch0421 dry-run/replay1file identicoLF. Nessuna
+modifica produzione/dipendenza; usa le librerie gia adottate. Log target/task-0421/{normal,jitless}.log.
+Alla ripresa quota93%usata, non esaurita; ripresa08:42:48 gia programmata resta valida.
+CI al controllo iniziale: Android e quattro runtime Linux/Windows verdi; browser e packaging
+attivi senza fallimenti. Conservare i commit locali bc14 e0421 durante queste run.
+
 **Pubblicazione confermata:** rootdd653a39bf2, wiki425dcc5, actionaa8ea47. Nuove run:
 V840820698282, generale40820698271, Android40820698291; iOS40820698138 esclusa.
 Action40820675997 e wiki40820672179 attive. Prima lettura: V8/generale in coda,
