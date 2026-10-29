@@ -4,6 +4,20 @@
 
 ### Punto corrente — 29 ottobre, 0420 e 0419
 
+**0425 proposta nativa verificata, NON ADOTTATA:** una guardia !module.is_graph_async()
+nel fast path di deno_core0.413 corregge il casoTLA radice/discendente in prova separata.
+Suite117normal/116JITless verdi, matrice resolve/reject/cache/namespace/fetchuna volta;
+negativa su dipendenza originale rileva import risolto prima del resolver. Patch portabile
+con dry-run/apply verificati in docs/handoff/0425-deno-core-static-tla-proposal.patch e
+spiegazione nello stesso percorso.md. Nativeworkspace ripristinata, registry e dipendenza
+produzione invariati. Richiedere eccezione esplicita al divieto fork prima dell'adozione;
+nessuna richiesta ripetuta per incarichi ordinari. Non sostituire con il WIP0424.
+
+0424 completa nel commit locale f2e860b812a, wiki ebe965e locale non ancora pubblicata.
+Al controllo precedente V8de07111/11verde, Androidverde, generaleLinuxportable ancoraattiva;
+nessun push fino a gate consentito. DOM/clic/noticeUI ancora bloccati da desktopWindowslock.
+
+
 **0424 completa locale, NUOVO GAP DI CORRETTEZZA:** test host-release con TLA pendente
 normal/JITless1/1 verdi, due percorsi e controlloWeak; patch0424 dry-run/replay1file
 identicoLF verde. Runtime produzione invariato.

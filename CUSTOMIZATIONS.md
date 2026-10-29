@@ -1,3 +1,15 @@
+## 2026-10-29 - Prepare an isolated deno_core async fast-path proposal (0425)
+
+Validate a one-condition upstream proposal: skip the already-evaluated shortcut for async
+graphs, leaving Deno's existing promise evaluation path to await completion. No production
+dependency/registry modification is made. Temporary isolated package copy preserves MIT
+licensing and is restored out of the test workspace afterward. Proposal suites pass117
+normal/116 JITless; root/descendant success/reject/cache/namespace/fetch-once cases pass.
+Without the patch the same matrix records premature settlement before the resolver.
+Preserve a portable dry-run/apply-verified diff and handoff for user review. Adoption would
+require an explicit temporary exception to the no-fork rule plus integrated browser CI;
+no production fix or overall migration completion is claimed.
+
 ## 2026-10-29 - Verify host release with pending TLA and record a cached-import gap (0424)
 
 Strengthen and accurately rename the shutdown test: prove TLA entered and remains pending,
