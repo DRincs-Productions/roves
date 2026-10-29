@@ -1,3 +1,10 @@
+## 2026-10-29 - Publish the requested V8 release checkpoint
+
+User explicitly requested cancellation of the previous CI batch and immediate push.
+Publish0437/0438 at f119d656222 and tag v0.7.14 to start Release. Artifacts, integrated
+shutdown verification and consumer pin synchronization remain pending until CI succeeds.
+No completed migration or verified runtime fix is claimed by creating the tag.
+
 ## 2026-10-29 - Exercise repeated detached DOM/listener cycles (0438)
 
 Expand the existing single-document retention scene from one removed div/probe/listener

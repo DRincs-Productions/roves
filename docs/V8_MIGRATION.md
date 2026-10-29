@@ -2,6 +2,17 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### Pubblicazione autorizzata e release avviata
+
+L'utente ha chiesto esplicitamente di annullare le vecchie CI e pubblicare subito.
+Run generale40945534864 cancellazione richiesta; Android precedente gia verde.
+Push f119d656222 include fix0437 e scena memoria0438. Tag v0.7.14 pubblicato per avviare
+Release. Non dichiarare artefatti disponibili o verifiche concluse prima dei risultati.
+Dopo release verde verificare ZIP reali e aggiornare pin roves-action/action.yml (due
+letterali + README) e roves-packmaster/src/lib/shell-version.txt + README, come AGENTS.
+I consumer restano0.7.13 fino alla verifica degli artefatti0.7.14. Ripetere la chiusura
+con fetch lento sul nuovo binario: il vecchio andava in panic. Versione non prova risoluzione.
+
 ### 0438 — ampliamento della prova di memoria, locale
 
 La scena document-retention ora crea/rimuove32 cicli DOM con listener e probe, conserva
