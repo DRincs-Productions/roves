@@ -1,3 +1,13 @@
+## 2026-10-29 - Preserve integrated static-load timing evidence (0431)
+
+Read the four completed Linux/Windows normal/JITless runtime-log artifacts for3cee4b8602b.
+Record all12 observations and artifact provenance before log expiry, distinguishing
+headless execution from document visibility. Slow loopback response intentionally waits
+250ms; observed timer/frame gaps confirm the provisional blocking pause. No new browser
+run, benchmark average, accepted latency threshold or overall performance claim. Keep
+manual input, remote network, shutdown and retention checks open. Documentation/data only;
+no production source or Servo overlay change. New0430 batch remains the publication gate.
+
 ## 2026-10-29 - Guard static-load isolation across suspended fetches (0430)
 
 Add a native regression using the existing host-loader interface and standard-library

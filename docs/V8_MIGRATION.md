@@ -2,14 +2,27 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
-### 0430 pronta: regressione sui fetch statici sospesi
+### Ultima pubblicazione e lavoro successivo
+
+Pubblicato **9f8d1c8a936**, wiki **66e15ef**: include0430. Nuovo batch identificato:
+V8 **40915577759**, generale **40915577791**, Android **40915577947**;
+iOS40915577836 esclusa. In coda al primo controllo; nessun nuovo push finché le run
+richieste non sono concluse e gli eventuali errori corretti.
+
+0431 completa come analisi documentata: recuperati12 campioni dai log del batch3cee.
+Con ritardo server deliberato250ms, timer/frame mostrano intervalli di circa255–261ms;
+nessuna soglia accettata o prova di input reale. Dataset conservato prima della scadenza
+degli artifact in docs/measurements/0431-static-module-pause.json, dettagli in
+[ROVES_PERFORMANCE.md](ROVES_PERFORMANCE.md). Pausa ancora provvisoria, non punto chiuso.
+
+### 0430 completata e pubblicata: regressione sui fetch statici sospesi
 
 118 test normali e117 JITless verdi; la negativa con pumping del loop durante il fetch
 fallisce nel punto previsto. Nessun cambiamento produttivo o nuova dipendenza.
 Patch0430 verificata; [dettaglio e log](handoff/0430-static-load-job-isolation.md).
 Batch3cee4b8602b concluso positivo per tutte le verifiche richieste: V8 Linux/Windows8/8,
 generale non Apple10/10, Android3/3. Moduli browser23/23 in tutte e quattro le combinazioni.
-Pubblicare il lavoro completo e identificare il nuovo batch una volta. Nessun Claude.
+Pubblicazione completata, nuovo batch indicato sopra. Nessun Claude.
 L'utente non può sbloccare Windows: continuare senza input desktop. Restano SourceText0361,
 misure della pausa, retention complessiva e prove UI. JSONpreload rimane nel TODO: le API
 pubbliche attuali non espongono il tipo della radice e il workaround scartato resta vietato.

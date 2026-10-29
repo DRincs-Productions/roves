@@ -1,0 +1,170 @@
+{
+  "commit": "3cee4b8602bb87914230e29dd417cc4650427038",
+  "run_id": 40907083551,
+  "headless": true,
+  "single_sample": true,
+  "artifacts": {
+    "windows-normal": 12914341730,
+    "windows-jitless": 12914142349,
+    "linux-jitless": 12913297102,
+    "linux-normal": 12913107693
+  },
+  "rows": [
+    {
+      "platform": "windows-normal",
+      "file": "module-order.BwQoMT/roves/roves.log",
+      "observation": {
+        "scene": "cold",
+        "elapsed_ms": 4.600000000000023,
+        "max_timer_gap_ms": 6.990000000000009,
+        "timer_ticks": 5,
+        "max_frame_gap_ms": 30.470000000000027,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "windows-normal",
+      "file": "module-order.BwQoMT/roves/roves.log",
+      "observation": {
+        "scene": "warm",
+        "elapsed_ms": 1.3899999999999864,
+        "max_timer_gap_ms": 7,
+        "timer_ticks": 9,
+        "max_frame_gap_ms": 30.960000000000036,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "windows-normal",
+      "file": "module-order.BwQoMT/roves/roves.log",
+      "observation": {
+        "scene": "slow",
+        "elapsed_ms": 257.27,
+        "max_timer_gap_ms": 258.05999999999995,
+        "timer_ticks": 6,
+        "max_frame_gap_ms": 258.0799999999999,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "windows-jitless",
+      "file": "module-order.V1Fb4g/roves/roves.log",
+      "observation": {
+        "scene": "cold",
+        "elapsed_ms": 5.630000000000109,
+        "max_timer_gap_ms": 7.6400000000001,
+        "timer_ticks": 5,
+        "max_frame_gap_ms": 30.84999999999991,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "windows-jitless",
+      "file": "module-order.V1Fb4g/roves/roves.log",
+      "observation": {
+        "scene": "warm",
+        "elapsed_ms": 2.1699999999998454,
+        "max_timer_gap_ms": 7.410000000000082,
+        "timer_ticks": 9,
+        "max_frame_gap_ms": 31,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "windows-jitless",
+      "file": "module-order.V1Fb4g/roves/roves.log",
+      "observation": {
+        "scene": "slow",
+        "elapsed_ms": 256.8800000000001,
+        "max_timer_gap_ms": 261.1300000000001,
+        "timer_ticks": 5,
+        "max_frame_gap_ms": 257.6600000000001,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-jitless",
+      "file": "module-order.4WiOHF/roves/roves.log",
+      "observation": {
+        "scene": "cold",
+        "elapsed_ms": 4.039999999999964,
+        "max_timer_gap_ms": 5.470000000000027,
+        "timer_ticks": 5,
+        "max_frame_gap_ms": 30.110000000000014,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-jitless",
+      "file": "module-order.4WiOHF/roves/roves.log",
+      "observation": {
+        "scene": "warm",
+        "elapsed_ms": 1.6599999999999682,
+        "max_timer_gap_ms": 5.309999999999945,
+        "timer_ticks": 11,
+        "max_frame_gap_ms": 30.1099999999999,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-jitless",
+      "file": "module-order.4WiOHF/roves/roves.log",
+      "observation": {
+        "scene": "slow",
+        "elapsed_ms": 254.45000000000005,
+        "max_timer_gap_ms": 258.4200000000001,
+        "timer_ticks": 6,
+        "max_frame_gap_ms": 255.22000000000014,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-normal",
+      "file": "module-order.ZWyDrp/roves/roves.log",
+      "observation": {
+        "scene": "cold",
+        "elapsed_ms": 5.190000000000055,
+        "max_timer_gap_ms": 6.730000000000018,
+        "timer_ticks": 5,
+        "max_frame_gap_ms": 30.120000000000005,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-normal",
+      "file": "module-order.ZWyDrp/roves/roves.log",
+      "observation": {
+        "scene": "warm",
+        "elapsed_ms": 1.7899999999999636,
+        "max_timer_gap_ms": 5.339999999999918,
+        "timer_ticks": 11,
+        "max_frame_gap_ms": 30.120000000000005,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    },
+    {
+      "platform": "linux-normal",
+      "file": "module-order.ZWyDrp/roves/roves.log",
+      "observation": {
+        "scene": "slow",
+        "elapsed_ms": 256.15999999999997,
+        "max_timer_gap_ms": 260.0799999999999,
+        "timer_ticks": 6,
+        "max_frame_gap_ms": 257.04999999999995,
+        "frame_samples": 1,
+        "visibility": "visible"
+      }
+    }
+  ]
+}

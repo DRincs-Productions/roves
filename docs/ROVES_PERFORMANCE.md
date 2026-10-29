@@ -1,3 +1,46 @@
+## 29 ottobre — pausa statica dopo il fix Deno, CI 3cee4b8602b (0431)
+
+Dati dai quattro artifact runtime del workflow V8 **40907083551**, commit
+**3cee4b8602bb87914230e29dd417cc4650427038**: Deno0.413.0 con patch0428,
+V8 150.4.0, build debug Servo0.5.0, Linux ubuntu-24.04 e Windows windows-latest,
+modalità normale/JITless reale. Runner GitHub condivisi, nessun hardware dedicato.
+Processi avviati con `--hard-fail -z` (headless); Linux anche tramite Xvfb1280x720x24.
+Il documento riferisce visibilityState visible: questo NON rende la prova visibile.
+Non sono misure Chrome MCP o test di input reale. Una sola osservazione per combinazione.
+
+Fixture module-order.html, caricamento statico aggiunto dopo l'avvio; cold/warm indicano
+il registro moduli dello stesso documento, non la pulizia di tutte le cache. HTTP loopback
+con server Python stdlib, slow impone250ms prima della risposta. Il tempo elapsed misura
+inserimento del tag fino a load, non solo la durata del prestito Rust o della rete.
+
+| Piattaforma | Scena | Caricamento ms | Max intervallo timer ms | Max intervallo frame ms |
+| --- | --- | ---: | ---: | ---: |
+| linux-normal | cold | 5.19 | 6.73 | 30.12 |
+| linux-normal | warm | 1.79 | 5.34 | 30.12 |
+| linux-normal | slow | 256.16 | 260.08 | 257.05 |
+| linux-jitless | cold | 4.04 | 5.47 | 30.11 |
+| linux-jitless | warm | 1.66 | 5.31 | 30.11 |
+| linux-jitless | slow | 254.45 | 258.42 | 255.22 |
+| windows-normal | cold | 4.60 | 6.99 | 30.47 |
+| windows-normal | warm | 1.39 | 7.00 | 30.96 |
+| windows-normal | slow | 257.27 | 258.06 | 258.08 |
+| windows-jitless | cold | 5.63 | 7.64 | 30.85 |
+| windows-jitless | warm | 2.17 | 7.41 | 31.00 |
+| windows-jitless | slow | 256.88 | 261.13 | 257.66 |
+
+Nella scena lenta l'intervallo timer sale a circa258–261ms e quello frame a255–258ms:
+la pausa provvisoria è osservabile nel browser integrato, non solo nel test nativo.
+Tutti i campioni mostrano ripresa di timer/frame; frame_samples è1 in queste esecuzioni,
+insufficiente per analizzare distribuzioni, FPS o input latency. Non stabilire soglie
+accettabili da questi numeri né confrontare causalmente normal/JITless con un campione.
+Il riferimento Chrome0410 sotto, su un'altra macchina/condizione, non è un benchmark A/B.
+
+Restano da verificare input reale, rete remota controllata, chiusura durante il fetch,
+scene di gioco rappresentative e ripetizioni. Nessuna misura CPU/RAM/GPU o promessa di
+prestazioni. L'autorizzazione alla pausa resta provvisoria: questo resoconto non la chiude.
+Dati e provenienza: docs/measurements/0431-static-module-pause.json; copie ZIP locali in
+target/task-0431. Gli artifact CI scadono dopo tre giorni; i valori sono conservati qui.
+
 ## 29 ottobre — confronto sorgenti prima/dopo adozione Deno (0427)
 
 Confronto Git reale tra1f0bdebb1e8 (padre del commit introduttivoDeno f8efd5c35ee) e
