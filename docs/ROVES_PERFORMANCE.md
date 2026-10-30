@@ -68,6 +68,59 @@ Automatizzare percorsi deterministici con timestamp/marker condivisi nel contenu
 - **Non priorità senza profilo:** sostituzione egui, fast path B, allocator tuning, JITless e ottimizzazioni worker speculative. Valutarli solo se un trace sul compilato dimostra impatto e il guadagno supera i rischi.
 - **Da mantenere come contratti di correttezza:** test GC/retention, lifecycle worker, fallback overlay, AccessKit e controlli DOM. Un test corretto non implica performance equivalenti a Chrome.
 
+## Proposte tecniche per aumentare la fluidità — ipotesi da validare sul compilato
+
+Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{headed_window,event_loop,gui,performance}.rs` e `components/roves-js/src/deno_impl.rs`. **Non sono miglioramenti già dimostrati.** Implementare una modifica alla volta, misurare contro Chrome e confrontare il bundle prima/dopo sulla stessa macchina. Non cambiare la pipeline di produzione sulla sola base di benchmark sintetici.
+
+### P0 — Frame pacing, redraw e sincronizzazione con il display
+
+- Il `RedrawCoalescer` di `headed_window.rs` accorpa richieste di redraw per evitare l'accumulo incontrollato di eventi SDL3 durante `requestAnimationFrame` (PixiJS/Three.js). **Conservarlo**, verificandone il comportamento sotto carico, dopo resize, durante focus lost/gained e quando arrivano nuove richieste durante il paint.
+- Tracciare la sequenza completa **rAF → richiesta redraw → dispatch SDL → WebView paint → GPU present → frame visibile** con timestamp correlabili e ID di frame. Distinguere latenza della coda, costo CPU, blocchi VSync e GPU; i contatori aggregati attuali non bastano.
+- Verificare se il loop SDL3 `WaitUntil` e il timeout degli eventi introducono jitter o wake-up inutili; controllare deadline e gestione degli eventi concorrenti. Non introdurre polling attivo o timer fissi a 60 Hz senza prova.
+- Analizzare frame mancati, intervalli P50/P95/P99 e sequenze di hitch sul display a 60 Hz; controllare anche duplicazioni e frame tardivi. La media FPS non certifica la fluidità.
+- Verificare scheduling a finestra in foreground, background, minimizzata e al ritorno in focus; ridurre lavoro inattivo senza penalizzare la ripresa.
+
+**Esperimento:** replay deterministico della visual novel compilata, scena PixiJS animata, confronto Chrome/Roves con cattura frame e trace; A/B del solo scheduler. **Rischi:** frame persi, input in ritardo, busy-loop, regressioni su macOS/Windows/Linux. **Promozione:** miglioramento ripetibile dei picchi di frame time e nessun peggioramento funzionale.
+
+### P0 — Rendering GPU e costo di composizione
+
+- Misurare il percorso esistente: WebRender nel contesto off-screen, `render_to_parent_callback`/`glBlitFramebuffer`, egui e `present()`. Contatori già presenti: `webview_paint`, `egui_run`, `shell_paint`, `present`, `framebuffer_blits`, `direct_presents` e `composited_presents`.
+- Verificare che il **fast path A** sia effettivamente selezionato nel pacchetto e che la sua scelta non oscilli inutilmente durante gameplay/overlay; mantenere fallback immediato per dialoghi, AccessKit, errori, texture, DPI e resize.
+- Profilare il costo GPU della copia off-screen e delle sincronizzazioni, non dedurlo dal solo tempo CPU `present`. Confrontare risoluzioni e GPU integrate.
+- **Fast path B come prototipo opzionale:** WebView direttamente nel framebuffer della finestra e present differito unico, con overlay egui nello stesso back buffer. Non assumere che sia sicuro sostituire il contesto: oggi `repaint_webviews()` può presentare prima dell'overlay; evitare flicker e doppio swap.
+- Valutare il prototipo B soltanto se la copia GPU è un collo di bottiglia misurato sul bundle; testare screenshot/readback, salvataggio, permessi, fullscreen, cambio DPI/display e fallback.
+
+**Esperimento:** A/B con stesso bundle/contenuto, GPU, VSync, risoluzione e scene, tracciando frame visibili e uso GPU. **Rischi:** artefatti, tearing, regressioni di compatibilità, swap prematuro. **Promozione:** miglioramento concreto del frame pacing senza perdita di funzionalità.
+
+### P1 — Pause nel runtime Deno/V8 e caricamento scene
+
+- Profilare i tempi di caricamento dei moduli, valutazione, microtask e polling in `deno_impl.rs`; il `poll_module_event_loop` avanza valutazioni e dynamic imports e può eseguire script. Separare attese di rete/disco, lavoro JS e pause sul thread della pagina.
+- Verificare se il caricamento statico/dinamico introduce blocchi visibili durante transizioni, typewriter e animazioni; misurare con una scena reale che carica moduli e asset mentre rAF e input sono attivi.
+- Cercare operazioni sincrone, decode di immagini, parsing e accesso a pack/salvataggi sul percorso critico; valutare prefetch, caricamento differito e spostamento del lavoro solo dopo profiling e con test di correttezza.
+- Profilare pause GC, frequenza e dimensione delle allocazioni e retention in sessioni lunghe. Non trattare uno snapshot o un WeakRef rilasciato come prova di riduzione RAM o assenza di leak.
+- Conservare i test di correttezza normal/JITless e worker come regressioni, ma non equipararli al comportamento della build finale.
+
+**Esperimento:** dialoghi rapidi, transizioni ripetute, caricamento asset cold/warm, sessioni prolungate e input durante il load; Chrome e bundle Roves sullo stesso hardware. **Rischi:** ordine dei moduli, race, lifecycle e differenze web-platform.
+
+### P1 — Diagnostica del frame pacing e input-to-display
+
+- Estendere la diagnostica **opt-in** senza overhead significativo nelle build normali: timestamp per frame e ID correlabili fra rAF, enqueue/dispatch redraw, paint, blit e present; esportazione grezza machine-readable e non solo aggregati per intervallo.
+- Registrare separatamente tempo CPU e tempo GPU/presentazione quando le API di piattaforma lo consentono; non attribuire automaticamente un `present` lento al codice CPU.
+- Per input-to-display, marcare evento e prima modifica visibile, con registrazione video/high-speed capture quando disponibile; i soli timestamp JS non sono latenza effettiva al display.
+- Automatizzare report con raw data, P50/P95/P99, hitch, crash, RAM, CPU/GPU e differenza Chrome/Roves. Hardware dedicato per soglie; CI condivisa solo per smoke/regressioni funzionali.
+
+### P2 — Worker, audio, intrinsics e altre micro-ottimizzazioni
+
+Eseguire i benchmark in `support/perf` **solo** quando un trace del gioco compilato indica un collo di bottiglia corrispondente. Valutare parallelismo worker, overhead messaggi/clone/transfer, audio analyser, WebGL getters, lookup di intrinsics e allocator senza confondere miglioramenti micro con guadagni di CPU/GPU/RAM dell'intero gioco. Non cambiare toolkit egui o introdurre un nuovo motore grafico senza evidenze misurate.
+
+### Sequenza operativa e criteri di decisione
+
+1. Congelare i commit di `visual-novel-template`, `roves-action`, shell Roves e Chrome, e produrre bundle Windows/Linux/macOS tracciabili.
+2. Stabilire baseline headed sullo stesso hardware medio con gameplay reale e scene stress integrate: 60 Hz, ripetizioni, cold/warm, sessione lunga e confronto frame/input.
+3. Aggiungere tracing opt-in dei frame; identificare i 3 principali contributori a hitch, latenza e carico CPU/GPU.
+4. Intervenire sul collo di bottiglia dominante (scheduler, blit/present, caricamento o GC), **un cambiamento per esperimento**, con A/B del bundle distribuito.
+5. Accettare un'ottimizzazione soltanto se migliora in modo riproducibile la fluidità percepita o le risorse senza regressioni di stabilità, audio, input, save/load e overlay su tutte le piattaforme. Se la differenza rispetto a Chrome non è misurabile, non dichiarare parità né risparmio.
+
 ## Fast path desktop: stato e decisione
 
 Il percorso A salta la pittura egui quando non servono overlay, mantenendo offscreen e blit; le misure storiche riportano un beneficio locale, **non** una dimostrazione di parità con Chrome nel bundle attuale. Il percorso B (render direttamente sul framebuffer con present differito) è un'ipotesi, non un obiettivo obbligatorio. Prima misurare `webview_paint`, `egui_run`, `shell_paint`, `present`, `framebuffer_blits`, `direct_presents`, `composited_presents` con e senza overlay nel bundle. Verificare save dialog, AccessKit, DPI, resize, fullscreen, errori, screenshot e fallback immediato. Promuovere un'ottimizzazione solo dopo test reali e A/B.
