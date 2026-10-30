@@ -2,6 +2,18 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 30 ottobre — v0.7.14 disponibile e CI concluse verdi
+
+Checkpoint f119d656222: tutti i workflow conclusi verdi, incluse Release40947853285,
+V840947853143/40947824480 e generale40947853363/40947824739, Android40947824441.
+Verificati sei ZIP pubblicati: Linux/macOS/Windows, plain e Steam, dimensioni non nulle.
+Consumer aggiornati dopo verifica: action232a51c, Packmaster9936b6d (pin condiviso UI/Rust).
+Il job Linux123707825713 conferma moduli23/23 e released element true probe true nella
+scena con32cicli. Non e una prova di memoria stabile su sessioni lunghe.
+Resta da ripetere sul nuovo binario la chiusura con fetch lento: CI verde non sostituisce
+la riproduzione reale del panic0437. Policy bundle solo log e pausa su gioco rappresentativo
+restano aperte. Non avvisare che tutti e tre i punti sono finiti; la release e disponibile.
+
 ### Pubblicazione autorizzata e release avviata
 
 L'utente ha chiesto esplicitamente di annullare le vecchie CI e pubblicare subito.

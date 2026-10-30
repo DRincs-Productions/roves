@@ -1,3 +1,11 @@
+## 2026-10-30 - Verify v0.7.14 publication and synchronize consumers
+
+Required checkpoint CI and Release finished successfully; verify six nonempty platform
+plain/Steam ZIP assets. Update both action shell literals/README and Packmaster shared
+UI/Rust pin/README to0.7.14. Linux browser logs confirm module23/23 and the repeated DOM
+scene release diagnostic. Manual fixed-binary shutdown and representative pause checks
+remain open; no full migration completion claim. Metadata-only change, no Servo overlay.
+
 ## 2026-10-29 - Publish the requested V8 release checkpoint
 
 User explicitly requested cancellation of the previous CI batch and immediate push.
