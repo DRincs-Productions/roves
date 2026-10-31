@@ -1,3 +1,11 @@
+## 2026-10-31 - Confirm downstream v0.7.14 integration checks
+
+The action consumer CI passes against visual-novel-template (41093967319), and Packmaster
+Test Distribution passes (41093987893). Root Android passes; iOS fails but is explicitly
+excluded from the publication gate. No Windows target was returned by Computer Use, so
+no new native shutdown/UI result is claimed. Record the pending fixed-binary, bundle-only
+logging and representative-pause checks. Documentation only, no source overlay change.
+
 ## 2026-10-30 - Verify v0.7.14 publication and synchronize consumers
 
 Required checkpoint CI and Release finished successfully; verify six nonempty platform

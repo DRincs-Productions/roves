@@ -2,6 +2,19 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 31 ottobre — consumer verificati, prove desktop ancora pendenti
+
+Il pin0.7.14 supera la CI di roves-action sul gioco visual-novel-template:
+run41093967319 verde. Packmaster9936b6d supera Build Test Distribution41093987893.
+Root653f774bb21: Android41094080598 verde; iOS41094080184 fallita ma esclusa dal gate
+per istruzione utente (non trattarla come successo, nessun retry solo per Apple).
+Nessun nuovo difetto richiesto rilevato. Nessun target Windows restituito da Computer Use
+al controllo31ottobre: nessuna prova UI aggiuntiva o chiusura sul nuovo binario eseguita.
+Non inferire automaticamente un desktop bloccato dalla sola lista vuota. Riprendere prova
+0437 quando esiste una finestra targetabile, poi bundle solo log e pausa rappresentativa.
+Le tre aree restano aperte: non dichiarare completata migrazione o disattivare il trigger.
+Nessun Claude e nessuna modifica al TODO esterno dell'utente.
+
 ### 30 ottobre — v0.7.14 disponibile e CI concluse verdi
 
 Checkpoint f119d656222: tutti i workflow conclusi verdi, incluse Release40947853285,
