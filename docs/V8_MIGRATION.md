@@ -2,6 +2,19 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0439 — binario release verificato e pronto per ripetere0437
+
+Scaricato asset Windows689903566 di v0.7.14 (90261149byte), SHA256 verificato:
+4630028da5c46ef94f2cbf1dd518cfcc692b515ea2cdf9e3f587b9fd36fe4aee. CRC ZIP completo
+valido; --version esce0 e riporta Servo0.5.0-f119d65, quindi include il fix0437.
+Binario: target/task-0439/shell/roves/play.exe; metadati e version.log nella stessa cartella.
+Non riutilizzare il vecchio binario task-0433 per dimostrare il fix. Ripetere la scena
+manual-shell del task0423 con server locale e chiusura nativa durante slow.mjs, osservando
+exitcode e log dopo la risposta. Nessuna nuova prova di chiusura ancora ottenuta.
+Al controllo ora esistono finestre desktop (VSCode/TeamViewer), nessuna finestra Roves:
+non chiamare il desktop indisponibile sulla base del precedente elenco vuoto.
+Le tre aree rimangono aperte. Nessun Claude o modifica al TODO esterno.
+
 ### 31 ottobre — consumer verificati, prove desktop ancora pendenti
 
 Il pin0.7.14 supera la CI di roves-action sul gioco visual-novel-template:

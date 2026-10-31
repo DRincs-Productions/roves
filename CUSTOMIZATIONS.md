@@ -1,3 +1,11 @@
+## 2026-10-31 - Stage the verified Windows release for shutdown retesting (0439)
+
+Download v0.7.14 Windows asset689903566, verify90261149 bytes, official SHA256 and all
+ZIP CRCs. Execute --version with persistent file-backed output handles: exit0 identifies
+Servo0.5.0-f119d65. Stage the correct fixed binary for native0437 retesting rather than
+the earlier task0433 build. This is artifact verification only, not a shutdown or pause
+result. Documentation only, no production source or overlay change.
+
 ## 2026-10-31 - Confirm downstream v0.7.14 integration checks
 
 The action consumer CI passes against visual-novel-template (41093967319), and Packmaster
