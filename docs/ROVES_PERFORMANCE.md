@@ -1,6 +1,6 @@
 # Roves — piano unificato di prestazioni e fluidità (Deno / V8)
 
-> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 30 ottobre 2026.
+> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 1 novembre 2026.
 
 ## Obiettivo di prodotto
 
@@ -22,6 +22,18 @@ Il candidato principale è `DRincs-Productions/visual-novel-template`, dopo la b
 4. Eseguire gli stessi percorsi in Chrome stable sul medesimo hardware, stessa risoluzione/DPR, frequenza del monitor, asset e configurazione. Alternare l'ordine Chrome/Roves e ripetere più sessioni dopo warm-up; conservare run individuali.
 5. Separare avvio a freddo, avvio caldo, gameplay a regime e sessione lunga; registrare modalità di alimentazione, VSync, GPU, processi concorrenti e stato della cache.
 6. Le GitHub Actions su runner condivisi servono per **build, test funzionali e raccolta di log**. Le soglie temporali vincolanti richiedono hardware dedicato e condizioni controllate. Non dichiarare passaggio del gate performance con soli test CI headless.
+
+## Seconda verifica essenziale: partita completa Roves e Chrome
+
+Dopo le verifiche mirate dei singoli casi, eseguire obbligatoriamente il confronto sulla visual novel reale. Questa seconda verifica è necessaria anche quando i test isolati passano: il checkpoint resta aperto finché il gioco distribuito non è stato scaricato, avviato e confrontato con Chrome.
+
+1. **Build con la release Roves:** compilare la visual novel tramite `roves-action`, usando esplicitamente la release Roves da verificare. Registrare repository e commit del gioco, pin risolto dell'action, versione della shell e run CI. Attendere il packaging riuscito, scaricare il bundle prodotto, verificarne l'hash, estrarlo/installarlo e avviare il gioco distribuito.
+2. **Build web per Chrome:** scaricare o clonare il repository Git della stessa visual novel e fare checkout dello stesso commit usato dall'Action. Installare le dipendenze dal lockfile, compilare normalmente la build di produzione con gli stessi parametri e asset della CI, quindi avviare il risultato con `serve` e aprirlo in Chrome. Registrare i comandi e le versioni utilizzate; verificare che i contenuti delle due build corrispondano.
+3. **Confronto prestazioni:** misurare entrambe le versioni sulla stessa macchina, con uguali viewport, DPR, impostazioni, stato iniziale e percorso di gioco, secondo le metriche sotto. Portare in primo piano la versione misurata, alternare l'ordine delle prove e ripetere le sessioni. Raccogliere avvio, caricamenti, CPU/RAM/GPU disponibili e frame pacing, distinguendo avvio freddo e caldo.
+4. **Avanzamento passo per passo:** avviare una nuova partita in entrambe le versioni e applicare la stessa sequenza di clic, tasti e scelte. A ogni passo attendere lo stesso stato narrativo e confrontare testo, personaggi, sfondi, posizione/dimensione degli elementi, colori, trasparenze e overlay. Durante typewriter, animazioni e transizioni osservare anche movimento, tempi, scatti, pause e risposta all'input; una schermata statica da sola non dimostra fluidità equivalente.
+5. **Evidenze e risultato:** conservare misure per sessione, screenshot degli stessi passi e catture delle sequenze dinamiche quando disponibili. Per ogni differenza riportare passo/scena, azione che la provoca, comportamento Chrome e Roves, log e riproduzione. Dichiarare esplicitamente se la resa grafica coincide e quali differenze di fluidità sono state osservate. Se mancano il bundle riuscito, l'avvio reale o il confronto interattivo, registrare il blocco e lasciare questa verifica incompleta.
+
+Le prove specifiche descritte nel resto del documento servono ad approfondire le differenze emerse durante questa partita e a verificare le correzioni. Dopo una correzione ripetere il passo interessato in entrambe le versioni e il percorso rappresentativo del gioco.
 
 ## Scenari obbligatori del gioco compilato
 
