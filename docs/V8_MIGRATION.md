@@ -2,6 +2,26 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0447 — misura di avvio su gioco reale, preliminare
+
+Pubblicato f1ac0a5563c: batch V8 41318759409 e generale 41318759482 in corso
+senza fallimenti al controllo, Android 41318759407 verde; iOS 41318759586 verde
+ma non richiesto dal gate. Non dichiarare corretta la cancellazione fino a CI
+e prova nativa con nuovo binario, fetch ancora pendente ed exit prima di SLOW END.
+
+Harness target/task-0444 (temporaneo, stdlib): corretti riepiloghi startup/steady,
+lead/tail, cache e limiti; 22 unittest verdi. File e JSONL restano in target e non
+sono versionati; non trattare lo strumento come prodotto o benchmark definitivo.
+Con release v0.7.14 e test-page PixiJS/React via HTTP loopback: un solo campione
+con ritardo 500ms sull’entry JS ha ricevuto la richiesta con ritardo confermato,
+nessun errore riportato, primo timer 853ms dopo iniezione e primo frame dopo
+1011ms; uscita 0. Un solo campione locale senza ritardo è riportato nella sezione
+precedente. Non sono confronti statisticamente validi, né attribuzione causale:
+cache, rete, rendering e schedulazione possono contribuire. Servono ripetizioni
+a freddo/caldo, input e giudizio su scene rappresentative; nessuna soglia concordata.
+README dello strumento registra limiti e versioni: target/task-0444/README.md.
+
+
 ### 0446 — cancellazione del caricamento statico allo shutdown, locale
 
 Causa di 0445: `load_module_graph` blocca il thread in `tokio.block_on` finché il fetch

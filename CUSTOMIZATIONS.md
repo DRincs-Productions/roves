@@ -1,3 +1,10 @@
+## Resume - Representative startup measurement (0447)
+
+A temporary measurement harness separates startup/steady samples and passed 22
+local unit tests. One real PixiJS/React load under a controlled 500 ms entry
+response delay was recorded; it is not an acceptance threshold or a causal
+benchmark. Details, limits, CI and remaining work are in docs/V8_MIGRATION.md.
+
 ## 2026-11-01 - Cancel a static module load blocked on the network at shutdown (0446)
 
 0445 showed a native close during a 20 s static fetch waiting for the response: the
