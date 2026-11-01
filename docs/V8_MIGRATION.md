@@ -2,16 +2,46 @@
 
 ## Punto operativo aggiornato — 1 novembre 2026
 
+### 0458 — yield cooperativo tra sorgenti già pronte, locale e non verificato
+
+Il poll di `SideModuleLoad` ora compila/registra al massimo una sorgente per
+chiamata. Dopo una sorgente pronta, interroga una volta il grafo per avviare i
+fetch discendenti: se il passo successivo è già pronto lo conserva nell'handle,
+accoda un wake e restituisce `Pending`; Servo riprende il grafo con un task
+successivo, lasciando intercalare il lavoro già in coda. Se la rete è davvero in
+attesa non si auto-risveglia; resta registrato il waker del fetch. L'istanziazione
+finale ha un poll dedicato. Il nuovo test Rust copre grafi tutti immediatamente
+disponibili, moduli JSON, root esterna/inline, script e microtask fra poll,
+ordine di valutazione e percorso bloccante. Claude non ha eseguito la suite; nessun
+risultato Rust è ancora disponibile.
+
+Questo limita il lavoro per poll ma non rende asincrone la compilazione di una
+singola sorgente, la risoluzione dei suoi import o l'istanziazione completa. Per
+un grafo pronto si accodano più task (un passo per sorgente più il link), costo e
+fairness reale dipendono dallo scheduler Servo. Il nuovo patch `0458` è stato
+applicato con `git apply --unidiff-zero` a una copia pulita del sorgente già a
+`0457` e confrontato con i file integrati (identici dopo normalizzazione LF).
+Replay e revisione del diff non sostituiscono CI.
+
+All'ultimo controllo aggregato (19:23 UTC), il batch del push `a9d45d33da8c`
+era in corso: V8 `41341178591` (Linux normal stava compilando; macOS è esclusa
+dal gate), Android `41341178585` e build Servo generale `41341178583` attive;
+iOS `41341178619` verde ma esclusa dal gate.
+Non pubblicare il commit `0458` finché Linux, Windows, Android e build generali
+del checkpoint precedente non sono concluse senza errori. TODO.md resta una
+modifica dell'utente e non va incluso.
+
 ### 0457 — caricamento statico deno_core a passi, integrazione locale non verificata
 
 Il prototipo 0457 è stato portato nel working tree: `SideModuleLoad` avanza
 `RecursiveModuleLoad` con poll brevi sulla ModuleMap unica di deno_core; il task
 networking Servo conserva il handle tra i fetch, senza tenere preso `JsRuntime`.
-Script, microtask, import dinamici, timer e input possono quindi proseguire mentre
-la rete risponde. Registrazione/compilazione delle sorgenti, risoluzione e link
-finale restano sincroni nel poll e possono ancora occupare il thread; nessuna
-soglia o miglioramento complessivo è dimostrato. Import dinamici e statici
-condividono la stessa mappa; HTML continua a decidere quando valutare il modulo.
+Script, microtask, import dinamici, timer e input possono proseguire mentre la
+rete risponde e, dopo 0458, tra sorgenti già pronte. La compilazione di una
+sorgente e il link finale restano sincroni e possono ancora occupare il thread;
+nessuna soglia o miglioramento complessivo è dimostrato. Import dinamici e
+statici condividono la stessa mappa; HTML continua a decidere quando valutare il
+modulo.
 
 Codex ha revisionato in lettura l’ordine HTML: Servo registra ogni completamento
 defer e avanza solo il primo elemento pronto della coda. L’API per passi non cambia

@@ -41,6 +41,9 @@ for the supported startup JIT switch. The migration plan and its status are in
 explains what the engine means for your game. How Roves performs against Chrome with PixiJS,
 three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
 [Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
+Static module loading is being changed to return control during network waits and between
+ready modules; Rust and browser CI are still pending, and V8 compilation/linking remain
+synchronous. See the migration plan for current status.
 The V8 smoke CI treats failed assertions, incomplete reports, unexpected skips and missing
 Window/CSP/navigation results as failures. JIT-less Wasm skips and explicitly configured
 missing audio/GPU devices are the only accepted exceptions. Completed suites stop their browser

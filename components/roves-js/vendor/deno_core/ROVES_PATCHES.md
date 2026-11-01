@@ -27,9 +27,11 @@ returning to `load_side_es_module`).
   and `JsRuntime::poll_side_es_module_load`. The handle owns the `RecursiveModuleLoad` and an
   `Rc` of the realm's existing module map, never a borrow of the runtime, so between polls
   the runtime runs its event loop, scripts and other loads on the same single module map.
-  A poll registers available sources, returns `Pending` with the caller's waker registered
-  only with pending fetches (no self-scheduled wake-up, no event-loop pump), and returns the
-  same errors as `load_side_es_module[_from_code]`. Dropping the handle cancels its fetches
+  A poll compiles/registers at most one source, then polls once more to start its child fetches.
+  If another step is already ready, it stores that step and schedules one cooperative wake so
+  Servo returns to the networking task queue between cached/ready sources; if a fetch is truly
+  pending, only that fetch wakes the task (no busy loop). The API does not pump the event loop
+  itself and returns the same errors as `load_side_es_module[_from_code]`. Dropping the handle cancels its fetches
   (calling `finish_load` if started); it may outlive the runtime.
   `drive_es_module_load` now shares the extracted helpers `register_es_module_from_code`,
   `register_loaded_module` and `instantiate_loaded_root` with it; its behaviour is unchanged.
@@ -39,6 +41,10 @@ returning to `load_side_es_module`).
   part of the root V8 normal/JITless CI. The vendor crate is excluded from that workspace.
 - Contract not covered: loaders whose `pump_event_loop_during_load()` is true need their
   caller to run the event loop between polls; Roves' loader keeps the default (false).
+
+The bounded cooperative-yield follow-up is kept separately as
+`patches/deno_core-0.413.0/0458-cooperative-module-poll.patch`. It is a zero-context
+diff; replay it after 0457 with `git apply --unidiff-zero`.
 
 Roves callers: components/roves-js/src/deno_impl.rs (`start_module_graph`,
 `poll_module_graph`, and the blocking `load_module_graph` driving the same handle).

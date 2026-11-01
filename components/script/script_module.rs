@@ -978,7 +978,8 @@ thread_local! {
 
 /// Wakes a static graph whose fetches are on the network: queues one networking task that
 /// advances it. Wakes that arrive before that task runs are coalesced into it; the task
-/// re-arms the waker before polling, so no wake-up is lost and none is self-scheduled.
+/// re-arms the waker before polling, so no wake-up is lost. A ready graph may schedule one
+/// additional task per source as a cooperative yield; actual pending fetches wake it normally.
 ///
 /// It holds only the graph's key and a sendable task source, no DOM reference: the waker may
 /// outlive the graph inside a finished fetch's channel on the network thread. The task finds

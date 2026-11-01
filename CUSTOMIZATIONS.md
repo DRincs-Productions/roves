@@ -1,4 +1,4 @@
-## 2026-11-01 - Port stepwise static module loading through deno_core (0457)
+## 2026-11-01 - Cooperative stepwise static module loading through deno_core (0457-0458)
 
 `components/roves-js/vendor/deno_core` now adds the public Roves `SideModuleLoad`
 handle and start/poll methods, sharing the existing `RecursiveModuleLoad` and
@@ -8,9 +8,13 @@ and dropping a pending handle cancels its fetches. `components/roves-js` exposes
 start/poll graph wrappers and records per-graph loader errors. Servo's
 `components/script/script_module.rs` keeps each pending graph by key and uses a
 coalescing networking-task waker, so no JsRuntime borrow survives across fetches.
-HTML's existing deferred/asap completion callbacks still control execution and
-document order. Runtime compilation/linking is synchronous; only waiting on
-network fetches yields to the event loop. This change is local and not yet
+Task 0458 bounds each poll to one compiled source. It defers an already-ready
+next stream item and self-wakes once through Servo's task source, returning
+control between cached/fast source registrations; genuine network waits still
+rely on their fetch wakers and do not busy-loop. Instantiation is deferred to
+its own poll. HTML's existing deferred/asap completion callbacks still control
+execution and document order. A single source compilation and final whole-graph
+instantiation remain synchronous. This change is local and not yet
 verified by Rust or browser CI. The three adapter-level tests in `roves-js/src/tests.rs`
 and the browser smoke are the executable gates; a separate vendor-only test module was
 not retained because that crate is excluded from the root workspace. The replayable
@@ -18,7 +22,10 @@ vendor delta is
 `patches/deno_core-0.413.0/0457-stepwise-side-module-load.patch`; the Servo adapter delta is
 `patches/servo-v0.5.0/0457-stepwise-static-module-loading.patch`. Both were applied to scratch
 copies of their HEAD source and compared with the working files (line endings normalized for
-the Windows checkout). Provenance and deno_core pin details:
+the Windows checkout). The 0458 deno_core follow-up is recorded separately in
+`patches/deno_core-0.413.0/0458-cooperative-module-poll.patch`; its replay also matches after
+line-ending normalization (`git apply --unidiff-zero` is required because the patch has no
+context lines). Provenance and deno_core pin details:
 `components/roves-js/vendor/deno_core/ROVES_PATCHES.md`.
 
 `support/v8-smoke` now uses a timer-issued HTTP probe and a server-side hold window

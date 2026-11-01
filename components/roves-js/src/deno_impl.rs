@@ -597,9 +597,10 @@ fn take_static_failure(owner: &DenoOwner, graph: &mut ModuleGraphLoad) {
 /// (see [`evaluate_module`]) and the module event loop is not pumped (the adapter loader
 /// never asks for it, see the module documentation).
 ///
-/// `Pending` means fetches are still on the network: `waker` was registered with them (and
-/// only with them; no wake-up is self-scheduled), and the embedder polls again after it is
-/// woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
+/// `Pending` either means a fetch is pending and registered `waker`, or that one source was
+/// registered and another immediately-ready step was deferred; in the latter case the waker
+/// was scheduled once to yield to the embedder's task queue. A real network wait is never
+/// self-woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
 /// finished and must be dropped. `Ready(Err(Busy))` leaves the handle untouched: poll it again
 /// from a later task. `Ready(Err(Cancelled))` once the runtime is shutting down: drop the
 /// handle (and with it the pending fetches) without reporting anything to script.

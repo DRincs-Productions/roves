@@ -7801,6 +7801,26 @@ mod deno_modules {
         panic!("static graph {} is still pending", graph.url());
     }
 
+    /// Polls a stepwise load whose remaining sources are all available, as Servo does: again
+    /// only after a wake-up. Task 0458: each `Pending` compiled one source and requested the
+    /// next poll itself (exactly one wake-up), instead of draining the graph in one poll.
+    fn poll_available(
+        runtime: &mut Runtime,
+        graph: &mut ModuleGraphLoad,
+        counter: &CountingWaker,
+        waker: &std::task::Waker,
+    ) -> Result<ModuleId, ModuleGraphError> {
+        for _ in 0..16 {
+            let before = wakes(counter);
+            match poll_module_graph(runtime.cx(), graph, waker) {
+                std::task::Poll::Ready(result) => return result,
+                std::task::Poll::Pending => assert_eq!(wakes(counter), before + 1,
+                    "with every source available, a pending poll requests the next one itself"),
+            }
+        }
+        panic!("static graph {} is still pending", graph.url());
+    }
+
     fn take_pending_exception(runtime: &Runtime) -> String {
         let cx = runtime.raw_cx();
         rooted!(in(cx) let mut error = UndefinedValue());
@@ -7815,7 +7835,6 @@ mod deno_modules {
     /// evaluating, and evaluates at the embedder's (HTML's) call.
     #[test]
     fn stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending() {
-        use std::task::Poll;
         let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
         let (counter, waker) = counting_waker();
         let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).expect("the load starts");
@@ -7852,15 +7871,80 @@ mod deno_modules {
             reply.send(Ok(network_source(&url))).unwrap();
         }
         assert!(wakes(&counter) > before);
-        let id = match poll_module_graph(runtime.cx(), &mut graph, &waker) {
-            Poll::Ready(result) => result.expect("the graph links"),
-            Poll::Pending => panic!("every source arrived"),
-        };
+        let id = poll_available(&mut runtime, &mut graph, &counter, &waker).expect("the graph links");
+        assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");
         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "linking evaluates nothing");
         drop(graph);
         evaluate_module(runtime.cx(), id).unwrap();
         assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn,main:D:7"), "top-level await completes: {}", log(&runtime));
         assert_eq!(started.get(), 4, "root, two imports and the dynamic import");
+    }
+
+    /// Task 0458: a graph whose sources are all immediately available (cached responses) is
+    /// not drained in one poll. Each poll compiles one source and wakes the graph for the next
+    /// step, so the embedder's other queued work (here a game script and its promise job) runs
+    /// between registrations; the instantiation gets a poll of its own. The graph still links,
+    /// evaluates only at the embedder's call, in module order, for external and inline roots.
+    #[test]
+    fn stepwise_static_load_returns_control_between_ready_sources() {
+        const MAIN: &str = r#"import { a } from "./a.js"; import { b } from "./b.js"; import data from "./data.json" with { type: "json" }; log.push("main:" + a + b + data.n);"#;
+        for inline in [false, true] {
+            let (mut runtime, loader, _) = runtime_with(&[
+                ("main.js", HostModuleKind::JavaScript, MAIN),
+                ("a.js", HostModuleKind::JavaScript, r#"import { c } from "./c.js"; log.push("a"); export const a = "A" + c;"#),
+                ("b.js", HostModuleKind::JavaScript, r#"log.push("b"); export const b = "B";"#),
+                ("c.js", HostModuleKind::JavaScript, r#"log.push("c"); export const c = "C";"#),
+                ("data.json", HostModuleKind::Json, r#"{ "n": 1 }"#),
+            ]);
+            let (counter, waker) = counting_waker();
+            let (url, mut source) = if inline {
+                (format!("{ORIGIN}page.html#roves-inline-module-3"), Some(MAIN.to_owned()))
+            } else {
+                (format!("{ORIGIN}main.js"), None)
+            };
+            let mut graph = start_module_graph(runtime.cx(), &url, &mut source).expect("the load starts");
+            let mut pending_polls = 0;
+            let mut expected_log = Vec::new();
+            let id = loop {
+                let before = wakes(&counter);
+                match poll_module_graph(runtime.cx(), &mut graph, &waker) {
+                    std::task::Poll::Ready(result) => break result.expect("the graph links"),
+                    std::task::Poll::Pending => {
+                        assert_eq!(wakes(&counter), before + 1, "inline={inline}: the graph requests its next step");
+                        // Unrelated game work queued meanwhile runs before the next step.
+                        eval(&runtime, &format!("log.push('tick{pending_polls}'); Promise.resolve().then(() => log.push('job{pending_polls}')); 0"));
+                        checkpoint(&mut runtime);
+                        expected_log.push(format!("tick{pending_polls},job{pending_polls}"));
+                        pending_polls += 1;
+                        assert!(pending_polls <= 16, "inline={inline}: the graph never completes");
+                    },
+                }
+            };
+            // One source per poll (root, a, b, c, data), then the instantiation alone.
+            assert_eq!(pending_polls, 5, "inline={inline}: one registration per poll");
+            assert_eq!(log(&runtime), expected_log.join(","), "inline={inline}: linking evaluates nothing");
+            let fetched = loader.fetched.borrow().len();
+            assert_eq!(fetched, if inline { 4 } else { 5 }, "inline={inline}: each module is fetched once");
+            drop(graph);
+            evaluate_module(runtime.cx(), id).unwrap();
+            assert!(drive(&mut runtime, |r| log(r).ends_with("c,a,b,main:ACB1")), "inline={inline}: {}", log(&runtime));
+            assert_eq!(log(&runtime), format!("{},c,a,b,main:ACB1", expected_log.join(",")));
+            drop(runtime);
+
+            // The blocking form (whose executor re-polls on the self-requested wake-ups) still
+            // completes the same graph within one call.
+            let (mut blocking, _, _) = runtime_with(&[
+                ("main.js", HostModuleKind::JavaScript, MAIN),
+                ("a.js", HostModuleKind::JavaScript, r#"import { c } from "./c.js"; log.push("a"); export const a = "A" + c;"#),
+                ("b.js", HostModuleKind::JavaScript, r#"log.push("b"); export const b = "B";"#),
+                ("c.js", HostModuleKind::JavaScript, r#"log.push("c"); export const c = "C";"#),
+                ("data.json", HostModuleKind::Json, r#"{ "n": 1 }"#),
+            ]);
+            let source = inline.then(|| MAIN.to_owned());
+            let id = load_module_graph(blocking.cx(), &url, source).expect("the blocking load links");
+            evaluate_module(blocking.cx(), id).unwrap();
+            assert!(drive(&mut blocking, |r| log(r) == "c,a,b,main:ACB1"), "inline={inline}: {}", log(&blocking));
+        }
     }
 
     /// Task 0457: the stepwise load keeps `load_module_graph`'s failure contracts, also with
@@ -7891,7 +7975,7 @@ mod deno_modules {
 
         // Three graphs wait on the network at once; their responses arrive out of order.
         let NetworkRuntime { mut runtime, network, .. } = network_runtime();
-        let (_, waker) = counting_waker();
+        let (counter, waker) = counting_waker();
         let mut graphs: Vec<_> = ["main.js", "gone.js", "broken.js"]
             .iter()
             .map(|path| start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap())
@@ -7918,10 +8002,8 @@ mod deno_modules {
         for (url, reply) in network.try_iter() {
             reply.send(Ok(network_source(&url))).unwrap();
         }
-        let id = match poll_module_graph(runtime.cx(), &mut main, &waker) {
-            Poll::Ready(result) => result.expect("the remaining graph still links"),
-            Poll::Pending => panic!("every source arrived"),
-        };
+        let id = poll_available(&mut runtime, &mut main, &counter, &waker).expect("the remaining graph still links");
+        assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");
         evaluate_module(runtime.cx(), id).unwrap();
         assert!(drive(&mut runtime, |r| log(r) == "main:D:7"), "{}", log(&runtime));
     }

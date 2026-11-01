@@ -3225,11 +3225,22 @@ enum SideModuleLoadState {
       Result<RecursiveModuleLoad, CoreError>,
     >,
   ),
-  /// Fetching sources and registering them in the module map.
-  Loading(RecursiveModuleLoad),
+  /// Fetching sources and registering them in the module map. `ready` keeps
+  /// a stream item that was already available when the poll had compiled a
+  /// source: it is handled by the next poll, which the poll that stored it
+  /// requested by waking its `cx` waker.
+  Loading {
+    recursive: RecursiveModuleLoad,
+    ready: Option<SideModuleLoadItem>,
+  },
   /// Returned `Ready` (success or error); the recursive load was dropped.
   Finished,
 }
+
+/// A `Ready` item of the `RecursiveModuleLoad` stream: a fetched source, a
+/// load error, or `None` once the whole graph is registered.
+type SideModuleLoadItem =
+  Option<Result<(ModuleRequest, ModuleSource), CoreError>>;
 
 impl SideModuleLoad {
   /// Root specifier this load was started with.
@@ -3248,7 +3259,7 @@ impl std::fmt::Debug for SideModuleLoad {
     let state = match self.state {
       SideModuleLoadState::NotStarted(_) => "NotStarted",
       SideModuleLoadState::Preparing(_) => "Preparing",
-      SideModuleLoadState::Loading(_) => "Loading",
+      SideModuleLoadState::Loading { .. } => "Loading",
       SideModuleLoadState::Finished => "Finished",
     };
     f.debug_struct("SideModuleLoad")
@@ -3538,17 +3549,24 @@ impl JsRuntime {
   /// Advances a load started with [`JsRuntime::start_side_es_module_load`]
   /// (Roves patch).
   ///
-  /// - Registers every source that is already available, then returns
-  ///   `Pending` once all remaining fetches are pending. The `cx` waker is
-  ///   only registered with those fetches (and `prepare_load`); this method
-  ///   never schedules wake-ups of its own. Poll again after a wake-up.
+  /// - Compiles and registers at most one source per poll (the inline root
+  ///   or one fetched module), then polls the load once more so the fetches
+  ///   of that source's imports start. If they are all pending it returns
+  ///   `Pending` with the `cx` waker registered only with them (and
+  ///   `prepare_load`). If a further step is already available (another
+  ///   source, an error or the final instantiation), it is kept in the handle,
+  ///   the `cx` waker is woken once and `Pending` is returned, so an
+  ///   all-cached graph gives control back to the embedder between
+  ///   registrations. There is no other self-scheduled wake-up: a graph that
+  ///   waits on fetches does not busy-loop. Poll again after a wake-up.
   /// - Evaluates no JavaScript and does not pump the event loop. Loaders that
   ///   answer through JavaScript
   ///   ([`ModuleLoader::pump_event_loop_during_load`]) need the caller to run
   ///   the event loop between polls; this is possible because no borrow of
-  ///   the runtime is held. Compilation, import resolution and the final
-  ///   instantiation run synchronously inside the poll, as in the `async`
-  ///   loaders.
+  ///   the runtime is held. The compilation of that one source, its import
+  ///   resolution and, in a poll of its own, the final instantiation of the
+  ///   whole graph still run synchronously inside the poll, as in the
+  ///   `async` loaders.
   /// - Returns `Ready(Ok(id))` once the whole graph is registered and the
   ///   root is instantiated; the caller evaluates it with
   ///   [`JsRuntime::mod_evaluate`], in its own order.
@@ -3578,6 +3596,11 @@ impl JsRuntime {
       ));
     }
     let realm = JsRealm::clone(&self.inner.main_realm);
+    // Whether this poll already compiled a source (the inline root or a
+    // fetched module). At most one is compiled per poll, so a graph whose
+    // sources are all immediately available still returns to the embedder
+    // between registrations.
+    let mut compiled = false;
     loop {
       let step = match &mut load.state {
         SideModuleLoadState::NotStarted(code) => {
@@ -3585,14 +3608,17 @@ impl JsRuntime {
           // import resolution error no recursive load is created, so no
           // `ModuleLoader::finish_load` runs.
           let registered = match code.take() {
-            Some(code) => self
-              .register_es_module_from_code(
-                &realm,
-                false,
-                &load.specifier,
-                code,
-              )
-              .map(|_| ()),
+            Some(code) => {
+              compiled = true;
+              self
+                .register_es_module_from_code(
+                  &realm,
+                  false,
+                  &load.specifier,
+                  code,
+                )
+                .map(|_| ())
+            }
             None => Ok(()),
           };
           match registered {
@@ -3617,26 +3643,49 @@ impl JsRuntime {
         {
           Poll::Pending => return Poll::Pending,
           Poll::Ready(Ok(recursive)) => {
-            load.state = SideModuleLoadState::Loading(recursive);
+            load.state = SideModuleLoadState::Loading {
+              recursive,
+              ready: None,
+            };
             continue;
           }
           Poll::Ready(Err(e)) => Err(e),
         },
-        SideModuleLoadState::Loading(recursive) => {
-          match recursive.poll_next_unpin(cx) {
-            Poll::Pending => return Poll::Pending,
-            Poll::Ready(Some(Ok((request, source)))) => {
+        SideModuleLoadState::Loading { recursive, ready } => {
+          let item = match ready.take() {
+            // Stored by the previous poll, which requested this one.
+            Some(item) => item,
+            // Polling the stream also starts the fetches queued by the last
+            // registration and registers the `cx` waker with them.
+            None => match recursive.poll_next_unpin(cx) {
+              Poll::Pending => return Poll::Pending,
+              Poll::Ready(item) => item,
+            },
+          };
+          if compiled {
+            // This poll already compiled a source: keep the next step
+            // (another source, an error or the final instantiation) for a
+            // later poll and ask for it now. This wake-up happens only when
+            // the stream had an item ready, so a graph that is really waiting
+            // on fetches is woken only by them.
+            *ready = Some(item);
+            cx.waker().wake_by_ref();
+            return Poll::Pending;
+          }
+          match item {
+            Some(Ok((request, source))) => {
+              compiled = true;
               match self
                 .register_loaded_module(&realm, recursive, &request, source)
               {
-                // Re-poll: more sources may be ready, and fetches queued by
-                // the registration must register the `cx` waker.
+                // Re-poll once: the fetches queued by the registration start
+                // and register the `cx` waker; a ready item is deferred above.
                 Ok(()) => continue,
                 Err(e) => Err(e),
               }
             }
-            Poll::Ready(Some(Err(e))) => Err(e),
-            Poll::Ready(None) => match recursive.root_module_id() {
+            Some(Err(e)) => Err(e),
+            None => match recursive.root_module_id() {
               Some(root_id) => self
                 .instantiate_loaded_root(&realm, root_id)
                 .map(|()| root_id),
