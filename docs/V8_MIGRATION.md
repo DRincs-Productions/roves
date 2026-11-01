@@ -31,6 +31,26 @@ Non pubblicare il commit `0458` finché Linux, Windows, Android e build generali
 del checkpoint precedente non sono concluse senza errori. TODO.md resta una
 modifica dell'utente e non va incluso.
 
+### Criteri globali ancora aperti
+
+- **Memoria:** `gc-lifecycle.html` verifica cicli DOM rimossi, handler, timer e
+  import dopo raccolte ripetute; la scena document-retention prova il rilascio
+  del ciclo costruito. Queste sono prove circoscritte: la retention generale,
+  la memoria nativa lungo l'intera vita del gioco e gli snapshot CI non sono
+  ancora conclusi/revisionati. Non dichiarare assenza di leak.
+- **Policy della finestra:** la smoke single-document controlla reload,
+  assegnazioni, link sintetici, iframe e route History/hash senza perdere il
+  documento. Il log deduplicato delle operazioni bloccate è in verifica nel
+  task0459. Restano il clic nativo reale con apertura nel browser di sistema,
+  il notice desktop e la chiusura dalla finestra reale con fetch pendente; non
+  controllare il desktop, chiedere all'utente quando serve la prova.
+- **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
+  pronte. Compilazione della singola sorgente, risoluzione e link completo
+  restano sincroni. La CI deve ancora verificare 0457/0458 e manca una misura
+  sulla scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi.
+
+SourceText e preload JSON sono backlog non bloccante e restano fuori dai criteri.
+
 ### 0457 — caricamento statico deno_core a passi, integrazione locale non verificata
 
 Il prototipo 0457 è stato portato nel working tree: `SideModuleLoad` avanza
