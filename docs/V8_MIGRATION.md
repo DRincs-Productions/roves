@@ -2,6 +2,18 @@
 
 ## Punto operativo aggiornato — 1 novembre 2026
 
+### 0459 — smoke dei log della policy documento singolo, locale
+
+Il runner ora legge solo il file `roves.log` del processo `single-document.html`
+e richiede esattamente un warning per navigazione completa, reload e documento
+iframe, ciascuno con il motivo della policy. I test simulano warning assenti,
+duplicati, log mancanti e warning presenti soltanto in un altro processo; il
+percorso `XDG_CACHE_HOME/roves/roves.log` è confermato dal logger di servoshell.
+Verifica locale: `python support/v8-smoke/test_runner.py`, **60 test, 15
+saltati**. È testato il controllo del runner, non il browser: il nuovo check
+attende ancora la CI dopo il push. `HistoryDocument` non è richiesto perché la
+fixture non crea una voce di cronologia con un documento precedente.
+
 ### 0458 — yield cooperativo tra sorgenti già pronte, locale e non verificato
 
 Il poll di `SideModuleLoad` ora compila/registra al massimo una sorgente per
@@ -40,8 +52,8 @@ modifica dell'utente e non va incluso.
   ancora conclusi/revisionati. Non dichiarare assenza di leak.
 - **Policy della finestra:** la smoke single-document controlla reload,
   assegnazioni, link sintetici, iframe e route History/hash senza perdere il
-  documento. Il log deduplicato delle operazioni bloccate è in verifica nel
-  task0459. Restano il clic nativo reale con apertura nel browser di sistema,
+  documento; il runner richiede ora un warning per reload, navigazione e iframe
+  (0459, CI non ancora eseguita). Restano il clic nativo reale con apertura nel browser di sistema,
   il notice desktop e la chiusura dalla finestra reale con fetch pendente; non
   controllare il desktop, chiedere all'utente quando serve la prova.
 - **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già

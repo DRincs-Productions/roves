@@ -30,9 +30,13 @@ context lines). Provenance and deno_core pin details:
 
 `support/v8-smoke` now uses a timer-issued HTTP probe and a server-side hold window
 to require evidence that JavaScript ran while `/slow-module.mjs` was still pending;
-testing only before `load` could have been a false positive. The Python runner
-passes 56 tests with 11 platform/dependency skips; this does not verify Rust,
+testing only before `load` could have been a false positive. The Python runner's
+0457 baseline passed 56 tests with 11 platform/dependency skips; this does not verify Rust,
 Servo, real-game responsiveness, or an acceptable pause for synchronous compile/link.
+It also checks that the headless single-document process logs one policy warning each
+for blocked full navigation, reload and iframe creation, with runner regression cases
+for missing, duplicate, absent-file and cross-process log output. Those new checks passed
+in the local Python runner (60 tests, 15 skips); the browser workflow has not run them yet.
 Do not label the three user-visible migration topics complete yet.
 
 Still needed: compile/tests normal and JITless, Linux/Windows browser smoke, all

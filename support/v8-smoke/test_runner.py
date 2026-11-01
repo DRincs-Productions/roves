@@ -1298,13 +1298,28 @@ assert options and options[0] == '--hard-fail', sys.argv
 options = options[1:]
 page = sys.argv[-1].rsplit('/', 1)[-1].split('?', 1)[0]
 scenario = os.environ['SMOKE_TEST_SCENARIO']
+from pathlib import Path
+cache = Path(os.environ['XDG_CACHE_HOME'])
+native_log = []
 if scenario == 'runtime-logs':
-    from pathlib import Path
-    cache = Path(os.environ['XDG_CACHE_HOME'])
     assert cache.is_absolute() and cache.parent == Path.cwd() / '.v8-smoke-runtime', cache
+    native_log.append(sys.argv[-1])
+# Like servoshell's file logger: the policy warns once per process and refused category.
+# 'policy-other-process' moves the warnings to another process's log.
+policy_page = 'suite.html' if scenario == 'policy-other-process' else 'single-document.html'
+if page == 'single-document.html' and scenario != 'policy-log-missing':
+    native_log.append('[2026-11-01T00:00:00.000Z INFO  servoshell::desktop::logging] Roves logging started')
+if page == policy_page and scenario != 'policy-log-missing':
+    for category in ('full-document navigation', 'reload', 'iframe document'):
+        if scenario == 'policy-missing:' + category:
+            continue
+        line = (f'[2026-11-01T00:00:00.000Z WARN  constellation::game_document_policy] Roves blocked {category}: '
+                'games keep one document; use same-document History/hash routes')
+        native_log += [line] * (2 if scenario == 'policy-duplicate:' + category else 1)
+if native_log:
     log = cache / 'roves' / 'roves.log'
     log.parent.mkdir(parents=True)
-    log.write_text(sys.argv[-1])
+    log.write_text('\\n'.join(native_log) + '\\n')
 if scenario == 'crash' and page == 'suite.html':
     raise SystemExit(139)
 snapshot_env = {name: os.environ[name] for name in ('ROVES_V8_HEAP_SNAPSHOT_PATH', 'ROVES_V8_HEAP_SNAPSHOT_GC') if name in os.environ}
@@ -1565,6 +1580,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertEqual(scenario == 'pass', result.returncode == 0, result.stdout + result.stderr)
                 self.assertIn('module-order.html', result.stdout)
                 self.assertNotIn('suite.html', result.stdout)
+                # Windows runs only this suite: no single-document policy log is required.
+                self.assertNotIn('single-document', result.stdout)
                 self.assertIsNone(result.gc_args)
                 if scenario != 'pass': self.assertIn('missing required check', result.stdout)
 
@@ -1587,6 +1604,55 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
         self.assertEqual(3, len(set(alias_logs)))
         self.assertTrue(any('module-order.html' in url for url in result.runtime_logs))
         self.assertTrue(any('gc-lifecycle.html' in url for url in result.runtime_logs))
+
+    POLICY_CATEGORIES = ('full-document navigation', 'reload', 'iframe document')
+
+    @staticmethod
+    def policy_warning(category):
+        return f'Roves blocked {category}: games keep one document; use same-document History/hash routes'
+
+    def policy_errors(self, result):
+        return [line for line in result.stdout.splitlines() if line.startswith('::error::single-document.html: ')]
+
+    def test_single_document_policy_warnings_once_per_category(self):
+        result = self.run_fixture('pass')
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual([], self.policy_errors(result))
+        for category in self.POLICY_CATEGORIES:
+            self.assertIn(f"single-document.html: native log reports once '{self.policy_warning(category)}'", result.stdout)
+        # The fixture creates no prior-document history entry: that category is not required.
+        self.assertNotIn('history document replacement', result.stdout)
+
+    def test_single_document_policy_warning_count_failures(self):
+        for category in self.POLICY_CATEGORIES:
+            for kind, found in (('missing', 0), ('duplicate', 2)):
+                with self.subTest(category=category, kind=kind):
+                    result = self.run_fixture(f'policy-{kind}:{category}')
+                    self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+                    errors = self.policy_errors(result)
+                    # Only the broken category fails; the others still report exactly once.
+                    self.assertEqual(1, len(errors), result.stdout)
+                    self.assertIn(f"expected exactly 1 native log warning '{self.policy_warning(category)}', found {found} in ", errors[0])
+                    self.assertTrue(errors[0].endswith('/roves/roves.log'), errors[0])
+                    self.assertIn('/.v8-smoke-runtime/single-document.', errors[0])
+
+    def test_single_document_policy_reads_its_own_process_log(self):
+        # Warnings present only in another suite's process log do not satisfy the check.
+        result = self.run_fixture('policy-other-process')
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        errors = self.policy_errors(result)
+        self.assertEqual(3, len(errors), result.stdout)
+        for error, category in zip(errors, self.POLICY_CATEGORIES):
+            self.assertIn(f"'{self.policy_warning(category)}', found 0 in ", error)
+        self.assertTrue(any(self.policy_warning('reload') in log for log in result.runtime_logs))
+
+    def test_single_document_policy_log_missing(self):
+        result = self.run_fixture('policy-log-missing')
+        self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
+        errors = self.policy_errors(result)
+        self.assertEqual(1, len(errors), result.stdout)
+        self.assertIn('/roves/roves.log', errors[0])
+        self.assertIn('not found; cannot confirm the single-document policy warnings', errors[0])
 
     def test_heap_snapshot_is_opt_in(self):
         # Unset: the snapshot page does not run, even when the job's environment carries the

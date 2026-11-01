@@ -17,6 +17,7 @@ DIR="$(cd "$(dirname "$0")" && pwd)"
 STATUS=0
 # Every suite's total, reported as one annotation at the end (at most 10 notices show per step).
 TOTALS=""
+LAST_RUNTIME_CACHE=""
 HTTP_PORT=18765
 # Native heap snapshot settings reach only the dedicated document-retention process (PAGE_ENV).
 unset ROVES_V8_HEAP_SNAPSHOT_PATH ROVES_V8_HEAP_SNAPSHOT_GC
@@ -55,10 +56,13 @@ fi
 run_page() {
   local page="$1" seconds="$2" log="$3" url="${4:-file://$DIR/$1}" done_pattern="${5:-}"
   local completed=0 pid code runtime_cache
+  LAST_RUNTIME_CACHE=""
   # Keep each process's existing file logger, which otherwise truncates roves.log at restart.
   # An isolated cache makes these CI scenes cold-cache observations, not warm-load benchmarks.
   mkdir -p "$PWD/.v8-smoke-runtime" || { STATUS=1; return 1; }
   runtime_cache=$(mktemp -d "$PWD/.v8-smoke-runtime/${log%.log}.XXXXXX") || { STATUS=1; return 1; }
+  # Callers read this process's native log at $LAST_RUNTIME_CACHE/roves/roves.log.
+  LAST_RUNTIME_CACHE="$runtime_cache"
   # Bash 3.2 treats an empty array as unset under nounset. Only expand non-empty arrays.
   local argv=()
   if [ "$RUNNER_COUNT" -gt 0 ]; then argv=("${RUNNER[@]}"); fi
@@ -93,6 +97,34 @@ run_page() {
     echo "::error::$page: servoshell exited with $code"
     grep -a -v '^\s*$' "$log" | tail -20 | sed 's/^/::error::  /'
     STATUS=1
+  fi
+}
+
+# check_policy_warnings PAGE NATIVE-LOG CATEGORY...
+# The single-document policy warns once per process and category. A dev `-z` launch writes the
+# file logger to $XDG_CACHE_HOME/roves/roves.log, so each run_page process has its own copy.
+check_policy_warnings() {
+  local page="$1" native_log="$2" category expected count failed=0
+  shift 2
+  if [ ! -f "$native_log" ]; then
+    echo "::error::$page: native log '$native_log' not found; cannot confirm the single-document policy warnings (servoshell file logger, XDG_CACHE_HOME/roves/roves.log)"
+    STATUS=1
+    return
+  fi
+  for category in "$@"; do
+    expected="Roves blocked $category: games keep one document; use same-document History/hash routes"
+    count=$(grep -acF "$expected" "$native_log")
+    if [ "$count" = 1 ]; then
+      echo "$page: native log reports once '$expected'"
+    else
+      echo "::error::$page: expected exactly 1 native log warning '$expected', found $count in $native_log"
+      failed=1
+    fi
+  done
+  if [ "$failed" -ne 0 ]; then
+    STATUS=1
+    echo "$page: policy lines in $native_log:"
+    grep -aF 'Roves blocked ' "$native_log" | head -20 | sed 's/^/  /'
   fi
 }
 
@@ -136,6 +168,9 @@ run_suite modules.html modules.log
 run_suite errors.html errors.log
 run_suite events.html events.log
 run_suite single-document.html single-document.log 60 "http://127.0.0.1:$HTTP_PORT/single-document.html"
+# Only the categories this fixture exercises; it creates no prior-document history entry.
+check_policy_warnings single-document.html "$LAST_RUNTIME_CACHE/roves/roves.log" \
+  "full-document navigation" reload "iframe document"
 run_suite module-order.html module-order.log 60 "http://127.0.0.1:$HTTP_PORT/module-order.html"
 run_suite module-csp.html module-csp.log 60 "http://127.0.0.1:$HTTP_PORT/module-csp.html"
 # Each alias resolution order requires a fresh process; the active document is never reloaded.
