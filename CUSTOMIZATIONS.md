@@ -1,3 +1,9 @@
+## Resume - Bundle policy verification plan (0442)
+
+Claude identified a proposed comparison of bundled and development launch modes,
+using the same release binary and a single-document fixture. Screenshots and native
+clicks remain unverified until a targetable window exists; see docs/V8_MIGRATION.md.
+
 ## 2026-11-01 - Split the document retention scene into GC rounds (0441)
 
 support/v8-smoke/document-retention.html now runs 4 rounds of 8 create/remove DOM

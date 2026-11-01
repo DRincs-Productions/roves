@@ -2,6 +2,23 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0442 — piano verifica bundle, analisi Claude
+
+Claude nuovamente autenticato; incarico 0441 revisionato e pubblicato b08ba3508f1.
+CI 41312918009 V8, 41312917969 generale, 41312917987 Android avviate; iOS
+41312918010 esclusa dal gate. TODO.md esterno invariato.
+
+Per verificare avvisi nel gioco distribuito usare una copia temporanea del binario
+v0.7.14 e dipendenze, con launch.json e fixture single-document.html/harness.js
+in dist; avviare senza argomenti e verificare log, stato del documento e assenza
+dell’avviso tramite screenshot reale. Confrontare un processo nuovo in sviluppo
+con URL esplicito, dove l’avviso deve apparire; controllare warning ripetuti e
+link reali/sintetici. Verificare prima la configurazione effettiva del bundle:
+questa è una procedura proposta, non un risultato. Gli avvisi e il clic richiedono
+una finestra targetabile: ultimo elenco Windows vuoto, senza dedurre il motivo.
+Ripetere anche la chiusura slow.mjs con marker SLOW START e exit code. Pausa su
+gioco rappresentativo e retention complessiva restano aperte.
+
 ### 0441 — scena memoria in round, verifiche locali
 
 document-retention ora esegue4round da8cicli DOM/listener/probe con2GC ciascuno
