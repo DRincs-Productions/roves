@@ -1,3 +1,146 @@
+# Roves — piano unificato di prestazioni e fluidità (Deno / V8)
+
+> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 30 ottobre 2026.
+
+## Obiettivo di prodotto
+
+**Roves deve offrire fluidità percepita, stabilità e prestazioni il più possibile equivalenti a Google Chrome**, eseguendo la **stessa visual novel di produzione**, con identici contenuti web, asset, risoluzione, impostazioni e percorso di interazione. Il riferimento primario è **60 FPS**, ma il numero medio di FPS da solo non è un criterio di accettazione. Non si promette parità prima delle misurazioni. La differenza deve essere quantificata e ogni regressione rilevante spiegata.
+
+**Ambito:** Windows, Linux, macOS; hardware prioritario: portatili/desktop di fascia media, inclusa grafica integrata. Confrontare su *stessa macchina e sistema operativo*, non confrontare numeri fra runner diversi. Documentare CPU/GPU, RAM, driver, display, refresh, alimentazione, build e versioni.
+
+## Architettura e perimetro
+
+Il riferimento attuale è **Deno + V8** nel runtime JS integrato in Servo, con SDL3, WebRender e overlay egui per la shell desktop. Verificare versioni e commit effettivi del binario sotto test: le vecchie misure SpiderMonkey, JITless, headless e di micro-API non rappresentano automaticamente la build distribuita. Il pacchetto generato da `DRincs-Productions/roves-action` usa normalmente una **shell precompilata** e impacchetta contenuti web già costruiti: non assumere che l'azione compili il motore. Registrare il pin dell'action, la versione della shell, il commit Roves, la build dei contenuti e l'hash dell'archivio; evitare alias mobili non risolti nelle prove riproducibili.
+
+Il candidato principale è `DRincs-Productions/visual-novel-template`, dopo la build web effettiva e il packaging con `roves-action`. Aggiungere scene di stress realistiche **dentro lo stesso contenuto compilato**; non sostituire il gioco con una pagina sintetica. Confrontare con Chrome che apre gli stessi file/asset tramite un'origine equivalente; registrare le eventuali differenze inevitabili fra packaging nativo e browser.
+
+## Regola di evidenza: testare l'artefatto finale
+
+1. Produrre un bundle installabile/portable per ciascuno dei tre OS usando l'action con versione/pin esplicito e pubblicare gli artifact CI.
+2. Scaricare, estrarre/installare ed **eseguire il binario del bundle**, non `mach run`, non una sola pagina in Servo debug e non solo test unitari. Verificare hash e versione realmente avviata.
+3. Eseguire in **headed mode**, finestra visibile e in primo piano, su display reale, con input reale o automazione desktop; verificare visivamente i frame. `-z`, Xvfb e headless sono diagnostici, **non** evidenza di fluidità percepita.
+4. Eseguire gli stessi percorsi in Chrome stable sul medesimo hardware, stessa risoluzione/DPR, frequenza del monitor, asset e configurazione. Alternare l'ordine Chrome/Roves e ripetere più sessioni dopo warm-up; conservare run individuali.
+5. Separare avvio a freddo, avvio caldo, gameplay a regime e sessione lunga; registrare modalità di alimentazione, VSync, GPU, processi concorrenti e stato della cache.
+6. Le GitHub Actions su runner condivisi servono per **build, test funzionali e raccolta di log**. Le soglie temporali vincolanti richiedono hardware dedicato e condizioni controllate. Non dichiarare passaggio del gate performance con soli test CI headless.
+
+## Scenari obbligatori del gioco compilato
+
+| Scenario | Verifica |
+| --- | --- |
+| Menu e idle | nessun rendering continuo non necessario, CPU/GPU a riposo, ripresa immediata |
+| Dialoghi | avanzamento manuale e rapido, typewriter, skip/auto, input senza blocchi |
+| Animazioni | sprite/PixiJS, tween, particelle, alpha/transparency, scene statiche e dinamiche |
+| Transizioni | cambio scena, fade, immagini grandi, primo caricamento e cache calda |
+| Audio | musica, effetti, cambi traccia e sincronizzazione con input/render |
+| Interazione | mouse, tastiera, focus, fullscreen, resize, DPI, cambio display |
+| Stato | save/load, ritorno al menu, apertura/chiusura dialoghi nativi e overlay |
+| Lungo periodo | sessione continua con cambi scena ripetuti, pause/ripresa, crescita memoria, crash e leak |
+
+Automatizzare percorsi deterministici con timestamp/marker condivisi nel contenuto, ma includere almeno una valutazione visiva/interattiva reale per OS. Le scene stress sono complementari alla partita rappresentativa, non sostitutive.
+
+## Metriche e confronto con Chrome
+
+- **Frame pacing:** distribuzione dei tempi tra frame effettivamente presentati, P50/P95/P99, picchi, sequenze di frame oltre budget, dropped/duplicated frames e hitch visibili; distinguere rAF dal present sul display. Budget teorico a 60 Hz: **16,67 ms**, non soglia di approvazione automatica.
+- **Fluidità percepita:** registrazione/cattura sincronizzata e annotazione degli scatti, pause nelle transizioni, ritardi nel testo e animazioni; annotare differenze visive e timing rispetto a Chrome.
+- **Input-to-display:** latenza dall'azione al primo frame che mostra l'effetto, distribuzione e picchi; non usare il solo tempo callback JS come surrogato.
+- **Risorse:** CPU totale e per thread, GPU busy/VRAM quando disponibili, RAM privata/residente, crescita nel tempo, I/O, caricamento asset, tempi startup e scene transition.
+- **Affidabilità:** crash/hang, perdita audio, freeze, errori JS, fallimenti di salvataggio, recovery dopo resize/focus/suspend.
+- **Comparazione:** per ogni metrica, valori Chrome e Roves sullo stesso hardware, differenza assoluta e relativa, numero di ripetizioni, dispersione e condizioni. Nessun confronto causale con campioni singoli o macchine diverse.
+
+### Criteri di accettazione da calibrare
+
+**Gate funzionale:** nessun crash/hang, input e salvataggi corretti, animazioni/audio equivalenti, nessun problema visivo evidente nei percorsi obbligatori. **Gate prestazionale:** baseline Chrome per scena e macchina, target 60 FPS quando Chrome raggiunge 60 FPS nelle stesse condizioni, assenza di hitch e regressioni percepibili significative rispetto a Chrome. Non fissare percentuali arbitrarie CPU/RAM o P99 prima di una baseline ripetibile. Se Chrome non mantiene 60 FPS, riportarlo e valutare il divario Roves/Chrome anziché attribuire automaticamente il problema a Roves. Definire soglie numeriche solo dopo una campagna pilota, con motivazione e tolleranze statistiche.
+
+## Roadmap aggiornata (in ordine)
+
+1. **P0 — Provenienza:** verificare versioni effettive Deno/V8/Servo e pin di `roves-action`; generare bundle di test tracciabili per tutti e tre gli OS.
+2. **P0 — Baseline Chrome vs Roves:** stessa visual novel, stessi scenari, 60 Hz, hardware medio, headed, almeno più ripetizioni per scena e registrazione frame/input.
+3. **P0 — Diagnosi hitch:** localizzare stalli nel main thread, JS/module loading, WebRender, present/VSync, decode immagini, audio, GC e I/O usando trace e contatori.
+4. **P1 — Stabilità e memoria:** test di sessione lunga, resize/focus, save/load, leak/retention, teardown; distinguere snapshot/WeakRef da memoria del processo.
+5. **P1 — Ottimizzazioni mirate:** modificare una variabile alla volta, confrontare build A/B sul bundle, conservare fallback e regressioni funzionali.
+6. **P2 — Microbenchmark:** audio, worker, WebGL getter, intrinsics e GC solo quando spiegano un problema osservato nel gioco compilato; nessuna ottimizzazione guidata esclusivamente dal microbenchmark.
+
+## Obiettivi declassati o rimossi
+
+- **Rimosso come obiettivo autonomo:** parità prestazionale basata su singole API, loop sintetici o numero di test verdi; restano strumenti diagnostici.
+- **Non valido come prova di fluidità:** smoke `-z`/Xvfb, rAF con pochi campioni, singole misure CI, screenshot statici, visibilità DOM `visible` in headless.
+- **Non più baseline corrente:** dati pre-Deno/V8 o su vecchi binari; mantenuti solo per provenienza storica.
+- **Non priorità senza profilo:** sostituzione egui, fast path B, allocator tuning, JITless e ottimizzazioni worker speculative. Valutarli solo se un trace sul compilato dimostra impatto e il guadagno supera i rischi.
+- **Da mantenere come contratti di correttezza:** test GC/retention, lifecycle worker, fallback overlay, AccessKit e controlli DOM. Un test corretto non implica performance equivalenti a Chrome.
+
+## Proposte tecniche per aumentare la fluidità — ipotesi da validare sul compilato
+
+Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{headed_window,event_loop,gui,performance}.rs` e `components/roves-js/src/deno_impl.rs`. **Non sono miglioramenti già dimostrati.** Implementare una modifica alla volta, misurare contro Chrome e confrontare il bundle prima/dopo sulla stessa macchina. Non cambiare la pipeline di produzione sulla sola base di benchmark sintetici.
+
+### P0 — Frame pacing, redraw e sincronizzazione con il display
+
+- Il `RedrawCoalescer` di `headed_window.rs` accorpa richieste di redraw per evitare l'accumulo incontrollato di eventi SDL3 durante `requestAnimationFrame` (PixiJS/Three.js). **Conservarlo**, verificandone il comportamento sotto carico, dopo resize, durante focus lost/gained e quando arrivano nuove richieste durante il paint.
+- Tracciare la sequenza completa **rAF → richiesta redraw → dispatch SDL → WebView paint → GPU present → frame visibile** con timestamp correlabili e ID di frame. Distinguere latenza della coda, costo CPU, blocchi VSync e GPU; i contatori aggregati attuali non bastano.
+- Verificare se il loop SDL3 `WaitUntil` e il timeout degli eventi introducono jitter o wake-up inutili; controllare deadline e gestione degli eventi concorrenti. Non introdurre polling attivo o timer fissi a 60 Hz senza prova.
+- Analizzare frame mancati, intervalli P50/P95/P99 e sequenze di hitch sul display a 60 Hz; controllare anche duplicazioni e frame tardivi. La media FPS non certifica la fluidità.
+- Verificare scheduling a finestra in foreground, background, minimizzata e al ritorno in focus; ridurre lavoro inattivo senza penalizzare la ripresa.
+
+**Esperimento:** replay deterministico della visual novel compilata, scena PixiJS animata, confronto Chrome/Roves con cattura frame e trace; A/B del solo scheduler. **Rischi:** frame persi, input in ritardo, busy-loop, regressioni su macOS/Windows/Linux. **Promozione:** miglioramento ripetibile dei picchi di frame time e nessun peggioramento funzionale.
+
+### P0 — Rendering GPU e costo di composizione
+
+- Misurare il percorso esistente: WebRender nel contesto off-screen, `render_to_parent_callback`/`glBlitFramebuffer`, egui e `present()`. Contatori già presenti: `webview_paint`, `egui_run`, `shell_paint`, `present`, `framebuffer_blits`, `direct_presents` e `composited_presents`.
+- Verificare che il **fast path A** sia effettivamente selezionato nel pacchetto e che la sua scelta non oscilli inutilmente durante gameplay/overlay; mantenere fallback immediato per dialoghi, AccessKit, errori, texture, DPI e resize.
+- Profilare il costo GPU della copia off-screen e delle sincronizzazioni, non dedurlo dal solo tempo CPU `present`. Confrontare risoluzioni e GPU integrate.
+- **Fast path B come prototipo opzionale:** WebView direttamente nel framebuffer della finestra e present differito unico, con overlay egui nello stesso back buffer. Non assumere che sia sicuro sostituire il contesto: oggi `repaint_webviews()` può presentare prima dell'overlay; evitare flicker e doppio swap.
+- Valutare il prototipo B soltanto se la copia GPU è un collo di bottiglia misurato sul bundle; testare screenshot/readback, salvataggio, permessi, fullscreen, cambio DPI/display e fallback.
+
+**Esperimento:** A/B con stesso bundle/contenuto, GPU, VSync, risoluzione e scene, tracciando frame visibili e uso GPU. **Rischi:** artefatti, tearing, regressioni di compatibilità, swap prematuro. **Promozione:** miglioramento concreto del frame pacing senza perdita di funzionalità.
+
+### P1 — Pause nel runtime Deno/V8 e caricamento scene
+
+- Profilare i tempi di caricamento dei moduli, valutazione, microtask e polling in `deno_impl.rs`; il `poll_module_event_loop` avanza valutazioni e dynamic imports e può eseguire script. Separare attese di rete/disco, lavoro JS e pause sul thread della pagina.
+- Verificare se il caricamento statico/dinamico introduce blocchi visibili durante transizioni, typewriter e animazioni; misurare con una scena reale che carica moduli e asset mentre rAF e input sono attivi.
+- Cercare operazioni sincrone, decode di immagini, parsing e accesso a pack/salvataggi sul percorso critico; valutare prefetch, caricamento differito e spostamento del lavoro solo dopo profiling e con test di correttezza.
+- Profilare pause GC, frequenza e dimensione delle allocazioni e retention in sessioni lunghe. Non trattare uno snapshot o un WeakRef rilasciato come prova di riduzione RAM o assenza di leak.
+- Conservare i test di correttezza normal/JITless e worker come regressioni, ma non equipararli al comportamento della build finale.
+
+**Esperimento:** dialoghi rapidi, transizioni ripetute, caricamento asset cold/warm, sessioni prolungate e input durante il load; Chrome e bundle Roves sullo stesso hardware. **Rischi:** ordine dei moduli, race, lifecycle e differenze web-platform.
+
+### P1 — Diagnostica del frame pacing e input-to-display
+
+- Estendere la diagnostica **opt-in** senza overhead significativo nelle build normali: timestamp per frame e ID correlabili fra rAF, enqueue/dispatch redraw, paint, blit e present; esportazione grezza machine-readable e non solo aggregati per intervallo.
+- Registrare separatamente tempo CPU e tempo GPU/presentazione quando le API di piattaforma lo consentono; non attribuire automaticamente un `present` lento al codice CPU.
+- Per input-to-display, marcare evento e prima modifica visibile, con registrazione video/high-speed capture quando disponibile; i soli timestamp JS non sono latenza effettiva al display.
+- Automatizzare report con raw data, P50/P95/P99, hitch, crash, RAM, CPU/GPU e differenza Chrome/Roves. Hardware dedicato per soglie; CI condivisa solo per smoke/regressioni funzionali.
+
+### P2 — Worker, audio, intrinsics e altre micro-ottimizzazioni
+
+Eseguire i benchmark in `support/perf` **solo** quando un trace del gioco compilato indica un collo di bottiglia corrispondente. Valutare parallelismo worker, overhead messaggi/clone/transfer, audio analyser, WebGL getters, lookup di intrinsics e allocator senza confondere miglioramenti micro con guadagni di CPU/GPU/RAM dell'intero gioco. Non cambiare toolkit egui o introdurre un nuovo motore grafico senza evidenze misurate.
+
+### Sequenza operativa e criteri di decisione
+
+1. Congelare i commit di `visual-novel-template`, `roves-action`, shell Roves e Chrome, e produrre bundle Windows/Linux/macOS tracciabili.
+2. Stabilire baseline headed sullo stesso hardware medio con gameplay reale e scene stress integrate: 60 Hz, ripetizioni, cold/warm, sessione lunga e confronto frame/input.
+3. Aggiungere tracing opt-in dei frame; identificare i 3 principali contributori a hitch, latenza e carico CPU/GPU.
+4. Intervenire sul collo di bottiglia dominante (scheduler, blit/present, caricamento o GC), **un cambiamento per esperimento**, con A/B del bundle distribuito.
+5. Accettare un'ottimizzazione soltanto se migliora in modo riproducibile la fluidità percepita o le risorse senza regressioni di stabilità, audio, input, save/load e overlay su tutte le piattaforme. Se la differenza rispetto a Chrome non è misurabile, non dichiarare parità né risparmio.
+
+## Fast path desktop: stato e decisione
+
+Il percorso A salta la pittura egui quando non servono overlay, mantenendo offscreen e blit; le misure storiche riportano un beneficio locale, **non** una dimostrazione di parità con Chrome nel bundle attuale. Il percorso B (render direttamente sul framebuffer con present differito) è un'ipotesi, non un obiettivo obbligatorio. Prima misurare `webview_paint`, `egui_run`, `shell_paint`, `present`, `framebuffer_blits`, `direct_presents`, `composited_presents` con e senza overlay nel bundle. Verificare save dialog, AccessKit, DPI, resize, fullscreen, errori, screenshot e fallback immediato. Promuovere un'ottimizzazione solo dopo test reali e A/B.
+
+## Protocollo report
+
+Ogni report deve contenere: data; OS e versione; hardware/GPU/driver; refresh e DPI; alimentazione; commit del contenuto; commit e versione Roves/Deno/V8; versione e SHA dell'action/shell; hash artifact; configurazione Chrome; scenario; warm-up; ordine prove; numero run; raw frame-time e input latency; P50/P95/P99 e hitch; CPU/GPU/RAM; video/trace/log; esito funzionale; limiti e conclusione. Contrassegnare **non misurato** dove manca un dato. Non inferire guadagni CPU/RAM dai byte di snapshot o dalla riduzione delle righe di codice.
+
+## Benchmark diagnostici (non gate di gameplay)
+
+Il catalogo `support/perf/*.html` resta disponibile per isolare anomalie. Servire localmente `support/perf` (ad esempio `python -m http.server 48762 --bind 127.0.0.1 --directory support/perf`); usare le opzioni `?auto=1` dove previste, controllare che audio e worker abbiano realmente eseguito il lavoro, e non confrontare Chrome e Roves con modalità foreground/headless differenti. La documentazione operativa originale è riprodotta più sotto per tracciabilità; queste prove **non** sostituiscono il bundle `roves-action`.
+
+---
+
+# Appendici storiche — non costituiscono target correnti
+
+I testi seguenti sono conservati per non perdere misure, condizioni, limiti e riferimenti agli artifact. Le conclusioni vanno lette nel loro contesto originale, non trasferite automaticamente all'architettura corrente.
+
+## Appendice A — risultati e note storiche
+
 ## 29 ottobre — rilascio del ciclo DOM nella scena documento unico (0432)
 
 Commit9f8d1c8a936, run V840915577759, job Linux normale123594773143,
@@ -1521,3 +1664,221 @@ MemLab2.0.5 suWSLNode24, queryRootSet e valori diretti delle suecelle:47archi e 
 valoreoggettoPerformance radicato. Le stringheatomiche chiamatePerformance non sono
 oggettiPerformance. È conferma circoscritta dell’eliminazione della radice osservata0345,
 non prova di rilascioframe né misuraRAM/CPU. FontFaceSet/callback restano per0348/0349.
+
+
+---
+
+## Appendice B — fast path desktop (testo storico)
+
+# Fast path di rendering desktop
+
+Analisi del 24 settembre 2026 sul percorso SDL3 del fork Servo `v0.5.0`.
+
+## Decisione
+
+Il fast path va sviluppato senza sostituire egui. Il repository usa già egui `0.36.2` ed
+`egui-file-dialog 0.15.0`, aggiornati rispettivamente da `0.34.3` e `0.13.0`. Non risulta
+installato un secondo toolkit desktop come Iced, Slint, Vizia o Floem. Il backend winit di egui
+è già stato sostituito dal bridge locale `SdlEguiGlow`, mentre egui resta necessario per splash,
+errori di caricamento, dialoghi, permessi, autenticazione, selezione file e accessibilità.
+
+Cambiare toolkit riscriverebbe queste funzioni e il relativo bridge SDL3 senza rimuovere il
+costo dominante del frame Web. La scelta resta quindi: conservare egui come piano overlay e
+saltarlo quando il gioco non sta mostrando UI native.
+
+## Percorso composto (fallback)
+
+Quando overlay o altre condizioni richiedono il percorso composto:
+
+1. Servo/WebRender dipinge nel `OffscreenRenderingContext` posseduto da `HeadedWindow`.
+2. `Gui::update` esegue comunque un frame egui e registra un `PaintCallback` sul layer di sfondo.
+3. Il callback chiama `OffscreenRenderingContext::render_to_parent_callback`, che pulisce la
+   destinazione e copia il framebuffer con `glBlitFramebuffer`.
+4. `Gui::paint` tessella le shape egui, esegue `egui_glow::Painter::paint_primitives` e libera le
+   texture scadute.
+5. La shell chiama `WindowRenderingContext::present`.
+
+La toolbar e le tab sono già disabilitate, ma questo non elimina il frame egui né il framebuffer
+off-screen. Le recenti correzioni di scheduling evitano che il percorso venga eseguito
+continuamente quando la pagina è davvero inattiva; il costo resta però presente per ogni frame
+richiesto dal gioco.
+
+## Fast path A: presentazione diretta dell'off-screen
+
+Implementato e attivo per default dalla shell v0.7.4 (prima solo con `ROVES_DIRECT_PRESENT=1`).
+Misura sulla visual novel al menu, 60 fps: CPU da 98,6% a 91,1% di un core, `shell_paint` da
+~128 a ~77 µs per frame, nessuna tassellazione egui.
+
+Comportamento già implementato:
+
+- Servo continua a usare l'attuale `OffscreenRenderingContext`.
+- Il normale `Gui::update` continua inizialmente a drenare input e AccessKit.
+- Se non esistono overlay, dialoghi, tooltip, errori o splash, la shell invoca direttamente il
+  callback di blit e presenta la finestra senza tessellare o disegnare shape egui.
+- Qualunque overlay riattiva nello stesso frame il percorso composto esistente.
+
+Questo elimina il lavoro del painter egui dai frame normali ma non elimina l'allocazione
+off-screen né `glBlitFramebuffer`. È una fase utile per misurare separatamente il costo egui dal
+costo della copia GPU.
+
+### Condizioni conservative
+
+Il percorso A è ammesso solo quando:
+
+- esiste esattamente una WebView attiva;
+- la pagina occupa l'intera area fisica della finestra;
+- non esiste alcun `Dialog` attivo;
+- splash e schermata di errore sono disattivati;
+- non esistono status tooltip o focus egui;
+- AccessKit è inattivo e non ci sono aggiornamenti pendenti;
+- non ci sono texture egui da caricare o liberare.
+
+Se una condizione cambia, il fallback composto deve essere immediato e non richiedere la
+ricreazione del contesto GL.
+
+## Fast path B: WebView sul framebuffer della finestra
+
+Secondo esperimento, quello con il guadagno potenziale maggiore:
+
+- la singola WebView dipinge direttamente nel `WindowRenderingContext`;
+- il `present()` richiesto internamente da `ServoShellWindow::repaint_webviews` viene differito;
+- la shell può disegnare eventuali overlay egui sullo stesso back buffer;
+- un solo `present()` conclude il frame.
+
+Questo può eliminare framebuffer off-screen, texture colore/depth e blit a piena finestra. Non
+può essere ottenuto semplicemente passando oggi il contesto della finestra alla WebView:
+`repaint_webviews()` presenta immediatamente dopo `WebView::paint()`, quindi un overlay verrebbe
+disegnato nel frame successivo e potrebbe produrre flicker o due swap per frame. Serve un
+contratto di presentazione differita, limitato alla shell desktop.
+
+Una possibile implementazione è un wrapper `RenderingContext` desktop che inoltra rendering,
+resize e letture al `WindowRenderingContext`, ma rende `present()` una richiesta differita. La
+shell possiede l'unico present reale dopo l'eventuale pass egui. Il percorso off-screen corrente
+rimane disponibile come fallback finché il prototipo non supera i test.
+
+## Metriche A/B
+
+I contatori `[roves-perf]` già disponibili misurano:
+
+- `direct_presents` e `composited_presents`;
+- `egui_runs`, `egui_tessellations` e `egui_paints`;
+- `framebuffer_blits`;
+- tempo CPU aggregato di WebView paint, egui update/paint e present; **Completato** come riga
+  `[roves-perf-time]` (totale e massimo in µs per `webview_paint`, `egui_run`, `shell_paint`,
+  `present`; tempo wall-clock lato CPU, il lavoro GPU asincrono emerge soprattutto in `present`);
+- dimensione e numero dei framebuffer permanenti.
+
+Le fixture restano `?perf=blank`, `?perf=pixi-static` e `?perf=pixi-animated`. Il confronto deve
+usare la stessa build release, GPU, risoluzione, VSync e warm-up. La CI verifica contratti e
+fallback, non impone soglie temporali sui runner condivisi.
+
+## Test necessari
+
+- unit test della decisione fast-path/fallback per ogni condizione precedente;
+- smoke test che apre e chiude Save File, file picker, prompt e permessi durante il fast path;
+- resize, fullscreen, DPI/display change e minimizzazione;
+- screenshot/readback e schermata di errore;
+- AccessKit attivo e disattivato;
+- PixiJS statico senza ticker e PixiJS animato;
+- Windows portable/MSI, macOS portable/DMG e Linux portable/DEB.
+
+## Lavoro restante
+
+1. Misurare il costo residuo di offscreen/blit separandolo dal render WebRender.
+   Le attese in present sono tempi wall-clock, non consumo CPU puro.
+2. Solo con evidenze favorevoli, prototipare il contesto a presentazione differita del fast
+   path B.
+3. Rendere predefinito il percorso B soltanto dopo smoke test completi e misure su hardware reale.
+
+I contatori aggiunti sono inattivi insieme al resto della diagnostica quando
+`ROVES_PERF_LOG_INTERVAL_MS` non è impostata; non introducono quindi timer o logging nelle build
+normali. Un frame diretto incrementa `direct_presents`, `framebuffer_blits` e
+`window_presents`; il fallback incrementa `composited_presents`. `egui_runs` continua a crescere
+anche nel percorso diretto; `egui_tessellations` e `egui_paints` contano solo i frame composti.
+
+### Verifica automatica del percorso A
+
+Gli unit test coprono ogni condizione di fallback.
+Gli smoke test desktop avviano i bundle reali con
+`ROVES_PERF_LOG_INTERVAL_MS=1000` e falliscono senza almeno un intervallo con
+`direct_presents > 0`. Restano i controlli di avvio, salvataggio e ciclo finestra SDL3.
+Non sono imposte soglie CPU, RAM o frame-time sui runner condivisi.
+
+La decisione usa l'output egui corrente, include le texture da caricare e liberare e viene
+consumata dal paint. Splash ed errori la azzerano; anche un dialogo appena chiuso mantiene il
+frame composto. Un resize tra update e paint o un callback di blit indisponibile conserva il
+fallback nello stesso frame. Il percorso B resta da implementare. I test manuali della matrice
+sopra e le misure A/B su hardware reale restano necessari prima di valutare un cambio del default.
+
+
+---
+
+## Appendice C — istruzioni benchmark isolati (testo storico)
+
+# Focused browser benchmarks
+
+Serve this directory locally, for example with `python -m http.server 48762 --bind 127.0.0.1 --directory support/perf`.
+
+- `audio-analysis-bench.html`: click Start; a sine oscillator feeds an AnalyserNode and a muted
+  destination. For fftSize 2048 and 8192, take 12 frequency reads on separate animation frames
+  after warm-up. Report median/max (the p95 of 12 samples is the maximum), peak bin and dB.
+  `?auto=1` starts without input and closes the test window on completion for Roves headless runs.
+  A browser autoplay policy can require the button; do not treat a suspended context as a result.
+- `webgl-getters-bench.html`: five timed batches of 2000 width/height pairs for WebGL 1 and 2,
+  after one warm-up batch. Check the accumulated dimensions and report median/max.
+- `analyser-transport-bench.html?nodes=8`: 0–32 analysers with silent output, a 2 s warm-up
+  and 12 s sampling window. Default: no analysis reads; `&read=1` reads time-domain data at
+  approximately 60 Hz. A final 1 s busy loop exercises backlog recovery; exclude it from CPU
+  samples. Checks finite, non-silent 32768-sample history. `&auto=1` starts and closes Roves.
+  Record the actual sample rate; Chrome and Roves can choose different device rates.
+- `worker-lifecycle-bench.html?auto=1`: retain four idle workers, each holding 8 MiB, then
+  terminate them while keeping their main-thread objects alive. Log baseline/ready/terminated/
+  after phases; sample OS thread IDs and private memory at each phase. In Roves' current
+  one-thread-per-worker implementation, added worker threads should disappear after termination.
+  Browsers with reusable thread pools may retain threads. Memory can remain cached by allocators.
+  `workers=1..8` and `mib=1..16` control the load. The page remains open for external sampling;
+  its completion marker alone is not evidence that worker runtimes were released.
+  Automatic mode hides the page and logs only to the console, avoiding glyph/render-worker
+  activity from updating the diagnostic output while OS thread IDs are sampled.
+- `worker-messaging-bench.html?auto=1`: worker startup/constructor time and sequential
+  round-trips of 1 KiB, 128 KiB and 4 MiB ArrayBuffers, cloned or transferred both ways.
+  Checks detachment and payload endpoints. Four warm-up iterations precede 16 timed samples;
+  their p95 is the maximum, not a robust tail estimate. Report enqueue time separately from
+  round-trip latency. Repeat in new Roves processes and record Chrome MCP browser/context state.
+- `worker-canvas-probe.html`: report worker OffscreenCanvas/requestAnimationFrame exposure
+  and attempt WebGL 1/2 contexts with a red-pixel readback. API existence alone does not mean
+  worker rendering works. This probe does not validate presentation into a transferred DOM canvas.
+- `worker-queue-probe.html`: check 128 FIFO replies, a later message after the burst, canceled
+  timers and a final ping. Empty wake-ups must not terminate a still-live worker. This is a
+  functional regression probe, not a throughput benchmark.
+- `worker-compute-bench.html?workers=1`: fixed 64 jobs of 1048576 integer iterations across
+  1/2/4/8 workers, with a warm-up and deterministic result checks. `&cached=1` uses a captured
+  Math.imul function as a control for global-lookup overhead. Startup is reported separately.
+  More workers can improve completion time while saturating more cores; this is not a whole-game
+  CPU saving. Short fast runs do not provide enough rAF samples for frame-percentile claims.
+  `jobs=1024&iterations=8388608` selects a larger fixed workload (bounds: 1..4096 jobs,
+  1..16777216 iterations); `auto=1` asks the page to close after completion. For Chrome MCP,
+  omit auto and await `window.computeRun`. CPU sampled over the whole process lifetime also
+  includes startup, warm-up and shutdown; distinguish it from the reported compute duration.
+- `main-intrinsics-bench.html`: warm-up and three alternating direct/captured Math.imul
+  runs on the main thread, 8388608 integer iterations each, checking identical results.
+  Logs WORKERBENCH with scene=main-intrinsics for the shared terminal runner. This isolates
+  global-lookup overhead, not whole-game performance; the page remains open after completion.
+
+- `native-globals-probe.html`: nine functional checks for standard intrinsics, DOM constructors,
+  Image/Audio/Option aliases, an initialized property descriptor and iframe constructor realms.
+  Logs WORKERBENCH with scene=native-globals. This is not a performance benchmark.
+
+The native-global, main-intrinsic and worker-queue probes also accept `auto=1` for page-owned
+closure, allowing foreground terminal runs without an external process launcher/terminator.
+
+Use the same page, browser build, hardware and rendering mode for before/after comparisons.
+Timing these individual APIs does not establish whole-game CPU, GPU or RAM parity with Chrome.
+Keep foreground and headless samples separate. Results are in [`ROVES_PERFORMANCE.md`](../../docs/ROVES_PERFORMANCE.md).
+
+Roves can run the audio test from a terminal with `play.exe -z http://127.0.0.1:48762/audio-analysis-bench.html?auto=1`.
+On PowerShell, pipe stdout to `Out-File` to wait for the GUI-subsystem executable and retain the
+`ANALYSERSTATS` / `ANALYSERBENCH PASS` results. Use a new output file for each run.
+Quote URLs containing `&` in PowerShell. Do not add `-x` to the audio benchmarks: it exits
+when the image becomes stable, before the timed audio checks finish. `-o` requires an image
+filename and is not needed for these tests; the benchmark's `auto=1` closes the window.
