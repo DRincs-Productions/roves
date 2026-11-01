@@ -1,3 +1,11 @@
+## Resume - Native bundled policy and slow shutdown evidence (0443–0445)
+
+The v0.7.14 bundled single-document fixture passed 9/9; warnings were logged.
+A supervised native close during a 20 s static fetch exited 0 without the prior
+panic, but shutdown waited for the fetch response and profiler-disconnected
+warnings were logged. Treat cancellation as open; see docs/V8_MIGRATION.md.
+A preliminary real-game startup measurement is not an acceptance result.
+
 ## Resume - Bundle policy verification plan (0442)
 
 Claude identified a proposed comparison of bundled and development launch modes,

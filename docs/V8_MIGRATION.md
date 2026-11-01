@@ -2,6 +2,37 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0443–0445 — prove reali e chiusura lenta, 1 novembre
+
+Batch b08ba3508f1 tutto verde: V8 41312918009, generale 41312917969, Android
+41312917987, iOS 41312918010. Log GitHub job Linux 124866872216: controllo
+conservato nei 4 round; rilasciati 32/32 elementi e 32/32 probe. Diagnostica
+limitata, non prova stabilità generale né sessioni lunghe. Batch documentale
+848765bfdf4 Android 41316804938 e iOS 41316804932 verdi.
+
+Bundle temporaneo target/task-0443/bundle con release v0.7.14, launch.json e
+fixture single-document: suite 9/9, warning reload/navigazione/iframe/finestra
+nei log, screenshot senza avviso dopo i controlli. La prova non dimostra tutti
+i casi di clic reale nel bundle. Suite e log in target/task-0443.
+
+Chiusura v0.7.14 durante fetch slow.mjs: server locale con ritardo 20s ha
+registrato SLOW START prima del clic nativo di chiusura e SLOW END dopo; il
+supervisore target/task-0445-launch.py registra codice uscita 0 (task-0445/exit.json),
+nessun panic o spurious wake nei log. Tuttavia il processo termina solo dopo la
+risposta lenta: la chiusura può restare bloccata per tutta la durata del fetch.
+Compaiono warning memory profiler Disconnected allo shutdown; analizzarli senza
+confonderli col panic corretto. Indagare cancellazione prima di dichiarare chiuso
+il punto policy/chiusura; non assumere che il limite sia accettato dall’utente.
+
+Harness provvisorio di misura in target/task-0444: gioco test-page/dist copiato
+e strumentato senza modificare l’originale. Un solo smoke Chrome e un solo Roves
+Windows v0.7.14 con server locale, nessuna distribuzione statistica né confronto
+controllato. Roves mostra primo timer 459 ms, primo frame 880 ms e gap massimo
+timer 398 ms nella prova; non attribuire univocamente la causa né generalizzare.
+Risultati e strumento in target/task-0444; ripetere freddo/caldo, latenza e input
+su gioco rappresentativo. Richiesti più campioni e verifica dello strumento.
+
+
 ### 0442 — piano verifica bundle, analisi Claude
 
 Claude nuovamente autenticato; incarico 0441 revisionato e pubblicato b08ba3508f1.
