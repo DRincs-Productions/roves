@@ -2,6 +2,20 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0453 — persistenza localStorage durante chiusura con fetch
+
+Su Windows, stesso binario f1ac0a5563c di 0451: una pagina HTTP loopback ha
+scritto localStorage `roves-0453-test=persisted-0453`, avviato slow.mjs con
+ritardo server 20s e ricevuto chiusura nativa dopo SLOW START. Il processo è
+uscito 0 alle 16:41:50, prima del tentativo di risposta alle 16:41:56; al
+riavvio sullo stesso profilo/origine ha letto `previous=persisted-0453` e
+uscito 0. Evidenze target/task-0453 e task-0453-server.log. Non prova altri
+sistemi di salvataggio né Worker.terminate. I warning del profiler in 0451–0452
+restano da analizzare; memoria complessiva e pausa provvisoria restano aperte.
+Batch 69626539b94 avviato: V8 41322414000, generale 41322413994, Android
+41322413995, iOS 41322414044 (esclusa dal gate).
+
+
 ### 0451–0452 — cancellazione verificata su Windows
 
 La CI V8 41318759409 di f1ac0a5563c è verde in normale e JITless su Linux e

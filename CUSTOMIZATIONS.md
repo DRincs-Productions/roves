@@ -1,3 +1,9 @@
+## Resume - Storage across pending-fetch shutdown (0453)
+
+On the f1ac0a5563c Windows test binary, a loopback page persisted a localStorage
+value, closed while a 20 s static fetch was pending, and recovered the value on
+restart. Both processes exited 0; this does not cover other storage systems.
+
 ## Resume - Native cancellation verified for window and worker (0451–0452)
 
 Windows test artifact 698703024 for f1ac0a5563c passed SHA256 and ZIP CRC.
