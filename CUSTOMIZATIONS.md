@@ -1,3 +1,11 @@
+## Resume - Native cancellation verified for window and worker (0451–0452)
+
+Windows test artifact 698703024 for f1ac0a5563c passed SHA256 and ZIP CRC.
+During separate 20 s static fetches in the document and a module worker, native
+window close logged cancellation and exited 0 before the response, with no
+observed panic. Profiler-disconnected shutdown warnings and storage persistence
+remain to assess; general CI and broader migration checks are still pending.
+
 ## 2026-11-01 - Bounded duration run of the document retention scene (0450)
 
 support/v8-smoke/document-retention.html now runs 16 rounds of 8 create/remove cycles, each

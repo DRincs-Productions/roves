@@ -2,6 +2,30 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0451–0452 — cancellazione verificata su Windows
+
+La CI V8 41318759409 di f1ac0a5563c è verde in normale e JITless su Linux e
+Windows; Android 41318759407 verde. Build generale 41318759482 ancora in corso
+all’ultimo controllo; Windows portable job 124884860501 verde. Dalla release
+test è stato scaricato asset 698703024 (125032945 byte), SHA256
+ccb63b5349dce3b56e1acb9b9645b1a581e8bcdda54e2fe693ce6cc343cd2518, CRC ZIP
+valido; il log del job associa il pacchetto al commit f1ac0a5563c.
+
+Con quel binario Windows e server loopback che trattiene slow.mjs per 20s:
+- documento: marker SLOW START, clic reale di chiusura, log `cancelled by
+  shutdown`, codice uscita 0 registrato prima della risposta del server; nessun
+  panic o spurious wake rilevato (target/task-0451).
+- module worker: la pagina avvia un worker module che importa slow.mjs; dopo
+  SLOW START e clic chiusura, log cancellazione worker e codice 0 prima della
+  risposta (target/task-0452). Non è test separato di Worker.terminate.
+
+Il server Python segnala ConnectionAbortedError quando prova a rispondere dopo
+la chiusura, coerente con la connessione chiusa; non è un panic Roves. Restano
+avvisi del profiler memoria Disconnected allo shutdown e la verifica del
+persistente localStorage. La memoria complessiva e la pausa statica restano
+aperte; non dichiarare completati tutti e tre i punti né fermare il trigger.
+
+
 ### 0450 — durata circoscritta della scena memoria, verifiche locali
 
 document-retention passa a16round da8cicli con2GC ciascuno (128cicli, 32GC);
