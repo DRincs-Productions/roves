@@ -1,3 +1,10 @@
+## Resume - Repeated startup with a reused cache (0455)
+
+With a repeated origin/profile and cache enabled, two subsequent PixiJS/React
+runs made no observed server requests and had shorter startup callback leads.
+This is consistent with cache reuse for the measured scene, not a general
+performance claim; structured observations and limits are in docs/measurements.
+
 ## Resume - Shutdown profiler warning analysis (0454)
 
 The profiler receives Exit before pipeline shutdown. Later reporter registration

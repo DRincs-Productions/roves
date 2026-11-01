@@ -2,6 +2,21 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0455 — riavvii con cache abilitata
+
+Tre avvii separati della scena PixiJS/React v0.7.14 sulla stessa origine e
+XDG_CACHE_HOME, server con max-age=3600 e 500ms di ritardo sull’entry quando
+richiesta. Primo report: 17 richieste, primo timer/frame dopo 878.98/1030.04ms.
+Secondo e terzo: nessuna richiesta osservata dal server, primo timer
+77.91/74.03ms, primo frame 229.52/227.74ms, tutti 0 errori ed exit 0.
+I risultati sono coerenti con riuso cache nella scena, non prova generale;
+resource timing non distingue cache in Servo, finestra del terzo avvio non
+screenshotabile e visibilità continua non registrata. File strutturato
+docs/measurements/0447-real-game-startup.json. Manca prova di input e di
+modulo statico aggiunto a gioco avviato su scena rappresentativa; pausa ancora
+provvisoria, nessuna soglia di accettazione concordata.
+
+
 ### 0454 — warning del profiler allo spegnimento
 
 In 0451/0452 i warning `memory profiler ... Disconnected` seguono la cancellazione

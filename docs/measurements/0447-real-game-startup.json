@@ -64,5 +64,39 @@
       0,
       0
     ]
+  },
+  "reused_profile_cache_enabled": {
+    "transport": "HTTP loopback; 500 ms delayed response headers for entry JS when requested",
+    "cache": "max-age=3600; same origin and XDG_CACHE_HOME across separate processes",
+    "visibility": "windowed; third window screenshot unavailable; continuous foreground visibility unrecorded",
+    "runs": [
+      {
+        "run": 1,
+        "timer_lead_ms": 878.98,
+        "frame_lead_ms": 1030.04,
+        "reported_errors": 0,
+        "server_requests_in_window": 17
+      },
+      {
+        "run": 2,
+        "timer_lead_ms": 77.91,
+        "frame_lead_ms": 229.52,
+        "reported_errors": 0,
+        "server_requests_in_window": 0
+      },
+      {
+        "run": 3,
+        "timer_lead_ms": 74.03,
+        "frame_lead_ms": 227.74,
+        "reported_errors": 0,
+        "server_requests_in_window": 0
+      }
+    ],
+    "exit_codes": [
+      0,
+      0,
+      0
+    ],
+    "interpretation": "No server requests observed in runs 2–3; consistent with cache use for this scene, not a general proof."
   }
 }
