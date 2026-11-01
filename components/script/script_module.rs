@@ -10,9 +10,12 @@
 //! it as a [`HostModuleLoader`]: resolving module specifiers (import maps) and fetching module
 //! scripts with Servo's fetch (destination, mode, credentials, referrer policy, CSP, SRI,
 //! MIME checks, resource timing). It also keeps the entry points script elements, workers
-//! and `modulepreload` call. A static graph is fetched and instantiated from a task, which
-//! blocks this thread until the graph is linked (provisional decision of 2026-10-27, logged as
-//! `[roves-module-pause]`); evaluation starts at HTML's execution point.
+//! and `modulepreload` call. A static graph is fetched and instantiated stepwise from
+//! networking tasks (`js::modules::start_module_graph`/`poll_module_graph`): a task polls the
+//! graph, and while fetches are on the network the thread keeps running other tasks (script,
+//! timers, input); a completed fetch queues one task that polls the graph again. Polls log the
+//! time they hold the thread as `[roves-module-pause]`. Evaluation starts at HTML's execution
+//! point.
 
 use std::borrow::Cow;
 use std::cell::{Cell, RefCell};
@@ -20,7 +23,9 @@ use std::collections::HashMap;
 use std::ffi::CStr;
 use std::fmt::Debug;
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::task::{Poll, Wake, Waker};
 
 use encoding_rs::UTF_8;
 use headers::{HeaderMapExt, ReferrerPolicy as ReferrerPolicyHeader};
@@ -29,7 +34,7 @@ use indexmap::IndexMap;
 use js::context::JSContext;
 use js::jsapi::{ExceptionStackBehavior, Handle as RawHandle, Heap, JSRuntime, JSTracer, SetScriptPrivateReferenceHooks, SetScriptPrivateTraceHook, Value};
 use js::jsval::{JSVal, UndefinedValue};
-use js::modules::{FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleId};
+use js::modules::{FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleGraphLoad, ModuleId};
 use js::rust::wrappers2::{JS_ClearPendingException, JS_GetPendingException, JS_GetScriptedCallerPrivate, JS_SetPendingException};
 use js::rust::Handle;
 use mime::Mime;
@@ -71,6 +76,7 @@ use crate::dom::types::{
 use crate::dom::window::Window;
 use crate::network_listener::{self, ResourceTimingListener};
 use crate::realms::enter_auto_realm;
+use crate::task_source::SendableTaskSource;
 
 pub(crate) fn gen_type_error(
     cx: &mut JSContext,
@@ -477,9 +483,9 @@ struct ModuleResponse {
 }
 
 /// The fetch callback of one module fetch: it runs on the fetch thread and hands the complete
-/// response to the module loader's future (which runs on this thread) at end of body. No task
-/// of this thread is involved, so the response also arrives while a static graph load blocks
-/// the thread (see the module documentation).
+/// response to the module loader's future (which runs on this thread) at end of body. Sending
+/// it wakes whoever polls that future: a static graph's [`GraphWaker`] (one resumption task),
+/// the module event loop's wake callback, or the blocking `load_module_graph` reactor.
 fn collect_module_response(sender: js::modules::oneshot::Sender<ModuleResponse>) -> BoxedFetchCallback {
     let mut pending = Some((sender, ModuleResponse::default()));
     Box::new(move |message| {
@@ -922,9 +928,13 @@ pub(crate) fn install_module_loader(cx: &JSContext, global: &GlobalScope) {
 
 /// Drops the module loader of this thread's runtime (before its DOM references go away).
 pub(crate) fn clear_module_loader(cx: &JSContext) {
-    // Cancel queued graph completions before the runtime/DOM references go away.
-    // Their already-queued tasks become no-ops because load_pending_graph removes by key.
-    PENDING_GRAPHS.with(|graphs| graphs.borrow_mut().clear());
+    // Cancel pending graphs before the runtime/DOM references go away: dropping a graph drops
+    // its deno_core load handle and with it the fetches still on the network (late responses
+    // find their channel closed), its global root and its `on_complete` (no completion, no
+    // `error` event). Already-queued tasks become no-ops because `advance_graph` removes by
+    // key. Taken out of the map first, so nothing dropped runs under its borrow.
+    let graphs = PENDING_GRAPHS.with(|graphs| std::mem::take(&mut *graphs.borrow_mut()));
+    drop(graphs);
     js::modules::clear_host_module_loader(cx);
     LOADER.with(|slot| slot.borrow_mut().take());
 }
@@ -943,14 +953,21 @@ fn poll_module_event_loop(cx: &mut JSContext, global: &GlobalScope) {
 
 type OnComplete = Box<dyn FnOnce(&mut JSContext, Option<Rc<ModuleTree>>)>;
 
-/// A static graph waiting for its loading task.
+/// A static graph, from its script's request to its completion. Kept by key in
+/// [`PENDING_GRAPHS`] between the networking tasks that advance it; it holds no borrow of the
+/// JS runtime or context there.
 struct PendingGraph {
     global: DomRoot<GlobalScope>,
     /// The script's URL, or an inline script's base URL.
     url: ServoUrl,
     /// The name deno_core loads the root under: its URL, or a unique name for inline source.
     name: String,
+    /// An inline script's source, until the load starts (deno_core then owns it).
     inline_source: Option<String>,
+    /// deno_core's load, once started by the first task.
+    load: Option<ModuleGraphLoad>,
+    /// Queues the task that advances this graph; created by the first task.
+    waker: Option<Arc<GraphWaker>>,
     on_complete: OnComplete,
 }
 
@@ -959,7 +976,38 @@ thread_local! {
     static NEXT_GRAPH: Cell<u64> = const { Cell::new(0) };
 }
 
-/// Fetches and links the static graph of a module script from a networking task (never from
+/// Wakes a static graph whose fetches are on the network: queues one networking task that
+/// advances it. Wakes that arrive before that task runs are coalesced into it; the task
+/// re-arms the waker before polling, so no wake-up is lost and none is self-scheduled.
+///
+/// It holds only the graph's key and a sendable task source, no DOM reference: the waker may
+/// outlive the graph inside a finished fetch's channel on the network thread. The task finds
+/// the graph (and its global) by key, and does nothing once it completed or was cleared.
+struct GraphWaker {
+    key: u64,
+    queued: AtomicBool,
+    task_source: Mutex<SendableTaskSource>,
+}
+
+impl Wake for GraphWaker {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        if self.queued.swap(true, Ordering::AcqRel) {
+            return;
+        }
+        let key = self.key;
+        if let Ok(task_source) = self.task_source.lock() {
+            task_source.queue(task!(advance_module_graph: move |cx| {
+                advance_graph(cx, key);
+            }));
+        }
+    }
+}
+
+/// Fetches and links the static graph of a module script from networking tasks (never from
 /// the script element's preparation, which may run inside script), then runs `on_complete`
 /// with the module script (`None` when a fetch failed).
 fn queue_graph_load(global: &GlobalScope, pending: PendingGraph) {
@@ -973,41 +1021,83 @@ fn queue_graph_load(global: &GlobalScope, pending: PendingGraph) {
         .task_manager()
         .networking_task_source()
         .queue(task!(load_module_graph: move |cx| {
-            load_pending_graph(cx, key);
+            advance_graph(cx, key);
         }));
 }
 
-fn load_pending_graph(cx: &mut JSContext, key: u64) {
-    let Some(pending) = PENDING_GRAPHS.with(|graphs| graphs.borrow_mut().remove(&key)) else {
+/// Starts the graph's load if needed, then polls it once.
+fn poll_graph(
+    cx: &mut JSContext,
+    pending: &mut PendingGraph,
+    waker: &Waker,
+) -> Poll<Result<ModuleId, ModuleGraphError>> {
+    if pending.load.is_none() {
+        match js::modules::start_module_graph(cx, &pending.name, &mut pending.inline_source) {
+            Ok(load) => pending.load = Some(load),
+            Err(error) => return Poll::Ready(Err(error)),
+        }
+    }
+    let load = pending.load.as_mut().expect("the load was started above");
+    js::modules::poll_module_graph(cx, load, waker)
+}
+
+/// One step of the static graph `key`: registers what arrived from the network and returns
+/// to the event loop while fetches are pending, or completes the graph.
+fn advance_graph(cx: &mut JSContext, key: u64) {
+    // Out of the map while it runs: nothing borrows PENDING_GRAPHS across a poll, and a stale
+    // task (graph completed or cleared) finds no entry.
+    let Some(mut pending) = PENDING_GRAPHS.with(|graphs| graphs.borrow_mut().remove(&key)) else {
         return;
     };
     let global = pending.global.clone();
     install_module_loader(cx, &global);
     let mut realm = enter_auto_realm(cx, &*global);
     let cx = &mut realm.current_realm();
-    let result = js::modules::load_module_graph(cx, &pending.name, pending.inline_source.clone());
-    let module = match result {
-        Ok(id) => Some(Rc::new(ModuleTree::new(pending.url.clone(), Some(id)))),
+    let waker = pending
+        .waker
+        .get_or_insert_with(|| {
+            Arc::new(GraphWaker {
+                key,
+                queued: AtomicBool::new(false),
+                task_source: Mutex::new(global.task_manager().networking_task_source().to_sendable()),
+            })
+        })
+        .clone();
+    // Re-armed before polling: a fetch completing from now on queues a new task.
+    waker.queued.store(false, Ordering::Release);
+    let std_waker = Waker::from(waker);
+    let module = match poll_graph(cx, &mut pending, &std_waker) {
+        // Fetches are on the network: their completion wakes `std_waker`.
+        Poll::Pending => {
+            PENDING_GRAPHS.with(|graphs| graphs.borrow_mut().insert(key, pending));
+            return;
+        },
+        Poll::Ready(Ok(id)) => Some(Rc::new(ModuleTree::new(pending.url.clone(), Some(id)))),
         // HTML: a fetch failure completes with null.
-        Err(ModuleGraphError::Fetch) => None,
+        Poll::Ready(Err(ModuleGraphError::Fetch)) => None,
         // HTML: a parse, resolution or link failure is the module script's error to rethrow.
-        Err(ModuleGraphError::Rethrow) => {
+        Poll::Ready(Err(ModuleGraphError::Rethrow)) => {
             let module = ModuleTree::new(pending.url.clone(), None);
             module.set_rethrow_error(RethrowError::from_pending_exception(cx));
             Some(Rc::new(module))
         },
-        Err(ModuleGraphError::Busy) => {
-            // Script runs inside deno_core's event loop: try again from the next task.
+        Poll::Ready(Err(ModuleGraphError::Busy)) => {
+            // Script runs inside deno_core's event loop: the graph (started or not) is kept
+            // unchanged and advanced again from the next task.
             let url = pending.url.clone();
-            queue_graph_load(&global, pending);
+            PENDING_GRAPHS.with(|graphs| graphs.borrow_mut().insert(key, pending));
+            std_waker.wake_by_ref();
             return debug!("module graph of {url} deferred: the JS runtime is busy");
         },
         // The thread is shutting down (window close, worker termination): the game gets no
-        // `error` event and no completion; dropping `on_complete` releases its DOM roots.
-        Err(ModuleGraphError::Cancelled) => {
+        // `error` event and no completion; dropping the graph drops its pending fetches and
+        // `on_complete` releases its DOM roots.
+        Poll::Ready(Err(ModuleGraphError::Cancelled)) => {
             return debug!("module graph of {} dropped: the runtime is shutting down", pending.url);
         },
     };
+    // The finished deno_core handle is released before script may run.
+    pending.load = None;
     (pending.on_complete)(cx, module);
 }
 
@@ -1031,6 +1121,8 @@ fn load_graph(
             url,
             name,
             inline_source,
+            load: None,
+            waker: None,
             on_complete: Box::new(on_complete),
         },
     );

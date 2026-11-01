@@ -115,6 +115,8 @@ use crate::modules::ModuleId;
 use crate::modules::ModuleLoader;
 use crate::modules::ModuleMap;
 use crate::modules::ModuleName;
+use crate::modules::ModuleRequest;
+use crate::modules::ModuleSource;
 use crate::modules::RequestedModuleType;
 use crate::modules::SideModuleKind;
 use crate::modules::ValidateImportAttributesCb;
@@ -3180,6 +3182,82 @@ impl JsRuntimeState {
   }
 }
 
+/// Caller-owned state of a side ES module load driven with
+/// [`JsRuntime::start_side_es_module_load`] and
+/// [`JsRuntime::poll_side_es_module_load`] (Roves patch).
+///
+/// The handle owns the in-flight `RecursiveModuleLoad` (the type used by
+/// [`JsRuntime::load_side_es_module`] and by dynamic imports) and an `Rc` of
+/// the realm's existing module map; it never stores a borrow of the
+/// [`JsRuntime`]. While a poll returned `Pending`, the runtime can run its
+/// event loop, execute scripts, start other loads or evaluate modules. All
+/// modules are registered in the single realm module map, so concurrent loads
+/// (side, main or dynamic) deduplicate on it instead of building a second
+/// graph.
+///
+/// Like the future returned by [`JsRuntime::load_side_es_module_from_code`],
+/// the handle does nothing until its first poll: an inline root's source is
+/// kept owned by the handle and compiled/registered by that poll, before
+/// root resolution, `ModuleLoader::prepare_load` or any fetch.
+///
+/// Dropping the handle cancels the in-flight fetches and calls
+/// `ModuleLoader::finish_load` if the load was started by a poll; modules
+/// already registered stay in the map, exactly as when the future returned by
+/// [`JsRuntime::load_side_es_module`] is dropped. A handle dropped before its
+/// first poll registered nothing, fetched nothing and calls no
+/// `finish_load`.
+#[must_use = "a side module load does nothing unless it is polled"]
+pub struct SideModuleLoad {
+  specifier: ModuleSpecifier,
+  module_map: Rc<ModuleMap>,
+  state: SideModuleLoadState,
+}
+
+enum SideModuleLoadState {
+  /// Not polled yet. Holds the owned source of an inline root, compiled and
+  /// registered by the first poll before the recursive load is created.
+  NotStarted(Option<ModuleCodeString>),
+  /// `RecursiveModuleLoad::side`: root resolution and
+  /// `ModuleLoader::prepare_load`, run on the first poll.
+  Preparing(
+    futures::future::LocalBoxFuture<
+      'static,
+      Result<RecursiveModuleLoad, CoreError>,
+    >,
+  ),
+  /// Fetching sources and registering them in the module map.
+  Loading(RecursiveModuleLoad),
+  /// Returned `Ready` (success or error); the recursive load was dropped.
+  Finished,
+}
+
+impl SideModuleLoad {
+  /// Root specifier this load was started with.
+  pub fn specifier(&self) -> &ModuleSpecifier {
+    &self.specifier
+  }
+
+  /// Whether a poll already returned `Ready` for this load.
+  pub fn is_finished(&self) -> bool {
+    matches!(self.state, SideModuleLoadState::Finished)
+  }
+}
+
+impl std::fmt::Debug for SideModuleLoad {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    let state = match self.state {
+      SideModuleLoadState::NotStarted(_) => "NotStarted",
+      SideModuleLoadState::Preparing(_) => "Preparing",
+      SideModuleLoadState::Loading(_) => "Loading",
+      SideModuleLoadState::Finished => "Finished",
+    };
+    f.debug_struct("SideModuleLoad")
+      .field("specifier", &self.specifier.as_str())
+      .field("state", &state)
+      .finish()
+  }
+}
+
 // Related to module loading
 impl JsRuntime {
   #[cfg(test)]
@@ -3319,17 +3397,7 @@ impl JsRuntime {
       module_map_rc.loader.borrow().pump_event_loop_during_load();
 
     if let Some(code) = code {
-      jsrealm::context_scope!(scope, &realm, self.v8_isolate());
-      module_map_rc
-        .new_es_module(
-          scope,
-          is_main,
-          specifier.to_string().into(),
-          code,
-          false,
-          None,
-        )
-        .map_err(|e| e.into_error(scope, false, false))?;
+      self.register_es_module_from_code(&realm, is_main, specifier, code)?;
     }
 
     let mut load = if is_main {
@@ -3374,24 +3442,227 @@ impl JsRuntime {
       let Some(load_result) = next_step else { break };
       let (request, source) = load_result?;
 
-      jsrealm::context_scope!(scope, &realm, self.v8_isolate());
-      load
-        .register_and_recurse(scope, &request, source)
-        .map_err(|e| e.into_error(scope, false, false))?;
+      self.register_loaded_module(&realm, &mut load, &request, source)?;
     }
 
     let root_id = load.root_module_id().expect("Root module should be loaded");
 
-    jsrealm::context_scope!(scope, &realm, self.v8_isolate());
+    self.instantiate_loaded_root(&realm, root_id)?;
+
+    Ok(root_id)
+  }
+
+  /// Compiles and registers an inline ES module in `realm`'s module map
+  /// without evaluating it. Shared by the async and stepwise loaders.
+  fn register_es_module_from_code(
+    &mut self,
+    realm: &JsRealm,
+    is_main: bool,
+    specifier: &ModuleSpecifier,
+    code: ModuleCodeString,
+  ) -> Result<ModuleId, CoreError> {
+    let module_map_rc = realm.0.module_map();
+    jsrealm::context_scope!(scope, realm, self.v8_isolate());
+    module_map_rc
+      .new_es_module(
+        scope,
+        is_main,
+        specifier.to_string().into(),
+        code,
+        false,
+        None,
+      )
+      .map_err(|e| e.into_error(scope, false, false))
+  }
+
+  /// Compiles one fetched source of `load`, registers it and queues the
+  /// fetches of its not-yet-registered imports. No JavaScript is evaluated.
+  fn register_loaded_module(
+    &mut self,
+    realm: &JsRealm,
+    load: &mut RecursiveModuleLoad,
+    request: &ModuleRequest,
+    source: ModuleSource,
+  ) -> Result<(), CoreError> {
+    jsrealm::context_scope!(scope, realm, self.v8_isolate());
+    load
+      .register_and_recurse(scope, request, source)
+      .map(|_| ())
+      .map_err(|e| e.into_error(scope, false, false))
+  }
+
+  /// Instantiates (links) a fully registered module graph root.
+  fn instantiate_loaded_root(
+    &mut self,
+    realm: &JsRealm,
+    root_id: ModuleId,
+  ) -> Result<(), CoreError> {
+    jsrealm::context_scope!(scope, realm, self.v8_isolate());
     realm.instantiate_module(scope, root_id).map_err(|e| {
       let exception = v8::Local::new(scope, e);
       CoreErrorKind::Js(crate::error::exception_to_err(
         scope, exception, false, false,
       ))
       .into_box()
-    })?;
+    })
+  }
 
-    Ok(root_id)
+  /// Starts a side ES module load whose progress is driven by
+  /// [`JsRuntime::poll_side_es_module_load`] (Roves patch). See
+  /// [`SideModuleLoad`].
+  ///
+  /// Unlike [`JsRuntime::load_side_es_module`], the returned handle does not
+  /// borrow the runtime, so between polls the runtime remains usable (event
+  /// loop, scripts, dynamic imports, other loads, evaluation).
+  ///
+  /// Starting does no work and cannot fail: it only records `specifier`,
+  /// the realm's module map and, when `code` is `Some`, the owned inline
+  /// source. Everything happens in [`JsRuntime::poll_side_es_module_load`],
+  /// matching the async loaders whose body runs at the first poll. The
+  /// first poll compiles and registers the inline root under `specifier`
+  /// (exactly like [`JsRuntime::load_side_es_module_from_code`]), then
+  /// starts root resolution, `ModuleLoader::prepare_load` and the fetches.
+  /// No JavaScript is evaluated.
+  pub fn start_side_es_module_load(
+    &self,
+    specifier: &ModuleSpecifier,
+    code: Option<ModuleCodeString>,
+  ) -> SideModuleLoad {
+    SideModuleLoad {
+      specifier: specifier.clone(),
+      module_map: self.inner.main_realm.0.module_map(),
+      state: SideModuleLoadState::NotStarted(code),
+    }
+  }
+
+  /// Advances a load started with [`JsRuntime::start_side_es_module_load`]
+  /// (Roves patch).
+  ///
+  /// - Registers every source that is already available, then returns
+  ///   `Pending` once all remaining fetches are pending. The `cx` waker is
+  ///   only registered with those fetches (and `prepare_load`); this method
+  ///   never schedules wake-ups of its own. Poll again after a wake-up.
+  /// - Evaluates no JavaScript and does not pump the event loop. Loaders that
+  ///   answer through JavaScript
+  ///   ([`ModuleLoader::pump_event_loop_during_load`]) need the caller to run
+  ///   the event loop between polls; this is possible because no borrow of
+  ///   the runtime is held. Compilation, import resolution and the final
+  ///   instantiation run synchronously inside the poll, as in the `async`
+  ///   loaders.
+  /// - Returns `Ready(Ok(id))` once the whole graph is registered and the
+  ///   root is instantiated; the caller evaluates it with
+  ///   [`JsRuntime::mod_evaluate`], in its own order.
+  /// - The first poll compiles and registers the inline root, if any, before
+  ///   creating the recursive load. If that fails, the error is returned,
+  ///   the handle is finished and no recursive load (so no
+  ///   `ModuleLoader::finish_load`) is ever created.
+  /// - Returns `Ready(Err(..))` for resolution, fetch, compile and
+  ///   instantiation errors, with the same error values as
+  ///   [`JsRuntime::load_side_es_module`] (and
+  ///   [`JsRuntime::load_side_es_module_from_code`] for inline roots). It
+  ///   also errors, without touching
+  ///   the handle, when the handle belongs to another runtime, and when the
+  ///   load already returned `Ready`.
+  pub fn poll_side_es_module_load(
+    &mut self,
+    load: &mut SideModuleLoad,
+    cx: &mut Context,
+  ) -> Poll<Result<ModuleId, CoreError>> {
+    if !Rc::ptr_eq(&load.module_map, &self.inner.main_realm.0.module_map) {
+      return Poll::Ready(Err(
+        CoreErrorKind::JsBox(JsErrorBox::generic(format!(
+          "side module load of {} belongs to a different runtime",
+          load.specifier
+        )))
+        .into_box(),
+      ));
+    }
+    let realm = JsRealm::clone(&self.inner.main_realm);
+    loop {
+      let step = match &mut load.state {
+        SideModuleLoadState::NotStarted(code) => {
+          // Inline root first, as in `drive_es_module_load`. On a compile or
+          // import resolution error no recursive load is created, so no
+          // `ModuleLoader::finish_load` runs.
+          let registered = match code.take() {
+            Some(code) => self
+              .register_es_module_from_code(
+                &realm,
+                false,
+                &load.specifier,
+                code,
+              )
+              .map(|_| ()),
+            None => Ok(()),
+          };
+          match registered {
+            Ok(()) => {
+              // `RecursiveModuleLoad::side` only captures owned values, so
+              // the boxed future is `'static` and holds no borrow of the
+              // runtime.
+              let prepare = RecursiveModuleLoad::side(
+                load.specifier.to_string(),
+                load.module_map.clone(),
+                SideModuleKind::Async,
+                None,
+              )
+              .boxed_local();
+              load.state = SideModuleLoadState::Preparing(prepare);
+              continue;
+            }
+            Err(e) => Err(e),
+          }
+        }
+        SideModuleLoadState::Preparing(prepare) => match prepare.poll_unpin(cx)
+        {
+          Poll::Pending => return Poll::Pending,
+          Poll::Ready(Ok(recursive)) => {
+            load.state = SideModuleLoadState::Loading(recursive);
+            continue;
+          }
+          Poll::Ready(Err(e)) => Err(e),
+        },
+        SideModuleLoadState::Loading(recursive) => {
+          match recursive.poll_next_unpin(cx) {
+            Poll::Pending => return Poll::Pending,
+            Poll::Ready(Some(Ok((request, source)))) => {
+              match self
+                .register_loaded_module(&realm, recursive, &request, source)
+              {
+                // Re-poll: more sources may be ready, and fetches queued by
+                // the registration must register the `cx` waker.
+                Ok(()) => continue,
+                Err(e) => Err(e),
+              }
+            }
+            Poll::Ready(Some(Err(e))) => Err(e),
+            Poll::Ready(None) => match recursive.root_module_id() {
+              Some(root_id) => self
+                .instantiate_loaded_root(&realm, root_id)
+                .map(|()| root_id),
+              None => Err(
+                CoreErrorKind::MissingFromModuleMap(load.specifier.to_string())
+                  .into_box(),
+              ),
+            },
+          }
+        }
+        SideModuleLoadState::Finished => {
+          return Poll::Ready(Err(
+            CoreErrorKind::JsBox(JsErrorBox::generic(format!(
+              "side module load of {} was polled after completion",
+              load.specifier
+            )))
+            .into_box(),
+          ));
+        }
+      };
+      // Dropping the recursive load calls `ModuleLoader::finish_load` after
+      // instantiation or the error, in the same order as
+      // `drive_es_module_load`.
+      load.state = SideModuleLoadState::Finished;
+      return Poll::Ready(step);
+    }
   }
 
   /// Load and evaluate an ES module provided the specifier and source code.

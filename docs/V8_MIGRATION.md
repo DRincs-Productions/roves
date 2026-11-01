@@ -1,25 +1,45 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Punto operativo aggiornato — 29 ottobre 2026
+## Punto operativo aggiornato — 1 novembre 2026
 
-### 0457 — rivalutazione caricamento asincrono, prototipo isolato
+### 0457 — caricamento statico deno_core a passi, integrazione locale non verificata
 
-Analisi Claude in lettura dopo 0456: il caricamento statico attuale mantiene il
-prestito esclusivo di JsRuntime per il future; con le API esaminate non si può
-restituire il controllo a Servo per input e script mentre quel future attende.
-La versione ufficiale deno_core 0.413.0 su docs.rs espone ancora
-`load_side_es_module(&mut self, ...)` asincrona; controllare gli aggiornamenti
-upstream prima di adottare una patch. Riferimento:
-https://docs.rs/deno_core/latest/src/deno_core/runtime/jsruntime.rs.html
+Il prototipo 0457 è stato portato nel working tree: `SideModuleLoad` avanza
+`RecursiveModuleLoad` con poll brevi sulla ModuleMap unica di deno_core; il task
+networking Servo conserva il handle tra i fetch, senza tenere preso `JsRuntime`.
+Script, microtask, import dinamici, timer e input possono quindi proseguire mentre
+la rete risponde. Registrazione/compilazione delle sorgenti, risoluzione e link
+finale restano sincroni nel poll e possono ancora occupare il thread; nessuna
+soglia o miglioramento complessivo è dimostrato. Import dinamici e statici
+condividono la stessa mappa; HTML continua a decidere quando valutare il modulo.
 
-Ipotesi da verificare: handle di caricamento a passi nell’unica ModuleMap di
-deno_core, con prestiti brevi tra poll e completamento HTML dopo il rilascio
-del prestito. Critici concorrenza import dinamici/statici, inline, redirect,
-HTML/TLA, CSP e cancellazione. Copia sperimentale in target/task-0457/deno_core;
-nessuna adozione o rimozione della pausa ancora dimostrata. L’eccezione utente
-sui fix di libreria che bloccano giochi si applica ove necessario; privilegiare
-soluzione ufficiale mantenuta e preparare riproduzione/test prima di proporre
-issue e PR upstream. Non pubblicare un’integrazione incompleta.
+Codex ha revisionato in lettura l’ordine HTML: Servo registra ogni completamento
+defer e avanza solo il primo elemento pronto della coda. L’API per passi non cambia
+questi callback. Il test smoke ora distingue il progresso dopo il caricamento dal
+progresso durante il fetch: il documento invia probe da un timer e la fixture HTTP
+conta solo le richieste ricevute mentre trattiene la risposta del modulo. Le suite
+Python locali passano **56 test, 11 saltati**; anche la prova diretta del server
+conferma una probe nel periodo trattenuto. Questi risultati non compilano Rust e
+non sono verifica browser.
+
+Restano obbligatori CI normal/JITless per `roves-js`, smoke browser Linux/Windows,
+regressioni errori/CSP/import map/TLA/redirect, prova runtime di chiusura con fetch
+pendente e replay delle patch Servo e deno_core. Le tre prove d’integrazione in
+`roves-js/src/tests.rs` sono incluse nel job `cargo test` di `roves-js`, in normale
+e JIT-less; non è stata conservata una suite unit separata dentro al vendor escluso
+dal workspace.
+
+Il probe smoke nuovo deve passare in entrambe le modalità e su Linux/Windows prima
+di considerare risolta la pausa di rete. Sulle scene reali manca ancora la prova
+dopo questa modifica: compilazione/link sincroni possono restare visibili. Il
+controllo dell’utente su link/notice/chiusura UI resta distinto; non ispezionare il
+desktop senza richiesta. Memoria generale e retention restano aperte. SourceText
+e preload JSON sono backlog non bloccante (non riprenderli qui).
+
+La modifica semanticamente nuova a deno_core è un fork temporaneo del crate
+0.413.0; `ROVES_PATCHES.md` documenta API e rimozione. La PR upstream per questa
+API di caricamento a passi non è stata aperta. Non pubblicare WIP né dichiarare
+completata la migrazione prima dei gate sopra e del replay/documentazione.
 
 
 ### 0456 — input su gioco avviato durante fetch statico

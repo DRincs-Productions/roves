@@ -742,10 +742,11 @@ Named-property visibility now reuses V8-backed descriptor traversal rather than 
 normal/JITless tests and required browser fixtures passed in the0eb CI batch. This is a bounded
 correction, not complete WebIDL conformance.
 
-Roves keeps its Servo shell while evaluating maintained libraries to replace internal
-services and remove duplicate implementation. rusty_v8 is already used; deno_core remains
-an isolated evaluation, not an adopted production runtime. DOM/layout/rendering stay in
-Servo initially. No separate Chromium or Deno installation is planned.
+Roves keeps its Servo shell while replacing internal services with maintained libraries
+where that removes duplicate implementation. rusty_v8 is already used; the local source
+tree now wires deno_core into Servo's single-document module loader, pending required
+normal/JITless Rust and browser CI. DOM/layout/rendering stay in Servo initially. No
+separate Chromium or Deno installation is planned.
 
 The product direction is one Servo-shell window and one game document, with internal
 routes such as TanStack Router using the History API and fragments. Additional tabs/windows
@@ -758,11 +759,9 @@ the system browser only after a real user click; automatic attempts are blocked 
 without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
 The source integration follows the single-document scope; browser validation remains required.
 
-The source candidate integrates deno_core with the existing Servo DOM, layout and shell,
-using one V8 version and replacing the old Roves module graph. Cross-platform browser
-validation is still pending; use artifacts from successful CI runs, not an unverified
-source checkpoint. Native Windows checks pass112tests normally and111with the compiled
-JITless feature (two benchmarks excluded, plus Wasm in JITless).
+The local source integration uses deno_core with the existing Servo DOM, layout and shell,
+one V8 version and a shared module map. It is not yet a verified release: cross-platform
+Rust and browser CI must pass before using a built artifact.
 
 Games keep one document: History/hash routes remain available; full navigation, reload,
 iframes and auxiliary windows are refused. Development launches show a non-modal notice;
@@ -770,12 +769,13 @@ bundled games log the refusal. External HTTP(S) anchor/area links require a nati
 click and use SDL's system URL handler; synthetic/automatic requests are blocked. Real-click
 OS handoff and notice rendering still require integration/visual verification.
 
-Three provisional differences are accepted: static graph fetching/instantiation can pause
+Three provisional differences are tracked: static module fetches now yield between network
+responses, while compilation, resolution and final linking remain synchronous and may pause
 input/timers; static evaluation errors arrive via unhandledrejection; inline module URLs
 include a distinct #roves-inline-module-N fragment. Dynamic imports stay asynchronous,
-relative asset bases remain correct, and external module URLs are unchanged. Pause duration
-and impact still need measurement at startup and during gameplay under cold/warm/slow loads.
-No performance improvement or acceptable latency threshold has been proved.
+relative asset bases remain correct, and external module URLs are unchanged. The new
+timer-probe smoke and Rust integration tests still need CI; responsiveness on real scenes
+and acceptable latency have not been established.
 
 JSON modulepreload is temporarily unavailable: it warns once and queues a link error,
 without reporting a false load or interrupting the game. Typed JSON imports remain supported;

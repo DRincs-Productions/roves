@@ -40,6 +40,7 @@ pub(crate) use jsruntime::NO_OF_BUILTIN_MODULES;
 pub use jsruntime::PollEventLoopOptions;
 pub use jsruntime::RuntimeOptions;
 pub use jsruntime::SharedArrayBufferStore;
+pub use jsruntime::SideModuleLoad;
 pub use snapshot::CreateSnapshotOptions;
 pub use snapshot::CreateSnapshotOutput;
 pub(crate) use snapshot::SnapshotDataId;

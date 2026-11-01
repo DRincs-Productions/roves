@@ -30,21 +30,56 @@ class ResultsTests(unittest.TestCase):
         self.assertEqual([], validate('suite.html', 'noise\nSUITE PASS example\nSUITE TOTAL 1/1\n'))
 
     def test_pause_observations_are_required_without_latency_thresholds(self):
+        # Only the slow scene carries the server report (hold and probe counts); cold and
+        # warm report null. Large values are accepted: there is no latency threshold.
+        def server(scene):
+            if scene == 'slow':
+                return dict(server_fetch_hold_ms=100000.5, server_probes_during_fetch=1, server_probes_total=3)
+            return dict(server_fetch_hold_ms=None, server_probes_during_fetch=None, server_probes_total=None)
         rows = [dict(scene=scene, elapsed_ms=100000.5, max_timer_gap_ms=0,
                      max_frame_gap_ms=100000, timer_ticks=1, frame_samples=1,
-                     visibility='hidden') for scene in ('cold', 'warm', 'slow')]
+                     visibility='hidden', **server(scene)) for scene in ('cold', 'warm', 'slow')]
         def report(values):
             return ''.join('ROVES-V8 module-pause diagnostic ' + json.dumps(row) + '\n' for row in values)
+        def changed(index, **changes):
+            bad = [dict(row) for row in rows]; bad[index].update(changes)
+            return report(bad)
         self.assertEqual([], pause_diagnostic_problems(report(rows)))
+        # Every probe arriving during the hold, and an integer hold, are still valid observations.
+        self.assertEqual([], pause_diagnostic_problems(changed(2, server_probes_during_fetch=3)))
+        self.assertEqual([], pause_diagnostic_problems(changed(2, server_fetch_hold_ms=1)))
         self.assertTrue(pause_diagnostic_problems(report(rows[:2])))
         self.assertTrue(pause_diagnostic_problems(report(rows + rows[:1])))
         for field, value in (('elapsed_ms', -1), ('max_frame_gap_ms', float('nan')),
                              ('max_timer_gap_ms', float('inf')), ('elapsed_ms', True),
                              ('frame_samples', 0), ('timer_ticks', 1.5), ('visibility', 'unknown')):
             with self.subTest(field=field, value=value):
-                bad = [dict(row) for row in rows]; bad[0][field] = value
-                self.assertTrue(pause_diagnostic_problems(report(bad)))
+                self.assertTrue(pause_diagnostic_problems(changed(0, **{field: value})))
+        # Slow: the server must prove a held response and at least one timer probe during it.
+        for field, value in (('server_fetch_hold_ms', 0), ('server_fetch_hold_ms', -1),
+                             ('server_fetch_hold_ms', float('nan')), ('server_fetch_hold_ms', float('inf')),
+                             ('server_fetch_hold_ms', True), ('server_fetch_hold_ms', '5'),
+                             ('server_fetch_hold_ms', None),
+                             ('server_probes_during_fetch', 0), ('server_probes_during_fetch', None),
+                             ('server_probes_during_fetch', 1.0), ('server_probes_during_fetch', True),
+                             ('server_probes_total', None), ('server_probes_total', 3.0),
+                             ('server_probes_total', 0)):
+            with self.subTest(scene='slow', field=field, value=value):
+                self.assertTrue(pause_diagnostic_problems(changed(2, **{field: value})))
+        # Inconsistent counts: more probes during the fetch than in total.
+        self.assertTrue(pause_diagnostic_problems(changed(2, server_probes_during_fetch=4, server_probes_total=3)))
+        self.assertTrue(pause_diagnostic_problems(changed(2, server_probes_during_fetch=-1, server_probes_total=-1)))
+        # Cold and warm must not carry a server report, not even a zero.
+        for index, scene in ((0, 'cold'), (1, 'warm')):
+            for changes in (dict(server_fetch_hold_ms=0), dict(server_probes_during_fetch=0),
+                            dict(server_probes_total=0), server('slow')):
+                with self.subTest(scene=scene, changes=changes):
+                    self.assertTrue(pause_diagnostic_problems(changed(index, **changes)))
+        missing_server_field = [dict(row) for row in rows]
+        del missing_server_field[0]['server_fetch_hold_ms']
+        self.assertTrue(pause_diagnostic_problems(report(missing_server_field)))
         self.assertTrue(pause_diagnostic_problems('ROVES-V8 module-pause diagnostic {broken'))
+        self.assertTrue(pause_diagnostic_problems('ROVES-V8 module-pause diagnostic []'))
         passes = ''.join(f'SUITE PASS {name}\n' for name in REQUIRED_CHECKS['module-order.html'])
         total = len(REQUIRED_CHECKS['module-order.html'])
         claimed = passes + f'SUITE TOTAL {total}/{total}\n'

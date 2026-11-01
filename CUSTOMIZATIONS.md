@@ -1,9 +1,38 @@
-## Resume - Investigating nonblocking static module loading (0457)
+## 2026-11-01 - Port stepwise static module loading through deno_core (0457)
 
-A step-driven side-module loading API is under investigation in an isolated
-copy under target/task-0457. The current official deno_core API holds a mutable
-runtime borrow while loading. No production integration or successful prototype
-is claimed; module identity, HTML ordering, security and cancellation remain gates.
+`components/roves-js/vendor/deno_core` now adds the public Roves `SideModuleLoad`
+handle and start/poll methods, sharing the existing `RecursiveModuleLoad` and
+single realm ModuleMap. Shared helpers keep the existing blocking load path
+semantically aligned; dropping an unpolled handle registers no inline source,
+and dropping a pending handle cancels its fetches. `components/roves-js` exposes
+start/poll graph wrappers and records per-graph loader errors. Servo's
+`components/script/script_module.rs` keeps each pending graph by key and uses a
+coalescing networking-task waker, so no JsRuntime borrow survives across fetches.
+HTML's existing deferred/asap completion callbacks still control execution and
+document order. Runtime compilation/linking is synchronous; only waiting on
+network fetches yields to the event loop. This change is local and not yet
+verified by Rust or browser CI. The three adapter-level tests in `roves-js/src/tests.rs`
+and the browser smoke are the executable gates; a separate vendor-only test module was
+not retained because that crate is excluded from the root workspace. The replayable
+vendor delta is
+`patches/deno_core-0.413.0/0457-stepwise-side-module-load.patch`; the Servo adapter delta is
+`patches/servo-v0.5.0/0457-stepwise-static-module-loading.patch`. Both were applied to scratch
+copies of their HEAD source and compared with the working files (line endings normalized for
+the Windows checkout). Provenance and deno_core pin details:
+`components/roves-js/vendor/deno_core/ROVES_PATCHES.md`.
+
+`support/v8-smoke` now uses a timer-issued HTTP probe and a server-side hold window
+to require evidence that JavaScript ran while `/slow-module.mjs` was still pending;
+testing only before `load` could have been a false positive. The Python runner
+passes 56 tests with 11 platform/dependency skips; this does not verify Rust,
+Servo, real-game responsiveness, or an acceptable pause for synchronous compile/link.
+Do not label the three user-visible migration topics complete yet.
+
+Still needed: compile/tests normal and JITless, Linux/Windows browser smoke, all
+module security/error/ordering and TLA regressions, shutdown/cancellation, a
+replayable Servo patch, current handoff/wiki/README, and a real-game observation
+after the change. The upstream cached-TLA fix issue/PR is separate; no public
+upstream issue/PR has been created for this new API.
 
 ## Resume - Input during a delayed static module in a running game (0456)
 

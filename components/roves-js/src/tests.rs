@@ -7700,6 +7700,8 @@ mod deno_modules {
             "main.js" => (HostModuleKind::JavaScript, r#"import { dep } from "./dep.js"; import data from "./data.json" with { type: "json" }; await Promise.resolve(); log.push("main:" + dep + ":" + data.n);"#),
             "dep.js" => (HostModuleKind::JavaScript, r#"export const dep = "D";"#),
             "data.json" => (HostModuleKind::Json, r#"{ "n": 7 }"#),
+            "dyn.js" => (HostModuleKind::JavaScript, r#"export const d = "dyn";"#),
+            "broken.js" => (HostModuleKind::JavaScript, "export const = ;"),
             _ => (HostModuleKind::JavaScript, "log.push('late source must not run');"),
         };
         FetchedModule { url: url.to_owned(), kind, source: source.to_owned() }
@@ -7768,6 +7770,215 @@ mod deno_modules {
         eval(&runtime, "import('./dep.js').then(m => log.push('dynamic:' + m.dep)); 0");
         assert!(drive(&mut runtime, |r| log(r) == "main:D:7,dynamic:D"), "cached dynamic import still settles: {}", log(&runtime));
         assert_eq!(started.get(), 3, "the dynamic import reuses the loaded module");
+    }
+
+    /// Counts the wake-ups of a stepwise static load (Servo queues one resumption task each).
+    #[derive(Default)]
+    struct CountingWaker(AtomicUsize);
+    impl std::task::Wake for CountingWaker {
+        fn wake(self: Arc<Self>) { self.wake_by_ref(); }
+        fn wake_by_ref(self: &Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
+    }
+
+    fn counting_waker() -> (Arc<CountingWaker>, std::task::Waker) {
+        let counter = Arc::new(CountingWaker::default());
+        (counter.clone(), std::task::Waker::from(counter))
+    }
+
+    fn wakes(counter: &CountingWaker) -> usize {
+        counter.0.load(Ordering::SeqCst)
+    }
+
+    /// Polls a stepwise load whose sources are all available. Bounded, and not the embedder's
+    /// pattern: Servo polls again only after a wake-up.
+    fn poll_until_ready(runtime: &mut Runtime, graph: &mut ModuleGraphLoad) -> Result<ModuleId, ModuleGraphError> {
+        let (_, waker) = counting_waker();
+        for _ in 0..16 {
+            if let std::task::Poll::Ready(result) = poll_module_graph(runtime.cx(), graph, &waker) {
+                return result;
+            }
+        }
+        panic!("static graph {} is still pending", graph.url());
+    }
+
+    fn take_pending_exception(runtime: &Runtime) -> String {
+        let cx = runtime.raw_cx();
+        rooted!(in(cx) let mut error = UndefinedValue());
+        assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) }, "an error to rethrow is pending");
+        unsafe { crate::api::JS_ClearPendingException(cx) };
+        describe(runtime, error.get())
+    }
+
+    /// Task 0457: while a static graph's fetch is held on the network, the thread is free:
+    /// script, promise jobs and the module event loop (a dynamic import with its own fetch)
+    /// keep making progress. The graph is woken only by its own fetches, links without
+    /// evaluating, and evaluates at the embedder's (HTML's) call.
+    #[test]
+    fn stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending() {
+        use std::task::Poll;
+        let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
+        let (counter, waker) = counting_waker();
+        let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).expect("the load starts");
+        assert_eq!(started.get(), 0, "starting a load fetches nothing");
+        assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+        let (root, root_reply) = network.try_recv().expect("the first poll fetches the root");
+        assert_eq!(root, format!("{ORIGIN}main.js"));
+
+        // The root's response is delayed; the document keeps running meanwhile.
+        eval(&runtime, "log.push('script'); Promise.resolve().then(() => log.push('job')); 0");
+        checkpoint(&mut runtime);
+        eval(&runtime, "import('./dyn.js').then(m => log.push('dynamic:' + m.d)); 0");
+        let (dynamic, dynamic_reply) = (0..16)
+            .find_map(|_| {
+                poll_module_event_loop(runtime.cx());
+                checkpoint(&mut runtime);
+                network.try_recv().ok()
+            })
+            .expect("the dynamic import fetches while the static graph waits");
+        assert_eq!(dynamic, format!("{ORIGIN}dyn.js"));
+        dynamic_reply.send(Ok(network_source(&dynamic))).unwrap();
+        assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn"), "the dynamic import settles: {}", log(&runtime));
+        assert_eq!(wakes(&counter), 0, "no wake-up (and no busy loop) before the graph's own fetch completes");
+
+        // The root arrives: its completion wakes the graph, whose next poll fetches the imports.
+        root_reply.send(Ok(network_source(&root))).unwrap();
+        assert!(wakes(&counter) >= 1, "the completed fetch wakes the graph");
+        assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+        let imports: Vec<_> = network.try_iter().collect();
+        assert_eq!(imports.len(), 2, "dep.js and data.json");
+        assert_eq!(log(&runtime), "script,job,dynamic:dyn", "nothing of the graph ran yet");
+        let before = wakes(&counter);
+        for (url, reply) in imports {
+            reply.send(Ok(network_source(&url))).unwrap();
+        }
+        assert!(wakes(&counter) > before);
+        let id = match poll_module_graph(runtime.cx(), &mut graph, &waker) {
+            Poll::Ready(result) => result.expect("the graph links"),
+            Poll::Pending => panic!("every source arrived"),
+        };
+        assert_eq!(log(&runtime), "script,job,dynamic:dyn", "linking evaluates nothing");
+        drop(graph);
+        evaluate_module(runtime.cx(), id).unwrap();
+        assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn,main:D:7"), "top-level await completes: {}", log(&runtime));
+        assert_eq!(started.get(), 4, "root, two imports and the dynamic import");
+    }
+
+    /// Task 0457: the stepwise load keeps `load_module_graph`'s failure contracts, also with
+    /// several graphs in flight on the single module map (each failure belongs to its graph).
+    #[test]
+    fn stepwise_static_load_failures_keep_their_contracts_per_graph() {
+        use std::task::Poll;
+        {
+            let (mut runtime, _, _) = runtime_with(&[
+                ("broken.js", HostModuleKind::JavaScript, "export const = ;"),
+                ("uses-missing.js", HostModuleKind::JavaScript, r#"import "./missing.js";"#),
+                ("uses-bare.js", HostModuleKind::JavaScript, r#"import "lodash";"#),
+            ]);
+            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}uses-missing.js"), &mut None).unwrap();
+            assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Fetch));
+            assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) }, "a fetch failure has no error to rethrow");
+            for (path, name) in [("broken.js", "SyntaxError"), ("uses-bare.js", "TypeError")] {
+                let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap();
+                assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Rethrow));
+                let described = take_pending_exception(&runtime);
+                assert!(described.starts_with(name), "{path}: {described}");
+            }
+            let mut inline = Some("export const = ;".to_owned());
+            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-7"), &mut inline).unwrap();
+            assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Rethrow));
+            assert!(take_pending_exception(&runtime).starts_with("SyntaxError"), "an inline parse error is rethrown");
+        }
+
+        // Three graphs wait on the network at once; their responses arrive out of order.
+        let NetworkRuntime { mut runtime, network, .. } = network_runtime();
+        let (_, waker) = counting_waker();
+        let mut graphs: Vec<_> = ["main.js", "gone.js", "broken.js"]
+            .iter()
+            .map(|path| start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap())
+            .collect();
+        for graph in &mut graphs {
+            assert!(poll_module_graph(runtime.cx(), graph, &waker).is_pending());
+        }
+        let mut replies: HashMap<String, NetworkReply> = network.try_iter().collect();
+        assert_eq!(replies.len(), 3);
+        let mut broken = graphs.pop().unwrap();
+        let mut gone = graphs.pop().unwrap();
+        let mut main = graphs.pop().unwrap();
+        replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).unwrap();
+        assert_eq!(poll_module_graph(runtime.cx(), &mut gone, &waker), Poll::Ready(Err(ModuleGraphError::Fetch)));
+        assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) });
+        let url = format!("{ORIGIN}broken.js");
+        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
+        assert_eq!(poll_module_graph(runtime.cx(), &mut broken, &waker), Poll::Ready(Err(ModuleGraphError::Rethrow)),
+            "the other graph's fetch failure is not attributed to this parse error");
+        assert!(take_pending_exception(&runtime).starts_with("SyntaxError"));
+        let url = format!("{ORIGIN}main.js");
+        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
+        assert!(poll_module_graph(runtime.cx(), &mut main, &waker).is_pending());
+        for (url, reply) in network.try_iter() {
+            reply.send(Ok(network_source(&url))).unwrap();
+        }
+        let id = match poll_module_graph(runtime.cx(), &mut main, &waker) {
+            Poll::Ready(result) => result.expect("the remaining graph still links"),
+            Poll::Pending => panic!("every source arrived"),
+        };
+        evaluate_module(runtime.cx(), id).unwrap();
+        assert!(drive(&mut runtime, |r| log(r) == "main:D:7"), "{}", log(&runtime));
+    }
+
+    /// Task 0457: dropping a pending stepwise load (Servo clears its pending graphs before the
+    /// DOM goes away) or shutting the runtime down cancels the fetches still on the network,
+    /// without running anything, leaving an exception, or touching a destroyed runtime.
+    #[test]
+    fn stepwise_static_load_drop_and_shutdown_cancel_pending_fetches() {
+        use std::task::Poll;
+        let (_, waker) = counting_waker();
+        {
+            let NetworkRuntime { mut runtime, started, dropped, network } = network_runtime();
+            let mut inline = Some(r#"import "./slow.js"; log.push("inline");"#.to_owned());
+            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-1"), &mut inline).unwrap();
+            assert!(inline.is_none(), "the started load owns the inline source");
+            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+            let (url, reply) = network.try_recv().expect("slow.js is fetched");
+            assert_eq!(url, format!("{ORIGIN}slow.js"));
+            drop(graph);
+            assert_eq!(dropped.get(), 1, "dropping the load drops its pending fetch");
+            assert!(reply.send(Ok(network_source(&url))).is_err(), "a late response finds the fetch closed");
+            assert_eq!(log(&runtime), "", "no module of the dropped graph runs");
+            assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "no exception is left pending");
+            assert_eq!(started.get(), 1);
+        }
+        {
+            let NetworkRuntime { mut runtime, started, dropped, network } = network_runtime();
+            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}slow.js"), &mut None).unwrap();
+            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+            let (url, reply) = network.try_recv().expect("slow.js is fetched");
+            let shutdown = runtime.thread_safe_js_context();
+            std::thread::spawn(move || shutdown.request_shutdown()).join().expect("the closing thread");
+            assert_eq!(poll_module_graph(runtime.cx(), &mut graph, &waker), Poll::Ready(Err(ModuleGraphError::Cancelled)));
+            assert_eq!(dropped.get(), 0, "the handle owns its fetch until the embedder drops it");
+            drop(graph);
+            assert_eq!(dropped.get(), 1);
+            assert!(reply.send(Ok(network_source(&url))).is_err(), "a late response finds the fetch closed");
+            let mut inline = Some(r#"import "./slow.js";"#.to_owned());
+            assert!(matches!(start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-2"), &mut inline),
+                Err(ModuleGraphError::Cancelled)));
+            assert!(inline.is_some(), "a refused start leaves the inline source to the caller");
+            assert_eq!(started.get(), 1, "no fetch starts after shutdown");
+            assert_eq!(log(&runtime), "");
+            assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "no exception is left pending");
+        }
+        {
+            let NetworkRuntime { mut runtime, dropped, network, .. } = network_runtime();
+            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).unwrap();
+            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+            let (url, reply) = network.try_recv().expect("main.js is fetched");
+            drop(runtime);
+            assert_eq!(dropped.get(), 0);
+            drop(graph);
+            assert_eq!(dropped.get(), 1, "a handle outliving its runtime still drops its fetch");
+            assert!(reply.send(Ok(network_source(&url))).is_err());
+        }
     }
 
 }

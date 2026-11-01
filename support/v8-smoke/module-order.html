@@ -171,7 +171,7 @@ check("descendant module fetch uses its importing module referrer", async () => 
   const expected = new URL("single-document-fixtures/referrer-parent.mjs", document.baseURI).href;
   return value.default === expected || "Referer=" + value.default + " expected=" + expected;
 });
-check("runtime static module loading resumes timers and frames", async () => {
+check("runtime static module loading advances timers during pending fetch", async () => {
   for (const [scene, path] of [
     ["cold", "single-document-fixtures/value.mjs?pause-probe"],
     ["warm", "single-document-fixtures/value.mjs?pause-probe"],
@@ -179,14 +179,32 @@ check("runtime static module loading resumes timers and frames", async () => {
   ]) {
     let ticks = 0, largestGap = 0, previous = performance.now(), waitForTick = null;
     let frames = 0, largestFrameGap = 0, previousFrame = null, frameRequest = null;
+    // Callbacks observed between append and load. Ticks queued during a pause may still
+    // run before load, so these are diagnostics only; the slow scene's proof is server-side.
+    let pending = false, pendingTicks = 0, pendingFrames = 0;
+    // Slow scene only: the timer sends at most one probe at a time while the load is
+    // pending; the server counts probes that arrive while it withholds the module body.
+    const slowToken = scene === "slow"
+      ? "t" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 12) : null;
+    const probes = []; let probeInFlight = false;
     function observeFrame(timestamp) {
       if (previousFrame !== null) largestFrameGap = Math.max(largestFrameGap, timestamp - previousFrame);
       previousFrame = timestamp; frames++;
+      if (pending) pendingFrames++;
       frameRequest = requestAnimationFrame(observeFrame);
     }
     const timer = setInterval(() => {
       const now = performance.now(); largestGap = Math.max(largestGap, now - previous);
       previous = now; ticks++;
+      if (pending) {
+        pendingTicks++;
+        if (slowToken && !probeInFlight) {
+          probeInFlight = true;
+          probes.push(fetch("slow-fetch-probe?token=" + slowToken, { cache: "no-store" })
+            .then(response => response.status, error => "error: " + error)
+            .finally(() => { probeInFlight = false; }));
+        }
+      }
       if (waitForTick) { const resolve = waitForTick; waitForTick = null; resolve(); }
     }, 5);
     const script = document.createElement("script"); script.type = "module";
@@ -196,20 +214,41 @@ check("runtime static module loading resumes timers and frames", async () => {
         previousFrame = timestamp; frameRequest = requestAnimationFrame(observeFrame); resolve();
       }));
       const started = performance.now();
+      let loadedAt;
       await new Promise((resolve, reject) => {
-        script.onload = resolve;
-        script.onerror = () => reject(new Error("pause fixture loading failed: " + scene));
-        script.src = path; document.head.append(script);
+        script.onload = () => { pending = false; loadedAt = performance.now(); resolve(); };
+        script.onerror = () => { pending = false; reject(new Error("pause fixture loading failed: " + scene)); };
+        script.src = slowToken ? path + "?token=" + slowToken : path;
+        pending = true; document.head.append(script);
       });
-      const elapsed = performance.now() - started;
+      const elapsed = loadedAt - started;
+      // No new probe starts after load (pending is false); drain those already sent so
+      // the report cannot be read before a probe that is still on the wire is recorded.
+      let report = null;
+      if (slowToken) {
+        const statuses = await Promise.all(probes);
+        const bad = statuses.find(status => status !== 204);
+        if (bad !== undefined) return "slow fetch probe failed: " + bad;
+        const response = await fetch("slow-fetch-report?token=" + slowToken, { cache: "no-store" });
+        report = await response.json();
+        if (!response.ok || report.error) return "slow fetch report failed: " + JSON.stringify(report);
+      }
       await new Promise(resolve => { waitForTick = resolve; });
       await new Promise(resolve => requestAnimationFrame(() => resolve()));
       console.log("ROVES-V8 module-pause diagnostic " + JSON.stringify({
         scene, elapsed_ms: elapsed, max_timer_gap_ms: largestGap, timer_ticks: ticks,
-        max_frame_gap_ms: largestFrameGap, frame_samples: frames, visibility: document.visibilityState
+        max_frame_gap_ms: largestFrameGap, frame_samples: frames,
+        timer_ticks_before_load: pendingTicks, frame_samples_before_load: pendingFrames,
+        server_fetch_hold_ms: report ? report.fetch_hold_ms : null,
+        server_probes_during_fetch: report ? report.probes_during_fetch : null,
+        server_probes_total: report ? report.probes_total : null,
+        visibility: document.visibilityState
       }));
       if (ticks === 0 || frames === 0) return "timer/frame did not resume: " + scene;
+      if (report && report.probes_during_fetch < 1)
+        return "no timer probe reached the server while it withheld the slow static module";
     } finally {
+      pending = false;
       clearInterval(timer); if (frameRequest !== null) cancelAnimationFrame(frameRequest); script.remove();
     }
   }

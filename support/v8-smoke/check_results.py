@@ -23,7 +23,7 @@ WASM_SKIPS = {
 REQUIRED_CHECKS = {
     "module-csp.html": ("classic script nonce authorizes its dynamic module fetch", "an unnonced classic script remains blocked"),
     "document-interface-alias.html": ("fresh interface resolution preserves the Document alias",),
-    "module-order.html": ('cached imports await static TLA roots and dependencies', 'initial static module loading reports parser and timer observations', 'deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading resumes timers and frames', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
+    "module-order.html": ('cached imports await static TLA roots and dependencies', 'initial static module loading reports parser and timer observations', 'deferred modules see the parsed body and TLA does not block DOMContentLoaded', 'static evaluation errors are rejection events and the game continues', 'inline module URLs are distinct and preserve the relative asset base', 'classic errors still use error events', 'static parse failure preserves its syntax error contract', 'static link failure preserves its syntax error contract', 'static fetch failure remains a script loading failure', 'dynamic fetch failure rejects the importing promise', 'classic eval and Function imports preserve each source directory', 'descendant module fetch uses its importing module referrer', 'runtime static module loading advances timers during pending fetch', 'cross-origin modules require a matching CORS response', 'JSON preload reports unavailable while typed imports still work', 'module redirects preserve final URL and relative imports', 'module fetch rejects a non-JavaScript MIME type', 'module response referrer policy controls descendant requests', 'static module integrity permits matching bytes and denies mismatches', 'static import attribute failures retain TypeError', 'static parse reports identify the external module source', 'cached dynamic imports settle across turns and preserve namespace identity', 'inline module diagnostics retain document rows and source identity'),
     "single-document.html": (
         "reload preserves the live game document",
         "same-origin assignment preserves the live game document",
@@ -95,6 +95,25 @@ def pause_diagnostic_problems(output):
                     raise ValueError("missing resumed timer/frame")
             if row.get("visibility") not in ("visible", "hidden"):
                 raise ValueError("invalid visibility")
+            # Server-side proof that a document timer probe arrived while the slow
+            # module response was withheld; the other scenes carry no server report.
+            report_fields = (
+                "server_fetch_hold_ms",
+                "server_probes_during_fetch",
+                "server_probes_total",
+            )
+            if any(name not in row for name in report_fields):
+                raise ValueError("missing server report fields")
+            hold = row.get("server_fetch_hold_ms")
+            during = row.get("server_probes_during_fetch")
+            total = row.get("server_probes_total")
+            if scene == "slow":
+                if type(hold) not in (int, float) or not math.isfinite(hold) or hold <= 0:
+                    raise ValueError("invalid server hold")
+                if type(during) is not int or type(total) is not int or not 1 <= during <= total:
+                    raise ValueError("no timer probe during slow fetch")
+            elif (hold, during, total) != (None, None, None):
+                raise ValueError("unexpected server report")
             scenes.add(scene)
         except (ValueError, TypeError, OverflowError):
             errors.append("invalid module-pause diagnostic")
