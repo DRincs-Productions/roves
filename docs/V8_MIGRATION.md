@@ -2,6 +2,26 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0457 — rivalutazione caricamento asincrono, prototipo isolato
+
+Analisi Claude in lettura dopo 0456: il caricamento statico attuale mantiene il
+prestito esclusivo di JsRuntime per il future; con le API esaminate non si può
+restituire il controllo a Servo per input e script mentre quel future attende.
+La versione ufficiale deno_core 0.413.0 su docs.rs espone ancora
+`load_side_es_module(&mut self, ...)` asincrona; controllare gli aggiornamenti
+upstream prima di adottare una patch. Riferimento:
+https://docs.rs/deno_core/latest/src/deno_core/runtime/jsruntime.rs.html
+
+Ipotesi da verificare: handle di caricamento a passi nell’unica ModuleMap di
+deno_core, con prestiti brevi tra poll e completamento HTML dopo il rilascio
+del prestito. Critici concorrenza import dinamici/statici, inline, redirect,
+HTML/TLA, CSP e cancellazione. Copia sperimentale in target/task-0457/deno_core;
+nessuna adozione o rimozione della pausa ancora dimostrata. L’eccezione utente
+sui fix di libreria che bloccano giochi si applica ove necessario; privilegiare
+soluzione ufficiale mantenuta e preparare riproduzione/test prima di proporre
+issue e PR upstream. Non pubblicare un’integrazione incompleta.
+
+
 ### 0456 — input su gioco avviato durante fetch statico
 
 Windows, binario CI f1ac0a5563c: copia strumentata test-page PixiJS animato,

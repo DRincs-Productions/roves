@@ -1,3 +1,10 @@
+## Resume - Investigating nonblocking static module loading (0457)
+
+A step-driven side-module loading API is under investigation in an isolated
+copy under target/task-0457. The current official deno_core API holds a mutable
+runtime borrow while loading. No production integration or successful prototype
+is claimed; module identity, HTML ordering, security and cancellation remain gates.
+
 ## Resume - Input during a delayed static module in a running game (0456)
 
 In one instrumented Windows PixiJS run with a deliberately delayed 30 s static
