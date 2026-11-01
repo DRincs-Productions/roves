@@ -2,23 +2,28 @@
 
 ## Punto operativo aggiornato — 1 novembre 2026
 
-### CI `aa2365b1ad5`: correzione del wake atteso, in verifica
+### CI `aa2365b1ad5`: test runtime falliti; fix pubblicato in `6e2f741cbc1`
 
 In V8 `41344381364` i quattro job runtime richiesti Linux/Windows, normal/JIT-less
-falliscono in `stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending`;
-le build `servoshell-v8` sono ancora in corso.
+sono falliti in `stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending`;
+tutti i job di build `servoshell-v8` sono riusciti. La build generale `41344381288`
+e Android `41344381293` sono riuscite; iOS `41344381280` è riuscita ma resta esclusa
+dal gate per istruzione dell'utente.
 Il test assumeva zero wake-up subito dopo l'avvio del fetch radice; `FuturesUnordered`
-può produrre un solo wake-up iniziale quando registra i nuovi fetch. La correzione locale
+può produrre un solo wake-up iniziale quando registra i nuovi fetch. La correzione
 ammette al massimo quel singolo wake-up e ripolla quattro volte il grafo mentre il fetch è
 ancora pendente, richiedendo che i wake-up restino stabili e non vengano accodati altri fetch.
 Ripete il controllo anche dopo l'avvio degli import discendenti. Il codice di produzione non
-è cambiato; Rust non è stato ricompilato localmente e la correzione attende una nuova CI.
+è cambiato; Rust non è stato ricompilato localmente. Il fix è stato revisionato, incluso nel
+replay di `0458` e pubblicato in `6e2f741cbc1`.
 
-Build `servoshell-v8` ancora in corso al checkpoint. Anche la build Servo generale
-`41344381288` e lo smoke Steam sono ancora attivi; Android `41344381293` e iOS
-`41344381280` sono verdi, con iOS esclusa dal gate per istruzione dell'utente. Non
-fare push finché tutte le verifiche obbligatorie del batch non sono concluse e gli
-eventuali errori sono corretti.
+Il batch di verifica del fix è stato identificato: V8 `41347412162`, generale
+`41347412130`, Android `41347412121` e iOS `41347412098`. V8 è conclusa **11/11 verde**,
+inclusi test runtime, build e smoke normal/JITless Linux/Windows. Android è verde; iOS è
+verde ma esclusa dal gate. Il workflow generale è a **11/13 verde**, senza errori:
+restano i test del bundle Linux e l'assemblaggio MSI Windows.
+Non pubblicare altri commit finché Linux, Windows, Android e build generali non sono
+concluse senza errori.
 
 ### Correzioni locali dopo il batch CI `a9d45d33da8c`
 
