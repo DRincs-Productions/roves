@@ -8,7 +8,7 @@
   "visibility": "windowed; continuous foreground visibility not recorded",
   "metric": "time from injected classic script to first timer callback and first rendered frame; includes all causes and scheduling",
   "limits": [
-    "Three samples only, no paired no-delay series, frame lead includes parsing/layout/rendering, not direct input latency or proof of cause.",
+    "Three samples only, no interleaving or paired randomized trials, frame lead includes parsing/layout/rendering, not direct input latency or proof of cause.",
     "First run was interrupted after its report by user escape; its exit code was not retained."
   ],
   "runs": [
@@ -33,5 +33,36 @@
       "reported_errors": 0,
       "server_requests_in_window": 19
     }
-  ]
+  ],
+  "no_added_delay": {
+    "transport": "HTTP loopback; 0 ms intentional delay; different fixed port",
+    "runs": [
+      {
+        "run": 1,
+        "timer_lead_ms": 368.32,
+        "frame_lead_ms": 522.74,
+        "reported_errors": 0,
+        "server_requests_in_window": 19
+      },
+      {
+        "run": 2,
+        "timer_lead_ms": 73.98,
+        "frame_lead_ms": 219.39,
+        "reported_errors": 0,
+        "server_requests_in_window": 19
+      },
+      {
+        "run": 3,
+        "timer_lead_ms": 99.57,
+        "frame_lead_ms": 252.61,
+        "reported_errors": 0,
+        "server_requests_in_window": 19
+      }
+    ],
+    "exit_codes": [
+      0,
+      0,
+      0
+    ]
+  }
 }

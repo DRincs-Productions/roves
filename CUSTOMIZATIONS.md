@@ -1,3 +1,9 @@
+## Resume - No-added-delay startup reference (0449)
+
+Three additional windowed PixiJS/React startup observations with no injected
+server delay are recorded alongside the 500 ms series. Runs were not interleaved
+or randomized; they do not measure physical input or establish accepted limits.
+
 ## Resume - Repeated real-game startup observations (0448)
 
 Three separate windowed runs of the PixiJS/React test scene were measured with

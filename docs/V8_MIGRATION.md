@@ -2,6 +2,19 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0449 — riferimento locale senza ritardo
+
+Stessa scena e binario: 3 avvii separati con 0ms ritardo aggiunto su porta
+loopback diversa, 19 richieste osservate per report, 0 errori, tutti exit 0.
+Primo timer dall’iniezione 368.32/73.98/99.57ms; primo frame
+522.74/219.39/252.61ms. Confrontare con la serie 500ms in 0448 e i dati
+strutturati docs/measurements/0447-real-game-startup.json. Serie eseguite
+separatamente e non randomizzate; prima esecuzione più lenta, cache fredda e
+visibilità continua non dimostrate; frame include parsing/layout, timer non
+misura input fisico. Non usare come soglia o conclusione generale. Restano
+prove a caldo e durante gioco avviato, decisione sulla pausa e fix chiusura CI.
+
+
 ### 0448 — tre avvii con latenza controllata
 
 Tre processi separati v0.7.14 hanno caricato la scena PixiJS/React tramite
