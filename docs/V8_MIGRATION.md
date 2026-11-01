@@ -17,15 +17,22 @@ Ripete il controllo anche dopo l'avvio degli import discendenti. Il codice di pr
 è cambiato; Rust non è stato ricompilato localmente. Il fix è stato revisionato, incluso nel
 replay di `0458` e pubblicato in `6e2f741cbc1`.
 
-Il batch di verifica del fix è stato identificato: V8 `41347412162`, generale
-`41347412130`, Android `41347412121` e iOS `41347412098`. V8 è conclusa **11/11 verde**,
-inclusi test runtime, build e smoke normal/JITless Linux/Windows. Android è verde; iOS è
-verde ma esclusa dal gate. Il workflow generale è a **11/13 verde**, senza errori:
-restano i test del bundle Linux e l'assemblaggio MSI Windows.
-Non pubblicare altri commit finché Linux, Windows, Android e build generali non sono
-concluse senza errori.
+Il batch di verifica del fix è concluso: V8 `41347412162` **11/11 verde**, generale
+`41347412130` **13/13 verde**, Android `41347412121` verde. iOS `41347412098` è verde
+ma esclusa dal gate. Il successivo push documentale `c181583cc83` ha avviato Android
+`41351431839` (3/3 verde) e iOS `41351431824` (3/3 verde, esclusa dal gate).
 
-### Correzioni locali dopo il batch CI `a9d45d33da8c`
+La run V8 ha prodotto lo snapshot `v8-heap-snapshot-document-retention`.
+L'analisi dei log Linux normal conferma una sola scena documento, 16 round da 8 cicli,
+32 raccolte esplicite, 128 listener abortiti e timer cancellati, e diagnostica di rilascio
+128/128 elementi e 128/128 probe con il controllo trattenuto. Lo snapshot da 3,164,549
+byte è strutturalmente valido e contiene i marker della scena secondo il checker esistente.
+È una prova circoscritta: il checker non analizza i retainer e questo risultato non dimostra
+assenza di retention generale o leak. Evidenza riproducibile: `docs/measurements/0458-document-retention-ci.json`.
+
+Non risultano altri errori CI. Il gate di questo push è concluso positivamente.
+
+### Correzioni al batch CI `a9d45d33da8c`, verificate
 
 Il batch precedente è concluso e **non è verde**. V8 `41341178591` ha compilato
 servoshell con successo su Linux/Windows/macOS, ma i sei job runtime sono falliti:
@@ -45,13 +52,12 @@ non vengono applicate dal workflow generale. `0457-stepwise-static-module-loadin
 ora include il lato `roves-js`; `0458-cooperative-static-module-poll.patch` porta
 il seguito. Riproduzione locale dalla baseline `a9d45d33da8^`: entrambe applicano
 in ordine e riproducono gli otto file di sorgente toccati, con newline normalizzati.
-Questa correzione della ricostruzione deve ancora passare il workflow generale.
-Il job SDL e Android `41341178585` sono verdi. iOS/macOS restano esclusi dal gate
-per istruzione dell'utente; gli errori macOS del batch non sono stati usati per
-bloccare la pubblicazione. Non fare push: le correzioni sono locali e non verificate
-da nuove CI.
+Le correzioni di runtime e replay descritte sopra sono state validate da V8
+`41347412162` (11/11) e dalla build generale `41347412130` (13/13); Android
+`41347412121` e il successivo `41351431839` sono verdi. iOS/macOS restano esclusi
+dal gate per istruzione dell'utente. Il fallimento storico di `a9d45d33da8c` è risolto.
 
-### 0459 — smoke dei log della policy documento singolo, locale
+### 0459 — smoke dei log della policy documento singolo, CI verificata
 
 Il runner ora legge solo il file `roves.log` del processo `single-document.html`
 e richiede esattamente un warning per navigazione completa, reload e documento
@@ -59,11 +65,12 @@ iframe, ciascuno con il motivo della policy. I test simulano warning assenti,
 duplicati, log mancanti e warning presenti soltanto in un altro processo; il
 percorso `XDG_CACHE_HOME/roves/roves.log` è confermato dal logger di servoshell.
 Verifica locale: `python support/v8-smoke/test_runner.py`, **60 test, 15
-saltati**. È testato il controllo del runner, non il browser: il nuovo check
-attende ancora la CI dopo il push. `HistoryDocument` non è richiesto perché la
-fixture non crea una voce di cronologia con un documento precedente.
+saltati**. V8 `41347412162` passa lo smoke Linux/Windows normal/JITless. È una
+verifica del browser headless e dei log, non un click manuale nella finestra Roves.
+`HistoryDocument` non è richiesto perché la fixture non crea una voce di cronologia
+con un documento precedente.
 
-### 0458 — yield cooperativo tra sorgenti già pronte, locale e non verificato
+### 0458 — yield cooperativo tra sorgenti già pronte, CI verificata
 
 Il poll di `SideModuleLoad` ora compila/registra al massimo una sorgente per
 chiamata. Dopo una sorgente pronta, interroga una volta il grafo per avviare i
@@ -73,8 +80,8 @@ successivo, lasciando intercalare il lavoro già in coda. Se la rete è davvero 
 attesa non si auto-risveglia; resta registrato il waker del fetch. L'istanziazione
 finale ha un poll dedicato. Il nuovo test Rust copre grafi tutti immediatamente
 disponibili, moduli JSON, root esterna/inline, script e microtask fra poll,
-ordine di valutazione e percorso bloccante. Claude non ha eseguito la suite; nessun
-risultato Rust è ancora disponibile.
+ordine di valutazione e percorso bloccante. I test runtime Rust sono passati in
+normal/JITless su Linux e Windows in V8 `41347412162`.
 
 Questo limita il lavoro per poll ma non rende asincrone la compilazione di una
 singola sorgente, la risoluzione dei suoi import o l'istanziazione completa. Per
@@ -84,33 +91,32 @@ applicato con `git apply --unidiff-zero` a una copia pulita del sorgente già a
 `0457` e confrontato con i file integrati (identici dopo normalizzazione LF).
 Replay e revisione del diff non sostituiscono CI.
 
-Non pubblicare i commit locali finché Linux, Windows, Android e build generali
-del checkpoint precedente non risultano concluse senza errori. Il batch sopra è
-concluso con errori; inviare le correzioni insieme solo dopo revisione, patch/replay
-e nuove verifiche locali appropriate. TODO.md resta una modifica dell'utente e non
-va incluso.
+Il replay delle patch `0457`/`0458`, la compilazione e gli smoke sono passati in
+V8 `41347412162`; il workflow generale `41347412130` è verde 13/13. `TODO.md`
+resta una modifica dell'utente e non va incluso.
 
 ### Criteri globali ancora aperti
 
-- **Memoria:** `gc-lifecycle.html` verifica cicli DOM rimossi, handler, timer e
-  import dopo raccolte ripetute; la scena document-retention prova il rilascio
-  del ciclo costruito. Queste sono prove circoscritte: la retention generale,
-  la memoria nativa lungo l'intera vita del gioco e gli snapshot CI non sono
-  ancora conclusi/revisionati. Non dichiarare assenza di leak.
+- **Memoria:** `gc-lifecycle.html` e lo snapshot CI `0458-document-retention-ci.json`
+  verificano raccolta di cicli DOM rimossi, handler, timer e import in scenari controllati;
+  la diagnostica document-retention segnala il rilascio di 128/128 elementi e probe mentre
+  il controllo resta vivo. Lo snapshot ha struttura e marker validi, ma non è stato analizzato
+  per i retainer. La retention generale e la memoria nativa lungo l'intera vita del gioco
+  restano aperte; non dichiarare assenza di leak.
 - **Policy della finestra:** la smoke single-document controlla reload,
   assegnazioni, link sintetici, iframe e route History/hash senza perdere il
   documento; il runner richiede ora un warning per reload, navigazione e iframe
-  (0459, CI non ancora eseguita). Restano il clic nativo reale con apertura nel browser di sistema,
+  (0459, smoke CI verde su Linux/Windows normal/JITless). Restano il clic nativo reale con apertura nel browser di sistema,
   il notice desktop e la chiusura dalla finestra reale con fetch pendente; non
   controllare il desktop, chiedere all'utente quando serve la prova.
 - **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
-  pronte. Compilazione della singola sorgente, risoluzione e link completo
-  restano sincroni. La CI deve ancora verificare 0457/0458 e manca una misura
-  sulla scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi.
+  pronte. La CI V8 ha compilato e superato smoke normal/JITless Linux/Windows.
+  Compilazione della singola sorgente, risoluzione e link completo restano sincroni.
+  Manca una misura sulla scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi.
 
 SourceText e preload JSON sono backlog non bloccante e restano fuori dai criteri.
 
-### 0457 — caricamento statico deno_core a passi, integrazione locale non verificata
+### 0457 — caricamento statico deno_core a passi, CI verificata; misura reale aperta
 
 Il prototipo 0457 è stato portato nel working tree: `SideModuleLoad` avanza
 `RecursiveModuleLoad` con poll brevi sulla ModuleMap unica di deno_core; il task
@@ -128,19 +134,21 @@ questi callback. Il test smoke ora distingue il progresso dopo il caricamento da
 progresso durante il fetch: il documento invia probe da un timer e la fixture HTTP
 conta solo le richieste ricevute mentre trattiene la risposta del modulo. Le suite
 Python locali passano **56 test, 11 saltati**; anche la prova diretta del server
-conferma una probe nel periodo trattenuto. Questi risultati non compilano Rust e
-non sono verifica browser.
+conferma una probe nel periodo trattenuto. V8 `41347412162` ha superato i test
+runtime Rust e gli smoke browser normal/JITless Linux/Windows, inclusa la probe
+durante il fetch trattenuto. Questi esiti non costituiscono una misura della pausa
+su una scena di gioco reale.
 
-Restano obbligatori CI normal/JITless per `roves-js`, smoke browser Linux/Windows,
-regressioni errori/CSP/import map/TLA/redirect, prova runtime di chiusura con fetch
-pendente e replay delle patch Servo e deno_core. Le tre prove d’integrazione in
+CI normal/JITless per `roves-js`, smoke browser Linux/Windows, regressioni
+errori/CSP/import map/TLA/redirect e replay delle patch Servo e deno_core sono
+passati nel batch `41347412162`/`41347412130`. La chiusura durante un fetch resta
+da provare nella finestra reale. Le tre prove d’integrazione in
 `roves-js/src/tests.rs` sono incluse nel job `cargo test` di `roves-js`, in normale
 e JIT-less; non è stata conservata una suite unit separata dentro al vendor escluso
 dal workspace.
 
-Il probe smoke nuovo deve passare in entrambe le modalità e su Linux/Windows prima
-di considerare risolta la pausa di rete. Sulle scene reali manca ancora la prova
-dopo questa modifica: compilazione/link sincroni possono restare visibili. Il
+Il probe smoke passa in entrambe le modalità su Linux/Windows. Sulle scene reali
+manca ancora la prova dopo questa modifica: compilazione/link sincroni possono restare visibili. Il
 controllo dell’utente su link/notice/chiusura UI resta distinto; non ispezionare il
 desktop senza richiesta. Memoria generale e retention restano aperte. SourceText
 e preload JSON sono backlog non bloccante (non riprenderli qui).

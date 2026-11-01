@@ -1,0 +1,44 @@
+{
+  "date": "2026-11-01",
+  "commit": "6e2f741cbc1462f42d33ce103617d8bdecab03dd",
+  "workflow_run": 41347412162,
+  "workflow_jobs": {
+    "completed": 11,
+    "successful": 11,
+    "failed": 0
+  },
+  "job": "servoshell-v8 (ubuntu-24.04, normal)",
+  "scene": "support/v8-smoke/document-retention.html",
+  "snapshot": {
+    "artifact_id": 13099369957,
+    "artifact_sha256": "eef6379e7fee8d3ac6e36ac26aa9e82a3aecc0b2ffab2697376aa61bcc187ac5",
+    "file": "document-retention.heapsnapshot",
+    "bytes": 3164549,
+    "sha256": "bb81a0ea4b0a2089d7f53f00bbf051a95ef3125f58325f0b244082bd62e78e53",
+    "explicit_collection": 32,
+    "schema_valid": true,
+    "required_scene_strings_present": true
+  },
+  "scene_results": {
+    "single_document": true,
+    "rounds": 16,
+    "cycles_per_round": 8,
+    "total_cycles": 128,
+    "explicit_collections": 32,
+    "aborted_listeners": 128,
+    "cancelled_timers": 128,
+    "released_elements": 128,
+    "released_probes": 128,
+    "retained_control": true,
+    "result": "pass"
+  },
+  "validation": {
+    "tool": "support/v8-smoke/check_heap_snapshot.py",
+    "result": "valid V8 snapshot with rovesDocumentRetentionProbe and roves-document-retention-probe"
+  },
+  "limits": [
+    "This is a controlled single-document scene, not a complete game session.",
+    "The snapshot checker validates snapshot structure and scene marker strings; it does not inspect retainer paths.",
+    "These results do not establish absence of general memory retention or leaks."
+  ]
+}
