@@ -1,3 +1,11 @@
+## Resume - Claude authentication and shutdown evidence
+
+User reauthorized Claude. One read-only CLI invocation failed because its OAuth session
+expired and could not be refreshed; no assignment or source change resulted. A review of
+the interrupted0440 logs found no slow request marker, so that run does not establish
+closure during a pending fetch. Keep the real shutdown, memory and pause checks open.
+Documentation only; no Servo overlay change.
+
 ## 2026-10-31 - Stage the verified Windows release for shutdown retesting (0439)
 
 Download v0.7.14 Windows asset689903566, verify90261149 bytes, official SHA256 and all

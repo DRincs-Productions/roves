@@ -2,6 +2,18 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### Ripresa — Claude e chiusura, verifica preliminare
+
+L'utente ha riabilitato la delega a Claude. Un tentativo CLI in sola lettura e fallito:
+OAuth session expired and could not be refreshed. Nessun incarico e stato avviato;
+serve rinnovare l'accesso Claude prima di poter delegare. Non ripetere tentativi equivalenti.
+
+Il controllo dei log della prova0440 interrotta non mostra richiesta slow.mjs ne marker
+slow requested: il solo processo terminato non prova che la chiusura sia avvenuta durante
+il fetch. Ripetere con conferma del server SLOW START, registrare exit code e panic dopo
+la risposta; non considerare0437 verificato. La prova memoria32 cicli resta circoscritta;
+pausa su gioco reale e modalita bundle restano aperte. Conservare TODO esterno dell'utente.
+
 ### 0439 — binario release verificato e pronto per ripetere0437
 
 Scaricato asset Windows689903566 di v0.7.14 (90261149byte), SHA256 verificato:
