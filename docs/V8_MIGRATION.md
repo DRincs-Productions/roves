@@ -2,6 +2,28 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0450 — durata circoscritta della scena memoria, verifiche locali
+
+document-retention passa a16round da8cicli con2GC ciascuno (128cicli, 32GC);
+lo snapshot nativo resta all'ultima collezione, ora32 (`ROVES_V8_HEAP_SNAPSHOT_GC`).
+Ogni ciclo aggiunge un listener autoreferenziale rimosso con AbortController
+(deve scattare una volta prima di abort, mai dopo) e un setTimeout(0)
+autoreferenziale cancellato subito; un'esecuzione del timer fa fallire il round
+dopo il task successivo. Il controllo vivo `#kept` è obbligatorio dopo ogni round:
+expando invariato e listener attivo (AbortSignal mai annullato) che deve ricevere
+un dispatch. WeakRef letti solo dopo l'ultimo round, solo diagnostici; nessuna
+soglia di raccolta, nessuna dichiarazione di assenza di leak. run.sh genera le16
+righe round (match di riga intera) e richiede `cleanup complete listeners aborted
+128 timers cancelled 128`; righe per round stampate come log semplici, totali come
+notice; timeout del processo portato a120s come limite, non come durata misurata.
+test_runner.py: mock Node con EventTarget/AbortController reali (signal ignorato,
+clearTimeout inefficace, listener del controllo perso) e finto browser a16round.
+Limiti: i mock non simulano il GC; durata reale, crescita della memoria e tempi
+delle32GC in build debug ignoti finché la CI non esegue la scena. Patch0450
+applicata all’indice di prova e confrontata: identica ai sorgenti. Unittest locali
+56 OK, 11 saltati perché richiedono POSIX o dipendenze assenti; runner POSIX e
+GC reale richiedono CI. TODO.md non toccato.
+
 ### 0449 — riferimento locale senza ritardo
 
 Stessa scena e binario: 3 avvii separati con 0ms ritardo aggiunto su porta

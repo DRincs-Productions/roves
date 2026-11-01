@@ -3,15 +3,19 @@
 <body><main id="kept"></main>
 <script>
 "use strict";
-// A real native snapshot after the last of eight explicit collections: 4 rounds, each of
-// 8 create/remove cycles followed by 2 collections. A control DOM wrapper with a searchable tag
-// must stay alive after every round (required). Released wrapper/closure cycles are read
-// through WeakRef only once, after the last round, and are diagnostic only: this scene does
-// not establish overall retention. It replaces the out-of-scope removed-frame scene.
-const ROUNDS = 4;
+// A bounded duration scene for one long-lived document: 16 rounds, each of 8 create/remove
+// cycles followed by 2 explicit collections (128 cycles, 32 collections); a debug build writes
+// its native snapshot at the last one. Every cycle also adds a self-capturing listener removed
+// through AbortController and a self-capturing timer cancelled before it can run. A control DOM
+// wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
+// every round (required). Released wrapper/closure cycles are read through WeakRef only once,
+// after the last round, and are diagnostic only: no collection threshold is judged, and this
+// scene does not establish overall retention or the absence of leaks.
+const ROUNDS = 16;
 const CYCLES_PER_ROUND = 8;
 const COLLECTIONS_PER_ROUND = 2;
 const COLLECTIONS = ROUNDS * COLLECTIONS_PER_ROUND;
+const CYCLES = ROUNDS * CYCLES_PER_ROUND;
 const PROBE_TAG = "roves-document-retention-probe";
 const failures = [];
 const report = (...parts) => console.log("ROVES-V8 document-retention " + parts.join(" "));
@@ -19,19 +23,34 @@ const fail = reason => { failures.push(reason); report("failure", reason); };
 addEventListener("error", event => fail("error " + event.message));
 addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+// Runs of cancelled timer callbacks (must stay 0) and dispatches seen by the control listener.
+let cancelledTimerRuns = 0;
+let controlHits = 0;
 function createAndRemoveNode() {
   const node = document.createElement("div");
   const probe = { rovesProbeTag: PROBE_TAG, node };
   node.rovesDocumentRetentionProbe = probe;
-  node.addEventListener("probe", () => { node.rovesHits = (node.rovesHits || 0) + 1; });
+  node.rovesHits = 0;
+  const controller = new AbortController();
+  node.addEventListener("probe", () => { node.rovesHits++; }, { signal: controller.signal });
+  // Cancelled at once: a run would show up after the round's next task.
+  const timer = setTimeout(() => { cancelledTimerRuns++; node.rovesHits = -1; }, 0);
+  clearTimeout(timer);
   document.body.append(node);
+  node.dispatchEvent(new Event("probe"));
+  const listened = node.rovesHits === 1;
+  controller.abort();
+  node.dispatchEvent(new Event("probe"));
+  const aborted = listened && controller.signal.aborted && node.rovesHits === 1;
   const refs = { element: new WeakRef(node), probe: new WeakRef(probe) };
   node.remove();
-  return { refs, removed: !node.isConnected };
+  return { refs, removed: !node.isConnected, aborted };
 }
 function checkControl(control, round) {
+  const before = controlHits;
+  control.dispatchEvent(new Event("roves-control"));
   if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe ||
-      control.rovesDocumentRetentionProbe.retained !== true) {
+      control.rovesDocumentRetentionProbe.retained !== true || controlHits !== before + 1) {
     throw new Error("retained control lost after round " + round);
   }
 }
@@ -40,7 +59,10 @@ async function main() {
   report("api", String(api));
   if (!api) throw new Error("TestUtils.gc unavailable");
   const control = document.getElementById("kept");
-  control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true };
+  // Never aborted: the control listener must keep running after every round.
+  const controlListener = new AbortController();
+  control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true, controlListener };
+  control.addEventListener("roves-control", () => { controlHits++; }, { signal: controlListener.signal });
   // Only WeakRefs and booleans are kept across rounds; no deref happens before the last round,
   // so diagnostics never keep a released target alive into a later collection.
   const rounds = [];
@@ -49,17 +71,22 @@ async function main() {
     const cycles = Array.from({ length: CYCLES_PER_ROUND }, createAndRemoveNode);
     rounds.push(cycles.map(cycle => cycle.refs));
     const removed = cycles.every(cycle => cycle.removed);
-    report("round", round, "created", cycles.length, "removed", String(removed));
+    const aborted = cycles.every(cycle => cycle.aborted);
+    report("round", round, "created", cycles.length, "removed", String(removed), "listeners aborted", String(aborted));
     if (!removed) throw new Error("node still connected in round " + round);
+    if (!aborted) throw new Error("listener not aborted in round " + round);
     // Leave the creating task so WeakRef targets are no longer kept for the current job.
     await nextTask();
+    if (cancelledTimerRuns !== 0) throw new Error("cancelled timer ran in round " + round);
     for (let i = 0; i < COLLECTIONS_PER_ROUND; i++) { await TestUtils.gc(); collections++; }
     await nextTask();
     checkControl(control, round);
     report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
   }
   report("node created true removed true");
-  report("rounds complete", ROUNDS, "cycles", ROUNDS * CYCLES_PER_ROUND);
+  report("rounds complete", ROUNDS, "cycles", CYCLES);
+  if (cancelledTimerRuns !== 0) throw new Error("cancelled timer ran after the last round");
+  report("cleanup complete listeners aborted", CYCLES, "timers cancelled", CYCLES);
   report("collections complete", String(collections));
   if (collections !== COLLECTIONS) throw new Error("expected " + COLLECTIONS + " collections, ran " + collections);
   checkControl(control, ROUNDS);

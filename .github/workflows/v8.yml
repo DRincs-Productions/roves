@@ -222,7 +222,7 @@ jobs:
           if [ "${{ matrix.mode }}" = jitless ]; then features="--features roves-js/jitless"; fi
           python support/v8_cutover_check.py servoshell --build --online --top 40 $features
           ls target/v8-cutover/debug/servoshell*
-      # Linux normal only: one extra debug servoshell process (one page, bounded by its 60 s
+      # Linux normal only: one extra debug servoshell process (one page, bounded by its 120 s
       # timeout) loads document-retention.html and writes one native V8 heap snapshot of a detached
       # DOM wrapper; its size follows the page's JS heap. Kept 3 days, for reading retainers in
       # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.

@@ -1,3 +1,26 @@
+## 2026-11-01 - Bounded duration run of the document retention scene (0450)
+
+support/v8-smoke/document-retention.html now runs 16 rounds of 8 create/remove cycles, each
+round followed by 2 explicit collections (128 cycles, 32 GCs); the native snapshot moves to
+the last collection, 32 (run.sh derives it from `RETENTION_ROUNDS`). Every cycle also adds
+a self-capturing listener registered with an AbortController signal (it must fire once
+before `abort()` and never after) and a self-capturing `setTimeout(0)` cleared at once (a
+run is detected after the round's next task and fails the round). The live control is
+required after every round: its expando and an active, never-aborted listener that must
+receive a dispatch. WeakRefs are still dereferenced only after the last round and are
+diagnostic only; no collection threshold is judged and no leak-free claim is made. run.sh
+builds the 16 whole-line round markers in a loop, requires the new `cleanup complete`
+marker, prints round lines as plain log lines (totals stay notices) and bounds the page
+process at 120 s (a limit, not a measured duration; v8.yml's comment updated). test_runner.py's
+Node mock uses Node's EventTarget/AbortController and covers an ignored signal, a no-op
+clearTimeout and a lost control listener; the fake browser emits 16 rounds and a missing
+cleanup marker case. The legacy frame-retention.html fixture keeps its own 8 collections,
+which no longer match the runner: its static test now checks that run.sh does not run it
+and derives the single snapshot collection from `RETENTION_ROUNDS`. No dependency, parser or
+production change. Patch replay matches the source; 56 local unit tests passed, 11 skipped
+for POSIX integration or missing dependencies. Real duration, memory growth and debug GC
+time remain unknown until CI runs the scene.
+
 ## Resume - No-added-delay startup reference (0449)
 
 Three additional windowed PixiJS/React startup observations with no injected

@@ -236,12 +236,15 @@ for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected tr
   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
 # Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
-# native V8 heap snapshot at the last of document-retention.html's 8 explicit collections (4 rounds
-# of 8 create/remove cycles, 2 collections each), for reading the retainers of detached DOM wrappers
-# with a live control. The control must survive every round and a requested snapshot must exist and
-# be valid; WeakRef release counts are reported as diagnostics only, never as a failure.
+# native V8 heap snapshot at the last of document-retention.html's 32 explicit collections (16
+# rounds of 8 create/remove cycles, each with an AbortController listener and a cancelled timer,
+# 2 collections per round), for reading the retainers of detached DOM wrappers with a live control.
+# The control (expando and active listener) must survive every round and a requested snapshot must
+# exist and be valid; WeakRef release counts are diagnostics only, never a failure or leak verdict.
 HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
-HEAP_SNAPSHOT_COLLECTION=8
+RETENTION_ROUNDS=16
+RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))
+HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))
 SNAPSHOT_LOGS=""
 if [ -n "$HEAP_SNAPSHOT" ]; then
   case "$HEAP_SNAPSHOT" in
@@ -258,21 +261,30 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
     PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=$HEAP_SNAPSHOT_COLLECTION")
     PAGE_ENV_COUNT=2
     SNAPSHOT_LOGS="document-retention.log"
-    run_page document-retention.html 60 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
+    # 120 s bounds the process (32 collections in a debug build); it is not a measured duration.
+    run_page document-retention.html 120 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
     PAGE_ENV=()
     PAGE_ENV_COUNT=0
-    for expected in "ROVES-V8 document-retention api true" \
-        "ROVES-V8 document-retention round 1 cycles 8 collections 2 retained control true" \
-        "ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true" \
-        "ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true" \
-        "ROVES-V8 document-retention round 4 cycles 8 collections 8 retained control true" \
-        "ROVES-V8 document-retention node created true removed true" "ROVES-V8 document-retention rounds complete 4 cycles 32" \
-        "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true" \
-        "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote " ; do
+    retention_expected=("ROVES-V8 document-retention api true")
+    for round in $(seq 1 "$RETENTION_ROUNDS"); do
+      retention_expected+=("ROVES-V8 document-retention round $round cycles 8 collections $((round * 2)) retained control true")
+    done
+    retention_expected+=("ROVES-V8 document-retention node created true removed true"
+      "ROVES-V8 document-retention rounds complete $RETENTION_ROUNDS cycles $RETENTION_CYCLES"
+      "ROVES-V8 document-retention cleanup complete listeners aborted $RETENTION_CYCLES timers cancelled $RETENTION_CYCLES"
+      "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true"
+      "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote ")
+    for expected in "${retention_expected[@]}"; do
       # Page markers are whole lines (round lines also contain "retained control true"); the
       # native snapshot marker is a prefix followed by size, path and collection.
       case "$expected" in "["*) match=-aFq ;; *) match=-aFxq ;; esac
-      if grep "$match" "$expected" document-retention.log; then echo "::notice::document-retention.html: $(grep -aF "$expected" document-retention.log | head -1)"; else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
+      if grep "$match" "$expected" document-retention.log; then
+        # Round lines stay plain log lines, outside GitHub's per-step annotation quota.
+        case "$expected" in
+          "ROVES-V8 document-retention round "*) echo "document-retention.html: $expected" ;;
+          *) echo "::notice::document-retention.html: $(grep -aF "$expected" document-retention.log | head -1)" ;;
+        esac
+      else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
     done
     if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" document-retention.log; then
       snapshot_ok=0; echo "::error::document-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
@@ -280,8 +292,9 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
     # Released counts are diagnostic only, but must be reported.
     diagnostic=$(grep -aE '^ROVES-V8 document-retention diagnostic released element (true|false) probe (true|false)$' document-retention.log | head -1)
     if [ -n "$diagnostic" ]; then echo "::notice::document-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::document-retention.html: missing released diagnostic"; fi
-    # Per-round and total counts: reported when present, never required or judged.
-    grep -aE '^ROVES-V8 document-retention diagnostic (round [1-4] released|released counts) ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
+    # Per-round (plain log lines) and total (notice) counts: reported when present, never required or judged.
+    grep -aE '^ROVES-V8 document-retention diagnostic round [0-9]+ released ' document-retention.log | while IFS= read -r line; do echo "document-retention.html: $line"; done
+    grep -aE '^ROVES-V8 document-retention diagnostic released counts ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
     if [ ! -s "$HEAP_SNAPSHOT" ]; then
       snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
     elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesDocumentRetentionProbe roves-document-retention-probe; then

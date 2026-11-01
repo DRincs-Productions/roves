@@ -797,9 +797,13 @@ def run_retention_page(script, mock=RETENTION_MOCK):
 class FrameRetentionPageTests(unittest.TestCase):
     """Static and Node checks of frame-retention.html; no browser, collection or snapshot."""
 
-    def test_collection_count_matches_the_runner(self):
+    def test_collection_count_is_local_to_the_legacy_fixture(self):
+        # run.sh no longer runs this frame fixture: its snapshot targets document-retention.html,
+        # whose count (rounds * 2) is checked with the document-retention tests. Keep them apart.
         runner = (HERE / 'run.sh').read_text(encoding='utf-8')
-        self.assertIn('HEAP_SNAPSHOT_COLLECTION=8\n', runner)
+        self.assertNotIn('frame-retention', runner)
+        self.assertEqual(1, runner.count('HEAP_SNAPSHOT_COLLECTION='))
+        self.assertIn('HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))\n', runner)
         self.assertEqual(1, retention_page_script().count('const COLLECTIONS = 8;'))
 
     @unittest.skipUnless(shutil.which('node'), 'needs Node')
@@ -850,50 +854,88 @@ class DocumentRetentionPageTests(unittest.TestCase):
     """Exercise the scene protocol with a mock; this does not simulate garbage collection."""
 
     # `events` records creations and collections in order; LOSE_AT drops the control's expando
-    # at the given collection (0: never); STUCK keeps created nodes connected.
+    # and DROP_LISTENER_AT its listener dispatch at the given collection (0: never); STUCK keeps
+    # created nodes connected; IGNORE_SIGNAL drops the listener's AbortSignal; KEEP_TIMERS makes
+    # clearTimeout a no-op. Nodes are Node's own EventTarget, with real signal handling.
     MOCK = r'''
 const events = [];
 let collections = 0;
 context.WeakRef = WeakRef;
-const control = { rovesDocumentRetentionProbe: undefined };
+context.AbortController = AbortController;
+context.Event = Event;
+if (KEEP_TIMERS) context.clearTimeout = () => {};
+const control = new EventTarget();
 context.TestUtils = { gc: async () => {
   collections++; events.push("gc");
   if (collections === LOSE_AT) control.rovesDocumentRetentionProbe = undefined;
+  if (collections === DROP_LISTENER_AT) control.dispatchEvent = () => true;
 } };
 context.document = {
   getElementById: () => control,
-  createElement: () => { events.push("node"); return { isConnected: false, addEventListener() {}, remove() { if (!STUCK) this.isConnected = false; } }; },
+  createElement: () => {
+    events.push("node");
+    const node = new EventTarget();
+    node.isConnected = false;
+    node.remove = () => { if (!STUCK) node.isConnected = false; };
+    if (IGNORE_SIGNAL) node.addEventListener = (type, listener) => EventTarget.prototype.addEventListener.call(node, type, listener);
+    return node;
+  },
   body: { append(node) { node.isConnected = true; } },
 };
 '''
-    AFTER = 'lines.push("collections " + collections); lines.push("events " + events.join(",")); process.stdout.write(lines.join("\\n"));'
+    # 16 rounds take 32+ timer tasks: wait for the result line instead of a fixed delay.
+    AFTER = ('const finish = () => { if (!lines.some(line => line.startsWith("ROVES-V8 document-retention result "))) return void setTimeout(finish, 10); '
+             'lines.push("collections " + collections); lines.push("events " + events.join(",")); process.stdout.write(lines.join("\\n")); }; finish();')
 
-    def run_scene(self, lose_at=0, stuck=False):
+    def run_scene(self, lose_at=0, stuck=False, drop_listener_at=0, ignore_signal=False, keep_timers=False):
         script = page_scripts("document-retention.html")[0]
-        mock = self.MOCK.replace('LOSE_AT', str(lose_at)).replace('STUCK', 'true' if stuck else 'false')
+        mock = (self.MOCK.replace('LOSE_AT', str(lose_at)).replace('DROP_LISTENER_AT', str(drop_listener_at))
+                .replace('STUCK', str(stuck).lower()).replace('IGNORE_SIGNAL', str(ignore_signal).lower())
+                .replace('KEEP_TIMERS', str(keep_timers).lower()))
         result = run_page_in_node(script, mock, self.AFTER)
         self.assertEqual('', result.stderr)
         return result.stdout.splitlines()
 
-    def test_four_rounds_of_eight_cycles_and_two_collections(self):
+    def test_sixteen_rounds_of_eight_cycles_and_two_collections(self):
         lines = self.run_scene()
         round_events = ','.join(['node'] * 8 + ['gc'] * 2)
-        self.assertIn('events ' + ','.join([round_events] * 4), lines)
-        markers = ['collections 8', 'ROVES-V8 document-retention node created true removed true',
-                   'ROVES-V8 document-retention rounds complete 4 cycles 32',
-                   'ROVES-V8 document-retention collections complete 8',
+        self.assertIn('events ' + ','.join([round_events] * 16), lines)
+        markers = ['collections 32', 'ROVES-V8 document-retention node created true removed true',
+                   'ROVES-V8 document-retention rounds complete 16 cycles 128',
+                   'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128',
+                   'ROVES-V8 document-retention collections complete 32',
                    'ROVES-V8 document-retention retained control true',
                    'ROVES-V8 document-retention result pass']
-        for round in range(1, 5):
-            markers.append(f'ROVES-V8 document-retention round {round} created 8 removed true')
+        for round in range(1, 17):
+            markers.append(f'ROVES-V8 document-retention round {round} created 8 removed true listeners aborted true')
             markers.append(f'ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true')
         for marker in markers:
             self.assertIn(marker, lines)
         # WeakRef results are diagnostic: whatever Node's GC did, the scene passes.
         diagnostics = [line for line in lines if line.startswith('ROVES-V8 document-retention diagnostic ')]
-        self.assertEqual(6, len(diagnostics), diagnostics)
+        self.assertEqual(18, len(diagnostics), diagnostics)
         self.assertTrue(any(line.startswith('ROVES-V8 document-retention diagnostic released element ') for line in lines))
-        self.assertTrue(any(line.endswith(' total 32') and 'released counts' in line for line in diagnostics))
+        self.assertTrue(any(line.endswith(' total 128') and 'released counts' in line for line in diagnostics))
+        self.assertTrue(any(line.startswith('ROVES-V8 document-retention diagnostic round 16 released ') for line in diagnostics))
+
+    def test_listener_ignoring_its_signal_fails_its_round(self):
+        lines = self.run_scene(ignore_signal=True)
+        self.assertIn('ROVES-V8 document-retention round 1 created 8 removed true listeners aborted false', lines)
+        self.assertIn('ROVES-V8 document-retention result fail exception Error listener not aborted in round 1', lines)
+        self.assertIn('collections 0', lines)
+
+    def test_cancelled_timer_run_fails_its_round(self):
+        lines = self.run_scene(keep_timers=True)
+        self.assertIn('ROVES-V8 document-retention round 1 created 8 removed true listeners aborted true', lines)
+        self.assertIn('ROVES-V8 document-retention result fail exception Error cancelled timer ran in round 1', lines)
+        self.assertIn('collections 0', lines)
+
+    def test_lost_control_listener_fails_after_its_round(self):
+        lines = self.run_scene(drop_listener_at=5)
+        self.assertIn('ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true', lines)
+        self.assertNotIn('ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true', lines)
+        self.assertIn('ROVES-V8 document-retention result fail exception Error retained control lost after round 3', lines)
+        self.assertIn('collections 6', lines)
 
     def test_lost_control_fails_after_its_round(self):
         lines = self.run_scene(lose_at=3)
@@ -904,17 +946,26 @@ context.document = {
 
     def test_connected_node_fails_its_round(self):
         lines = self.run_scene(stuck=True)
-        self.assertIn('ROVES-V8 document-retention round 1 created 8 removed false', lines)
+        self.assertIn('ROVES-V8 document-retention round 1 created 8 removed false listeners aborted true', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error node still connected in round 1', lines)
         self.assertIn('collections 0', lines)
 
     def test_runner_requires_retained_control(self):
-        runner = (HERE / "run.sh").read_text(encoding="utf-8").replace('\\\n', ' ')
-        line = next(line for line in runner.splitlines() if line.strip().startswith('for expected in "ROVES-V8 document-retention'))
-        self.assertIn('"ROVES-V8 document-retention retained control true"', line)
-        for round in range(1, 5):
-            self.assertIn(f'"ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true"', line)
-        self.assertIn('"ROVES-V8 document-retention rounds complete 4 cycles 32"', line)
+        # The fake-browser runs (RunnerTests) exercise these requirements; this keeps the
+        # runner's round count and markers in step with the page.
+        runner = (HERE / "run.sh").read_text(encoding="utf-8")
+        page = (HERE / "document-retention.html").read_text(encoding="utf-8")
+        self.assertIn('const ROUNDS = 16;', page)
+        self.assertIn('const CYCLES_PER_ROUND = 8;', page)
+        self.assertIn('const COLLECTIONS_PER_ROUND = 2;', page)
+        self.assertIn('RETENTION_ROUNDS=16\n', runner)
+        self.assertIn('RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))\n', runner)
+        self.assertIn('HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))\n', runner)
+        for marker in ('"ROVES-V8 document-retention retained control true"',
+                       '"ROVES-V8 document-retention round $round cycles 8 collections $((round * 2)) retained control true"',
+                       '"ROVES-V8 document-retention rounds complete $RETENTION_ROUNDS cycles $RETENTION_CYCLES"',
+                       '"ROVES-V8 document-retention cleanup complete listeners aborted $RETENTION_CYCLES timers cancelled $RETENTION_CYCLES"'):
+            self.assertIn(marker, runner)
 
     def test_missing_gc_reports_failure(self):
         script = page_scripts("document-retention.html")[0]
@@ -1327,28 +1378,30 @@ elif page == 'document-retention.html':
     print('ROVES-V8 document-retention api ' + str(api).lower())
     if api and scenario != 'snapshot-scene':
         print('ROVES-V8 document-retention node created true removed true')
-    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '8' and scenario != 'snapshot-dump-failed':
+    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '32' and scenario != 'snapshot-dump-failed':
         if scenario != 'snapshot-file-missing':
             with open(path, 'x') as written:
                 written.write('{"broken"' if scenario == 'snapshot-invalid' else json.dumps(
                     {'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 1}, 'nodes': [0, 0],
                      'strings': ['rovesDocumentRetentionProbe', 'roves-document-retention-probe']}))
-        print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 8', file=sys.stderr)
+        print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 32', file=sys.stderr)
     elif scenario == 'snapshot-dump-failed':
-        print(f'[roves-heap-snapshot] failed at explicit collection 8: {path}: No space left on device', file=sys.stderr)
+        print(f'[roves-heap-snapshot] failed at explicit collection 32: {path}: No space left on device', file=sys.stderr)
     if api:
-        for round in range(1, 5):
-            if scenario != 'snapshot-round' or round != 3:
+        for round in range(1, 17):
+            if scenario != 'snapshot-round' or round != 11:
                 print(f'ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true')
-        print('ROVES-V8 document-retention rounds complete 4 cycles 32')
+        print('ROVES-V8 document-retention rounds complete 16 cycles 128')
+        if scenario != 'snapshot-cleanup':
+            print('ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128')
         if scenario != 'snapshot-control':
             print('ROVES-V8 document-retention retained control true')
-        print('ROVES-V8 document-retention collections complete 8')
+        print('ROVES-V8 document-retention collections complete 32')
         if scenario != 'snapshot-diagnostic':
-            for round in range(1, 5):
+            for round in range(1, 17):
                 print(f'ROVES-V8 document-retention diagnostic round {round} released elements 0 probes 0 total 8')
             print('ROVES-V8 document-retention diagnostic released element false probe false')
-            print('ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 32')
+            print('ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 128')
     print('ROVES-V8 document-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
 elif page == 'pref-jitless.html':
     if scenario == 'pref-cli' and '--pref' in options:
@@ -1516,15 +1569,20 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 settings, options = result.snapshot_env
                 self.assertEqual(['ROVES_V8_HEAP_SNAPSHOT_GC', 'ROVES_V8_HEAP_SNAPSHOT_PATH'], sorted(settings))
-                self.assertEqual('8', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
+                self.assertEqual('32', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
                 self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
                 self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
                 self.assertIsNotNone(result.snapshot)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released element false', result.stdout)
                 # Unreleased targets are reported, never judged.
-                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic round 4 released elements 0 probes 0 total 8', result.stdout)
-                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 32', result.stdout)
-                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention round 4 cycles 8 collections 8 retained control true', result.stdout)
+                # Per-round lines are plain log lines, outside the per-step annotation quota.
+                self.assertIn('\ndocument-retention.html: ROVES-V8 document-retention diagnostic round 16 released elements 0 probes 0 total 8', result.stdout)
+                self.assertNotIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic round ', result.stdout)
+                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 128', result.stdout)
+                self.assertIn('\ndocument-retention.html: ROVES-V8 document-retention round 16 cycles 8 collections 32 retained control true', result.stdout)
+                self.assertNotIn('::notice::document-retention.html: ROVES-V8 document-retention round ', result.stdout)
+                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention rounds complete 16 cycles 128', result.stdout)
+                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128', result.stdout)
                 self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'", result.stdout)
                 wrapper = ['wrapper with spaces', '--option'] if wrapped else []
                 self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
@@ -1538,7 +1596,8 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
             # Round lines also end in "retained control true": the final control line is still required.
             ('snapshot-control', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention retained control true'"),
-            ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true'"),
+            ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 11 cycles 8 collections 22 retained control true'"),
+            ('snapshot-cleanup', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128'"),
             ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
             ('pass', 'relative', 'must be an absolute path'),
         )
