@@ -1515,9 +1515,14 @@ else:
                 parser_span_ms=1, dom_ready_ms=250, first_frame_ms=250, max_timer_gap_ms=250,
                 timer_ticks=2, ticks_before_dom_ready=0, visibility='hidden')))
             for scene in ('cold', 'warm', 'slow'):
+                # Like module-order.html: only the slow scene carries the server hold report.
+                slow = scene == 'slow'
                 print('ROVES-V8 module-pause diagnostic ' + json.dumps(dict(
                     scene=scene, elapsed_ms=250, max_timer_gap_ms=250, timer_ticks=1,
-                    max_frame_gap_ms=250, frame_samples=1, visibility='hidden')))
+                    max_frame_gap_ms=250, frame_samples=1, visibility='hidden',
+                    server_fetch_hold_ms=250 if slow else None,
+                    server_probes_during_fetch=1 if slow else None,
+                    server_probes_total=2 if slow else None)))
         print('SUITE PASS example')
         for name in names:
             print('SUITE PASS ' + name)

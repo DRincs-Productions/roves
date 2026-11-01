@@ -772,9 +772,10 @@ bundled games log the refusal. External HTTP(S) anchor/area links require a nati
 click and use SDL's system URL handler; synthetic/automatic requests are blocked. Real-click
 OS handoff and notice rendering still require integration/visual verification.
 
-Three provisional differences are tracked: static module fetches now yield between network
-responses, while compilation, resolution and final linking remain synchronous and may pause
-input/timers; static evaluation errors arrive via unhandledrejection; inline module URLs
+Three provisional differences are tracked: static module loading now yields between network
+responses and already-ready sources, while each source compilation, resolution and final linking
+remain synchronous and may pause input/timers; static evaluation errors arrive via
+unhandledrejection; inline module URLs
 include a distinct #roves-inline-module-N fragment. Dynamic imports stay asynchronous,
 relative asset bases remain correct, and external module URLs are unchanged. The new
 timer-probe smoke and Rust integration tests still need CI; responsiveness on real scenes

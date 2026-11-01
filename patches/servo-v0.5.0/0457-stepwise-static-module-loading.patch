@@ -244,3 +244,955 @@ index f03eb323533..b5b9cf13834 100644
              on_complete: Box::new(on_complete),
          },
      );
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index 475f4829f27..f27bb3b416e 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -15,15 +15,22 @@
+ //!   `queueMicrotask` are deleted before any script runs (the embedder defines its own). Module
+ //!   resolution and fetching go to the embedder's [`HostModuleLoader`] (Servo's import maps,
+ //!   fetch, CSP, SRI, credentials and referrer policy); nothing reads files or the network here.
+-//! - **Static graphs block** (user decision of 2026-10-27, provisional): [`load_module_graph`]
+-//!   drives `load_side_es_module[_from_code]` to completion on the runtime's current-thread
+-//!   Tokio reactor, pausing its thread while the graph is fetched and instantiated. Fetches
+-//!   complete on the embedder's network thread and wake the reactor; no task of the thread
+-//!   runs, and no script runs, while the `JsRuntime` is borrowed. Each load logs its duration
+-//!   (`[roves-module-pause]`) for the review of that decision; no threshold is assumed.
+-//!   Shutdown (`ThreadSafeJSContext::request_shutdown`, from any thread) wakes the wait:
+-//!   the load returns [`ModuleGraphError::Cancelled`] and drops its pending fetches. Native
+-//!   shutdown timing and network teardown must still be verified (task 0446).
++//! - **Static graphs load stepwise.** [`start_module_graph`] creates a deno_core
++//!   `SideModuleLoad` handle (Roves patch of the vendored deno_core, see
++//!   `vendor/deno_core/ROVES_PATCHES.md`) and [`poll_module_graph`] advances it from embedder
++//!   tasks: each poll registers the sources that already arrived and returns `Pending` while
++//!   fetches are on the network, with the embedder's waker registered only with those fetches.
++//!   No borrow of the `JsRuntime` is held between polls, so script, timers, input and dynamic
++//!   imports keep running while a graph is fetched (this replaces the provisional blocking
++//!   decision of 2026-10-27). All graphs share the runtime's single module map. Polls log the
++//!   time they held the thread (`[roves-module-pause]`). The handle does not pump the event
++//!   loop: the adapter [`Loader`] never asks for it (`pump_event_loop_during_load` stays
++//!   false), and the embedder polls the module event loop independently anyway.
++//!   Shutdown (`ThreadSafeJSContext::request_shutdown`, from any thread) makes the next poll
++//!   or start return [`ModuleGraphError::Cancelled`]; dropping the handle drops its pending
++//!   fetches. [`load_module_graph`] is the blocking form (one call drives the same handle on
++//!   the runtime's current-thread Tokio reactor; shutdown wakes that wait), kept for callers
++//!   and tests that need it.
+ //! - **Evaluation** ([`evaluate_module`]) starts with `JsRuntime::mod_evaluate` at the caller's
+ //!   (HTML's) execution point and never waits for top-level await. A rejected evaluation
+ //!   reaches the embedder's promise rejection tracker through a promise internal to
+@@ -155,7 +162,7 @@ pub enum ModuleGraphError {
+     Cancelled,
+ }
+ 
+-/// A failure seen by the loader during a static graph load (see [`load_module_graph`]).
++/// A failure seen by the loader during a static graph load (see [`take_static_failure`]).
+ enum StaticFailure {
+     Fetch(String),
+     Resolve(String),
+@@ -377,7 +384,7 @@ pub(crate) struct DenoOwner {
+     evaluated: RefCell<HashSet<ModuleId>>,
+     /// Logged `poll_event_loop` errors, to bound repetitions.
+     poll_errors: Cell<u32>,
+-    /// Set once, from any thread, when the runtime shuts down (see [`load_module_graph`]).
++    /// Set once, from any thread, when the runtime shuts down (see [`poll_module_graph`]).
+     shutdown: Arc<tokio::sync::watch::Sender<bool>>,
+ }
+ 
+@@ -510,13 +517,43 @@ fn set_pending_error(cx: &JSContext, syntax: bool, message: &str) {
+     });
+ }
+ 
+-/// Fetches and instantiates the static module graph rooted at `url` (with `inline_source`, an
+-/// inline module's text, loaded under that name), blocking this thread until every module of
+-/// the graph is fetched and linked. Nothing is evaluated (see [`evaluate_module`]). A shutdown
+-/// requested before or during the wait returns [`ModuleGraphError::Cancelled`] instead.
++/// A static module graph load in progress, advanced by [`poll_module_graph`] from embedder
++/// tasks (see the module documentation). It holds no borrow of the `JsRuntime` or of a
++/// context: between polls script, timers, input, dynamic imports and other loads run normally,
++/// all on the runtime's single module map. Dropping it cancels the fetches still pending (the
++/// modules it already registered stay in the map, so a later load reuses them); it may be
++/// dropped at any time, also after the runtime.
++pub struct ModuleGraphLoad {
++    load: deno_core::SideModuleLoad,
++    url: String,
++    /// The first failure the loader noted while this load was polled (see
++    /// [`take_static_failure`]).
++    failure: Option<StaticFailure>,
++    started: std::time::Instant,
++    /// Time spent inside polls: the part of the load that holds the thread.
++    polling: std::time::Duration,
++    polls: u32,
++}
++
++impl ModuleGraphLoad {
++    /// The name the graph's root is loaded under.
++    pub fn url(&self) -> &str {
++        &self.url
++    }
++}
++
++/// Starts loading the static module graph rooted at `url`, without fetching anything yet:
++/// [`poll_module_graph`] does the work. `inline_source`, an inline module's text loaded under
++/// `url`, is taken only when the load starts (it is left in place on `Busy`).
+ ///
+-/// Must not be called while script runs on this thread (embedders call it from a task).
+-pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_source: Option<String>) -> Result<ModuleId, ModuleGraphError> {
++/// Errors: `Rethrow` for an invalid URL (pending exception set), `Cancelled` once the runtime
++/// is shutting down (nothing is fetched), `Busy` when called while the runtime runs deno_core
++/// work on this thread (retry from a later task).
++pub fn start_module_graph(
++    cx: &mut crate::context::JSContext,
++    url: &str,
++    inline_source: &mut Option<String>,
++) -> Result<ModuleGraphLoad, ModuleGraphError> {
+     let raw = cx.raw_ref();
+     let owner = owner(raw);
+     let specifier = match web_module_url(url) {
+@@ -526,40 +563,125 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
+             return Err(ModuleGraphError::Rethrow);
+         },
+     };
+-    owner.loader.static_failure.borrow_mut().take();
+-    // Subscribed before the check and the wait: a shutdown requested at any point, even
+-    // before this call, is seen (the watch value persists; `wait_for` checks it first).
+-    let mut shutdown = owner.shutdown.subscribe();
+-    if *shutdown.borrow_and_update() {
++    if *owner.shutdown.borrow() {
+         log::debug!("[roves-modules] static module graph {url} not loaded: the runtime is shutting down");
+         return Err(ModuleGraphError::Cancelled);
+     }
+-    let started = std::time::Instant::now();
++    let js = owner.js.try_borrow().map_err(|_| ModuleGraphError::Busy)?;
++    let code = inline_source.take().map(deno_core::ModuleCodeString::from);
++    let load = js.start_side_es_module_load(&specifier, code);
++    Ok(ModuleGraphLoad {
++        load,
++        url: url.to_owned(),
++        failure: None,
++        started: std::time::Instant::now(),
++        polling: std::time::Duration::ZERO,
++        polls: 0,
++    })
++}
++
++/// Clears the loader's failure slot before a poll of `graph`.
++///
++/// A static load's fetch futures, root resolution, inline registration and import
++/// resolution only run inside a poll of that load's own handle (deno_core's
++/// `RecursiveModuleLoad` owns its fetches, and dynamic imports never note failures), so what
++/// the slot holds after the poll belongs to `graph`, even with several graphs in flight.
++fn take_static_failure(owner: &DenoOwner, graph: &mut ModuleGraphLoad) {
++    if let Some(failure) = owner.loader.static_failure.borrow_mut().take() {
++        graph.failure.get_or_insert(failure);
++    }
++}
++
++/// Advances `graph`: registers every module whose source already arrived, starts the fetches
++/// of their imports and, once the whole graph is registered, links it. Nothing is evaluated
++/// (see [`evaluate_module`]) and the module event loop is not pumped (the adapter loader
++/// never asks for it, see the module documentation).
++///
++/// `Pending` means fetches are still on the network: `waker` was registered with them (and
++/// only with them; no wake-up is self-scheduled), and the embedder polls again after it is
++/// woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
++/// finished and must be dropped. `Ready(Err(Busy))` leaves the handle untouched: poll it again
++/// from a later task. `Ready(Err(Cancelled))` once the runtime is shutting down: drop the
++/// handle (and with it the pending fetches) without reporting anything to script.
++///
++/// Must not be called while script runs on this thread (embedders call it from a task).
++pub fn poll_module_graph(
++    cx: &mut crate::context::JSContext,
++    graph: &mut ModuleGraphLoad,
++    waker: &Waker,
++) -> Poll<Result<ModuleId, ModuleGraphError>> {
++    let raw = cx.raw_ref();
++    let owner = owner(raw);
++    if *owner.shutdown.borrow() {
++        log::debug!("[roves-modules] static module graph {} dropped: the runtime is shutting down", graph.url);
++        return Poll::Ready(Err(ModuleGraphError::Cancelled));
++    }
++    if graph.load.is_finished() {
++        log::warn!("[roves-modules] static module graph {} polled after completion", graph.url);
++        return Poll::Ready(Err(ModuleGraphError::Cancelled));
++    }
++    owner.loader.static_failure.borrow_mut().take();
++    let mut context = Context::from_waker(waker);
++    let polled = std::time::Instant::now();
++    let Some(poll) = owner.with_js(|js, _| js.poll_side_es_module_load(&mut graph.load, &mut context)) else {
++        return Poll::Ready(Err(ModuleGraphError::Busy));
++    };
++    graph.polling += polled.elapsed();
++    graph.polls += 1;
++    take_static_failure(owner, graph);
++    let Poll::Ready(result) = poll else {
++        return Poll::Pending;
++    };
++    // Measured for the review of the former blocking decision; no threshold is assumed.
++    log::info!(
++        "[roves-module-pause] static module graph {} ({}) held the thread {:.1} ms over {} polls, {:.1} ms after it started",
++        graph.url,
++        if result.is_ok() { "loaded" } else { "failed" },
++        graph.polling.as_secs_f64() * 1000.0,
++        graph.polls,
++        graph.started.elapsed().as_secs_f64() * 1000.0
++    );
++    Poll::Ready(finish_graph_load(raw, &graph.url, result, graph.failure.take()))
++}
++
++/// Fetches and instantiates the static module graph rooted at `url` (with `inline_source`, an
++/// inline module's text, loaded under that name), blocking this thread until every module of
++/// the graph is fetched and linked. Nothing is evaluated (see [`evaluate_module`]). A shutdown
++/// requested before or during the wait returns [`ModuleGraphError::Cancelled`] instead.
++///
++/// The blocking form of [`start_module_graph`]/[`poll_module_graph`], kept for callers that
++/// need the whole graph within one call; Servo's script elements use the stepwise form.
++///
++/// Must not be called while script runs on this thread (embedders call it from a task).
++pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_source: Option<String>) -> Result<ModuleId, ModuleGraphError> {
++    let mut inline_source = inline_source;
++    let mut graph = start_module_graph(cx, url, &mut inline_source)?;
++    let raw = cx.raw_ref();
++    let owner = owner(raw);
++    owner.loader.static_failure.borrow_mut().take();
++    // Subscribed after `start_module_graph` checked the flag: the watch value persists and
++    // `wait_for` checks it first, so a shutdown requested in between is still seen.
++    let mut shutdown = owner.shutdown.subscribe();
+     let result = owner
+         .with_js(|js, tokio| {
+             tokio.block_on(async {
+-                let mut load = std::pin::pin!(async {
+-                    match inline_source {
+-                        Some(source) => js.load_side_es_module_from_code(&specifier, source).await,
+-                        None => js.load_side_es_module(&specifier).await,
+-                    }
+-                });
+                 let mut cancelled = std::pin::pin!(shutdown.wait_for(|closing| *closing));
+                 // Shutdown first, then the load; both register the reactor's waker, so a
+                 // signal from another thread wakes this wait without any polling. Returning
+-                // drops the load future between steps (deno_core registers modules only
++                // drops the load between steps (deno_core registers modules only
+                 // synchronously), and with it the host fetches still waiting on the network.
+                 // `Err` (sender gone) cannot happen while the owner lives; treat it as shutdown.
+                 std::future::poll_fn(|cx| {
+                     if cancelled.as_mut().poll(cx).is_ready() {
+                         return Poll::Ready(None);
+                     }
+-                    load.as_mut().poll(cx).map(Some)
++                    js.poll_side_es_module_load(&mut graph.load, cx).map(Some)
+                 })
+                 .await
+             })
+         })
+         .ok_or(ModuleGraphError::Busy)?;
++    take_static_failure(owner, &mut graph);
+     // The provisional static-load pause (see the module documentation): measured, not judged.
+     log::info!(
+         "[roves-module-pause] static module graph {url} ({}) paused the thread {:.1} ms",
+@@ -568,16 +690,26 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
+             Some(Ok(_)) => "loaded",
+             Some(Err(_)) => "failed",
+         },
+-        started.elapsed().as_secs_f64() * 1000.0
++        graph.started.elapsed().as_secs_f64() * 1000.0
+     );
+     let Some(result) = result else {
+         // Failures noted by the dropped fetches belong to no one: no exception, no report.
+-        owner.loader.static_failure.borrow_mut().take();
+         return Err(ModuleGraphError::Cancelled);
+     };
++    finish_graph_load(raw, url, result, graph.failure.take())
++}
++
++/// Maps the outcome of a static graph load to HTML's results: a fetch failure has no error to
++/// rethrow; resolution, parse and link failures leave the error to rethrow pending.
++fn finish_graph_load(
++    raw: &JSContext,
++    url: &str,
++    result: Result<ModuleId, deno_core::error::CoreError>,
++    failure: Option<StaticFailure>,
++) -> Result<ModuleId, ModuleGraphError> {
+     match result {
+         Ok(id) => Ok(id),
+-        Err(error) => match owner.loader.static_failure.borrow_mut().take() {
++        Err(error) => match failure {
+             Some(StaticFailure::Fetch(message)) => {
+                 log::warn!("[roves-modules] fetching the module graph of {url} failed: {message}");
+                 Err(ModuleGraphError::Fetch)
+diff --git a/components/roves-js/src/lib.rs b/components/roves-js/src/lib.rs
+index aca0b9eea56..4200e158abd 100644
+--- a/components/roves-js/src/lib.rs
++++ b/components/roves-js/src/lib.rs
+@@ -47,10 +47,11 @@ pub mod rust;
+ /// embedder supplies resolution and fetching; scripts get no Deno API.
+ pub mod modules {
+     pub use crate::deno_impl::{
+-        FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleId,
+-        ModuleSourcePosition,
++        FetchedModule, HostModuleFetch, HostModuleKind, HostModuleLoader, ModuleGraphError, ModuleGraphLoad,
++        ModuleId, ModuleSourcePosition,
+         clear_host_module_loader, evaluate_module, has_host_module_loader, install_host_module_loader,
+-        load_module_graph, module_namespace, oneshot, poll_module_event_loop,
++        load_module_graph, module_namespace, oneshot, poll_module_event_loop, poll_module_graph,
++        start_module_graph,
+     };
+ }
+ 
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 116f211a6f9..7578e994554 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7700,6 +7700,8 @@ mod deno_modules {
+             "main.js" => (HostModuleKind::JavaScript, r#"import { dep } from "./dep.js"; import data from "./data.json" with { type: "json" }; await Promise.resolve(); log.push("main:" + dep + ":" + data.n);"#),
+             "dep.js" => (HostModuleKind::JavaScript, r#"export const dep = "D";"#),
+             "data.json" => (HostModuleKind::Json, r#"{ "n": 7 }"#),
++            "dyn.js" => (HostModuleKind::JavaScript, r#"export const d = "dyn";"#),
++            "broken.js" => (HostModuleKind::JavaScript, "export const = ;"),
+             _ => (HostModuleKind::JavaScript, "log.push('late source must not run');"),
+         };
+         FetchedModule { url: url.to_owned(), kind, source: source.to_owned() }
+@@ -7770,6 +7772,215 @@ mod deno_modules {
+         assert_eq!(started.get(), 3, "the dynamic import reuses the loaded module");
+     }
+ 
++    /// Counts the wake-ups of a stepwise static load (Servo queues one resumption task each).
++    #[derive(Default)]
++    struct CountingWaker(AtomicUsize);
++    impl std::task::Wake for CountingWaker {
++        fn wake(self: Arc<Self>) { self.wake_by_ref(); }
++        fn wake_by_ref(self: &Arc<Self>) { self.0.fetch_add(1, Ordering::SeqCst); }
++    }
++
++    fn counting_waker() -> (Arc<CountingWaker>, std::task::Waker) {
++        let counter = Arc::new(CountingWaker::default());
++        (counter.clone(), std::task::Waker::from(counter))
++    }
++
++    fn wakes(counter: &CountingWaker) -> usize {
++        counter.0.load(Ordering::SeqCst)
++    }
++
++    /// Polls a stepwise load whose sources are all available. Bounded, and not the embedder's
++    /// pattern: Servo polls again only after a wake-up.
++    fn poll_until_ready(runtime: &mut Runtime, graph: &mut ModuleGraphLoad) -> Result<ModuleId, ModuleGraphError> {
++        let (_, waker) = counting_waker();
++        for _ in 0..16 {
++            if let std::task::Poll::Ready(result) = poll_module_graph(runtime.cx(), graph, &waker) {
++                return result;
++            }
++        }
++        panic!("static graph {} is still pending", graph.url());
++    }
++
++    fn take_pending_exception(runtime: &Runtime) -> String {
++        let cx = runtime.raw_cx();
++        rooted!(in(cx) let mut error = UndefinedValue());
++        assert!(unsafe { crate::api::JS_GetPendingException(cx, error.handle_mut().into()) }, "an error to rethrow is pending");
++        unsafe { crate::api::JS_ClearPendingException(cx) };
++        describe(runtime, error.get())
++    }
++
++    /// Task 0457: while a static graph's fetch is held on the network, the thread is free:
++    /// script, promise jobs and the module event loop (a dynamic import with its own fetch)
++    /// keep making progress. The graph is woken only by its own fetches, links without
++    /// evaluating, and evaluates at the embedder's (HTML's) call.
++    #[test]
++    fn stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending() {
++        use std::task::Poll;
++        let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
++        let (counter, waker) = counting_waker();
++        let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).expect("the load starts");
++        assert_eq!(started.get(), 0, "starting a load fetches nothing");
++        assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
++        let (root, root_reply) = network.try_recv().expect("the first poll fetches the root");
++        assert_eq!(root, format!("{ORIGIN}main.js"));
++
++        // The root's response is delayed; the document keeps running meanwhile.
++        eval(&runtime, "log.push('script'); Promise.resolve().then(() => log.push('job')); 0");
++        checkpoint(&mut runtime);
++        eval(&runtime, "import('./dyn.js').then(m => log.push('dynamic:' + m.d)); 0");
++        let (dynamic, dynamic_reply) = (0..16)
++            .find_map(|_| {
++                poll_module_event_loop(runtime.cx());
++                checkpoint(&mut runtime);
++                network.try_recv().ok()
++            })
++            .expect("the dynamic import fetches while the static graph waits");
++        assert_eq!(dynamic, format!("{ORIGIN}dyn.js"));
++        dynamic_reply.send(Ok(network_source(&dynamic))).unwrap();
++        assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn"), "the dynamic import settles: {}", log(&runtime));
++        assert_eq!(wakes(&counter), 0, "no wake-up (and no busy loop) before the graph's own fetch completes");
++
++        // The root arrives: its completion wakes the graph, whose next poll fetches the imports.
++        root_reply.send(Ok(network_source(&root))).unwrap();
++        assert!(wakes(&counter) >= 1, "the completed fetch wakes the graph");
++        assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
++        let imports: Vec<_> = network.try_iter().collect();
++        assert_eq!(imports.len(), 2, "dep.js and data.json");
++        assert_eq!(log(&runtime), "script,job,dynamic:dyn", "nothing of the graph ran yet");
++        let before = wakes(&counter);
++        for (url, reply) in imports {
++            reply.send(Ok(network_source(&url))).unwrap();
++        }
++        assert!(wakes(&counter) > before);
++        let id = match poll_module_graph(runtime.cx(), &mut graph, &waker) {
++            Poll::Ready(result) => result.expect("the graph links"),
++            Poll::Pending => panic!("every source arrived"),
++        };
++        assert_eq!(log(&runtime), "script,job,dynamic:dyn", "linking evaluates nothing");
++        drop(graph);
++        evaluate_module(runtime.cx(), id).unwrap();
++        assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn,main:D:7"), "top-level await completes: {}", log(&runtime));
++        assert_eq!(started.get(), 4, "root, two imports and the dynamic import");
++    }
++
++    /// Task 0457: the stepwise load keeps `load_module_graph`'s failure contracts, also with
++    /// several graphs in flight on the single module map (each failure belongs to its graph).
++    #[test]
++    fn stepwise_static_load_failures_keep_their_contracts_per_graph() {
++        use std::task::Poll;
++        {
++            let (mut runtime, _, _) = runtime_with(&[
++                ("broken.js", HostModuleKind::JavaScript, "export const = ;"),
++                ("uses-missing.js", HostModuleKind::JavaScript, r#"import "./missing.js";"#),
++                ("uses-bare.js", HostModuleKind::JavaScript, r#"import "lodash";"#),
++            ]);
++            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}uses-missing.js"), &mut None).unwrap();
++            assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Fetch));
++            assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) }, "a fetch failure has no error to rethrow");
++            for (path, name) in [("broken.js", "SyntaxError"), ("uses-bare.js", "TypeError")] {
++                let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap();
++                assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Rethrow));
++                let described = take_pending_exception(&runtime);
++                assert!(described.starts_with(name), "{path}: {described}");
++            }
++            let mut inline = Some("export const = ;".to_owned());
++            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-7"), &mut inline).unwrap();
++            assert_eq!(poll_until_ready(&mut runtime, &mut graph), Err(ModuleGraphError::Rethrow));
++            assert!(take_pending_exception(&runtime).starts_with("SyntaxError"), "an inline parse error is rethrown");
++        }
++
++        // Three graphs wait on the network at once; their responses arrive out of order.
++        let NetworkRuntime { mut runtime, network, .. } = network_runtime();
++        let (_, waker) = counting_waker();
++        let mut graphs: Vec<_> = ["main.js", "gone.js", "broken.js"]
++            .iter()
++            .map(|path| start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap())
++            .collect();
++        for graph in &mut graphs {
++            assert!(poll_module_graph(runtime.cx(), graph, &waker).is_pending());
++        }
++        let mut replies: HashMap<String, NetworkReply> = network.try_iter().collect();
++        assert_eq!(replies.len(), 3);
++        let mut broken = graphs.pop().unwrap();
++        let mut gone = graphs.pop().unwrap();
++        let mut main = graphs.pop().unwrap();
++        replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).unwrap();
++        assert_eq!(poll_module_graph(runtime.cx(), &mut gone, &waker), Poll::Ready(Err(ModuleGraphError::Fetch)));
++        assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) });
++        let url = format!("{ORIGIN}broken.js");
++        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
++        assert_eq!(poll_module_graph(runtime.cx(), &mut broken, &waker), Poll::Ready(Err(ModuleGraphError::Rethrow)),
++            "the other graph's fetch failure is not attributed to this parse error");
++        assert!(take_pending_exception(&runtime).starts_with("SyntaxError"));
++        let url = format!("{ORIGIN}main.js");
++        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
++        assert!(poll_module_graph(runtime.cx(), &mut main, &waker).is_pending());
++        for (url, reply) in network.try_iter() {
++            reply.send(Ok(network_source(&url))).unwrap();
++        }
++        let id = match poll_module_graph(runtime.cx(), &mut main, &waker) {
++            Poll::Ready(result) => result.expect("the remaining graph still links"),
++            Poll::Pending => panic!("every source arrived"),
++        };
++        evaluate_module(runtime.cx(), id).unwrap();
++        assert!(drive(&mut runtime, |r| log(r) == "main:D:7"), "{}", log(&runtime));
++    }
++
++    /// Task 0457: dropping a pending stepwise load (Servo clears its pending graphs before the
++    /// DOM goes away) or shutting the runtime down cancels the fetches still on the network,
++    /// without running anything, leaving an exception, or touching a destroyed runtime.
++    #[test]
++    fn stepwise_static_load_drop_and_shutdown_cancel_pending_fetches() {
++        use std::task::Poll;
++        let (_, waker) = counting_waker();
++        {
++            let NetworkRuntime { mut runtime, started, dropped, network } = network_runtime();
++            let mut inline = Some(r#"import "./slow.js"; log.push("inline");"#.to_owned());
++            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-1"), &mut inline).unwrap();
++            assert!(inline.is_none(), "the started load owns the inline source");
++            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
++            let (url, reply) = network.try_recv().expect("slow.js is fetched");
++            assert_eq!(url, format!("{ORIGIN}slow.js"));
++            drop(graph);
++            assert_eq!(dropped.get(), 1, "dropping the load drops its pending fetch");
++            assert!(reply.send(Ok(network_source(&url))).is_err(), "a late response finds the fetch closed");
++            assert_eq!(log(&runtime), "", "no module of the dropped graph runs");
++            assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "no exception is left pending");
++            assert_eq!(started.get(), 1);
++        }
++        {
++            let NetworkRuntime { mut runtime, started, dropped, network } = network_runtime();
++            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}slow.js"), &mut None).unwrap();
++            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
++            let (url, reply) = network.try_recv().expect("slow.js is fetched");
++            let shutdown = runtime.thread_safe_js_context();
++            std::thread::spawn(move || shutdown.request_shutdown()).join().expect("the closing thread");
++            assert_eq!(poll_module_graph(runtime.cx(), &mut graph, &waker), Poll::Ready(Err(ModuleGraphError::Cancelled)));
++            assert_eq!(dropped.get(), 0, "the handle owns its fetch until the embedder drops it");
++            drop(graph);
++            assert_eq!(dropped.get(), 1);
++            assert!(reply.send(Ok(network_source(&url))).is_err(), "a late response finds the fetch closed");
++            let mut inline = Some(r#"import "./slow.js";"#.to_owned());
++            assert!(matches!(start_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-2"), &mut inline),
++                Err(ModuleGraphError::Cancelled)));
++            assert!(inline.is_some(), "a refused start leaves the inline source to the caller");
++            assert_eq!(started.get(), 1, "no fetch starts after shutdown");
++            assert_eq!(log(&runtime), "");
++            assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "no exception is left pending");
++        }
++        {
++            let NetworkRuntime { mut runtime, dropped, network, .. } = network_runtime();
++            let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).unwrap();
++            assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
++            let (url, reply) = network.try_recv().expect("main.js is fetched");
++            drop(runtime);
++            assert_eq!(dropped.get(), 0);
++            drop(graph);
++            assert_eq!(dropped.get(), 1, "a handle outliving its runtime still drops its fetch");
++            assert!(reply.send(Ok(network_source(&url))).is_err());
++        }
++    }
++
+ }
+ 
+ /// One script context per runtime (task 0385): the first global adopts deno_core's context,
+diff --git a/components/roves-js/vendor/deno_core/ROVES_PATCHES.md b/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
+index b64b75c0d91..0fa5b8a3b1b 100644
+--- a/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
++++ b/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
+@@ -9,10 +9,40 @@ Authorized by the user on2026-10-29 for a game-blocking cached-TLA import bug.
+ - Issue: https://github.com/denoland/deno/issues/37097
+ - Draft PR: https://github.com/denoland/deno/pull/37098
+ 
+-The sole semantic change is `&& !module.is_graph_async()` in modules/map/dynamic.rs.
++## Semantic change 1: cached TLA dynamic import
++
++`&& !module.is_graph_async()` in modules/map/dynamic.rs.
+ The general Deno evaluation-promise path handles async graphs; synchronous graphs retain
+ the shortcut. No Roves module graph or privileged game API is added.
+ 
++## Semantic change 2: stepwise side module load (`SideModuleLoad`)
++
++Added for the non-blocking static module graphs of task 0457 (the 0456 measurement showed
++input handled ~21 s late during a delayed static fetch while `load_side_es_module` borrowed
++the runtime). Not yet proposed upstream: an issue/PR is still to be opened, and this
++change also needs its own removal path (an equivalent maintained public API, or Roves
++returning to `load_side_es_module`).
++
++- runtime/jsruntime.rs: public `SideModuleLoad` handle, `JsRuntime::start_side_es_module_load`
++  and `JsRuntime::poll_side_es_module_load`. The handle owns the `RecursiveModuleLoad` and an
++  `Rc` of the realm's existing module map, never a borrow of the runtime, so between polls
++  the runtime runs its event loop, scripts and other loads on the same single module map.
++  A poll registers available sources, returns `Pending` with the caller's waker registered
++  only with pending fetches (no self-scheduled wake-up, no event-loop pump), and returns the
++  same errors as `load_side_es_module[_from_code]`. Dropping the handle cancels its fetches
++  (calling `finish_load` if started); it may outlive the runtime.
++  `drive_es_module_load` now shares the extracted helpers `register_es_module_from_code`,
++  `register_loaded_module` and `instantiate_loaded_root` with it; its behaviour is unchanged.
++- runtime/mod.rs and lib.rs: re-export `SideModuleLoad`.
++- API behavior is exercised by `components/roves-js/src/tests.rs` (borrow release, wake-ups,
++  concurrency on the single map, inline roots, errors and handle lifetime); those tests are
++  part of the root V8 normal/JITless CI. The vendor crate is excluded from that workspace.
++- Contract not covered: loaders whose `pump_event_loop_during_load()` is true need their
++  caller to run the event loop between polls; Roves' loader keeps the default (false).
++
++Roves callers: components/roves-js/src/deno_impl.rs (`start_module_graph`,
++`poll_module_graph`, and the blocking `load_module_graph` driving the same handle).
++
+ Packaging-only differences: registry cache markers are omitted; examples/benchmarks and
+ their Cargo target declarations are omitted (including the unused wasm binary example).
+ The library sources, features and dependency declarations are otherwise the published
+@@ -22,7 +52,8 @@ the upstream MIT license; upstream copyright headers are preserved.
+ Root workspace and standalone roves-js manifests apply this same path snapshot through
+ Cargo patch.crates-io; default crate features and a single V8 version stay unchanged.
+ Do not edit the Cargo registry/cache. New semantic changes need review, tests and an
+-upstream issue/PR. This is temporary, not a permanent substitute for maintained releases.
++upstream issue/PR (still missing for semantic change 2). This is temporary, not a permanent
++substitute for maintained releases.
+ 
+ Removal checklist is in the root TODO.md: inspect the upstream fix and released crate,
+ remove both overrides and this snapshot, regenerate locks, and verify the root/descendant
+diff --git a/components/roves-js/vendor/deno_core/lib.rs b/components/roves-js/vendor/deno_core/lib.rs
+index abad7a34829..6ce6be8fdd2 100644
+--- a/components/roves-js/vendor/deno_core/lib.rs
++++ b/components/roves-js/vendor/deno_core/lib.rs
+@@ -190,6 +190,7 @@ pub use crate::runtime::MODULE_MAP_SLOT_INDEX;
+ pub use crate::runtime::PollEventLoopOptions;
+ pub use crate::runtime::RuntimeOptions;
+ pub use crate::runtime::SharedArrayBufferStore;
++pub use crate::runtime::SideModuleLoad;
+ pub use crate::runtime::V8_WRAPPER_OBJECT_INDEX;
+ pub use crate::runtime::V8_WRAPPER_TYPE_INDEX;
+ pub use crate::runtime::host_defined_options::HOST_DEFINED_OPTIONS_KEY_INDEX;
+diff --git a/components/roves-js/vendor/deno_core/runtime/jsruntime.rs b/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
+index b859b91b14c..de32ab4ff56 100644
+--- a/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
++++ b/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
+@@ -115,6 +115,8 @@ use crate::modules::ModuleId;
+ use crate::modules::ModuleLoader;
+ use crate::modules::ModuleMap;
+ use crate::modules::ModuleName;
++use crate::modules::ModuleRequest;
++use crate::modules::ModuleSource;
+ use crate::modules::RequestedModuleType;
+ use crate::modules::SideModuleKind;
+ use crate::modules::ValidateImportAttributesCb;
+@@ -3180,6 +3182,82 @@ impl JsRuntimeState {
+   }
+ }
+ 
++/// Caller-owned state of a side ES module load driven with
++/// [`JsRuntime::start_side_es_module_load`] and
++/// [`JsRuntime::poll_side_es_module_load`] (Roves patch).
++///
++/// The handle owns the in-flight `RecursiveModuleLoad` (the type used by
++/// [`JsRuntime::load_side_es_module`] and by dynamic imports) and an `Rc` of
++/// the realm's existing module map; it never stores a borrow of the
++/// [`JsRuntime`]. While a poll returned `Pending`, the runtime can run its
++/// event loop, execute scripts, start other loads or evaluate modules. All
++/// modules are registered in the single realm module map, so concurrent loads
++/// (side, main or dynamic) deduplicate on it instead of building a second
++/// graph.
++///
++/// Like the future returned by [`JsRuntime::load_side_es_module_from_code`],
++/// the handle does nothing until its first poll: an inline root's source is
++/// kept owned by the handle and compiled/registered by that poll, before
++/// root resolution, `ModuleLoader::prepare_load` or any fetch.
++///
++/// Dropping the handle cancels the in-flight fetches and calls
++/// `ModuleLoader::finish_load` if the load was started by a poll; modules
++/// already registered stay in the map, exactly as when the future returned by
++/// [`JsRuntime::load_side_es_module`] is dropped. A handle dropped before its
++/// first poll registered nothing, fetched nothing and calls no
++/// `finish_load`.
++#[must_use = "a side module load does nothing unless it is polled"]
++pub struct SideModuleLoad {
++  specifier: ModuleSpecifier,
++  module_map: Rc<ModuleMap>,
++  state: SideModuleLoadState,
++}
++
++enum SideModuleLoadState {
++  /// Not polled yet. Holds the owned source of an inline root, compiled and
++  /// registered by the first poll before the recursive load is created.
++  NotStarted(Option<ModuleCodeString>),
++  /// `RecursiveModuleLoad::side`: root resolution and
++  /// `ModuleLoader::prepare_load`, run on the first poll.
++  Preparing(
++    futures::future::LocalBoxFuture<
++      'static,
++      Result<RecursiveModuleLoad, CoreError>,
++    >,
++  ),
++  /// Fetching sources and registering them in the module map.
++  Loading(RecursiveModuleLoad),
++  /// Returned `Ready` (success or error); the recursive load was dropped.
++  Finished,
++}
++
++impl SideModuleLoad {
++  /// Root specifier this load was started with.
++  pub fn specifier(&self) -> &ModuleSpecifier {
++    &self.specifier
++  }
++
++  /// Whether a poll already returned `Ready` for this load.
++  pub fn is_finished(&self) -> bool {
++    matches!(self.state, SideModuleLoadState::Finished)
++  }
++}
++
++impl std::fmt::Debug for SideModuleLoad {
++  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++    let state = match self.state {
++      SideModuleLoadState::NotStarted(_) => "NotStarted",
++      SideModuleLoadState::Preparing(_) => "Preparing",
++      SideModuleLoadState::Loading(_) => "Loading",
++      SideModuleLoadState::Finished => "Finished",
++    };
++    f.debug_struct("SideModuleLoad")
++      .field("specifier", &self.specifier.as_str())
++      .field("state", &state)
++      .finish()
++  }
++}
++
+ // Related to module loading
+ impl JsRuntime {
+   #[cfg(test)]
+@@ -3319,17 +3397,7 @@ impl JsRuntime {
+       module_map_rc.loader.borrow().pump_event_loop_during_load();
+ 
+     if let Some(code) = code {
+-      jsrealm::context_scope!(scope, &realm, self.v8_isolate());
+-      module_map_rc
+-        .new_es_module(
+-          scope,
+-          is_main,
+-          specifier.to_string().into(),
+-          code,
+-          false,
+-          None,
+-        )
+-        .map_err(|e| e.into_error(scope, false, false))?;
++      self.register_es_module_from_code(&realm, is_main, specifier, code)?;
+     }
+ 
+     let mut load = if is_main {
+@@ -3374,24 +3442,227 @@ impl JsRuntime {
+       let Some(load_result) = next_step else { break };
+       let (request, source) = load_result?;
+ 
+-      jsrealm::context_scope!(scope, &realm, self.v8_isolate());
+-      load
+-        .register_and_recurse(scope, &request, source)
+-        .map_err(|e| e.into_error(scope, false, false))?;
++      self.register_loaded_module(&realm, &mut load, &request, source)?;
+     }
+ 
+     let root_id = load.root_module_id().expect("Root module should be loaded");
+ 
+-    jsrealm::context_scope!(scope, &realm, self.v8_isolate());
++    self.instantiate_loaded_root(&realm, root_id)?;
++
++    Ok(root_id)
++  }
++
++  /// Compiles and registers an inline ES module in `realm`'s module map
++  /// without evaluating it. Shared by the async and stepwise loaders.
++  fn register_es_module_from_code(
++    &mut self,
++    realm: &JsRealm,
++    is_main: bool,
++    specifier: &ModuleSpecifier,
++    code: ModuleCodeString,
++  ) -> Result<ModuleId, CoreError> {
++    let module_map_rc = realm.0.module_map();
++    jsrealm::context_scope!(scope, realm, self.v8_isolate());
++    module_map_rc
++      .new_es_module(
++        scope,
++        is_main,
++        specifier.to_string().into(),
++        code,
++        false,
++        None,
++      )
++      .map_err(|e| e.into_error(scope, false, false))
++  }
++
++  /// Compiles one fetched source of `load`, registers it and queues the
++  /// fetches of its not-yet-registered imports. No JavaScript is evaluated.
++  fn register_loaded_module(
++    &mut self,
++    realm: &JsRealm,
++    load: &mut RecursiveModuleLoad,
++    request: &ModuleRequest,
++    source: ModuleSource,
++  ) -> Result<(), CoreError> {
++    jsrealm::context_scope!(scope, realm, self.v8_isolate());
++    load
++      .register_and_recurse(scope, request, source)
++      .map(|_| ())
++      .map_err(|e| e.into_error(scope, false, false))
++  }
++
++  /// Instantiates (links) a fully registered module graph root.
++  fn instantiate_loaded_root(
++    &mut self,
++    realm: &JsRealm,
++    root_id: ModuleId,
++  ) -> Result<(), CoreError> {
++    jsrealm::context_scope!(scope, realm, self.v8_isolate());
+     realm.instantiate_module(scope, root_id).map_err(|e| {
+       let exception = v8::Local::new(scope, e);
+       CoreErrorKind::Js(crate::error::exception_to_err(
+         scope, exception, false, false,
+       ))
+       .into_box()
+-    })?;
++    })
++  }
+ 
+-    Ok(root_id)
++  /// Starts a side ES module load whose progress is driven by
++  /// [`JsRuntime::poll_side_es_module_load`] (Roves patch). See
++  /// [`SideModuleLoad`].
++  ///
++  /// Unlike [`JsRuntime::load_side_es_module`], the returned handle does not
++  /// borrow the runtime, so between polls the runtime remains usable (event
++  /// loop, scripts, dynamic imports, other loads, evaluation).
++  ///
++  /// Starting does no work and cannot fail: it only records `specifier`,
++  /// the realm's module map and, when `code` is `Some`, the owned inline
++  /// source. Everything happens in [`JsRuntime::poll_side_es_module_load`],
++  /// matching the async loaders whose body runs at the first poll. The
++  /// first poll compiles and registers the inline root under `specifier`
++  /// (exactly like [`JsRuntime::load_side_es_module_from_code`]), then
++  /// starts root resolution, `ModuleLoader::prepare_load` and the fetches.
++  /// No JavaScript is evaluated.
++  pub fn start_side_es_module_load(
++    &self,
++    specifier: &ModuleSpecifier,
++    code: Option<ModuleCodeString>,
++  ) -> SideModuleLoad {
++    SideModuleLoad {
++      specifier: specifier.clone(),
++      module_map: self.inner.main_realm.0.module_map(),
++      state: SideModuleLoadState::NotStarted(code),
++    }
++  }
++
++  /// Advances a load started with [`JsRuntime::start_side_es_module_load`]
++  /// (Roves patch).
++  ///
++  /// - Registers every source that is already available, then returns
++  ///   `Pending` once all remaining fetches are pending. The `cx` waker is
++  ///   only registered with those fetches (and `prepare_load`); this method
++  ///   never schedules wake-ups of its own. Poll again after a wake-up.
++  /// - Evaluates no JavaScript and does not pump the event loop. Loaders that
++  ///   answer through JavaScript
++  ///   ([`ModuleLoader::pump_event_loop_during_load`]) need the caller to run
++  ///   the event loop between polls; this is possible because no borrow of
++  ///   the runtime is held. Compilation, import resolution and the final
++  ///   instantiation run synchronously inside the poll, as in the `async`
++  ///   loaders.
++  /// - Returns `Ready(Ok(id))` once the whole graph is registered and the
++  ///   root is instantiated; the caller evaluates it with
++  ///   [`JsRuntime::mod_evaluate`], in its own order.
++  /// - The first poll compiles and registers the inline root, if any, before
++  ///   creating the recursive load. If that fails, the error is returned,
++  ///   the handle is finished and no recursive load (so no
++  ///   `ModuleLoader::finish_load`) is ever created.
++  /// - Returns `Ready(Err(..))` for resolution, fetch, compile and
++  ///   instantiation errors, with the same error values as
++  ///   [`JsRuntime::load_side_es_module`] (and
++  ///   [`JsRuntime::load_side_es_module_from_code`] for inline roots). It
++  ///   also errors, without touching
++  ///   the handle, when the handle belongs to another runtime, and when the
++  ///   load already returned `Ready`.
++  pub fn poll_side_es_module_load(
++    &mut self,
++    load: &mut SideModuleLoad,
++    cx: &mut Context,
++  ) -> Poll<Result<ModuleId, CoreError>> {
++    if !Rc::ptr_eq(&load.module_map, &self.inner.main_realm.0.module_map) {
++      return Poll::Ready(Err(
++        CoreErrorKind::JsBox(JsErrorBox::generic(format!(
++          "side module load of {} belongs to a different runtime",
++          load.specifier
++        )))
++        .into_box(),
++      ));
++    }
++    let realm = JsRealm::clone(&self.inner.main_realm);
++    loop {
++      let step = match &mut load.state {
++        SideModuleLoadState::NotStarted(code) => {
++          // Inline root first, as in `drive_es_module_load`. On a compile or
++          // import resolution error no recursive load is created, so no
++          // `ModuleLoader::finish_load` runs.
++          let registered = match code.take() {
++            Some(code) => self
++              .register_es_module_from_code(
++                &realm,
++                false,
++                &load.specifier,
++                code,
++              )
++              .map(|_| ()),
++            None => Ok(()),
++          };
++          match registered {
++            Ok(()) => {
++              // `RecursiveModuleLoad::side` only captures owned values, so
++              // the boxed future is `'static` and holds no borrow of the
++              // runtime.
++              let prepare = RecursiveModuleLoad::side(
++                load.specifier.to_string(),
++                load.module_map.clone(),
++                SideModuleKind::Async,
++                None,
++              )
++              .boxed_local();
++              load.state = SideModuleLoadState::Preparing(prepare);
++              continue;
++            }
++            Err(e) => Err(e),
++          }
++        }
++        SideModuleLoadState::Preparing(prepare) => match prepare.poll_unpin(cx)
++        {
++          Poll::Pending => return Poll::Pending,
++          Poll::Ready(Ok(recursive)) => {
++            load.state = SideModuleLoadState::Loading(recursive);
++            continue;
++          }
++          Poll::Ready(Err(e)) => Err(e),
++        },
++        SideModuleLoadState::Loading(recursive) => {
++          match recursive.poll_next_unpin(cx) {
++            Poll::Pending => return Poll::Pending,
++            Poll::Ready(Some(Ok((request, source)))) => {
++              match self
++                .register_loaded_module(&realm, recursive, &request, source)
++              {
++                // Re-poll: more sources may be ready, and fetches queued by
++                // the registration must register the `cx` waker.
++                Ok(()) => continue,
++                Err(e) => Err(e),
++              }
++            }
++            Poll::Ready(Some(Err(e))) => Err(e),
++            Poll::Ready(None) => match recursive.root_module_id() {
++              Some(root_id) => self
++                .instantiate_loaded_root(&realm, root_id)
++                .map(|()| root_id),
++              None => Err(
++                CoreErrorKind::MissingFromModuleMap(load.specifier.to_string())
++                  .into_box(),
++              ),
++            },
++          }
++        }
++        SideModuleLoadState::Finished => {
++          return Poll::Ready(Err(
++            CoreErrorKind::JsBox(JsErrorBox::generic(format!(
++              "side module load of {} was polled after completion",
++              load.specifier
++            )))
++            .into_box(),
++          ));
++        }
++      };
++      // Dropping the recursive load calls `ModuleLoader::finish_load` after
++      // instantiation or the error, in the same order as
++      // `drive_es_module_load`.
++      load.state = SideModuleLoadState::Finished;
++      return Poll::Ready(step);
++    }
+   }
+ 
+   /// Load and evaluate an ES module provided the specifier and source code.
+diff --git a/components/roves-js/vendor/deno_core/runtime/mod.rs b/components/roves-js/vendor/deno_core/runtime/mod.rs
+index 8fc39a1d7de..662379be9c4 100644
+--- a/components/roves-js/vendor/deno_core/runtime/mod.rs
++++ b/components/roves-js/vendor/deno_core/runtime/mod.rs
+@@ -40,6 +40,7 @@ pub(crate) use jsruntime::NO_OF_BUILTIN_MODULES;
+ pub use jsruntime::PollEventLoopOptions;
+ pub use jsruntime::RuntimeOptions;
+ pub use jsruntime::SharedArrayBufferStore;
++pub use jsruntime::SideModuleLoad;
+ pub use snapshot::CreateSnapshotOptions;
+ pub use snapshot::CreateSnapshotOutput;
+ pub(crate) use snapshot::SnapshotDataId;

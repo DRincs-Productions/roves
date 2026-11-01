@@ -15,14 +15,19 @@ rely on their fetch wakers and do not busy-loop. Instantiation is deferred to
 its own poll. HTML's existing deferred/asap completion callbacks still control
 execution and document order. A single source compilation and final whole-graph
 instantiation remain synchronous. This change is local and not yet
-verified by Rust or browser CI. The three adapter-level tests in `roves-js/src/tests.rs`
+verified by Rust or browser CI. Four adapter-level tests in `roves-js/src/tests.rs`
 and the browser smoke are the executable gates; a separate vendor-only test module was
-not retained because that crate is excluded from the root workspace. The replayable
-vendor delta is
-`patches/deno_core-0.413.0/0457-stepwise-side-module-load.patch`; the Servo adapter delta is
-`patches/servo-v0.5.0/0457-stepwise-static-module-loading.patch`. Both were applied to scratch
-copies of their HEAD source and compared with the working files (line endings normalized for
-the Windows checkout). The 0458 deno_core follow-up is recorded separately in
+not retained because that crate is excluded from the root workspace. CI 41341178583 exposed
+that the Servo patch series also needs the roves-js and deno_core half of the adapter change:
+the workflow reconstructs the engine from `patches/servo-v0.5.0/`, not the separate vendor
+patch directory. The Servo 0457 patch now carries those API and runtime changes. The
+cooperative 0458 follow-up is mirrored as
+`patches/servo-v0.5.0/0458-cooperative-static-module-poll.patch` as well as the deno_core
+source patch. Replaying Servo patches 0457 and 0458 from the pre-0457 tree applies cleanly
+and reproduces all eight touched files after newline normalization. This fixes the missing
+patch-series content; fresh-workflow CI is still required. The vendor patch is
+`patches/deno_core-0.413.0/0457-stepwise-side-module-load.patch`; the Servo adapter patch is
+`patches/servo-v0.5.0/0457-stepwise-static-module-loading.patch`. The 0458 deno_core follow-up is recorded separately in
 `patches/deno_core-0.413.0/0458-cooperative-module-poll.patch`; its replay also matches after
 line-ending normalization (`git apply --unidiff-zero` is required because the patch has no
 context lines). Provenance and deno_core pin details:
@@ -40,8 +45,8 @@ in the local Python runner (60 tests, 15 skips); the browser workflow has not ru
 Do not label the three user-visible migration topics complete yet.
 
 Still needed: compile/tests normal and JITless, Linux/Windows browser smoke, all
-module security/error/ordering and TLA regressions, shutdown/cancellation, a
-replayable Servo patch, current handoff/wiki/README, and a real-game observation
+module security/error/ordering and TLA regressions, shutdown/cancellation, fresh CI
+replay of the Servo patches, current handoff/wiki/README, and a real-game observation
 after the change. The upstream cached-TLA fix issue/PR is separate; no public
 upstream issue/PR has been created for this new API.
 

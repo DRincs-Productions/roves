@@ -2,6 +2,32 @@
 
 ## Punto operativo aggiornato — 1 novembre 2026
 
+### Correzioni locali dopo il batch CI `a9d45d33da8c`
+
+Il batch precedente è concluso e **non è verde**. V8 `41341178591` ha compilato
+servoshell con successo su Linux/Windows/macOS, ma i sei job runtime sono falliti:
+Linux e macOS normal/JITless per la fixture Python che ometteva i campi server
+richiesti dalla diagnostica `module-pause`; Windows normal/JITless per sette
+`.send(...).unwrap()` nei test Rust, che richiedevano `Debug` su
+`FetchedModule`. La fixture ora emette hold/probe validi solo per `slow`; i test
+usano asserzioni `is_ok()` senza richiedere `Debug`. Verifica locale runner:
+`python -m unittest discover -s support/v8-smoke -p test_runner.py`, **60 passati,
+15 saltati**. I test Rust non sono stati compilati localmente; la verifica resta CI.
+
+Il workflow generale `41341178583` è fallito nei build Linux e Windows e nello
+smoke Steam, perché la serie applicata da pristine Servo aveva il nuovo adapter
+Servo (`0457`) ma non le corrispondenti API `start_module_graph`/
+`poll_module_graph` e le modifiche deno_core in `roves-js`. Le patch deno separate
+non vengono applicate dal workflow generale. `0457-stepwise-static-module-loading.patch`
+ora include il lato `roves-js`; `0458-cooperative-static-module-poll.patch` porta
+il seguito. Riproduzione locale dalla baseline `a9d45d33da8^`: entrambe applicano
+in ordine e riproducono gli otto file di sorgente toccati, con newline normalizzati.
+Questa correzione della ricostruzione deve ancora passare il workflow generale.
+Il job SDL e Android `41341178585` sono verdi. iOS/macOS restano esclusi dal gate
+per istruzione dell'utente; gli errori macOS del batch non sono stati usati per
+bloccare la pubblicazione. Non fare push: le correzioni sono locali e non verificate
+da nuove CI.
+
 ### 0459 — smoke dei log della policy documento singolo, locale
 
 Il runner ora legge solo il file `roves.log` del processo `single-document.html`
@@ -35,13 +61,11 @@ applicato con `git apply --unidiff-zero` a una copia pulita del sorgente già a
 `0457` e confrontato con i file integrati (identici dopo normalizzazione LF).
 Replay e revisione del diff non sostituiscono CI.
 
-All'ultimo controllo aggregato (19:23 UTC), il batch del push `a9d45d33da8c`
-era in corso: V8 `41341178591` (Linux normal stava compilando; macOS è esclusa
-dal gate), Android `41341178585` e build Servo generale `41341178583` attive;
-iOS `41341178619` verde ma esclusa dal gate.
-Non pubblicare il commit `0458` finché Linux, Windows, Android e build generali
-del checkpoint precedente non sono concluse senza errori. TODO.md resta una
-modifica dell'utente e non va incluso.
+Non pubblicare i commit locali finché Linux, Windows, Android e build generali
+del checkpoint precedente non risultano concluse senza errori. Il batch sopra è
+concluso con errori; inviare le correzioni insieme solo dopo revisione, patch/replay
+e nuove verifiche locali appropriate. TODO.md resta una modifica dell'utente e non
+va incluso.
 
 ### Criteri globali ancora aperti
 

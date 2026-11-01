@@ -7855,12 +7855,12 @@ mod deno_modules {
             })
             .expect("the dynamic import fetches while the static graph waits");
         assert_eq!(dynamic, format!("{ORIGIN}dyn.js"));
-        dynamic_reply.send(Ok(network_source(&dynamic))).unwrap();
+        assert!(dynamic_reply.send(Ok(network_source(&dynamic))).is_ok(), "the dynamic graph still owns its fetch");
         assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn"), "the dynamic import settles: {}", log(&runtime));
         assert_eq!(wakes(&counter), 0, "no wake-up (and no busy loop) before the graph's own fetch completes");
 
         // The root arrives: its completion wakes the graph, whose next poll fetches the imports.
-        root_reply.send(Ok(network_source(&root))).unwrap();
+        assert!(root_reply.send(Ok(network_source(&root))).is_ok(), "the static graph still owns its root fetch");
         assert!(wakes(&counter) >= 1, "the completed fetch wakes the graph");
         assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
         let imports: Vec<_> = network.try_iter().collect();
@@ -7868,7 +7868,7 @@ mod deno_modules {
         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "nothing of the graph ran yet");
         let before = wakes(&counter);
         for (url, reply) in imports {
-            reply.send(Ok(network_source(&url))).unwrap();
+            assert!(reply.send(Ok(network_source(&url))).is_ok(), "the static graph still owns each import fetch");
         }
         assert!(wakes(&counter) > before);
         let id = poll_available(&mut runtime, &mut graph, &counter, &waker).expect("the graph links");
@@ -7988,19 +7988,19 @@ mod deno_modules {
         let mut broken = graphs.pop().unwrap();
         let mut gone = graphs.pop().unwrap();
         let mut main = graphs.pop().unwrap();
-        replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).unwrap();
+        assert!(replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).is_ok(), "the failed graph still owns its fetch");
         assert_eq!(poll_module_graph(runtime.cx(), &mut gone, &waker), Poll::Ready(Err(ModuleGraphError::Fetch)));
         assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) });
         let url = format!("{ORIGIN}broken.js");
-        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
+        assert!(replies.remove(&url).unwrap().send(Ok(network_source(&url))).is_ok(), "the broken graph still owns its fetch");
         assert_eq!(poll_module_graph(runtime.cx(), &mut broken, &waker), Poll::Ready(Err(ModuleGraphError::Rethrow)),
             "the other graph's fetch failure is not attributed to this parse error");
         assert!(take_pending_exception(&runtime).starts_with("SyntaxError"));
         let url = format!("{ORIGIN}main.js");
-        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
+        assert!(replies.remove(&url).unwrap().send(Ok(network_source(&url))).is_ok(), "the remaining graph still owns its root fetch");
         assert!(poll_module_graph(runtime.cx(), &mut main, &waker).is_pending());
         for (url, reply) in network.try_iter() {
-            reply.send(Ok(network_source(&url))).unwrap();
+            assert!(reply.send(Ok(network_source(&url))).is_ok(), "the remaining graph still owns each import fetch");
         }
         let id = poll_available(&mut runtime, &mut main, &counter, &waker).expect("the remaining graph still links");
         assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");

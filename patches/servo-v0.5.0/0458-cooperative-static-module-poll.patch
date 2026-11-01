@@ -1,0 +1,415 @@
+diff --git a/components/roves-js/src/deno_impl.rs b/components/roves-js/src/deno_impl.rs
+index f27bb3b416e..e46a7d62b38 100644
+--- a/components/roves-js/src/deno_impl.rs
++++ b/components/roves-js/src/deno_impl.rs
+@@ -597,9 +597,10 @@ fn take_static_failure(owner: &DenoOwner, graph: &mut ModuleGraphLoad) {
+ /// (see [`evaluate_module`]) and the module event loop is not pumped (the adapter loader
+ /// never asks for it, see the module documentation).
+ ///
+-/// `Pending` means fetches are still on the network: `waker` was registered with them (and
+-/// only with them; no wake-up is self-scheduled), and the embedder polls again after it is
+-/// woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
++/// `Pending` either means a fetch is pending and registered `waker`, or that one source was
++/// registered and another immediately-ready step was deferred; in the latter case the waker
++/// was scheduled once to yield to the embedder's task queue. A real network wait is never
++/// self-woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
+ /// finished and must be dropped. `Ready(Err(Busy))` leaves the handle untouched: poll it again
+ /// from a later task. `Ready(Err(Cancelled))` once the runtime is shutting down: drop the
+ /// handle (and with it the pending fetches) without reporting anything to script.
+diff --git a/components/roves-js/src/tests.rs b/components/roves-js/src/tests.rs
+index 7578e994554..e32ad33c567 100644
+--- a/components/roves-js/src/tests.rs
++++ b/components/roves-js/src/tests.rs
+@@ -7801,6 +7801,26 @@ mod deno_modules {
+         panic!("static graph {} is still pending", graph.url());
+     }
+ 
++    /// Polls a stepwise load whose remaining sources are all available, as Servo does: again
++    /// only after a wake-up. Task 0458: each `Pending` compiled one source and requested the
++    /// next poll itself (exactly one wake-up), instead of draining the graph in one poll.
++    fn poll_available(
++        runtime: &mut Runtime,
++        graph: &mut ModuleGraphLoad,
++        counter: &CountingWaker,
++        waker: &std::task::Waker,
++    ) -> Result<ModuleId, ModuleGraphError> {
++        for _ in 0..16 {
++            let before = wakes(counter);
++            match poll_module_graph(runtime.cx(), graph, waker) {
++                std::task::Poll::Ready(result) => return result,
++                std::task::Poll::Pending => assert_eq!(wakes(counter), before + 1,
++                    "with every source available, a pending poll requests the next one itself"),
++            }
++        }
++        panic!("static graph {} is still pending", graph.url());
++    }
++
+     fn take_pending_exception(runtime: &Runtime) -> String {
+         let cx = runtime.raw_cx();
+         rooted!(in(cx) let mut error = UndefinedValue());
+@@ -7815,7 +7835,6 @@ mod deno_modules {
+     /// evaluating, and evaluates at the embedder's (HTML's) call.
+     #[test]
+     fn stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending() {
+-        use std::task::Poll;
+         let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
+         let (counter, waker) = counting_waker();
+         let mut graph = start_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), &mut None).expect("the load starts");
+@@ -7836,12 +7855,12 @@ mod deno_modules {
+             })
+             .expect("the dynamic import fetches while the static graph waits");
+         assert_eq!(dynamic, format!("{ORIGIN}dyn.js"));
+-        dynamic_reply.send(Ok(network_source(&dynamic))).unwrap();
++        assert!(dynamic_reply.send(Ok(network_source(&dynamic))).is_ok(), "the dynamic graph still owns its fetch");
+         assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn"), "the dynamic import settles: {}", log(&runtime));
+         assert_eq!(wakes(&counter), 0, "no wake-up (and no busy loop) before the graph's own fetch completes");
+ 
+         // The root arrives: its completion wakes the graph, whose next poll fetches the imports.
+-        root_reply.send(Ok(network_source(&root))).unwrap();
++        assert!(root_reply.send(Ok(network_source(&root))).is_ok(), "the static graph still owns its root fetch");
+         assert!(wakes(&counter) >= 1, "the completed fetch wakes the graph");
+         assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
+         let imports: Vec<_> = network.try_iter().collect();
+@@ -7849,13 +7868,11 @@ mod deno_modules {
+         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "nothing of the graph ran yet");
+         let before = wakes(&counter);
+         for (url, reply) in imports {
+-            reply.send(Ok(network_source(&url))).unwrap();
++            assert!(reply.send(Ok(network_source(&url))).is_ok(), "the static graph still owns each import fetch");
+         }
+         assert!(wakes(&counter) > before);
+-        let id = match poll_module_graph(runtime.cx(), &mut graph, &waker) {
+-            Poll::Ready(result) => result.expect("the graph links"),
+-            Poll::Pending => panic!("every source arrived"),
+-        };
++        let id = poll_available(&mut runtime, &mut graph, &counter, &waker).expect("the graph links");
++        assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");
+         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "linking evaluates nothing");
+         drop(graph);
+         evaluate_module(runtime.cx(), id).unwrap();
+@@ -7863,6 +7880,73 @@ mod deno_modules {
+         assert_eq!(started.get(), 4, "root, two imports and the dynamic import");
+     }
+ 
++    /// Task 0458: a graph whose sources are all immediately available (cached responses) is
++    /// not drained in one poll. Each poll compiles one source and wakes the graph for the next
++    /// step, so the embedder's other queued work (here a game script and its promise job) runs
++    /// between registrations; the instantiation gets a poll of its own. The graph still links,
++    /// evaluates only at the embedder's call, in module order, for external and inline roots.
++    #[test]
++    fn stepwise_static_load_returns_control_between_ready_sources() {
++        const MAIN: &str = r#"import { a } from "./a.js"; import { b } from "./b.js"; import data from "./data.json" with { type: "json" }; log.push("main:" + a + b + data.n);"#;
++        for inline in [false, true] {
++            let (mut runtime, loader, _) = runtime_with(&[
++                ("main.js", HostModuleKind::JavaScript, MAIN),
++                ("a.js", HostModuleKind::JavaScript, r#"import { c } from "./c.js"; log.push("a"); export const a = "A" + c;"#),
++                ("b.js", HostModuleKind::JavaScript, r#"log.push("b"); export const b = "B";"#),
++                ("c.js", HostModuleKind::JavaScript, r#"log.push("c"); export const c = "C";"#),
++                ("data.json", HostModuleKind::Json, r#"{ "n": 1 }"#),
++            ]);
++            let (counter, waker) = counting_waker();
++            let (url, mut source) = if inline {
++                (format!("{ORIGIN}page.html#roves-inline-module-3"), Some(MAIN.to_owned()))
++            } else {
++                (format!("{ORIGIN}main.js"), None)
++            };
++            let mut graph = start_module_graph(runtime.cx(), &url, &mut source).expect("the load starts");
++            let mut pending_polls = 0;
++            let mut expected_log = Vec::new();
++            let id = loop {
++                let before = wakes(&counter);
++                match poll_module_graph(runtime.cx(), &mut graph, &waker) {
++                    std::task::Poll::Ready(result) => break result.expect("the graph links"),
++                    std::task::Poll::Pending => {
++                        assert_eq!(wakes(&counter), before + 1, "inline={inline}: the graph requests its next step");
++                        // Unrelated game work queued meanwhile runs before the next step.
++                        eval(&runtime, &format!("log.push('tick{pending_polls}'); Promise.resolve().then(() => log.push('job{pending_polls}')); 0"));
++                        checkpoint(&mut runtime);
++                        expected_log.push(format!("tick{pending_polls},job{pending_polls}"));
++                        pending_polls += 1;
++                        assert!(pending_polls <= 16, "inline={inline}: the graph never completes");
++                    },
++                }
++            };
++            // One source per poll (root, a, b, c, data), then the instantiation alone.
++            assert_eq!(pending_polls, 5, "inline={inline}: one registration per poll");
++            assert_eq!(log(&runtime), expected_log.join(","), "inline={inline}: linking evaluates nothing");
++            let fetched = loader.fetched.borrow().len();
++            assert_eq!(fetched, if inline { 4 } else { 5 }, "inline={inline}: each module is fetched once");
++            drop(graph);
++            evaluate_module(runtime.cx(), id).unwrap();
++            assert!(drive(&mut runtime, |r| log(r).ends_with("c,a,b,main:ACB1")), "inline={inline}: {}", log(&runtime));
++            assert_eq!(log(&runtime), format!("{},c,a,b,main:ACB1", expected_log.join(",")));
++            drop(runtime);
++
++            // The blocking form (whose executor re-polls on the self-requested wake-ups) still
++            // completes the same graph within one call.
++            let (mut blocking, _, _) = runtime_with(&[
++                ("main.js", HostModuleKind::JavaScript, MAIN),
++                ("a.js", HostModuleKind::JavaScript, r#"import { c } from "./c.js"; log.push("a"); export const a = "A" + c;"#),
++                ("b.js", HostModuleKind::JavaScript, r#"log.push("b"); export const b = "B";"#),
++                ("c.js", HostModuleKind::JavaScript, r#"log.push("c"); export const c = "C";"#),
++                ("data.json", HostModuleKind::Json, r#"{ "n": 1 }"#),
++            ]);
++            let source = inline.then(|| MAIN.to_owned());
++            let id = load_module_graph(blocking.cx(), &url, source).expect("the blocking load links");
++            evaluate_module(blocking.cx(), id).unwrap();
++            assert!(drive(&mut blocking, |r| log(r) == "c,a,b,main:ACB1"), "inline={inline}: {}", log(&blocking));
++        }
++    }
++
+     /// Task 0457: the stepwise load keeps `load_module_graph`'s failure contracts, also with
+     /// several graphs in flight on the single module map (each failure belongs to its graph).
+     #[test]
+@@ -7891,7 +7975,7 @@ mod deno_modules {
+ 
+         // Three graphs wait on the network at once; their responses arrive out of order.
+         let NetworkRuntime { mut runtime, network, .. } = network_runtime();
+-        let (_, waker) = counting_waker();
++        let (counter, waker) = counting_waker();
+         let mut graphs: Vec<_> = ["main.js", "gone.js", "broken.js"]
+             .iter()
+             .map(|path| start_module_graph(runtime.cx(), &format!("{ORIGIN}{path}"), &mut None).unwrap())
+@@ -7904,24 +7988,22 @@ mod deno_modules {
+         let mut broken = graphs.pop().unwrap();
+         let mut gone = graphs.pop().unwrap();
+         let mut main = graphs.pop().unwrap();
+-        replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).unwrap();
++        assert!(replies.remove(&format!("{ORIGIN}gone.js")).unwrap().send(Err("HTTP error code 404".to_owned())).is_ok(), "the failed graph still owns its fetch");
+         assert_eq!(poll_module_graph(runtime.cx(), &mut gone, &waker), Poll::Ready(Err(ModuleGraphError::Fetch)));
+         assert!(!unsafe { crate::api::JS_IsExceptionPending(runtime.raw_cx()) });
+         let url = format!("{ORIGIN}broken.js");
+-        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
++        assert!(replies.remove(&url).unwrap().send(Ok(network_source(&url))).is_ok(), "the broken graph still owns its fetch");
+         assert_eq!(poll_module_graph(runtime.cx(), &mut broken, &waker), Poll::Ready(Err(ModuleGraphError::Rethrow)),
+             "the other graph's fetch failure is not attributed to this parse error");
+         assert!(take_pending_exception(&runtime).starts_with("SyntaxError"));
+         let url = format!("{ORIGIN}main.js");
+-        replies.remove(&url).unwrap().send(Ok(network_source(&url))).unwrap();
++        assert!(replies.remove(&url).unwrap().send(Ok(network_source(&url))).is_ok(), "the remaining graph still owns its root fetch");
+         assert!(poll_module_graph(runtime.cx(), &mut main, &waker).is_pending());
+         for (url, reply) in network.try_iter() {
+-            reply.send(Ok(network_source(&url))).unwrap();
++            assert!(reply.send(Ok(network_source(&url))).is_ok(), "the remaining graph still owns each import fetch");
+         }
+-        let id = match poll_module_graph(runtime.cx(), &mut main, &waker) {
+-            Poll::Ready(result) => result.expect("the remaining graph still links"),
+-            Poll::Pending => panic!("every source arrived"),
+-        };
++        let id = poll_available(&mut runtime, &mut main, &counter, &waker).expect("the remaining graph still links");
++        assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");
+         evaluate_module(runtime.cx(), id).unwrap();
+         assert!(drive(&mut runtime, |r| log(r) == "main:D:7"), "{}", log(&runtime));
+     }
+diff --git a/components/roves-js/vendor/deno_core/ROVES_PATCHES.md b/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
+index 0fa5b8a3b1b..14e8b739074 100644
+--- a/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
++++ b/components/roves-js/vendor/deno_core/ROVES_PATCHES.md
+@@ -27,9 +27,11 @@ returning to `load_side_es_module`).
+   and `JsRuntime::poll_side_es_module_load`. The handle owns the `RecursiveModuleLoad` and an
+   `Rc` of the realm's existing module map, never a borrow of the runtime, so between polls
+   the runtime runs its event loop, scripts and other loads on the same single module map.
+-  A poll registers available sources, returns `Pending` with the caller's waker registered
+-  only with pending fetches (no self-scheduled wake-up, no event-loop pump), and returns the
+-  same errors as `load_side_es_module[_from_code]`. Dropping the handle cancels its fetches
++  A poll compiles/registers at most one source, then polls once more to start its child fetches.
++  If another step is already ready, it stores that step and schedules one cooperative wake so
++  Servo returns to the networking task queue between cached/ready sources; if a fetch is truly
++  pending, only that fetch wakes the task (no busy loop). The API does not pump the event loop
++  itself and returns the same errors as `load_side_es_module[_from_code]`. Dropping the handle cancels its fetches
+   (calling `finish_load` if started); it may outlive the runtime.
+   `drive_es_module_load` now shares the extracted helpers `register_es_module_from_code`,
+   `register_loaded_module` and `instantiate_loaded_root` with it; its behaviour is unchanged.
+@@ -40,6 +42,10 @@ returning to `load_side_es_module`).
+ - Contract not covered: loaders whose `pump_event_loop_during_load()` is true need their
+   caller to run the event loop between polls; Roves' loader keeps the default (false).
+ 
++The bounded cooperative-yield follow-up is kept separately as
++`patches/deno_core-0.413.0/0458-cooperative-module-poll.patch`. It is a zero-context
++diff; replay it after 0457 with `git apply --unidiff-zero`.
++
+ Roves callers: components/roves-js/src/deno_impl.rs (`start_module_graph`,
+ `poll_module_graph`, and the blocking `load_module_graph` driving the same handle).
+ 
+diff --git a/components/roves-js/vendor/deno_core/runtime/jsruntime.rs b/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
+index de32ab4ff56..fba81078242 100644
+--- a/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
++++ b/components/roves-js/vendor/deno_core/runtime/jsruntime.rs
+@@ -3225,12 +3225,23 @@ enum SideModuleLoadState {
+       Result<RecursiveModuleLoad, CoreError>,
+     >,
+   ),
+-  /// Fetching sources and registering them in the module map.
+-  Loading(RecursiveModuleLoad),
++  /// Fetching sources and registering them in the module map. `ready` keeps
++  /// a stream item that was already available when the poll had compiled a
++  /// source: it is handled by the next poll, which the poll that stored it
++  /// requested by waking its `cx` waker.
++  Loading {
++    recursive: RecursiveModuleLoad,
++    ready: Option<SideModuleLoadItem>,
++  },
+   /// Returned `Ready` (success or error); the recursive load was dropped.
+   Finished,
+ }
+ 
++/// A `Ready` item of the `RecursiveModuleLoad` stream: a fetched source, a
++/// load error, or `None` once the whole graph is registered.
++type SideModuleLoadItem =
++  Option<Result<(ModuleRequest, ModuleSource), CoreError>>;
++
+ impl SideModuleLoad {
+   /// Root specifier this load was started with.
+   pub fn specifier(&self) -> &ModuleSpecifier {
+@@ -3248,7 +3259,7 @@ impl std::fmt::Debug for SideModuleLoad {
+     let state = match self.state {
+       SideModuleLoadState::NotStarted(_) => "NotStarted",
+       SideModuleLoadState::Preparing(_) => "Preparing",
+-      SideModuleLoadState::Loading(_) => "Loading",
++      SideModuleLoadState::Loading { .. } => "Loading",
+       SideModuleLoadState::Finished => "Finished",
+     };
+     f.debug_struct("SideModuleLoad")
+@@ -3538,17 +3549,24 @@ impl JsRuntime {
+   /// Advances a load started with [`JsRuntime::start_side_es_module_load`]
+   /// (Roves patch).
+   ///
+-  /// - Registers every source that is already available, then returns
+-  ///   `Pending` once all remaining fetches are pending. The `cx` waker is
+-  ///   only registered with those fetches (and `prepare_load`); this method
+-  ///   never schedules wake-ups of its own. Poll again after a wake-up.
++  /// - Compiles and registers at most one source per poll (the inline root
++  ///   or one fetched module), then polls the load once more so the fetches
++  ///   of that source's imports start. If they are all pending it returns
++  ///   `Pending` with the `cx` waker registered only with them (and
++  ///   `prepare_load`). If a further step is already available (another
++  ///   source, an error or the final instantiation), it is kept in the handle,
++  ///   the `cx` waker is woken once and `Pending` is returned, so an
++  ///   all-cached graph gives control back to the embedder between
++  ///   registrations. There is no other self-scheduled wake-up: a graph that
++  ///   waits on fetches does not busy-loop. Poll again after a wake-up.
+   /// - Evaluates no JavaScript and does not pump the event loop. Loaders that
+   ///   answer through JavaScript
+   ///   ([`ModuleLoader::pump_event_loop_during_load`]) need the caller to run
+   ///   the event loop between polls; this is possible because no borrow of
+-  ///   the runtime is held. Compilation, import resolution and the final
+-  ///   instantiation run synchronously inside the poll, as in the `async`
+-  ///   loaders.
++  ///   the runtime is held. The compilation of that one source, its import
++  ///   resolution and, in a poll of its own, the final instantiation of the
++  ///   whole graph still run synchronously inside the poll, as in the
++  ///   `async` loaders.
+   /// - Returns `Ready(Ok(id))` once the whole graph is registered and the
+   ///   root is instantiated; the caller evaluates it with
+   ///   [`JsRuntime::mod_evaluate`], in its own order.
+@@ -3578,6 +3596,11 @@ impl JsRuntime {
+       ));
+     }
+     let realm = JsRealm::clone(&self.inner.main_realm);
++    // Whether this poll already compiled a source (the inline root or a
++    // fetched module). At most one is compiled per poll, so a graph whose
++    // sources are all immediately available still returns to the embedder
++    // between registrations.
++    let mut compiled = false;
+     loop {
+       let step = match &mut load.state {
+         SideModuleLoadState::NotStarted(code) => {
+@@ -3585,14 +3608,17 @@ impl JsRuntime {
+           // import resolution error no recursive load is created, so no
+           // `ModuleLoader::finish_load` runs.
+           let registered = match code.take() {
+-            Some(code) => self
+-              .register_es_module_from_code(
+-                &realm,
+-                false,
+-                &load.specifier,
+-                code,
+-              )
+-              .map(|_| ()),
++            Some(code) => {
++              compiled = true;
++              self
++                .register_es_module_from_code(
++                  &realm,
++                  false,
++                  &load.specifier,
++                  code,
++                )
++                .map(|_| ())
++            }
+             None => Ok(()),
+           };
+           match registered {
+@@ -3617,26 +3643,49 @@ impl JsRuntime {
+         {
+           Poll::Pending => return Poll::Pending,
+           Poll::Ready(Ok(recursive)) => {
+-            load.state = SideModuleLoadState::Loading(recursive);
++            load.state = SideModuleLoadState::Loading {
++              recursive,
++              ready: None,
++            };
+             continue;
+           }
+           Poll::Ready(Err(e)) => Err(e),
+         },
+-        SideModuleLoadState::Loading(recursive) => {
+-          match recursive.poll_next_unpin(cx) {
+-            Poll::Pending => return Poll::Pending,
+-            Poll::Ready(Some(Ok((request, source)))) => {
++        SideModuleLoadState::Loading { recursive, ready } => {
++          let item = match ready.take() {
++            // Stored by the previous poll, which requested this one.
++            Some(item) => item,
++            // Polling the stream also starts the fetches queued by the last
++            // registration and registers the `cx` waker with them.
++            None => match recursive.poll_next_unpin(cx) {
++              Poll::Pending => return Poll::Pending,
++              Poll::Ready(item) => item,
++            },
++          };
++          if compiled {
++            // This poll already compiled a source: keep the next step
++            // (another source, an error or the final instantiation) for a
++            // later poll and ask for it now. This wake-up happens only when
++            // the stream had an item ready, so a graph that is really waiting
++            // on fetches is woken only by them.
++            *ready = Some(item);
++            cx.waker().wake_by_ref();
++            return Poll::Pending;
++          }
++          match item {
++            Some(Ok((request, source))) => {
++              compiled = true;
+               match self
+                 .register_loaded_module(&realm, recursive, &request, source)
+               {
+-                // Re-poll: more sources may be ready, and fetches queued by
+-                // the registration must register the `cx` waker.
++                // Re-poll once: the fetches queued by the registration start
++                // and register the `cx` waker; a ready item is deferred above.
+                 Ok(()) => continue,
+                 Err(e) => Err(e),
+               }
+             }
+-            Poll::Ready(Some(Err(e))) => Err(e),
+-            Poll::Ready(None) => match recursive.root_module_id() {
++            Some(Err(e)) => Err(e),
++            None => match recursive.root_module_id() {
+               Some(root_id) => self
+                 .instantiate_loaded_root(&realm, root_id)
+                 .map(|()| root_id),
+diff --git a/components/script/script_module.rs b/components/script/script_module.rs
+index b5b9cf13834..d9ec628fbe1 100644
+--- a/components/script/script_module.rs
++++ b/components/script/script_module.rs
+@@ -978,7 +978,8 @@ thread_local! {
+ 
+ /// Wakes a static graph whose fetches are on the network: queues one networking task that
+ /// advances it. Wakes that arrive before that task runs are coalesced into it; the task
+-/// re-arms the waker before polling, so no wake-up is lost and none is self-scheduled.
++/// re-arms the waker before polling, so no wake-up is lost. A ready graph may schedule one
++/// additional task per source as a cooperative yield; actual pending fetches wake it normally.
+ ///
+ /// It holds only the graph's key and a sendable task source, no DOM reference: the waker may
+ /// outlive the graph inside a finished fetch's channel on the network thread. The task finds
