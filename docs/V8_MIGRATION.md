@@ -2,6 +2,17 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0454 — warning del profiler allo spegnimento
+
+In 0451/0452 i warning `memory profiler ... Disconnected` seguono la cancellazione
+del fetch. Analisi del codice: `constellation::handle_exit` invia prima Exit al
+profiler; il loop profiler esce, mentre le registrazioni dei thread al drop
+tentano `UnregisterReporter` tramite un canale che può essere già disconnesso.
+Questo ordine spiega i warning osservati; il messaggio non identifica i singoli
+thread e non dimostra la causa di ogni warning né esclude altre retention.
+Nessuna modifica al codice: analisi in lettura, nessun nuovo test runtime.
+
+
 ### 0453 — persistenza localStorage durante chiusura con fetch
 
 Su Windows, stesso binario f1ac0a5563c di 0451: una pagina HTTP loopback ha

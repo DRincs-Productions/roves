@@ -1,3 +1,9 @@
+## Resume - Shutdown profiler warning analysis (0454)
+
+The profiler receives Exit before pipeline shutdown. Later reporter registration
+drops may attempt to unregister through the closed channel, explaining observed
+Disconnected warnings. Logs do not identify the threads or exclude other leaks.
+
 ## Resume - Storage across pending-fetch shutdown (0453)
 
 On the f1ac0a5563c Windows test binary, a loopback page persisted a localStorage
