@@ -21,6 +21,9 @@
 //!   complete on the embedder's network thread and wake the reactor; no task of the thread
 //!   runs, and no script runs, while the `JsRuntime` is borrowed. Each load logs its duration
 //!   (`[roves-module-pause]`) for the review of that decision; no threshold is assumed.
+//!   Shutdown (`ThreadSafeJSContext::request_shutdown`, from any thread) wakes the wait:
+//!   the load returns [`ModuleGraphError::Cancelled`] and drops its pending fetches. Native
+//!   shutdown timing and network teardown must still be verified (task 0446).
 //! - **Evaluation** ([`evaluate_module`]) starts with `JsRuntime::mod_evaluate` at the caller's
 //!   (HTML's) execution point and never waits for top-level await. A rejected evaluation
 //!   reaches the embedder's promise rejection tracker through a promise internal to
@@ -145,6 +148,11 @@ pub enum ModuleGraphError {
     /// The runtime is already running deno_core work on this thread (a nested call from
     /// script); retry from a later task.
     Busy,
+    /// The runtime is shutting down ([`crate::rust::ThreadSafeJSContext::request_shutdown`]):
+    /// the load stopped waiting for the network and dropped its pending fetches, or never
+    /// started. No exception is pending; embedders drop the load without reporting it to
+    /// script (no `error` event at shutdown).
+    Cancelled,
 }
 
 /// A failure seen by the loader during a static graph load (see [`load_module_graph`]).
@@ -369,6 +377,8 @@ pub(crate) struct DenoOwner {
     evaluated: RefCell<HashSet<ModuleId>>,
     /// Logged `poll_event_loop` errors, to bound repetitions.
     poll_errors: Cell<u32>,
+    /// Set once, from any thread, when the runtime shuts down (see [`load_module_graph`]).
+    shutdown: Arc<tokio::sync::watch::Sender<bool>>,
 }
 
 impl DenoOwner {
@@ -399,7 +409,14 @@ impl DenoOwner {
             evaluations: Default::default(),
             evaluated: Default::default(),
             poll_errors: Cell::new(0),
+            // No receiver is kept: loads subscribe while they wait, and the value persists.
+            shutdown: Arc::new(tokio::sync::watch::channel(false).0),
         })
+    }
+
+    /// The shutdown flag shared with the runtime's `ThreadSafeJSContext`.
+    pub(crate) fn shutdown_signal(&self) -> Arc<tokio::sync::watch::Sender<bool>> {
+        self.shutdown.clone()
     }
 
     /// The `v8::Isolate` deno_core created (stable: it lives behind the `OwnedIsolate`).
@@ -495,7 +512,8 @@ fn set_pending_error(cx: &JSContext, syntax: bool, message: &str) {
 
 /// Fetches and instantiates the static module graph rooted at `url` (with `inline_source`, an
 /// inline module's text, loaded under that name), blocking this thread until every module of
-/// the graph is fetched and linked. Nothing is evaluated (see [`evaluate_module`]).
+/// the graph is fetched and linked. Nothing is evaluated (see [`evaluate_module`]). A shutdown
+/// requested before or during the wait returns [`ModuleGraphError::Cancelled`] instead.
 ///
 /// Must not be called while script runs on this thread (embedders call it from a task).
 pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_source: Option<String>) -> Result<ModuleId, ModuleGraphError> {
@@ -509,23 +527,54 @@ pub fn load_module_graph(cx: &mut crate::context::JSContext, url: &str, inline_s
         },
     };
     owner.loader.static_failure.borrow_mut().take();
+    // Subscribed before the check and the wait: a shutdown requested at any point, even
+    // before this call, is seen (the watch value persists; `wait_for` checks it first).
+    let mut shutdown = owner.shutdown.subscribe();
+    if *shutdown.borrow_and_update() {
+        log::debug!("[roves-modules] static module graph {url} not loaded: the runtime is shutting down");
+        return Err(ModuleGraphError::Cancelled);
+    }
     let started = std::time::Instant::now();
     let result = owner
         .with_js(|js, tokio| {
             tokio.block_on(async {
-                match inline_source {
-                    Some(source) => js.load_side_es_module_from_code(&specifier, source).await,
-                    None => js.load_side_es_module(&specifier).await,
-                }
+                let mut load = std::pin::pin!(async {
+                    match inline_source {
+                        Some(source) => js.load_side_es_module_from_code(&specifier, source).await,
+                        None => js.load_side_es_module(&specifier).await,
+                    }
+                });
+                let mut cancelled = std::pin::pin!(shutdown.wait_for(|closing| *closing));
+                // Shutdown first, then the load; both register the reactor's waker, so a
+                // signal from another thread wakes this wait without any polling. Returning
+                // drops the load future between steps (deno_core registers modules only
+                // synchronously), and with it the host fetches still waiting on the network.
+                // `Err` (sender gone) cannot happen while the owner lives; treat it as shutdown.
+                std::future::poll_fn(|cx| {
+                    if cancelled.as_mut().poll(cx).is_ready() {
+                        return Poll::Ready(None);
+                    }
+                    load.as_mut().poll(cx).map(Some)
+                })
+                .await
             })
         })
         .ok_or(ModuleGraphError::Busy)?;
     // The provisional static-load pause (see the module documentation): measured, not judged.
     log::info!(
         "[roves-module-pause] static module graph {url} ({}) paused the thread {:.1} ms",
-        if result.is_ok() { "loaded" } else { "failed" },
+        match &result {
+            None => "cancelled by shutdown",
+            Some(Ok(_)) => "loaded",
+            Some(Err(_)) => "failed",
+        },
         started.elapsed().as_secs_f64() * 1000.0
     );
+    let Some(result) = result else {
+        // Failures noted by the dropped fetches belong to no one: no exception, no report.
+        owner.loader.static_failure.borrow_mut().take();
+        return Err(ModuleGraphError::Cancelled);
+    };
     match result {
         Ok(id) => Ok(id),
         Err(error) => match owner.loader.static_failure.borrow_mut().take() {

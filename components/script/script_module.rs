@@ -1002,6 +1002,11 @@ fn load_pending_graph(cx: &mut JSContext, key: u64) {
             queue_graph_load(&global, pending);
             return debug!("module graph of {url} deferred: the JS runtime is busy");
         },
+        // The thread is shutting down (window close, worker termination): the game gets no
+        // `error` event and no completion; dropping `on_complete` releases its DOM roots.
+        Err(ModuleGraphError::Cancelled) => {
+            return debug!("module graph of {} dropped: the runtime is shutting down", pending.url);
+        },
     };
     (pending.on_complete)(cx, module);
 }

@@ -334,11 +334,15 @@ pub struct ParentRuntime {
 unsafe impl Send for ParentRuntime {}
 
 /// The thread-safe side of a runtime (mozjs's `ThreadSafeJSContext`): interrupts from other
-/// threads, through V8's isolate handle.
+/// threads, through V8's isolate handle, and the runtime's shutdown signal.
 #[derive(Clone)]
-pub struct ThreadSafeJSContext(std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>);
+pub struct ThreadSafeJSContext {
+    isolate: std::sync::Arc<std::sync::RwLock<Option<v8::IsolateHandle>>>,
+    /// The runtime's persistent shutdown flag (see [`ThreadSafeJSContext::request_shutdown`]).
+    shutdown: std::sync::Arc<tokio::sync::watch::Sender<bool>>,
+}
 
-// SAFETY: `IsolateHandle` is V8's thread-safe isolate reference.
+// SAFETY: `IsolateHandle` is V8's thread-safe isolate reference; a watch sender is `Sync`.
 unsafe impl Send for ThreadSafeJSContext {}
 unsafe impl Sync for ThreadSafeJSContext {}
 
@@ -346,11 +350,22 @@ impl ThreadSafeJSContext {
     /// Requests the runtime's interrupt callbacks (`JS_AddInterruptCallback`) to run soon on
     /// the runtime's thread.
     pub fn request_interrupt_callback(&self) {
-        if let Some(handle) = self.0.read().unwrap().as_ref() {
+        if let Some(handle) = self.isolate.read().unwrap().as_ref() {
             handle.request_interrupt(crate::runtime_impl::run_interrupt_callbacks, std::ptr::null_mut());
         }
     }
 
+    /// Marks the runtime as shutting down (its thread exits, or its worker is terminated) and
+    /// requests its interrupt callbacks. Callable from any thread, only for shutdown: the flag
+    /// stays set for the runtime's whole remaining life, so a static module graph load blocked
+    /// on the network ([`crate::modules::load_module_graph`]) returns
+    /// [`crate::modules::ModuleGraphError::Cancelled`] whether it started before or after this
+    /// call. Nothing else observes the flag; ordinary interrupts never cancel a load.
+    pub fn request_shutdown(&self) {
+        // `send_replace` stores the value even when no load is currently subscribed.
+        self.shutdown.send_replace(true);
+        self.request_interrupt_callback();
+    }
 }
 
 /// One V8 isolate with its script context: the `JSRuntime`/`JSContext` pair of mozjs. The
@@ -460,7 +475,7 @@ impl Runtime {
     }
 
     pub fn thread_safe_js_context(&self) -> ThreadSafeJSContext {
-        ThreadSafeJSContext(self.thread_safe_handle.clone())
+        ThreadSafeJSContext { isolate: self.thread_safe_handle.clone(), shutdown: self.deno.shutdown_signal() }
     }
 
     /// The `JSRuntime` pointer (the raw context: one runtime per context on V8).

@@ -402,7 +402,9 @@ struct BHMExitSignal {
 impl BackgroundHangMonitorExitSignal for BHMExitSignal {
     fn signal_to_exit(&self) {
         self.closing.store(true, Ordering::SeqCst);
-        self.js_context.request_interrupt_callback();
+        // Sent from the hang monitor's thread at shutdown only; it also ends a static module
+        // graph load still waiting on the network, so the thread can process its exit.
+        self.js_context.request_shutdown();
     }
 }
 

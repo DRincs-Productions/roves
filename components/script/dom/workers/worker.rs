@@ -299,9 +299,9 @@ impl WorkerMethods<crate::DomTypeHolder> for Worker {
         // Step 2
         self.terminated.set(true);
 
-        // Step 3
+        // Step 3. Abort the script, and a static module graph load still on the network.
         if let Some(cx) = self.context_for_interrupt.borrow().as_ref() {
-            cx.request_interrupt_callback()
+            cx.request_shutdown()
         }
 
         // A V8 interrupt cannot wake the event loop while it is blocked on channels.

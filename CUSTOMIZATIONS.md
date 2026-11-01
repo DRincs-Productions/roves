@@ -1,3 +1,33 @@
+## 2026-11-01 - Cancel a static module load blocked on the network at shutdown (0446)
+
+0445 showed a native close during a 20 s static fetch waiting for the response: the
+provisional blocking static load (`load_module_graph`, Tokio `block_on`) kept the script
+thread from reading its exit message. `ThreadSafeJSContext` (roves-js/src/rust.rs) now
+also carries an `Arc<tokio::sync::watch::Sender<bool>>` owned by the runtime's `DenoOwner`;
+new `request_shutdown()` sets it with `send_replace(true)` (persistent, even with no load
+subscribed) and requests the interrupt callbacks. `load_module_graph` subscribes before
+loading, returns the new `ModuleGraphError::Cancelled` at once if the flag is already set,
+and otherwise waits in a biased `poll_fn` select (shutdown first, then deno_core's load).
+Both futures register the reactor waker, so the signal from another thread ends the
+wait without polling; returning drops deno_core's `RecursiveModuleLoad` (its Drop only
+calls the default `finish_load`, modules are registered synchronously between awaits) and
+the host fetch futures, so late network responses find closed oneshots. No JS runs and
+`JsRuntime` is not re-entered; no exception is left pending and the static-failure slot
+is cleared. script_module.rs drops a cancelled pending graph without `on_complete`, so the
+game gets no `error` event at shutdown. Shutdown-only callers switched from
+`request_interrupt_callback` to `request_shutdown`: the script thread's hang-monitor exit
+signal (sent by the constellation only on exit/event-loop drop), `AutoCloseWorker::drop`
+(otherwise the window's exit join waits for a worker's static fetch), `Worker.terminate()`
+and the service worker exit. Ordinary interrupts never cancel a load. tokio's `sync`
+feature is now explicit (already enabled through deno_core; no new crate, no fork, no
+duplicated graph). New roves-js tests (normal and JITless in CI): cancellation from
+another thread for URL and inline roots (fetch dropped, late reply rejected, no module
+runs, no pending exception, later loads cancelled without fetching), shutdown before the
+load, and interrupts not cancelling a cross-thread JS+JSON+TLA load followed by a cached
+dynamic import. Rust files parsed with rustfmt; the generated patch was replay-checked. No local compile or
+runtime test was run; CI is required. Native close during slow.mjs must be
+repeated on a CI-built binary before calling the shutdown issue resolved.
+
 ## Resume - Native bundled policy and slow shutdown evidence (0443–0445)
 
 The v0.7.14 bundled single-document fixture passed 9/9; warnings were logged.

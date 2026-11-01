@@ -7644,6 +7644,132 @@ mod deno_modules {
         }
     }
 
+    type NetworkReply = oneshot::Sender<Result<FetchedModule, String>>;
+
+    /// Counts dropped fetch futures.
+    struct FetchGuard(Rc<std::cell::Cell<usize>>);
+    impl Drop for FetchGuard {
+        fn drop(&mut self) { self.0.set(self.0.get() + 1); }
+    }
+
+    /// A host loader whose fetches complete from another thread, as Servo's network thread
+    /// does: each started fetch hands its URL and reply channel to that thread (task 0446).
+    struct NetworkLoader {
+        resolver: Rc<MemoryLoader>,
+        network: std::sync::mpsc::Sender<(String, NetworkReply)>,
+        started: Rc<std::cell::Cell<usize>>,
+        dropped: Rc<std::cell::Cell<usize>>,
+    }
+    impl HostModuleLoader for NetworkLoader {
+        fn resolve(&self, specifier: &str, referrer: &str) -> Result<String, String> {
+            self.resolver.resolve(specifier, referrer)
+        }
+        fn fetch(&self, url: &str, _: Option<&str>, _: HostModuleKind, _: bool) -> HostModuleFetch {
+            self.started.set(self.started.get() + 1);
+            let (sender, receiver) = oneshot::channel();
+            let _ = self.network.send((url.to_owned(), sender));
+            let guard = FetchGuard(self.dropped.clone());
+            Box::pin(async move {
+                let _guard = guard;
+                receiver.await.unwrap_or_else(|_| Err("the network thread went away".to_owned()))
+            })
+        }
+    }
+
+    struct NetworkRuntime {
+        runtime: Runtime,
+        started: Rc<std::cell::Cell<usize>>,
+        dropped: Rc<std::cell::Cell<usize>>,
+        network: std::sync::mpsc::Receiver<(String, NetworkReply)>,
+    }
+
+    fn network_runtime() -> NetworkRuntime {
+        let (runtime, resolver, _) = runtime_with(&[]);
+        let (sender, network) = std::sync::mpsc::channel();
+        let started = Rc::new(std::cell::Cell::new(0));
+        let dropped = Rc::new(std::cell::Cell::new(0));
+        install_host_module_loader(runtime.cx_no_gc(), Rc::new(NetworkLoader {
+            resolver, network: sender, started: started.clone(), dropped: dropped.clone(),
+        }), Arc::new(|| {}));
+        NetworkRuntime { runtime, started, dropped, network }
+    }
+
+    fn network_source(url: &str) -> FetchedModule {
+        let path = url.strip_prefix(ORIGIN).expect("a game URL");
+        let (kind, source) = match path {
+            "main.js" => (HostModuleKind::JavaScript, r#"import { dep } from "./dep.js"; import data from "./data.json" with { type: "json" }; await Promise.resolve(); log.push("main:" + dep + ":" + data.n);"#),
+            "dep.js" => (HostModuleKind::JavaScript, r#"export const dep = "D";"#),
+            "data.json" => (HostModuleKind::Json, r#"{ "n": 7 }"#),
+            _ => (HostModuleKind::JavaScript, "log.push('late source must not run');"),
+        };
+        FetchedModule { url: url.to_owned(), kind, source: source.to_owned() }
+    }
+
+    #[test]
+    fn shutdown_from_another_thread_cancels_a_static_load_waiting_on_the_network() {
+        for inline in [false, true] {
+            let NetworkRuntime { mut runtime, started, dropped, network } = network_runtime();
+            let shutdown = runtime.thread_safe_js_context();
+            // The "network" never answers before shutdown: the load can only end by cancellation.
+            let closer = std::thread::spawn(move || {
+                let (url, reply) = network.recv().expect("the static load starts a fetch");
+                shutdown.request_shutdown();
+                (url, reply)
+            });
+            let (url, source) = if inline {
+                (format!("{ORIGIN}page.html#roves-inline-module-1"), Some(r#"import "./slow.js"; log.push("inline");"#.to_owned()))
+            } else {
+                (format!("{ORIGIN}slow.js"), None)
+            };
+            assert_eq!(load_module_graph(runtime.cx(), &url, source), Err(ModuleGraphError::Cancelled), "inline={inline}");
+            let (fetched, reply) = closer.join().expect("the closing thread");
+            assert_eq!(fetched, format!("{ORIGIN}slow.js"));
+            assert_eq!(dropped.get(), 1, "cancellation drops the pending host fetch");
+            assert!(reply.send(Ok(network_source(&fetched))).is_err(), "a late response finds the fetch closed");
+            assert_eq!(log(&runtime), "", "no module of the cancelled graph runs");
+            assert_eq!(describe(&runtime, eval(&runtime, "1 + 1")), "2", "no exception is left pending");
+            // The signal persists: a later load neither fetches nor waits.
+            assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}other.js"), None), Err(ModuleGraphError::Cancelled));
+            assert_eq!(started.get(), 1, "no fetch starts after shutdown");
+            drop(runtime);
+        }
+    }
+
+    #[test]
+    fn shutdown_signalled_before_a_static_load_starts_no_fetch() {
+        let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
+        let shutdown = runtime.thread_safe_js_context();
+        std::thread::spawn(move || shutdown.request_shutdown()).join().expect("the closing thread");
+        let inline = Some(r#"import "./slow.js"; log.push("inline");"#.to_owned());
+        assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}page.html#roves-inline-module-1"), inline), Err(ModuleGraphError::Cancelled));
+        assert_eq!(load_module_graph(runtime.cx(), &format!("{ORIGIN}slow.js"), None), Err(ModuleGraphError::Cancelled));
+        assert_eq!(started.get(), 0);
+        assert!(network.try_recv().is_err(), "nothing reached the network");
+        assert_eq!(log(&runtime), "");
+    }
+
+    #[test]
+    fn interrupts_do_not_cancel_static_loads_completed_from_another_thread() {
+        let NetworkRuntime { mut runtime, started, network, .. } = network_runtime();
+        let interrupt = runtime.thread_safe_js_context();
+        // An ordinary interrupt per fetch (not a shutdown) must not end the wait.
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                let (url, reply) = network.recv().expect("a module fetch");
+                interrupt.request_interrupt_callback();
+                let _ = reply.send(Ok(network_source(&url)));
+            }
+        });
+        let id = load_module_graph(runtime.cx(), &format!("{ORIGIN}main.js"), None).expect("the graph loads");
+        server.join().expect("the network thread");
+        assert_eq!(started.get(), 3, "root, JavaScript and JSON dependencies");
+        evaluate_module(runtime.cx(), id).unwrap();
+        assert!(drive(&mut runtime, |r| log(r) == "main:D:7"), "top-level await completes: {}", log(&runtime));
+        eval(&runtime, "import('./dep.js').then(m => log.push('dynamic:' + m.dep)); 0");
+        assert!(drive(&mut runtime, |r| log(r) == "main:D:7,dynamic:D"), "cached dynamic import still settles: {}", log(&runtime));
+        assert_eq!(started.get(), 3, "the dynamic import reuses the loaded module");
+    }
+
 }
 
 /// One script context per runtime (task 0385): the first global adopts deno_core's context,

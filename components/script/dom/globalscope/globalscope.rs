@@ -191,7 +191,9 @@ impl Drop for AutoCloseWorker {
             warn!("Couldn't send an exit message to a dedicated worker.");
         }
 
-        self.context.request_interrupt_callback();
+        // Also ends a static module graph load waiting on the network, which would otherwise
+        // delay the join below until the response arrives.
+        self.context.request_shutdown();
 
         // Step 2. If there are any tasks queued in the `WorkerGlobalScope` object's relevant agent's event loop's task queues, discard them without processing them.
         // Step 3. Abort the script currently running in the worker.

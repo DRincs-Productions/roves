@@ -24,8 +24,9 @@ v8 = "=150.4.0"
 # No Deno extension, op or namespace is exposed to scripts (see `deno_impl`).
 # Temporary TLA fix; provenance and removal criteria: vendor/deno_core/ROVES_PATCHES.md.
 deno_core = "=0.413.0"
-# The current-thread reactor deno_core's futures and blocking static module loads run on.
-tokio = { version = "1", features = ["rt"] }
+# The current-thread reactor deno_core's futures and blocking static module loads run on;
+# `sync` (already enabled through deno_core) gives the fetch oneshot and the shutdown watch.
+tokio = { version = "1", features = ["rt", "sync"] }
 # Used by the conversions ported from mozjs.
 encoding_rs = "0.8.35"
 libc = "0.2.189"

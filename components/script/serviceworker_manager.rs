@@ -116,7 +116,7 @@ impl Drop for ServiceWorkerRegistration {
         self.context
             .take()
             .expect("No context to request interrupt.")
-            .request_interrupt_callback();
+            .request_shutdown();
 
         // TODO: Step 1, 2 and 3.
         if self

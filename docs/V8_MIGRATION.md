@@ -2,6 +2,25 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0446 — cancellazione del caricamento statico allo shutdown, locale
+
+Causa di 0445: `load_module_graph` blocca il thread in `tokio.block_on` finché il fetch
+statico risponde, quindi il messaggio di uscita non viene letto. Correzione: segnale
+persistente `tokio::sync::watch` (Arc nel `DenoOwner`, condiviso da `ThreadSafeJSContext`);
+`request_shutdown()` (send_replace + interrupt) lo imposta da qualsiasi thread. Il load
+controlla il flag prima di iniziare e poi attende in select prioritaria shutdown/caricamento,
+senza polling; l'annullamento scarta il future deno_core e i fetch host (risposte tardive
+ignorate), nessun rientro JsRuntime né eccezione pendente. `ModuleGraphError::Cancelled`:
+script_module scarta il grafo senza evento error al gioco. Chiamanti solo di shutdown:
+BHM exit dello script thread, AutoCloseWorker, Worker.terminate, uscita service worker; gli
+interrupt ordinari non annullano. Nessun fork o grafo duplicato; feature tokio `sync`
+esplicita. Tre test roves-js (normali/JITless in CI). Patch0446 generata dal diff e verificata in replay; sintassi Rust analizzata con
+rustfmt. Compilazione e test runtime attendono CI. Poi ripetere la chiusura nativa durante slow.mjs (marker SLOW
+START, exit code, tempo di uscita prima di SLOW END) su binario CI; non dichiarare risolto
+prima. Rischi residui: import dinamici eseguiti dopo lo shutdown possono vedere moduli
+registrati ma non istanziati (solo a runtime in chiusura); se Worker.terminate precede
+l'arrivo del contesto del worker il segnale non è inviato (lacuna preesistente).
+
 ### 0443–0445 — prove reali e chiusura lenta, 1 novembre
 
 Batch b08ba3508f1 tutto verde: V8 41312918009, generale 41312917969, Android
