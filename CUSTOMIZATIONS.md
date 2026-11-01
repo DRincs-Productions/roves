@@ -1,3 +1,18 @@
+## 2026-11-01 - Split the document retention scene into GC rounds (0441)
+
+support/v8-smoke/document-retention.html now runs 4 rounds of 8 create/remove DOM
+div/probe/listener cycles, each followed by 2 explicit collections (32 cycles, 8 GCs:
+the native snapshot collection stays 8). The connected control is required after every
+round and at the end; a still-connected node or a missing round fails the scene. WeakRefs
+are dereferenced only once, after the last round, so diagnostics cannot keep earlier
+targets alive; per-round and total release counts are reported but never judged.
+run.sh requires the four round lines exactly (whole-line match: round lines also contain
+"retained control true") and emits the count notices; test_runner.py covers round order,
+lost control, connected nodes and the fake-browser missing-round path. No dependency or
+production change; patch replay matches the working files. Local Python tests passed
+(53 tests, 11 skipped on Windows); POSIX runner integration and runtime counts await CI.
+Collection is diagnostic, not a leak-free claim.
+
 ## Resume - Claude authentication and shutdown evidence
 
 User reauthorized Claude. One read-only CLI invocation failed because its OAuth session

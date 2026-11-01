@@ -3,10 +3,15 @@
 <body><main id="kept"></main>
 <script>
 "use strict";
-// A real native snapshot after eight explicit collections. Keep one control DOM wrapper
-// with a searchable tag; release another wrapper/closure cycle and report it diagnostically.
-// This replaces the out-of-scope removed-frame scene; it does not establish overall retention.
-const COLLECTIONS = 8;
+// A real native snapshot after the last of eight explicit collections: 4 rounds, each of
+// 8 create/remove cycles followed by 2 collections. A control DOM wrapper with a searchable tag
+// must stay alive after every round (required). Released wrapper/closure cycles are read
+// through WeakRef only once, after the last round, and are diagnostic only: this scene does
+// not establish overall retention. It replaces the out-of-scope removed-frame scene.
+const ROUNDS = 4;
+const CYCLES_PER_ROUND = 8;
+const COLLECTIONS_PER_ROUND = 2;
+const COLLECTIONS = ROUNDS * COLLECTIONS_PER_ROUND;
 const PROBE_TAG = "roves-document-retention-probe";
 const failures = [];
 const report = (...parts) => console.log("ROVES-V8 document-retention " + parts.join(" "));
@@ -22,8 +27,13 @@ function createAndRemoveNode() {
   document.body.append(node);
   const refs = { element: new WeakRef(node), probe: new WeakRef(probe) };
   node.remove();
-  report("node created true removed", String(!node.isConnected));
-  return refs;
+  return { refs, removed: !node.isConnected };
+}
+function checkControl(control, round) {
+  if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe ||
+      control.rovesDocumentRetentionProbe.retained !== true) {
+    throw new Error("retained control lost after round " + round);
+  }
 }
 async function main() {
   const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
@@ -31,18 +41,40 @@ async function main() {
   if (!api) throw new Error("TestUtils.gc unavailable");
   const control = document.getElementById("kept");
   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true };
-  // Repeated cycles exercise listener/closure teardown beyond a single lucky GC.
-  const refs = Array.from({ length: 32 }, createAndRemoveNode);
-  await nextTask();
-  for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
-  report("collections complete", String(COLLECTIONS));
-  await nextTask();
-  if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe.retained) throw new Error("retained control lost");
+  // Only WeakRefs and booleans are kept across rounds; no deref happens before the last round,
+  // so diagnostics never keep a released target alive into a later collection.
+  const rounds = [];
+  let collections = 0;
+  for (let round = 1; round <= ROUNDS; round++) {
+    const cycles = Array.from({ length: CYCLES_PER_ROUND }, createAndRemoveNode);
+    rounds.push(cycles.map(cycle => cycle.refs));
+    const removed = cycles.every(cycle => cycle.removed);
+    report("round", round, "created", cycles.length, "removed", String(removed));
+    if (!removed) throw new Error("node still connected in round " + round);
+    // Leave the creating task so WeakRef targets are no longer kept for the current job.
+    await nextTask();
+    for (let i = 0; i < COLLECTIONS_PER_ROUND; i++) { await TestUtils.gc(); collections++; }
+    await nextTask();
+    checkControl(control, round);
+    report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
+  }
+  report("node created true removed true");
+  report("rounds complete", ROUNDS, "cycles", ROUNDS * CYCLES_PER_ROUND);
+  report("collections complete", String(collections));
+  if (collections !== COLLECTIONS) throw new Error("expected " + COLLECTIONS + " collections, ran " + collections);
+  checkControl(control, ROUNDS);
   report("retained control", "true");
-  const elementsReleased = refs.filter(ref => ref.element.deref() === undefined).length;
-  const probesReleased = refs.filter(ref => ref.probe.deref() === undefined).length;
-  report("diagnostic released element", String(elementsReleased === refs.length), "probe", String(probesReleased === refs.length));
-  report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", refs.length);
+  // Diagnostic only: never a failure condition.
+  const released = rounds.map(refs => ({
+    elements: refs.filter(ref => ref.element.deref() === undefined).length,
+    probes: refs.filter(ref => ref.probe.deref() === undefined).length,
+    total: refs.length,
+  }));
+  const sum = key => released.reduce((total, round) => total + round[key], 0);
+  const elementsReleased = sum("elements"), probesReleased = sum("probes"), total = sum("total");
+  released.forEach((round, index) => report("diagnostic round", index + 1, "released elements", round.elements, "probes", round.probes, "total", round.total));
+  report("diagnostic released element", String(elementsReleased === total), "probe", String(probesReleased === total));
+  report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", total);
 }
 main().catch(error => fail("exception " + error.name + " " + error.message))
   .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));

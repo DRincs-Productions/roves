@@ -2,6 +2,18 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0441 — scena memoria in round, verifiche locali
+
+document-retention ora esegue4round da8cicli DOM/listener/probe con2GC ciascuno
+(32cicli,8GC: snapshot nativo invariato alla collezione8). Controllo DOM obbligatorio
+dopo ogni round e alla fine; nodo ancora connesso o round mancante fanno fallire la scena.
+WeakRef letti una sola volta dopo l'ultimo round: conteggi per round e totali solo
+diagnostici. run.sh richiede le4righe round con match di riga intera; test_runner.py
+aggiornato. Patch0441 applicata all’indice di prova e confrontata con i file: identici.
+Unittest locali: 53 OK, 11 saltati (integrazione POSIX e dipendenze non disponibili);
+i mock Node verificano anche lo script. Runner POSIX e risultati runtime attendono CI.
+TODO.md esterno non toccato. Claude nuovamente accessibile; incarico0441 completato.
+
 ### Ripresa — Claude e chiusura, verifica preliminare
 
 L'utente ha riabilitato la delega a Claude. Un tentativo CLI in sola lettura e fallito:
@@ -505,7 +517,8 @@ riversare warning legacy, JSON API o interi storici. Non ripetere prove senza mo
   document-interface-alias eseguito in3processi freschi per distinguere il primo accesso.
 - gc-lifecycle mantiene controlli DOM/cicli/listener/signal/inlinehandler/importer/cleanup
   settings, moduli/eval/resolver prima/dopo GC. Non conclude raccolta del grafo.
-- document-retention:8GC, controlloDOM conservato obbligatorio, WeakRef diagnostici e vero
+- document-retention:4round x8cicli x2GC (8GC), controlloDOM conservato obbligatorio
+  dopo ogni round, WeakRef letti solo alla fine e diagnostici, e vero
   snapshotJSON V8 validato. Mock Node non prova raccolta reale. Vecchie prove frame sono
   archiviate in legacy-multidocument e i loro mock restano distinguibili da test attivi.
 - http_server.py riusa stdlib SimpleHTTPRequestHandler/ThreadingHTTPServer su loopback;

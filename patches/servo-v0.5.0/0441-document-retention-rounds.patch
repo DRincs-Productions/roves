@@ -1,0 +1,272 @@
+diff --git a/support/v8-smoke/document-retention.html b/support/v8-smoke/document-retention.html
+--- a/support/v8-smoke/document-retention.html
++++ b/support/v8-smoke/document-retention.html
+@@ -3,47 +3,79 @@
+ <body><main id="kept"></main>
+ <script>
+ "use strict";
+-// A real native snapshot after eight explicit collections. Keep one control DOM wrapper
+-// with a searchable tag; release another wrapper/closure cycle and report it diagnostically.
+-// This replaces the out-of-scope removed-frame scene; it does not establish overall retention.
+-const COLLECTIONS = 8;
++// A real native snapshot after the last of eight explicit collections: 4 rounds, each of
++// 8 create/remove cycles followed by 2 collections. A control DOM wrapper with a searchable tag
++// must stay alive after every round (required). Released wrapper/closure cycles are read
++// through WeakRef only once, after the last round, and are diagnostic only: this scene does
++// not establish overall retention. It replaces the out-of-scope removed-frame scene.
++const ROUNDS = 4;
++const CYCLES_PER_ROUND = 8;
++const COLLECTIONS_PER_ROUND = 2;
++const COLLECTIONS = ROUNDS * COLLECTIONS_PER_ROUND;
+ const PROBE_TAG = "roves-document-retention-probe";
+ const failures = [];
+ const report = (...parts) => console.log("ROVES-V8 document-retention " + parts.join(" "));
+ const fail = reason => { failures.push(reason); report("failure", reason); };
+ addEventListener("error", event => fail("error " + event.message));
+ addEventListener("unhandledrejection", event => fail("unhandledrejection " + String(event.reason)));
+ const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
+ function createAndRemoveNode() {
+   const node = document.createElement("div");
+   const probe = { rovesProbeTag: PROBE_TAG, node };
+   node.rovesDocumentRetentionProbe = probe;
+   node.addEventListener("probe", () => { node.rovesHits = (node.rovesHits || 0) + 1; });
+   document.body.append(node);
+   const refs = { element: new WeakRef(node), probe: new WeakRef(probe) };
+   node.remove();
+-  report("node created true removed", String(!node.isConnected));
+-  return refs;
++  return { refs, removed: !node.isConnected };
++}
++function checkControl(control, round) {
++  if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe ||
++      control.rovesDocumentRetentionProbe.retained !== true) {
++    throw new Error("retained control lost after round " + round);
++  }
+ }
+ async function main() {
+   const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
+   report("api", String(api));
+   if (!api) throw new Error("TestUtils.gc unavailable");
+   const control = document.getElementById("kept");
+   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true };
+-  // Repeated cycles exercise listener/closure teardown beyond a single lucky GC.
+-  const refs = Array.from({ length: 32 }, createAndRemoveNode);
+-  await nextTask();
+-  for (let collection = 0; collection < COLLECTIONS; collection++) await TestUtils.gc();
+-  report("collections complete", String(COLLECTIONS));
+-  await nextTask();
+-  if (document.getElementById("kept") !== control || !control.rovesDocumentRetentionProbe.retained) throw new Error("retained control lost");
++  // Only WeakRefs and booleans are kept across rounds; no deref happens before the last round,
++  // so diagnostics never keep a released target alive into a later collection.
++  const rounds = [];
++  let collections = 0;
++  for (let round = 1; round <= ROUNDS; round++) {
++    const cycles = Array.from({ length: CYCLES_PER_ROUND }, createAndRemoveNode);
++    rounds.push(cycles.map(cycle => cycle.refs));
++    const removed = cycles.every(cycle => cycle.removed);
++    report("round", round, "created", cycles.length, "removed", String(removed));
++    if (!removed) throw new Error("node still connected in round " + round);
++    // Leave the creating task so WeakRef targets are no longer kept for the current job.
++    await nextTask();
++    for (let i = 0; i < COLLECTIONS_PER_ROUND; i++) { await TestUtils.gc(); collections++; }
++    await nextTask();
++    checkControl(control, round);
++    report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
++  }
++  report("node created true removed true");
++  report("rounds complete", ROUNDS, "cycles", ROUNDS * CYCLES_PER_ROUND);
++  report("collections complete", String(collections));
++  if (collections !== COLLECTIONS) throw new Error("expected " + COLLECTIONS + " collections, ran " + collections);
++  checkControl(control, ROUNDS);
+   report("retained control", "true");
+-  const elementsReleased = refs.filter(ref => ref.element.deref() === undefined).length;
+-  const probesReleased = refs.filter(ref => ref.probe.deref() === undefined).length;
+-  report("diagnostic released element", String(elementsReleased === refs.length), "probe", String(probesReleased === refs.length));
+-  report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", refs.length);
++  // Diagnostic only: never a failure condition.
++  const released = rounds.map(refs => ({
++    elements: refs.filter(ref => ref.element.deref() === undefined).length,
++    probes: refs.filter(ref => ref.probe.deref() === undefined).length,
++    total: refs.length,
++  }));
++  const sum = key => released.reduce((total, round) => total + round[key], 0);
++  const elementsReleased = sum("elements"), probesReleased = sum("probes"), total = sum("total");
++  released.forEach((round, index) => report("diagnostic round", index + 1, "released elements", round.elements, "probes", round.probes, "total", round.total));
++  report("diagnostic released element", String(elementsReleased === total), "probe", String(probesReleased === total));
++  report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", total);
+ }
+ main().catch(error => fail("exception " + error.name + " " + error.message))
+   .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));
+ </script>
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -237,5 +237,7 @@
+ done
+ # Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
+-# native V8 heap snapshot at the last of document-retention.html's 8 explicit collections, for
+-# reading the retainers of detached DOM wrappers with a live control. A requested snapshot must exist and be valid.
++# native V8 heap snapshot at the last of document-retention.html's 8 explicit collections (4 rounds
++# of 8 create/remove cycles, 2 collections each), for reading the retainers of detached DOM wrappers
++# with a live control. The control must survive every round and a requested snapshot must exist and
++# be valid; WeakRef release counts are reported as diagnostics only, never as a failure.
+ HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
+@@ -261,4 +263,14 @@
+     PAGE_ENV_COUNT=0
+-    for expected in "ROVES-V8 document-retention api true" "ROVES-V8 document-retention node created true removed true" "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true" "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote " ; do
+-      if grep -aFq "$expected" document-retention.log; then echo "::notice::document-retention.html: $(grep -aF "$expected" document-retention.log | head -1)"; else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
++    for expected in "ROVES-V8 document-retention api true" \
++        "ROVES-V8 document-retention round 1 cycles 8 collections 2 retained control true" \
++        "ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true" \
++        "ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true" \
++        "ROVES-V8 document-retention round 4 cycles 8 collections 8 retained control true" \
++        "ROVES-V8 document-retention node created true removed true" "ROVES-V8 document-retention rounds complete 4 cycles 32" \
++        "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true" \
++        "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote " ; do
++      # Page markers are whole lines (round lines also contain "retained control true"); the
++      # native snapshot marker is a prefix followed by size, path and collection.
++      case "$expected" in "["*) match=-aFq ;; *) match=-aFxq ;; esac
++      if grep "$match" "$expected" document-retention.log; then echo "::notice::document-retention.html: $(grep -aF "$expected" document-retention.log | head -1)"; else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
+     done
+@@ -269,3 +281,5 @@
+     diagnostic=$(grep -aE '^ROVES-V8 document-retention diagnostic released element (true|false) probe (true|false)$' document-retention.log | head -1)
+     if [ -n "$diagnostic" ]; then echo "::notice::document-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::document-retention.html: missing released diagnostic"; fi
++    # Per-round and total counts: reported when present, never required or judged.
++    grep -aE '^ROVES-V8 document-retention diagnostic (round [1-4] released|released counts) ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
+     if [ ! -s "$HEAP_SNAPSHOT" ]; then
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -848,35 +848,74 @@
+ @unittest.skipUnless(shutil.which("node"), "needs Node")
+ class DocumentRetentionPageTests(unittest.TestCase):
+     """Exercise the scene protocol with a mock; this does not simulate garbage collection."""
+-
+-    def test_eight_collections_and_retained_control(self):
+-        script = page_scripts("document-retention.html")[0]
+-        mock = r'''
+-let collections = 0;
+-context.WeakRef = WeakRef;
+-context.TestUtils = { gc: async () => { collections++; } };
+-const control = {};
+-context.document = {
+-  getElementById: () => control,
+-  createElement: () => ({ isConnected: false, addEventListener() {}, remove() { this.isConnected = false; } }),
+-  body: { append(node) { node.isConnected = true; } },
+-};
+-'''
+-        after = 'lines.push("collections " + collections); process.stdout.write(lines.join("\\n"));'
+-        result = run_page_in_node(script, mock, after)
+-        self.assertEqual('', result.stderr)
+-        lines = result.stdout.splitlines()
+-        for marker in ('collections 8', 'ROVES-V8 document-retention node created true removed true',
+-                       'ROVES-V8 document-retention retained control true',
+-                       'ROVES-V8 document-retention result pass'):
+-            self.assertIn(marker, lines)
+-        self.assertTrue(any(line.startswith('ROVES-V8 document-retention diagnostic released element ') for line in lines))
+-
+-    def test_runner_requires_retained_control(self):
+-        runner = (HERE / "run.sh").read_text(encoding="utf-8")
+-        line = next(line for line in runner.splitlines() if line.strip().startswith('for expected in "ROVES-V8 document-retention'))
+-        self.assertIn('"ROVES-V8 document-retention retained control true"', line)
+-
++
++    # `events` records creations and collections in order; LOSE_AT drops the control's expando
++    # at the given collection (0: never); STUCK keeps created nodes connected.
++    MOCK = r'''
++const events = [];
++let collections = 0;
++context.WeakRef = WeakRef;
++const control = { rovesDocumentRetentionProbe: undefined };
++context.TestUtils = { gc: async () => {
++  collections++; events.push("gc");
++  if (collections === LOSE_AT) control.rovesDocumentRetentionProbe = undefined;
++} };
++context.document = {
++  getElementById: () => control,
++  createElement: () => { events.push("node"); return { isConnected: false, addEventListener() {}, remove() { if (!STUCK) this.isConnected = false; } }; },
++  body: { append(node) { node.isConnected = true; } },
++};
++'''
++    AFTER = 'lines.push("collections " + collections); lines.push("events " + events.join(",")); process.stdout.write(lines.join("\\n"));'
++
++    def run_scene(self, lose_at=0, stuck=False):
++        script = page_scripts("document-retention.html")[0]
++        mock = self.MOCK.replace('LOSE_AT', str(lose_at)).replace('STUCK', 'true' if stuck else 'false')
++        result = run_page_in_node(script, mock, self.AFTER)
++        self.assertEqual('', result.stderr)
++        return result.stdout.splitlines()
++
++    def test_four_rounds_of_eight_cycles_and_two_collections(self):
++        lines = self.run_scene()
++        round_events = ','.join(['node'] * 8 + ['gc'] * 2)
++        self.assertIn('events ' + ','.join([round_events] * 4), lines)
++        markers = ['collections 8', 'ROVES-V8 document-retention node created true removed true',
++                   'ROVES-V8 document-retention rounds complete 4 cycles 32',
++                   'ROVES-V8 document-retention collections complete 8',
++                   'ROVES-V8 document-retention retained control true',
++                   'ROVES-V8 document-retention result pass']
++        for round in range(1, 5):
++            markers.append(f'ROVES-V8 document-retention round {round} created 8 removed true')
++            markers.append(f'ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true')
++        for marker in markers:
++            self.assertIn(marker, lines)
++        # WeakRef results are diagnostic: whatever Node's GC did, the scene passes.
++        diagnostics = [line for line in lines if line.startswith('ROVES-V8 document-retention diagnostic ')]
++        self.assertEqual(6, len(diagnostics), diagnostics)
++        self.assertTrue(any(line.startswith('ROVES-V8 document-retention diagnostic released element ') for line in lines))
++        self.assertTrue(any(line.endswith(' total 32') and 'released counts' in line for line in diagnostics))
++
++    def test_lost_control_fails_after_its_round(self):
++        lines = self.run_scene(lose_at=3)
++        self.assertIn('ROVES-V8 document-retention round 1 cycles 8 collections 2 retained control true', lines)
++        self.assertNotIn('ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true', lines)
++        self.assertIn('ROVES-V8 document-retention result fail exception Error retained control lost after round 2', lines)
++        self.assertIn('collections 4', lines)
++
++    def test_connected_node_fails_its_round(self):
++        lines = self.run_scene(stuck=True)
++        self.assertIn('ROVES-V8 document-retention round 1 created 8 removed false', lines)
++        self.assertIn('ROVES-V8 document-retention result fail exception Error node still connected in round 1', lines)
++        self.assertIn('collections 0', lines)
++
++    def test_runner_requires_retained_control(self):
++        runner = (HERE / "run.sh").read_text(encoding="utf-8").replace('\\\n', ' ')
++        line = next(line for line in runner.splitlines() if line.strip().startswith('for expected in "ROVES-V8 document-retention'))
++        self.assertIn('"ROVES-V8 document-retention retained control true"', line)
++        for round in range(1, 5):
++            self.assertIn(f'"ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true"', line)
++        self.assertIn('"ROVES-V8 document-retention rounds complete 4 cycles 32"', line)
++
+     def test_missing_gc_reports_failure(self):
+         script = page_scripts("document-retention.html")[0]
+         result = run_page_in_node(script)
+@@ -1300,7 +1339,14 @@
+     if api:
++        for round in range(1, 5):
++            if scenario != 'snapshot-round' or round != 3:
++                print(f'ROVES-V8 document-retention round {round} cycles 8 collections {round * 2} retained control true')
++        print('ROVES-V8 document-retention rounds complete 4 cycles 32')
+         if scenario != 'snapshot-control':
+             print('ROVES-V8 document-retention retained control true')
+         print('ROVES-V8 document-retention collections complete 8')
+         if scenario != 'snapshot-diagnostic':
++            for round in range(1, 5):
++                print(f'ROVES-V8 document-retention diagnostic round {round} released elements 0 probes 0 total 8')
+             print('ROVES-V8 document-retention diagnostic released element false probe false')
++            print('ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 32')
+     print('ROVES-V8 document-retention result ' + ('pass' if api else 'fail exception Error TestUtils.gc unavailable'))
+@@ -1476,3 +1522,7 @@
+                 self.assertIsNotNone(result.snapshot)
+                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released element false', result.stdout)
++                # Unreleased targets are reported, never judged.
++                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic round 4 released elements 0 probes 0 total 8', result.stdout)
++                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released counts elements 0 probes 0 total 32', result.stdout)
++                self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention round 4 cycles 8 collections 8 retained control true', result.stdout)
+                 self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'", result.stdout)
+@@ -1488,3 +1538,5 @@
+             ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
++            # Round lines also end in "retained control true": the final control line is still required.
+             ('snapshot-control', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention retained control true'"),
++            ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true'"),
+             ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
