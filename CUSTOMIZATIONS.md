@@ -1,3 +1,11 @@
+## Resume - Input during a delayed static module in a running game (0456)
+
+In one instrumented Windows PixiJS run with a deliberately delayed 30 s static
+fetch, a trusted click submitted during the fetch was handled roughly 21.3 s
+later, after the response. This demonstrates the provisional responsiveness
+limit under that controlled condition; it is not a normal-network benchmark.
+The asynchronous design needs reassessment; see docs/V8_MIGRATION.md.
+
 ## Resume - Repeated startup with a reused cache (0455)
 
 With a repeated origin/profile and cache enabled, two subsequent PixiJS/React

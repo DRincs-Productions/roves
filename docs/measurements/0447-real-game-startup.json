@@ -98,5 +98,21 @@
       0
     ],
     "interpretation": "No server requests observed in runs 2–3; consistent with cache use for this scene, not a general proof."
+  },
+  "running_game_static_fetch_input": {
+    "engine": "f1ac0a5563c CI Windows portable",
+    "scene": "test-page PixiJS animated, instrumented copy with static module injected after startup",
+    "transport": "local server deliberately delays module response by 30 s",
+    "server_fetch_start_epoch_ms": 1793548155949.4194,
+    "os_click_sent_epoch_ms": 1793548165047,
+    "server_response_epoch_ms": 1793548185949.9487,
+    "js_click_handler_epoch_ms": 1793548186369,
+    "click_trusted": true,
+    "process_exit_code": 0,
+    "limits": [
+      "Single windowed run under deliberately extreme latency.",
+      "Time of input request measured by automation before issuing native click, not hardware timestamp.",
+      "Does not characterize normal local assets, dynamic import, other games or acceptable threshold."
+    ]
   }
 }

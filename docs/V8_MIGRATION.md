@@ -2,6 +2,25 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0456 — input su gioco avviato durante fetch statico
+
+Windows, binario CI f1ac0a5563c: copia strumentata test-page PixiJS animato,
+script module aggiunto dopo avvio e server loopback che ritarda appositamente
+la risposta 30s. SLOW START 1793548155949ms; clic nativo inviato alle
+1793548165047ms mentre il fetch era pendente; risposta 1793548185949ms;
+handler `trusted=true` eseguito alle 1793548186369ms, circa 21.3s dopo l’invio
+e 0.42s dopo la risposta. Scena ripresa, processo exit 0. Un primo tentativo
+con 10s è invalido perché il clic è stato inviato dopo la risposta.
+
+È una prova singola in condizioni estreme controllate, non una stima di rete
+ordinaria o asset locali, ma dimostra che il compromesso provvisorio può rendere
+il gioco non reattivo. Conservare target/task-0456 e i dati strutturati
+docs/measurements/0447-real-game-startup.json. Rivalutare eliminazione della
+pausa tramite API mantenute senza rientro JsRuntime, rispettando HTML/TLA/CSP
+e senza grafo duplicato; non dichiarare il punto concluso. Utente aveva
+autorizzato la pausa solo provvisoriamente e richiesto di rivederla.
+
+
 ### 0455 — riavvii con cache abilitata
 
 Tre avvii separati della scena PixiJS/React v0.7.14 sulla stessa origine e
