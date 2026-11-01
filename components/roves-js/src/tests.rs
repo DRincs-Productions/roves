@@ -7821,6 +7821,29 @@ mod deno_modules {
         panic!("static graph {} is still pending", graph.url());
     }
 
+    /// CI 41344381364: a poll that starts fetches may wake the graph once (`before` is the
+    /// count just before that poll): futures' `FuturesUnordered`, inside deno_core's recursive
+    /// load, yields after polling every newly started fetch. That wake-up is one-shot. While
+    /// the fetches stay pending, the polls answering it (and any later one) are quiet: no
+    /// wake-up, no fetch, so a pending network response never busy-loops. Returns the count.
+    fn assert_waits_quietly(
+        runtime: &mut Runtime,
+        graph: &mut ModuleGraphLoad,
+        counter: &CountingWaker,
+        waker: &std::task::Waker,
+        network: &std::sync::mpsc::Receiver<(String, NetworkReply)>,
+        before: usize,
+    ) -> usize {
+        let waiting = wakes(counter);
+        assert!(waiting <= before + 1, "starting fetches wakes the graph at most once ({before} -> {waiting})");
+        for _ in 0..4 {
+            assert!(poll_module_graph(runtime.cx(), graph, waker).is_pending(), "the graph's fetches are still pending");
+            assert_eq!(wakes(counter), waiting, "a graph waiting on the network is not woken again");
+            assert!(network.try_recv().is_err(), "nothing more is fetched while waiting");
+        }
+        waiting
+    }
+
     fn take_pending_exception(runtime: &Runtime) -> String {
         let cx = runtime.raw_cx();
         rooted!(in(cx) let mut error = UndefinedValue());
@@ -7831,7 +7854,8 @@ mod deno_modules {
 
     /// Task 0457: while a static graph's fetch is held on the network, the thread is free:
     /// script, promise jobs and the module event loop (a dynamic import with its own fetch)
-    /// keep making progress. The graph is woken only by its own fetches, links without
+    /// keep making progress. Apart from one yield right after starting fetches (see
+    /// [`assert_waits_quietly`]) the graph is woken only by its own fetches, links without
     /// evaluating, and evaluates at the embedder's (HTML's) call.
     #[test]
     fn stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending() {
@@ -7842,6 +7866,7 @@ mod deno_modules {
         assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
         let (root, root_reply) = network.try_recv().expect("the first poll fetches the root");
         assert_eq!(root, format!("{ORIGIN}main.js"));
+        let waiting = assert_waits_quietly(&mut runtime, &mut graph, &counter, &waker, &network, 0);
 
         // The root's response is delayed; the document keeps running meanwhile.
         eval(&runtime, "log.push('script'); Promise.resolve().then(() => log.push('job')); 0");
@@ -7857,20 +7882,23 @@ mod deno_modules {
         assert_eq!(dynamic, format!("{ORIGIN}dyn.js"));
         assert!(dynamic_reply.send(Ok(network_source(&dynamic))).is_ok(), "the dynamic graph still owns its fetch");
         assert!(drive(&mut runtime, |r| log(r) == "script,job,dynamic:dyn"), "the dynamic import settles: {}", log(&runtime));
-        assert_eq!(wakes(&counter), 0, "no wake-up (and no busy loop) before the graph's own fetch completes");
+        assert_eq!(wakes(&counter), waiting, "no wake-up (and no busy loop) before the graph's own fetch completes");
+        assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending(), "the root is still on the network");
+        assert_eq!(wakes(&counter), waiting, "the other loads' progress does not make the graph spin");
 
         // The root arrives: its completion wakes the graph, whose next poll fetches the imports.
         assert!(root_reply.send(Ok(network_source(&root))).is_ok(), "the static graph still owns its root fetch");
-        assert!(wakes(&counter) >= 1, "the completed fetch wakes the graph");
+        assert!(wakes(&counter) > waiting, "the completed fetch wakes the graph");
+        let before = wakes(&counter);
         assert!(poll_module_graph(runtime.cx(), &mut graph, &waker).is_pending());
         let imports: Vec<_> = network.try_iter().collect();
         assert_eq!(imports.len(), 2, "dep.js and data.json");
+        let waiting = assert_waits_quietly(&mut runtime, &mut graph, &counter, &waker, &network, before);
         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "nothing of the graph ran yet");
-        let before = wakes(&counter);
         for (url, reply) in imports {
             assert!(reply.send(Ok(network_source(&url))).is_ok(), "the static graph still owns each import fetch");
         }
-        assert!(wakes(&counter) > before);
+        assert!(wakes(&counter) > waiting, "the completed imports wake the graph");
         let id = poll_available(&mut runtime, &mut graph, &counter, &waker).expect("the graph links");
         assert!(network.try_recv().is_err(), "every source arrived: nothing more is fetched");
         assert_eq!(log(&runtime), "script,job,dynamic:dyn", "linking evaluates nothing");

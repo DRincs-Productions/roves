@@ -33,6 +33,12 @@ line-ending normalization (`git apply --unidiff-zero` is required because the pa
 context lines). Provenance and deno_core pin details:
 `components/roves-js/vendor/deno_core/ROVES_PATCHES.md`.
 
+V8 CI `41344381364` then exposed an overstrict test expectation: `FuturesUnordered` may
+wake once when the initial root or child fetch is first registered. The test now permits
+at most that one wake, polls the still-pending graph four more times, and asserts no
+additional wake or fetch until the network reply. This is a test correction; no production
+code changed. Rust CI must confirm it in normal and JIT-less modes.
+
 `support/v8-smoke` now uses a timer-issued HTTP probe and a server-side hold window
 to require evidence that JavaScript ran while `/slow-module.mjs` was still pending;
 testing only before `load` could have been a false positive. The Python runner's

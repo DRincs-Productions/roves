@@ -18,8 +18,10 @@
 //! - **Static graphs load stepwise.** [`start_module_graph`] creates a deno_core
 //!   `SideModuleLoad` handle (Roves patch of the vendored deno_core, see
 //!   `vendor/deno_core/ROVES_PATCHES.md`) and [`poll_module_graph`] advances it from embedder
-//!   tasks: each poll registers the sources that already arrived and returns `Pending` while
-//!   fetches are on the network, with the embedder's waker registered only with those fetches.
+//!   tasks: each poll registers at most one source that already arrived and returns `Pending`,
+//!   waking itself once when a further step is ready, or while fetches are on the network. A
+//!   poll that starts fetches may also wake once (futures' `FuturesUnordered` yield); then only
+//!   those fetches wake the embedder's waker, so a pending network response never busy-loops.
 //!   No borrow of the `JsRuntime` is held between polls, so script, timers, input and dynamic
 //!   imports keep running while a graph is fetched (this replaces the provisional blocking
 //!   decision of 2026-10-27). All graphs share the runtime's single module map. Polls log the
@@ -592,18 +594,21 @@ fn take_static_failure(owner: &DenoOwner, graph: &mut ModuleGraphLoad) {
     }
 }
 
-/// Advances `graph`: registers every module whose source already arrived, starts the fetches
-/// of their imports and, once the whole graph is registered, links it. Nothing is evaluated
+/// Advances `graph`: registers at most one module whose source already arrived, starts the
+/// fetches of its imports and, once the whole graph is registered, links it. Nothing is evaluated
 /// (see [`evaluate_module`]) and the module event loop is not pumped (the adapter loader
 /// never asks for it, see the module documentation).
 ///
 /// `Pending` either means a fetch is pending and registered `waker`, or that one source was
 /// registered and another immediately-ready step was deferred; in the latter case the waker
-/// was scheduled once to yield to the embedder's task queue. A real network wait is never
-/// self-woken. `Ready` gives the same results as [`load_module_graph`]; the handle is then
-/// finished and must be dropped. `Ready(Err(Busy))` leaves the handle untouched: poll it again
-/// from a later task. `Ready(Err(Cancelled))` once the runtime is shutting down: drop the
-/// handle (and with it the pending fetches) without reporting anything to script.
+/// was scheduled once to yield to the embedder's task queue. A poll that starts fetches may
+/// also wake `waker` once (futures' `FuturesUnordered` yields after polling every newly
+/// started fetch); the poll that answers finds nothing ready and does not wake again, so a
+/// real network wait is never a busy loop. `Ready` gives the same results as
+/// [`load_module_graph`]; the handle is then finished and must be dropped. `Ready(Err(Busy))`
+/// leaves the handle untouched: poll it again from a later task. `Ready(Err(Cancelled))` once
+/// the runtime is shutting down: drop the handle (and with it the pending fetches) without
+/// reporting anything to script.
 ///
 /// Must not be called while script runs on this thread (embedders call it from a task).
 pub fn poll_module_graph(

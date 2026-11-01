@@ -2,6 +2,24 @@
 
 ## Punto operativo aggiornato — 1 novembre 2026
 
+### CI `aa2365b1ad5`: correzione del wake atteso, in verifica
+
+In V8 `41344381364` i quattro job runtime richiesti Linux/Windows, normal/JIT-less
+falliscono in `stepwise_static_load_lets_the_document_run_while_a_fetch_is_pending`;
+le build `servoshell-v8` sono ancora in corso.
+Il test assumeva zero wake-up subito dopo l'avvio del fetch radice; `FuturesUnordered`
+può produrre un solo wake-up iniziale quando registra i nuovi fetch. La correzione locale
+ammette al massimo quel singolo wake-up e ripolla quattro volte il grafo mentre il fetch è
+ancora pendente, richiedendo che i wake-up restino stabili e non vengano accodati altri fetch.
+Ripete il controllo anche dopo l'avvio degli import discendenti. Il codice di produzione non
+è cambiato; Rust non è stato ricompilato localmente e la correzione attende una nuova CI.
+
+Build `servoshell-v8` ancora in corso al checkpoint. Anche la build Servo generale
+`41344381288` e lo smoke Steam sono ancora attivi; Android `41344381293` e iOS
+`41344381280` sono verdi, con iOS esclusa dal gate per istruzione dell'utente. Non
+fare push finché tutte le verifiche obbligatorie del batch non sono concluse e gli
+eventuali errori sono corretti.
+
 ### Correzioni locali dopo il batch CI `a9d45d33da8c`
 
 Il batch precedente è concluso e **non è verde**. V8 `41341178591` ha compilato
