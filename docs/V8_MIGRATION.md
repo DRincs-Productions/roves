@@ -2,6 +2,20 @@
 
 ## Punto operativo aggiornato — 29 ottobre 2026
 
+### 0448 — tre avvii con latenza controllata
+
+Tre processi separati v0.7.14 hanno caricato la scena PixiJS/React tramite
+loopback con 500ms sulle risposte dell’entry JS; tre report senza errori,
+primo timer dopo 841.54/574.14/570.61ms e primo frame dopo
+1143.16/727.69/721.54ms dall’iniezione. Per gli ultimi due exit 0; il primo
+è stato interrotto dopo il report senza conservarne l’exit code. Finestra
+nativa, visibilità continua non registrata; no-store e profili separati, ma
+porta fissa e cache fredda non dimostrata. Dati e limiti in
+docs/measurements/0447-real-game-startup.json. Tre campioni non dimostrano
+causa né soglia accettabile; manca serie confrontabile senza ritardo, prove
+input e rivalutazione del compromesso. Non chiudere pausa statica.
+
+
 ### 0447 — misura di avvio su gioco reale, preliminare
 
 Pubblicato f1ac0a5563c: batch V8 41318759409 e generale 41318759482 in corso

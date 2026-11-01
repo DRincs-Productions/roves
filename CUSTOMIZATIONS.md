@@ -1,3 +1,10 @@
+## Resume - Repeated real-game startup observations (0448)
+
+Three separate windowed runs of the PixiJS/React test scene were measured with
+a 500 ms entry response delay. Results and limitations are recorded in
+docs/measurements/0447-real-game-startup.json; they do not establish causation
+or an accepted threshold, and cold cache and continuous visibility are unproven.
+
 ## Resume - Representative startup measurement (0447)
 
 A temporary measurement harness separates startup/steady samples and passed 22
