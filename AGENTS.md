@@ -287,6 +287,13 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
+- Per controllare GitHub Actions, preferire il plugin `@github` disponibile in Codex:
+  leggere in una singola richiesta aggregata le run associate allo SHA e i riepiloghi dei job,
+  riportando solo nome, stato ed esito. Scaricare i log soltanto per i job falliti o quando
+  un dubbio concreto richiede i dettagli; non riversare risposte JSON estese nel contesto e
+  non ripetere controlli senza un nuovo punto di verifica. Usare CLI/API alternative solo
+  se il plugin non espone i dati necessari o non è disponibile, senza chiedere all'utente
+  credenziali che non servono.
 - Al raggiungimento di una quota effettiva, salvare il punto di ripresa e sospendere il
   lavoro. Quando Claude segnala una quota esaurita, aprire la CLI e usare `/usage` per
   verificare quota e prossimo reset, senza inviare richieste al modello. Per il limite
