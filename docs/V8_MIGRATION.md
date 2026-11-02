@@ -1,6 +1,6 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Punto operativo aggiornato — 1 novembre 2026
+## Punto operativo aggiornato — 2 novembre 2026
 
 ### CI `aa2365b1ad5`: test runtime falliti; fix pubblicato in `6e2f741cbc1`
 
@@ -29,6 +29,23 @@ L'analisi dei log Linux normal conferma una sola scena documento, 16 round da 8 
 byte è strutturalmente valido e contiene i marker della scena secondo il checker esistente.
 È una prova circoscritta: il checker non analizza i retainer e questo risultato non dimostra
 assenza di retention generale o leak. Evidenza riproducibile: `docs/measurements/0458-document-retention-ci.json`.
+
+### 0460 — analisi offline dei retainer dello snapshot 0458
+
+Lo snapshot dell'artefatto CI `13099369957` è stato analizzato offline, senza avviare il gioco
+o nuove prove. Nel grafo risultano 37.183 nodi e 155.151 archi. L'unico oggetto con la proprietà
+`rovesProbeTag` che punta al marcatore di prova è il controllo deliberatamente trattenuto; il
+percorso forte più breve dal nodo root passa per `C++ native stack roots`, `Window (cppgc)`,
+`RovesJsCell`, `Proxy`, `HTMLElement` e infine la proprietà `rovesDocumentRetentionProbe`.
+I 128 probe temporanei non compaiono come oggetti marcati nello snapshot, coerentemente con
+le diagnostiche WeakRef 128/128 già registrate. Analisi e hash sono in
+`docs/measurements/0460-document-retainer-analysis.json`; la copia locale dello snapshot è
+sotto `target/retention-analysis/` e non è un artefatto da pubblicare.
+
+Questa analisi descrive soltanto il retainer del controllo e l'assenza dei marcatori temporanei
+nella singola scena. Non spiega ogni oggetto DOM/native, non misura memoria nel tempo e non
+dimostra assenza di retention generale. Le prove di sessione lunga e memoria nativa restano
+aperte.
 
 Non risultano altri errori CI. Il gate di questo push è concluso positivamente.
 
@@ -100,19 +117,23 @@ resta una modifica dell'utente e non va incluso.
 - **Memoria:** `gc-lifecycle.html` e lo snapshot CI `0458-document-retention-ci.json`
   verificano raccolta di cicli DOM rimossi, handler, timer e import in scenari controllati;
   la diagnostica document-retention segnala il rilascio di 128/128 elementi e probe mentre
-  il controllo resta vivo. Lo snapshot ha struttura e marker validi, ma non è stato analizzato
-  per i retainer. La retention generale e la memoria nativa lungo l'intera vita del gioco
-  restano aperte; non dichiarare assenza di leak.
+  il controllo resta vivo. L'analisi offline 0460 trova il solo probe marcato trattenuto atteso
+  e ne identifica un percorso forte; non copre gli altri oggetti o la memoria nativa. La retention
+  generale e la memoria nativa lungo l'intera vita del gioco restano aperte; non dichiarare
+  assenza di leak.
 - **Policy della finestra:** la smoke single-document controlla reload,
   assegnazioni, link sintetici, iframe e route History/hash senza perdere il
   documento; il runner richiede ora un warning per reload, navigazione e iframe
   (0459, smoke CI verde su Linux/Windows normal/JITless). Restano il clic nativo reale con apertura nel browser di sistema,
   il notice desktop e la chiusura dalla finestra reale con fetch pendente; non
-  controllare il desktop, chiedere all'utente quando serve la prova.
+  controllare il desktop in questo flusso: le prove manuali sono assegnate all'altro flusso
+  di test dell'utente.
 - **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
   pronte. La CI V8 ha compilato e superato smoke normal/JITless Linux/Windows.
   Compilazione della singola sorgente, risoluzione e link completo restano sincroni.
-  Manca una misura sulla scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi.
+  Manca una valutazione su scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi;
+  questa verifica è assegnata all'altro flusso dell'utente. Non dichiarare accettabile la pausa
+  finché non ne arriva l'esito.
 
 SourceText e preload JSON sono backlog non bloccante e restano fuori dai criteri.
 

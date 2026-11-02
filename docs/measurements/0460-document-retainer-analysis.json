@@ -1,0 +1,48 @@
+{
+  "date": "2026-11-02",
+  "source": {
+    "workflow_run": 41347412162,
+    "artifact_id": 13099369957,
+    "artifact_sha256": "eef6379e7fee8d3ac6e36ac26aa9e82a3aecc0b2ffab2697376aa61bcc187ac5",
+    "snapshot_file": "document-retention.heapsnapshot",
+    "snapshot_bytes": 3164549,
+    "snapshot_sha256": "bb81a0ea4b0a2089d7f53f00bbf051a95ef3125f58325f0b244082bd62e78e53"
+  },
+  "method": {
+    "kind": "offline heap-snapshot graph inspection",
+    "parser": "one-off Python standard-library JSON traversal; no dependency added",
+    "retainer_path": "shortest strong path from the heap root; weak edges excluded",
+    "snapshot_nodes": 37183,
+    "snapshot_edges": 155151
+  },
+  "findings": {
+    "objects_with_rovesProbeTag_pointing_to_scene_marker": 1,
+    "object_role": "the deliberately retained control probe",
+    "control_properties": [
+      "rovesProbeTag",
+      "retained",
+      "controlListener"
+    ],
+    "shortest_strong_retainer_path": [
+      "(GC roots)",
+      "C++ native stack roots",
+      "Window (cppgc)",
+      "RovesJsCell",
+      "Proxy",
+      "RovesJsCell",
+      "HTMLElement",
+      "property rovesDocumentRetentionProbe -> Object"
+    ],
+    "temporary_probe_objects_with_scene_marker": 0,
+    "consistent_with_weakref_diagnostics": {
+      "released_elements": 128,
+      "released_probes": 128,
+      "total": 128
+    }
+  },
+  "limits": [
+    "This is one controlled document scene and only traces the tagged test probe.",
+    "The shortest path does not enumerate all retaining paths or explain all live DOM/native objects.",
+    "It is not a time-series measurement and does not establish absence of general retention or leaks."
+  ]
+}
