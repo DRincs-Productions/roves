@@ -2,7 +2,7 @@
 
 ## Punto operativo aggiornato — 3 novembre 2026
 
-### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — locale, CI non eseguita
+### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — push 19ca, CI in corso
 
 Il singolo snapshot alla collezione 32 di 0458/0461 non basta a valutare la retention nel
 tempo. Nelle build debug `ROVES_V8_HEAP_SNAPSHOT_GC` accetta ora anche una lista crescente
@@ -19,38 +19,65 @@ Ogni snapshot deve esistere ed essere valido; solo l'ultimo mantiene il vincolo 
 I tre file finiscono nell'artefatto esistente `v8-heap-snapshot-document-retention`.
 
 Verifiche locali: suite focalizzata del runner, 33 test con 16 skip (i `RunnerTests` POSIX
-saltati su Windows); 8 test del harness di chiusura; `py_compile`, `bash -n` e `git diff --check`
-passano. Non ho eseguito test Rust, build o harness nativo. Restano i test Rust `heap_snapshot`
-normal/JITless e la run V8 Linux normal. Limiti: tre punti di una
+saltati su Windows); harness di chiusura aggiornato a 12 test, tutti passati; `py_compile`,
+`bash -n` e `git diff --check` passano. Non ho eseguito test Rust, build o harness nativo. Il
+push `19ca0363691` sta eseguendo la matrice V8; gli snapshot non sono ancora disponibili.
+Restano i test Rust `heap_snapshot` normal/JITless e la run V8 Linux normal. Limiti: tre punti di una
 scena sintetica in un processo debug restano diagnostici e non chiudono la retention generale,
 la proprietà cppgc né la memoria nativa. Nessuna patch in `patches/` per richiesta del task.
 
-### Smoke Windows: chiusura nativa con fetch statico pendente (task 0462) — locale, CI non eseguita
+### Smoke Windows deterministica: uscita con risposta ancora trattenuta (task 0464) — locale, non nel push 19ca
 
-Nuovo `support/v8-smoke/window_close_pending_fetch.py` (stdlib Python + ctypes/user32, nessuna
-dipendenza o modifica di produzione). Solo nel job `servoshell-v8` Windows normal, dopo la
-build e lo staging ANGLE: avvia un servoshell separato *headed* (senza `-z`) con
-`--window-title` fisso e la fixture dedicata `window-close-pending-fetch.html`; il modulo
-`window-close-pending-fetch.mjs` importa staticamente `/window-close-held.mjs`, trattenuto da
-un server loopback interno. Quando la richiesta è arrivata e il processo possiede una sola
-finestra visibile con quel titolo, l'harness invia `WM_CLOSE` con `PostMessageW` (nessun
-clic o tastiera, nessun desktop sbloccato richiesto), poi rilascia la risposta: chiusura e
-consegna corrono volutamente in parallelo. Richiede uscita con codice 0 entro 60 s, una sola
-richiesta trattenuta e assenza di `Panic hook called`, `panicked at` e `spurious wake-up` in
-output e `roves.log` (confronto dei marker senza distinzione maiuscole/minuscole, per coprire
-il testo reale `spurious wake-up`); richiesta o finestra mancanti fanno fallire il passo. Processo figlio e
-server vengono sempre chiusi. Consegna della risposta tardiva e valutazione del modulo sono
-solo diagnostiche di gara (notice), non asserzioni. La smoke delle pagine resta headless.
-`test_window_close_pending_fetch.py` (job `runtime` normal, tutti gli OS) verifica selezione
-finestra, marker, server hold/release e il flusso con processo e finestra finti.
+Il harness 0462 rilasciava la risposta subito dopo `WM_CLOSE`, quindi non provava che il
+processo uscisse durante il fetch pendente. Ora `window_close_pending_fetch.py` mantiene la
+risposta trattenuta mentre attende l'uscita di servoshell (stesso limite di 60 s). All'uscita
+osservata `HoldState.record_exit()` registra se la risposta era ancora non rilasciata (evento
+di rilascio non impostato e nessuna risposta scritta) e se il modulo dipendente non aveva
+ancora segnalato la valutazione; ciascuna condizione falsa è un fallimento. Solo dopo questa
+registrazione la risposta viene rilasciata, per permettere al thread del server di terminare
+(esito della scrittura solo come diagnostica di pulizia). Se il processo non esce entro il
+limite, il fallimento viene riportato, poi la risposta è rilasciata e il figlio terminato e
+raccolto. Nessuna interazione con il desktop: solo `PostMessageW(WM_CLOSE)`.
 
-Verifiche locali: 8 test unitari del harness passano; `py_compile` e `git diff --check`
-passano; nessuna build né esecuzione dell'harness nativo. Non c'è una patch Servo: la prova
-tocca solo il workflow e i fixture del repository. Il primo esito reale del test arriva dalla
-CI V8, attivata dai percorsi `support/v8-smoke/**` e `v8.yml`. Limiti: copre `WM_CLOSE`
-inviato dal test, non il clic dell'utente sul pulsante di chiusura né Alt+F4; un solo import statico
-trattenuto, nessun TLA, import dinamico o fetch multipli; non misura durate né risolve la
-retention generale. Non dichiarare chiusa la prova finché la CI non è verde.
+`test_window_close_pending_fetch.py`: il figlio finto avvia la richiesta trattenuta senza mai
+leggerne la risposta, esce con codice 0 alla ricezione del `WM_CLOSE` finto (file creato da
+`FakeWin32`) e un evento di rilascio strumentato verifica, su Windows e sugli altri OS, che
+ogni rilascio avvenga dopo l'uscita del figlio. Coperti anche: valutazione prima dell'uscita,
+rilascio prima dell'uscita (regressione simulata), timeout di uscita con rilascio/kill/reap,
+finestra mancante e uscita prima della richiesta. La suite locale aggiornata conta 12 test e
+passa; `py_compile` e `git diff --check` passano. La matrice V8 del push `19ca0363691` non
+contiene questa versione 0464; serve la successiva run nativa Windows della CI V8 prima di
+considerare la prova superata.
+
+### Smoke Windows: prima versione 0462, superata dal criterio 0464
+
+> Aggiornato da 0464: la risposta non viene più rilasciata dopo `WM_CLOSE` ma solo dopo
+> l'uscita osservata; consegna e valutazione all'uscita sono ora asserzioni, non diagnostiche.
+
+La prima versione di `support/v8-smoke/window_close_pending_fetch.py` (task 0462) usava la
+stessa fixture, finestra nativa e richiesta statica trattenuta descritte sopra, ma rilasciava la
+risposta subito dopo `PostMessageW(WM_CLOSE)`. Quel test controllava l'uscita pulita nella gara
+tra chiusura e risposta, ma non dimostrava che il processo uscisse prima del completamento del
+fetch. Il criterio attuale è quello più forte descritto nella sezione 0464 qui sopra. Il resto
+del perimetro 0462 rimane valido: solo Windows normal dopo build/staging ANGLE, nessun click o
+tastiera, smoke pagine headless e nessuna modifica di produzione.
+
+Il push `19ca0363691` include questa prima versione, ma non le asserzioni deterministiche aggiunte
+da 0464. La sua matrice V8 è in corso. Nessuna patch Servo o modifica di produzione: la prova
+tocca solo workflow e fixture. Il perimetro resta un solo `WM_CLOSE` inviato dal test, non clic
+utente o Alt+F4; un import statico trattenuto, senza TLA/import dinamico/fetch multipli; non misura
+durate né risolve retention generale. La versione attuale da verificare è 0464.
+
+### CI dopo push `19ca0363691` — checkpoint aggregato
+
+Al controllo dopo l'implementazione locale 0464 non risultano job rossi. V8 `41718462513`:
+runtime Windows normal/JITless e Linux JITless verdi; smoke/build Linux normal e JITless,
+Windows normal/JITless e runtime Linux normal in corso; job macOS in coda. Android
+`41718462547` verde. In iOS `41718462473`, il job simulatore è intenzionalmente `skipped` e
+`ios-release-signing-smoke` è in coda. Anche il retry preesistente del simulatore sul vecchio SHA
+è ancora in coda, ma non è più un gate. Il commit 0464 è locale e non può essere pubblicato
+finché i job richiesti del batch `19ca` sono terminali; poi la sua prova nativa richiederà un
+nuovo push e una run Windows normal.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
@@ -132,8 +159,8 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
   automatica, notice di sviluppo e handoff al browser OS con un clic mouse reale. Resta la
   prova end-to-end della chiusura nativa mentre un caricamento è pendente; la catena di
   shutdown fino all'annullamento del fetch è stata verificata nel codice e nel test runtime.
-  La smoke Windows 0462 (`WM_CLOSE` con import statico trattenuto) è aggiunta ma non ancora
-  eseguita in CI.
+  La smoke Windows 0462/0464 (`WM_CLOSE` con import statico trattenuto fino all'uscita
+  osservata, poi rilascio) è aggiunta ma non ancora eseguita in CI nativa.
 - **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
   apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
   input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di

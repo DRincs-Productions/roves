@@ -256,7 +256,7 @@ jobs:
         run: bash support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell.exe"
       # One headed process (the page smoke above stays headless): the loopback server holds the
       # fixture's static module dependency, the harness posts WM_CLOSE to the process's native
-      # window, then releases the response; servoshell must exit 0 without a panic.
+      # window, and requires servoshell to exit 0 while that response is still held, without panic.
       - name: close the native window while a static module fetch is pending
         if: runner.os == 'Windows' && matrix.mode == 'normal'
         shell: bash

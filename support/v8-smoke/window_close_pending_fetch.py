@@ -7,10 +7,15 @@ A loopback server (stdlib, reusing http_server.Handler's fixture MIME map) serve
 window-close-pending-fetch.html, whose static module imports /window-close-held.mjs. The server
 holds that response. Once the request has arrived and the headed servoshell process owns a
 visible native window with the fixed --window-title, the harness posts WM_CLOSE to that window
-(no mouse/keyboard input, so no unlocked desktop is needed), then releases the held response so
-shutdown races with the pending fetch. The process must exit with code 0 within a bound, without
-a panic or the former spurious wake-up failure in its output or native log. The child process and
-the server are always cleaned up. Bounds below are harness limits, not product latency targets.
+(no mouse/keyboard input, so no unlocked desktop is needed) and keeps the response held while it
+waits for the process to exit. The criterion is deterministic: when the exit is observed, the held
+response must still be unreleased (never written) and the dependent module must not have
+evaluated; either condition being false is a failure. Only after that exit-time state is recorded
+is the response released, so the server thread can finish. The process must exit with code 0
+within a bound, without a panic or the former spurious wake-up failure in its output or native
+log. On an exit timeout the failure is reported, then the response is released and the child is
+killed and reaped. The child process and the server are always cleaned up. Bounds below are
+harness limits, not product latency targets.
 """
 import argparse
 import functools
@@ -54,7 +59,18 @@ class HoldState:
         self.evaluated = threading.Event()
         self.held_requests = 0
         self.held_outcome = None  # set after the release: delivered, or the socket error
+        # Recorded by the harness when the process exit is observed, before any release.
+        self.unreleased_at_exit = None
+        self.evaluated_at_exit = None
         self.log = []
+
+    def record_exit(self):
+        """Snapshots, at the observed process exit, whether the response is still held."""
+        with self.lock:
+            self.unreleased_at_exit = not self.release.is_set() and self.held_outcome is None
+            self.evaluated_at_exit = self.evaluated.is_set()
+        self.note(f"process exit observed: unreleased={self.unreleased_at_exit} "
+                  f"evaluated={self.evaluated_at_exit}")
 
     def note(self, line):
         with self.lock:
@@ -242,26 +258,34 @@ def run(binary, runtime_root, win32=None, launch=subprocess.Popen):
             return errors, notices, state, output_path, native_log
         closed = time.monotonic()
         state.note(f"posted WM_CLOSE to {hwnd:#x}")
-        # Release only now: the response and the shutdown race on purpose.
-        state.release.set()
+        # The response stays held: the exit must happen while the static fetch is pending.
         try:
             code = proc.wait(EXIT_TIMEOUT)
         except subprocess.TimeoutExpired:
-            errors.append(f"servoshell did not exit within {EXIT_TIMEOUT:.0f} s of WM_CLOSE")
+            errors.append(f"servoshell did not exit within {EXIT_TIMEOUT:.0f} s of WM_CLOSE "
+                          f"with the static module response still held")
             return errors, notices, state, output_path, native_log
+        state.record_exit()
+        # Release only after the exit-time state is recorded, so the server thread can finish.
+        state.release.set()
         notices.append(f"exit code {code} {time.monotonic() - closed:.1f} s after WM_CLOSE "
                        f"(diagnostic, not a threshold)")
+        notices.append(f"at process exit: response unreleased={state.unreleased_at_exit}, "
+                       f"dependent module evaluated={state.evaluated_at_exit}")
         if code != 0:
             errors.append(f"servoshell exited with {code} after WM_CLOSE")
+        if not state.unreleased_at_exit:
+            errors.append("the static module response was no longer held when the exit was observed")
+        if state.evaluated_at_exit:
+            errors.append("the dependent module evaluated before the exit was observed")
         if state.held_requests != 1:
             errors.append(f"expected exactly 1 held module request, saw {state.held_requests}")
-        # Server-side completion of the released response, bounded by the server's own write.
+        # Server-side cleanup of the post-exit release, bounded by the server's own write.
         deadline = time.monotonic() + 10
         while state.held_outcome is None and time.monotonic() < deadline:
             time.sleep(0.05)
-        notices.append(f"held response after release: {state.held_outcome or 'still writing'}; "
-                       f"dependent module evaluated before exit: {state.evaluated.is_set()} "
-                       f"(race diagnostics)")
+        notices.append(f"held response after post-exit release: "
+                       f"{state.held_outcome or 'still writing'} (cleanup diagnostic)")
         texts = [output_path.read_text(encoding="utf-8", errors="replace")]
         if native_log.exists():
             texts.append(native_log.read_text(encoding="utf-8", errors="replace"))
@@ -272,6 +296,8 @@ def run(binary, runtime_root, win32=None, launch=subprocess.Popen):
             errors.append("failure markers in servoshell output/log: " + " | ".join(markers[:10]))
         return errors, notices, state, output_path, native_log
     finally:
+        # Failure paths (including the exit timeout) release before kill/reap; harmless if set.
+        state.release.set()
         if proc is not None and proc.poll() is None:
             proc.kill()
             try:
@@ -307,7 +333,7 @@ def main(argv=None):
             for line in tail(path):
                 print(f"  {line}")
         return 1
-    print("window close with a pending static module fetch: clean exit")
+    print("window close with a pending static module fetch: clean exit while the response was held")
     return 0
 
 

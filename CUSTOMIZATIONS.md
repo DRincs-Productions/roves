@@ -31,6 +31,24 @@ Limits: three points of one synthetic scene in one debug process are still diagn
 not establish general retention, cppgc ownership, native memory or the absence of leaks. Not yet
 run by CI. Per user instruction for this task, no `patches/` file was generated for it.
 
+## 2026-11-03 - Windows smoke: deterministic exit while the static fetch is held (0464)
+
+`support/v8-smoke/window_close_pending_fetch.py` no longer releases the held response right
+after posting `WM_CLOSE` (which did not prove the exit happened during the pending fetch). It
+keeps the response held while waiting (same 60 s bound) for servoshell to exit; at the observed
+exit, `HoldState.record_exit()` records whether the response was still unreleased (release not
+set, nothing written) and whether the dependent module had not evaluated, and either being
+false is a failure. Only then is the response released so the server thread can finish; the
+write outcome is a cleanup diagnostic. On an exit timeout the failure is reported, then the
+response is released and the child killed and reaped. No desktop interaction.
+`test_window_close_pending_fetch.py` now uses a fake child that never reads the held response
+and exits 0 on a fake `WM_CLOSE`, plus an instrumented release event proving on every OS that
+each release follows the child's exit; it also covers evaluation before exit, a simulated
+release before exit, and the exit timeout. All 12 focused tests pass locally, as do `py_compile`
+and `git diff --check`. Harness/tests/docs and the workflow description only; no production code
+or `patches/` change. The native Windows CI run is still required before treating the check as
+passed.
+
 ## 2026-11-03 - Windows smoke: close the native window during a pending static fetch (0462)
 
 New `support/v8-smoke/window_close_pending_fetch.py` (Python stdlib + ctypes/user32, no new
