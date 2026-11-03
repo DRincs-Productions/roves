@@ -74,8 +74,8 @@ fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra dura
 fetch; il percorso di produzione fino allo shutdown e l'annullamento runtime sono coperti,
 ma non ancora insieme da una prova nativa end-to-end.
 
-Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` è avanti di un commit
-locale, `0da747eb45d`, che documenta l'ulteriore conteggio cppgc dello snapshot. Il push
+Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` è avanti di due commit
+locali (`0da747eb45d` e `58a9dcecc5f`) che documentano l'analisi cppgc e il batch CI. Il push
 `db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
 Android `41689949095` è verde, V8 `41689949123` è ancora in coda e iOS `41689949222` è in
 coda ed esclusa. Non pubblicare il commit locale finché la CI V8 richiesta non è conclusa.
