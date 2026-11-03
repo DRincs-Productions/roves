@@ -57,40 +57,37 @@ Conservare la shell Servo. Il prodotto esegue un solo documento di gioco in una 
 con route interne tipo TanStack Router (History API e frammenti, senza nuovo documento).
 Tab, finestre aggiuntive e iframe non sono requisiti. Reload e cambi pagina completi non
 devono essere accessibili al gioco; restano necessari caricamento iniziale shell e chiusura.
-Quando si implementa questa policy, bloccare le operazioni non supportate nel motore prima
-di modificare il documento, preservando il gioco. Segnalare almeno un warning nei log/console
-con operazione e motivo; limitare ripetizioni, niente alert modali o crash come segnalazione.
-Scelte confermate dall'utente: avviso discreto non modale durante lo sviluppo, solo log
-nel gioco distribuito. Link esterni nel browser di sistema solo dopo un clic reale
-dell'utente; richieste automatiche bloccate e segnalate, mai navigate dentro Roves.
-Prima completare la prova isolata deno_core per il documento unico; poi implementare
-insieme al runtime scelto la policy di blocco e diagnostica. Questa è una direttiva da implementare,
-non una funzionalità già disponibile: handoff docs/handoff/0380-single-document-runtime.md.
+La policy single-document è implementata: blocca reload e navigazioni complete prima che
+sostituiscano il documento, mostra un avviso discreto solo in sviluppo e usa i log nelle
+build distribuite. I link esterni si aprono nel browser di sistema solo dopo clic utente
+reale. Smoke e prova Windows sono registrati nel handoff; resta da verificare la chiusura
+OS della finestra mentre un fetch statico è pendente.
 
-Si possono sostituire e rimuovere servizi interni Servo tramite librerie mantenute. rusty_v8
-è già usato; rivalutare deno_core per il documento unico, senza imporre frame multipli o
-identità WindowProxy fra pagine sostituite. Il NO-GO0378 riguardava il precedente perimetro
-browser più ampio, non decide quello nuovo. Verificare DOM/eventi, sicurezza web, microtask,
-moduli, GC e JITless con API pubbliche, rimuovendo il servizio sostituito senza fork nostro o
-duplicazione permanente. DOM/layout/rendering restano inizialmente Servo. Nessuna installazione
-separata Deno/Chromium o API Deno privilegiate ai giochi. Non eliminare test esistenti prima
-di avere copertura sostitutiva del perimetro; non dichiarare adozione o prestazioni provate.
-Delega, revisione, patch, quote e vincoli CI sottostanti restano validi.
+Il target embedded `servoshell` usa V8 con `deno_core` in produzione. Il workspace collega
+`js` a `roves-js` senza selettore alternativo; deno_core possiede isolate, contesto, modulo
+map ed event loop. `roves-js` mantiene la superficie JSAPI compatibile con Servo e
+l'integrazione DOM; `roves-v8` inizializza V8. Cargo.lock contiene una sola versione V8 e
+nessuna dipendenza `mozjs`. `support/deno-core-probe` resta un esperimento isolato, non un
+secondo backend. Non installare Deno o Chromium separatamente né esporre le API privilegiate
+Deno ai giochi. La shell Servo e DOM/layout/rendering Servo restano.
+
+Il caricamento statico deno_core usa il poll cooperativo 0457/0458; gli import dinamici sono
+asincroni. Fetch e sorgenti già pronte cedono al loop del gioco, ma compilazione di una
+sorgente, risoluzione e link finale restano sincroni e possono causare pause. La valutazione
+su scene reali e soglie accettabili resta aperta e non va dichiarata completata. Continuare
+a verificare API pubbliche, CSP/origini, moduli, microtask, GC, sicurezza e JITless; non
+dichiarare copertura generale o prestazioni misurate senza evidenze. Dettagli correnti in
+`docs/V8_MIGRATION.md`.
 
 ### Caricamento statico deno_core: pausa provvisoria autorizzata (27 ottobre 2026)
 
-L'ultima istruzione dell'utente autorizza a procedere subito: durante il caricamento e
-l'istanziamento dei moduli statici input e timer del gioco possono fermarsi temporaneamente.
-Gli import dinamici restano asincroni. Questa decisione sostituisce la precedente scelta2.
-E un compromesso PROVVISORIO DA RIVEDERE nei test, non una prestazione accettabile gia
-misurata: documentare quando accade (avvio e script module aggiunti a gioco avviato), durata,
-sorgenti locali/rete, input/timer/frame e gestione errori/chiusura. Confrontare caricamenti
-freddi/caldi e rete lenta controllata; non inventare durata o soglie accettate dall'utente.
-Preservare valutazione HTML/TLA, sicurezza fetch, import map e microtask. Nessun rientro JS
-mentre JsRuntime e preso in prestito esclusivo; nessun fork o grafo duplicato permanente.
-Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisionata;
-nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
-la decisione e rivalutare un'API pubblica interamente asincrona.
+L'utente ha autorizzato il compromesso provvisorio della pausa statica. L'implementazione
+0457/0458 cede tra fetch e sorgenti già pronte; compilazione, risoluzione e link finale
+restano sincroni. Gli import dinamici sono asincroni. Rivedere il compromesso su scene reali:
+documentare quando accade, durata, input/timer/frame, sorgenti locali/rete, errori e chiusura;
+non inventare soglie accettate. Preservare HTML/TLA, sicurezza fetch, import map e microtask.
+Nessun rientro JS mentre JsRuntime è preso in prestito esclusivo; non aggiungere un secondo
+grafo runtime. La prova di fluidità è assegnata al flusso dedicato.
 
 ### Errori dei moduli statici deno_core: deviazione autorizzata (28 ottobre 2026)
 

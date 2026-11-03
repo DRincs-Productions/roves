@@ -746,17 +746,18 @@ normal/JITless tests and required browser fixtures passed in the0eb CI batch. Th
 correction, not complete WebIDL conformance.
 
 Roves keeps its Servo shell while replacing internal services with maintained libraries
-where that removes duplicate implementation. rusty_v8 is already used; the local source
-tree now wires deno_core into Servo's single-document module loader, pending required
-normal/JITless Rust and browser CI. DOM/layout/rendering stay in Servo initially. No
-separate Chromium or Deno installation is planned.
+where that removes duplicate implementation. The embedded `servoshell` target uses V8
+through `roves-js`/`roves-v8` and `deno_core` unconditionally; there is no SpiderMonkey
+runtime fallback. The lockfile contains one V8 version. Normal/JITless CI and the remaining
+lifecycle checks still gate a final release. DOM/layout/rendering stay in Servo. No separate
+Chromium or Deno installation is needed.
 
 The product direction is one Servo-shell window and one game document, with internal
 routes such as TanStack Router using the History API and fragments. Additional tabs/windows
 and iframes are not required. Game-driven reloads and full-document navigations are outside
-this scope. The planned engine policy must block unsupported attempts before replacing the
-document and emit at least a useful console/log warning, without crashing or opening a
-blocking alert. Repeated attempts must not flood logs. The confirmed behavior is a discreet
+this scope. The implemented engine policy blocks unsupported attempts before replacing the
+document and emits a useful console/log warning, without crashing or opening a blocking
+alert. Repeated attempts are limited to avoid log floods. The confirmed behavior is a discreet
 non-modal notice in development and logs only in distributed games. External links may open
 the system browser only after a real user click; automatic attempts are blocked and logged,
 without navigating inside Roves. Initial shell loading/shutdown remain lifecycle requirements.
@@ -769,8 +770,9 @@ Rust and browser CI must pass before using a built artifact.
 Games keep one document: History/hash routes remain available; full navigation, reload,
 iframes and auxiliary windows are refused. Development launches show a non-modal notice;
 bundled games log the refusal. External HTTP(S) anchor/area links require a native trusted
-click and use SDL's system URL handler; synthetic/automatic requests are blocked. Real-click
-OS handoff and notice rendering still require integration/visual verification.
+click and use SDL's system URL handler; synthetic/automatic requests are blocked. The Windows
+fixture verified notice rendering and real-click OS handoff. Closing the OS window during a
+pending static fetch still needs an end-to-end check.
 
 Three provisional differences are tracked: static module loading now yields between network
 responses and already-ready sources, while each source compilation, resolution and final linking

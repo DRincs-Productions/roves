@@ -74,9 +74,9 @@ fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra dura
 fetch; il percorso di produzione fino allo shutdown e l'annullamento runtime sono coperti,
 ma non ancora insieme da una prova nativa end-to-end.
 
-Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` è avanti di due commit
-locali (`0da747eb45d` e `58a9dcecc5f`) che documentano l'analisi cppgc e il batch CI. Il push
-`db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
+Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` contiene follow-up
+documentali locali sull'analisi cppgc, sul checkpoint CI e sulla direzione runtime aggiornata.
+Il push `db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
 Android `41689949095` è verde, V8 `41689949123` è ancora in coda e iOS `41689949222` è in
 coda ed esclusa. Non pubblicare il commit locale finché la CI V8 richiesta non è conclusa.
 Il batch precedente `5d818c4a53e` è concluso: i job obbligatori Linux/Windows V8 e Android
@@ -3871,10 +3871,11 @@ regressione JSAPI proxy; il primo test mirato ha trovato un riferimento globale 
 fixture, ora cancellato prima del controllo di finalizzazione. Il test proxy mirato passa dopo la
 correzione. In `39320063351` tutti i test runtime passano, ma lo smoke browser continua a non
 confermare il prototipo immutabile Window: causa e correzione di produzione restano aperte.
-Nessuna libreria aggiunta: rusty_v8 già offre
-handle `Global` e cppgc; serde_v8 non serve per identità DOM, deno_core duplicherà il runtime
-senza sostituire l’event loop/realm/CSP Servo, web-audio-api-rs resta fuori ambito secondo il
-piano.
+Nota storica, valutazione del 19 ottobre prima dell'adozione single-document: allora nessuna
+libreria era stata aggiunta; si riteneva che deno_core avrebbe duplicato runtime senza
+sostituire event loop/realm/CSP Servo. Questa valutazione è superata dall'integrazione
+successiva descritta nel punto operativo in cima a questo documento. serde_v8 non serviva
+per l'identità DOM; web-audio-api-rs resta fuori ambito secondo il piano.
 
 ### Correzione TrustedScript in `eval` — 19 ottobre 2026
 
@@ -4035,10 +4036,14 @@ codice sostituito. Documentare anche le valutazioni che concludono di non aggiun
   preservare identità. Il crate non è nel `Cargo.lock`; l’upstream dedicato è archiviato e il
   codice è stato spostato in `denoland/deno`. Nessun nuovo costo CPU/RAM e nessun rischio di
   compatibilità V8 introdotti. Rivalutare solo con una API concreta che elimini codice esistente.
-- [x] **deno_core — non adottato:** il repository autonomo è archiviato e integrato in
-  `denoland/deno`; aggiungerlo porterebbe un secondo livello runtime oltre a quello Servo, senza
-  eliminare event loop browser, realm, CSP, loader, cppgc o integrazione JIT-less. Nessuna
-  riduzione complessiva dimostrata; memoria e complessità di versionamento aumenterebbero.
+- [x] **deno_core — adottato nel runtime embedded:** `roves-js` crea un `JsRuntime` per il
+  documento, che possiede isolate/contesto, module map, moduli statici/dinamici e il relativo
+  event loop; il vecchio percorso runtime/module-loader Servo è stato sostituito dove previsto.
+  Servo conserva DOM, layout, rendering, task HTML e fetch con le policy di sicurezza. Il gioco
+  non riceve namespace o op Deno; non c'è un selettore di motore né una seconda copia V8 nel
+  lock (una sola `v8 150.4.0`). Il repository standalone è archiviato, ma deno_core continua
+  nel monorepo Deno. È una dipendenza di produzione con una patch temporanea TLA tracciata in
+  TODO; CI e i tre controlli residui in cima a questo handoff restano criteri separati.
 - [x] **web-audio-api-rs — non adottata nella migrazione V8:** il progetto è attivo e MIT, ma
   fornisce un grafo WebAudio Rust con backend audio nativi, non sostituisce il binding browser
   Servo né certifica AudioWorklet JS V8. Sposterebbe lavoro CPU/audio e gestione dispositivi

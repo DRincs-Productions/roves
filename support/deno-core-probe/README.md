@@ -1,13 +1,12 @@
 # deno_core single-document probe
 
-Isolated feasibility experiment for running the one Roves game document on
-[deno_core](https://crates.io/crates/deno_core) (MIT, maintained by the Deno authors),
-following [docs/handoff/0380-single-document-runtime.md](../../docs/handoff/0380-single-document-runtime.md).
-It is **not** an adoption, not a production dependency and not wired into the engine: the
-crate is its own Cargo workspace, nothing in the Roves workspace depends on it, and no game
-API, Deno extension or capability (file system, network, process) is exposed. The only
-game-visible additions are test fixtures: the native class wrappers and one
-`nativeFixture` function backed by an in-memory Rust future.
+Historical isolated feasibility harness for the single-document Roves runtime. This
+directory itself is still a separate Cargo workspace and is not linked into the product.
+The production embedded engine has since adopted `deno_core` in `components/roves-js`; it
+uses one V8 version and does not expose Deno namespaces, extensions or privileged operations
+to games. This probe is not a second backend or a runtime selection option. See the current
+[V8 migration handoff](../../docs/V8_MIGRATION.md) for production status and open checks.
+The isolated harness contains test-only class and async-operation fixtures.
 
 ## Scope
 
@@ -77,12 +76,12 @@ executed.
 
 ## Engine version gap
 
-`deno_core 0.413.0` depends on `deno_v8 0.5.0` (aliased as `v8` inside deno_core), which
-resolved to `v8 150.4.0` in `Cargo.lock`. Roves pins `v8 = "=152.2.0"`. This probe never
-imports the engine's `v8` crate; it uses `deno_core::v8` only. Adoption would mean one V8
-line for the whole engine (deno_core's), not two copies side by side.
+The isolated probe's lock resolves `deno_core 0.413.0` -> `deno_v8 0.5.0` ->
+`v8 150.4.0`; the production workspace now pins the same `v8 150.4.0` line, so it does
+not link a second V8 version. This probe uses only `deno_core::v8`; it is not the production
+runtime.
 
-## Remaining public-API checks before any adoption
+## What this isolated probe does not establish
 
 Each needs a bounded proof using existing maintained APIs, not a new framework:
 
@@ -92,18 +91,18 @@ Each needs a bounded proof using existing maintained APIs, not a new framework:
    open: Servo's DOM objects and their prototype chains (inheritance through deno_core's
    `Base`/`Inherits`), interface objects exposed on the document global instead of
    `Deno.core.ops`, and Web IDL conversions.
-2. **Module and async single owner.** deno_core must replace Servo's module map and
-   dynamic-import service and the Promise job queue for the document, not run beside them;
-   the old path is removed in the same change. One native async op fixture driven by
+2. **Servo task-source integration.** This isolated probe does not show how Servo's network,
+   timer and DOM task sources integrate with deno_core. Production uses deno_core as the single
+   module/runtime owner; its current implementation and regressions are documented in the
+   migration handoff. One native async op fixture driven by
    deno_core's op driver is authored
    (`native_async_op_completes_or_is_dropped_with_the_runtime`, awaiting CI); still open:
-   how Servo's own task sources (network, timers, DOM events) would feed or share that
-   event loop.
+   how this standalone fixture's synthetic async operation compares with real Servo tasks.
 3. **Bootstrap globals and capabilities.** Namespace removal is authored
    (`bootstrap_namespace_is_removed_before_game_code`, awaiting CI). The absence of these
-   globals is not a universal capability proof: privilege isolation still has to be
-   re-checked once Servo's DOM globals, console and event loop replace deno_core's
-   builtins, and production integration is pending.
+   globals is not a universal capability proof. Product bootstrap, host APIs and security
+   checks are maintained in `roves-js`; this isolated test only describes its own stripped
+   runtime fixture, not the full game capability boundary.
 4. **HTML checkpoint timing, security and teardown.** Microtask checkpoints interleaved with
    Servo tasks per HTML, CSP/codegen decided by Servo's policy, clean isolate teardown at
    shutdown, all in normal and JITless mode.

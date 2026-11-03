@@ -1,12 +1,19 @@
-## Deno static loading: provisional decision to review in tests (27 October 2026)
+## Runtime V8 + deno_core in the embedded Servo shell — current status
 
-Proceed with public Deno/Tokio static graph loading even though it temporarily pauses the
-game ScriptThread. Dynamic imports stay asynchronous. This supersedes the intervening
-fully-async-only decision. Preserve HTML/TLA and existing fetch security; no permanent
-second graph or Deno fork. Open question: actual impact at startup and when module scripts
-are added during gameplay, for local/cold/warm/slow-network cases, input/timers/frame time,
-errors and closing. No measurements or accepted latency threshold yet. Review with tests;
-prefer a maintained fully asynchronous API when available. See handoff0385.
+The embedded `servoshell` production target uses V8 through `roves-js` and `roves-v8`, with
+`deno_core` owning the isolate/context, single-document module map and module event loop.
+The workspace binds Servo's `js` dependency to `roves-js` unconditionally: there is no
+runtime `if` that selects SpiderMonkey or another JS engine. `Cargo.lock` resolves one
+`v8` package version (`150.4.0`); deno_core is pinned at `0.413.0`. `roves-js` keeps Servo's
+JSAPI-compatible surface and DOM bindings. `support/deno-core-probe` is an isolated
+historical experiment, not a product fallback. Games receive no Deno namespace or privileged
+ops, and no separate Deno/Chromium installation is required.
+
+Static module loading uses the cooperative 0457/0458 poll: fetches and already-ready sources
+yield between steps, dynamic imports remain asynchronous, while compiling an individual
+source, resolving it and final linking remain synchronous. The user accepted this provisional
+tradeoff, pending the separate real-scene responsiveness tests. No latency or performance
+claim is established. The migration handoff records current CI, limitations and open work.
 
 # Roves: librerie, GPU e console
 
@@ -23,34 +30,23 @@ Router. History API/pushState/replaceState/back/forward e frammenti restano inte
 finestre aggiuntive e iframe non sono obbligatori; reload e cambi pagina completi non devono
 essere accessibili al gioco. Caricamento iniziale shell e chiusura restano necessari.
 
-La policy deve impedire richieste non supportate prima di sostituire il documento, senza
-interrompere il gioco, e segnalarle almeno nei log/console con operazione e motivo. Preferire
-diagnostica/UI esistenti; limitare ripetizioni e non usare alert modali. Un avviso visibile
-è discreto e non modale solo in sviluppo; nel gioco distribuito usare solo i log.
-I link esterni possono aprire il browser di sistema solo dopo un clic reale dell'utente;
-le richieste automatiche restano bloccate e segnalate. Non si naviga dentro Roves.
-Ordine scelto: prima la prova deno_core per un documento, poi policy e diagnostica insieme
-al runtime selezionato. Blocco e nuove segnalazioni sono DA IMPLEMENTARE, non già disponibili.
-Dettagli e casi di accettazione: [handoff0380](handoff/0380-single-document-runtime.md).
+La policy single-document è implementata nel motore: reload e navigazioni complete sono
+bloccati prima di sostituire il documento; le richieste automatiche sono segnalate, i link
+esterni usano il browser di sistema solo dopo un clic nativo dell'utente. La prova Windows
+ha verificato blocco, avviso in sviluppo e apertura del browser esterno. La chiusura OS della
+finestra durante un fetch statico resta da verificare end-to-end. Vedi
+[handoff0380](handoff/0380-single-document-runtime.md) e il punto operativo in V8_MIGRATION.md.
 
-Si possono sostituire e rimuovere servizi interni Servo, non solo affiancarli. DOM/layout/
-rendering restano inizialmente Servo. rusty_v8 è già usato; deno_core è da rivalutare per
-il singolo documento, senza i vecchi vincoli di frame multipli/WindowProxy fra navigazioni.
-La [valutazione0378](handoff/0378-deno-core-feasibility.md) resta evidenza del precedente
-perimetro: lock194pacchetti/metadata/parse verificati, nessun test runtime o misura eseguiti.
-Non costituisce una bocciatura del nuovo prodotto, né prova di fattibilità dell'integrazione.
+DOM, layout e rendering restano in Servo; i servizi di moduli e runtime JavaScript sostituiti
+sono gestiti da deno_core. L'adozione è presente nel codice di produzione, ma non equivale a
+una release finale né a conformità generale del browser. Le verifiche ancora aperte su CSP,
+microtask, GC, sicurezza, scene reali e JITless sono elencate nel handoff. Nessun fallback
+SpiderMonkey e nessun secondo grafo runtime vanno reintrodotti.
 
-Verificare API pubbliche mantenute per DOM/eventi, moduli statici/dinamici/JSON/cicli/TLA,
-microtask HTML/Promise, CSP/origini, GC/chiusura e JITless. Adottare solo con rimozioni reali
-dei servizi sostituiti, senza fork nostro o doppio percorso permanente. Nessuna dipendenza
-produttiva deno_core è ancora aggiunta, nessun privilegio Deno ai giochi o installazione
-separata Chromium/Deno. Valutare licenze, dipendenze e costi effettivi senza promettere
-percentuali. Build pesanti online; handoff corrente in V8_MIGRATION.md.
-
-### Prova0381 verificata online, bootstrap0382 pronto per CI
+### Prova0381 isolata (storica; non è il runtime di produzione)
 
 [Handoff0381](handoff/0381-deno-single-document-probe.md): workspace isolato in
-support/deno-core-probe, nessuna dipendenza produttiva. Dieci scenari logici in due test
+support/deno-core-probe, indipendente dal binario di produzione. Dieci scenari logici in due test
 Rust, una sola thread per gli scenari V8, stessa suite normale/JITless su Linux/Windows.
 Metadata/parse e contratto YAML/lock verificati; CI40539608247 verde4/4, Linux/Windows
 normale/JITless. Due testRust perjob coprono dieci scenari logici, non integrazione DOM. RustyV8150 espone il flag globale di contesto per eval/Function, non la callback per
