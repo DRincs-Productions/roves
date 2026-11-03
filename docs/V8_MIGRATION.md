@@ -16,16 +16,20 @@ snapshot reale valido. La nuova asserzione deve ancora passare nella CI V8 del c
 Il repository indicato dall'utente, `DRincs-Productions/visual-novel-template`, è pubblico,
 non archiviato e aggiornato il 2 novembre (`a99126b5dface08e965448c666d5d289f3967e99`).
 La build TypeScript/Vite del commit è riuscita; è stata impacchettata in `target` e il
-processo Roves è stato avviato. Computer Use è stato fermato dall'utente con Esc prima
-dell'ispezione della scena di questa build: non dichiarare completata la prova statica.
-La build precedente del checkout locale del template mostrava menu e narrava in Roves,
-ma non sostituisce il test sul repository richiesto.
+processo Roves è stato avviato con il manifest del template. `roves.log` non mostra errori
+di import JS; segnala invece due WAV che PixiJS non riesce a parsare, problema separato da
+V8 da lasciare al flusso di test del gioco. Computer Use è stato fermato dall'utente con
+Esc prima dell'ispezione visiva della scena: non dichiarare completata la prova statica.
+La build del checkout locale precedente mostrava menu e narrazione, ma non sostituisce il
+test sul repository indicato.
 
 La build diagnostica Windows mostra che `location.assign(https://example.org/)` viene
 bloccato e il documento resta vivo; `roves.log` registra una volta la causa. Il link
-HTTP(S), attivato con input utente, apre Chrome e lascia Roves vivo. Non è stato separato
-in modo affidabile il clic mouse dall'attivazione da tastiera, né verificata la notice
-di sviluppo nella modalità di sviluppo. La chiusura con fetch pendente resta non provata.
+HTTP(S) si è aperto in Chrome dopo selezione e attivazione con Invio; il solo clic mouse
+non è stato verificato separatamente. La notice di sviluppo non è stata verificata nella
+modalità non impacchettata. Il test Rust 0457/0458 conferma che drop e shutdown annullano
+un fetch statico pendente e rifiutano la risposta tardiva; resta da confermare la chiusura
+della finestra Roves durante una richiesta reale.
 
 ### Stato di completamento — 3 novembre 2026
 
@@ -39,10 +43,11 @@ di sviluppo nella modalità di sviluppo. La chiusura con fetch pendente resta no
   valutazione su una scena reale, inclusi input/timer e rete fredda/calda/lenta.
 
 Questi tre punti non sono ancora tutti completati. Per concludere la pausa statica serve
-esaminare la finestra della build GitHub e provare la scena; per la notice e il clic mouse
-serve un'interazione desktop visibile, perché il controllo computer è stato interrotto con
-Esc. La chiusura pendente può essere completata da Codex con una fixture lenta. Le misure
-comparative di performance restano nel flusso separato dell'utente.
+esaminare la finestra della build GitHub e provare la scena; per notice e clic mouse serve
+un'interazione desktop visibile, perché il controllo computer è stato interrotto con Esc.
+Il test drop/shutdown copre già la cancellazione del fetch a livello runtime; resta la
+prova OS di chiusura finestra. Le misure comparative di performance restano nel flusso
+separato dell'utente.
 
 ## Storico aggiornato — 2 novembre 2026
 
