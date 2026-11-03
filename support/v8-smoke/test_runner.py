@@ -1,5 +1,7 @@
 """Regression tests for the smoke protocol and the complete shell runner."""
 
+import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,7 +13,7 @@ import tempfile
 import time
 import unittest
 
-from check_heap_snapshot import problems as snapshot_problems
+from check_heap_snapshot import analyze as analyze_snapshot, main as snapshot_main, problems as snapshot_problems
 from check_results import REQUIRED_CHECKS, pause_diagnostic_problems, startup_diagnostic_problems, validate
 
 HERE = Path(__file__).resolve().parent
@@ -996,6 +998,11 @@ context.document = {
         self.assertIn('RETENTION_ROUNDS=16\n', runner)
         self.assertIn('RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))\n', runner)
         self.assertIn('HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))\n', runner)
+        # The series: after rounds 1, 8 and 16 (2 collections per round), ending at the last one.
+        self.assertIn('HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION"\n', runner)
+        self.assertIn('"ROVES_V8_HEAP_SNAPSHOT_GC=${HEAP_SNAPSHOT_COLLECTIONS// /,}"', runner)
+        # Same derived name as roves-js's heap_snapshot::derived_path for `<stem>.heapsnapshot`.
+        self.assertIn('heap_snapshot_path() { echo "${HEAP_SNAPSHOT%.heapsnapshot}.gc$1.heapsnapshot"; }\n', runner)
         for marker in ('"ROVES-V8 document-retention retained control true"',
                        '"ROVES-V8 document-retention round $round cycles 8 collections $((round * 2)) retained control true"',
                        '"ROVES-V8 document-retention rounds complete $RETENTION_ROUNDS cycles $RETENTION_CYCLES"',
@@ -1060,6 +1067,46 @@ class HeapSnapshotCheckTests(unittest.TestCase):
         self.assertEqual(
             ["expected 1 tagged probe object(s) with 'rovesProbeTag' -> 'roves-document-retention-probe', found 2"],
             self.check(snapshot(2), *required, expected_tagged_probes=1))
+
+    def test_reported_metrics_are_not_judged(self):
+        data = json.loads(self._valid_retention_snapshot())
+        data['snapshot']['meta']['node_types'][0].append('native')
+        data['strings'].append('RovesJsCell')
+        # Three nodes named RovesJsCell (one of them a string node), one named RovesJsCellular.
+        data['strings'].append('RovesJsCellular')
+        data['nodes'] += [3, 4, 0, 3, 4, 0, 2, 4, 0, 3, 5, 0]
+        data['snapshot']['node_count'] += 4
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'scene.heapsnapshot'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            # The fixture holds two tagged probes: reported without an expectation, judged with one.
+            found, metrics = analyze_snapshot(str(path), ('rovesProbeTag',), report_tagged_probes=True,
+                                              node_names=('RovesJsCell', 'RovesJsAbsent'))
+            self.assertEqual([], found)
+            self.assertEqual({'tagged': 2, 'named': {'RovesJsCell': 3, 'RovesJsAbsent': 0}}, metrics)
+            found, metrics = analyze_snapshot(str(path), (), expected_tagged_probes=1, node_names=('RovesJsCell',))
+            self.assertEqual(1, len(found))
+            self.assertIn('found 2', found[0])
+            # Neither metric is computed unless requested.
+            self.assertEqual(([], {}), analyze_snapshot(str(path), ()))
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = snapshot_main(['check', '--report-tagged-probes', '--count-node-name', 'RovesJsCell', str(path)])
+            self.assertEqual(0, code)
+            self.assertIn('; 2 tagged retention probe(s) (reported, not judged); '
+                          "3 node(s) named 'RovesJsCell' (diagnostic, not judged)", output.getvalue())
+            self.assertTrue(output.getvalue().startswith('::notice::'))
+
+    def test_node_name_count_needs_a_name_field(self):
+        data = json.loads(self._valid_retention_snapshot())
+        data['snapshot']['meta']['node_fields'] = ['type', 'id', 'edge_count']
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'scene.heapsnapshot'
+            path.write_text(json.dumps(data), encoding='utf-8')
+            found, metrics = analyze_snapshot(str(path), (), node_names=('RovesJsCell',))
+        self.assertEqual(1, len(found))
+        self.assertIn('invalid node table', found[0])
+        self.assertNotIn('named', metrics)
 
     def test_retention_snapshot_rejects_malformed_edge_graph(self):
         valid = json.loads(self._valid_retention_snapshot())
@@ -1483,40 +1530,51 @@ if page == 'gc-lifecycle.html':
                 line = 'result fail self-capturing inline handler nodes collected'
             print('ROVES-V8 gc ' + line)
 elif page == 'document-retention.html':
-    # Like a debug servoshell: the snapshot is written at the requested explicit collection.
+    # Like a debug servoshell: a series writes one derived file at each requested explicit
+    # collection (`<stem>.gc<N>.heapsnapshot`), never the base path itself.
     path = snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_PATH')
     api = prefs.get('dom_testutils_enabled', False)
     print('ROVES-V8 document-retention api ' + str(api).lower())
     if api and scenario != 'snapshot-scene':
         print('ROVES-V8 document-retention node created true removed true')
-    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '32' and scenario != 'snapshot-dump-failed':
-        if scenario != 'snapshot-file-missing':
-            with open(path, 'x') as written:
-                if scenario == 'snapshot-invalid':
-                    written.write('{"broken"')
-                else:
-                    probe_count = 2 if scenario == 'snapshot-extra-retained-probe' else 1
-                    nodes = [0, 0, probe_count]
-                    edges = []
-                    for _ in range(probe_count):
-                        object_offset = len(nodes)
-                        marker_offset = object_offset + 3
-                        nodes.extend([1, 1, 1, 2, 2, 0])
-                        edges.extend([0, 0, object_offset, 1, 3, marker_offset])
-                    written.write(json.dumps({
-                        'snapshot': {'meta': {
-                            'node_fields': ['type', 'name', 'edge_count'],
-                            'node_types': [['synthetic', 'object', 'string']],
-                            'edge_fields': ['type', 'name_or_index', 'to_node'],
-                            'edge_types': [['shortcut', 'property']],
-                        }, 'node_count': 1 + probe_count * 2, 'edge_count': probe_count * 2},
-                        'nodes': nodes, 'edges': edges,
-                        'strings': ['(GC roots)', 'Object', 'roves-document-retention-probe', 'rovesProbeTag',
-                                    'rovesDocumentRetentionProbe'],
-                    }))
-        print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 32', file=sys.stderr)
-    elif scenario == 'snapshot-dump-failed':
-        print(f'[roves-heap-snapshot] failed at explicit collection 32: {path}: No space left on device', file=sys.stderr)
+    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '2,16,32':
+        for collection in (2, 16, 32):
+            target = path[:-len('.heapsnapshot')] + f'.gc{collection}.heapsnapshot'
+            if scenario == 'snapshot-dump-failed' and collection == 16:
+                print(f'[roves-heap-snapshot] failed at explicit collection 16: {target}: No space left on device', file=sys.stderr)
+                continue
+            if scenario != 'snapshot-file-missing' or collection != 32:
+                with open(target, 'x') as written:
+                    if scenario == 'snapshot-invalid' and collection == 2:
+                        written.write('{"broken"')
+                    else:
+                        probe_count = 1
+                        if scenario == 'snapshot-extra-retained-probe' and collection == 32:
+                            probe_count = 2
+                        if scenario == 'snapshot-early-probes' and collection == 2:
+                            probe_count = 3
+                        # Synthetic RovesJsCell nodes: one per round so far, reported per snapshot.
+                        cells = collection // 2
+                        nodes = [0, 0, probe_count]
+                        edges = []
+                        for _ in range(probe_count):
+                            object_offset = len(nodes)
+                            marker_offset = object_offset + 3
+                            nodes.extend([1, 1, 1, 2, 2, 0])
+                            edges.extend([0, 0, object_offset, 1, 3, marker_offset])
+                        nodes.extend([3, 5, 0] * cells)
+                        written.write(json.dumps({
+                            'snapshot': {'meta': {
+                                'node_fields': ['type', 'name', 'edge_count'],
+                                'node_types': [['synthetic', 'object', 'string', 'native']],
+                                'edge_fields': ['type', 'name_or_index', 'to_node'],
+                                'edge_types': [['shortcut', 'property']],
+                            }, 'node_count': 1 + probe_count * 2 + cells, 'edge_count': probe_count * 2},
+                            'nodes': nodes, 'edges': edges,
+                            'strings': ['(GC roots)', 'Object', 'roves-document-retention-probe', 'rovesProbeTag',
+                                        'rovesDocumentRetentionProbe', 'RovesJsCell'],
+                        }))
+            print(f'[roves-heap-snapshot] wrote 31 bytes to {target} at explicit collection {collection}', file=sys.stderr)
     if api:
         for round in range(1, 17):
             if scenario != 'snapshot-round' or round != 11:
@@ -1638,8 +1696,9 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             elif snapshot is not None:
                 env['V8_SMOKE_HEAP_SNAPSHOT'] = str(directory / snapshot)
                 if snapshot.startswith('existing/'):
+                    # One derived target of the series already exists.
                     (directory / 'existing').mkdir()
-                    (directory / snapshot).write_text('kept')
+                    (directory / 'existing' / 'scene.gc16.heapsnapshot').write_text('kept')
             env.update(extra_env or {})
             result = subprocess.run(['bash', str(runner), 'unused-browser',
                                      *(['wrapper with spaces', '--option'] if wrapped else [])],
@@ -1650,10 +1709,13 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             result.gc_args = received.read_text().split('\n') if received.exists() else None
             received = directory / 'snapshot-env.txt'
             result.snapshot_env = json.loads(received.read_text()) if received.exists() else None
-            written = directory / 'out' / 'scene.heapsnapshot'
-            result.snapshot = written.read_text() if written.exists() else None
-            existing = directory / 'existing' / 'scene.heapsnapshot'
+            result.base_written = (directory / 'out' / 'scene.heapsnapshot').exists()
+            result.snapshots = sorted(path.name for path in (directory / 'out').glob('*')) \
+                if (directory / 'out').exists() else []
+            existing = directory / 'existing' / 'scene.gc16.heapsnapshot'
             result.existing = existing.read_text() if existing.exists() else None
+            result.existing_files = sorted(path.name for path in (directory / 'existing').glob('*')) \
+                if (directory / 'existing').exists() else []
             result.runtime_logs = [path.read_text() for path in
                                    (directory / '.v8-smoke-runtime').glob('*/roves/roves.log')]
             return result
@@ -1755,10 +1817,22 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 settings, options = result.snapshot_env
                 self.assertEqual(['ROVES_V8_HEAP_SNAPSHOT_GC', 'ROVES_V8_HEAP_SNAPSHOT_PATH'], sorted(settings))
-                self.assertEqual('32', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
+                self.assertEqual('2,16,32', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
                 self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
                 self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
-                self.assertIsNotNone(result.snapshot)
+                # Three distinct derived files; the base path is never written.
+                self.assertEqual(['scene.gc16.heapsnapshot', 'scene.gc2.heapsnapshot', 'scene.gc32.heapsnapshot'],
+                                 result.snapshots)
+                self.assertFalse(result.base_written)
+                # Every snapshot is validated; only the last tagged count is judged, and the
+                # RovesJsCell counts (synthetic 1, 8, 16) are reported per snapshot, never judged.
+                for collection, cells in ((2, 1), (16, 8)):
+                    self.assertIn(f"scene.gc{collection}.heapsnapshot: valid V8 snapshot with 'rovesDocumentRetentionProbe', "
+                                  "'roves-document-retention-probe'; 1 tagged retention probe(s) (reported, not judged); "
+                                  f"{cells} node(s) named 'RovesJsCell' (diagnostic, not judged)", result.stdout)
+                self.assertIn("scene.gc32.heapsnapshot: valid V8 snapshot with 'rovesDocumentRetentionProbe', "
+                              "'roves-document-retention-probe'; 1 tagged retention probe(s); "
+                              "16 node(s) named 'RovesJsCell' (diagnostic, not judged)", result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released element false', result.stdout)
                 # Unreleased targets are reported, never judged.
                 # Per-round lines are plain log lines, outside the per-step annotation quota.
@@ -1769,15 +1843,22 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertNotIn('::notice::document-retention.html: ROVES-V8 document-retention round ', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention rounds complete 16 cycles 128', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128', result.stdout)
-                self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'; 1 tagged retention probe(s)", result.stdout)
                 wrapper = ['wrapper with spaces', '--option'] if wrapped else []
                 self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
 
+    def test_early_tagged_counts_are_reported_not_judged(self):
+        result = self.run_fixture('snapshot-early-probes', snapshot='out/scene.heapsnapshot')
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertIn('scene.gc2.heapsnapshot: valid V8 snapshot with', result.stdout)
+        self.assertIn('; 3 tagged retention probe(s) (reported, not judged); 1 node(s)', result.stdout)
+
     def test_requested_heap_snapshot_failures(self):
         cases = (
-            ('snapshot-dump-failed', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
-            ('snapshot-file-missing', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty'),
+            ('snapshot-dump-failed', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty: '),
+            ('snapshot-dump-failed', 'out/scene.heapsnapshot', '/out/scene.gc16.heapsnapshot at explicit collection 16'),
+            ('snapshot-file-missing', 'out/scene.heapsnapshot', 'requested heap snapshot missing or empty: '),
             ('snapshot-invalid', 'out/scene.heapsnapshot', '::error::heap snapshot '),
+            ('snapshot-invalid', 'out/scene.heapsnapshot', 'scene.gc2.heapsnapshot: not a V8 heap snapshot'),
             ('snapshot-scene', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention node created true removed true'"),
             ('snapshot-diagnostic', 'out/scene.heapsnapshot', 'missing released diagnostic'),
             # Round lines also end in "retained control true": the final control line is still required.
@@ -1785,19 +1866,24 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 11 cycles 8 collections 22 retained control true'"),
             ('snapshot-cleanup', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128'"),
             ('snapshot-extra-retained-probe', 'out/scene.heapsnapshot', 'found 2'),
-            ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
+            ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten: '),
             ('pass', 'relative', 'must be an absolute path'),
+            ('pass', 'out/scene.json', 'must name a <name>.heapsnapshot file'),
+            ('pass', 'out/.heapsnapshot', 'must name a <name>.heapsnapshot file'),
         )
         for scenario, snapshot, message in cases:
-            with self.subTest(scenario=scenario, snapshot=snapshot):
+            with self.subTest(scenario=scenario, snapshot=snapshot, message=message):
                 result = self.run_fixture(scenario, snapshot=snapshot)
                 self.assertNotEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertIn(message, result.stdout)
                 if snapshot != 'out/scene.heapsnapshot':
                     # Refused before launching: nothing runs, nothing is overwritten.
                     self.assertIsNone(result.snapshot_env)
+                    self.assertEqual([], result.snapshots)
                     if snapshot.startswith('existing/'):
+                        self.assertIn('/existing/scene.gc16.heapsnapshot', result.stdout)
                         self.assertEqual('kept', result.existing)
+                        self.assertEqual(['scene.gc16.heapsnapshot'], result.existing_files)
                 else:
                     self.assertIn('V8 smoke diagnostics: document-retention.log', result.stdout)
 

@@ -227,10 +227,12 @@ jobs:
           if [ "${{ matrix.mode }}" = jitless ]; then features="--features roves-js/jitless"; fi
           python support/v8_cutover_check.py servoshell --build --online --top 40 $features
           ls target/v8-cutover/debug/servoshell*
-      # Linux normal only: one extra debug servoshell process (one page, bounded by its 120 s
-      # timeout) loads document-retention.html and writes one native V8 heap snapshot of a detached
-      # DOM wrapper; its size follows the page's JS heap. Kept 3 days, for reading retainers in
-      # DevTools' Memory panel. The smoke step fails when the requested snapshot is missing.
+      # Linux normal only: one extra debug servoshell process (one page, bounded by its 180 s
+      # timeout) loads document-retention.html and writes a series of three native V8 heap
+      # snapshots (explicit collections 2, 16 and 32) next to the base path below, as
+      # document-retention.gc<N>.heapsnapshot; their size follows the page's JS heap. Kept 3 days,
+      # for comparing retainers in DevTools' Memory panel. The smoke step fails when a requested
+      # snapshot is missing or invalid.
       - name: run the V8 smoke pages headlessly
         if: runner.os == 'Linux'
         env:
@@ -280,11 +282,11 @@ jobs:
             *.log
           retention-days: 3
           if-no-files-found: ignore
-      - name: upload the document-retention heap snapshot
+      - name: upload the document-retention heap snapshots
         if: always() && runner.os == 'Linux' && matrix.mode == 'normal'
         uses: actions/upload-artifact@v4
         with:
           name: v8-heap-snapshot-document-retention
-          path: target/v8-heap-snapshot/document-retention.heapsnapshot
+          path: target/v8-heap-snapshot/document-retention.gc*.heapsnapshot
           retention-days: 3
           if-no-files-found: warn

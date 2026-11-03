@@ -4,8 +4,8 @@
 <script>
 "use strict";
 // A bounded duration scene for one long-lived document: 16 rounds, each of 8 create/remove
-// cycles followed by 2 explicit collections (128 cycles, 32 collections); a debug build writes
-// its native snapshot at the last one. Every cycle also adds a self-capturing listener removed
+// cycles followed by 2 explicit collections (128 cycles, 32 collections); a debug build may write
+// native snapshots at chosen ones (run.sh: 2, 16 and 32). Every cycle also adds a self-capturing listener removed
 // through AbortController and a self-capturing timer cancelled before it can run. A control DOM
 // wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
 // every round (required). Released wrapper/closure cycles are read through WeakRef only once,

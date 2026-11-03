@@ -151,10 +151,11 @@ for Roves comes from the V8 CI smoke (see the shell wiki page). Unused job-queue
 left from Servo's old engine, and the small per-runtime allocation they leaked, are removed.
 Its scheduling check accepts a 0 ms timer and the next animation frame in either order, as
 browsers do, and still requires queued microtasks to run first (see the shell wiki page).
-Debug builds can write one native V8 heap snapshot at the Nth explicit `TestUtils.gc()`
-(private `ROVES_V8_HEAP_SNAPSHOT_PATH`/`ROVES_V8_HEAP_SNAPSHOT_GC`; compiled out of release
-builds). V8 CI's Linux normal smoke captures one for a removed blank frame as a 3-day artifact,
-to read its retainers; release is still diagnostic only (see the shell wiki page). Native
+Debug builds can write native V8 heap snapshots at chosen explicit `TestUtils.gc()` calls
+(private `ROVES_V8_HEAP_SNAPSHOT_PATH`/`ROVES_V8_HEAP_SNAPSHOT_GC`, one collection or a short
+series; compiled out of release builds). V8 CI's Linux normal smoke captures a series of three
+(collections 2, 16 and 32) of one long-lived document as a 3-day artifact, to compare retainers
+over time; the counts it reports are diagnostic only (see the shell wiki page). Native
 objects in these snapshots are named after their class (e.g. `HTMLIFrameElement`).
 Maintainers can validate the generated V8 adapter wrappers without rewriting them with
 `support/roves_js/gen_wrappers2.py --check` (see the shell wiki page).

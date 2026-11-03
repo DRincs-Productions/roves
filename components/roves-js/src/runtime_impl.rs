@@ -455,9 +455,9 @@ pub unsafe fn JS_GC(cx: *mut JSContext, reason: GCReason) {
     #[cfg(debug_assertions)]
     if reason == GCReason::DOM_TESTUTILS {
         let request = hooks(cx).heap_snapshot.borrow();
-        if let Some(request) = request.as_ref().filter(|request| request.take()) {
+        if let Some(target) = request.as_ref().and_then(|request| request.take()) {
             // SAFETY: callers pass this thread's live context.
-            unsafe { &*cx }.with_scope(|scope| request.dump(|sink| scope.take_heap_snapshot(sink)));
+            unsafe { &*cx }.with_scope(|scope| target.dump(|sink| scope.take_heap_snapshot(sink)));
         }
     }
     #[cfg(not(debug_assertions))]

@@ -2,6 +2,29 @@
 
 ## Punto operativo aggiornato — 3 novembre 2026
 
+### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — locale, CI non eseguita
+
+Il singolo snapshot alla collezione 32 di 0458/0461 non basta a valutare la retention nel
+tempo. Nelle build debug `ROVES_V8_HEAP_SNAPSHOT_GC` accetta ora anche una lista crescente
+(max 8, es. `2,16,32`); con un solo valore il comportamento resta identico (scrive esattamente
+`ROVES_V8_HEAP_SNAPSHOT_PATH`). Una serie scrive file nuovi derivati `<stem>.gc<N>.<ext>`,
+mai il percorso base, mai sovrascritti; un tentativo per collezione. Stessa API pubblica V8
+`take_heap_snapshot`, nessuna dipendenza, nessun comportamento di produzione (codice solo
+`debug_assertions`). `run.sh` chiede 2, 16 e 32 (dopo i round 1, 8, 16) nello stesso processo
+document-retention; `V8_SMOKE_HEAP_SNAPSHOT` deve ora nominare un file `<nome>.heapsnapshot`.
+Ogni snapshot deve esistere ed essere valido; solo l'ultimo mantiene il vincolo giudicato di
+**1** probe taggato (il controllo). I conteggi taggati a 2 e 16 e il numero di nodi chiamati
+`RovesJsCell` in ciascuno snapshot sono solo riportati (`--report-tagged-probes`,
+`--count-node-name`): nessuna soglia, nessun verdetto di leak, nessuna analisi dei retainer.
+I tre file finiscono nell'artefatto esistente `v8-heap-snapshot-document-retention`.
+
+Verifiche locali: suite focalizzata del runner, 33 test con 16 skip (i `RunnerTests` POSIX
+saltati su Windows); 8 test del harness di chiusura; `py_compile`, `bash -n` e `git diff --check`
+passano. Non ho eseguito test Rust, build o harness nativo. Restano i test Rust `heap_snapshot`
+normal/JITless e la run V8 Linux normal. Limiti: tre punti di una
+scena sintetica in un processo debug restano diagnostici e non chiudono la retention generale,
+la proprietà cppgc né la memoria nativa. Nessuna patch in `patches/` per richiesta del task.
+
 ### Smoke Windows: chiusura nativa con fetch statico pendente (task 0462) — locale, CI non eseguita
 
 Nuovo `support/v8-smoke/window_close_pending_fetch.py` (stdlib Python + ctypes/user32, nessuna
@@ -38,9 +61,13 @@ cancellato, mentre `ensure-test-release` e `ios-release-signing-smoke` sono verd
 è rimasto attivo per 15 minuti; la risposta API non identifica chi o perché l'abbia cancellato
 e il log del job non è disponibile (404). Il workflow V8 non è partito perché nessun percorso
 monitorato da `.github/workflows/v8.yml` era cambiato. Questa cancellazione non soddisfa il gate
-Apple: nessun ulteriore push finché il batch richiesto non è verificato positivamente. Il test
-Windows 0462 in sviluppo locale modificherà `v8.yml` e farà partire la matrice V8, inclusi i job
-macOS, al prossimo push autorizzato.
+Apple: nessun ulteriore push finché il batch richiesto non è verificato positivamente. Il job iOS
+cancellato è stato riavviato singolarmente e ora è in coda (nuovo job `126197711507`); non
+trattare la cancellazione originale come successo. La smoke Windows 0462 è un commit locale
+(`a0375e277c1`) e la serie diagnostica memoria è in WIP; entrambe modificano `v8.yml`/i percorsi
+V8 e faranno partire la matrice V8 al prossimo push consentito. Al checkpoint corrente
+`origin/main` resta `fcecc8d6a2c`; i commit locali e il WIP non sono pubblicati. Ricontrollare il
+job riavviato al prossimo checkpoint aggregato; un nuovo errore va corretto prima del push.
 
 ### 0461 — conteggio automatico del controllo di retention
 

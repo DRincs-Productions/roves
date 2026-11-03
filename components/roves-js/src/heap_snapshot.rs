@@ -2,53 +2,40 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
-//! Debug builds only: one V8 heap snapshot at the Nth explicit collection of a runtime
+//! Debug builds only: V8 heap snapshots at chosen explicit collections of a runtime
 //! (`JS_GC` with `GCReason::DOM_TESTUTILS`, i.e. Servo's `TestUtils.gc()`), to find what
-//! retains objects in a controlled smoke page (`support/v8-smoke/frame-retention.html`).
+//! retains objects in a controlled smoke page (`support/v8-smoke/document-retention.html`).
 //!
 //! Off unless both private environment variables are set, read once per runtime:
-//! `ROVES_V8_HEAP_SNAPSHOT_PATH`, an absolute path to a new file (never overwritten), and
-//! `ROVES_V8_HEAP_SNAPSHOT_GC`, which explicit collection dumps (from 1). V8's heap profiler
-//! takes and serializes the snapshot (Chrome DevTools' `.heapsnapshot` JSON); it is streamed
-//! to the file. One attempt per runtime: the request is consumed before the dump, and an
-//! invalid configuration or I/O error is reported on stderr, never retried.
+//! `ROVES_V8_HEAP_SNAPSHOT_PATH`, an absolute path, and `ROVES_V8_HEAP_SNAPSHOT_GC`, which
+//! explicit collections dump (from 1): one number, or up to [`MAX_SNAPSHOTS`] strictly
+//! increasing numbers separated by commas (`2,16,32`). One collection writes exactly the given
+//! path; a series writes one derived path per collection, `<stem>.gc<N>[.<extension>]`
+//! (`scene.heapsnapshot` at 16 becomes `scene.gc16.heapsnapshot`). Files are created new, never
+//! overwritten. V8's heap profiler takes and serializes each snapshot (Chrome DevTools'
+//! `.heapsnapshot` JSON); it is streamed to its file. One attempt per collection: each target is
+//! consumed before its dump, and an invalid configuration or I/O error is reported on stderr,
+//! never retried (later targets of a series still run).
 
 use std::cell::Cell;
-use std::ffi::OsString;
+use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 
 pub(crate) const PATH_VAR: &str = "ROVES_V8_HEAP_SNAPSHOT_PATH";
 pub(crate) const GC_VAR: &str = "ROVES_V8_HEAP_SNAPSHOT_GC";
+/// Bounds a series: each snapshot is a full, potentially large heap dump.
+pub(crate) const MAX_SNAPSHOTS: usize = 8;
 
-/// A pending one-shot snapshot request.
+/// One snapshot: the file it creates and the explicit collection that writes it.
 #[derive(Debug)]
-pub(crate) struct Request {
+pub(crate) struct Target {
     path: PathBuf,
     collection: u32,
-    /// Explicit collections seen so far; `None` once the request is consumed.
-    seen: Cell<Option<u32>>,
 }
 
-impl Request {
-    /// The request configured by the environment, if any (an invalid one is logged).
-    pub(crate) fn from_env() -> Option<Request> {
-        parse(std::env::var_os(PATH_VAR), std::env::var_os(GC_VAR)).unwrap_or_else(|error| {
-            eprintln!("[roves-heap-snapshot] disabled: {error}");
-            None
-        })
-    }
-
-    /// Counts one explicit collection; true, once, when it is the requested one.
-    pub(crate) fn take(&self) -> bool {
-        let Some(seen) = self.seen.get() else { return false };
-        let seen = seen + 1;
-        let due = seen == self.collection;
-        self.seen.set(if due { None } else { Some(seen) });
-        due
-    }
-
+impl Target {
     /// Writes the snapshot `snapshot` produces (see [`write`]) and reports the outcome.
     pub(crate) fn dump(&self, snapshot: impl FnOnce(&mut dyn FnMut(&[u8]) -> bool)) {
         match write(&self.path, snapshot) {
@@ -66,23 +53,87 @@ impl Request {
     }
 }
 
+/// Pending snapshot targets, in collection order.
+#[derive(Debug)]
+pub(crate) struct Request {
+    targets: Vec<Target>,
+    /// Explicit collections seen while a target is pending.
+    seen: Cell<u32>,
+    /// The next pending target; `targets.len()` once all are consumed.
+    next: Cell<usize>,
+}
+
+impl Request {
+    /// The request configured by the environment, if any (an invalid one is logged).
+    pub(crate) fn from_env() -> Option<Request> {
+        parse(std::env::var_os(PATH_VAR), std::env::var_os(GC_VAR)).unwrap_or_else(|error| {
+            eprintln!("[roves-heap-snapshot] disabled: {error}");
+            None
+        })
+    }
+
+    /// Counts one explicit collection; the target due at it, once, if any.
+    pub(crate) fn take(&self) -> Option<&Target> {
+        let target = self.targets.get(self.next.get())?;
+        let seen = self.seen.get() + 1;
+        self.seen.set(seen);
+        if seen != target.collection {
+            return None;
+        }
+        self.next.set(self.next.get() + 1);
+        Some(target)
+    }
+}
+
 /// The request two variable values describe: none when both are unset.
-pub(crate) fn parse(path: Option<OsString>, collection: Option<OsString>) -> Result<Option<Request>, String> {
-    let (path, collection) = match (path, collection) {
+pub(crate) fn parse(path: Option<OsString>, collections: Option<OsString>) -> Result<Option<Request>, String> {
+    let (path, collections) = match (path, collections) {
         (None, None) => return Ok(None),
-        (Some(path), Some(collection)) => (PathBuf::from(path), collection),
+        (Some(path), Some(collections)) => (PathBuf::from(path), collections),
         (Some(_), None) => return Err(format!("{PATH_VAR} is set without {GC_VAR}")),
         (None, Some(_)) => return Err(format!("{GC_VAR} is set without {PATH_VAR}")),
     };
     if !path.is_absolute() {
         return Err(format!("{PATH_VAR} must be an absolute path, not {:?}", path));
     }
-    let collection = collection
+    let invalid = || {
+        format!(
+            "{GC_VAR} must be a positive integer or up to {MAX_SNAPSHOTS} strictly increasing ones \
+             separated by commas, not {:?}",
+            collections
+        )
+    };
+    let values = collections
         .to_str()
-        .and_then(|value| value.parse::<u32>().ok())
-        .filter(|&value| value > 0)
-        .ok_or_else(|| format!("{GC_VAR} must be a positive integer, not {:?}", collection))?;
-    Ok(Some(Request { path, collection, seen: Cell::new(Some(0)) }))
+        .ok_or_else(invalid)?
+        .split(',')
+        .map(|value| value.parse::<u32>().ok().filter(|&value| value > 0))
+        .collect::<Option<Vec<u32>>>()
+        .filter(|values| values.len() <= MAX_SNAPSHOTS && values.windows(2).all(|pair| pair[0] < pair[1]))
+        .ok_or_else(invalid)?;
+    let targets = match values[..] {
+        [collection] => vec![Target { path, collection }],
+        _ => values
+            .iter()
+            .map(|&collection| {
+                derived_path(&path, collection)
+                    .map(|path| Target { path, collection })
+                    .ok_or_else(|| format!("{PATH_VAR} has no file name to derive a series from: {:?}", path))
+            })
+            .collect::<Result<_, _>>()?,
+    };
+    Ok(Some(Request { targets, seen: Cell::new(0), next: Cell::new(0) }))
+}
+
+/// `<stem>.gc<collection>[.<extension>]` next to `path`: distinct for distinct collections.
+pub(crate) fn derived_path(path: &Path, collection: u32) -> Option<PathBuf> {
+    let mut name = path.file_stem()?.to_owned();
+    name.push(format!(".gc{collection}"));
+    if let Some(extension) = path.extension() {
+        name.push(OsStr::new("."));
+        name.push(extension);
+    }
+    Some(path.with_file_name(name))
 }
 
 /// Creates `path` (never an existing file) and streams into it the chunks `snapshot` passes
@@ -133,15 +184,20 @@ mod tests {
         directory
     }
 
-    fn request(path: &Path, collection: &str) -> Result<Option<Request>, String> {
-        parse(Some(path.as_os_str().to_owned()), Some(OsString::from(collection)))
+    fn request(path: &Path, collections: &str) -> Result<Option<Request>, String> {
+        parse(Some(path.as_os_str().to_owned()), Some(OsString::from(collections)))
+    }
+
+    fn targets(request: &Request) -> Vec<(PathBuf, u32)> {
+        request.targets.iter().map(|target| (target.path.clone(), target.collection)).collect()
     }
 
     #[test]
     fn configuration() {
         let path = std::env::temp_dir().join("roves.heapsnapshot");
         assert!(parse(None, None).unwrap().is_none());
-        assert_eq!(3, request(&path, "3").unwrap().unwrap().collection);
+        // One collection: exactly the given path (the original single-snapshot contract).
+        assert_eq!(vec![(path.clone(), 3)], targets(&request(&path, "3").unwrap().unwrap()));
         for (path, collection) in [
             (Some(path.as_os_str().to_owned()), None),
             (None, Some(OsString::from("1"))),
@@ -150,20 +206,48 @@ mod tests {
         ] {
             assert!(parse(path, collection).is_err());
         }
-        for collection in ["0", "-1", "two", "", " 1", "4294967296"] {
-            let error = request(&path, collection).unwrap_err();
-            assert!(error.contains(GC_VAR), "{error}");
+        for collections in [
+            "0", "-1", "two", "", " 1", "4294967296", "1,", ",1", "1,,2", "1, 2", "2,2", "16,2", "1,0",
+            "1,2,3,4,5,6,7,8,9",
+        ] {
+            let error = request(&path, collections).unwrap_err();
+            assert!(error.contains(GC_VAR), "{collections}: {error}");
         }
+        assert_eq!(MAX_SNAPSHOTS, request(&path, "1,2,3,4,5,6,7,8").unwrap().unwrap().targets.len());
     }
 
     #[test]
-    fn one_shot_at_the_requested_collection() {
+    fn series_targets_derive_distinct_paths() {
+        let directory = std::env::temp_dir();
+        let base = directory.join("document-retention.heapsnapshot");
+        assert_eq!(
+            vec![
+                (directory.join("document-retention.gc2.heapsnapshot"), 2),
+                (directory.join("document-retention.gc16.heapsnapshot"), 16),
+                (directory.join("document-retention.gc32.heapsnapshot"), 32),
+            ],
+            targets(&request(&base, "2,16,32").unwrap().unwrap())
+        );
+        assert_eq!(Some(directory.join("scene.gc7")), derived_path(&directory.join("scene"), 7));
+        assert_eq!(Some(directory.join("a.b.gc1.c")), derived_path(&directory.join("a.b.c"), 1));
+        // A root has no file name to derive from.
+        let root = directory.ancestors().last().unwrap().to_owned();
+        assert!(derived_path(&root, 1).is_none());
+        assert!(request(&root, "1,2").unwrap_err().contains(PATH_VAR));
+    }
+
+    #[test]
+    fn each_target_once_at_its_collection() {
         let path = std::env::temp_dir().join("unused.heapsnapshot");
         let first = request(&path, "1").unwrap().unwrap();
-        assert!(first.take());
-        assert!(!first.take());
+        assert_eq!(Some(1), first.take().map(|target| target.collection));
+        assert!(first.take().is_none());
         let third = request(&path, "3").unwrap().unwrap();
-        assert_eq!([false, false, true, false, false], std::array::from_fn(|_| third.take()));
+        let due: [Option<u32>; 5] = std::array::from_fn(|_| third.take().map(|target| target.collection));
+        assert_eq!([None, None, Some(3), None, None], due);
+        let series = request(&path, "2,4,5").unwrap().unwrap();
+        let due: [Option<u32>; 7] = std::array::from_fn(|_| series.take().map(|target| target.collection));
+        assert_eq!([None, Some(2), None, Some(4), Some(5), None, None], due);
     }
 
     #[test]
@@ -182,11 +266,11 @@ mod tests {
         let empty = directory.join("empty.heapsnapshot");
         assert!(write(&empty, |sink| assert!(sink(&[]))).is_err());
         assert!(!empty.exists());
-        // A consumed request is not retried after an error.
+        // A consumed target is not retried after an error.
         let failing = request(&existing, "1").unwrap().unwrap();
-        assert!(failing.take());
-        failing.dump(|_| unreachable!("the file exists"));
-        assert!(!failing.take());
+        failing.take().unwrap().dump(|_| unreachable!("the file exists"));
+        assert!(failing.take().is_none());
+        assert_eq!(b"kept", &std::fs::read(&existing).unwrap()[..]);
         let _ = std::fs::remove_dir_all(&directory);
     }
 
@@ -219,6 +303,42 @@ mod tests {
         std::fs::remove_file(&path).unwrap();
         unsafe { JS_GC(cx, GCReason::DOM_TESTUTILS) };
         assert!(!path.exists());
+        drop(runtime);
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
+    /// A series in one real runtime: each derived file is written at its own collection, the
+    /// base path is never written, and each file sees the heap of its moment.
+    #[test]
+    fn real_snapshot_series() {
+        let directory = scratch("series");
+        let base = directory.join("scene.heapsnapshot");
+        let runtime = Runtime::new(JSEngineHandle::for_tests());
+        let cx = runtime.raw_cx();
+        // SAFETY: this thread's live runtime.
+        let hooks = unsafe { &(*cx).hooks };
+        hooks.heap_snapshot.replace(request(&base, "1,3").unwrap());
+        let run = |code: &str| {
+            unsafe { &*cx }.with_scope(|scope| {
+                let source = v8::String::new(scope, code).unwrap();
+                v8::Script::compile(scope, source, None).unwrap().run(scope).unwrap();
+            })
+        };
+        run("class RovesSeriesFirst {}; globalThis.first = new RovesSeriesFirst();");
+        unsafe { JS_GC(cx, GCReason::DOM_TESTUTILS) };
+        run("class RovesSeriesLater {}; globalThis.later = new RovesSeriesLater();");
+        unsafe {
+            JS_GC(cx, GCReason::DOM_TESTUTILS);
+            JS_GC(cx, GCReason::DOM_TESTUTILS);
+            JS_GC(cx, GCReason::DOM_TESTUTILS);
+        }
+        let first = std::fs::read_to_string(directory.join("scene.gc1.heapsnapshot")).unwrap();
+        let third = std::fs::read_to_string(directory.join("scene.gc3.heapsnapshot")).unwrap();
+        assert!(first.contains("\"RovesSeriesFirst\"") && !first.contains("RovesSeriesLater"));
+        assert!(third.contains("\"RovesSeriesFirst\"") && third.contains("\"RovesSeriesLater\""));
+        assert!(!base.exists());
+        assert!(!directory.join("scene.gc2.heapsnapshot").exists());
+        assert_eq!(2, std::fs::read_dir(&directory).unwrap().count());
         drop(runtime);
         let _ = std::fs::remove_dir_all(&directory);
     }

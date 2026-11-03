@@ -270,34 +270,52 @@ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-l
 for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
 done
-# Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute path to a new file): a debug servoshell dumps one
-# native V8 heap snapshot at the last of document-retention.html's 32 explicit collections (16
-# rounds of 8 create/remove cycles, each with an AbortController listener and a cancelled timer,
-# 2 collections per round), for reading the retainers of detached DOM wrappers with a live control.
-# The control (expando and active listener) must survive every round and a requested snapshot must
-# exist and be valid; WeakRef release counts are diagnostics only, never a failure or leak verdict.
+# Opt-in (V8_SMOKE_HEAP_SNAPSHOT, an absolute base path naming a `.heapsnapshot` file): one debug
+# servoshell process dumps a bounded series of native V8 heap snapshots at explicit collections 2,
+# 16 and 32 of document-retention.html (after rounds 1, 8 and 16 of 16 rounds of 8 create/remove
+# cycles, each with an AbortController listener and a cancelled timer, 2 collections per round),
+# for reading the retainers of detached DOM wrappers with a live control over time. Each snapshot
+# goes to its own new derived file, `<base without .heapsnapshot>.gc<N>.heapsnapshot`; the base
+# path itself is never written. The control (expando and active listener) must survive every round,
+# every requested snapshot must exist and be valid, and the last must hold exactly one tagged
+# probe (the control). The earlier tagged counts and every count of nodes named RovesJsCell are
+# reported only; WeakRef release counts are diagnostics too, never a failure or leak verdict.
 HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
 RETENTION_ROUNDS=16
 RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))
 HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))
+HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION"
+# Must match roves-js's heap_snapshot::derived_path for a `<stem>.heapsnapshot` base.
+heap_snapshot_path() { echo "${HEAP_SNAPSHOT%.heapsnapshot}.gc$1.heapsnapshot"; }
 SNAPSHOT_LOGS=""
 if [ -n "$HEAP_SNAPSHOT" ]; then
   case "$HEAP_SNAPSHOT" in
     /*) snapshot_ok=1 ;;
     *) snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT must be an absolute path: $HEAP_SNAPSHOT" ;;
   esac
-  if [ "$snapshot_ok" -eq 1 ] && [ -e "$HEAP_SNAPSHOT" ]; then
-    snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT already exists and is never overwritten: $HEAP_SNAPSHOT"
+  if [ "$snapshot_ok" -eq 1 ]; then
+    case "${HEAP_SNAPSHOT##*/}" in
+      ?*.heapsnapshot) ;;
+      *) snapshot_ok=0; echo "::error::V8_SMOKE_HEAP_SNAPSHOT must name a <name>.heapsnapshot file: $HEAP_SNAPSHOT" ;;
+    esac
+  fi
+  if [ "$snapshot_ok" -eq 1 ]; then
+    for collection in $HEAP_SNAPSHOT_COLLECTIONS; do
+      if [ -e "$(heap_snapshot_path "$collection")" ]; then
+        snapshot_ok=0; echo "::error::heap snapshot already exists and is never overwritten: $(heap_snapshot_path "$collection")"
+      fi
+    done
   fi
   if [ "$snapshot_ok" -eq 1 ] && ! mkdir -p "$(dirname "$HEAP_SNAPSHOT")"; then
     snapshot_ok=0; echo "::error::cannot create the directory of V8_SMOKE_HEAP_SNAPSHOT: $HEAP_SNAPSHOT"
   fi
   if [ "$snapshot_ok" -eq 1 ]; then
-    PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=$HEAP_SNAPSHOT_COLLECTION")
+    PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=${HEAP_SNAPSHOT_COLLECTIONS// /,}")
     PAGE_ENV_COUNT=2
     SNAPSHOT_LOGS="document-retention.log"
-    # 120 s bounds the process (32 collections in a debug build); it is not a measured duration.
-    run_page document-retention.html 120 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
+    # 180 s bounds the process (32 collections and 3 snapshots in a debug build); it is not a
+    # measured duration.
+    run_page document-retention.html 180 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
     PAGE_ENV=()
     PAGE_ENV_COUNT=0
     retention_expected=("ROVES-V8 document-retention api true")
@@ -321,22 +339,30 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
         esac
       else snapshot_ok=0; echo "::error::document-retention.html: missing '$expected' ($(grep -aF -e 'ROVES-V8 document-retention ' -e '[roves-heap-snapshot]' document-retention.log | tr '\n' ' '))"; fi
     done
-    if ! grep -aFq " to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION" document-retention.log; then
-      snapshot_ok=0; echo "::error::document-retention.html: no snapshot written to $HEAP_SNAPSHOT at explicit collection $HEAP_SNAPSHOT_COLLECTION"
-    fi
+    for collection in $HEAP_SNAPSHOT_COLLECTIONS; do
+      snapshot=$(heap_snapshot_path "$collection")
+      if ! grep -aFq " to $snapshot at explicit collection $collection" document-retention.log; then
+        snapshot_ok=0; echo "::error::document-retention.html: no snapshot written to $snapshot at explicit collection $collection"
+      fi
+    done
     # Released counts are diagnostic only, but must be reported.
     diagnostic=$(grep -aE '^ROVES-V8 document-retention diagnostic released element (true|false) probe (true|false)$' document-retention.log | head -1)
     if [ -n "$diagnostic" ]; then echo "::notice::document-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::document-retention.html: missing released diagnostic"; fi
     # Per-round (plain log lines) and total (notice) counts: reported when present, never required or judged.
     grep -aE '^ROVES-V8 document-retention diagnostic round [0-9]+ released ' document-retention.log | while IFS= read -r line; do echo "document-retention.html: $line"; done
     grep -aE '^ROVES-V8 document-retention diagnostic released counts ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
-    if [ ! -s "$HEAP_SNAPSHOT" ]; then
-      snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
-    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" --expected-tagged-probes 1 \
-      --tag-property rovesProbeTag --tag-marker roves-document-retention-probe \
-      "$HEAP_SNAPSHOT" rovesDocumentRetentionProbe roves-document-retention-probe; then
-      snapshot_ok=0
-    fi
+    for collection in $HEAP_SNAPSHOT_COLLECTIONS; do
+      snapshot=$(heap_snapshot_path "$collection")
+      # Only the last snapshot's tagged count is judged (the existing one-control contract).
+      if [ "$collection" -eq "$HEAP_SNAPSHOT_COLLECTION" ]; then tagged=(--expected-tagged-probes 1); else tagged=(--report-tagged-probes); fi
+      if [ ! -s "$snapshot" ]; then
+        snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $snapshot"
+      elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "${tagged[@]}" --count-node-name RovesJsCell \
+        --tag-property rovesProbeTag --tag-marker roves-document-retention-probe \
+        "$snapshot" rovesDocumentRetentionProbe roves-document-retention-probe; then
+        snapshot_ok=0
+      fi
+    done
   fi
   if [ "$snapshot_ok" -ne 1 ]; then STATUS=1; fi
 fi

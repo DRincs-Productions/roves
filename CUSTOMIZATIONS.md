@@ -1,3 +1,36 @@
+## 2026-11-03 - Bounded heap snapshot series for the document retention scene
+
+Debug-only diagnostic, no production behavior: `components/roves-js/src/heap_snapshot.rs`
+(compiled only with `debug_assertions`) now accepts in the private `ROVES_V8_HEAP_SNAPSHOT_GC`
+either one positive collection (unchanged: exactly `ROVES_V8_HEAP_SNAPSHOT_PATH` is written)
+or up to 8 strictly increasing collections separated by commas. A series writes one new file
+per collection at a derived path, `<stem>.gc<N>[.<extension>]` next to the base path, which
+itself is never written; files are still created with `create_new` (never overwritten) and
+each target is attempted once (a failed dump does not stop later targets). `runtime_impl.rs`'s
+`JS_GC` only switches from a boolean to the due target. Rust unit tests cover parsing
+(malformed, duplicate, decreasing and oversized lists), path derivation, the per-collection
+take sequence and a real two-snapshot series in one runtime. The same V8 public
+`take_heap_snapshot` API is reused; no dependency was added.
+
+`support/v8-smoke/run.sh` now requests collections 2, 16 and 32 (after rounds 1, 8 and 16)
+from one document-retention.html process. Its private contract changed: `V8_SMOKE_HEAP_SNAPSHOT`
+is an absolute base path that must name a `<name>.heapsnapshot` file, and the three outputs are
+`<name>.gc2/.gc16/.gc32.heapsnapshot`; any existing output refuses the run. The page process
+bound grows from 120 s to 180 s (a limit, not a measurement). Every snapshot must be logged as
+written, non-empty and a valid V8 snapshot with the scene strings; only the last keeps the
+existing judged contract of exactly one tagged probe (the retained control). The tagged counts
+at 2 and 16 and the count of nodes named exactly `RovesJsCell` in every snapshot are reported
+only (`check_heap_snapshot.py --report-tagged-probes` and `--count-node-name`, Python standard
+library): no leak threshold or pass/fail is derived from them, and no retainer-path analysis is
+added. `v8.yml` uploads the three files in the existing `v8-heap-snapshot-document-retention`
+artifact. `test_runner.py` covers the new checker metrics, the shell/Rust path mapping, the
+fake series (derived files, base untouched, per-snapshot reports, unjudged early counts) and the
+new refusal and failure cases. The page only had its comment updated.
+
+Limits: three points of one synthetic scene in one debug process are still diagnostic; they do
+not establish general retention, cppgc ownership, native memory or the absence of leaks. Not yet
+run by CI. Per user instruction for this task, no `patches/` file was generated for it.
+
 ## 2026-11-03 - Windows smoke: close the native window during a pending static fetch (0462)
 
 New `support/v8-smoke/window_close_pending_fetch.py` (Python stdlib + ctypes/user32, no new

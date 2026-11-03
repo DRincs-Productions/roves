@@ -4,7 +4,9 @@
     check_heap_snapshot.py SNAPSHOT [REQUIRED-STRING...]
 
 The file must be V8's complete `.heapsnapshot` JSON. Besides checking its structure and scene
-strings, an optional marker check counts owners of one tagged retention probe. It does not trace
+strings, an optional marker check counts owners of one tagged retention probe: judged against
+--expected-tagged-probes, or only reported with --report-tagged-probes. --count-node-name NAME
+reports how many nodes carry exactly that name (diagnostic only, never judged). It does not trace
 retainer paths or establish that unrelated objects are free of retention. Prints one annotation.
 """
 
@@ -74,8 +76,22 @@ def tagged_probe_count(data, property_name, marker):
     return matches
 
 
-def problems(path, required, expected_tagged_probes=None,
-             tag_property='rovesProbeTag', tag_marker='roves-document-retention-probe'):
+def named_node_count(data, name):
+    """Count nodes whose name is exactly `name` (any node type); no retention judgement."""
+    node_fields = data['snapshot']['meta']['node_fields']
+    if 'name' not in node_fields:
+        raise ValueError('node metadata is missing name')
+    width, offset = len(node_fields), node_fields.index('name')
+    indices = {index for index, string in enumerate(data['strings']) if string == name}
+    nodes = data['nodes']
+    return sum(1 for start in range(offset, len(nodes), width) if nodes[start] in indices)
+
+
+def analyze(path, required, expected_tagged_probes=None,
+            tag_property='rovesProbeTag', tag_marker='roves-document-retention-probe',
+            report_tagged_probes=False, node_names=()):
+    """Problems and reported metrics: {'tagged': count (when requested), 'named': {name: count}}."""
+    metrics = {}
     try:
         with open(path, encoding='utf-8') as file:
             data = json.load(file)
@@ -84,41 +100,58 @@ def problems(path, required, expected_tagged_probes=None,
         node_count = data['snapshot']['node_count']
         width = len(meta['node_fields'])
     except (OSError, ValueError, KeyError, TypeError) as error:
-        return [f'not a V8 heap snapshot: {type(error).__name__}: {error}']
+        return [f'not a V8 heap snapshot: {type(error).__name__}: {error}'], metrics
     found = []
     if node_count <= 0 or len(nodes) != node_count * width:
         found.append(f'{len(nodes)} node fields for {node_count} nodes of {width} fields')
     present = set(strings)
     found += [f'missing string {name!r}' for name in required if name not in present]
-    if expected_tagged_probes is not None and not found:
+    if (expected_tagged_probes is not None or report_tagged_probes) and not found:
         try:
-            actual = tagged_probe_count(data, tag_property, tag_marker)
+            metrics['tagged'] = tagged_probe_count(data, tag_property, tag_marker)
         except (IndexError, KeyError, TypeError, ValueError) as error:
             found.append(f'invalid tagged-probe graph: {type(error).__name__}: {error}')
         else:
-            if actual != expected_tagged_probes:
+            if expected_tagged_probes is not None and metrics['tagged'] != expected_tagged_probes:
                 found.append(
                     f'expected {expected_tagged_probes} tagged probe object(s) with '
-                    f'{tag_property!r} -> {tag_marker!r}, found {actual}')
-    return found
+                    f'{tag_property!r} -> {tag_marker!r}, found {metrics["tagged"]}')
+    if node_names and not found:
+        try:
+            metrics['named'] = {name: named_node_count(data, name) for name in node_names}
+        except (KeyError, TypeError, ValueError) as error:
+            found.append(f'invalid node table: {type(error).__name__}: {error}')
+    return found, metrics
+
+
+def problems(path, required, expected_tagged_probes=None,
+             tag_property='rovesProbeTag', tag_marker='roves-document-retention-probe'):
+    return analyze(path, required, expected_tagged_probes, tag_property, tag_marker)[0]
 
 
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--expected-tagged-probes', type=int)
+    parser.add_argument('--report-tagged-probes', action='store_true')
     parser.add_argument('--tag-property', default='rovesProbeTag')
     parser.add_argument('--tag-marker', default='roves-document-retention-probe')
+    parser.add_argument('--count-node-name', action='append', default=[])
     parser.add_argument('snapshot')
     parser.add_argument('required', nargs='*')
     args = parser.parse_args(argv[1:])
-    found = problems(args.snapshot, args.required, args.expected_tagged_probes,
-                     args.tag_property, args.tag_marker)
+    found, metrics = analyze(args.snapshot, args.required, args.expected_tagged_probes,
+                             args.tag_property, args.tag_marker, args.report_tagged_probes,
+                             args.count_node_name)
     if found:
         print(f'::error::heap snapshot {args.snapshot}: ' + '; '.join(found))
         return 1
     detail = ', '.join(map(repr, args.required))
     if args.expected_tagged_probes is not None:
         detail += f'; {args.expected_tagged_probes} tagged retention probe(s)'
+    elif 'tagged' in metrics:
+        detail += f'; {metrics["tagged"]} tagged retention probe(s) (reported, not judged)'
+    for name, count in metrics.get('named', {}).items():
+        detail += f'; {count} node(s) named {name!r} (diagnostic, not judged)'
     print(f'::notice::heap snapshot {args.snapshot}: valid V8 snapshot with ' + detail)
     return 0
 
