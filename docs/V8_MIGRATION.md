@@ -68,16 +68,18 @@ tocca solo workflow e fixture. Il perimetro resta un solo `WM_CLOSE` inviato dal
 utente o Alt+F4; un import statico trattenuto, senza TLA/import dinamico/fetch multipli; non misura
 durate né risolve retention generale. La versione attuale da verificare è 0464.
 
-### CI dopo push `19ca0363691` — checkpoint aggregato
+### CI dopo push `19ca0363691` — checkpoint aggregato aggiornato
 
-Al controllo dopo l'implementazione locale 0464 non risultano job rossi. V8 `41718462513`:
-runtime Windows normal/JITless e Linux JITless verdi; smoke/build Linux normal e JITless,
-Windows normal/JITless e runtime Linux normal in corso; job macOS in coda. Android
-`41718462547` verde. In iOS `41718462473`, il job simulatore è intenzionalmente `skipped` e
-`ios-release-signing-smoke` è in coda. Anche il retry preesistente del simulatore sul vecchio SHA
-è ancora in coda, ma non è più un gate. Il commit 0464 è locale e non può essere pubblicato
-finché i job richiesti del batch `19ca` sono terminali; poi la sua prova nativa richiederà un
-nuovo push e una run Windows normal.
+Android `41718462547` è verde. In V8 `41718462513` tutti i job Linux e Windows sono verdi;
+`servoshell-v8 (macos-latest, normal)` è ancora in corso. I due job runtime macOS normal e
+JITless sono cancellati e i log API restituiscono 404, senza causa leggibile. Ho provato a
+rilanciarli, ma GitHub ha rifiutato il retry perché la run V8 è ancora attiva (403: il workflow è
+in esecuzione); riprovare i due job soltanto quando la run diventa terminale. Nessun errore di
+codice è emerso finora. Nel workflow iOS `41718462473`, il simulatore è intenzionalmente
+`skipped`; il retry di `ios-release-signing-smoke` è in coda. Il job simulatore del vecchio SHA
+resta fuori dal gate. Il commit 0464 `2f927b36e9a` è locale: non pubblicarlo finché i due job
+macOS mancanti non sono stati completati positivamente e gli altri controlli richiesti sono
+terminali. Dopo il push di 0464, verificare la sua nuova run Windows normal.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
