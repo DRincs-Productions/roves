@@ -77,14 +77,26 @@ ma non ancora insieme da una prova nativa end-to-end.
 Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` contiene follow-up
 documentali locali sull'analisi cppgc, sul checkpoint CI e sulla direzione runtime aggiornata.
 Il push `db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
-Android `41689949095` è verde. La V8 `41689949123` è in corso: tutti i job Linux e tutti i job
-Windows tranne `servoshell-v8 (windows-latest, jitless)` sono verdi; quest'ultimo è ancora
-attivo. iOS `41689949222` è fallita ed è esclusa. Non pubblicare i commit locali finché la
-CI V8 richiesta non è conclusa.
-Il batch precedente `5d818c4a53e` è concluso: i job obbligatori Linux/Windows V8 e Android
-sono verdi; la conclusione globale failure della run V8 deriva solo da job macOS annullati,
-e iOS è fallita. Entrambi i workflow Apple sono esclusi dal gate per istruzione dell'utente.
-I test Windows della policy e della scena descritti sopra sono stati eseguiti direttamente
+Android `41689949095` è verde; tutti i job V8 Linux/Windows normal e JITless sono verdi, ma la
+conclusione globale V8 è failure per i job macOS cancellati. iOS `41689949222` è failure per
+la cancellazione dei job Apple; `ensure-test-release` è verde. Il nuovo gate Apple è descritto
+qui sotto.
+
+### Aggiornamento gate Apple — 3 novembre 2026
+
+L'utente ha riabilitato macOS e iOS come verifiche obbligatorie per le prossime
+pubblicazioni, senza autorizzare il riavvio delle run cancellate correnti. Le run del push
+`db0781b2a46` sono ora tutte concluse: Android `41689949095` è verde; i job V8 richiesti
+Linux/Windows normal e JITless sono verdi, ma la run `41689949123` ha conclusione globale
+failure perché i tre job macOS sono stati cancellati; la run iOS `41689949222` ha conclusione
+failure perché i job `ios` e `ios-release-signing-smoke` sono stati cancellati (il controllo
+`ensure-test-release` è verde). Questi esiti Apple non soddisfano il gate ripristinato.
+Non fare push finché non sarà disponibile un nuovo batch Apple valido e verde, insieme ai
+controlli Linux/Windows/Android richiesti. Per ora non avviare retry né nuove run Apple su
+questo SHA. Il lavoro locale documentale può proseguire e accumularsi in commit.
+Il batch precedente `5d818c4a53e` è concluso: i job Linux/Windows V8 e Android sono verdi;
+le conclusioni globali Apple riportate sopra derivano da job cancellati. I test Windows della
+policy e della scena descritti sopra sono stati eseguiti direttamente
 nella finestra Roves. La chiusura OS con fetch pendente resta aperta.
 
 ## Storico aggiornato — 2 novembre 2026

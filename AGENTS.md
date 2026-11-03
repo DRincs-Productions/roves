@@ -190,16 +190,16 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
 
-### Eccezione corrente: CI macOS/iOS non bloccanti (26 ottobre 2026)
+### Gate CI Apple riabilitato (3 novembre 2026)
 
-Per esplicita istruzione dell'utente, durante questa prosecuzione della migrazione V8
-ignorare i job e workflow macOS/iOS ai fini del blocco di pubblicazione. Questa eccezione
-prevale sui vincoli CI sotto solo per tali verifiche Apple: possono restare attive,
-cancellate o fallite senza impedire il push quando tutte le altre verifiche necessarie
-sono concluse positivamente. Non disattivare i workflow e non presentare verifiche escluse
-come verdi o eseguite; documentarne lo stato e non avviare ulteriori retry solo per esse.
-Linux, Windows, Android e controlli condivisi restano obbligatori: nessun push mentre uno
-di questi è attivo o ha errori irrisolti. L'eccezione vale fino a nuova indicazione utente.
+Per nuova indicazione dell'utente, i job macOS/iOS tornano obbligatori per le prossime
+pubblicazioni. Run cancellate, fallite, saltate o ancora attive non sono verdi e impediscono
+il push, come per Linux, Windows, Android e controlli condivisi. Non rilanciare le run
+Apple attualmente cancellate: l'utente ha chiesto di non riavviarle per ora. Continuare
+sviluppo e commit locali indipendenti; prima del prossimo push occorre un batch Apple valido
+concluso positivamente, oltre a tutte le altre verifiche richieste. Non presentare run
+cancellate come eseguite o riuscite. Questa regola sostituisce l'eccezione non bloccante
+del 26 ottobre.
 
 ### Procedura di implementazione: loop autonomo
 
