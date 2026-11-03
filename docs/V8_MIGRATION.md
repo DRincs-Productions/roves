@@ -10,13 +10,17 @@ punti al marker del controllo intenzionalmente trattenuto. La suite copre un con
 corretto, un secondo probe trattenuto e grafi sintetici. Sullo snapshot reale di 0458 il
 conteggio atteso è **1**. Questo verifica il marker mirato; non traccia tutti i retainer,
 non copre gli oggetti non marcati o memoria nativa e non chiude la retention generale.
-Runner locale: 61 test, 15 skip (verificare nuovamente dopo il commit); checker sullo
-snapshot reale valido. La nuova asserzione deve ancora passare nella CI V8 del commit.
+Runner locale: 62 test, 15 skip; checker sullo snapshot reale valido. La nuova asserzione
+deve ancora passare nella CI V8 del commit `5d818c4a53e` (run `41684945512`, ancora in
+coda al checkpoint del 3 novembre).
 
 Il repository indicato dall'utente, `DRincs-Productions/visual-novel-template`, è pubblico,
 non archiviato e aggiornato il 2 novembre (`a99126b5dface08e965448c666d5d289f3967e99`).
 La build TypeScript/Vite del commit è riuscita; è stata impacchettata in `target` e il
-processo Roves è stato avviato con il manifest del template. `roves.log` non mostra errori
+processo Roves è stato avviato con il manifest del template. L'utente conferma che la
+schermata principale appare e che Start apre il gioco. Questo prova il caricamento della
+scena e il passaggio alla route di gioco, non misura pause o input/timer durante i fetch.
+`roves.log` non mostra errori
 di import JS; segnala invece due WAV che PixiJS non riesce a parsare, problema separato da
 V8 da lasciare al flusso di test del gioco. Computer Use è stato fermato dall'utente con
 Esc prima dell'ispezione visiva della scena: non dichiarare completata la prova statica.
@@ -39,15 +43,15 @@ della finestra Roves durante una richiesta reale.
 - **Policy finestra:** smoke/log headless passano e il test Windows blocca la navigazione
   automatica mantenendo vivo il documento. Confermare clic mouse OS diretto, notice di
   sviluppo nella modalità di sviluppo e chiusura mentre un caricamento è pendente.
-- **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte, ma manca la
-  valutazione su una scena reale, inclusi input/timer e rete fredda/calda/lenta.
+- **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
+  apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
+  input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di
+  fluidità resta al flusso dedicato dell'utente.
 
-Questi tre punti non sono ancora tutti completati. Per concludere la pausa statica serve
-esaminare la finestra della build GitHub e provare la scena; per notice e clic mouse serve
-un'interazione desktop visibile, perché il controllo computer è stato interrotto con Esc.
-Il test drop/shutdown copre già la cancellazione del fetch a livello runtime; resta la
-prova OS di chiusura finestra. Le misure comparative di performance restano nel flusso
-separato dell'utente.
+Questi tre punti non sono ancora tutti completati. La prova scena è positiva; non sono
+stati misurati tempi, pause o input durante il fetch perché appartengono al flusso di
+fluidità dell'utente. Per la policy servono ancora clic mouse, notice di sviluppo e prova
+OS di chiusura finestra durante un fetch; drop/shutdown è già coperto a livello runtime.
 
 ## Storico aggiornato — 2 novembre 2026
 
