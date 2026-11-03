@@ -2,16 +2,45 @@
 
 ## Punto operativo aggiornato — 3 novembre 2026
 
-### Checkpoint push `fcecc8d6a2c` — CI in corso
+### Smoke Windows: chiusura nativa con fetch statico pendente (task 0462) — locale, CI non eseguita
+
+Nuovo `support/v8-smoke/window_close_pending_fetch.py` (stdlib Python + ctypes/user32, nessuna
+dipendenza o modifica di produzione). Solo nel job `servoshell-v8` Windows normal, dopo la
+build e lo staging ANGLE: avvia un servoshell separato *headed* (senza `-z`) con
+`--window-title` fisso e la fixture dedicata `window-close-pending-fetch.html`; il modulo
+`window-close-pending-fetch.mjs` importa staticamente `/window-close-held.mjs`, trattenuto da
+un server loopback interno. Quando la richiesta è arrivata e il processo possiede una sola
+finestra visibile con quel titolo, l'harness invia `WM_CLOSE` con `PostMessageW` (nessun
+clic o tastiera, nessun desktop sbloccato richiesto), poi rilascia la risposta: chiusura e
+consegna corrono volutamente in parallelo. Richiede uscita con codice 0 entro 60 s, una sola
+richiesta trattenuta e assenza di `Panic hook called`, `panicked at` e `spurious wake-up` in
+output e `roves.log` (confronto dei marker senza distinzione maiuscole/minuscole, per coprire
+il testo reale `spurious wake-up`); richiesta o finestra mancanti fanno fallire il passo. Processo figlio e
+server vengono sempre chiusi. Consegna della risposta tardiva e valutazione del modulo sono
+solo diagnostiche di gara (notice), non asserzioni. La smoke delle pagine resta headless.
+`test_window_close_pending_fetch.py` (job `runtime` normal, tutti gli OS) verifica selezione
+finestra, marker, server hold/release e il flusso con processo e finestra finti.
+
+Verifiche locali: 8 test unitari del harness passano; `py_compile` e `git diff --check`
+passano; nessuna build né esecuzione dell'harness nativo. Non c'è una patch Servo: la prova
+tocca solo il workflow e i fixture del repository. Il primo esito reale del test arriva dalla
+CI V8, attivata dai percorsi `support/v8-smoke/**` e `v8.yml`. Limiti: copre `WM_CLOSE`
+inviato dal test, non il clic dell'utente sul pulsante di chiusura né Alt+F4; un solo import statico
+trattenuto, nessun TLA, import dinamico o fetch multipli; non misura durate né risolve la
+retention generale. Non dichiarare chiusa la prova finché la CI non è verde.
+
+### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
 Su richiesta esplicita dell'utente è stato pubblicato il batch documentale locale, benché le
-run Apple precedenti fossero cancellate. Nuove run: Android `41707717101`, iOS `41707717245`
-e deno_core probe `41707717193`. All'ultimo controllo Android ha i due job di build attivi,
-iOS ha i due job macOS in coda e `ensure-test-release` verde; il probe esegue i job Linux e
-Windows normal/JITless (uno Linux ancora in coda). Il workflow V8 non è partito perché nessun
-percorso monitorato da `.github/workflows/v8.yml` è cambiato. Per il prossimo push attendere
-esiti positivi di tutte le run richieste e una verifica Apple valida; nessun esito Apple
-cancellato è considerato verde.
+run Apple precedenti fossero cancellate. Android `41707717101` e deno_core probe `41707717193`
+sono verdi; il workflow iOS `41707717245` è concluso con failure perché il job `ios` è stato
+cancellato, mentre `ensure-test-release` e `ios-release-signing-smoke` sono verdi. Il job iOS
+è rimasto attivo per 15 minuti; la risposta API non identifica chi o perché l'abbia cancellato
+e il log del job non è disponibile (404). Il workflow V8 non è partito perché nessun percorso
+monitorato da `.github/workflows/v8.yml` era cambiato. Questa cancellazione non soddisfa il gate
+Apple: nessun ulteriore push finché il batch richiesto non è verificato positivamente. Il test
+Windows 0462 in sviluppo locale modificherà `v8.yml` e farà partire la matrice V8, inclusi i job
+macOS, al prossimo push autorizzato.
 
 ### 0461 — conteggio automatico del controllo di retention
 
@@ -74,6 +103,8 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
   automatica, notice di sviluppo e handoff al browser OS con un clic mouse reale. Resta la
   prova end-to-end della chiusura nativa mentre un caricamento è pendente; la catena di
   shutdown fino all'annullamento del fetch è stata verificata nel codice e nel test runtime.
+  La smoke Windows 0462 (`WM_CLOSE` con import statico trattenuto) è aggiunta ma non ancora
+  eseguita in CI.
 - **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
   apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
   input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di

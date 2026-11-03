@@ -53,6 +53,11 @@ jobs:
       - name: test cutover build failure gate
         shell: bash
         run: python -m unittest discover -s support/v8-smoke -p test_cutover_build_gate.py
+      # Fake child process and window: ordering and failure paths of the Windows close smoke.
+      - name: test window-close harness contracts
+        if: matrix.mode == 'normal'
+        shell: bash
+        run: python -m unittest discover -s support/v8-smoke -p test_window_close_pending_fetch.py
       # Runs the real WebIDL parser and binding generator on a small IDL: no build needed.
       - name: test generated named-property visibility
         if: matrix.mode == 'normal'
@@ -247,12 +252,21 @@ jobs:
           V8_SMOKE_MODE: ${{ matrix.mode }}
           V8_SMOKE_MODULE_ORDER_ONLY: '1'
         run: bash support/v8-smoke/run.sh "$PWD/target/v8-cutover/debug/servoshell.exe"
+      # One headed process (the page smoke above stays headless): the loopback server holds the
+      # fixture's static module dependency, the harness posts WM_CLOSE to the process's native
+      # window, then releases the response; servoshell must exit 0 without a panic.
+      - name: close the native window while a static module fetch is pending
+        if: runner.os == 'Windows' && matrix.mode == 'normal'
+        shell: bash
+        run: python support/v8-smoke/window_close_pending_fetch.py target/v8-cutover/debug/servoshell.exe
       - name: upload per-process V8 runtime logs
         if: always() && (runner.os == 'Linux' || runner.os == 'Windows')
         uses: actions/upload-artifact@v4
         with:
           name: v8-runtime-logs-${{ matrix.os }}-${{ matrix.mode }}
-          path: .v8-smoke-runtime/**/roves.log
+          path: |
+            .v8-smoke-runtime/**/roves.log
+            .v8-smoke-runtime/**/servoshell-output.log
           include-hidden-files: true
           retention-days: 3
           if-no-files-found: warn

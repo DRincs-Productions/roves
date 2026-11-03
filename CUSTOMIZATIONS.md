@@ -1,3 +1,22 @@
+## 2026-11-03 - Windows smoke: close the native window during a pending static fetch (0462)
+
+New `support/v8-smoke/window_close_pending_fetch.py` (Python stdlib + ctypes/user32, no new
+dependency) runs one headed servoshell with a fixed `--window-title` against a dedicated
+fixture (`window-close-pending-fetch.html` + `.mjs`) served by an in-process loopback server
+that reuses `http_server.Handler`'s MIME map. The fixture's static module import of
+`/window-close-held.mjs` is held by the server; once that request has arrived and the
+process owns exactly one visible window with that title, the harness posts `WM_CLOSE` to it
+(no mouse/keyboard input), then releases the response so shutdown races with the fetch. It
+requires exit code 0 within 60 s, exactly one held request, and no panic-hook, `panicked at`
+or `spurious wake-up` lines (case-insensitive) in process output or `roves.log`; the child process and the
+server are always cleaned up, and a missing request or window fails instead of passing.
+Whether the late response was delivered and whether the dependency evaluated are reported as
+race diagnostics only. `test_window_close_pending_fetch.py` covers window selection, markers,
+the hold/release server and the harness flow with a fake child and fake window. `v8.yml` runs
+the unit tests in the `runtime` normal jobs and the smoke in the Windows normal
+`servoshell-v8` job after ANGLE staging; the runtime-log artifact also keeps
+`servoshell-output.log`. No production code change.
+
 ## 2026-11-01 - Cooperative stepwise static module loading through deno_core (0457-0458)
 
 `components/roves-js/vendor/deno_core` now adds the public Roves `SideModuleLoad`
