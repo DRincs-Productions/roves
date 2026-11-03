@@ -2,6 +2,17 @@
 
 ## Punto operativo aggiornato — 3 novembre 2026
 
+### Checkpoint push `fcecc8d6a2c` — CI in corso
+
+Su richiesta esplicita dell'utente è stato pubblicato il batch documentale locale, benché le
+run Apple precedenti fossero cancellate. Nuove run: Android `41707717101`, iOS `41707717245`
+e deno_core probe `41707717193`. All'ultimo controllo Android ha i due job di build attivi,
+iOS ha i due job macOS in coda e `ensure-test-release` verde; il probe esegue i job Linux e
+Windows normal/JITless (uno Linux ancora in coda). Il workflow V8 non è partito perché nessun
+percorso monitorato da `.github/workflows/v8.yml` è cambiato. Per il prossimo push attendere
+esiti positivi di tutte le run richieste e una verifica Apple valida; nessun esito Apple
+cancellato è considerato verde.
+
 ### 0461 — conteggio automatico del controllo di retention
 
 Esteso `check_heap_snapshot.py` con il modulo JSON standard di Python (nessuna nuova
