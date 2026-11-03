@@ -1061,6 +1061,36 @@ class HeapSnapshotCheckTests(unittest.TestCase):
             ["expected 1 tagged probe object(s) with 'rovesProbeTag' -> 'roves-document-retention-probe', found 2"],
             self.check(snapshot(2), *required, expected_tagged_probes=1))
 
+    def test_retention_snapshot_rejects_malformed_edge_graph(self):
+        valid = json.loads(self._valid_retention_snapshot())
+        valid['edges'][-1] = 999
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'scene.heapsnapshot'
+            path.write_text(json.dumps(valid), encoding='utf-8')
+            found = snapshot_problems(str(path), ('rovesProbeTag',), expected_tagged_probes=1)
+        self.assertEqual(1, len(found))
+        self.assertIn('invalid tagged-probe graph', found[0])
+
+    @staticmethod
+    def _valid_retention_snapshot():
+        nodes = [0, 0, 2, 1, 1, 1, 2, 2, 0, 1, 1, 1, 2, 2, 0]
+        edges = [0, 0, 3, 1, 3, 6, 0, 0, 9, 1, 3, 12]
+        return json.dumps({
+            'snapshot': {
+                'meta': {
+                    'node_fields': ['type', 'name', 'edge_count'],
+                    'node_types': [['synthetic', 'object', 'string']],
+                    'edge_fields': ['type', 'name_or_index', 'to_node'],
+                    'edge_types': [['shortcut', 'property']],
+                },
+                'node_count': 5,
+                'edge_count': 6,
+            },
+            'nodes': nodes,
+            'edges': edges,
+            'strings': ['(GC roots)', 'Object', 'roves-document-retention-probe', 'rovesProbeTag'],
+        })
+
 
 ROOT = HERE.parents[1]
 
