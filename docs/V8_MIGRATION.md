@@ -77,8 +77,10 @@ ma non ancora insieme da una prova nativa end-to-end.
 Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` contiene follow-up
 documentali locali sull'analisi cppgc, sul checkpoint CI e sulla direzione runtime aggiornata.
 Il push `db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
-Android `41689949095` è verde, V8 `41689949123` è ancora in coda e iOS `41689949222` è in
-coda ed esclusa. Non pubblicare il commit locale finché la CI V8 richiesta non è conclusa.
+Android `41689949095` è verde. La V8 `41689949123` è in corso: tutti i job Linux e tutti i job
+Windows tranne `servoshell-v8 (windows-latest, jitless)` sono verdi; quest'ultimo è ancora
+attivo. iOS `41689949222` è fallita ed è esclusa. Non pubblicare i commit locali finché la
+CI V8 richiesta non è conclusa.
 Il batch precedente `5d818c4a53e` è concluso: i job obbligatori Linux/Windows V8 e Android
 sono verdi; la conclusione globale failure della run V8 deriva solo da job macOS annullati,
 e iOS è fallita. Entrambi i workflow Apple sono esclusi dal gate per istruzione dell'utente.
