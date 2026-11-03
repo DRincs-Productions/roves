@@ -19106,3 +19106,22 @@ with the signed `mach bundle --ios --ios-release` path. The repository's `releas
 publishes desktop shell builds only; do not describe it as iOS validation or disable the real
 iOS release path. The short `ios-release-signing-smoke` job remains enabled, but is not a
 successful iOS app build. Other required CI gates are unchanged.
+
+
+## 2026-11-03 - V8 retention series and deterministic pending-fetch close check
+
+The V8 Linux normal job in run `41718462513` produced three document-retention snapshots at
+collections 2, 16 and 32. All passed the V8 snapshot and tagged-control checks. The fixture
+reported 128/128 temporary elements and probes released, while retaining its control probe;
+the diagnostic `RovesJsCell` counts were 128/129/129. The artifact and hashes are recorded in
+`docs/measurements/0465-document-retention-series-ci.json`. This bounded synthetic scene does
+not identify retainers or resolve general JS, cppgc, native-memory, route or long-session
+retention.
+
+The 0464 harness now asserts that native servoshell exits while a static module response is
+still held, then releases the response for cleanup. Its 12 local contract tests pass. The
+Windows normal smoke in run `41718462513` predates 0464 and ran the weaker 0462 check, so it
+does not validate the new assertion. The 0464 native smoke remains pending its next V8 CI run.
+The current batch also has two cancelled macOS runtime jobs and one active macOS shell job;
+Android is green and iOS release-signing smoke is green while its per-commit simulator build
+is intentionally skipped. No broader retention or user-visible performance claim is made.

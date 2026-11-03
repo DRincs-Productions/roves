@@ -1,0 +1,63 @@
+{
+  "date": "2026-11-03",
+  "source": {
+    "repository": "DRincs-Productions/roves",
+    "commit": "19ca0363691c9113cb5eeb426d6ac5b2899d923f",
+    "workflow_run": 41718462513,
+    "linux_normal_job": 126204582331,
+    "artifact_id": 13272826212,
+    "artifact_sha256": "77d6a59847ca62c296031b9157becc8da4ad20d1f7e32de09e3148b8bf7f0ead",
+    "platform": "ubuntu-24.04",
+    "mode": "normal",
+    "scene": "support/v8-smoke/document-retention.html",
+    "artifact_retention_days": 3
+  },
+  "method": {
+    "description": "Three V8 heap snapshots in one debug servoshell process after explicit collections 2, 16 and 32; 16 rounds of 8 detached-element/listener/probe cycles, with two explicit collections per round.",
+    "snapshot_files": [
+      {
+        "file": "document-retention.gc2.heapsnapshot",
+        "bytes": 3131669,
+        "sha256": "6e6c62996b2a71dfa9cad337a30c3fd905340b07415bbd0c2e010625575ed4d3",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 128
+      },
+      {
+        "file": "document-retention.gc16.heapsnapshot",
+        "bytes": 3153204,
+        "sha256": "8f9e3323d987e915a832ea77befda5b76752f6d092c99ae0dd6889e68d886479",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 129
+      },
+      {
+        "file": "document-retention.gc32.heapsnapshot",
+        "bytes": 3166515,
+        "sha256": "a34127e885f6090aec7e53af9f9ff4df8fec077246f35e87734b3818e43c7cb3",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 129
+      }
+    ],
+    "snapshot_validation": "All three files passed support/v8-smoke/check_heap_snapshot.py. Only the last tagged-probe count is a pass/fail condition; earlier counts and RovesJsCell counts are diagnostic.",
+    "weakref_diagnostics": {
+      "rounds": 16,
+      "cycles_per_round": 8,
+      "temporary_elements_released": 128,
+      "temporary_probes_released": 128,
+      "total_temporary_elements": 128,
+      "total_temporary_probes": 128,
+      "retained_control_probe": 1
+    }
+  },
+  "findings": {
+    "RovesJsCell_series": [128, 129, 129],
+    "interpretation": "One additional named cell is present by collection 16; the count is unchanged at collection 32. This bounded scene shows no continuing increase in this metric after collection 16. The count does not identify owners or retainer paths and is not a leak verdict.",
+    "controlled_release": "The scene reports all 128 removed elements and all 128 temporary probes released by its final WeakRef check, while the deliberately retained control remains reachable.",
+    "conclusion": "This verifies the controlled document-retention smoke only. It does not resolve general JS, cppgc, native-memory, route-transition, or long-session retention."
+  },
+  "limits": [
+    "Three snapshots cover one synthetic document scene, one Linux debug process and 32 explicit collections.",
+    "RovesJsCell node counts are diagnostic only; this measurement does not enumerate all retainers or classify the cells.",
+    "The WeakRef release check is performed after the final round, not as a per-round release measurement.",
+    "No process RSS, native allocation, route-transition workload or long-duration game session was measured."
+  ]
+}

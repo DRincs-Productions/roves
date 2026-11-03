@@ -2,7 +2,7 @@
 
 ## Punto operativo aggiornato — 3 novembre 2026
 
-### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — push 19ca, CI in corso
+### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — CI 19ca
 
 Il singolo snapshot alla collezione 32 di 0458/0461 non basta a valutare la retention nel
 tempo. Nelle build debug `ROVES_V8_HEAP_SNAPSHOT_GC` accetta ora anche una lista crescente
@@ -18,15 +18,21 @@ Ogni snapshot deve esistere ed essere valido; solo l'ultimo mantiene il vincolo 
 `--count-node-name`): nessuna soglia, nessun verdetto di leak, nessuna analisi dei retainer.
 I tre file finiscono nell'artefatto esistente `v8-heap-snapshot-document-retention`.
 
-Verifiche locali: suite focalizzata del runner, 33 test con 16 skip (i `RunnerTests` POSIX
-saltati su Windows); harness di chiusura aggiornato a 12 test, tutti passati; `py_compile`,
-`bash -n` e `git diff --check` passano. Non ho eseguito test Rust, build o harness nativo. Il
-push `19ca0363691` sta eseguendo la matrice V8; gli snapshot non sono ancora disponibili.
-Restano i test Rust `heap_snapshot` normal/JITless e la run V8 Linux normal. Limiti: tre punti di una
-scena sintetica in un processo debug restano diagnostici e non chiudono la retention generale,
-la proprietà cppgc né la memoria nativa. Nessuna patch in `patches/` per richiesta del task.
+La run Linux normal `41718462513`, job `126204582331`, ha prodotto i tre snapshot nell'artefatto
+`v8-heap-snapshot-document-retention` (ID `13272826212`, digest
+`sha256:77d6a59847ca62c2960319b3157becc8da4ad20d1f7e32de09e3148b8bf7f0ead`). Checker V8 e
+conteggio del probe passano per ciascun file. Conteggio `RovesJsCell`: 128 alla raccolta 2,
+129 alla 16, 129 alla 32. La fixture segnala inoltre 128/128 elementi temporanei e 128/128
+probe rilasciati, con il probe di controllo trattenuto. File, hash, dimensioni, workload e
+limiti sono registrati in `docs/measurements/0465-document-retention-series-ci.json`.
 
-### Smoke Windows deterministica: uscita con risposta ancora trattenuta (task 0464) — locale, non nel push 19ca
+Risultato positivo per questa scena controllata, non per la retention generale: i conteggi non
+identificano proprietari o retainer; non coprono tutti gli oggetti JS, cppgc, memoria nativa,
+cambi di route o sessioni lunghe. Le verifiche locali del runner erano 33 test con 16 skip
+(RunnerTests POSIX su Windows); il harness 0464 conta 12 test. Non ho eseguito build Rust
+locali. Nessuna patch in `patches/` per richiesta del task.
+
+### Smoke Windows deterministica: uscita con risposta ancora trattenuta (task 0464)
 
 Il harness 0462 rilasciava la risposta subito dopo `WM_CLOSE`, quindi non provava che il
 processo uscisse durante il fetch pendente. Ora `window_close_pending_fetch.py` mantiene la
@@ -45,9 +51,10 @@ leggerne la risposta, esce con codice 0 alla ricezione del `WM_CLOSE` finto (fil
 ogni rilascio avvenga dopo l'uscita del figlio. Coperti anche: valutazione prima dell'uscita,
 rilascio prima dell'uscita (regressione simulata), timeout di uscita con rilascio/kill/reap,
 finestra mancante e uscita prima della richiesta. La suite locale aggiornata conta 12 test e
-passa; `py_compile` e `git diff --check` passano. La matrice V8 del push `19ca0363691` non
-contiene questa versione 0464; serve la successiva run nativa Windows della CI V8 prima di
-considerare la prova superata.
+passa; `py_compile` e `git diff --check` passano. Precisazione: il job Windows normal
+`126204582698` della run `41718462513` è verde ma sul commit `19ca0363691`, che conteneva
+ancora 0462. Non verifica le asserzioni rafforzate 0464; la nuova prova nativa per 0464 è
+ancora necessaria.
 
 ### Smoke Windows: prima versione 0462, superata dal criterio 0464
 
@@ -70,16 +77,15 @@ durate né risolve retention generale. La versione attuale da verificare è 0464
 
 ### CI dopo push `19ca0363691` — checkpoint aggregato aggiornato
 
-Android `41718462547` è verde. In V8 `41718462513` tutti i job Linux e Windows sono verdi;
+Android `41718462547` è verde. In V8 `41718462513` i job Linux e Windows sono verdi;
 `servoshell-v8 (macos-latest, normal)` è ancora in corso. I due job runtime macOS normal e
-JITless sono cancellati e i log API restituiscono 404, senza causa leggibile. Ho provato a
-rilanciarli, ma GitHub ha rifiutato il retry perché la run V8 è ancora attiva (403: il workflow è
-in esecuzione); riprovare i due job soltanto quando la run diventa terminale. Nessun errore di
-codice è emerso finora. Nel workflow iOS `41718462473`, il simulatore è intenzionalmente
-`skipped`; il retry di `ios-release-signing-smoke` è in coda. Il job simulatore del vecchio SHA
-resta fuori dal gate. Il commit 0464 `2f927b36e9a` è locale: non pubblicarlo finché i due job
-macOS mancanti non sono stati completati positivamente e gli altri controlli richiesti sono
-terminali. Dopo il push di 0464, verificare la sua nuova run Windows normal.
+JITless sono cancellati e i log API restituiscono 404, senza causa leggibile. Il retry era stato
+rifiutato mentre la run era attiva; appena diventa terminale, rilanciare solo i due job runtime
+cancellati e attendere un esito positivo. Nessun errore di codice è emerso. Nel workflow iOS
+`41718462473`, `ios-release-signing-smoke` è verde e il build simulatore è intenzionalmente
+`skipped` per la regola per-commit dell'utente. Il commit 0464 `2f927b36e9a` è locale: non
+pubblicarlo finché le verifiche macOS richieste non sono verdi e tutte le altre verifiche
+obbligatorie sono terminali. La nuova run dopo il push dovrà provare 0464 su Windows normal.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
@@ -154,33 +160,32 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
 
 ### Stato di completamento — 3 novembre 2026
 
-- **Memoria:** ciclo DOM controllato e conteggio del marker atteso automatizzati;
-  retention generale e memoria nativa su sessioni lunghe restano da verificare. Non
+- **Memoria:** ciclo DOM e serie di snapshot 2/16/32 superano i controlli della fixture;
+  conteggio `RovesJsCell` 128/129/129 e rilascio dei 128 probe temporanei sono diagnostici.
+  Retention generale, cppgc e memoria nativa su sessioni lunghe restano aperte; non
   dichiarare assenza di leak.
-- **Policy finestra:** smoke/log headless e test Windows confermano blocco della navigazione
-  automatica, notice di sviluppo e handoff al browser OS con un clic mouse reale. Resta la
-  prova end-to-end della chiusura nativa mentre un caricamento è pendente; la catena di
-  shutdown fino all'annullamento del fetch è stata verificata nel codice e nel test runtime.
-  La smoke Windows 0462/0464 (`WM_CLOSE` con import statico trattenuto fino all'uscita
-  osservata, poi rilascio) è aggiunta ma non ancora eseguita in CI nativa.
-- **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
-  apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
-  input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di
-  fluidità resta al flusso dedicato dell'utente.
+- **Policy finestra:** navigazione automatica bloccata, notice di sviluppo e browser OS dopo
+  clic reale sono verificati. La chiusura nativa mentre una risposta di modulo statico è
+  trattenuta ora è verificata localmente nell'harness, ma la versione 0464 non ha ancora una
+  run CI: il job Windows verde del push 19ca usava la precedente prova 0462.
+- **Pausa statica:** template GitHub reale apre la schermata principale e Start entra nella
+  route di gioco; i contratti di caricamento sono coperti dagli smoke. Misure di durata e di
+  input/timer durante fetch appartengono al flusso performance dell'utente e non sono state
+  raccolte qui. Il compromesso resta provvisorio finché quel flusso non lo valuta.
 
-Questi tre punti non sono ancora tutti completati. La prova scena è positiva; non sono
-stati misurati tempi, pause o input durante il fetch perché appartengono al flusso di
-fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra durante un
-fetch; il percorso di produzione fino allo shutdown e l'annullamento runtime sono coperti,
-ma non ancora insieme da una prova nativa end-to-end.
+Non tutti e tre i punti sono conclusi: memoria generale resta un'indagine aperta e la pausa
+statica richiede la valutazione di fluidità nel flusso dedicato. Per la policy, il test 0464
+asserisce l'uscita del processo prima del rilascio della risposta, ma serve ancora la sua
+esecuzione nella matrice CI; il vecchio job 0462 non soddisfa questo criterio.
 
-Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` contiene follow-up
-documentali locali sull'analisi cppgc, sul checkpoint CI e sulla direzione runtime aggiornata.
-Il push `db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
-Android `41689949095` è verde; tutti i job V8 Linux/Windows normal e JITless sono verdi, ma la
-conclusione globale V8 è failure per i job macOS cancellati. iOS `41689949222` è failure per
-la cancellazione dei job Apple; `ensure-test-release` è verde. Il nuovo gate Apple è descritto
-qui sotto.
+Checkpoint Git al 3 novembre: `origin/main` è `19ca0363691`; `main` è a `fabecd8566b`, con
+i commit locali `2f927b36e9a` (harness 0464) e `fabecd8566b` (handoff). La run V8
+`41718462513` ha tutti i job Linux/Windows verdi, un job `servoshell-v8 (macos-latest, normal)`
+ancora attivo e due runtime macOS cancellati; il retry era stato rifiutato mentre il workflow
+era attivo. Android `41718462547` è verde. iOS `41718462473` ha signing smoke verde e build
+simulatore saltato per la regola per-commit dell'utente. Nessun nuovo push finché la verifica
+macOS richiesta non è verde; al termine del workflow tentare una volta i soli runtime macOS
+cancellati e aggiornare il gate.
 
 ### Aggiornamento gate Apple — 3 novembre 2026
 
