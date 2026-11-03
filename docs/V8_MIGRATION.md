@@ -35,7 +35,13 @@ si carica; Start entra nella scena con sfondo, personaggio, dialogo e controlli.
 fotogramma dopo Start era vuoto, quello successivo mostra la scena: osservazione qualitativa,
 non una misura di durata o fluidità. Il test Rust 0457/0458 conferma che drop e shutdown
 annullano un fetch statico pendente e rifiutano la risposta tardiva; resta la chiusura OS
-della finestra Roves durante una richiesta reale.
+della finestra Roves durante una richiesta reale. La revisione del percorso di produzione
+conferma la catena attesa: `CloseRequested` pianifica la chiusura della finestra;
+`close_empty_windows` la rimuove dallo stato della shell; il drop del relativo `EventLoop`
+segnala l'uscita al Background Hang Monitor, che chiama `BHMExitSignal::signal_to_exit`;
+questo invoca `ThreadSafeJSContext::request_shutdown`, già coperto dal test runtime che
+annulla il grafo e rifiuta la risposta tardiva. È una verifica del collegamento nel codice,
+non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è trattenuto.
 
 ### Stato di completamento — 3 novembre 2026
 
@@ -44,7 +50,8 @@ della finestra Roves durante una richiesta reale.
   dichiarare assenza di leak.
 - **Policy finestra:** smoke/log headless e test Windows confermano blocco della navigazione
   automatica, notice di sviluppo e handoff al browser OS con un clic mouse reale. Resta la
-  chiusura della finestra mentre un caricamento è pendente.
+  prova end-to-end della chiusura nativa mentre un caricamento è pendente; la catena di
+  shutdown fino all'annullamento del fetch è stata verificata nel codice e nel test runtime.
 - **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
   apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
   input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di
@@ -53,7 +60,8 @@ della finestra Roves durante una richiesta reale.
 Questi tre punti non sono ancora tutti completati. La prova scena è positiva; non sono
 stati misurati tempi, pause o input durante il fetch perché appartengono al flusso di
 fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra durante un
-fetch; drop/shutdown è già coperto a livello runtime.
+fetch; il percorso di produzione fino allo shutdown e l'annullamento runtime sono coperti,
+ma non ancora insieme da una prova nativa end-to-end.
 
 Checkpoint Git al 3 novembre: `origin/main` è `5d818c4a53e`; il lavoro completo successivo
 è locale su `main` e include la riga TODO aggiunta dall'utente e committata su sua richiesta
