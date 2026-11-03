@@ -53,6 +53,14 @@ stati misurati tempi, pause o input durante il fetch perché appartengono al flu
 fluidità dell'utente. Per la policy servono ancora clic mouse, notice di sviluppo e prova
 OS di chiusura finestra durante un fetch; drop/shutdown è già coperto a livello runtime.
 
+Checkpoint Git al 3 novembre: `origin/main` è `5d818c4a53e`; il lavoro completo successivo
+è locale su `main` in cinque commit non pubblicati, inclusa la riga TODO aggiunta dall'utente
+e committata su sua richiesta in `3ecb7ee6af6`. Non pubblicare mentre la V8 `41684945512`
+è in coda. Android
+`41684946080` è verde; iOS `41684945849` è in coda ma esclusa dal gate. L'ultima cattura
+Computer Use non corrispondeva alla finestra Roves, quindi non sono stati eseguiti altri
+clic via automazione; la conferma visiva della scena è dell'utente.
+
 ## Storico aggiornato — 2 novembre 2026
 
 ### CI `aa2365b1ad5`: test runtime falliti; fix pubblicato in `6e2f741cbc1`
