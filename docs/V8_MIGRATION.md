@@ -16,6 +16,15 @@ verdi e Android è verde. La run V8 `41684945512` ha conclusione globale `failur
 job macOS annullati; sono esclusi dal gate per istruzione dell'utente. iOS `41684945849` è
 fallita ed è anch'essa esclusa. Non risultano errori nei job richiesti.
 
+L'analisi offline dello stesso snapshot conta 129 nodi `RovesJsCell`, tutti raggiungibili
+dal root ignorando gli archi weak; 7 hanno almeno un arco entrante diretto dai `C++ native
+stack roots` (27 archi in totale). È un dato non classificato: cppgc scansiona in modo
+conservativo lo stack C++, e un singolo snapshot non distingue puntatori temporanei da
+proprietari vivi né prova leak. Registrato in
+`docs/measurements/0460-document-retainer-analysis.json`; serve un confronto nel tempo o
+una cattura con radici interpretate diversamente prima di trarre conclusioni sulla retention
+cppgc complessiva.
+
 Il repository indicato dall'utente, `DRincs-Productions/visual-novel-template`, è pubblico,
 non archiviato e aggiornato il 2 novembre (`a99126b5dface08e965448c666d5d289f3967e99`).
 La build TypeScript/Vite del commit è riuscita; è stata impacchettata in `target` e il
