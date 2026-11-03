@@ -91,6 +91,9 @@ Linux/Windows normal e JITless sono verdi, ma la run `41689949123` ha conclusion
 failure perché i tre job macOS sono stati cancellati; la run iOS `41689949222` ha conclusione
 failure perché i job `ios` e `ios-release-signing-smoke` sono stati cancellati (il controllo
 `ensure-test-release` è verde). Questi esiti Apple non soddisfano il gate ripristinato.
+I workflow Apple risultano ancora configurati; cambia il gate di pubblicazione, non il loro
+avvio. Le API GitHub consultate non indicano chi o perché abbia cancellato i job, che inoltre
+non hanno risultati di step: non attribuire la causa a un difetto del workflow senza prove.
 Non fare push finché non sarà disponibile un nuovo batch Apple valido e verde, insieme ai
 controlli Linux/Windows/Android richiesti. Per ora non avviare retry né nuove run Apple su
 questo SHA. Il lavoro locale documentale può proseguire e accumularsi in commit.
