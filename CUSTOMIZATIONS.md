@@ -19079,3 +19079,12 @@ Logs target/task-0285/*.log, patch0285-reclaim-dispatched-tasks-before-isolate-d
 README/wiki/migration/CLAUDE_RESUME updated. AGENTS now requires today's resume file updates
 per user request. No global leak-free or performance claim: platform/timer/no-handler/late-post
 policies remain outside accepted-dispatch reclamation, as does callback closure lifetime.
+
+## 2026-11-03 - Defer the per-commit iOS simulator build to release validation
+
+Per user instruction, `.github/workflows/ios.yml` keeps the `ios` simulator-build job visible
+but disabled on every commit (`if: false`) because it is slow. The user will test iOS directly
+with the signed `mach bundle --ios --ios-release` path. The repository's `release.yml` currently
+publishes desktop shell builds only; do not describe it as iOS validation or disable the real
+iOS release path. The short `ios-release-signing-smoke` job remains enabled, but is not a
+successful iOS app build. Other required CI gates are unchanged.

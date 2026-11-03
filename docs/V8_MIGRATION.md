@@ -61,13 +61,15 @@ cancellato, mentre `ensure-test-release` e `ios-release-signing-smoke` sono verd
 è rimasto attivo per 15 minuti; la risposta API non identifica chi o perché l'abbia cancellato
 e il log del job non è disponibile (404). Il workflow V8 non è partito perché nessun percorso
 monitorato da `.github/workflows/v8.yml` era cambiato. Questa cancellazione non soddisfa il gate
-Apple: nessun ulteriore push finché il batch richiesto non è verificato positivamente. Il job iOS
-cancellato è stato riavviato singolarmente e ora è in coda (nuovo job `126197711507`); non
-trattare la cancellazione originale come successo. La smoke Windows 0462 è un commit locale
-(`a0375e277c1`) e la serie diagnostica memoria è in WIP; entrambe modificano `v8.yml`/i percorsi
-V8 e faranno partire la matrice V8 al prossimo push consentito. Al checkpoint corrente
-`origin/main` resta `fcecc8d6a2c`; i commit locali e il WIP non sono pubblicati. Ricontrollare il
-job riavviato al prossimo checkpoint aggregato; un nuovo errore va corretto prima del push.
+Apple: la cancellazione non è stata una verifica superata. L'utente ha poi disposto di
+disabilitare a ogni commit il job lento del simulatore iOS e di verificare iOS direttamente con
+il build reale firmato `mach bundle --ios --ios-release`; `release.yml` attualmente pubblica
+solo i build desktop, quindi questo test iOS va registrato solo quando viene eseguito. Il job
+rapido di firma resta attivo. Il retry del vecchio job simulatore `126197711507` era in coda al
+controllo ed è escluso dal gate secondo la nuova istruzione. La smoke Windows 0462
+(`a0375e277c1`) e la serie diagnostica memoria (`307c1682be3`) sono commit locali; non sono
+ancora stati provati dalla CI. Il prossimo batch deve verificare V8, controlli generali, Android
+e il job di firma; il job iOS simulatore intenzionalmente saltato sarà annotato come differito.
 
 ### 0461 — conteggio automatico del controllo di retention
 

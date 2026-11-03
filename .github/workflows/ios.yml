@@ -25,6 +25,9 @@ name: Build iOS native WKWebView app
 # `roves_android_project.zip` -- a consumer (Packmaster, roves-action) that wants the iOS
 # template without a git checkout of the engine can download this directly, the same way
 # Packmaster's Android backend already does for the Android project.
+# Since 2026-11-03 the per-commit simulator build job below is disabled because it is slow.
+# Actual iOS release validation remains the signed `mach bundle --ios --ios-release` path in
+# support/MOBILE.md; this repository's release.yml currently publishes desktop shell builds.
 
 on:
   push:
@@ -58,7 +61,10 @@ jobs:
             2>/dev/null || \
           gh release view "$TEST_RELEASE_TAG" > /dev/null
 
+  # The simulator build is intentionally deferred to the actual signed iOS release path.
+  # This repository's release.yml currently publishes desktop shell builds only.
   ios:
+    if: ${{ false }} # 2026-11-03: per-commit iOS simulator build deferred to release validation.
     needs: ensure-test-release
     permissions:
       contents: write

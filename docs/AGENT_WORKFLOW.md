@@ -123,13 +123,15 @@ Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisi
 nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
 la decisione e rivalutare un'API pubblica interamente asincrona.
 
-## Eccezione Apple autorizzata il 26 ottobre 2026
+## Build iOS per commit rinviata al rilascio — 3 novembre 2026
 
-Per la prosecuzione V8 l'utente esclude macOS/iOS dal blocco di pubblicazione. Non sono
-verifiche superate: documentarle come escluse/mancanti, senza disattivare workflow o
-ritentare per la sola piattaforma Apple. Tutti i job non Apple necessari devono restare
-verdi e terminali prima del push. Questa eccezione prevale sulla regola generale di batch
-interamente verde solo per macOS/iOS; il loop di sviluppo e gli altri limiti restano validi.
+Il job del simulatore iOS (`ios.yml`, job `ios`) è intenzionalmente disabilitato a ogni commit
+perché lento. L'utente verificherà iOS con il build reale firmato `mach bundle --ios
+--ios-release`; `release.yml` oggi pubblica solo i build desktop. Non disabilitare il percorso
+di rilascio iOS. Il controllo rapido `ios-release-signing-smoke` rimane attivo. I job macOS e
+tutte le verifiche Linux, Windows, Android e condivise continuano a bloccare la pubblicazione
+finché non sono concluse positivamente. Il job iOS simulatore intenzionalmente `skipped` va
+annotato come differito al rilascio, non come verde.
 
 ## Loop operativo autonomo
 

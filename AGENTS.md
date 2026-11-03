@@ -190,16 +190,17 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
 
-### Gate CI Apple riabilitato (3 novembre 2026)
+### Gate CI Apple aggiornato (3 novembre 2026)
 
-Per nuova indicazione dell'utente, i job macOS/iOS tornano obbligatori per le prossime
-pubblicazioni. Run cancellate, fallite, saltate o ancora attive non sono verdi e impediscono
-il push, come per Linux, Windows, Android e controlli condivisi. Non rilanciare le run
-Apple attualmente cancellate: l'utente ha chiesto di non riavviarle per ora. Continuare
-sviluppo e commit locali indipendenti; prima del prossimo push occorre un batch Apple valido
-concluso positivamente, oltre a tutte le altre verifiche richieste. Non presentare run
-cancellate come eseguite o riuscite. Questa regola sostituisce l'eccezione non bloccante
-del 26 ottobre.
+Per richiesta dell'utente, il job `ios` di build simulatore in `ios.yml` resta disabilitato
+su ogni commit perché è lento. L'utente verificherà iOS direttamente con il build reale firmato
+`mach bundle --ios --ios-release`; non disabilitare né modificare quel percorso di rilascio.
+Il workflow `release.yml` pubblica attualmente i build desktop, quindi non descriverlo come CI
+iOS del rilascio. Il job rapido `ios-release-signing-smoke` resta attivo. I job macOS, Linux,
+Windows, Android e i controlli condivisi restano richiesti e devono essere verdi e terminali
+prima del push; lo stato `skipped` del solo job `ios` simulatore è intenzionale e non rappresenta
+una build superata. Non rilanciare il vecchio job iOS simulatore per sbloccare la pubblicazione.
+Documentare il test iOS solo quando il build firmato viene realmente verificato.
 
 ### Procedura di implementazione: loop autonomo
 
