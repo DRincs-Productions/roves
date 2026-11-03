@@ -27,12 +27,14 @@ Esc prima dell'ispezione visiva della scena: non dichiarare completata la prova 
 La build del checkout locale precedente mostrava menu e narrazione, ma non sostituisce il
 test sul repository indicato.
 
-La build diagnostica Windows mostra che `location.assign(https://example.org/)` viene
-bloccato e il documento resta vivo; `roves.log` registra una volta la causa. Il link
-HTTP(S) si è aperto in Chrome dopo selezione e attivazione con Invio; il solo clic mouse
-non è stato verificato separatamente. La notice di sviluppo non è stata verificata nella
-modalità non impacchettata. Il test Rust 0457/0458 conferma che drop e shutdown annullano
-un fetch statico pendente e rifiutano la risposta tardiva; resta da confermare la chiusura
+La fixture Windows diretta in modalità sviluppo mostra che `location.assign(https://example.org/)`
+viene bloccato, il documento resta vivo e compare l'avviso discreto “A page change was
+blocked. Use History or hash routes inside the game.” Un clic mouse sul link HTTPS apre
+Chrome e Roves rimane sul documento originale. La schermata iniziale del template GitHub
+si carica; Start entra nella scena con sfondo, personaggio, dialogo e controlli. Il primo
+fotogramma dopo Start era vuoto, quello successivo mostra la scena: osservazione qualitativa,
+non una misura di durata o fluidità. Il test Rust 0457/0458 conferma che drop e shutdown
+annullano un fetch statico pendente e rifiutano la risposta tardiva; resta la chiusura OS
 della finestra Roves durante una richiesta reale.
 
 ### Stato di completamento — 3 novembre 2026
@@ -40,9 +42,9 @@ della finestra Roves durante una richiesta reale.
 - **Memoria:** ciclo DOM controllato e conteggio del marker atteso automatizzati;
   retention generale e memoria nativa su sessioni lunghe restano da verificare. Non
   dichiarare assenza di leak.
-- **Policy finestra:** smoke/log headless passano e il test Windows blocca la navigazione
-  automatica mantenendo vivo il documento. Confermare clic mouse OS diretto, notice di
-  sviluppo nella modalità di sviluppo e chiusura mentre un caricamento è pendente.
+- **Policy finestra:** smoke/log headless e test Windows confermano blocco della navigazione
+  automatica, notice di sviluppo e handoff al browser OS con un clic mouse reale. Resta la
+  chiusura della finestra mentre un caricamento è pendente.
 - **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte; il template GitHub
   apre la schermata principale e la route di gioco senza errori di import JS. Le pause e
   input/timer durante i fetch non sono stati misurati in questo flusso; il controllo di
@@ -50,16 +52,15 @@ della finestra Roves durante una richiesta reale.
 
 Questi tre punti non sono ancora tutti completati. La prova scena è positiva; non sono
 stati misurati tempi, pause o input durante il fetch perché appartengono al flusso di
-fluidità dell'utente. Per la policy servono ancora clic mouse, notice di sviluppo e prova
-OS di chiusura finestra durante un fetch; drop/shutdown è già coperto a livello runtime.
+fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra durante un
+fetch; drop/shutdown è già coperto a livello runtime.
 
 Checkpoint Git al 3 novembre: `origin/main` è `5d818c4a53e`; il lavoro completo successivo
-è locale su `main` in cinque commit non pubblicati, inclusa la riga TODO aggiunta dall'utente
-e committata su sua richiesta in `3ecb7ee6af6`. Non pubblicare mentre la V8 `41684945512`
-è in coda. Android
-`41684946080` è verde; iOS `41684945849` è in coda ma esclusa dal gate. L'ultima cattura
-Computer Use non corrispondeva alla finestra Roves, quindi non sono stati eseguiti altri
-clic via automazione; la conferma visiva della scena è dell'utente.
+è locale su `main` e include la riga TODO aggiunta dall'utente e committata su sua richiesta
+in `3ecb7ee6af6`. Non pubblicare mentre la V8 `41684945512`
+è in corso. Android `41684946080` è verde; iOS `41684945849` è fallita ma esclusa dal gate.
+I test Windows della policy e della scena descritti sopra sono stati eseguiti direttamente
+nella finestra Roves. La chiusura OS con fetch pendente resta aperta.
 
 ## Storico aggiornato — 2 novembre 2026
 
