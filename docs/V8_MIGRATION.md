@@ -74,12 +74,14 @@ fluidità dell'utente. Per la policy resta la prova OS di chiusura finestra dura
 fetch; il percorso di produzione fino allo shutdown e l'annullamento runtime sono coperti,
 ma non ancora insieme da una prova nativa end-to-end.
 
-Checkpoint Git al 3 novembre: `origin/main` è `5d818c4a53e`; il lavoro completo successivo
-è locale su `main` e include la riga TODO aggiunta dall'utente e committata su sua richiesta
-in `3ecb7ee6af6`. La CI precedente è conclusa: i job obbligatori Linux/Windows V8 e Android
-sono verdi. La conclusione globale failure della run V8 deriva solo da job macOS annullati;
-la run iOS è fallita. Entrambi i workflow Apple restano esclusi dal gate per istruzione
-dell'utente.
+Checkpoint Git al 3 novembre: `origin/main` è `db0781b2a46`; `main` è avanti di un commit
+locale, `0da747eb45d`, che documenta l'ulteriore conteggio cppgc dello snapshot. Il push
+`db0781b2a46` include la riga TODO dell'utente, committata in `3ecb7ee6af6`. Per quel push,
+Android `41689949095` è verde, V8 `41689949123` è ancora in coda e iOS `41689949222` è in
+coda ed esclusa. Non pubblicare il commit locale finché la CI V8 richiesta non è conclusa.
+Il batch precedente `5d818c4a53e` è concluso: i job obbligatori Linux/Windows V8 e Android
+sono verdi; la conclusione globale failure della run V8 deriva solo da job macOS annullati,
+e iOS è fallita. Entrambi i workflow Apple sono esclusi dal gate per istruzione dell'utente.
 I test Windows della policy e della scena descritti sopra sono stati eseguiti direttamente
 nella finestra Roves. La chiusura OS con fetch pendente resta aperta.
 
