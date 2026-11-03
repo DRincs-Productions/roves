@@ -1011,12 +1011,12 @@ context.document = {
 class HeapSnapshotCheckTests(unittest.TestCase):
     """check_heap_snapshot.py on synthetic files (the real format comes from V8 in CI)."""
 
-    def check(self, content, *required):
+    def check(self, content, *required, expected_tagged_probes=None):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / 'scene.heapsnapshot'
             if content is not None:
                 path.write_text(content, encoding='utf-8')
-            return snapshot_problems(str(path), required)
+            return snapshot_problems(str(path), required, expected_tagged_probes)
 
     def test_valid_and_invalid_snapshots(self):
         valid = json.dumps({'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 2},
@@ -1029,6 +1029,37 @@ class HeapSnapshotCheckTests(unittest.TestCase):
                 found = self.check(content)
                 self.assertEqual(1, len(found))
                 self.assertTrue(found[0].startswith('not a V8 heap snapshot: '), found)
+
+    def test_retention_snapshot_counts_only_tagged_marker_owners(self):
+        def snapshot(probe_count):
+            nodes = [0, 0, probe_count]
+            edges = []
+            for _ in range(probe_count):
+                object_offset = len(nodes)
+                marker_offset = object_offset + 3
+                nodes.extend([1, 1, 1, 2, 2, 0])
+                edges.extend([0, 0, object_offset, 1, 3, marker_offset])
+            return json.dumps({
+                'snapshot': {
+                    'meta': {
+                        'node_fields': ['type', 'name', 'edge_count'],
+                        'node_types': [['synthetic', 'object', 'string']],
+                        'edge_fields': ['type', 'name_or_index', 'to_node'],
+                        'edge_types': [['shortcut', 'property']],
+                    },
+                    'node_count': 1 + probe_count * 2,
+                    'edge_count': probe_count * 2,
+                },
+                'nodes': nodes,
+                'edges': edges,
+                'strings': ['(GC roots)', 'Object', 'roves-document-retention-probe', 'rovesProbeTag'],
+            })
+
+        required = ('rovesProbeTag', 'roves-document-retention-probe')
+        self.assertEqual([], self.check(snapshot(1), *required, expected_tagged_probes=1))
+        self.assertEqual(
+            ["expected 1 tagged probe object(s) with 'rovesProbeTag' -> 'roves-document-retention-probe', found 2"],
+            self.check(snapshot(2), *required, expected_tagged_probes=1))
 
 
 ROOT = HERE.parents[1]
@@ -1431,9 +1462,28 @@ elif page == 'document-retention.html':
     if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '32' and scenario != 'snapshot-dump-failed':
         if scenario != 'snapshot-file-missing':
             with open(path, 'x') as written:
-                written.write('{"broken"' if scenario == 'snapshot-invalid' else json.dumps(
-                    {'snapshot': {'meta': {'node_fields': ['type', 'name']}, 'node_count': 1}, 'nodes': [0, 0],
-                     'strings': ['rovesDocumentRetentionProbe', 'roves-document-retention-probe']}))
+                if scenario == 'snapshot-invalid':
+                    written.write('{"broken"')
+                else:
+                    probe_count = 2 if scenario == 'snapshot-extra-retained-probe' else 1
+                    nodes = [0, 0, probe_count]
+                    edges = []
+                    for _ in range(probe_count):
+                        object_offset = len(nodes)
+                        marker_offset = object_offset + 3
+                        nodes.extend([1, 1, 1, 2, 2, 0])
+                        edges.extend([0, 0, object_offset, 1, 3, marker_offset])
+                    written.write(json.dumps({
+                        'snapshot': {'meta': {
+                            'node_fields': ['type', 'name', 'edge_count'],
+                            'node_types': [['synthetic', 'object', 'string']],
+                            'edge_fields': ['type', 'name_or_index', 'to_node'],
+                            'edge_types': [['shortcut', 'property']],
+                        }, 'node_count': 1 + probe_count * 2, 'edge_count': probe_count * 2},
+                        'nodes': nodes, 'edges': edges,
+                        'strings': ['(GC roots)', 'Object', 'roves-document-retention-probe', 'rovesProbeTag',
+                                    'rovesDocumentRetentionProbe'],
+                    }))
         print(f'[roves-heap-snapshot] wrote 31 bytes to {path} at explicit collection 32', file=sys.stderr)
     elif scenario == 'snapshot-dump-failed':
         print(f'[roves-heap-snapshot] failed at explicit collection 32: {path}: No space left on device', file=sys.stderr)
@@ -1689,7 +1739,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertNotIn('::notice::document-retention.html: ROVES-V8 document-retention round ', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention rounds complete 16 cycles 128', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128', result.stdout)
-                self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'", result.stdout)
+                self.assertIn("valid V8 snapshot with 'rovesDocumentRetentionProbe', 'roves-document-retention-probe'; 1 tagged retention probe(s)", result.stdout)
                 wrapper = ['wrapper with spaces', '--option'] if wrapped else []
                 self.assertEqual(wrapper + ['unused-browser', '--pref', 'dom_testutils_enabled=true'], result.gc_args)
 
@@ -1704,6 +1754,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('snapshot-control', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention retained control true'"),
             ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 11 cycles 8 collections 22 retained control true'"),
             ('snapshot-cleanup', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128'"),
+            ('snapshot-extra-retained-probe', 'out/scene.heapsnapshot', 'found 2'),
             ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten'),
             ('pass', 'relative', 'must be an absolute path'),
         )

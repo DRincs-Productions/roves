@@ -1,6 +1,50 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Punto operativo aggiornato — 2 novembre 2026
+## Punto operativo aggiornato — 3 novembre 2026
+
+### 0461 — conteggio automatico del controllo di retention
+
+Esteso `check_heap_snapshot.py` con il modulo JSON standard di Python (nessuna nuova
+dipendenza): oltre alla struttura V8, verifica che una sola proprietà `rovesProbeTag`
+punti al marker del controllo intenzionalmente trattenuto. La suite copre un controllo
+corretto, un secondo probe trattenuto e grafi sintetici. Sullo snapshot reale di 0458 il
+conteggio atteso è **1**. Questo verifica il marker mirato; non traccia tutti i retainer,
+non copre gli oggetti non marcati o memoria nativa e non chiude la retention generale.
+Runner locale: 61 test, 15 skip (verificare nuovamente dopo il commit); checker sullo
+snapshot reale valido. La nuova asserzione deve ancora passare nella CI V8 del commit.
+
+Il repository indicato dall'utente, `DRincs-Productions/visual-novel-template`, è pubblico,
+non archiviato e aggiornato il 2 novembre (`a99126b5dface08e965448c666d5d289f3967e99`).
+La build TypeScript/Vite del commit è riuscita; è stata impacchettata in `target` e il
+processo Roves è stato avviato. Computer Use è stato fermato dall'utente con Esc prima
+dell'ispezione della scena di questa build: non dichiarare completata la prova statica.
+La build precedente del checkout locale del template mostrava menu e narrava in Roves,
+ma non sostituisce il test sul repository richiesto.
+
+La build diagnostica Windows mostra che `location.assign(https://example.org/)` viene
+bloccato e il documento resta vivo; `roves.log` registra una volta la causa. Il link
+HTTP(S), attivato con input utente, apre Chrome e lascia Roves vivo. Non è stato separato
+in modo affidabile il clic mouse dall'attivazione da tastiera, né verificata la notice
+di sviluppo nella modalità di sviluppo. La chiusura con fetch pendente resta non provata.
+
+### Stato di completamento — 3 novembre 2026
+
+- **Memoria:** ciclo DOM controllato e conteggio del marker atteso automatizzati;
+  retention generale e memoria nativa su sessioni lunghe restano da verificare. Non
+  dichiarare assenza di leak.
+- **Policy finestra:** smoke/log headless passano e il test Windows blocca la navigazione
+  automatica mantenendo vivo il documento. Confermare clic mouse OS diretto, notice di
+  sviluppo nella modalità di sviluppo e chiusura mentre un caricamento è pendente.
+- **Pausa statica:** il caricamento cede fra fetch e sorgenti pronte, ma manca la
+  valutazione su una scena reale, inclusi input/timer e rete fredda/calda/lenta.
+
+Questi tre punti non sono ancora tutti completati. Per concludere la pausa statica serve
+esaminare la finestra della build GitHub e provare la scena; per la notice e il clic mouse
+serve un'interazione desktop visibile, perché il controllo computer è stato interrotto con
+Esc. La chiusura pendente può essere completata da Codex con una fixture lenta. Le misure
+comparative di performance restano nel flusso separato dell'utente.
+
+## Storico aggiornato — 2 novembre 2026
 
 ### CI `aa2365b1ad5`: test runtime falliti; fix pubblicato in `6e2f741cbc1`
 

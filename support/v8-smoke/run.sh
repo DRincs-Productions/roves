@@ -332,7 +332,9 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
     grep -aE '^ROVES-V8 document-retention diagnostic released counts ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
     if [ ! -s "$HEAP_SNAPSHOT" ]; then
       snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $HEAP_SNAPSHOT"
-    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "$HEAP_SNAPSHOT" rovesDocumentRetentionProbe roves-document-retention-probe; then
+    elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" --expected-tagged-probes 1 \
+      --tag-property rovesProbeTag --tag-marker roves-document-retention-probe \
+      "$HEAP_SNAPSHOT" rovesDocumentRetentionProbe roves-document-retention-probe; then
       snapshot_ok=0
     fi
   fi
