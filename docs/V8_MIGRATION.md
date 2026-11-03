@@ -10,9 +10,11 @@ punti al marker del controllo intenzionalmente trattenuto. La suite copre un con
 corretto, un secondo probe trattenuto e grafi sintetici. Sullo snapshot reale di 0458 il
 conteggio atteso è **1**. Questo verifica il marker mirato; non traccia tutti i retainer,
 non copre gli oggetti non marcati o memoria nativa e non chiude la retention generale.
-Runner locale: 62 test, 15 skip; checker sullo snapshot reale valido. La nuova asserzione
-deve ancora passare nella CI V8 del commit `5d818c4a53e` (run `41684945512`, ancora in
-coda al checkpoint del 3 novembre).
+Runner locale: 62 test, 15 skip; checker sullo snapshot reale valido. Nel batch del commit
+`5d818c4a53e`, tutti i job Linux/Windows V8 (build/smoke e runtime, normal/JITless) sono
+verdi e Android è verde. La run V8 `41684945512` ha conclusione globale `failure` solo per
+job macOS annullati; sono esclusi dal gate per istruzione dell'utente. iOS `41684945849` è
+fallita ed è anch'essa esclusa. Non risultano errori nei job richiesti.
 
 Il repository indicato dall'utente, `DRincs-Productions/visual-novel-template`, è pubblico,
 non archiviato e aggiornato il 2 novembre (`a99126b5dface08e965448c666d5d289f3967e99`).
@@ -65,8 +67,10 @@ ma non ancora insieme da una prova nativa end-to-end.
 
 Checkpoint Git al 3 novembre: `origin/main` è `5d818c4a53e`; il lavoro completo successivo
 è locale su `main` e include la riga TODO aggiunta dall'utente e committata su sua richiesta
-in `3ecb7ee6af6`. Non pubblicare mentre la V8 `41684945512`
-è in corso. Android `41684946080` è verde; iOS `41684945849` è fallita ma esclusa dal gate.
+in `3ecb7ee6af6`. La CI precedente è conclusa: i job obbligatori Linux/Windows V8 e Android
+sono verdi. La conclusione globale failure della run V8 deriva solo da job macOS annullati;
+la run iOS è fallita. Entrambi i workflow Apple restano esclusi dal gate per istruzione
+dell'utente.
 I test Windows della policy e della scena descritti sopra sono stati eseguiti direttamente
 nella finestra Roves. La chiusura OS con fetch pendente resta aperta.
 
