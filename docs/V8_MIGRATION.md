@@ -114,6 +114,14 @@ stata accettata solo dopo la conclusione del retry normal ed è queued/in progre
 altri retry mentre questa run è attiva. Per la nuova regola utente non rilanciare macOS normal;
 la verifica 0464 resta non coperta dal batch, che risale a 0462.
 
+Checkpoint locale corrente: `main` è a `426a6e7e7e3`, sette commit avanti rispetto a
+`origin/main`. Comprende il test 0464, la diagnostica memory 0466 (campioni per round e controllo
+finale dei 128 cicli), questa esclusione V8 per-commit e il job release-only macOS normal in
+`release.yml`. Il controllo YAML locale non è disponibile (`actionlint` e PyYAML assenti); il
+diff whitespace è pulito. Nessun push finché il retry macOS JITless non è terminale e verde.
+La nuova CI dopo il push dovrà confermare Windows normal per 0464, Linux normal per 0466 e la
+matrice senza macOS normal; la build macOS normal verrà controllata al successivo tag di release.
+
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
 Su richiesta esplicita dell'utente è stato pubblicato il batch documentale locale, benché le
