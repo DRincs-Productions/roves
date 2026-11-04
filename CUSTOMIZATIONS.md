@@ -19169,6 +19169,8 @@ the intermediate dereferences and sample once after the last task boundary and a
 collection. Keep the final 128-element/probe release assertion scoped to this fixture. Update the
 Node test harness to use a deterministic WeakRef protocol mock for pass/fail behavior; it does not
 claim to simulate browser garbage collection. The workload still has 32 snapshot checkpoints and
-one separate final verification collection. Commit `3ea49c3faac` is published; V8 run
-`41886424033` and Android run `41886423978` are queued/in progress. Overall memory retention
-remains open.
+one separate final verification collection. Commit `3ea49c3faac` is published. Linux/Windows V8
+jobs passed in run `41886424033`, but macOS JITless was cancelled. Android run `41886423978`
+passed 3/3. iOS run `41886423928` skipped the intentionally disabled simulator build; its signing
+smoke was cancelled before a runner started, with no code failure reported. Overall memory
+retention remains open.

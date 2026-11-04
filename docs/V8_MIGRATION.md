@@ -2,7 +2,7 @@
 
 ## Punto operativo aggiornato — 4 novembre 2026
 
-### Correzione diagnostica memoria (task 0467) — pubblicata, CI in corso
+### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
 La run V8 `41880418433` ha fallito tutti e quattro i job runtime Linux/Windows normal e JITless
 nello stesso test runner. La causa era concreta: leggere `WeakRef.deref()` a ogni round mantiene
@@ -16,15 +16,15 @@ segnano i checkpoint snapshot restano invariate; la raccolta di verifica porta i
 
 Le build V8 `41880418433` sono terminali: Linux/Windows normal e JITless falliti per la stessa
 causa; macOS JITless cancellato; tutti gli altri job non Apple verdi. Android `41880418434` è
-verde 3/3. In iOS `41880418445`, `ensure-test-release` è verde, simulatore skipped come richiesto,
-ma `ios-release-signing-smoke` era cancellato; il simulatore era skipped intenzionalmente. Le
-verifiche locali della correzione passano: 66 test del runner (16 skipped per dipendenze
+verde 3/3. In iOS `41880418445`, `ensure-test-release` è verde, il simulatore è skipped come
+richiesto, e `ios-release-signing-smoke` è stato cancellato dopo 15 minuti senza iniziare step né
+ricevere un runner. La risposta API non espone il motivo; non c'è evidenza di un errore del codice.
+Le verifiche locali della correzione passano: 66 test del runner (16 skipped per dipendenze
 facoltative), `node --check`, `bash -n` e `git diff --check`. Fix pubblicato nel commit
-`3ea49c3faac`. Nuove run: V8 `41886424033` (runtime Linux/Windows normal/JITless e servoshell
-Linux/Windows normal/JITless in corso; runtime macOS JITless queued) e Android `41886423978`
-(ensure-release verde, firma Android e build in corso). Al controllo aggregato non risultano
-nuove CI rosse; nessuna run iOS è stata avviata per questo push. Questa prova resta limitata al
-ciclo DOM controllato e non chiude la retention generale.
+`3ea49c3faac`. Nuove run: V8 `41886424033` (Linux/Windows normal e JITless verdi, macOS JITless
+cancellato), Android `41886423978` (verde 3/3) e iOS `41886423928` (ensure-release verde,
+simulatore skipped intenzionalmente, signing smoke cancellato prima dell'avvio). Questa prova
+resta limitata al ciclo DOM controllato e non chiude la retention generale.
 
 ### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — CI 19ca
 
@@ -126,11 +126,10 @@ Checkpoint pubblicato `3f755e31c2d`, 4 novembre: i dieci commit locali sono stat
 macOS JITless in coda. Quel job `126745809771` resta queued; il precedente runtime macOS normal
 `126745810772` è cancellato ma non viene ritentato per la nuova regola utente.
 
-Nuova CI per lo SHA pubblicato `3ea49c3faac`: V8 `41886424033` e Android `41886423978`.
-Gli esiti aggregati correnti sono riportati nel punto operativo 0467 sopra. Non pubblicare altri
-commit mentre queste run sono attive; al prossimo punto di verifica aggregato controllare gli
-esiti terminali e intervenire su ogni eventuale errore. La build versionata macOS normal è
-definita in `release.yml` e verrà eseguita solo al prossimo tag `v*.*.*`.
+Nuova CI per lo SHA pubblicato `3ea49c3faac`: V8 `41886424033`, Android `41886423978` e iOS
+`41886423928`. Tutte le run sono terminali; gli esiti sono riportati nel punto operativo 0467
+sopra. V8 resta non verificata perché macOS JITless è stato cancellato. La build versionata macOS
+normal è definita in `release.yml` e verrà eseguita solo al prossimo tag `v*.*.*`.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
