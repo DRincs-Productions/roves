@@ -114,14 +114,22 @@ log. Una nuova richiesta è stata accettata e il job `126745809771` è in coda. 
 retry mentre questo è queued/in progress. Per la nuova regola utente non rilanciare macOS normal;
 la verifica 0464 resta non coperta dal batch, che risale a 0462.
 
-Checkpoint locale corrente: `main` è a `d341aef324f`, nove commit avanti rispetto a
-`origin/main`. Comprende il test 0464, la diagnostica memory 0466 (campioni per round e controllo
-finale dei 128 cicli), l'esclusione V8 macOS normal per commit e il job runtime macOS normal nel
-workflow taggato `release.yml`. Il controllo YAML locale non è disponibile (`actionlint` e PyYAML
-assenti); `git diff --check` passa. Nessun push finché il retry macOS JITless `126745809771` non
-è terminale e verde. La nuova CI dovrà confermare Windows normal per 0464, Linux normal per 0466
-e la matrice senza macOS normal; il runtime e il bundle macOS normal saranno coperti al prossimo
-tag di release.
+Checkpoint pubblicato `3f755e31c2d`, 4 novembre: i dieci commit locali sono stati pushati su
+`main` su richiesta esplicita dell'utente, nonostante la run precedente avesse ancora il runtime
+macOS JITless in coda. Quel job `126745809771` resta queued; il precedente runtime macOS normal
+`126745810772` è cancellato ma non viene ritentato per la nuova regola utente.
+
+Nuova CI per lo SHA pubblicato: V8 `41880418433` (9 job, senza alcuna cella macOS normal),
+Android `41880418434` (3 job) e iOS `41880418445` (signing smoke e ensure-release in coda,
+simulatore `skipped` intenzionalmente). I job V8 Windows normal includono la prova 0464; Linux
+normal include la diagnostica 0466. Tutti i job non saltati della nuova run sono queued al checkpoint;
+la build versionata macOS normal è definita in `release.yml` ma verrà eseguita solo al prossimo
+tag `v*.*.*`. `actionlint` e PyYAML non sono installati localmente; `git diff --check` passava
+prima del push.
+
+Non fare altri push finché il runtime JITless residuo della run precedente e tutte le verifiche
+obbligatorie delle nuove run non sono concluse positivamente. La cancellazione macOS normal
+della run vecchia è esclusa dal gate secondo l'ultima istruzione dell'utente.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
