@@ -109,9 +109,9 @@ pubblicarlo finché il runtime macOS JITless e tutte le altre verifiche richiest
 terminali. La nuova run dovrà provare 0464 su Windows normal; le due celle macOS normal saranno
 assenti dalla matrice per commit.
 
-Stato riprese aggiornato il 4 novembre: la richiesta di riesecuzione del job macOS JITless è
-stata accettata solo dopo la conclusione del retry normal ed è queued/in progress. Non eseguire
-altri retry mentre questa run è attiva. Per la nuova regola utente non rilanciare macOS normal;
+Stato riprese aggiornato il 4 novembre: il retry JITless `126729839589` è stato cancellato senza
+log. Una nuova richiesta è stata accettata e il job `126745809771` è in coda. Non eseguire altri
+retry mentre questo è queued/in progress. Per la nuova regola utente non rilanciare macOS normal;
 la verifica 0464 resta non coperta dal batch, che risale a 0462.
 
 Checkpoint locale corrente: `main` è a `426a6e7e7e3`, sette commit avanti rispetto a

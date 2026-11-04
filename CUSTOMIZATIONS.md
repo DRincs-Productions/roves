@@ -19154,6 +19154,7 @@ entries: the isolated V8 runtime tests and the servoshell V8 build. Version-tagg
 builds/publishes macOS plain and Steam bundles. The macOS JITless runtime job remains in
 per-commit V8 CI. The iOS simulator exclusion is unchanged.
 The repeated cancellation of the old macOS normal runtime job is now an intentional deferral;
-do not retry it. The JITless retry is still required before the current checkpoint can be
-treated as green. The release workflow now waits for the macOS normal runtime tests before
-creating the versioned release or uploading artifacts; no product code changed.
+do not retry it. The JITless retry `126729839589` was cancelled without a log; a new retry
+`126745809771` is queued and remains required before the current checkpoint can be treated as
+green. The release workflow now waits for the macOS normal runtime tests before creating the
+versioned release or uploading artifacts; no product code changed.
