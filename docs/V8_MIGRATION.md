@@ -1,6 +1,21 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Punto operativo aggiornato — 3 novembre 2026
+## Punto operativo aggiornato — 4 novembre 2026
+
+### Diagnostica rilascio a ogni round (task 0466) — locale, CI non ancora eseguita
+
+La fixture `document-retention.html` campiona ora i `WeakRef` del round appena completato,
+dopo le due raccolte esplicite e un task event-loop, riportando elementi/probe rilasciati su
+8. Conserva soltanto i conteggi numerici, non gli oggetti dereferenziati. Le letture restano
+diagnostiche: nessuna soglia per round, quindi nessun nuovo criterio flaky di pass/fail. Il
+totale finale deriva dalla somma dei campioni, per distinguere un rilascio progressivo da una
+liberazione visibile soltanto a fine sessione. Riusa `WeakRef` JavaScript standard già presente;
+nessuna dipendenza.
+
+La serie 0465 della CI precedente ha campionato soltanto dopo l'ultimo round; non prova il nuovo
+comportamento 0466. `node --check` sullo script inline e `git diff --check` passano localmente.
+Serve un futuro job Linux normal per raccogliere i nuovi conteggi; il risultato resta specifico
+alla fixture e non chiude la retention generale.
 
 ### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — CI 19ca
 

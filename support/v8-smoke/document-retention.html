@@ -8,9 +8,9 @@
 // native snapshots at chosen ones (run.sh: 2, 16 and 32). Every cycle also adds a self-capturing listener removed
 // through AbortController and a self-capturing timer cancelled before it can run. A control DOM
 // wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
-// every round (required). Released wrapper/closure cycles are read through WeakRef only once,
-// after the last round, and are diagnostic only: no collection threshold is judged, and this
-// scene does not establish overall retention or the absence of leaks.
+// every round (required). Released wrapper/closure cycles are sampled through WeakRef after each
+// round; these counts are diagnostic only, no release threshold is judged, and this scene does
+// not establish overall retention or the absence of leaks.
 const ROUNDS = 16;
 const CYCLES_PER_ROUND = 8;
 const COLLECTIONS_PER_ROUND = 2;
@@ -63,9 +63,10 @@ async function main() {
   const controlListener = new AbortController();
   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true, controlListener };
   control.addEventListener("roves-control", () => { controlHits++; }, { signal: controlListener.signal });
-  // Only WeakRefs and booleans are kept across rounds; no deref happens before the last round,
-  // so diagnostics never keep a released target alive into a later collection.
+  // Only WeakRefs and booleans are kept across rounds. Per-round deref samples happen after that
+  // round's collections; sampled counts, never targets, are retained for the final summary.
   const rounds = [];
+  const releaseSamples = [];
   let collections = 0;
   for (let round = 1; round <= ROUNDS; round++) {
     const cycles = Array.from({ length: CYCLES_PER_ROUND }, createAndRemoveNode);
@@ -81,6 +82,14 @@ async function main() {
     for (let i = 0; i < COLLECTIONS_PER_ROUND; i++) { await TestUtils.gc(); collections++; }
     await nextTask();
     checkControl(control, round);
+    const sample = rounds[round - 1].reduce((counts, refs) => {
+      if (refs.element.deref() === undefined) counts.elements++;
+      if (refs.probe.deref() === undefined) counts.probes++;
+      return counts;
+    }, { elements: 0, probes: 0, total: CYCLES_PER_ROUND });
+    releaseSamples.push(sample);
+    report("diagnostic round", round, "released elements", sample.elements,
+      "probes", sample.probes, "total", CYCLES_PER_ROUND);
     report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
   }
   report("node created true removed true");
@@ -92,14 +101,8 @@ async function main() {
   checkControl(control, ROUNDS);
   report("retained control", "true");
   // Diagnostic only: never a failure condition.
-  const released = rounds.map(refs => ({
-    elements: refs.filter(ref => ref.element.deref() === undefined).length,
-    probes: refs.filter(ref => ref.probe.deref() === undefined).length,
-    total: refs.length,
-  }));
-  const sum = key => released.reduce((total, round) => total + round[key], 0);
+  const sum = key => releaseSamples.reduce((total, round) => total + round[key], 0);
   const elementsReleased = sum("elements"), probesReleased = sum("probes"), total = sum("total");
-  released.forEach((round, index) => report("diagnostic round", index + 1, "released elements", round.elements, "probes", round.probes, "total", round.total));
   report("diagnostic released element", String(elementsReleased === total), "probe", String(probesReleased === total));
   report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", total);
 }
