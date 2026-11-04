@@ -123,22 +123,21 @@ Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisi
 nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
 la decisione e rivalutare un'API pubblica interamente asincrona.
 
-## Build macOS normal e simulatore iOS differiti — 4 novembre 2026
+## Build macOS differite ai rilasci e simulatore iOS — 4 novembre 2026
 
-Le due celle V8 `macos-latest / normal` (`runtime` e `servoshell-v8`) sono escluse dalle CI per
-commit su richiesta dell'utente. `release.yml`, sui tag di versione `v*.*.*`, esegue il runtime
-macOS normal e poi compila i bundle macOS plain e Steam; la build macOS normal viene quindi
-spostata al rilascio versionato. Il runtime macOS JITless resta richiesto per commit. Non
-rilanciare le celle macOS normal cancellate per sbloccare il push; annotarle come differite al
-rilascio, non come verdi.
+Per decisione aggiornata dell'utente, tutte le celle macOS V8 (runtime normal/JITless e
+servoshell) sono escluse dalle CI per commit. `release.yml`, sui tag `v*.*.*`, esegue entrambi i
+modi dei test runtime macOS prima di compilare i bundle plain e Steam. Linux/Windows
+normal/JITless, Android e controlli condivisi restano i gate per commit. Non riabilitare macOS
+nei push ordinari; il job macOS JITless cancellato nella run `41886424033` è differito al
+rilascio e non blocca il push una volta concluse tutte le altre verifiche.
 
 Il job del simulatore iOS (`ios.yml`, job `ios`) resta intenzionalmente disabilitato a ogni commit
 perché lento. L'utente verificherà iOS con il build reale firmato `mach bundle --ios
 --ios-release`; `release.yml` non è la build iOS. Il controllo rapido `ios-release-signing-smoke`
 rimane attivo, ma non costituisce una build dell'app. Tutti gli altri controlli Linux, Windows,
-macOS JITless, Android e condivisi continuano a bloccare la pubblicazione finché non sono
-conclusi positivamente. I due job intenzionalmente differiti vanno annotati come tali, non come
-verdi.
+Android e condivisi continuano a bloccare la pubblicazione finché non sono conclusi positivamente.
+Il solo job iOS simulatore intenzionalmente differito va annotato come tale, non come verde.
 
 ## Loop operativo autonomo
 

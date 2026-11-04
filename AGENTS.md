@@ -192,18 +192,19 @@ prima di passare al controllo della CI e alla decisione di pubblicare.
 
 ### Gate CI Apple aggiornato (4 novembre 2026)
 
-Per richiesta dell'utente, le celle V8 `macos-latest / normal` (`runtime` e
-`servoshell-v8`) sono escluse dalla CI per commit e si eseguono solo nel rilascio versionato:
-`release.yml` esegue anche i test runtime macOS normal prima di compilare e pubblicare i bundle
-plain e Steam sui tag `v*.*.*`. Le verifiche macOS JITless restano richieste nella CI per commit.
+Per richiesta dell'utente, tutte le celle macOS V8 (runtime normal/JITless e servoshell) sono
+escluse dalla CI per commit. Sul tag versionato `v*.*.*`, `release.yml` esegue i test runtime
+macOS in entrambe le modalità prima di compilare e pubblicare i bundle plain e Steam. Linux e
+Windows continuano a eseguire normal/JITless per commit. I job macOS non vanno riabilitati nei
+push ordinari; il rilascio versionato è il gate e il percorso per verificare i bundle macOS.
 Il job `ios` di build
 simulatore in `ios.yml` resta disabilitato su ogni commit perché è lento. L'utente verificherà
 iOS direttamente con il build reale firmato `mach bundle --ios --ios-release`; non disabilitare
 né modificare quel percorso di rilascio. `release.yml` non è una build iOS. Il job rapido
 `ios-release-signing-smoke` resta attivo, ma non è una build dell'app. Linux, Windows, Android
 e controlli condivisi restano richiesti e devono essere verdi e terminali prima del push.
-`skipped` per i due lavori esplicitamente differiti è intenzionale e non rappresenta una build
-superata; non rilanciare il simulatore iOS o macOS normal per sbloccare la pubblicazione.
+`skipped` per i lavori esplicitamente differiti è intenzionale e non rappresenta una build
+superata; non rilanciare il simulatore iOS per sbloccare la pubblicazione.
 Documentare i build macOS/iOS soltanto quando il relativo percorso versionato viene verificato.
 
 ### Procedura di implementazione: loop autonomo

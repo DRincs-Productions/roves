@@ -19174,3 +19174,14 @@ jobs passed in run `41886424033`, but macOS JITless was cancelled. Android run `
 passed 3/3. iOS run `41886423928` skipped the intentionally disabled simulator build; its signing
 smoke was cancelled before a runner started, with no code failure reported. Overall memory
 retention remains open.
+
+
+## 2026-11-04 - Run all macOS V8 checks only on versioned releases
+
+The user clarified that macOS V8 should never run on every commit, including JITless. Exclude
+all macOS runtime and servoshell cells from `.github/workflows/v8.yml`; run both runtime modes
+in the versioned release workflow before publishing the plain and Steam desktop bundles. Linux
+and Windows normal/JITless remain per-commit gates. The latest release is `v0.7.14`; the next
+planned tag is `v0.7.15`, pending green non-macOS CI for the workflow change. The macOS JITless
+cancellation in run `41886424033` is deferred under this updated policy. Do not describe it as a
+code failure or re-enable it on ordinary pushes.

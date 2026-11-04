@@ -32,10 +32,12 @@ jobs:
       matrix:
         os: [ubuntu-24.04, windows-latest, macos-latest]
         mode: [normal, jitless]
-        # macOS normal is exercised only by the versioned release build; keep JIT-less runtime coverage per commit.
+        # All macOS V8 jobs run only on versioned releases; Linux and Windows remain per-commit gates.
         exclude:
           - os: macos-latest
             mode: normal
+          - os: macos-latest
+            mode: jitless
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -93,7 +95,7 @@ jobs:
           fi
 
   # servoshell built against roves-js (the mozjs API on V8) instead of SpiderMonkey on the
-  # per-commit platforms. macOS normal package builds run in release.yml on version tags.
+  # per-commit platforms. macOS package builds run in release.yml on version tags.
   # Then (Linux) the smoke pages in support/v8-smoke/ run
   # headlessly. This is the end-to-end check of the V8 cutover, kept in CI so no local machine
   # has to link the browser.

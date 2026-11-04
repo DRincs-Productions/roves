@@ -310,9 +310,9 @@ real, signed release build instead of the default debug/simulator one — see
 `support/MOBILE.md` for the required signing credentials (an Android keystore
 you can generate yourself, or an Apple Distribution certificate + provisioning
 profile from your own Apple Developer Program account for iOS). CI builds a
-native WebView smoke-test APK on Android and an unsigned iOS Simulator build
-on macOS, plus a real signed-release verification for Android. Console
-targets remain on the roadmap.
+native WebView smoke-test APK on Android and verifies Android release signing.
+The per-commit iOS Simulator build is deferred; verify iOS with a signed
+`mach bundle --ios --ios-release` build. Console targets remain on the roadmap.
 
 ## Embedding
 

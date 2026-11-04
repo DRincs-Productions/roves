@@ -22,7 +22,7 @@ env:
 jobs:
   # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──
   create-release:
-    needs: v8-runtime-macos-normal
+    needs: v8-runtime-macos
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -66,10 +66,13 @@ jobs:
             --title "Roves ${{ github.ref_name }}" \
             --notes-file notes.md
 
-  # The normal macOS V8 runtime lane is intentionally release-only to avoid repeating this
-  # native build on every commit. Keep it as a release gate alongside the macOS shell bundles.
-  v8-runtime-macos-normal:
-    name: V8 runtime tests (macOS, normal)
+  # Both macOS V8 runtime modes run only for versioned releases, alongside the macOS shell bundles.
+  v8-runtime-macos:
+    name: V8 runtime tests (macOS, ${{ matrix.mode }})
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, jitless]
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -86,11 +89,16 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/v8-runtime-target
+          V8_TEST_MODE: ${{ matrix.mode }}
         run: |
           cd "$RUNNER_TEMP/roves-v8"
-          cargo test --locked
+          args=()
+          if [ "$V8_TEST_MODE" = jitless ]; then
+            args+=(--features jitless)
+          fi
+          cargo test --locked "${args[@]}"
           cd "$RUNNER_TEMP/roves-js"
-          cargo test --locked
+          cargo test --locked "${args[@]}"
 
   # ── Build the real release bundle and publish it, once per platform ───────────────────
   build-and-publish:
