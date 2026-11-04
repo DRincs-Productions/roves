@@ -77,15 +77,20 @@ durate né risolve retention generale. La versione attuale da verificare è 0464
 
 ### CI dopo push `19ca0363691` — checkpoint aggregato aggiornato
 
-Android `41718462547` è verde. In V8 `41718462513` i job Linux e Windows sono verdi;
-`servoshell-v8 (macos-latest, normal)` è ancora in corso. I due job runtime macOS normal e
-JITless sono cancellati e i log API restituiscono 404, senza causa leggibile. Il retry era stato
-rifiutato mentre la run era attiva; appena diventa terminale, rilanciare solo i due job runtime
-cancellati e attendere un esito positivo. Nessun errore di codice è emerso. Nel workflow iOS
+Android `41718462547` è verde. In V8 `41718462513` i job Linux e Windows sono verdi; anche
+`servoshell-v8 (macos-latest, normal)` è verde. I runtime macOS normal e JITless erano stati
+cancellati senza log accessibili. Un retry del runtime normal (job `126238605256`) è a sua volta
+terminato cancellato. Il retry del runtime JITless è ora in coda come job `126729839589`; quando
+termina, riprovare il runtime normal una volta e richiedere esiti verdi per entrambi. Nessun
+errore di codice è emerso. Nel workflow iOS
 `41718462473`, `ios-release-signing-smoke` è verde e il build simulatore è intenzionalmente
 `skipped` per la regola per-commit dell'utente. Il commit 0464 `2f927b36e9a` è locale: non
 pubblicarlo finché le verifiche macOS richieste non sono verdi e tutte le altre verifiche
 obbligatorie sono terminali. La nuova run dopo il push dovrà provare 0464 su Windows normal.
+
+Stato riprese aggiornato il 4 novembre: la richiesta di riesecuzione del job macOS JITless è
+stata accettata solo dopo la conclusione del retry normal; non avviare altri retry mentre questo
+è queued/in progress. La verifica 0464 resta non coperta dal batch, che risale a 0462.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 

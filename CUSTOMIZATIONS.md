@@ -19125,3 +19125,8 @@ does not validate the new assertion. The 0464 native smoke remains pending its n
 The current batch also has two cancelled macOS runtime jobs and one active macOS shell job;
 Android is green and iOS release-signing smoke is green while its per-commit simulator build
 is intentionally skipped. No broader retention or user-visible performance claim is made.
+
+Follow-up checkpoint (2026-11-04): macOS servoshell normal completed successfully. A retry of
+macOS runtime normal was cancelled again without an accessible log. The retry of macOS runtime
+JITless is queued as job `126729839589`; wait for it to finish before attempting the remaining
+runtime retry. Do not publish while either required macOS runtime result is not green.
