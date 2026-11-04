@@ -9,8 +9,8 @@
 // through AbortController and a self-capturing timer cancelled before it can run. A control DOM
 // wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
 // every round (required). Released wrapper/closure cycles are sampled through WeakRef after each
-// round; these counts are diagnostic only, no release threshold is judged, and this scene does
-// not establish overall retention or the absence of leaks.
+// round for diagnostics, then checked again at the end; all temporary targets must be gone by
+// then. This scoped assertion does not establish overall retention or the absence of leaks.
 const ROUNDS = 16;
 const CYCLES_PER_ROUND = 8;
 const COLLECTIONS_PER_ROUND = 2;
@@ -64,9 +64,8 @@ async function main() {
   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true, controlListener };
   control.addEventListener("roves-control", () => { controlHits++; }, { signal: controlListener.signal });
   // Only WeakRefs and booleans are kept across rounds. Per-round deref samples happen after that
-  // round's collections; sampled counts, never targets, are retained for the final summary.
+  // round's collections; only the numeric counts are logged, never the dereferenced targets.
   const rounds = [];
-  const releaseSamples = [];
   let collections = 0;
   for (let round = 1; round <= ROUNDS; round++) {
     const cycles = Array.from({ length: CYCLES_PER_ROUND }, createAndRemoveNode);
@@ -87,7 +86,6 @@ async function main() {
       if (refs.probe.deref() === undefined) counts.probes++;
       return counts;
     }, { elements: 0, probes: 0, total: CYCLES_PER_ROUND });
-    releaseSamples.push(sample);
     report("diagnostic round", round, "released elements", sample.elements,
       "probes", sample.probes, "total", CYCLES_PER_ROUND);
     report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
@@ -100,11 +98,24 @@ async function main() {
   if (collections !== COLLECTIONS) throw new Error("expected " + COLLECTIONS + " collections, ran " + collections);
   checkControl(control, ROUNDS);
   report("retained control", "true");
-  // Diagnostic only: never a failure condition.
-  const sum = key => releaseSamples.reduce((total, round) => total + round[key], 0);
+  // End the job that dereferenced the final round; WeakRef targets are kept alive through that job.
+  await nextTask();
+  // Collect after that boundary so the final assertion doesn't confuse kept-alive targets with retainers.
+  await TestUtils.gc();
+  await nextTask();
+  report("final release verification collection", "complete");
+  const finalRelease = rounds.map(refs => ({
+    elements: refs.filter(ref => ref.element.deref() === undefined).length,
+    probes: refs.filter(ref => ref.probe.deref() === undefined).length,
+    total: refs.length,
+  }));
+  const sum = key => finalRelease.reduce((total, round) => total + round[key], 0);
   const elementsReleased = sum("elements"), probesReleased = sum("probes"), total = sum("total");
   report("diagnostic released element", String(elementsReleased === total), "probe", String(probesReleased === total));
   report("diagnostic released counts", "elements", elementsReleased, "probes", probesReleased, "total", total);
+  if (elementsReleased !== total || probesReleased !== total) {
+    throw new Error("temporary wrapper/probe WeakRefs remain after all rounds");
+  }
 }
 main().catch(error => fail("exception " + error.name + " " + error.message))
   .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));

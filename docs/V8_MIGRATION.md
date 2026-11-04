@@ -6,16 +6,18 @@
 
 La fixture `document-retention.html` campiona ora i `WeakRef` del round appena completato,
 dopo le due raccolte esplicite e un task event-loop, riportando elementi/probe rilasciati su
-8. Conserva soltanto i conteggi numerici, non gli oggetti dereferenziati. Le letture restano
-diagnostiche: nessuna soglia per round, quindi nessun nuovo criterio flaky di pass/fail. Il
-totale finale deriva dalla somma dei campioni, per distinguere un rilascio progressivo da una
-liberazione visibile soltanto a fine sessione. Riusa `WeakRef` JavaScript standard già presente;
-nessuna dipendenza.
+8. Non impone una soglia per round: i conteggi mostrano l'andamento senza rendere il test
+sensibile al momento preciso della raccolta. Alla fine lascia terminare il job che ha dereferenziato
+l'ultimo campione, esegue una raccolta aggiuntiva non inclusa nei 32 checkpoint snapshot e
+ricontrolla tutti i 128 elementi e probe: devono essere rilasciati mentre il marker di controllo
+resta vivo. Questa asserzione verifica soltanto il ciclo DOM controllato della fixture. Riusa
+`WeakRef` JavaScript standard; nessuna dipendenza.
 
-La serie 0465 della CI precedente ha campionato soltanto dopo l'ultimo round; non prova il nuovo
-comportamento 0466. `node --check` sullo script inline e `git diff --check` passano localmente.
-Serve un futuro job Linux normal per raccogliere i nuovi conteggi; il risultato resta specifico
-alla fixture e non chiude la retention generale.
+La serie 0465 della CI precedente ha controllato il rilascio soltanto dopo l'ultimo round e non
+prova il nuovo comportamento 0466. `node --check` sullo script inline e `git diff --check`
+passano localmente. Serve un futuro job Linux normal per raccogliere i conteggi intermedi e
+verificare l'asserzione finale; il risultato resta specifico alla fixture e non chiude la
+retention generale.
 
 ### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — CI 19ca
 

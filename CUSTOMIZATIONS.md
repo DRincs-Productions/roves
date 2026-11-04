@@ -19136,9 +19136,11 @@ runtime retry. Do not publish while either required macOS runtime result is not 
 
 Updated the synthetic `document-retention.html` scene to record diagnostic WeakRef release
 counts for each of its 16 rounds, after two explicit collections and an event-loop task. Only
-numeric counts are retained; dereferenced objects are not saved. The final total now sums the
-per-round samples, showing whether release is gradual or appears only at the end. Existing
-standard JavaScript `WeakRef` is sufficient; no dependency or pass/fail threshold was added.
+numeric counts are logged; dereferenced objects are not saved. Per-round samples have no
+threshold. After yielding past the last dereference, one additional collection (outside the
+32 snapshot checkpoints) precedes a final pass/fail assertion requiring all 128 temporary
+elements and probes to be gone while the explicit control marker remains. Existing standard
+JavaScript `WeakRef` is sufficient; no dependency was added.
 `node --check` on the inline script and `git diff --check` pass locally. This version has not
 run in browser CI yet; the 0465 snapshot series predates the change. It remains a bounded
 diagnostic, not a general retention or leak result.
