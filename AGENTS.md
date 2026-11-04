@@ -653,8 +653,8 @@ means tearing both down and starting clean, not just re-running the failed job:
    --delete vX.Y.Z`.
 3. Fix whatever caused the failure.
 4. Re-tag and re-push: `git tag vX.Y.Z && git push origin vX.Y.Z`.
-5. Repeat until every one of the 3 matrix jobs is green and the release page shows all 3
-   zips.
+5. Repeat until both macOS runtime modes and every one of the six platform/feature bundle
+   jobs are green and the release page shows all six zips.
 
 ### Diagnosing a failure without `gh`/a token on hand
 

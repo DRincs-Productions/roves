@@ -19181,7 +19181,8 @@ retention remains open.
 The user clarified that macOS V8 should never run on every commit, including JITless. Exclude
 all macOS runtime and servoshell cells from `.github/workflows/v8.yml`; run both runtime modes
 in the versioned release workflow before publishing the plain and Steam desktop bundles. Linux
-and Windows normal/JITless remain per-commit gates. The latest release is `v0.7.14`; the next
-planned tag is `v0.7.15`, pending green non-macOS CI for the workflow change. The macOS JITless
+and Windows normal/JITless remain per-commit gates. Commit `a985c8b7092` publishes the change;
+V8 `41910791033`, Android `41910791013` and iOS `41910791011` are in progress. The latest release
+is `v0.7.14`; the next planned tag is `v0.7.15`, pending green non-macOS CI. The macOS JITless
 cancellation in run `41886424033` is deferred under this updated policy. Do not describe it as a
 code failure or re-enable it on ordinary pushes.

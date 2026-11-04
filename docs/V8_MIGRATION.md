@@ -2,20 +2,23 @@
 
 ## Punto operativo aggiornato — 4 novembre 2026
 
-### Gate macOS spostato interamente ai rilasci — decisione aggiornata 4 novembre
+### Gate macOS spostato interamente ai rilasci — commit `a985c8b`, CI in corso
 
 L'utente ha chiarito che nessuna verifica V8 macOS va eseguita a ogni commit, nemmeno JITless.
-La modifica locale esclude tutte le combinazioni macOS da `.github/workflows/v8.yml`; il workflow
-versionato aggiunge runtime normal e JITless come prerequisiti prima dei bundle macOS plain/Steam.
+Il commit `a985c8b7092` esclude tutte le combinazioni macOS da `.github/workflows/v8.yml`; il
+workflow versionato aggiunge runtime normal e JITless come prerequisiti prima dei bundle macOS
+plain/Steam.
 Il batch associato a `3ea49c3faac` è terminale: V8 Linux/Windows normal e JITless verdi, Android
 verde 3/3; macOS JITless cancellato secondo la vecchia matrice, ora differito. Firma iOS cancellata
 prima di assegnare un runner; il simulatore iOS resta intenzionalmente disabilitato.
 
-Ultimo tag/rilascio esistente: `v0.7.14`; prossimo tag pianificato `v0.7.15`. Prima del tag,
-pubblicare la modifica alla matrice e attendere verdi le verifiche Linux/Windows, Android e
-condivise del nuovo push. Poi il tag deve eseguire entrambi i runtime macOS e compilare i bundle
-macOS. Dopo il successo verificare gli asset pubblicati e aggiornare i pin consumer secondo
-`AGENTS.md`.
+La nuova V8 `41910791033` esegue 8 job Linux/Windows normal/JITless (runtime e servoshell); tutti
+sono in corso e non include job macOS. Android `41910791013` è in corso dopo `ensure-test-release`
+verde; iOS `41910791011` ha `ensure-test-release` verde, signing smoke queued e simulatore skipped
+intenzionalmente. Nessun nuovo errore al checkpoint. Ultimo tag/rilascio esistente: `v0.7.14`;
+prossimo tag pianificato `v0.7.15`. Crearlo solo dopo il batch per-commit verde; il tag eseguirà
+entrambi i runtime macOS e compilerà i bundle. Dopo il successo verificare gli asset pubblicati e
+aggiornare i pin consumer secondo `AGENTS.md`.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
