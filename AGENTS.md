@@ -190,17 +190,21 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
 
-### Gate CI Apple aggiornato (3 novembre 2026)
+### Gate CI Apple aggiornato (4 novembre 2026)
 
-Per richiesta dell'utente, il job `ios` di build simulatore in `ios.yml` resta disabilitato
-su ogni commit perché è lento. L'utente verificherà iOS direttamente con il build reale firmato
-`mach bundle --ios --ios-release`; non disabilitare né modificare quel percorso di rilascio.
-Il workflow `release.yml` pubblica attualmente i build desktop, quindi non descriverlo come CI
-iOS del rilascio. Il job rapido `ios-release-signing-smoke` resta attivo. I job macOS, Linux,
-Windows, Android e i controlli condivisi restano richiesti e devono essere verdi e terminali
-prima del push; lo stato `skipped` del solo job `ios` simulatore è intenzionale e non rappresenta
-una build superata. Non rilanciare il vecchio job iOS simulatore per sbloccare la pubblicazione.
-Documentare il test iOS solo quando il build firmato viene realmente verificato.
+Per richiesta dell'utente, le celle V8 `macos-latest / normal` (`runtime` e
+`servoshell-v8`) sono escluse dalla CI per commit e si eseguono solo nel rilascio versionato:
+`release.yml` esegue anche i test runtime macOS normal prima di compilare e pubblicare i bundle
+plain e Steam sui tag `v*.*.*`. Le verifiche macOS JITless restano richieste nella CI per commit.
+Il job `ios` di build
+simulatore in `ios.yml` resta disabilitato su ogni commit perché è lento. L'utente verificherà
+iOS direttamente con il build reale firmato `mach bundle --ios --ios-release`; non disabilitare
+né modificare quel percorso di rilascio. `release.yml` non è una build iOS. Il job rapido
+`ios-release-signing-smoke` resta attivo, ma non è una build dell'app. Linux, Windows, Android
+e controlli condivisi restano richiesti e devono essere verdi e terminali prima del push.
+`skipped` per i due lavori esplicitamente differiti è intenzionale e non rappresenta una build
+superata; non rilanciare il simulatore iOS o macOS normal per sbloccare la pubblicazione.
+Documentare i build macOS/iOS soltanto quando il relativo percorso versionato viene verificato.
 
 ### Procedura di implementazione: loop autonomo
 

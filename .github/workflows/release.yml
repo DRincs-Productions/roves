@@ -22,6 +22,7 @@ env:
 jobs:
   # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──
   create-release:
+    needs: v8-runtime-macos-normal
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -64,6 +65,32 @@ jobs:
           gh release create "${{ github.ref_name }}" \
             --title "Roves ${{ github.ref_name }}" \
             --notes-file notes.md
+
+  # The normal macOS V8 runtime lane is intentionally release-only to avoid repeating this
+  # native build on every commit. Keep it as a release gate alongside the macOS shell bundles.
+  v8-runtime-macos-normal:
+    name: V8 runtime tests (macOS, normal)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: isolate the runtime crates
+        shell: bash
+        run: |
+          cp -R components/roves-v8 "$RUNNER_TEMP/roves-v8"
+          cp -R components/roves-js "$RUNNER_TEMP/roves-js"
+      - name: test V8 runtime and Servo-compatible JS API
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/v8-runtime-target
+        run: |
+          cd "$RUNNER_TEMP/roves-v8"
+          cargo test --locked
+          cd "$RUNNER_TEMP/roves-js"
+          cargo test --locked
 
   # ── Build the real release bundle and publish it, once per platform ───────────────────
   build-and-publish:

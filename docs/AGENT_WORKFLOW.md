@@ -123,15 +123,22 @@ Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisi
 nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
 la decisione e rivalutare un'API pubblica interamente asincrona.
 
-## Build iOS per commit rinviata al rilascio — 3 novembre 2026
+## Build macOS normal e simulatore iOS differiti — 4 novembre 2026
 
-Il job del simulatore iOS (`ios.yml`, job `ios`) è intenzionalmente disabilitato a ogni commit
+Le due celle V8 `macos-latest / normal` (`runtime` e `servoshell-v8`) sono escluse dalle CI per
+commit su richiesta dell'utente. `release.yml`, sui tag di versione `v*.*.*`, esegue il runtime
+macOS normal e poi compila i bundle macOS plain e Steam; la build macOS normal viene quindi
+spostata al rilascio versionato. Il runtime macOS JITless resta richiesto per commit. Non
+rilanciare le celle macOS normal cancellate per sbloccare il push; annotarle come differite al
+rilascio, non come verdi.
+
+Il job del simulatore iOS (`ios.yml`, job `ios`) resta intenzionalmente disabilitato a ogni commit
 perché lento. L'utente verificherà iOS con il build reale firmato `mach bundle --ios
---ios-release`; `release.yml` oggi pubblica solo i build desktop. Non disabilitare il percorso
-di rilascio iOS. Il controllo rapido `ios-release-signing-smoke` rimane attivo. I job macOS e
-tutte le verifiche Linux, Windows, Android e condivise continuano a bloccare la pubblicazione
-finché non sono concluse positivamente. Il job iOS simulatore intenzionalmente `skipped` va
-annotato come differito al rilascio, non come verde.
+--ios-release`; `release.yml` non è la build iOS. Il controllo rapido `ios-release-signing-smoke`
+rimane attivo, ma non costituisce una build dell'app. Tutti gli altri controlli Linux, Windows,
+macOS JITless, Android e condivisi continuano a bloccare la pubblicazione finché non sono
+conclusi positivamente. I due job intenzionalmente differiti vanno annotati come tali, non come
+verdi.
 
 ## Loop operativo autonomo
 

@@ -19144,3 +19144,16 @@ JavaScript `WeakRef` is sufficient; no dependency was added.
 `node --check` on the inline script and `git diff --check` pass locally. This version has not
 run in browser CI yet; the 0465 snapshot series predates the change. It remains a bounded
 diagnostic, not a general retention or leak result.
+
+
+## 2026-11-04 - Defer per-commit macOS normal V8 jobs to versioned releases
+
+Per the user's instruction, `.github/workflows/v8.yml` excludes both macOS normal matrix
+entries: the isolated V8 runtime tests and the servoshell V8 build. Version-tagged
+`.github/workflows/release.yml` now runs the macOS normal runtime tests as a gate, then
+builds/publishes macOS plain and Steam bundles. The macOS JITless runtime job remains in
+per-commit V8 CI. The iOS simulator exclusion is unchanged.
+The repeated cancellation of the old macOS normal runtime job is now an intentional deferral;
+do not retry it. The JITless retry is still required before the current checkpoint can be
+treated as green. The release workflow now waits for the macOS normal runtime tests before
+creating the versioned release or uploading artifacts; no product code changed.

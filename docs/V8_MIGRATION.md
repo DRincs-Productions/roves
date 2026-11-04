@@ -95,19 +95,24 @@ durate né risolve retention generale. La versione attuale da verificare è 0464
 ### CI dopo push `19ca0363691` — checkpoint aggregato aggiornato
 
 Android `41718462547` è verde. In V8 `41718462513` i job Linux e Windows sono verdi; anche
-`servoshell-v8 (macos-latest, normal)` è verde. I runtime macOS normal e JITless erano stati
-cancellati senza log accessibili. Un retry del runtime normal (job `126238605256`) è a sua volta
-terminato cancellato. Il retry del runtime JITless è ora in coda come job `126729839589`; quando
-termina, riprovare il runtime normal una volta e richiedere esiti verdi per entrambi. Nessun
+`servoshell-v8 (macos-latest, normal)` è verde. Il runtime macOS normal è stato cancellato sia
+nel tentativo iniziale sia nel retry (`126238605256`); per nuova istruzione dell'utente entrambe
+le celle macOS normal sono escluse dalla CI per commit. Il bundle macOS plain/Steam resta
+compilato dal workflow versionato `release.yml`, che ora esegue anche i test runtime macOS
+normal come gate prima della pubblicazione. Il runtime macOS JITless resta richiesto: il retry
+è in coda come job `126729839589`. Quando termina, se verde, il gate non attende le celle normal
+differite. Nessun
 errore di codice è emerso. Nel workflow iOS
 `41718462473`, `ios-release-signing-smoke` è verde e il build simulatore è intenzionalmente
 `skipped` per la regola per-commit dell'utente. Il commit 0464 `2f927b36e9a` è locale: non
-pubblicarlo finché le verifiche macOS richieste non sono verdi e tutte le altre verifiche
-obbligatorie sono terminali. La nuova run dopo il push dovrà provare 0464 su Windows normal.
+pubblicarlo finché il runtime macOS JITless e tutte le altre verifiche richieste sono verdi e
+terminali. La nuova run dovrà provare 0464 su Windows normal; le due celle macOS normal saranno
+assenti dalla matrice per commit.
 
 Stato riprese aggiornato il 4 novembre: la richiesta di riesecuzione del job macOS JITless è
-stata accettata solo dopo la conclusione del retry normal; non avviare altri retry mentre questo
-è queued/in progress. La verifica 0464 resta non coperta dal batch, che risale a 0462.
+stata accettata solo dopo la conclusione del retry normal ed è queued/in progress. Non eseguire
+altri retry mentre questa run è attiva. Per la nuova regola utente non rilanciare macOS normal;
+la verifica 0464 resta non coperta dal batch, che risale a 0462.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 
