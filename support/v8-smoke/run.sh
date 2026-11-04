@@ -279,7 +279,8 @@ done
 # path itself is never written. The control (expando and active listener) must survive every round,
 # every requested snapshot must exist and be valid, and the last must hold exactly one tagged
 # probe (the control). The earlier tagged counts and every count of nodes named RovesJsCell are
-# reported only; WeakRef release counts are diagnostics too, never a failure or leak verdict.
+# reported only. The page also asserts release of this fixture's temporary WeakRef targets
+# after the final task boundary and collection; this is not a general leak verdict.
 HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
 RETENTION_ROUNDS=16
 RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))
@@ -326,6 +327,7 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
       "ROVES-V8 document-retention rounds complete $RETENTION_ROUNDS cycles $RETENTION_CYCLES"
       "ROVES-V8 document-retention cleanup complete listeners aborted $RETENTION_CYCLES timers cancelled $RETENTION_CYCLES"
       "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true"
+      "ROVES-V8 document-retention final release verification collection complete"
       "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote ")
     for expected in "${retention_expected[@]}"; do
       # Page markers are whole lines (round lines also contain "retained control true"); the
@@ -345,11 +347,10 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
         snapshot_ok=0; echo "::error::document-retention.html: no snapshot written to $snapshot at explicit collection $collection"
       fi
     done
-    # Released counts are diagnostic only, but must be reported.
+    # The page asserts the counts for this exact fixture; keep the summary visible.
     diagnostic=$(grep -aE '^ROVES-V8 document-retention diagnostic released element (true|false) probe (true|false)$' document-retention.log | head -1)
     if [ -n "$diagnostic" ]; then echo "::notice::document-retention.html: $diagnostic"; else snapshot_ok=0; echo "::error::document-retention.html: missing released diagnostic"; fi
-    # Per-round (plain log lines) and total (notice) counts: reported when present, never required or judged.
-    grep -aE '^ROVES-V8 document-retention diagnostic round [0-9]+ released ' document-retention.log | while IFS= read -r line; do echo "document-retention.html: $line"; done
+    # Report final counts; the page result above enforces its fixture-specific release assertion.
     grep -aE '^ROVES-V8 document-retention diagnostic released counts ' document-retention.log | while IFS= read -r line; do echo "::notice::document-retention.html: $line"; done
     for collection in $HEAP_SNAPSHOT_COLLECTIONS; do
       snapshot=$(heap_snapshot_path "$collection")

@@ -2,22 +2,27 @@
 
 ## Punto operativo aggiornato — 4 novembre 2026
 
-### Diagnostica rilascio a ogni round (task 0466) — locale, CI non ancora eseguita
+### Correzione diagnostica memoria (task 0467) — modifica locale, CI richiesta
 
-La fixture `document-retention.html` campiona ora i `WeakRef` del round appena completato,
-dopo le due raccolte esplicite e un task event-loop, riportando elementi/probe rilasciati su
-8. Non impone una soglia per round: i conteggi mostrano l'andamento senza rendere il test
-sensibile al momento preciso della raccolta. Alla fine lascia terminare il job che ha dereferenziato
-l'ultimo campione, esegue una raccolta aggiuntiva non inclusa nei 32 checkpoint snapshot e
-ricontrolla tutti i 128 elementi e probe: devono essere rilasciati mentre il marker di controllo
-resta vivo. Questa asserzione verifica soltanto il ciclo DOM controllato della fixture. Riusa
-`WeakRef` JavaScript standard; nessuna dipendenza.
+La run V8 `41880418433` ha fallito tutti e quattro i job runtime Linux/Windows normal e JITless
+nello stesso test runner. La causa era concreta: leggere `WeakRef.deref()` a ogni round mantiene
+i target vivi nel kept-objects set e falsava la successiva raccolta. I log mostravano 0/128
+rilasciati, poi il test si aspettava anche una sequenza eventi senza la raccolta finale aggiunta.
+La correzione elimina i campioni intermedi, dereferenzia una sola volta dopo l'ultimo confine di
+task e la raccolta finale, e mantiene l'asserzione dei 128 elementi e probe della fixture. Il
+test runner Node usa ora un mock deterministico del protocollo WeakRef: verifica successo e
+fallimento dell'asserzione, ma non pretende di simulare il GC del browser. Le 32 raccolte che
+segnano i checkpoint snapshot restano invariate; la raccolta di verifica porta il totale a 33.
 
-La serie 0465 della CI precedente ha controllato il rilascio soltanto dopo l'ultimo round e non
-prova il nuovo comportamento 0466. `node --check` sullo script inline e `git diff --check`
-passano localmente. Serve un futuro job Linux normal per raccogliere i conteggi intermedi e
-verificare l'asserzione finale; il risultato resta specifico alla fixture e non chiude la
-retention generale.
+Le build V8 `41880418433` sono terminali: Linux/Windows normal e JITless falliti per la stessa
+causa; macOS JITless cancellato; tutti gli altri job non Apple verdi. Android `41880418434` è
+verde 3/3. In iOS `41880418445`, `ensure-test-release` è verde, simulatore skipped come richiesto,
+ma `ios-release-signing-smoke` è cancellato; il simulatore è skipped intenzionalmente. Le
+verifiche locali della correzione passano: 66 test del runner (16 skipped per dipendenze
+facoltative), `node --check`, `bash -n` e `git diff --check`. Tutte le run del batch sono
+terminali; la correzione pronta verrà pubblicata e la nuova CI dovrà verificare Linux/Windows
+normal e JITless, macOS JITless e il signing smoke iOS. Questa prova resta limitata al ciclo DOM
+controllato e non chiude la retention generale.
 
 ### Serie diagnostica di snapshot document-retention (collezioni 2/16/32) — CI 19ca
 
@@ -119,17 +124,10 @@ Checkpoint pubblicato `3f755e31c2d`, 4 novembre: i dieci commit locali sono stat
 macOS JITless in coda. Quel job `126745809771` resta queued; il precedente runtime macOS normal
 `126745810772` è cancellato ma non viene ritentato per la nuova regola utente.
 
-Nuova CI per lo SHA pubblicato: V8 `41880418433` (9 job, senza alcuna cella macOS normal),
-Android `41880418434` (3 job) e iOS `41880418445` (signing smoke e ensure-release in coda,
-simulatore `skipped` intenzionalmente). I job V8 Windows normal includono la prova 0464; Linux
-normal include la diagnostica 0466. Tutti i job non saltati della nuova run sono queued al checkpoint;
-la build versionata macOS normal è definita in `release.yml` ma verrà eseguita solo al prossimo
-tag `v*.*.*`. `actionlint` e PyYAML non sono installati localmente; `git diff --check` passava
-prima del push.
-
-Non fare altri push finché il runtime JITless residuo della run precedente e tutte le verifiche
-obbligatorie delle nuove run non sono concluse positivamente. La cancellazione macOS normal
-della run vecchia è esclusa dal gate secondo l'ultima istruzione dell'utente.
+Nuova CI per lo SHA pubblicato: V8 `41880418433`, Android `41880418434` e iOS `41880418445`.
+Gli esiti aggregati sono riportati nel punto operativo 0467 sopra; le run sono terminali e non
+ci sono job ancora in esecuzione. La build versionata macOS normal è definita in `release.yml` e
+verrà eseguita solo al prossimo tag `v*.*.*`. La correzione locale non è ancora pubblicata.
 
 ### Checkpoint push `fcecc8d6a2c` — CI conclusa, gate Apple non soddisfatto
 

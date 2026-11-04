@@ -8,9 +8,10 @@
 // native snapshots at chosen ones (run.sh: 2, 16 and 32). Every cycle also adds a self-capturing listener removed
 // through AbortController and a self-capturing timer cancelled before it can run. A control DOM
 // wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
-// every round (required). Released wrapper/closure cycles are sampled through WeakRef after each
-// round for diagnostics, then checked again at the end; all temporary targets must be gone by
-// then. This scoped assertion does not establish overall retention or the absence of leaks.
+// every round (required). Released wrapper/closure cycles are checked through WeakRef only after
+// all rounds and a final collection; dereferencing during the workload would keep targets alive
+// under WeakRef's kept-during-job semantics. This scoped assertion does not establish overall
+// retention or the absence of leaks.
 const ROUNDS = 16;
 const CYCLES_PER_ROUND = 8;
 const COLLECTIONS_PER_ROUND = 2;
@@ -63,8 +64,8 @@ async function main() {
   const controlListener = new AbortController();
   control.rovesDocumentRetentionProbe = { rovesProbeTag: PROBE_TAG, retained: true, controlListener };
   control.addEventListener("roves-control", () => { controlHits++; }, { signal: controlListener.signal });
-  // Only WeakRefs and booleans are kept across rounds. Per-round deref samples happen after that
-  // round's collections; only the numeric counts are logged, never the dereferenced targets.
+  // Keep only WeakRefs across rounds. Do not dereference them during the workload: WeakRef targets
+  // are kept alive through the current job and can therefore contaminate later round collections.
   const rounds = [];
   let collections = 0;
   for (let round = 1; round <= ROUNDS; round++) {
@@ -81,13 +82,6 @@ async function main() {
     for (let i = 0; i < COLLECTIONS_PER_ROUND; i++) { await TestUtils.gc(); collections++; }
     await nextTask();
     checkControl(control, round);
-    const sample = rounds[round - 1].reduce((counts, refs) => {
-      if (refs.element.deref() === undefined) counts.elements++;
-      if (refs.probe.deref() === undefined) counts.probes++;
-      return counts;
-    }, { elements: 0, probes: 0, total: CYCLES_PER_ROUND });
-    report("diagnostic round", round, "released elements", sample.elements,
-      "probes", sample.probes, "total", CYCLES_PER_ROUND);
     report("round", round, "cycles", CYCLES_PER_ROUND, "collections", collections, "retained control true");
   }
   report("node created true removed true");
@@ -98,7 +92,7 @@ async function main() {
   if (collections !== COLLECTIONS) throw new Error("expected " + COLLECTIONS + " collections, ran " + collections);
   checkControl(control, ROUNDS);
   report("retained control", "true");
-  // End the job that dereferenced the final round; WeakRef targets are kept alive through that job.
+  // Yield after the final workload task so its WeakRef targets are no longer kept alive.
   await nextTask();
   // Collect after that boundary so the final assertion doesn't confuse kept-alive targets with retainers.
   await TestUtils.gc();

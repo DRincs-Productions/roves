@@ -19158,3 +19158,16 @@ do not retry it. The JITless retry `126729839589` was cancelled without a log; a
 `126745809771` is queued and remains required before the current checkpoint can be treated as
 green. The release workflow now waits for the macOS normal runtime tests before creating the
 versioned release or uploading artifacts; no product code changed.
+
+
+## 2026-11-04 - Stop dereferencing retention WeakRefs between workload rounds
+
+The V8 run `41880418433` failed the document-retention runner contract on Linux and Windows in
+normal and JITless configurations. Per-round `WeakRef.deref()` calls kept their targets alive
+under WeakRef's kept-during-job semantics, so the final check observed 0/128 releases. Remove
+the intermediate dereferences and sample once after the last task boundary and an extra explicit
+collection. Keep the final 128-element/probe release assertion scoped to this fixture. Update the
+Node test harness to use a deterministic WeakRef protocol mock for pass/fail behavior; it does not
+claim to simulate browser garbage collection. The workload still has 32 snapshot checkpoints and
+one separate final verification collection. The required browser CI rerun is pending; overall
+memory retention remains open.
