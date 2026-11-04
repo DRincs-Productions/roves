@@ -19169,5 +19169,6 @@ the intermediate dereferences and sample once after the last task boundary and a
 collection. Keep the final 128-element/probe release assertion scoped to this fixture. Update the
 Node test harness to use a deterministic WeakRef protocol mock for pass/fail behavior; it does not
 claim to simulate browser garbage collection. The workload still has 32 snapshot checkpoints and
-one separate final verification collection. The required browser CI rerun is pending; overall
-memory retention remains open.
+one separate final verification collection. Commit `3ea49c3faac` is published; V8 run
+`41886424033` and Android run `41886423978` are queued/in progress. Overall memory retention
+remains open.
