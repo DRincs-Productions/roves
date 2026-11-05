@@ -41,8 +41,10 @@ dipende dall'analisi del nuovo artefatto CI: non inferire assenza di leak né tr
 mock come prova del GC browser.
 
 Il commit `740c4b6023e` è pubblicato. Checkpoint associato: V8 `42019654141` e Android
-`42019654078` sono in corso; iOS `42019654048` è terminale con signing smoke verde e simulatore
-skipped secondo la regola per-commit. Dopo la conclusione del batch, scaricare solo l'artefatto
+`42019654078` è verde; iOS `42019654048` è terminale con signing smoke verde e simulatore
+skipped secondo la regola per-commit. Nella run V8 restano in corso quattro build servoshell
+(Linux/Windows normal e JITless); i quattro job runtime sono verdi. L'artefatto snapshot non è
+ancora disponibile. Dopo la conclusione del batch, scaricare solo l'artefatto
 `v8-heap-snapshot-document-retention` della run V8 e confrontare il nuovo `gc34` con `gc32` tramite
 MemLab mantenuto. Non pubblicare altri commit mentre le run obbligatorie sono attive.
 
