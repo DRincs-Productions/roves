@@ -19221,5 +19221,10 @@ with the fixture still running at the capture point, so it does not establish a 
 new CI series (run 42019654141, artifact 13411233797) showed a separate fixture root: MemLab traced
 the `main` closure through the `Window` global property. The page now invokes an async function
 expression without exposing that entry point as `window.main`; the Python mock asserts the global
-name is absent. The next CI artifact must confirm the artificial retainer is gone before drawing a
-broader retention conclusion.
+name is absent. The corrected CI (run 42025623358, artifact 13414956470) passed all eight V8 jobs.
+MemLab no longer reports the `main` closure as a growing object; `RovesJsCell` counts are
+128/129/129/126, the 128 temporary element/probe WeakRefs are released, and no increasing collection
+is found. The window's retained size changes by 2.1 KiB from collection 32 to 34, which does not
+identify a persistent owner or establish a leak. Full findings and snapshot hashes are recorded in
+`docs/measurements/0478-document-retention-post-settled-ci.json`; broader JS, cppgc and native
+retention remain open.

@@ -60,8 +60,8 @@ devono essere accessibili al gioco; restano necessari caricamento iniziale shell
 La policy single-document è implementata: blocca reload e navigazioni complete prima che
 sostituiscano il documento, mostra un avviso discreto solo in sviluppo e usa i log nelle
 build distribuite. I link esterni si aprono nel browser di sistema solo dopo clic utente
-reale. Smoke e prova Windows sono registrati nel handoff; resta da verificare la chiusura
-OS della finestra mentre un fetch statico è pendente.
+reale. Smoke e prova Windows sono registrati nel handoff; la chiusura OS durante un fetch
+statico pendente è stata verificata nella CI del tag `v0.7.15` (harness 0464).
 
 Il target embedded `servoshell` usa V8 con `deno_core` in produzione. Il workspace collega
 `js` a `roves-js` senza selettore alternativo; deno_core possiede isolate, contesto, modulo

@@ -25,38 +25,26 @@ va confuso con i test V8/macOS e con i sei bundle reali del tag.
 
 ### Retention generale: snapshot dopo il completamento della scena (task 0478)
 
-Il confronto offline iniziale con MemLab 2.0.6, senza aggiungere dipendenze al progetto, ha
-analizzato i tre snapshot CI delle collezioni 2/16/32. Tra gli oggetti maggiori compaiono una
-Promise, il contesto/generatore async e l'array locale `rounds`, raggiunti dalla radice dello stack
-C++ tramite la closure di `main`. Poiché gli snapshot erano presi mentre la scena era ancora in
-esecuzione, questa traccia è compatibile con stato temporaneo del fixture; da sola non dimostra un
-leak Roves.
+La smoke `document-retention.html` ora acquisisce gli snapshot 2/16/32 durante il carico e 34
+dopo che la Promise della scena è risolta e il task è terminato. MemLab 2.0.6 viene usato offline,
+senza aggiungere dipendenze al progetto. La prima serie post-settled, run `42019654141` sul commit
+`740c4b6023e`, ha rivelato una radice artificiale: il trace mostrava
+`WindowProxy -> Window [JSGlobalObject] --main--> closure` perché la fixture dichiarava `main` come
+funzione globale. La funzione tratteneva sé stessa; non era una radice del gioco o del runtime.
 
-Per distinguere i casi, `document-retention.html` esegue ora una raccolta aggiuntiva dopo che la
-Promise di `main()` è risolta e il task è terminato. La serie diagnostica passa a quattro snapshot
-(2/16/32 durante il carico e 34 dopo la conclusione); solo l'ultimo giudica che resti il probe di
-controllo, mentre i conteggi intermedi sono riportati. MemLab è usato offline senza diventare una
-dipendenza runtime o di test installata nel repository. La conclusione sulla retention generale
-dipende dall'analisi del nuovo artefatto CI: non inferire assenza di leak né trattare il runner con
-mock come prova del GC browser.
+La fixture è stata corretta per invocare un'espressione async senza pubblicare `main` su Window;
+il test runner asserisce ora `typeof main === "undefined"`. Il batch che include il fix è verde:
+V8 `42025623358` (8/8 job), Android `42025623379` (3/3) e iOS `42025623456` (signing smoke
+verde, simulatore skipped come previsto). L'artefatto V8 è `13414956470`; hash, conteggi e analisi
+sono registrati in [0478-document-retention-post-settled-ci.json](measurements/0478-document-retention-post-settled-ci.json).
 
-La CI del commit `740c4b6023e` è terminale e verde: V8 `42019654141` (8/8 job), Android
-`42019654078` (3/3) e iOS `42019654048` (signing smoke verde, simulatore skipped secondo la
-regola per-commit). L'artefatto snapshot V8 è `13411233797`.
-
-MemLab 2.0.6 sul nuovo `gc34` mostra ancora la closure `main` (19.9 KB; `gc32`: 17.5 KB) e una
-crescita della finestra da 228.5 KB a 250.5 KB. Il trace mantenuto identifica il percorso
-`WindowProxy -> Window [JSGlobalObject] --main--> closure`: la fixture dichiarava `main` come
-funzione globale, trattenendo sé stessa. Non è evidenza di una radice introdotta dal gioco o dal
-runtime. La fixture è stata corretta per invocare un'espressione async senza pubblicare `main` su
-Window e il mock ora asserisce `typeof main === "undefined"`. La nuova CI dovrà confermare che il
-retainer artificiale scompare prima di trarre conclusioni sulla retention generale.
-
-La correzione è pubblicata nel commit `f5222db619f`, dopo il batch precedente interamente verde.
-Nuovo checkpoint: V8 `42025623358`, Android `42025623379` e iOS `42025623456` sono stati avviati;
-al primo riepilogo non erano terminali. Non pubblicare altri commit finché il batch non è concluso.
-Alla fine scaricare il nuovo artefatto V8 e verificare con MemLab se `main` è ancora trattenuto e
-quale sia il nuovo percorso dominante della finestra.
+Sul nuovo `gc34`, la closure `main` non appare più tra gli oggetti in crescita; il conteggio
+`RovesJsCell` scende da 129 a 126 tra le raccolte 32 e 34. MemLab segnala «No increasing
+collections found». Il retained size della finestra passa da 228.4 KiB a 230.5 KiB tra gli stessi
+due punti; questa differenza limitata su una singola scena non identifica un proprietario persistente
+né dimostra una perdita. I 128 elementi e probe temporanei superano le asserzioni di rilascio,
+mentre il probe di controllo resta vivo. Questa evidenza riguarda solo il fixture controllato:
+retention generale JS, cppgc, memoria nativa, transizioni di route e sessioni lunghe restano aperte.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
@@ -249,9 +237,9 @@ Chrome e Roves rimane sul documento originale. La schermata iniziale del templat
 si carica; Start entra nella scena con sfondo, personaggio, dialogo e controlli. Il primo
 fotogramma dopo Start era vuoto, quello successivo mostra la scena: osservazione qualitativa,
 non una misura di durata o fluidità. Il test Rust 0457/0458 conferma che drop e shutdown
-annullano un fetch statico pendente e rifiutano la risposta tardiva; resta la chiusura OS
-della finestra Roves durante una richiesta reale. La revisione del percorso di produzione
-conferma la catena attesa: `CloseRequested` pianifica la chiusura della finestra;
+annullano un fetch statico pendente e rifiutano la risposta tardiva. La chiusura OS della finestra
+Roves durante un fetch reale è verificata dall'harness 0464 nella CI del tag `v0.7.15`. La revisione
+del percorso di produzione conferma la catena: `CloseRequested` pianifica la chiusura della finestra;
 `close_empty_windows` la rimuove dallo stato della shell; il drop del relativo `EventLoop`
 segnala l'uscita al Background Hang Monitor, che chiama `BHMExitSignal::signal_to_exit`;
 questo invoca `ThreadSafeJSContext::request_shutdown`, già coperto dal test runtime che
@@ -260,12 +248,12 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
 
 ### Stato di completamento — 5 novembre 2026
 
-- **Memoria:** il ciclo DOM e la serie CI precedente 2/16/32 superano i controlli della fixture;
-  conteggio `RovesJsCell` 128/129/129 e rilascio dei 128 probe temporanei sono diagnostici.
-  MemLab 2.0.6 ha trovato una traccia dell'async `main` negli snapshot presi durante la scena,
-  compatibile con stato temporaneo del test. La fixture è stata estesa con uno snapshot 34 dopo
-  il completamento; attende la nuova CI e l'analisi MemLab. Retention generale, cppgc e memoria
-  nativa su sessioni lunghe restano aperte; non dichiarare assenza di leak.
+- **Memoria:** il batch `f5222db` è verde e la serie 2/16/32/34 è analizzata. La fixture rilascia
+  i 128 elementi e probe temporanei; `RovesJsCell` è 128/129/129/126 e MemLab non trova collezioni
+  crescenti. Un riferimento artificiale globale `Window.main` è stato rimosso dalla fixture; il
+  nuovo snapshot non mostra più la closure fra gli oggetti in crescita. Retention generale,
+  cppgc, memoria nativa, transizioni di route e sessioni lunghe restano aperte; non dichiarare
+  assenza di leak.
 - **Policy finestra:** navigazione automatica bloccata, notice di sviluppo e browser OS dopo
   clic reale sono verificati. La chiusura nativa mentre una risposta di modulo statico è
   trattenuta è ora verificata dall'harness 0464 nella CI del tag `v0.7.15`: il job

@@ -1,0 +1,75 @@
+{
+  "date": "2026-11-05",
+  "source": {
+    "repository": "DRincs-Productions/roves",
+    "commit": "f5222db619f494c2c9b6e192b449d02383d7d31e",
+    "workflow_run": 42025623358,
+    "linux_normal_job": 127238980148,
+    "artifact_id": 13414956470,
+    "artifact_sha256": "31b6b8a02d85c3994e9deac1fa3a60394462d3af2b38e2508d4f6d66b7dfad96",
+    "platform": "ubuntu-24.04",
+    "mode": "normal",
+    "scene": "support/v8-smoke/document-retention.html",
+    "artifact_retention_days": 3
+  },
+  "method": {
+    "description": "Four V8 heap snapshots in one debug servoshell process at explicit collections 2, 16, 32 and 34; collection 34 runs after the fixture's async entry point settles.",
+    "snapshot_files": [
+      {
+        "file": "document-retention.gc2.heapsnapshot",
+        "bytes": 3134687,
+        "sha256": "c03658b3cad332a568f21e289af9d467370bb66ee8f0446d33511bf0f377483e",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 128
+      },
+      {
+        "file": "document-retention.gc16.heapsnapshot",
+        "bytes": 3155905,
+        "sha256": "e0b30c1b75b74a16c74091e3239567f8c2ea129864935efa8f8f98c6e38bd906",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 129
+      },
+      {
+        "file": "document-retention.gc32.heapsnapshot",
+        "bytes": 3169217,
+        "sha256": "0b1e7d6a6225c39f309092b91c1eafc52287d5b85a4edfa8cec70ed0b68cf9ac",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 129
+      },
+      {
+        "file": "document-retention.gc34.heapsnapshot",
+        "bytes": 3138048,
+        "sha256": "f96b6c0368344533b9557a397d16f0ecf2d31c6938b6da41e6353197514f7938",
+        "tagged_control_probes": 1,
+        "nodes_named_RovesJsCell": 126
+      }
+    ],
+    "snapshot_validation": "All four files passed support/v8-smoke/check_heap_snapshot.py. Only the final tagged-probe count is judged; earlier tagged counts and all RovesJsCell counts are diagnostic.",
+    "weakref_diagnostics": {
+      "rounds": 16,
+      "cycles_per_round": 8,
+      "temporary_elements_released": 128,
+      "temporary_probes_released": 128,
+      "retained_control_probe": 1
+    }
+  },
+  "analysis": {
+    "tool": "MemLab 2.0.6",
+    "commands": [
+      "memlab analyze unbound-object --snapshot-dir <four snapshots>",
+      "memlab analyze unbound-collection --snapshot-dir <four snapshots>"
+    ],
+    "unbound_object_top_sizes_bytes": {
+      "Window [JSGlobalObject]": [228144, 222824, 228480, 230592],
+      "builtins object": [116960, 117088, 116960, 116960],
+      "HTMLBodyElement": [19288, 20144, 19288, 19288]
+    },
+    "unbound_collection": "No increasing collections found.",
+    "fixture_entry_global": "typeof main is undefined; the prior Window.main fixture root is absent."
+  },
+  "findings": {
+    "RovesJsCell_series": [128, 129, 129, 126],
+    "interpretation": "In this bounded scene, the temporary WeakRef targets pass their release assertions, the retained control remains, the named main-closure root found in the prior fixture is absent, and MemLab reports no increasing collection. Window retained size rises 2.1 KiB between collections 32 and 34; the four-point series alone does not identify a persistent owner or establish a leak.",
+    "conclusion": "This is evidence for the controlled document-retention fixture only. It does not resolve general JavaScript, cppgc, native-memory, route-transition, or long-session retention."
+  }
+}
