@@ -8,7 +8,7 @@ name: 'Build Servo Test Binaries (from source, with local patches)'
 #
 # This workflow builds Servo *from source* — pristine upstream tag + our own patches/
 # applied on top — purely to smoke-test local customizations (see ../CUSTOMIZATIONS.md) on
-# real Windows/Linux/macOS machines, without needing to compile Servo (a very heavy,
+# real Windows/Linux machines, without needing to compile Servo (a very heavy,
 # hours-long build) on a dev machine. Every run overwrites the same "test" GitHub Release —
 # it is not versioned, not meant to be depended on, and is not the real distributable shell
 # (see release.yml for that).
@@ -19,6 +19,12 @@ name: 'Build Servo Test Binaries (from source, with local patches)'
 # runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our customizations;
 # this workflow downloads the pristine tag fresh on every run and applies them, so nothing
 # bulky needs to be committed anywhere.
+#
+# Apple CI policy (2026-11-05): no macOS/iOS job runs per commit. The macOS SDL3 gamepad probe
+# and the macOS shell bundles are verified only by release.yml on versioned `v*.*.*` tags, and
+# the iOS simulator build only by ios.yml on the same tags. The macOS-only steps left below
+# (`--dmg`, BSD patch, ROVES_MACOS_GAMEPAD sampling) are inactive here because the matrix has
+# no macOS entry; they are kept as reference for re-deriving a release-time macOS smoke test.
 
 on:
   push:
@@ -32,7 +38,7 @@ on:
   workflow_dispatch: {}
 
 # A new SDL3 checkpoint supersedes the previous one. Without this, every push keeps an entire
-# eight-job Servo matrix alive (including macOS smoke tests), wasting runner time and obscuring
+# Windows/Linux Servo matrix alive, wasting runner time and obscuring
 # which commit is authoritative.
 concurrency:
   group: test-${{ github.workflow }}-${{ github.ref }}
@@ -82,10 +88,11 @@ jobs:
       - name: validate SDL3 event and patch contracts
         run: python3 support/check_sdl3_windowing_contracts.py
 
-  # Exercise SDL3's native virtual-gamepad API on each desktop platform. This
+  # Exercise SDL3's native virtual-gamepad API on Windows and Linux. This
   # tests discovery and input without a physical controller or virtual-HID driver.
   # Required gate: build-and-publish and the Steam smoke test need this job, so a
-  # failed or cancelled Windows/Linux probe still skips them.
+  # failed or cancelled Windows/Linux probe still skips them. The macOS leg runs
+  # only on versioned tags, in release.yml (see the Apple CI policy note above).
   sdl3-gamepad-probe:
     name: sdl3-gamepad-probe (${{ matrix.os }})
     strategy:
@@ -93,24 +100,6 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.95.0
-      - name: compile isolated SDL3 probe
-        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
-      - name: probe SDL3 virtual gamepad with a 90-second runtime limit
-        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
-
-  # Same probe on macOS, kept as its own job so its result stays visible (a
-  # failure still marks the run red) without gating non-Apple jobs. A `needs:`
-  # on a matrix job waits for and aggregates every leg, so a cancelled macOS leg
-  # used to skip all Windows/Linux packaging and the Steam test. Not depending on
-  # this job is the project's authorized exception for macOS/iOS checks (see
-  # AGENTS.md); it does not extend to the Windows/Linux probe or shared checks.
-  sdl3-gamepad-probe-macos:
-    name: sdl3-gamepad-probe (macos-latest)
-    runs-on: macos-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -149,11 +138,13 @@ jobs:
       fail-fast: false
       matrix:
         # Every platform gets both its portable output and its installable
-        # one — `mach bundle`'s own --deb/--msi/--dmg (see CUSTOMIZATIONS.md
+        # one — `mach bundle`'s own --deb/--msi (see CUSTOMIZATIONS.md
         # and README.md's "Getting started" per-OS sections for what each
         # produces). This workflow exists to smoke-test that mach bundle
         # actually still works, so it exercises every mode mach bundle
-        # supports on each OS, not just the portable default.
+        # supports on each OS, not just the portable default. macOS
+        # portable/--dmg entries were removed by the Apple CI policy above;
+        # the macOS portable bundle is built and smoke-tested by release.yml.
         include:
           - platform: 'windows-latest'
             os_name: 'windows'
@@ -161,12 +152,6 @@ jobs:
           - platform: 'windows-latest'
             os_name: 'windows'
             package_mode: 'msi'
-          - platform: 'macos-latest'
-            os_name: 'macos'
-            package_mode: 'portable'
-          - platform: 'macos-latest'
-            os_name: 'macos'
-            package_mode: 'dmg'
           - platform: 'ubuntu-24.04'
             os_name: 'linux'
             package_mode: 'portable'

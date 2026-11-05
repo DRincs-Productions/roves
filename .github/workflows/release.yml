@@ -22,7 +22,7 @@ env:
 jobs:
   # ── Create (or, on a retried tag, replace) the GitHub Release before the matrix starts ──
   create-release:
-    needs: v8-runtime-macos
+    needs: [v8-runtime-macos, sdl3-gamepad-probe-macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -66,7 +66,9 @@ jobs:
             --title "Roves ${{ github.ref_name }}" \
             --notes-file notes.md
 
-  # Both macOS V8 runtime modes run only for versioned releases, alongside the macOS shell bundles.
+  # Apple CI runs only on versioned tags (no macOS/iOS jobs per commit): both macOS V8 runtime
+  # modes and the macOS SDL3 gamepad probe below gate create-release, and the macOS shell bundles
+  # are built in build-and-publish. The iOS simulator build runs on the same tags in ios.yml.
   v8-runtime-macos:
     name: V8 runtime tests (macOS, ${{ matrix.mode }})
     strategy:
@@ -99,6 +101,21 @@ jobs:
           cargo test --locked "${args[@]}"
           cd "$RUNNER_TEMP/roves-js"
           cargo test --locked "${args[@]}"
+
+  # macOS leg of test.yml's SDL3 native virtual-gamepad probe (discovery and input without a
+  # physical controller). Per-commit CI has no Apple jobs, so it runs here on versioned tags and,
+  # like the macOS V8 runtime tests, gates the release before any bundle is published.
+  sdl3-gamepad-probe-macos:
+    name: sdl3-gamepad-probe (macos-latest)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: compile isolated SDL3 probe
+        run: cargo build --release --manifest-path support/sdl3-gamepad-probe/Cargo.toml --target-dir target/sdl3-gamepad-probe
+      - name: probe SDL3 virtual gamepad with a 90-second runtime limit
+        run: node support/sdl3-gamepad-probe/run-with-timeout.mjs target/sdl3-gamepad-probe/release/sdl3-gamepad-probe
 
   # ── Build the real release bundle and publish it, once per platform ───────────────────
   build-and-publish:

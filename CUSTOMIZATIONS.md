@@ -19243,3 +19243,7 @@ skipped on Windows, and `bash -n` passes. These are fixture-logic checks only; S
 behavior is pending the Linux/Windows normal and JITless
 CI gate. Patch: `patches/servo-v0.5.0/0459-timeout-callback-retention.patch`. Overall retention
 remains open.
+
+## 2026-11-05 - Run Apple CI on versioned tags
+
+Move iOS simulator and signing checks to versioned tags. Refresh the rolling iOS template on those tags for existing consumers. Move the macOS SDL3 probe into the release workflow alongside the existing V8 checks and desktop bundles.
