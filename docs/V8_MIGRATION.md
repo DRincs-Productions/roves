@@ -225,7 +225,7 @@ questo invoca `ThreadSafeJSContext::request_shutdown`, già coperto dal test run
 annulla il grafo e rifiuta la risposta tardiva. È una verifica del collegamento nel codice,
 non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è trattenuto.
 
-### Stato di completamento — 3 novembre 2026
+### Stato di completamento — 5 novembre 2026
 
 - **Memoria:** ciclo DOM e serie di snapshot 2/16/32 superano i controlli della fixture;
   conteggio `RovesJsCell` 128/129/129 e rilascio dei 128 probe temporanei sono diagnostici.
@@ -233,26 +233,20 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
   dichiarare assenza di leak.
 - **Policy finestra:** navigazione automatica bloccata, notice di sviluppo e browser OS dopo
   clic reale sono verificati. La chiusura nativa mentre una risposta di modulo statico è
-  trattenuta ora è verificata localmente nell'harness, ma la versione 0464 non ha ancora una
-  run CI: il job Windows verde del push 19ca usava la precedente prova 0462.
+  trattenuta è ora verificata dall'harness 0464 nella CI del tag `v0.7.15`: il job
+  `servoshell-v8 (windows-latest, normal)` `127130558418` ha superato il passo “close the native
+  window while a static module fetch is pending”. La fixture conferma l'uscita prima del rilascio
+  della risposta; non è un test di clic o input desktop.
 - **Pausa statica:** template GitHub reale apre la schermata principale e Start entra nella
   route di gioco; i contratti di caricamento sono coperti dagli smoke. Misure di durata e di
   input/timer durante fetch appartengono al flusso performance dell'utente e non sono state
   raccolte qui. Il compromesso resta provvisorio finché quel flusso non lo valuta.
 
-Non tutti e tre i punti sono conclusi: memoria generale resta un'indagine aperta e la pausa
-statica richiede la valutazione di fluidità nel flusso dedicato. Per la policy, il test 0464
-asserisce l'uscita del processo prima del rilascio della risposta, ma serve ancora la sua
-esecuzione nella matrice CI; il vecchio job 0462 non soddisfa questo criterio.
-
-Checkpoint Git al 3 novembre: `origin/main` è `19ca0363691`; `main` è a `fabecd8566b`, con
-i commit locali `2f927b36e9a` (harness 0464) e `fabecd8566b` (handoff). La run V8
-`41718462513` ha tutti i job Linux/Windows verdi, un job `servoshell-v8 (macos-latest, normal)`
-ancora attivo e due runtime macOS cancellati; il retry era stato rifiutato mentre il workflow
-era attivo. Android `41718462547` è verde. iOS `41718462473` ha signing smoke verde e build
-simulatore saltato per la regola per-commit dell'utente. Nessun nuovo push finché la verifica
-macOS richiesta non è verde; al termine del workflow tentare una volta i soli runtime macOS
-cancellati e aggiornare il gate.
+La policy finestra ha completato i criteri qui verificabili. Memoria generale e accettabilità
+della pausa statica restano aperte; la valutazione di fluidità e prestazioni appartiene al flusso
+dedicato dell'utente. Il rilascio `v0.7.15` è verde e contiene sei bundle; i due test macOS
+normal/JITless sono superati. Il retry del workflow di test Servo `41993343293` attempt 2 è ancora
+in corso per il job Linux `.deb`; le sue verifiche sono separate dal rilascio versionato.
 
 ### Aggiornamento gate Apple — 3 novembre 2026
 
