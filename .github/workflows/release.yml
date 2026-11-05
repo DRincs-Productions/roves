@@ -250,10 +250,10 @@ jobs:
         shell: bash
         env:
           DEBIAN_FRONTEND: noninteractive
-        # Backstop beyond the apt-timer fix above -- see test.yml's own comment on this same
-        # step for the real, reproduced hang this guards against. mach bootstrap itself is
-        # normally done in well under a minute.
-        timeout-minutes: 15
+        # Fresh Linux runners may spend several minutes downloading the system multimedia
+        # packages from Ubuntu mirrors. Keep the timeout bounded, but leave enough room for
+        # a slow mirror; the previous 15-minute limit expired while apt was still fetching.
+        timeout-minutes: 45
         run: |
           if [ "${{ matrix.os_name }}" = "windows" ]; then
             ./mach bootstrap --force --yes --skip-lints --skip-nextest --skip-platform

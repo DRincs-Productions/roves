@@ -1,24 +1,24 @@
 # Migrazione V8 / deno_core — punto operativo autorevole
 
-## Punto operativo aggiornato — 4 novembre 2026
+## Punto operativo aggiornato — 5 novembre 2026
 
-### Gate macOS spostato interamente ai rilasci — commit `a985c8b`, CI in corso
+### Release `v0.7.15` — test macOS verdi, retry necessario per Linux Steam
 
 L'utente ha chiarito che nessuna verifica V8 macOS va eseguita a ogni commit, nemmeno JITless.
 Il commit `a985c8b7092` esclude tutte le combinazioni macOS da `.github/workflows/v8.yml`; il
 workflow versionato aggiunge runtime normal e JITless come prerequisiti prima dei bundle macOS
-plain/Steam.
-Il batch associato a `3ea49c3faac` è terminale: V8 Linux/Windows normal e JITless verdi, Android
-verde 3/3; macOS JITless cancellato secondo la vecchia matrice, ora differito. Firma iOS cancellata
-prima di assegnare un runner; il simulatore iOS resta intenzionalmente disabilitato.
+plain/Steam. Il tag `v0.7.15` è stato creato sul commit `8e609737488` dopo il batch Linux/Windows
+V8 e Android verde.
 
-La nuova V8 `41910791033` esegue 8 job Linux/Windows normal/JITless (runtime e servoshell); tutti
-sono in corso e non include job macOS. Android `41910791013` è in corso dopo `ensure-test-release`
-verde; iOS `41910791011` ha `ensure-test-release` verde, signing smoke queued e simulatore skipped
-intenzionalmente. Nessun nuovo errore al checkpoint. Ultimo tag/rilascio esistente: `v0.7.14`;
-prossimo tag pianificato `v0.7.15`. Crearlo solo dopo il batch per-commit verde; il tag eseguirà
-entrambi i runtime macOS e compilerà i bundle. Dopo il successo verificare gli asset pubblicati e
-aggiornare i pin consumer secondo `AGENTS.md`.
+Nel rilascio `41921646062` entrambi i test runtime macOS sono verdi e i bundle macOS plain/Steam,
+Linux plain e Windows plain/Steam sono stati caricati. Il bundle Linux Steam è fallito perché
+`mach bootstrap` ha superato il timeout di 15 minuti mentre apt scaricava pacchetti; nessun errore
+di compilazione è stato raggiunto. Sono presenti cinque asset nella release incompleta. La patch
+locale aumenta il timeout del bootstrap a 45 minuti; va pubblicata, poi va ritentato il tag secondo
+la procedura di `AGENTS.md`. Il workflow `test.yml` ha inoltre cancellato in coda due job macOS
+senza assegnare runner; la release workflow invece ha eseguito e superato i test e i bundle macOS.
+Non dichiarare completato il rilascio finché il bundle Linux Steam e tutti e sei gli asset non
+sono verificati. Dopo il successo sincronizzare i pin consumer come descritto in `AGENTS.md`.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
