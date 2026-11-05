@@ -5,7 +5,8 @@
 "use strict";
 // A bounded duration scene for one long-lived document: 16 rounds, each of 8 create/remove
 // cycles followed by 2 explicit collections (128 cycles, 32 collections); a debug build may write
-// native snapshots at chosen ones (run.sh: 2, 16 and 32). Every cycle also adds a self-capturing listener removed
+// native snapshots at chosen ones (run.sh: 2, 16, 32 and post-settled 34). Every cycle also adds
+// a self-capturing listener removed
 // through AbortController and a self-capturing timer cancelled before it can run. A control DOM
 // wrapper with a searchable tag and an active listener must stay reachable and dispatchable after
 // every round (required). Released wrapper/closure cycles are checked through WeakRef only after
@@ -111,6 +112,26 @@ async function main() {
     throw new Error("temporary wrapper/probe WeakRefs remain after all rounds");
   }
 }
+let resultReported = false;
+function reportResult() {
+  if (resultReported) return;
+  resultReported = true;
+  report("result", failures.length ? "fail " + failures.join("; ") : "pass");
+}
+function collectAfterSceneSettled() {
+  if (typeof TestUtils === "undefined" || typeof TestUtils.gc !== "function") return reportResult();
+  // Do not retain main()'s async frame while taking the final diagnostic snapshot. The timer
+  // runs after its promise and local `rounds` array have settled and left the active task.
+  setTimeout(() => {
+    Promise.resolve().then(() => TestUtils.gc()).then(() => {
+      report("post-settled collection", "complete");
+      reportResult();
+    }, error => {
+      fail("post-settled collection " + error.name + " " + error.message);
+      reportResult();
+    });
+  }, 0);
+}
 main().catch(error => fail("exception " + error.name + " " + error.message))
-  .finally(() => report("result", failures.length ? "fail " + failures.join("; ") : "pass"));
+  .finally(collectAfterSceneSettled);
 </script>

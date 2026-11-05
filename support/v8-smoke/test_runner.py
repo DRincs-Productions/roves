@@ -944,13 +944,14 @@ context.document = {
     def test_sixteen_rounds_of_eight_cycles_and_two_collections(self):
         lines = self.run_scene()
         round_events = ','.join(['node'] * 8 + ['gc'] * 2)
-        self.assertIn('events ' + ','.join([round_events] * 16 + ['gc']), lines)
-        markers = ['collections 33', 'ROVES-V8 document-retention node created true removed true',
+        self.assertIn('events ' + ','.join([round_events] * 16 + ['gc', 'gc']), lines)
+        markers = ['collections 34', 'ROVES-V8 document-retention node created true removed true',
                    'ROVES-V8 document-retention rounds complete 16 cycles 128',
                    'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128',
                    'ROVES-V8 document-retention collections complete 32',
                    'ROVES-V8 document-retention retained control true',
                    'ROVES-V8 document-retention final release verification collection complete',
+                   'ROVES-V8 document-retention post-settled collection complete',
                    'ROVES-V8 document-retention result pass']
         for round in range(1, 17):
             markers.append(f'ROVES-V8 document-retention round {round} created 8 removed true listeners aborted true')
@@ -965,7 +966,7 @@ context.document = {
 
     def test_retained_weakrefs_fail_final_release_assertion(self):
         lines = self.run_scene(keep_weakrefs=True)
-        self.assertIn('collections 33', lines)
+        self.assertIn('collections 34', lines)
         self.assertIn('ROVES-V8 document-retention diagnostic released element false probe false', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error temporary wrapper/probe WeakRefs remain after all rounds', lines)
 
@@ -973,33 +974,33 @@ context.document = {
         lines = self.run_scene(ignore_signal=True)
         self.assertIn('ROVES-V8 document-retention round 1 created 8 removed true listeners aborted false', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error listener not aborted in round 1', lines)
-        self.assertIn('collections 0', lines)
+        self.assertIn('collections 1', lines)  # post-settled diagnostic collection
 
     def test_cancelled_timer_run_fails_its_round(self):
         lines = self.run_scene(keep_timers=True)
         self.assertIn('ROVES-V8 document-retention round 1 created 8 removed true listeners aborted true', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error cancelled timer ran in round 1', lines)
-        self.assertIn('collections 0', lines)
+        self.assertIn('collections 1', lines)  # post-settled diagnostic collection
 
     def test_lost_control_listener_fails_after_its_round(self):
         lines = self.run_scene(drop_listener_at=5)
         self.assertIn('ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true', lines)
         self.assertNotIn('ROVES-V8 document-retention round 3 cycles 8 collections 6 retained control true', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error retained control lost after round 3', lines)
-        self.assertIn('collections 6', lines)
+        self.assertIn('collections 7', lines)  # post-settled diagnostic collection
 
     def test_lost_control_fails_after_its_round(self):
         lines = self.run_scene(lose_at=3)
         self.assertIn('ROVES-V8 document-retention round 1 cycles 8 collections 2 retained control true', lines)
         self.assertNotIn('ROVES-V8 document-retention round 2 cycles 8 collections 4 retained control true', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error retained control lost after round 2', lines)
-        self.assertIn('collections 4', lines)
+        self.assertIn('collections 5', lines)  # post-settled diagnostic collection
 
     def test_connected_node_fails_its_round(self):
         lines = self.run_scene(stuck=True)
         self.assertIn('ROVES-V8 document-retention round 1 created 8 removed false listeners aborted true', lines)
         self.assertIn('ROVES-V8 document-retention result fail exception Error node still connected in round 1', lines)
-        self.assertIn('collections 0', lines)
+        self.assertIn('collections 1', lines)  # post-settled diagnostic collection
 
     def test_runner_requires_retained_control(self):
         # The fake-browser runs (RunnerTests) exercise these requirements; this keeps the
@@ -1012,8 +1013,10 @@ context.document = {
         self.assertIn('RETENTION_ROUNDS=16\n', runner)
         self.assertIn('RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))\n', runner)
         self.assertIn('HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))\n', runner)
-        # The series: after rounds 1, 8 and 16 (2 collections per round), ending at the last one.
-        self.assertIn('HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION"\n', runner)
+        # The series adds one snapshot after main() settles, separating active async locals from
+        # retention that survives completion of the fixture.
+        self.assertIn('HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION $HEAP_SNAPSHOT_SETTLED_COLLECTION"\n', runner)
+        self.assertIn('ROVES-V8 document-retention post-settled collection complete', runner)
         self.assertIn('"ROVES_V8_HEAP_SNAPSHOT_GC=${HEAP_SNAPSHOT_COLLECTIONS// /,}"', runner)
         # Same derived name as roves-js's heap_snapshot::derived_path for `<stem>.heapsnapshot`.
         self.assertIn('heap_snapshot_path() { echo "${HEAP_SNAPSHOT%.heapsnapshot}.gc$1.heapsnapshot"; }\n', runner)
@@ -1551,24 +1554,24 @@ elif page == 'document-retention.html':
     print('ROVES-V8 document-retention api ' + str(api).lower())
     if api and scenario != 'snapshot-scene':
         print('ROVES-V8 document-retention node created true removed true')
-    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '2,16,32':
-        for collection in (2, 16, 32):
+    if api and path and snapshot_env.get('ROVES_V8_HEAP_SNAPSHOT_GC') == '2,16,32,34':
+        for collection in (2, 16, 32, 34):
             target = path[:-len('.heapsnapshot')] + f'.gc{collection}.heapsnapshot'
             if scenario == 'snapshot-dump-failed' and collection == 16:
                 print(f'[roves-heap-snapshot] failed at explicit collection 16: {target}: No space left on device', file=sys.stderr)
                 continue
-            if scenario != 'snapshot-file-missing' or collection != 32:
+            if scenario != 'snapshot-file-missing' or collection != 34:
                 with open(target, 'x') as written:
                     if scenario == 'snapshot-invalid' and collection == 2:
                         written.write('{"broken"')
                     else:
                         probe_count = 1
-                        if scenario == 'snapshot-extra-retained-probe' and collection == 32:
+                        if scenario == 'snapshot-extra-retained-probe' and collection == 34:
                             probe_count = 2
                         if scenario == 'snapshot-early-probes' and collection == 2:
                             probe_count = 3
                         # Synthetic RovesJsCell nodes: one per round so far, reported per snapshot.
-                        cells = collection // 2
+                        cells = min(collection // 2, 16)
                         nodes = [0, 0, probe_count]
                         edges = []
                         for _ in range(probe_count):
@@ -1601,6 +1604,8 @@ elif page == 'document-retention.html':
         print('ROVES-V8 document-retention collections complete 32')
         if scenario != 'snapshot-final-release':
             print('ROVES-V8 document-retention final release verification collection complete')
+        if scenario != 'snapshot-post-settled':
+            print('ROVES-V8 document-retention post-settled collection complete')
         if scenario != 'snapshot-diagnostic':
             print('ROVES-V8 document-retention diagnostic released element true probe true')
             print('ROVES-V8 document-retention diagnostic released counts elements 128 probes 128 total 128')
@@ -1831,11 +1836,12 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 settings, options = result.snapshot_env
                 self.assertEqual(['ROVES_V8_HEAP_SNAPSHOT_GC', 'ROVES_V8_HEAP_SNAPSHOT_PATH'], sorted(settings))
-                self.assertEqual('2,16,32', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
+                self.assertEqual('2,16,32,34', settings['ROVES_V8_HEAP_SNAPSHOT_GC'])
                 self.assertTrue(settings['ROVES_V8_HEAP_SNAPSHOT_PATH'].endswith('/out/scene.heapsnapshot'))
                 self.assertEqual(['--pref', 'dom_testutils_enabled=true'], options)
-                # Three distinct derived files; the base path is never written.
-                self.assertEqual(['scene.gc16.heapsnapshot', 'scene.gc2.heapsnapshot', 'scene.gc32.heapsnapshot'],
+                # Four distinct derived files; the base path is never written.
+                self.assertEqual(['scene.gc16.heapsnapshot', 'scene.gc2.heapsnapshot', 'scene.gc32.heapsnapshot',
+                                  'scene.gc34.heapsnapshot'],
                                  result.snapshots)
                 self.assertFalse(result.base_written)
                 # Every snapshot is validated; only the last tagged count is judged, and the
@@ -1845,11 +1851,15 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
                                   "'roves-document-retention-probe'; 1 tagged retention probe(s) (reported, not judged); "
                                   f"{cells} node(s) named 'RovesJsCell' (diagnostic, not judged)", result.stdout)
                 self.assertIn("scene.gc32.heapsnapshot: valid V8 snapshot with 'rovesDocumentRetentionProbe', "
+                              "'roves-document-retention-probe'; 1 tagged retention probe(s) (reported, not judged); "
+                              "16 node(s) named 'RovesJsCell' (diagnostic, not judged)", result.stdout)
+                self.assertIn("scene.gc34.heapsnapshot: valid V8 snapshot with 'rovesDocumentRetentionProbe', "
                               "'roves-document-retention-probe'; 1 tagged retention probe(s); "
                               "16 node(s) named 'RovesJsCell' (diagnostic, not judged)", result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released element true probe true', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention diagnostic released counts elements 128 probes 128 total 128', result.stdout)
                 self.assertIn('ROVES-V8 document-retention final release verification collection complete', result.stdout)
+                self.assertIn('ROVES-V8 document-retention post-settled collection complete', result.stdout)
                 self.assertIn('\ndocument-retention.html: ROVES-V8 document-retention round 16 cycles 8 collections 32 retained control true', result.stdout)
                 self.assertNotIn('::notice::document-retention.html: ROVES-V8 document-retention round ', result.stdout)
                 self.assertIn('::notice::document-retention.html: ROVES-V8 document-retention rounds complete 16 cycles 128', result.stdout)
@@ -1877,6 +1887,7 @@ raise SystemExit(124 if scenario == 'timeout' or scenario == 'incomplete' else 0
             ('snapshot-round', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention round 11 cycles 8 collections 22 retained control true'"),
             ('snapshot-cleanup', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128'"),
             ('snapshot-final-release', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention final release verification collection complete'"),
+            ('snapshot-post-settled', 'out/scene.heapsnapshot', "missing 'ROVES-V8 document-retention post-settled collection complete'"),
             ('snapshot-extra-retained-probe', 'out/scene.heapsnapshot', 'found 2'),
             ('pass', 'existing/scene.heapsnapshot', 'already exists and is never overwritten: '),
             ('pass', 'relative', 'must be an absolute path'),

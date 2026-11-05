@@ -274,7 +274,8 @@ done
 # servoshell process dumps a bounded series of native V8 heap snapshots at explicit collections 2,
 # 16 and 32 of document-retention.html (after rounds 1, 8 and 16 of 16 rounds of 8 create/remove
 # cycles, each with an AbortController listener and a cancelled timer, 2 collections per round),
-# for reading the retainers of detached DOM wrappers with a live control over time. Each snapshot
+# plus collection 34 after the scene's async main() promise settles and its local state is released.
+# This separates in-flight fixture state from objects still retained after completion. Each snapshot
 # goes to its own new derived file, `<base without .heapsnapshot>.gc<N>.heapsnapshot`; the base
 # path itself is never written. The control (expando and active listener) must survive every round,
 # every requested snapshot must exist and be valid, and the last must hold exactly one tagged
@@ -285,7 +286,8 @@ HEAP_SNAPSHOT="${V8_SMOKE_HEAP_SNAPSHOT:-}"
 RETENTION_ROUNDS=16
 RETENTION_CYCLES=$((RETENTION_ROUNDS * 8))
 HEAP_SNAPSHOT_COLLECTION=$((RETENTION_ROUNDS * 2))
-HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION"
+HEAP_SNAPSHOT_SETTLED_COLLECTION=$((HEAP_SNAPSHOT_COLLECTION + 2))
+HEAP_SNAPSHOT_COLLECTIONS="2 16 $HEAP_SNAPSHOT_COLLECTION $HEAP_SNAPSHOT_SETTLED_COLLECTION"
 # Must match roves-js's heap_snapshot::derived_path for a `<stem>.heapsnapshot` base.
 heap_snapshot_path() { echo "${HEAP_SNAPSHOT%.heapsnapshot}.gc$1.heapsnapshot"; }
 SNAPSHOT_LOGS=""
@@ -314,7 +316,7 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
     PAGE_ENV=("ROVES_V8_HEAP_SNAPSHOT_PATH=$HEAP_SNAPSHOT" "ROVES_V8_HEAP_SNAPSHOT_GC=${HEAP_SNAPSHOT_COLLECTIONS// /,}")
     PAGE_ENV_COUNT=2
     SNAPSHOT_LOGS="document-retention.log"
-    # 180 s bounds the process (32 collections and 3 snapshots in a debug build); it is not a
+    # 180 s bounds the process (34 collections and 4 snapshots in a debug build); it is not a
     # measured duration.
     run_page document-retention.html 180 document-retention.log "http://127.0.0.1:$HTTP_PORT/document-retention.html" '^ROVES-V8 document-retention result ' --pref dom_testutils_enabled=true
     PAGE_ENV=()
@@ -328,6 +330,7 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
       "ROVES-V8 document-retention cleanup complete listeners aborted $RETENTION_CYCLES timers cancelled $RETENTION_CYCLES"
       "ROVES-V8 document-retention collections complete $HEAP_SNAPSHOT_COLLECTION" "ROVES-V8 document-retention retained control true"
       "ROVES-V8 document-retention final release verification collection complete"
+      "ROVES-V8 document-retention post-settled collection complete"
       "ROVES-V8 document-retention result pass" "[roves-heap-snapshot] wrote ")
     for expected in "${retention_expected[@]}"; do
       # Page markers are whole lines (round lines also contain "retained control true"); the
@@ -355,7 +358,7 @@ if [ -n "$HEAP_SNAPSHOT" ]; then
     for collection in $HEAP_SNAPSHOT_COLLECTIONS; do
       snapshot=$(heap_snapshot_path "$collection")
       # Only the last snapshot's tagged count is judged (the existing one-control contract).
-      if [ "$collection" -eq "$HEAP_SNAPSHOT_COLLECTION" ]; then tagged=(--expected-tagged-probes 1); else tagged=(--report-tagged-probes); fi
+      if [ "$collection" -eq "$HEAP_SNAPSHOT_SETTLED_COLLECTION" ]; then tagged=(--expected-tagged-probes 1); else tagged=(--report-tagged-probes); fi
       if [ ! -s "$snapshot" ]; then
         snapshot_ok=0; echo "::error::document-retention.html: requested heap snapshot missing or empty: $snapshot"
       elif ! "$PYTHON" "$DIR/check_heap_snapshot.py" "${tagged[@]}" --count-node-name RovesJsCell \

@@ -238,8 +238,9 @@ jobs:
           python support/v8_cutover_check.py servoshell --build --online --top 40 $features
           ls target/v8-cutover/debug/servoshell*
       # Linux normal only: one extra debug servoshell process (one page, bounded by its 180 s
-      # timeout) loads document-retention.html and writes a series of three native V8 heap
-      # snapshots (explicit collections 2, 16 and 32) next to the base path below, as
+      # timeout) loads document-retention.html and writes a series of four native V8 heap
+      # snapshots (explicit collections 2, 16, 32 and 34; 34 is after the async scene settles)
+      # next to the base path below, as
       # document-retention.gc<N>.heapsnapshot; their size follows the page's JS heap. Kept 3 days,
       # for comparing retainers in DevTools' Memory panel. The smoke step fails when a requested
       # snapshot is missing or invalid.

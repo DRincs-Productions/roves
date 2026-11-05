@@ -75,7 +75,8 @@ potrebbero non mostrarli. Non estendere questa eccezione agli errori classici, d
 parse/link o agli import dinamici; conservarne i contratti distinti e verificarli. Evitare
 terminazione del runtime per un reject non gestito: notificare il gioco tramite il normale
 percorso degli eventi di rejection. Non fingere una promise appartenente al gioco se e
-interna alla libreria. La pausa statica provvisoria e i suoi test restano un tema separato.
+interna alla libreria. I test funzionali del caricamento statico restano in questo gate; la
+valutazione di fluidità su scene reali è affidata al flusso performance ed è esclusa da questo gate.
 Nessun fork, layout privato o grafo duplicato autorizzato; adozione ancora da completare.
 
 ### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
@@ -110,18 +111,17 @@ e verifiche attesi. Codex dirige/revisiona, Claude implementa; quote e regole CI
 
 ### Caricamento statico deno_core: pausa provvisoria autorizzata (27 ottobre 2026)
 
-L'ultima istruzione dell'utente autorizza a procedere subito: durante il caricamento e
-l'istanziamento dei moduli statici input e timer del gioco possono fermarsi temporaneamente.
-Gli import dinamici restano asincroni. Questa decisione sostituisce la precedente scelta2.
-E un compromesso PROVVISORIO DA RIVEDERE nei test, non una prestazione accettabile gia
-misurata: documentare quando accade (avvio e script module aggiunti a gioco avviato), durata,
-sorgenti locali/rete, input/timer/frame e gestione errori/chiusura. Confrontare caricamenti
-freddi/caldi e rete lenta controllata; non inventare durata o soglie accettate dall'utente.
+L'ultima istruzione dell'utente autorizza a procedere: durante il caricamento e
+l'istanziamento dei moduli statici input e timer possono fermarsi temporaneamente. Gli import
+dinamici restano asincroni. Documentare quando accade (avvio e script module aggiunti a gioco
+avviato), sorgenti locali/rete, input/timer/frame ed errori/chiusura; non inventare soglie
+accettate dall'utente. Per decisione del 5 novembre, la valutazione di fluidità su scene reali
+spetta al flusso performance separato ed è esclusa dai criteri di completamento V8; non
+duplicarla né attendere il suo esito in questo loop.
 Preservare valutazione HTML/TLA, sicurezza fetch, import map e microtask. Nessun rientro JS
 mentre JsRuntime e preso in prestito esclusivo; nessun fork o grafo duplicato permanente.
 Usare API pubbliche Deno/Tokio. La bozza salvata0385 puo essere ripresa e revisionata;
-nessun backend parziale va pubblicato. Se i test mostrano pause problematiche riaprire
-la decisione e rivalutare un'API pubblica interamente asincrona.
+nessun backend parziale va pubblicato. La valutazione performance è separata da questo incarico.
 
 ## Build macOS differite ai rilasci e simulatore iOS — 4 novembre 2026
 

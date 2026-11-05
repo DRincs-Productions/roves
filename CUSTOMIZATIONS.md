@@ -19206,3 +19206,16 @@ README in commit `099f6f6`. Their CI runs `42014335639` and `42014343610` are re
 progress and queued. The separate Servo source test workflow's Linux `.deb` job failed on its
 first attempt; its logs were unavailable through the GitHub plugin and attempt 2 is running. This
 does not change the successful tagged release or its six verified assets.
+## 2026-11-05 - Separate in-flight and post-settled document-retention snapshots (0478)
+
+Extended the Linux normal debug `document-retention.html` heap-snapshot series from explicit
+collections 2/16/32 to 2/16/32/34. Collection 34 runs from a timer after the fixture's `main()`
+promise settles; its completion marker is required before the smoke exits. The final snapshot
+alone enforces the one tagged control probe, while earlier counts remain diagnostics. The Python
+runner covers the new completion marker and missing-snapshot behavior; its mock does not claim to
+simulate browser GC.
+
+Used maintained MemLab 2.0.6 offline against the existing three-snapshot CI artifact, without
+adding a repository dependency. Its trace of `main`'s async context and `rounds` array is consistent
+with the fixture still running at the capture point, so it does not establish a product leak. The
+new settled snapshot must be inspected before drawing a broader retention conclusion.

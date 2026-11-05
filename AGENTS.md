@@ -74,20 +74,24 @@ Deno ai giochi. La shell Servo e DOM/layout/rendering Servo restano.
 Il caricamento statico deno_core usa il poll cooperativo 0457/0458; gli import dinamici sono
 asincroni. Fetch e sorgenti già pronte cedono al loop del gioco, ma compilazione di una
 sorgente, risoluzione e link finale restano sincroni e possono causare pause. La valutazione
-su scene reali e soglie accettabili resta aperta e non va dichiarata completata. Continuare
-a verificare API pubbliche, CSP/origini, moduli, microtask, GC, sicurezza e JITless; non
+di fluidità su scene reali è affidata al flusso performance separato ed è fuori dai criteri
+della migrazione V8; non duplicarla né attendere quel flusso per completare la migrazione.
+Continuare a verificare API pubbliche, CSP/origini, moduli, microtask, GC, sicurezza e JITless; non
 dichiarare copertura generale o prestazioni misurate senza evidenze. Dettagli correnti in
 `docs/V8_MIGRATION.md`.
 
 ### Caricamento statico deno_core: pausa provvisoria autorizzata (27 ottobre 2026)
 
-L'utente ha autorizzato il compromesso provvisorio della pausa statica. L'implementazione
-0457/0458 cede tra fetch e sorgenti già pronte; compilazione, risoluzione e link finale
-restano sincroni. Gli import dinamici sono asincroni. Rivedere il compromesso su scene reali:
-documentare quando accade, durata, input/timer/frame, sorgenti locali/rete, errori e chiusura;
-non inventare soglie accettate. Preservare HTML/TLA, sicurezza fetch, import map e microtask.
+L'utente ha autorizzato il compromesso static-load. L'implementazione 0457/0458 cede tra fetch
+e sorgenti già pronte; compilazione, risoluzione e link finale restano sincroni. Gli import
+dinamici sono asincroni. Conservare la descrizione tecnica di quando accade e delle conseguenze
+su input/timer/frame, sorgenti, errori e chiusura; non inventare soglie accettate. La valutazione
+di fluidità su scene reali è stata assegnata al flusso performance separato e, per decisione del
+5 novembre, è esclusa dai criteri e dai gate di completamento V8. Preservare HTML/TLA, sicurezza
+fetch, import map e microtask.
 Nessun rientro JS mentre JsRuntime è preso in prestito esclusivo; non aggiungere un secondo
-grafo runtime. La prova di fluidità è assegnata al flusso dedicato.
+grafo runtime. Non duplicare né attendere nel loop V8 la valutazione di fluidità assegnata al
+flusso performance separato.
 
 ### Errori dei moduli statici deno_core: deviazione autorizzata (28 ottobre 2026)
 
@@ -98,7 +102,8 @@ potrebbero non mostrarli. Non estendere questa eccezione agli errori classici, d
 parse/link o agli import dinamici; conservarne i contratti distinti e verificarli. Evitare
 terminazione del runtime per un reject non gestito: notificare il gioco tramite il normale
 percorso degli eventi di rejection. Non fingere una promise appartenente al gioco se e
-interna alla libreria. La pausa statica provvisoria e i suoi test restano un tema separato.
+interna alla libreria. I test funzionali del caricamento statico restano in questo gate; la
+valutazione di fluidità su scene reali è affidata al flusso performance ed è esclusa da questo gate.
 Nessun fork, layout privato o grafo duplicato autorizzato; adozione ancora da completare.
 
 ### URL dei moduli inline: differenza provvisoria autorizzata (28 ottobre 2026)

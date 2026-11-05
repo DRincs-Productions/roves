@@ -19,11 +19,26 @@ attesi. Anche il V8 per il tag (`41993343240`) e la probe Deno (`41993343364`) s
 
 I pin consumer sono aggiornati: `roves-action` commit `0d96531` e `roves-packmaster` commit
 `099f6f6`, entrambi su main. Le verifiche consumer `42014335639` (action) e `42014343610`
-(Packmaster) sono rispettivamente in corso e in coda al checkpoint. Il workflow distinto di test
-dei sorgenti Servo `41993343293` ha fallito il job Linux `.deb` al primo tentativo; la lettura dei
-log tramite plugin ha restituito 404 e il retry del job è in corso (attempt 2). Questo non ha
-impedito il rilascio; non confondere la prova di bundle sorgente con i test V8/macOS e con i sei
-bundle reali del tag.
+(Packmaster) sono verdi. Il workflow distinto di test dei sorgenti Servo `41993343293` è verde al
+secondo tentativo, dopo il fallimento infrastrutturale del job Linux `.deb` al primo. Questo non
+va confuso con i test V8/macOS e con i sei bundle reali del tag.
+
+### Retention generale: snapshot dopo il completamento della scena (task 0478)
+
+Il confronto offline iniziale con MemLab 2.0.6, senza aggiungere dipendenze al progetto, ha
+analizzato i tre snapshot CI delle collezioni 2/16/32. Tra gli oggetti maggiori compaiono una
+Promise, il contesto/generatore async e l'array locale `rounds`, raggiunti dalla radice dello stack
+C++ tramite la closure di `main`. Poiché gli snapshot erano presi mentre la scena era ancora in
+esecuzione, questa traccia è compatibile con stato temporaneo del fixture; da sola non dimostra un
+leak Roves.
+
+Per distinguere i casi, `document-retention.html` esegue ora una raccolta aggiuntiva dopo che la
+Promise di `main()` è risolta e il task è terminato. La serie diagnostica passa a quattro snapshot
+(2/16/32 durante il carico e 34 dopo la conclusione); solo l'ultimo giudica che resti il probe di
+controllo, mentre i conteggi intermedi sono riportati. MemLab è usato offline senza diventare una
+dipendenza runtime o di test installata nel repository. La conclusione sulla retention generale
+dipende dall'analisi del nuovo artefatto CI: non inferire assenza di leak né trattare il runner con
+mock come prova del GC browser.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
@@ -227,26 +242,27 @@ non una prova end-to-end che chiuda la finestra nativa mentre il fetch reale è 
 
 ### Stato di completamento — 5 novembre 2026
 
-- **Memoria:** ciclo DOM e serie di snapshot 2/16/32 superano i controlli della fixture;
+- **Memoria:** il ciclo DOM e la serie CI precedente 2/16/32 superano i controlli della fixture;
   conteggio `RovesJsCell` 128/129/129 e rilascio dei 128 probe temporanei sono diagnostici.
-  Retention generale, cppgc e memoria nativa su sessioni lunghe restano aperte; non
-  dichiarare assenza di leak.
+  MemLab 2.0.6 ha trovato una traccia dell'async `main` negli snapshot presi durante la scena,
+  compatibile con stato temporaneo del test. La fixture è stata estesa con uno snapshot 34 dopo
+  il completamento; attende la nuova CI e l'analisi MemLab. Retention generale, cppgc e memoria
+  nativa su sessioni lunghe restano aperte; non dichiarare assenza di leak.
 - **Policy finestra:** navigazione automatica bloccata, notice di sviluppo e browser OS dopo
   clic reale sono verificati. La chiusura nativa mentre una risposta di modulo statico è
   trattenuta è ora verificata dall'harness 0464 nella CI del tag `v0.7.15`: il job
   `servoshell-v8 (windows-latest, normal)` `127130558418` ha superato il passo “close the native
   window while a static module fetch is pending”. La fixture conferma l'uscita prima del rilascio
   della risposta; non è un test di clic o input desktop.
-- **Pausa statica:** template GitHub reale apre la schermata principale e Start entra nella
-  route di gioco; i contratti di caricamento sono coperti dagli smoke. Misure di durata e di
-  input/timer durante fetch appartengono al flusso performance dell'utente e non sono state
-  raccolte qui. Il compromesso resta provvisorio finché quel flusso non lo valuta.
+- **Pausa statica (fuori dai criteri attivi):** la decisione del 5 novembre assegna la
+  valutazione di fluidità al flusso performance separato. La migrazione conserva le limitazioni
+  tecniche documentate, ma non attende né replica quella valutazione.
 
-La policy finestra ha completato i criteri qui verificabili. Memoria generale e accettabilità
-della pausa statica restano aperte; la valutazione di fluidità e prestazioni appartiene al flusso
-dedicato dell'utente. Il rilascio `v0.7.15` è verde e contiene sei bundle; i due test macOS
-normal/JITless sono superati. Il retry del workflow di test Servo `41993343293` attempt 2 è ancora
-in corso per il job Linux `.deb`; le sue verifiche sono separate dal rilascio versionato.
+La policy finestra ha completato i criteri qui verificabili. La retention generale è il solo punto
+residuo dei tre ambiti richiesti; la valutazione di fluidità della pausa statica è esclusa da questa
+migrazione per decisione dell'utente. Il rilascio `v0.7.15` è verde e contiene sei bundle; i due
+test macOS normal/JITless sono superati. Il workflow di test Servo `41993343293` attempt 2 è verde;
+le sue verifiche sono separate dal rilascio versionato.
 
 ### Aggiornamento gate Apple — 3 novembre 2026
 
@@ -398,16 +414,14 @@ resta una modifica dell'utente e non va incluso.
   prova 0464 e dal passo `127130558418` della release CI `41993343240`; non rimane un
   blocco noto della policy nel perimetro del documento unico. Gli usi non standard dei link
   restano un approfondimento non bloccante nel TODO.
-- **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
-  pronte. La CI V8 ha compilato e superato smoke normal/JITless Linux/Windows.
-  Compilazione della singola sorgente, risoluzione e link completo restano sincroni.
-  Manca una valutazione su scena gioco reale dopo 0458, inclusi input e caricamenti freddi/caldi;
-  questa verifica è assegnata all'altro flusso dell'utente. Non dichiarare accettabile la pausa
-  finché non ne arriva l'esito.
+- **Pausa statica (non gate):** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
+  pronte. Compilazione della singola sorgente, risoluzione e link completo restano sincroni.
+  La valutazione di fluidità su scene reali appartiene al flusso separato di performance ed è
+  esclusa dai criteri e dai gate attivi di questa migrazione.
 
 SourceText e preload JSON sono backlog non bloccante e restano fuori dai criteri.
 
-### 0457 — caricamento statico deno_core a passi, CI verificata; misura reale aperta
+### 0457 — caricamento statico deno_core a passi, CI verificata; misura nel flusso performance
 
 Il prototipo 0457 è stato portato nel working tree: `SideModuleLoad` avanza
 `RecursiveModuleLoad` con poll brevi sulla ModuleMap unica di deno_core; il task
