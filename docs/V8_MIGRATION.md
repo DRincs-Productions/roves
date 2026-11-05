@@ -52,6 +52,12 @@ runtime. La fixture è stata corretta per invocare un'espressione async senza pu
 Window e il mock ora asserisce `typeof main === "undefined"`. La nuova CI dovrà confermare che il
 retainer artificiale scompare prima di trarre conclusioni sulla retention generale.
 
+La correzione è pubblicata nel commit `f5222db619f`, dopo il batch precedente interamente verde.
+Nuovo checkpoint: V8 `42025623358`, Android `42025623379` e iOS `42025623456` sono stati avviati;
+al primo riepilogo non erano terminali. Non pubblicare altri commit finché il batch non è concluso.
+Alla fine scaricare il nuovo artefatto V8 e verificare con MemLab se `main` è ancora trattenuto e
+quale sia il nuovo percorso dominante della finestra.
+
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
 La run V8 `41880418433` ha fallito tutti e quattro i job runtime Linux/Windows normal e JITless
