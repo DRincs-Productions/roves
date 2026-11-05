@@ -19218,4 +19218,8 @@ simulate browser GC.
 Used maintained MemLab 2.0.6 offline against the existing three-snapshot CI artifact, without
 adding a repository dependency. Its trace of `main`'s async context and `rounds` array is consistent
 with the fixture still running at the capture point, so it does not establish a product leak. The
-new settled snapshot must be inspected before drawing a broader retention conclusion.
+new CI series (run 42019654141, artifact 13411233797) showed a separate fixture root: MemLab traced
+the `main` closure through the `Window` global property. The page now invokes an async function
+expression without exposing that entry point as `window.main`; the Python mock asserts the global
+name is absent. The next CI artifact must confirm the artificial retainer is gone before drawing a
+broader retention conclusion.

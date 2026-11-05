@@ -56,7 +56,7 @@ function checkControl(control, round) {
     throw new Error("retained control lost after round " + round);
   }
 }
-async function main() {
+(async function main() {
   const api = typeof TestUtils === "object" && typeof TestUtils.gc === "function";
   report("api", String(api));
   if (!api) throw new Error("TestUtils.gc unavailable");
@@ -111,7 +111,8 @@ async function main() {
   if (elementsReleased !== total || probesReleased !== total) {
     throw new Error("temporary wrapper/probe WeakRefs remain after all rounds");
   }
-}
+})().catch(error => fail("exception " + error.name + " " + error.message))
+  .finally(collectAfterSceneSettled);
 let resultReported = false;
 function reportResult() {
   if (resultReported) return;
@@ -132,6 +133,6 @@ function collectAfterSceneSettled() {
     });
   }, 0);
 }
-main().catch(error => fail("exception " + error.name + " " + error.message))
-  .finally(collectAfterSceneSettled);
+// The async scene entry point is an unbound function expression rather than a Window global;
+// otherwise the fixture itself roots its closure and creates a false retention in the snapshot.
 </script>

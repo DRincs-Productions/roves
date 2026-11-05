@@ -928,7 +928,8 @@ context.document = {
 '''
     # 16 rounds take 32+ timer tasks: wait for the result line instead of a fixed delay.
     AFTER = ('const finish = () => { if (!lines.some(line => line.startsWith("ROVES-V8 document-retention result "))) return void setTimeout(finish, 10); '
-             'lines.push("collections " + collections); lines.push("events " + events.join(",")); process.stdout.write(lines.join("\\n")); }; finish();')
+             'lines.push("collections " + collections); lines.push("events " + events.join(",")); lines.push("global main " + typeof main); '
+             'process.stdout.write(lines.join("\\n")); }; finish();')
 
     def run_scene(self, lose_at=0, stuck=False, drop_listener_at=0, ignore_signal=False, keep_timers=False,
                   keep_weakrefs=False):
@@ -945,6 +946,7 @@ context.document = {
         lines = self.run_scene()
         round_events = ','.join(['node'] * 8 + ['gc'] * 2)
         self.assertIn('events ' + ','.join([round_events] * 16 + ['gc', 'gc']), lines)
+        self.assertIn('global main undefined', lines)  # the diagnostic fixture must not root its own entry closure
         markers = ['collections 34', 'ROVES-V8 document-retention node created true removed true',
                    'ROVES-V8 document-retention rounds complete 16 cycles 128',
                    'ROVES-V8 document-retention cleanup complete listeners aborted 128 timers cancelled 128',

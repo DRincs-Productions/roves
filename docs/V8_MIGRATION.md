@@ -40,13 +40,17 @@ dipendenza runtime o di test installata nel repository. La conclusione sulla ret
 dipende dall'analisi del nuovo artefatto CI: non inferire assenza di leak né trattare il runner con
 mock come prova del GC browser.
 
-Il commit `740c4b6023e` è pubblicato. Checkpoint associato: V8 `42019654141` e Android
-`42019654078` è verde; iOS `42019654048` è terminale con signing smoke verde e simulatore
-skipped secondo la regola per-commit. Nella run V8 restano in corso quattro build servoshell
-(Linux/Windows normal e JITless); i quattro job runtime sono verdi. L'artefatto snapshot non è
-ancora disponibile. Dopo la conclusione del batch, scaricare solo l'artefatto
-`v8-heap-snapshot-document-retention` della run V8 e confrontare il nuovo `gc34` con `gc32` tramite
-MemLab mantenuto. Non pubblicare altri commit mentre le run obbligatorie sono attive.
+La CI del commit `740c4b6023e` è terminale e verde: V8 `42019654141` (8/8 job), Android
+`42019654078` (3/3) e iOS `42019654048` (signing smoke verde, simulatore skipped secondo la
+regola per-commit). L'artefatto snapshot V8 è `13411233797`.
+
+MemLab 2.0.6 sul nuovo `gc34` mostra ancora la closure `main` (19.9 KB; `gc32`: 17.5 KB) e una
+crescita della finestra da 228.5 KB a 250.5 KB. Il trace mantenuto identifica il percorso
+`WindowProxy -> Window [JSGlobalObject] --main--> closure`: la fixture dichiarava `main` come
+funzione globale, trattenendo sé stessa. Non è evidenza di una radice introdotta dal gioco o dal
+runtime. La fixture è stata corretta per invocare un'espressione async senza pubblicare `main` su
+Window e il mock ora asserisce `typeof main === "undefined"`. La nuova CI dovrà confermare che il
+retainer artificiale scompare prima di trarre conclusioni sulla retention generale.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
