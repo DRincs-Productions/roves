@@ -6,8 +6,11 @@ La retention generale resta aperta. L'ultima prova controllata estende `gc-lifec
 al ciclo di vita dei callback `setTimeout`: il callback resta raggiungibile finché il timer è
 pendente e diventa raccoglibile dopo `clearTimeout`; un callback di controllo intenzionalmente
 radicato deve restare utilizzabile. I controlli Node della fixture e `bash -n` passano localmente.
-La prova con il runtime Servo e la CI devono ancora confermare il comportamento; questi risultati
-non dimostrano assenza di retention generale.
+La CI V8 42064217468 ha superato tutti gli otto job. La prova resta circoscritta al ciclo di vita del callback.
+
+### Prossimo rilascio
+
+Il commit 23d01ba sposta i controlli Apple sui tag. Android 42082671149 è verde. La build Servo Linux e Windows 42082671432 è ancora in corso al checkpoint. Attenderne l’esito prima di pubblicare v0.7.16.
 
 ### Release `v0.7.15` — completata e verificata
 

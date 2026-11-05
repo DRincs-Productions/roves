@@ -195,22 +195,9 @@ un nuovo incarico preciso, ripetendo il ciclo. Non considerare concluso un incar
 a metà: ogni implementazione deve essere coerente e teoricamente completa e funzionante
 prima di passare al controllo della CI e alla decisione di pubblicare.
 
-### Gate CI Apple aggiornato (4 novembre 2026)
+### Gate CI Apple aggiornato (5 novembre 2026)
 
-Per richiesta dell'utente, tutte le celle macOS V8 (runtime normal/JITless e servoshell) sono
-escluse dalla CI per commit. Sul tag versionato `v*.*.*`, `release.yml` esegue i test runtime
-macOS in entrambe le modalità prima di compilare e pubblicare i bundle plain e Steam. Linux e
-Windows continuano a eseguire normal/JITless per commit. I job macOS non vanno riabilitati nei
-push ordinari; il rilascio versionato è il gate e il percorso per verificare i bundle macOS.
-Il job `ios` di build
-simulatore in `ios.yml` resta disabilitato su ogni commit perché è lento. L'utente verificherà
-iOS direttamente con il build reale firmato `mach bundle --ios --ios-release`; non disabilitare
-né modificare quel percorso di rilascio. `release.yml` non è una build iOS. Il job rapido
-`ios-release-signing-smoke` resta attivo, ma non è una build dell'app. Linux, Windows, Android
-e controlli condivisi restano richiesti e devono essere verdi e terminali prima del push.
-`skipped` per i lavori esplicitamente differiti è intenzionale e non rappresenta una build
-superata; non rilanciare il simulatore iOS per sbloccare la pubblicazione.
-Documentare i build macOS/iOS soltanto quando il relativo percorso versionato viene verificato.
+I controlli Apple girano sui tag versionati v*.*.*. release.yml esegue V8 macOS normal e JITless e la probe SDL3 prima della pubblicazione dei bundle desktop. ios.yml esegue sul tag la build del simulatore e lo smoke della firma, e aggiorna il template iOS della release test. La verifica su dispositivo resta il build firmato mach bundle --ios --ios-release. Linux, Windows, Android e i controlli condivisi restano i gate per commit.
 
 ### Procedura di implementazione: loop autonomo
 
