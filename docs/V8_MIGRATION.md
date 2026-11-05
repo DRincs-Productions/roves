@@ -2,6 +2,9 @@
 
 ## Punto operativo aggiornato — 5 novembre 2026
 
+Handoff sintetico per riprendere l'indagine sulla retention generale in un'altra chat:
+[`docs/handoff/0479-general-memory-retention-review.md`](handoff/0479-general-memory-retention-review.md).
+
 ### Release `v0.7.15` — completata e verificata
 
 L'utente ha chiarito che nessuna verifica V8 macOS va eseguita a ogni commit, nemmeno JITless.
