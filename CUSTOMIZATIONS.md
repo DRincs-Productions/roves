@@ -19228,3 +19228,16 @@ is found. The window's retained size changes by 2.1 KiB from collection 32 to 34
 identify a persistent owner or establish a leak. Full findings and snapshot hashes are recorded in
 `docs/measurements/0478-document-retention-post-settled-ci.json`; broader JS, cppgc and native
 retention remain open.
+
+
+## 2026-11-05 - Check pending timer callback ownership (0480)
+
+Extend the active single-document GC smoke with a one-shot timeout ownership check: while the
+timer is pending, its callback remains reachable; after `clearTimeout`, the callback is
+collectible. A separately rooted callback must remain callable after collections. The probe uses
+the existing `WeakRef` and `TestUtils.gc()` APIs and adds no dependencies or heap parser. The
+targeted GC tests pass 7/7; the full Python runner passes 52 with 16 POSIX-shell integration tests
+skipped on Windows, and `bash -n` passes. These are fixture-logic checks only; Servo runtime
+behavior is pending the Linux/Windows normal and JITless
+CI gate. Patch: `patches/servo-v0.5.0/0459-timeout-callback-retention.patch`. Overall retention
+remains open.

@@ -2,8 +2,12 @@
 
 ## Punto operativo aggiornato — 5 novembre 2026
 
-Handoff sintetico per riprendere l'indagine sulla retention generale in un'altra chat:
-[`docs/handoff/0479-general-memory-retention-review.md`](handoff/0479-general-memory-retention-review.md).
+La retention generale resta aperta. L'ultima prova controllata estende `gc-lifecycle.html`
+al ciclo di vita dei callback `setTimeout`: il callback resta raggiungibile finché il timer è
+pendente e diventa raccoglibile dopo `clearTimeout`; un callback di controllo intenzionalmente
+radicato deve restare utilizzabile. I controlli Node della fixture e `bash -n` passano localmente.
+La prova con il runtime Servo e la CI devono ancora confermare il comportamento; questi risultati
+non dimostrano assenza di retention generale.
 
 ### Release `v0.7.15` — completata e verificata
 

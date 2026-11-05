@@ -9,7 +9,8 @@
 // be collected. This checks reachability from script only: it does not count native
 // finalizers and does not establish overall module/realm retention. Multi-document probes
 // remain archived in legacy-multidocument/gc-lifecycle.html. The active scene checks imports,
-// direct-eval imports and escaped import.meta.resolve across GC in the one live document.
+// direct-eval imports and escaped import.meta.resolve across GC in the one live document,
+// and that a pending timeout keeps its callback alive until clearTimeout releases it.
 "use strict";
 const MAX_COLLECTIONS = 8;
 const FRAME_TIMEOUT_MS = 5000;
@@ -310,6 +311,44 @@ async function checkInlineHandlerOwnership() {
   }
 }
 
+// A pending one-shot timeout owns its callback: the window's timer list must keep it alive while
+// the timer is pending, and clearTimeout must release it. The helper returns only the timer id
+// and a WeakRef, so no strong reference to the callback outlives it; `state` does not reference
+// the callback. The delay exceeds the page's run time, so the timer never fires here.
+const PENDING_TIMEOUT_MS = 600000;
+function schedulePendingTimeout(state) {
+  const callback = () => { state.fired++; };
+  return { id: setTimeout(callback, PENDING_TIMEOUT_MS), ref: new WeakRef(callback) };
+}
+
+// Control: a callback the test roots itself, scheduled and cancelled like the probe, must stay
+// the same usable function after collections and still run when scheduled again.
+async function checkTimerCallbackOwnership() {
+  const state = { fired: 0 };
+  const { id, ref } = schedulePendingTimeout(state);
+  const control = { calls: 0, resolve: null };
+  const controlCallback = () => { control.calls++; if (control.resolve) control.resolve(); };
+  const controlRef = new WeakRef(controlCallback);
+  clearTimeout(setTimeout(controlCallback, PENDING_TIMEOUT_MS));
+  // Each aliveCount() runs in the task after a collection; the next collection starts in a
+  // later task, so its deref() does not keep the target alive into that collection.
+  let pendingAlive = 0;
+  for (let round = 0; round < 3; round++) {
+    await collectOnce();
+    pendingAlive += aliveCount([ref]);
+  }
+  check("timeout callback pending retained", pendingAlive === 3 && state.fired === 0,
+    `alive ${pendingAlive}/3 fired ${state.fired}`);
+  clearTimeout(id);
+  await expectCollected("cancelled timeout callback", [ref]);
+  const fired = new Promise(resolve => { control.resolve = resolve; });
+  setTimeout(controlCallback, 0);
+  await withTimeout(fired, "control timeout");
+  check("timeout control after collection",
+    controlRef.deref() === controlCallback && control.calls === 1 && state.fired === 0,
+    `identity=${controlRef.deref() === controlCallback} calls=${control.calls} fired=${state.fired}`);
+}
+
 // The live document must remain usable after collections. This does not prove graph
 // disposal or overall native retention; the optional document-retention snapshot is diagnostic.
 async function reportSingleDocumentLifetime() {
@@ -348,6 +387,7 @@ async function main() {
   await checkModuleOwners();
   await checkListenerOwnership();
   await checkInlineHandlerOwnership();
+  await checkTimerCallbackOwnership();
   checkKept("retained nodes final");
 }
 

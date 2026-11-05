@@ -1,0 +1,131 @@
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index 45771a7d023..eb8b2cc628f 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -11,3 +11,4 @@
+ // remain archived in legacy-multidocument/gc-lifecycle.html. The active scene checks imports,
+-// direct-eval imports and escaped import.meta.resolve across GC in the one live document.
++// direct-eval imports and escaped import.meta.resolve across GC in the one live document,
++// and that a pending timeout keeps its callback alive until clearTimeout releases it.
+ "use strict";
+@@ -312,2 +313,40 @@ async function checkInlineHandlerOwnership() {
+ 
++// A pending one-shot timeout owns its callback: the window's timer list must keep it alive while
++// the timer is pending, and clearTimeout must release it. The helper returns only the timer id
++// and a WeakRef, so no strong reference to the callback outlives it; `state` does not reference
++// the callback. The delay exceeds the page's run time, so the timer never fires here.
++const PENDING_TIMEOUT_MS = 600000;
++function schedulePendingTimeout(state) {
++  const callback = () => { state.fired++; };
++  return { id: setTimeout(callback, PENDING_TIMEOUT_MS), ref: new WeakRef(callback) };
++}
++
++// Control: a callback the test roots itself, scheduled and cancelled like the probe, must stay
++// the same usable function after collections and still run when scheduled again.
++async function checkTimerCallbackOwnership() {
++  const state = { fired: 0 };
++  const { id, ref } = schedulePendingTimeout(state);
++  const control = { calls: 0, resolve: null };
++  const controlCallback = () => { control.calls++; if (control.resolve) control.resolve(); };
++  const controlRef = new WeakRef(controlCallback);
++  clearTimeout(setTimeout(controlCallback, PENDING_TIMEOUT_MS));
++  // Each aliveCount() runs in the task after a collection; the next collection starts in a
++  // later task, so its deref() does not keep the target alive into that collection.
++  let pendingAlive = 0;
++  for (let round = 0; round < 3; round++) {
++    await collectOnce();
++    pendingAlive += aliveCount([ref]);
++  }
++  check("timeout callback pending retained", pendingAlive === 3 && state.fired === 0,
++    `alive ${pendingAlive}/3 fired ${state.fired}`);
++  clearTimeout(id);
++  await expectCollected("cancelled timeout callback", [ref]);
++  const fired = new Promise(resolve => { control.resolve = resolve; });
++  setTimeout(controlCallback, 0);
++  await withTimeout(fired, "control timeout");
++  check("timeout control after collection",
++    controlRef.deref() === controlCallback && control.calls === 1 && state.fired === 0,
++    `identity=${controlRef.deref() === controlCallback} calls=${control.calls} fired=${state.fired}`);
++}
++
+ // The live document must remain usable after collections. This does not prove graph
+@@ -350,2 +389,3 @@ async function main() {
+   await checkInlineHandlerOwnership();
++  await checkTimerCallbackOwnership();
+   checkKept("retained nodes final");
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index e5e809045f3..50909bf16b4 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -266,6 +266,6 @@ fi
+ # hidden in test.html), so it gets its own process. The single-document scene preserves
+-# DOM/closure/handler/importer collection controls and module/eval/resolve behavior across GC.
++# DOM/closure/handler/importer/timer-callback collection controls and module/eval/resolve behavior across GC.
+ # The old removed-frame groups are archived, not claimed as passing under the new policy.
+ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc timeout callback pending retained true" "ROVES-V8 gc cancelled timeout callback collected true" "ROVES-V8 gc timeout control after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index f33737eb541..aa6ae95ca5b 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -638,3 +638,3 @@ def gc_page_script(name="gc-lifecycle.html"):
+ 
+-def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));'):
++def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));', node_args=()):
+     """Runs the page script in a Node vm context without TestUtils or a DOM, then `after`."""
+@@ -650,3 +650,3 @@ setTimeout(() => { ''' + after + ''' }, 200);
+ '''
+-    result = subprocess.run(['node', '-e', harness], input=script, capture_output=True,
++    result = subprocess.run(['node', *node_args, '-e', harness], input=script, capture_output=True,
+                             text=True, encoding='utf-8', timeout=30)
+@@ -753,2 +753,42 @@ process.stdout.write(lines.join("\n"));
+ 
++    # Runs only checkTimerCallbackOwnership() under Node's own V8 with --expose-gc. TestUtils.gc
++    # is mocked as a full collection in its own task, as in Servo. main() reports the missing
++    # API and returns before TestUtils is installed; its markers are ignored here.
++    TIMER_RUN = r'''
++context.TestUtils = { gc: () => new Promise(resolve => setTimeout(() => { gc(); resolve(); }, 0)) };
++vm.runInContext("checkTimerCallbackOwnership()", context)
++  .catch(error => lines.push("thrown " + error.name + " " + error.message))
++  // Exits explicitly: an uncancelled probe timer would otherwise keep Node running.
++  .finally(() => process.stdout.write(lines.filter(line => /timeout|thrown/.test(line)).join("\n"), () => process.exit(0)));
++'''
++
++    def run_timer_check(self, script):
++        return run_page_in_node(script, after=self.TIMER_RUN, node_args=('--expose-gc',))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_timer_callback_ownership(self):
++        result = self.run_timer_check(gc_page_script())
++        self.assertEqual('', result.stderr)
++        self.assertEqual(['ROVES-V8 gc timeout callback pending retained true',
++                          'ROVES-V8 gc cancelled timeout callback collected true',
++                          'ROVES-V8 gc timeout control after collection true'],
++                         result.stdout.splitlines())
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_timer_callback_ownership_catches_retention(self):
++        script = gc_page_script()
++        mutations = (
++            # The timer is never cancelled, so its callback stays reachable.
++            ('  clearTimeout(id);\n', ''),
++            # The fixture itself roots the probe callback.
++            ('const callback = () => { state.fired++; };',
++             'const callback = state.keep = () => { state.fired++; };'),
++        )
++        for original, replacement in mutations:
++            with self.subTest(original=original):
++                self.assertEqual(1, script.count(original))
++                result = self.run_timer_check(script.replace(original, replacement))
++                self.assertIn('ROVES-V8 gc cancelled timeout callback collected false 1/1 alive after 8 collections',
++                              result.stdout.splitlines(), result.stdout)
++
+     def test_main_runs_both_frame_groups(self):
+@@ -1501,2 +1541,5 @@ if page == 'gc-lifecycle.html':
+                      'window inline handlers after collection true',
++                     'timeout callback pending retained true',
++                     'cancelled timeout callback collected true',
++                     'timeout control after collection true',
+                      'retained nodes final true true true',

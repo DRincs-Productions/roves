@@ -636,7 +636,7 @@ def gc_page_script(name="gc-lifecycle.html"):
     return page.split('<script>', 1)[1].split('</script>', 1)[0]
 
 
-def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));'):
+def run_page_in_node(script, setup='', after='process.stdout.write(lines.join("\\n"));', node_args=()):
     """Runs the page script in a Node vm context without TestUtils or a DOM, then `after`."""
     harness = r'''
 const vm = require("vm");
@@ -648,7 +648,7 @@ try { vm.runInContext(require("fs").readFileSync(0, "utf8"), context); }
 catch (error) { lines.push("thrown " + error.name + " " + error.message); }
 setTimeout(() => { ''' + after + ''' }, 200);
 '''
-    result = subprocess.run(['node', '-e', harness], input=script, capture_output=True,
+    result = subprocess.run(['node', *node_args, '-e', harness], input=script, capture_output=True,
                             text=True, encoding='utf-8', timeout=30)
     return result
 
@@ -750,6 +750,46 @@ process.stdout.write(lines.join("\n"));
         results = [line for line in lines if line.startswith('ROVES-V8 gc result ')]
         self.assertEqual(['ROVES-V8 gc result fail TestUtils.gc unavailable; '
                           'exception ReferenceError Image is not defined'], results)
+
+    # Runs only checkTimerCallbackOwnership() under Node's own V8 with --expose-gc. TestUtils.gc
+    # is mocked as a full collection in its own task, as in Servo. main() reports the missing
+    # API and returns before TestUtils is installed; its markers are ignored here.
+    TIMER_RUN = r'''
+context.TestUtils = { gc: () => new Promise(resolve => setTimeout(() => { gc(); resolve(); }, 0)) };
+vm.runInContext("checkTimerCallbackOwnership()", context)
+  .catch(error => lines.push("thrown " + error.name + " " + error.message))
+  // Exits explicitly: an uncancelled probe timer would otherwise keep Node running.
+  .finally(() => process.stdout.write(lines.filter(line => /timeout|thrown/.test(line)).join("\n"), () => process.exit(0)));
+'''
+
+    def run_timer_check(self, script):
+        return run_page_in_node(script, after=self.TIMER_RUN, node_args=('--expose-gc',))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_timer_callback_ownership(self):
+        result = self.run_timer_check(gc_page_script())
+        self.assertEqual('', result.stderr)
+        self.assertEqual(['ROVES-V8 gc timeout callback pending retained true',
+                          'ROVES-V8 gc cancelled timeout callback collected true',
+                          'ROVES-V8 gc timeout control after collection true'],
+                         result.stdout.splitlines())
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_timer_callback_ownership_catches_retention(self):
+        script = gc_page_script()
+        mutations = (
+            # The timer is never cancelled, so its callback stays reachable.
+            ('  clearTimeout(id);\n', ''),
+            # The fixture itself roots the probe callback.
+            ('const callback = () => { state.fired++; };',
+             'const callback = state.keep = () => { state.fired++; };'),
+        )
+        for original, replacement in mutations:
+            with self.subTest(original=original):
+                self.assertEqual(1, script.count(original))
+                result = self.run_timer_check(script.replace(original, replacement))
+                self.assertIn('ROVES-V8 gc cancelled timeout callback collected false 1/1 alive after 8 collections',
+                              result.stdout.splitlines(), result.stdout)
 
     def test_main_runs_both_frame_groups(self):
         main = gc_page_script("legacy-multidocument/gc-lifecycle.html").split('async function main() {', 1)[1].split('\n}\n', 1)[0]
@@ -1499,6 +1539,9 @@ if page == 'gc-lifecycle.html':
                      'diagnostic inline handler nodes alive closure 0 compiled 0 uncompiled 0',
                      'inline handler control after collection true',
                      'window inline handlers after collection true',
+                     'timeout callback pending retained true',
+                     'cancelled timeout callback collected true',
+                     'timeout control after collection true',
                      'retained nodes final true true true',
                      'cleanup callback entry settings true',
                      # Retained frames, as in CI so far: diagnostic, not a failure.

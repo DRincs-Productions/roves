@@ -1,0 +1,37 @@
+{
+  "task": "0480-timeout-callback-ownership",
+  "date": "2026-11-05",
+  "scope": "Fixture logic only; this is not a Servo runtime or general leak measurement.",
+  "environment": {
+    "os": "Windows",
+    "node": "v23.3.0",
+    "v8": "12.9.202.28-node.11"
+  },
+  "checks": {
+    "runner_syntax": {
+      "command": "bash -n support/v8-smoke/run.sh",
+      "result": "passed"
+    },
+    "gc_page_tests": {
+      "command": "python -m unittest discover -s support/v8-smoke -p test_runner.py -k GcPageTests -v",
+      "passed": 7,
+      "failed": 0,
+      "skipped": 0,
+      "includes": [
+        "timeout callback remains reachable while pending",
+        "timeout callback is collected after clearTimeout",
+        "intentionally rooted callback remains callable",
+        "negative case without clearTimeout is detected",
+        "negative case with a retained callback root is detected"
+      ]
+    },
+    "full_runner_suite": {
+      "command": "python -m unittest discover -s support/v8-smoke -p test_runner.py -v",
+      "passed": 52,
+      "failed": 0,
+      "skipped": 16,
+      "note": "All skips are shell integration cases requiring POSIX bash."
+    }
+  },
+  "servo_ci": "pending"
+}
