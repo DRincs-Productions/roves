@@ -391,11 +391,13 @@ resta una modifica dell'utente e non va incluso.
   assenza di leak.
 - **Policy della finestra:** la smoke single-document controlla reload,
   assegnazioni, link sintetici, iframe e route History/hash senza perdere il
-  documento; il runner richiede ora un warning per reload, navigazione e iframe
-  (0459, smoke CI verde su Linux/Windows normal/JITless). Restano il clic nativo reale con apertura nel browser di sistema,
-  il notice desktop e la chiusura dalla finestra reale con fetch pendente; non
-  controllare il desktop in questo flusso: le prove manuali sono assegnate all'altro flusso
-  di test dell'utente.
+  documento; il runner richiede warning per reload, navigazione e iframe
+  (0459, smoke CI verde su Linux/Windows normal/JITless). I test Windows reali hanno
+  verificato link esterni dopo clic utente, blocco delle richieste automatiche e notice
+  discreto di sviluppo. La chiusura OS durante un fetch statico pendente è coperta dalla
+  prova 0464 e dal passo `127130558418` della release CI `41993343240`; non rimane un
+  blocco noto della policy nel perimetro del documento unico. Gli usi non standard dei link
+  restano un approfondimento non bloccante nel TODO.
 - **Pausa statica:** 0457 cede durante fetch di rete; 0458 cede fra sorgenti già
   pronte. La CI V8 ha compilato e superato smoke normal/JITless Linux/Windows.
   Compilazione della singola sorgente, risoluzione e link completo restano sincroni.

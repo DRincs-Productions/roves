@@ -19197,6 +19197,8 @@ apt was downloading system multimedia dependencies. Increase the release bootstr
 passed. Final release run `41993343336` passed both macOS runtime tests and all six Windows,
 macOS and Linux plain/Steam bundle jobs. The release page has all six expected assets. The tag's
 V8 check (`41993343240`) and Deno single-document probe (`41993343364`) also passed.
+The V8 run's Windows normal servoshell job `127130558418` passed the strengthened 0464 smoke
+that holds the static module response until the shell process exits.
 
 Synchronize consumers after publication: `roves-action` pins source checkout and prebuilt asset
 to `v0.7.15` in commit `0d96531`; `roves-packmaster` updates its shared shell-version file and
