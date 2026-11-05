@@ -19186,3 +19186,21 @@ V8 `41910791033`, Android `41910791013` and iOS `41910791011` are in progress. T
 is `v0.7.14`; the next planned tag is `v0.7.15`, pending green non-macOS CI. The macOS JITless
 cancellation in run `41886424033` is deferred under this updated policy. Do not describe it as a
 code failure or re-enable it on ordinary pushes.
+
+
+## 2026-11-05 - Publish v0.7.15 with release-only macOS V8 checks
+
+The first `v0.7.15` release run `41921646062` passed both macOS runtime modes and published the
+macOS plain/Steam bundles, but Linux Steam `mach bootstrap` exceeded its 15-minute timeout while
+apt was downloading system multimedia dependencies. Increase the release bootstrap timeout to
+45 minutes, remove the incomplete tag and republish at `4f7ff3ad6c8` after the main-branch CI
+passed. Final release run `41993343336` passed both macOS runtime tests and all six Windows,
+macOS and Linux plain/Steam bundle jobs. The release page has all six expected assets. The tag's
+V8 check (`41993343240`) and Deno single-document probe (`41993343364`) also passed.
+
+Synchronize consumers after publication: `roves-action` pins source checkout and prebuilt asset
+to `v0.7.15` in commit `0d96531`; `roves-packmaster` updates its shared shell-version file and
+README in commit `099f6f6`. Their CI runs `42014335639` and `42014343610` are respectively in
+progress and queued. The separate Servo source test workflow's Linux `.deb` job failed on its
+first attempt; its logs were unavailable through the GitHub plugin and attempt 2 is running. This
+does not change the successful tagged release or its six verified assets.

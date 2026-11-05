@@ -2,23 +2,28 @@
 
 ## Punto operativo aggiornato — 5 novembre 2026
 
-### Release `v0.7.15` — test macOS verdi, retry necessario per Linux Steam
+### Release `v0.7.15` — completata e verificata
 
 L'utente ha chiarito che nessuna verifica V8 macOS va eseguita a ogni commit, nemmeno JITless.
 Il commit `a985c8b7092` esclude tutte le combinazioni macOS da `.github/workflows/v8.yml`; il
 workflow versionato aggiunge runtime normal e JITless come prerequisiti prima dei bundle macOS
-plain/Steam. Il tag `v0.7.15` è stato creato sul commit `8e609737488` dopo il batch Linux/Windows
-V8 e Android verde.
+plain/Steam. Il tag finale `v0.7.15` punta al commit `4f7ff3ad6c8`, dopo il batch per-commit
+Linux/Windows V8 e Android verde.
 
-Nel rilascio `41921646062` entrambi i test runtime macOS sono verdi e i bundle macOS plain/Steam,
-Linux plain e Windows plain/Steam sono stati caricati. Il bundle Linux Steam è fallito perché
-`mach bootstrap` ha superato il timeout di 15 minuti mentre apt scaricava pacchetti; nessun errore
-di compilazione è stato raggiunto. Sono presenti cinque asset nella release incompleta. La patch
-locale aumenta il timeout del bootstrap a 45 minuti; va pubblicata, poi va ritentato il tag secondo
-la procedura di `AGENTS.md`. Il workflow `test.yml` ha inoltre cancellato in coda due job macOS
-senza assegnare runner; la release workflow invece ha eseguito e superato i test e i bundle macOS.
-Non dichiarare completato il rilascio finché il bundle Linux Steam e tutti e sei gli asset non
-sono verificati. Dopo il successo sincronizzare i pin consumer come descritto in `AGENTS.md`.
+Il primo tentativo `41921646062` ha superato i due test runtime macOS e compilato i bundle macOS,
+ma il bootstrap Linux Steam ha raggiunto il timeout di 15 minuti durante i download apt. Portato
+il limite del bootstrap release a 45 minuti in `4f7ff3ad6c8`, è stato ripubblicato il tag.
+Il rilascio finale `41993343336` è verde: test runtime macOS normal e JITless e tutti i sei
+bundle Windows/macOS/Linux, plain e Steam, sono riusciti. La pagina release contiene i sei asset
+attesi. Anche il V8 per il tag (`41993343240`) e la probe Deno (`41993343364`) sono verdi.
+
+I pin consumer sono aggiornati: `roves-action` commit `0d96531` e `roves-packmaster` commit
+`099f6f6`, entrambi su main. Le verifiche consumer `42014335639` (action) e `42014343610`
+(Packmaster) sono rispettivamente in corso e in coda al checkpoint. Il workflow distinto di test
+dei sorgenti Servo `41993343293` ha fallito il job Linux `.deb` al primo tentativo; la lettura dei
+log tramite plugin ha restituito 404 e il retry del job è in corso (attempt 2). Questo non ha
+impedito il rilascio; non confondere la prova di bundle sorgente con i test V8/macOS e con i sei
+bundle reali del tag.
 
 ### Correzione diagnostica memoria (task 0467) — pubblicata, CI terminale
 
