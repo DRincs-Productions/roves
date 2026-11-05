@@ -1,5 +1,5 @@
 //! Isolated deno_core 0.413.0 feasibility probe for the single-document runtime
-//! (docs/handoff/0380-single-document-runtime.md).
+//! (docs/V8_MIGRATION.md).
 //!
 //! One document means one `JsRuntime` and its main realm: no additional realms, frames or
 //! WindowProxy reuse are modelled. Every scenario builds its own runtime with an in-memory

@@ -122,7 +122,7 @@ Do not label the three user-visible migration topics complete yet.
 
 Still needed: compile/tests normal and JITless, Linux/Windows browser smoke, all
 module security/error/ordering and TLA regressions, shutdown/cancellation, fresh CI
-replay of the Servo patches, current handoff/wiki/README, and a real-game observation
+replay of the Servo patches, docs/V8_MIGRATION.md/wiki/README, and a real-game observation
 after the change. The upstream cached-TLA fix issue/PR is separate; no public
 upstream issue/PR has been created for this new API.
 
@@ -750,7 +750,7 @@ locks are validated; Windows native110normal/109JITless and Python59/8skip pass.
 replays81source paths on Windows and WSL after the reconstructed prior series; root
 metadata exceptions remain explicit. Full pristine replay and browser behavior await CI.
 
-Rewrite the current handoff and README/wiki to remove superseded no-go/no-op statuses.
+Rewrite docs/V8_MIGRATION.md and README/wiki to remove superseded no-go/no-op statuses.
 The code is a complete integration candidate, not a validated browser migration or a
 retention fix. SourceText, performance, visual notice and controlled OS handoff remain
 explicit verification work. Preserve the user's unrelated TODO line while adding only
@@ -1004,18 +1004,18 @@ Current rusty_v8 backend and complete independent shell changes remain; no adopt
 The user selected option1: static graph fetch/instantiation may pause ScriptThread input
 and timers, while dynamic imports remain asynchronous. Preserve HTML evaluation/TLA timing;
 no unsafe runtime reentry, private Deno graph or permanent duplicate service. Update AGENTS,
-workflow and0385/current handoffs to unblock implementation rather than ask again. The
+workflow and docs/V8_MIGRATION.md to unblock implementation rather than ask again. The
 production port remains unverified/in progress. README/wiki record the accepted limitation;
 patch0392 reproduces the process/design change. No public game API or dependency changes
 are claimed by this documentation commit.
 
 ## 2026-10-27 - Record the reviewed production Deno module-loading gap (0385)
 
-Add durable docs/handoff/0385-deno-production-integration.md distinguishing green isolated
-class/async CI from an unimplemented production cutover. Document exclusive load futures,
+Add durable migration documentation distinguishing green isolated class/async CI from an
+unimplemented production cutover. Document exclusive load futures,
 HTML/TLA counterexamples, exact public V8 header evidence and the pending user choice on
 static-load pauses. No production dependency, unsafe workaround, fork or duplicate graph.
-Update current handoff/README/wiki; patch0391 reproduces the new durable design evidence.
+Update docs/V8_MIGRATION.md/README/wiki; patch0391 reproduces the new durable design evidence.
 Previous shell changes pass syntax, existing SDL3 contracts and five-file replay comparison;
 actual browser/visual coverage remains pending. No active Claude task or scheduled retry.
 
@@ -1194,8 +1194,8 @@ remain open. Patch0377; previous0376 quota checkpoint remains historical.
 
 No source implementation started for0376. Interactive /usage confirms session reset14:00
 Europe/Rome and a single retry14:02; the completed earlier retry was deleted. Preserve the
-named-deletion task in docs/handoff/0376-named-delete-resume.md and the authoritative migration
-handoff. Completed0375 stays local pending the previous CI batch; no incomplete source is
+named-deletion task in the authoritative migration record. Completed0375 stays local pending
+the previous CI batch; no incomplete source is
 published. Patch0376 contains only the durable resume document, not a runtime fix.
 
 ## 2026-10-27 - Avoid overlap between indexed and numeric named DOM keys (0375)
@@ -1290,16 +1290,17 @@ normalization. Full-series/build authority remains CI. No runtime change.
 One focused normal and one JITless test pass. Ordinary V8 expandos/accessors keep
 foreign receivers and avoid setter re-entry; exact key ordering still differs from
 Roves Proxy and the live Chrome Document reference. This is a standalone proof,
-not a production backend. Reproducible diff and MCP observations are in docs/handoff;
-tests.rs restored. Patch0367 adds only the proof documentation and experimental diff.
+not a production backend. The reproducible diff is in patch0367 and MCP observations are in
+the migration history; tests.rs restored. Patch0367 adds only proof documentation and an
+experimental diff.
 
 ## 2026-10-26 - Reject the uncompiled API-object compatibility adapter (0366)
 
 The native compile gate exposed a missing public receiver API; replacing it with the
 holder would change accessor semantics. Unordered own-key comparisons were rejected.
 The incomplete five-file prototype is saved outside publishable sources, which were
-restored. No runtime change. docs/handoff/0366-api-backend-blockers.md records the
-failure and next ordinary-V8-property proof; source-text compatibility remains open.
+restored. No runtime change. The migration record documents the failure and next
+ordinary-V8-property proof; source-text compatibility remains open.
 Patch0366 contains documentation only. Required CI for3e25 is entirely green.
 
 ## 2026-10-26 - Verify the first public V8 API-object gate (0364/0365)
@@ -1309,7 +1310,8 @@ and real API objects used as context extensions preserve bare-call receivers, wr
 text, identity and scope lifetime. No production route changes. A fixture initially reserved
 an uninitialized ClassBox field and aborted; the generic V8 fixture now has no internal fields,
 explicitly leaving actual ClassBox/ProxyTraps integration for the next gate. Verified proof and
-design are saved under docs/handoff, tests.rs restored to HEAD to avoid unused prototype code.
+design are preserved in patches0364/0365 and the migration history; tests.rs restored to HEAD
+to avoid unused prototype code.
 The named-only extensibility behavior still differs from the Chrome Document reference.
 Patches0364/0365 replay documentation and the standalone experimental diff, not runtime code.
 
@@ -1332,8 +1334,8 @@ interceptor signatures are an unverified compile gate. Expectations and risks:
 
 ## 2026-10-26 - Design: real DOM reflectors as V8 API objects with interceptors (0364)
 
-Design only, no code or test change. `docs/handoff/0364-real-dom-api-reflector-design.md`
-proposes keeping eligible DOM proxies' existing target (API object with ClassBox) as their V8
+Design only, no code or test change. The migration record notes the proposal to keep eligible
+DOM proxies' existing target (API object with ClassBox) as their V8
 value, with named/indexed interceptors delegating to the unchanged ProxyTraps, so scope-chain
 objects are the real reflectors. JSAPI proxy accessors already read the ClassBox and stay
 compatible. Open risks: no V8 hook for [[PreventExtensions]], unverified rusty_v8 interceptor
@@ -1344,7 +1346,7 @@ APIs, expando creation path. Next step is a bounded roves-js proof (0365); no cl
 Normal and JITless focused tests pass on V8 152. An ordinary API object with named interceptors
 is accepted by CompileFunction and matches source text and property operations, but bare
 method calls receive the facade instead of the actual DOM scope object. No production change
-is adopted. The verified experimental diff is saved under docs/handoff for reproduction;
+is adopted. Patch0363 retains the verified experimental diff for reproduction;
 tests.rs is restored to HEAD, avoiding unused prototype code in the runtime. Documentation
 patch0363 records this evidence and the next bounded design step. Existing V8 APIs are reused,
 no new dependency. The0361 HTML source-text gap stays open; no behavior/performance claim.
@@ -1698,8 +1700,8 @@ or performance claim.
 
 ## 2026-10-25 - Traced inline event handler storage design (0354, documentation only)
 
-Design-only handoff `docs/handoff/0354-inline-handler-ownership.md`: store compiled inline
-handlers as a kind tag plus the 0353 traced callback/incumbent record (generalized to
+Design-only note: store compiled inline handlers as a kind tag plus the 0353 traced
+callback/incumbent record (generalized to
 `TracedCallback`) instead of rooted `CommonEventHandler` `Rc`s, rebuilding the rooted handler
 per getter/dispatch through `CallbackContainer::new_with_incumbent`. No source changed, no
 patch needed; retention not claimed fixed.
@@ -1785,8 +1787,8 @@ smokes. No `mach build`/`mach bundle` flag and no `test.yml` behavior changed, s
 
 ## 2026-10-25 - Traced DOM event listener storage design (0352, documentation only)
 
-Design-only handoff `docs/handoff/0352-event-listener-design.md`: replace the rooted
-`Rc<EventListener>` kept by `EventTarget` and `AbortSignal` with traced callback/incumbent
+Design-only note: replace the rooted `Rc<EventListener>` kept by `EventTarget` and
+`AbortSignal` with traced callback/incumbent
 records, rebuild rooted listeners per dispatch through a generated
 `CallbackContainer::new_with_incumbent`, and root the dispatch snapshot with
 `RootedTraceableBox`. No source changed, no patch needed; retention not claimed fixed.
@@ -2756,8 +2758,8 @@ removed temporary docs/CLAUDE_RESUME.md at the user's request. Restored Codex di
 review and Claude implementation. Reviewed the current CI: general/Android/iOS pass;
 normal/JITless Linux smoke fail because gc-lifecycle.html calls undefined main after0314.
 
-Delegated task0315 hit the actual Claude session limit before checks/replay. Saved the
-incomplete diff and continuation instructions under docs/handoff, restored production
+Delegated task0315 hit the actual Claude session limit before checks/replay. Retained the
+incomplete patch artifact, restored production
 sources, and stopped without automatic quota retries. Reset reported18:40 Europe/Rome.
 No production source or numbered patch change; no claim that the GC smoke or overall
 retention is fixed. This documentation checkpoint remains local until the complete fix
@@ -18974,8 +18976,8 @@ and all nine edited source files were restored to complete HEAD196ee7a5faa. No p
 
 ## 2026-10-22 - Portable Claude resume handoff
 
-Added docs/CLAUDE_RESUME.md and versioned docs/handoff design/instructions/incomplete0281
-patch so the next Claude session does not require chat history or ignored target artifacts.
+Added docs/CLAUDE_RESUME.md and versioned migration history/patch artifacts so the next Claude
+session did not require chat history or ignored target artifacts.
 The WIP is not applied to production and is outside CI patches. Documented actualSteam
 bootstrap timeout and explicit user-requested checkpoint push without claiming fullCIgreen.
 

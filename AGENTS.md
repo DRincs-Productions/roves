@@ -2,7 +2,7 @@
 
 L'utente rinvia SourceText0361 e il preload JSON al TODO, escludendoli dai criteri di
 completamento della migrazione V8. Non riprenderne lo sviluppo nel loop della migrazione.
-Conservare evidenze e vincoli nel TODO e nel handoff0361; non dichiararli implementati.
+Conservare evidenze e vincoli nel TODO; l'handoff0361 e stato rimosso su richiesta il5novembre2026.
 Gli import JSON ordinari e gli handler continuano a funzionare. La policy temporanea
 modulepreload JSON resta valida. Finire gli altri punti pertinenti e verificabili.
 

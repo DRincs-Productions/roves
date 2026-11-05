@@ -889,7 +889,7 @@ La ricerca ha riprodotto con deno_core0.413 puro import() risolto PRIMA del TLA 
 ChromeMCP mantiene pending e risolve solo dopo release. Candidato viaimportDeno pubblico
 passava116normal/115JITless ma fallisce sui DISCENDENTI: rifiutato e salvato FUORI dai
 sorgenti pubblicabili, deno_impl ripristinato esattamente a de071. Non ripubblicare il WIP.
-Handoff dettagliato docs/handoff/0424-static-tla-cached-import.md e log target/task-0424.
+Handoff dettagliato 0424 archiviato e log target/task-0424.
 Questo e un requisito ancora aperto, NON coperto dalla CI verde e non deviazione autorizzata.
 Prossimo studio: fix mantenuto del fast path async, senza fork/registry modificato in
 produzione. Un esperimento separato puo validare una proposta, senza adottarla implicitamente.
@@ -950,7 +950,7 @@ Quota verificata alla chiusura di questo intervento96%usata/4%rimanente, settima
 reset invariato08:40:48 e tentativo unico08:42:48 gia attivo, non crearne un secondo.
 Analisi0422 distingue gli handler SourceText0361 dai moduli Deno: percorsoCompileFunction
 ancora invariato; facade0363 gia provata ma receivererrato, nessun nuovo fix di produzione.
-Aggiornato docs/handoff/0361-source-text-gap.md per evitare uso di vecchi blocchi disco/CI.
+Aggiornato il TODO SourceText con evidenze e vincoli, senza i vecchi blocchi disco/CI.
 Alla ripresa verificare prima CI21check/quote, poi prossima prova concreta; non ripetere
 studi/prove negativi senza un nuovo candidato mantenuto. TODO utente ancora unica modifica
 esterna ai commit. Nessun Claude. Nessuna nuova run e stata avviata durante questo turno.
@@ -1299,7 +1299,7 @@ non vanno segnate verdi o eseguite per finta. Nessun polling continuo; resta aut
 
 ### Implementazione0374 — HTMLDocument aliasstandard, rimosso codiceinutilizzato
 
-[Alias0374](handoff/0374-html-document-alias.md): LegacyWindowAlias sulDocumentvero,
+Alias0374 (nota V8 archiviata): LegacyWindowAlias sulDocumentvero,
 riusando generatore/runtime giàusati daDOMMatrix. Rimossi sottoclasseRustHTMLDocument,
 IDLseparata, moddeclarationeconfigobsolete. Nessunfactorynuovo odipendenza/cache.
 DoctypeIsHTMLDocument eCreateHTMLDocument invariati. 9testgeneratorerealiverdi Win/Linux;
@@ -1316,7 +1316,7 @@ Restano sourceText0361,numericdup,define/delete e retentionglobale: non dichiara
 
 ### Batchlocale0372/0373 — chiavi visibili e correzioneDocument reale
 
-[Handoff0372/0373](handoff/0372-0373-visible-named-keys.md): ownKeys filtra nomi
+Handoff0372/0373 (nota V8 archiviata): ownKeys filtra nomi
 nascosti da prototype/own/unforgeable, rispettando corto circuito e rientranza; nullproto
 noncausa piùpanic. FlagdaIDL, nessunbackend/cache/dipendenzanuova. Nonoverride usaVec
 transitorio e seconda conversione pernomisopravvissuti; nessunrisparmioCPU promesso.
@@ -1336,7 +1336,7 @@ sourceText0361 e retentionglobale restanoaperti. ChromeMCP indisponibile, nessun
 
 ### Implementazione0371 — nomi DOM senza CString e pin permanente, completa locale
 
-[Fix0371](handoff/0371-supported-name-string-ids.md): conversioneDOMString esistente
+Fix0371 (nota V8 archiviata): conversioneDOMString esistente
 più JS_StringToId standard, shimV8 tramitekey_id giàpresente. Rimuove panicNUL e pin
 incondizionato dei nomi enumerati, preserva unitàstringa eordine. Wrapper rigenerato
 con generatoreufficiale e liste realimozjs. Staticcross-originatoms invariati.
@@ -1353,7 +1353,7 @@ verdi, browserV8 e buildgenerali ancoraattivi. Niente push di0371 finché richie
 
 ### Implementazione0370 — letture LegacyOverrideBuiltIns complete localmente
 
-[Fix0370](handoff/0370-legacy-override-read-visibility.md): get/GOPD/hasOwn usano
+Fix0370 (nota V8 archiviata): get/GOPD/hasOwn usano
 l'attributo del parser WebIDL, senza nomi classe a runtime. HTMLDocument e dataset
 leggono il nome supportato prima del prototype, dopo indexed e own/unforgeable.
 7 test parser/generatore verdi suWindows eLinux; runner42 verdi(8skipPOSIX).
@@ -1368,7 +1368,7 @@ conclusi; pronto al push. Mappa0368 revisionata nel commitlocale c7152ae07d1.
 
 ### Ripresa 27 ottobre — revisione 0368 conclusa, CI del fix verde
 
-Claude disponibile al tentativo di ripresa: [mappa0368](handoff/0368-native-dom-hook-map.md)
+Claude disponibile al tentativo di ripresa: mappa0368 (nota V8 archiviata)
 corretta e revisionata. HTMLDocument dichiara LegacyOverrideBuiltIns; il generatore ignora
 ancora l'attributo nelle letture. Le ipotesi su Form/Select e sull'ordine delle chiavi V8
 restano provvisorie, senza dichiarazioni di impossibilità generale o backend già compatibile.
@@ -1413,7 +1413,7 @@ e fermarsi senza concatenare altri tentativi.
 
 Generale40397621958: validatepatches121834747087 rossa, build saltate (non superate).
 Causa:0361 creava un nome con backslash suLinux,0363 cercava il percorso con slash.
-[Fix0369](handoff/0369-linux-patch-path-fix.md): dueheader corretti daClaude;
+Fix0369 (nota V8 archiviata): dueheader corretti daClaude;
 negativa riprodotta, replayLinux0361–0367verde,10/10 fileidentici normalizzandoLF.
 Android40397621986verde3/3; Apple esclusa. Correzione pronta per prossimo push,
 nessunaltro jobnonApple attivo nelbatch. Non dichiarareverificatelebuildsaltate.
@@ -1422,7 +1422,7 @@ baseconHTMLDocument. NessunroutingV8adottato;0361compatibilitàsourceTextrestaap
 
 ### Checkpoint0367 — proprietà ordinarie provate normal/JITless
 
-[Prova0367](handoff/0367-ordinary-properties-proof.md):1normal/1JITless verdi.
+Prova0367 (nota V8 archiviata):1normal/1JITless verdi.
 Accessor/receiver esterni sono corretti senza simulazione; ordine esatto generico
 `5,x,acc,Symbol(s),named` diverso dal Proxy attuale e dal riferimento DocumentChrome.
 ChromeDevToolsMCP155 visibile: misurate Document/form/select reali in iframe;
@@ -1434,7 +1434,7 @@ Android40397621986, iOS40397621971 esclusa. V8non riavviata (nessuna modifica ru
 
 ### Checkpoint0366 — backend respinto, sorgenti ripristinati
 
-[Diagnosi0366](handoff/0366-api-backend-blockers.md): il compile conferma che manca
+Diagnosi0366 (nota V8 archiviata): il compile conferma che manca
 il receiver nell’API pubblica V8; usare holder altererebbe gli accessor con receiver
 esterno. Respinto anche il confronto delle chiavi come insiemi. WIP salvato in
 target/task-0366/incomplete-api-backend.patch, cinque sorgenti ripristinati aHEAD.
@@ -1458,8 +1458,8 @@ senza overrideglobale/parserprivato. Claude implementa una prova circoscritta, C
 
 ### Checkpoint0364/0365 — design e primo gate verificati, runtime invariato
 
-[Design0364](handoff/0364-real-dom-api-reflector-design.md) pronto come mappa, non implementato.
-[Prova0365](handoff/0365-api-reflector-proof.md):2normal/2JITless verdi. V8rifiutagiàpreventExtensions
+Design0364 (nota V8 archiviata) pronto come mappa, non implementato.
+Prova0365 (nota V8 archiviata):2normal/2JITless verdi. V8rifiutagiàpreventExtensions
 coninterceptor; oggetti REALI comecatena(scope) preservanothis/sourceText/GC. DifferenzaChromeDoc
 named-onlyancoradistinta. Fixturecorretta dopoabort:0internalfields perchéClassBoxnoninizializzato
 fuori perimetro; nientecambioproduzionepernasconderlo. Logtarget/task-0365/. Prototiposalvatoin
@@ -1488,7 +1488,7 @@ Gate0: firme indexed non verificate. Ripresa Codex: compilare, test normale/JITl
 
 ### Claude0364 — design reflector DOM come API object (da revisionare, nessun codice)
 
-Solo documentazione: [design0364](handoff/0364-real-dom-api-reflector-design.md). Per i proxy
+Solo documentazione: design0364 (nota V8 archiviata). Per i proxy
 DOM eleggibili (famiglia DOM, prototipo non lazy, nessun trap prototype/call/construct; routing
 codegen per interfacce Node) il valore V8 diventa il target API object già esistente, con
 interceptor named/indexed che chiamano gli stessi ProxyTraps; `GetProxyHandler`/private/slot/
@@ -1505,7 +1505,7 @@ generare (Codex). README/wiki invariati.
 Testmirato1normal/1JITless verdi suAPIpubblicheV8; dati/logtarget/task-0363/. Firma setter
 corretta inrevisione. SourceText/lookup/scritture/delete/unscopables/GC funzionano, ma chiamata
 nonqualificata ricevefacade inveceoggettoDOMreale: regressione nonaccettabile. Nessunfixproduzione.
-Diff verificato e diagnosi in[prova0363](handoff/0363-scope-facade-proof.md); tests.rs ripristinatoaHEAD,
+Diff verificato e diagnosi inprova0363 (nota V8 archiviata); tests.rs ripristinatoaHEAD,
 nessunprototipoinutilizzato nei sorgentipubblicabili.0361ancoraaperta. Passosuccessivo0364:
 designlimitato reflectorDOMreali APIobject+interceptor, riusandohookesistenti, senzaWindowProxy.
 C:~0.86GiB, riusareworkspaceisolati, niente nuovecache/buildpesantilocali.
@@ -1535,7 +1535,7 @@ Ripresa Codex: test normale e JITless di `scripts`, poi patch0363.
 ### Checkpoint0361 — diagnosi salvata, blocchi reali disco e runner
 
 0357–0360 restano completi locali, nessunpush.0361 è diagnosi della lacunaHTMLsourceText:
-[handoffdurabile](handoff/0361-source-text-gap.md) con stringhe osservate/specprimaria e
+handoffdurabile (nota V8 archiviata) con stringhe osservate/specprimaria e
 prossimopasso APIpubblicaV8. TestWIPsalvati intarget/task-0361/incomplete-source-text-tests.patch
 (SHA256167cf52d7c3a555c6a1f10b5bb7d143e0d33c1b58ffd027dbbae149f67e4ff86), tests.rs
 ripristinatoaHEAD. Nessuntestfallenteignorato nei sorgentipubblicabili. Patch0361 è SOLIdocumentazione.
@@ -1788,13 +1788,13 @@ handler inline (closure, attributo compilato, controllo mai compilato) + control
 (nodo tenuto, window onerror/onbeforeunload); run.sh 3 marker, fake `gc-inline`. Nessuna
 verifica eseguita localmente (solo Read/Edit): runner, patch0355 e replay a Codex; compilazione
 e GC solo in CI; il negativo GC pre-fix è un atteso. Retention frame complessiva APERTA.
-Dettagli e percorsi patch in `docs/handoff/0355-inline-handler-ownership.md` e
+Dettagli storici nel record 0355 e percorsi patch in
 `target/task-0355/RESULTS.md`.
 
 ### Claude0354 — design ownership handler inline (da revisionare, nessun codice)
 
 Base31036a74536 (0353 locale), batch0351 ancora attivo: nessun push. Design in
-`docs/handoff/0354-inline-handler-ownership.md`: `InlineEventListener::Compiled` passa da
+nota storica 0354: `InlineEventListener::Compiled` passa da
 `CommonEventHandler` (Rc radicate) a `TracedInlineHandler` = tag di tipo + record0353
 generalizzato (`TracedEventListener` → `TracedCallback`, metodi generici su
 `CallbackContainer::new_with_incumbent`); `CommonEventHandler` resta transitorio per getter e
@@ -1850,7 +1850,7 @@ Dettagli in `target/task-0353/RESULTS.md`.
 ### Claude0352 — design storage tracciato dei listener DOM (da revisionare, nessun codice)
 
 Base pubblicata9f62b30b1e8 (0351); CI del push in corso, gestita da Codex. Design in
-`docs/handoff/0352-event-listener-design.md`: `EventListenerType::Additive` e
+nota storica 0352: `EventListenerType::Additive` e
 `RemovableDomEventListener` passano da `Rc<EventListener>` (radice permanente
 `CallbackObject::root`) a record tracciati `Box<Heap<*mut JSObject>>` (+ incumbent `Dom` per
 il target); al dispatch la `Rc` radicata è ricostruita con il nuovo
@@ -1911,7 +1911,7 @@ pre0349 fallisce inentrambimodi. Nessuncambio produzione o fullsuiteimmutata rip
 Patch0350 dryrun/apply,480/483 identiciLF con3eccezioninote; scratchora0350.
 Logtarget/task-0350/. Commitlocale completo consentito, pubblicazionevietatafinchébatchattivo.
 
-Prossimo incarico dopo fix0351: [ownership listenerDOM](handoff/0351-traced-event-listener-ownership.md),
+Prossimo incarico dopo fix0351: ownership listenerDOM (nota V8 archiviata),
 piano soltanto. Punti giàstudiati: factoryCallbackContainer nelcodegen devepreservare incumbent
 originale, storageAbortSignal possiede un’ulterioreRc; proteggeremetadata durante ricostruzione/
 dispatch. Niente conteggiRcmanuali, collettoriRustpropri o rimozioneindiscriminataroot.
@@ -2025,7 +2025,7 @@ dal tentativo22:42 richiesto dalla regola5ore dal blocco.
 Batchaa028313991 completato TUTTO VERDE: V84020862053610/10, generale4020862053813/13,
 Android40208620533, iOS40208620526. Diagnosi0342–0346 committate; ultimo commit prima di
 questo handoff7940989387f. Prossimo incarico completo e durevole:
-[0347: scarto task pipeline chiuse](handoff/0347-discarded-pipeline-tasks.md).
+0347: scarto task pipeline chiuse (nota V8 archiviata).
 Sorgenti invariati dalle0341; patch0342–0346 inesistenti perché sola diagnosi.
 Non rieseguire snapshot/query già acquisite senza nuova domanda. FixPerformanceTask è
 separato dal successivo cleanup FontFaceSet/callback: retentionframe ancora irrisolta.
@@ -2675,7 +2675,7 @@ GC fallisce con ReferenceError: main is not defined. I restanti job passano. Cor
 mirata0315 delegata: la prima invocazione si era fermata per quota; il tentativo delle18:45
 è riuscito. Claude ha consegnato, Codex ha revisionato diff ed evidenze senza ripetere test
 identici. Il ricontrollo one-shot riprendi-claude-alle-18-45 è stato eliminato dopo il tentativo.
-La bozza e le vecchie istruzioni sotto docs/handoff sono soltanto archivio storico, non WIP.
+I vecchi WIP 0281 sono rimossi dal checkout; i patch artifact restano per il replay storico.
 
 **0315 completo e revisionato (ripresa18:45, Claude), in questo checkpoint di pubblicazione:** main() ripristinato
 identico al pre-0314, diagnostica0314 e check cleanup entry settings invariati, marker run.sh
@@ -3107,7 +3107,8 @@ Questa è un'eccezione esplicita per il checkpoint, non un cambio delle regole C
 **0281 completata da Codex — stato corrente22ottobre:** l'utente ha corretto la quota Codex
 (97% residuo) e chiesto implementazione diretta senza Claude. Nessuna nuova invocazione Claude.
 HEAD pubblicato1094b88f051/wiki9fbd176,0279/0280 già pubblicate;0281 completa localmente.
-Il vecchio WIP versionato sotto docs/handoff resta archivio storico, NON va riapplicato.
+Il vecchio WIP 0281 è rimosso dal checkout; il relativo patch artifact resta archivio storico e
+NON va riapplicato.
 RealmData è cppgc: context→holder→RealmData→context è un ciclo tracciato; registro debole,
 radici esplicite current/saved, RealmSwitch RAII per callback, snapshot forte in iterazione.
 Principal condiviso azzerato e rilasciato esattamente una volta a finalizzazione o shutdown.
@@ -3126,7 +3127,7 @@ CI su1094b88f051: Android39842644914 e iOS39842644717 verdi; generale39842644716
 V839842644668 ancora in corso. Nessun altro push prima della conclusione del batch.
 
 **Handoff storico:** il file temporaneo di ripresa è stato rimosso il23ottobre; usare lo stato corrente in cima.
-Design, istruzioni e WIP0281 sono ora versionati sotto docs/handoff/, non soltanto target/.
+Le prove WIP0281 restano nella cronologia Git e nei patch artifact; non costituiscono handoff attivi.
 0279/0280 complete nei commit45d88a513e7/196ee7a5faa;0281 resta fuori dai sorgenti.
 L'utente ha chiesto commit/push di salvataggio per continuare direttamente con Claude
 senza questa chat, dato il quasi esaurimento della quota settimanale Codex.

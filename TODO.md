@@ -248,15 +248,22 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 
 - [ ] A ogni aggiornamento Deno e prima del rilascio stabile, ricontrollare [issue37097](https://github.com/denoland/deno/issues/37097) e [PR37098](https://github.com/denoland/deno/pull/37098). Il vecchio repository deno_core e archiviato dopo la confluenza in denoland/deno; usare il repository attivo.
 - [ ] Quando una crate ufficiale contiene il fix (non basta che l'issue sia chiusa), verificarla senza patch con regressioni TLA radice/discendente, resolve/reject, identita cache/eccezioni e fetch/esecuzione una volta, in normale e JITless.
-- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS/handoff. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
+- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS e docs/V8_MIGRATION.md. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
 
 ## Compatibilita HTML rinviata: SourceText
 
 - [ ] Correggere il testo restituito da Function.prototype.toString per handler HTML inline
   con scope DOM (0361), conservando lookup, receiver, nome, lunghezza e ciclo di vita.
   Il codice degli handler funziona; nessun gioco o libreria concretamente incompatibile
-  e stato identificato. Preferire API pubbliche mantenute V8; niente formatter, override
-  globale di toString o facade che cambia this. Evidenze: docs/handoff/0361-source-text-gap.md.
+  è stato identificato. Evidenza storica: in Chrome 155 su Windows, per un onclick con corpo
+  `this.rovesHits += 1;`, sourceText era `function onclick(event) {\nthis.rovesHits += 1;\n}`;
+  V8 `CompileFunction` senza scope produceva lo stesso testo, mentre con `scopeProxy` produceva
+  `function (event) {this.rovesHits += 1;\n}`. Il passo 3.9 dell'algoritmo HTML richiede il
+  testo esatto incluse le LF: è una lacuna di conformità ancora aperta. La prova 0363 ha mostrato
+  che la facade con interceptor cambia `this` per le chiamate nude e non è una soluzione.
+  Preferire API pubbliche mantenute V8 per handler wrappati, preservando lookup e receiver; niente
+  formatter, override globale di `toString`, layout V8 privato, parser ad hoc o facade che cambia
+  `this`.
 - **Scelta utente29ottobre2026:** lavoro non essenziale, fuori dai criteri di completamento
   della migrazione V8. Riprenderlo solo come compatibilita futura motivata.
 - **Anche il preload JSON e fuori dalla migrazione V8**, per scelta utente29ottobre2026:
