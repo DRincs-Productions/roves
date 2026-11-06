@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
 publish = false
-description = "Process-wide V8 setup for roves-js: flags, the foreground-task platform deno_core initializes V8 with, and the public V8 APIs rusty_v8 does not bind (see ../../docs/V8_MIGRATION.md)."
+description = "Process-wide V8 setup for roves-js: flags, the foreground-task platform deno_core initializes V8 with, and the public V8 APIs rusty_v8 does not bind (see the V8 migration notes in Git history)."
 build = "build.rs"
 
 [lib]
@@ -22,7 +22,7 @@ v8 = "=150.4.0"
 cc = "1.2"
 
 [features]
-# See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a first-class
+# See the V8 migration notes in Git history's "Console-oriented requirement: JIT-less" — a first-class
 # supported configuration from the start, not an afterthought bolted on before a console port.
 # Applies the "--jitless" V8 flag before platform/isolate creation; does not change which V8
 # binary is linked (rusty_v8's prebuilt archives support both modes in the same build).

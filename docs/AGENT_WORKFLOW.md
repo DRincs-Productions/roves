@@ -45,7 +45,7 @@ alle17:30 Europe/Rome, anche se il limite delle5ore scade prima. Promemoria unic
 al modello; l'orario autorizza un tentativo, non certifica che la quota settimanale sia
 ripristinata. Nessun nuovo tentativo automatico se resta limitato. Coordinare l'ownership
 prima di riprendere la delega. Nessuna automazione periodica. Prima di altre implementazioni
-consegnare il handoff dettagliato in docs/V8_MIGRATION.md chiesto dall'utente.
+aggiornare il punto pertinente in TODO.md.
 
 ### URL dei moduli inline: differenza provvisoria autorizzata (28 ottobre 2026)
 
@@ -180,7 +180,7 @@ deriva patch preesistente rilevata dal replay completo, mantenendo un solo Claud
 L'utente ha ripristinato Codex direzione/revisione e Claude implementazione via terminale.
 Un solo incarico Claude attivo, nessuna implementazione duplicata, nessun tetto numerico o
 contabilità ordinaria. L'eccezione Codex diretto del22ottobre è terminata. Handoff unico:
-docs/V8_MIGRATION.md; il file temporaneo CLAUDE_RESUME.md è stato rimosso su richiesta.
+TODO.md; il file temporaneo CLAUDE_RESUME.md è stato rimosso su richiesta.
 Il lavoro remoto di Claude è stato acquisito con fast-forward fino a8e4fb2e6cf4 (wiki b86bb38).
 La CI generale/Android/iOS è verde; V8 fallisce nei due smoke Linux con main non definita
 in gc-lifecycle.html. Correzione mirata delegata; pubblicare dopo revisione e batch concluso. La prima invocazione0315 si è

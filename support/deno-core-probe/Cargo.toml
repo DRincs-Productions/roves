@@ -1,5 +1,5 @@
 # Isolated deno_core feasibility probe for the single-document runtime
-# (docs/V8_MIGRATION.md). Not part of the Roves workspace and not a
+# (the V8 migration notes in Git history). Not part of the Roves workspace and not a
 # production dependency: nothing in the engine depends on this crate.
 #
 # deno_core (MIT, maintained by the Deno authors) keeps its default features on purpose:

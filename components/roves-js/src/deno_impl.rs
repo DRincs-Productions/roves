@@ -3,7 +3,7 @@
  * file, You can obtain one at https://mozilla.org/MPL/2.0/. */
 
 //! deno_core ownership of a roves-js runtime (single-document runtime, task 0385; see
-//! ../../docs/V8_MIGRATION.md).
+//! the V8 migration notes in Git history).
 //!
 //! Every [`crate::rust::Runtime`] owns one `deno_core::JsRuntime`: it creates the isolate and
 //! the runtime's only script context (its "main realm"), owns the ES module graph (static and

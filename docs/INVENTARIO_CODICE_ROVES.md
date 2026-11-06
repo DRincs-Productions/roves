@@ -107,6 +107,6 @@ conteggio del solo codice Roves.
   rendering e console.
 - [`docs/AUDIT_MIGRAZIONE_LIBRERIE.md`](AUDIT_MIGRAZIONE_LIBRERIE.md): audit delle dipendenze
   e dei consumatori nel grafo Cargo.
-- [`docs/V8_MIGRATION.md`](V8_MIGRATION.md): stato e architettura della migrazione V8.
+- [`docs/V8_MIGRATION.md`](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md): stato e architettura della migrazione V8.
 - [`CUSTOMIZATIONS.md`](../CUSTOMIZATIONS.md): cronologia delle modifiche rispetto a Servo
   upstream.

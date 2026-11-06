@@ -533,7 +533,7 @@ Nessuna nuova misura browser CPU/RAM/GPU/startup; non attribuire alle modifiche
 i valori della release v0.7.13 riportati sotto. Prima delle nuove misure completare
 CI e lifecycle; il controllo GC browser è solo pianificato, non implementato.
 Per run esatte e ordine di lavoro usare la sezione di ripresa in
-[V8_MIGRATION.md](V8_MIGRATION.md).
+[V8_MIGRATION.md](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md).
 
 ## Aggiornamento migrazione, 21 ottobre 2026 (risultato storico prima dei retry)
 
@@ -542,7 +542,7 @@ CI V8 39636431164: smoke Linux normal/JIT-less verdi, 8 job verdi e 2 macOS canc
 Sono verifiche funzionali: nessuna nuova misura CPU/RAM/GPU/startup. Il costo di token,
 holder e host options sulla compilation cache va misurato; retention realm/moduli aperta.
 I numeri sotto appartengono alla release v0.7.13, non a queste modifiche.
-Dettagli in [V8_MIGRATION.md](V8_MIGRATION.md).
+Dettagli in [V8_MIGRATION.md](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md).
 
 ## Stato verificato, 18 ottobre 2026
 

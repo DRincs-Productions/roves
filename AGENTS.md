@@ -78,7 +78,7 @@ di fluidità su scene reali è affidata al flusso performance separato ed è fuo
 della migrazione V8; non duplicarla né attendere quel flusso per completare la migrazione.
 Continuare a verificare API pubbliche, CSP/origini, moduli, microtask, GC, sicurezza e JITless; non
 dichiarare copertura generale o prestazioni misurate senza evidenze. Dettagli correnti in
-`docs/V8_MIGRATION.md`.
+[archivio della migrazione V8](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md).
 
 ### Caricamento statico deno_core: pausa provvisoria autorizzata (27 ottobre 2026)
 
@@ -144,15 +144,14 @@ a stop condition. Historical bounded-task counts are retained only as historical
 No periodic automation is authorized. A single retry at the reset time reported by Claude `/usage`, plus two minutes,
 is authorized for a confirmed five-hour session limit as specified below; no intermediate polling.
 
-Before resuming, read only the current handoff in `docs/V8_MIGRATION.md`; consult historical
-sections only for a concrete issue. Consumption evidence and the first bounded comparison
+Before resuming V8 work, read the relevant entry in `TODO.md`; consult the archived migration evidence only for a concrete issue. Consumption evidence and the first bounded comparison
 are in `docs/AGENT_WORKFLOW.md`; browser performance history is separate in
 `docs/ROVES_PERFORMANCE.md`. Prototype coverage is not a completed production migration.
 This file is the shared entry point for coding agents.
 Dal 23 ottobre 2026 l'utente ha ripristinato la delega a Claude: Codex dirige e revisiona,
 Claude implementa incarichi circoscritti via terminale. L'eccezione del22ottobre (sviluppo
 Codex diretto per quota Claude) è terminata. Il file temporaneo docs/CLAUDE_RESUME.md
-è stato rimosso su richiesta; il punto di ripresa unico è docs/V8_MIGRATION.md.
+è stato rimosso su richiesta; il lavoro residuo è in TODO.md.
 
 ### Sospensione Claude fino al 30 ottobre 2026, 17:30 Europe/Rome
 
@@ -162,7 +161,7 @@ alle17:30 Europe/Rome, anche se il limite delle5ore scade prima. Promemoria unic
 al modello; l'orario autorizza un tentativo, non certifica che la quota settimanale sia
 ripristinata. Nessun nuovo tentativo automatico se resta limitato. Coordinare l'ownership
 prima di riprendere la delega. Nessuna automazione periodica. Prima di altre implementazioni
-consegnare il handoff dettagliato in docs/V8_MIGRATION.md chiesto dall'utente.
+aggiornare il punto pertinente in TODO.md.
 
 ### Eccezione corrente: implementazione diretta Codex (28 ottobre 2026)
 

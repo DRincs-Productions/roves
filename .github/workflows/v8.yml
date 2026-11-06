@@ -109,7 +109,7 @@ jobs:
           - os: macos-latest
             mode: normal
         include:
-          # V8 without its JIT, the console configuration (docs/V8_MIGRATION.md, "JIT-less").
+          # V8 without its JIT, the console configuration (the V8 migration notes in Git history, "JIT-less").
           - os: ubuntu-24.04
             mode: jitless
           - os: windows-latest

@@ -218,7 +218,7 @@ pub trait DomObject: js::gc::Traceable + 'static {
 /// This is exactly the value the former open-coded `ObjectValue(obj.reflector().get_jsobject()
 /// .get())` call sites produced: it does **not** apply cross-compartment wrapping, unlike
 /// `ToJSValConvertible for Reflector`. Whether those callers should wrap is an open question
-/// recorded in `docs/V8_MIGRATION.md`; this helper only gives them one seam to replace at the
+/// recorded in `the V8 migration notes in Git history`; this helper only gives them one seam to replace at the
 /// engine cutover.
 #[inline]
 pub fn dom_object_value(object: &impl DomObject) -> JSVal {

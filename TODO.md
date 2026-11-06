@@ -248,7 +248,7 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 
 - [ ] A ogni aggiornamento Deno e prima del rilascio stabile, ricontrollare [issue37097](https://github.com/denoland/deno/issues/37097) e [PR37098](https://github.com/denoland/deno/pull/37098). Il vecchio repository deno_core e archiviato dopo la confluenza in denoland/deno; usare il repository attivo.
 - [ ] Quando una crate ufficiale contiene il fix (non basta che l'issue sia chiusa), verificarla senza patch con regressioni TLA radice/discendente, resolve/reject, identita cache/eccezioni e fetch/esecuzione una volta, in normale e JITless.
-- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS e docs/V8_MIGRATION.md. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
+- [ ] Dopo native e browser/security CI verdi, eliminare snapshot components/roves-js/vendor/deno_core e override Cargo root/standalone, aggiornare entrambi i lock e patch/replay, README/wiki/CUSTOMIZATIONS. Conservare una sola versione V8; non rimuovere anticipatamente le regressioni. Provenienza/licenza e commit fork sono in ROVES_PATCHES.md nello snapshot.
 
 ## Compatibilita HTML rinviata: SourceText
 
@@ -288,3 +288,8 @@ si chiude con evidenza pertinente al comportamento finale, poi va rimosso da que
 - [ ] Confrontare librerie/router mantenuti e casi reali prima di introdurre un adattatore
   condiviso. Preservare sicurezza, document lifetime e policy prodotto; non allentare il
   blocco delle navigazioni complete solo per fare funzionare un link di prova.
+
+## Memoria del documento di gioco
+
+- [ ] Misurare memoria nativa e sessioni lunghe su scene reali nel flusso performance.
+- La smoke controllata con 12 transizioni e 36 riferimenti deboli è verde su Ubuntu normale e JITless dopo il fix di replaceState. [CI V8](https://github.com/DRincs-Productions/roves/actions/runs/42189932118).

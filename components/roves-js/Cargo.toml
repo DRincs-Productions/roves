@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "MPL-2.0"
 publish = false
-description = "The `js` (mozjs) API surface Servo's script crates use, implemented on V8 through roves-v8. Swapping the workspace `js` dependency to this crate is the V8 cutover (see ../../docs/V8_MIGRATION.md)."
+description = "The `js` (mozjs) API surface Servo's script crates use, implemented on V8 through roves-v8. Swapping the workspace `js` dependency to this crate is the V8 cutover (see the V8 migration notes in Git history)."
 
 [lib]
 name = "js"
@@ -45,7 +45,7 @@ jit = []
 jitspew = []
 libz-sys = []
 
-# V8 without its JIT compilers (see ../../docs/V8_MIGRATION.md, "JIT-less"): servoshell
+# V8 without its JIT compilers (see the V8 migration notes in Git history, "JIT-less"): servoshell
 # builds it with `--features roves-js/jitless`.
 jitless = ["roves-v8/jitless"]
 

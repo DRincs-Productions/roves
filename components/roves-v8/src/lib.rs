@@ -7,7 +7,7 @@
 //! (`incumbent`, `codegen`, through `src/shim.cc`). deno_core initializes V8 itself, once:
 //! roves-js applies [`set_flags`] and hands [`platform`] to `JsRuntime::init_platform`.
 //! roves-js owns isolates (through deno_core), contexts and the JSAPI surface (see
-//! ../../docs/V8_MIGRATION.md).
+//! the V8 migration notes in Git history).
 
 pub mod codegen;
 pub mod compat;
@@ -29,7 +29,7 @@ pub fn set_flags(extra: &str) {
     // a second module/referrer graph. Deno's module cache remains enabled. Revisit the
     // compilation/startup cost and this guard when upgrading the shared Deno/V8 version.
     v8::V8::set_flags_from_string("--no-compilation-cache");
-    // See ../../docs/V8_MIGRATION.md's "Console-oriented requirement: JIT-less" — a
+    // See the V8 migration notes in Git history's "Console-oriented requirement: JIT-less" — a
     // first-class supported configuration from the start. This must run before the platform
     // is initialized, not after.
     #[cfg(feature = "jitless")]

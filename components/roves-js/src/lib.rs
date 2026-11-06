@@ -7,7 +7,7 @@
 //! The V8 cutover swaps the workspace `js` dependency from `mozjs` to this crate, so the DOM
 //! code keeps its `js::...` paths. `support/v8_cutover_check.py` measures how far the
 //! workspace is from compiling against it. Modules mirror mozjs's layout; see
-//! `docs/V8_MIGRATION.md` ("Cutover strategy") for the value and rooting model.
+//! `the V8 migration notes in Git history` ("Cutover strategy") for the value and rooting model.
 
 #![allow(non_snake_case, non_camel_case_types, non_upper_case_globals)]
 

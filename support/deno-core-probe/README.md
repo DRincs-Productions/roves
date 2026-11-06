@@ -5,7 +5,7 @@ directory itself is still a separate Cargo workspace and is not linked into the 
 The production embedded engine has since adopted `deno_core` in `components/roves-js`; it
 uses one V8 version and does not expose Deno namespaces, extensions or privileged operations
 to games. This probe is not a second backend or a runtime selection option. See the current
-[V8 migration handoff](../../docs/V8_MIGRATION.md) for production status and open checks.
+[V8 migration handoff](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md) for production status and open checks.
 The isolated harness contains test-only class and async-operation fixtures.
 
 ## Scope

@@ -542,7 +542,7 @@ jobs:
             exit $STATUS
           fi
 
-      # V8 migration Phase 1 (docs/V8_MIGRATION.md, CUSTOMIZATIONS.md's 2026-09-29 entry):
+      # V8 migration Phase 1 (the V8 migration notes in Git history, CUSTOMIZATIONS.md's 2026-09-29 entry):
       # components/roves-v8 is a standalone workspace crate, not wired into the production
       # script engine, so it needs its own leg rather than piggybacking on servoshell's. Plain
       # `cargo test`, not `./mach test-unit`: `mach test-unit -p <anything>`

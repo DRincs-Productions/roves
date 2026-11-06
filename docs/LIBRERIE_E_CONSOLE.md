@@ -35,7 +35,7 @@ bloccati prima di sostituire il documento; le richieste automatiche sono segnala
 esterni usano il browser di sistema solo dopo un clic nativo dell'utente. La prova Windows
 ha verificato blocco, avviso in sviluppo e apertura del browser esterno. La chiusura OS della
 finestra durante un fetch statico resta da verificare end-to-end. Vedi
-[handoff0380](handoff/0380-single-document-runtime.md) e il punto operativo in V8_MIGRATION.md.
+[handoff0380](handoff/0380-single-document-runtime.md) e il lavoro residuo in TODO.md.
 
 DOM, layout e rendering restano in Servo; i servizi di moduli e runtime JavaScript sostituiti
 sono gestiti da deno_core. L'adozione è presente nel codice di produzione, ma non equivale a

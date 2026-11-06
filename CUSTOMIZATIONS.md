@@ -1,5 +1,7 @@
 ## 2026-11-03 - Bounded heap snapshot series for the document retention scene
 
+The V8 migration handoff was retired after the route retention checks passed on Ubuntu in both V8 modes. Historical references below describe the files as they existed at the time. The remaining memory work is tracked in TODO.md.
+
 Debug-only diagnostic, no production behavior: `components/roves-js/src/heap_snapshot.rs`
 (compiled only with `debug_assertions`) now accepts in the private `ROVES_V8_HEAP_SNAPSHOT_GC`
 either one positive collection (unchanged: exactly `ROVES_V8_HEAP_SNAPSHOT_PATH` is written)

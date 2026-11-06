@@ -37,7 +37,7 @@ WebAssembly games (Unity, Godot or Emscripten exports) need the regular build. D
 JavaScript debugging is not available on V8 yet. SpiderMonkey-only Baseline/Ion, asm.js and
 per-tier Wasm tuning preferences were removed because V8 ignored them; use `js_disable_jit`
 for the supported startup JIT switch. The migration plan and its status are in
-`docs/V8_MIGRATION.md`; the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
+[the V8 migration archive](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md); the [Roves wiki](https://github.com/DRincs-Productions/roves-wiki)
 explains what the engine means for your game. How Roves performs against Chrome with PixiJS,
 three.js, motion, GSAP, Tone.js and Web Workers is on the wiki's
 [Performance page](https://github.com/DRincs-Productions/roves-wiki/blob/main/content/docs/performance.mdx).
@@ -124,7 +124,7 @@ separate JavaScript behavior. The smoke also checks the WPT-required case where 
 checker, extracting trusted data without invoking altered `toString` methods and retaining
 V8's native constructor/parser. Mixed strings and counterfeit objects remain blocked. This
 path passed Linux normal/JIT-less browser CI; migration status and remaining limitations are tracked in
-[`docs/V8_MIGRATION.md`](./docs/V8_MIGRATION.md). Chrome 155 still rejects the all-trusted case.
+[`docs/V8_MIGRATION.md`](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md). Chrome 155 still rejects the all-trusted case.
 GeneratorFunction, AsyncFunction and AsyncGeneratorFunction inherit from the exposed `Function`,
 as in the language specification, so the unwrapped constructor is not reachable through them.
 The experimental WebIDL V8 pilot is retained as a generator-only evaluation tool and is not
@@ -685,7 +685,7 @@ stays the same object when that window navigates to another page served by the s
 thread, as in browsers. Going back or forward in history therefore reloads the page instead of
 resuming it from memory (`session_history_max_length` defaults to 0).
 
-V8 migration status and agent handoff are maintained in [docs/V8_MIGRATION.md](docs/V8_MIGRATION.md).
+Historical V8 migration evidence is archived in [docs/V8_MIGRATION.md](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md).
 The Linux GC smoke entry point is fixed and verified in normal/JITless browser CI, with
 a lightweight entry-sequence regression.
 Removed-frame collection remains diagnostic, not a completed page-retention guarantee.
@@ -792,11 +792,11 @@ TODO.md with policy, cache and performance acceptance criteria.
 A reproduced Function-constructor import-referrer bug requires V8's public
 --no-compilation-cache guard; Deno's module cache stays active. Startup/compilation costs
 remain unmeasured. Internal Deno/Node module namespaces are denied before cache lookup.
-Overall retention and the older SourceText issue remain open.
+Native memory and long sessions remain open in TODO.md, alongside SourceText.
 
 The isolated probe previously passed Linux/Windows normal/JITless; it is not proof of this
-complete Servo integration. Current checks, remaining tasks and publication status are in
-the [migration handoff](docs/V8_MIGRATION.md). Contributor quota restarts follow AGENTS:
+complete Servo integration. Historical checks and publication status are in
+the [migration handoff](https://github.com/DRincs-Productions/roves/blob/b41261401b3898086a070d956c0440efa6cfeb24/docs/V8_MIGRATION.md). Contributor quota restarts follow AGENTS:
 one verified-reset retry, saved handoff, no periodic polling or chained attempts.
 
 The first integration CI identified two compiler errors and stale Linux runner simulations;
