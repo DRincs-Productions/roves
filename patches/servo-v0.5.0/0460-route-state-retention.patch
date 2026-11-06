@@ -1,0 +1,229 @@
+diff --git a/support/v8-smoke/gc-lifecycle.html b/support/v8-smoke/gc-lifecycle.html
+index eb8b2cc628f..f5ac1e0b54a 100644
+--- a/support/v8-smoke/gc-lifecycle.html
++++ b/support/v8-smoke/gc-lifecycle.html
+@@ -12,3 +12,4 @@
+ // direct-eval imports and escaped import.meta.resolve across GC in the one live document,
+-// and that a pending timeout keeps its callback alive until clearTimeout releases it.
++// that a pending timeout keeps its callback alive until clearTimeout releases it, and that
++// History API route transitions release per-route JS state after cleanup.
+ "use strict";
+@@ -351,2 +352,100 @@ async function checkTimerCallbackOwnership() {
+ 
++// Single-document route lifecycle. A History API router keeps one retained control (its own
++// popstate listener and a store of plain route summaries) while each route owns ephemeral JS
++// state: a self-capturing state object, a popstate listener registered with an AbortSignal and a
++// pending timeout. Leaving a route aborts the signal and clears the timer; afterwards nothing the
++// router keeps may reach that state. No DOM nodes are created (detached nodes are covered above).
++// This checks JS reachability only: native memory and session-history storage are not measured.
++const ROUTE_TRANSITIONS = 12;
++const ROUTE_TRAVERSE_EVERY = 4;
++
++function traverseHistory(method) {
++  return new Promise(resolve => {
++    const timer = setTimeout(() => { removeEventListener("popstate", done); resolve(false); }, FRAME_TIMEOUT_MS);
++    function done() { clearTimeout(timer); resolve(true); }
++    addEventListener("popstate", done, { once: true });
++    history[method]();
++  });
++}
++
++// Built in its own scope: V8 shares one closure context per function, so a cleanup closure created
++// inside enterRoute() would also hold the route state and root it from the router.
++function routeCleanup(controller, timer) {
++  return () => { controller.abort(); clearTimeout(timer); };
++}
++
++// Returns only WeakRefs to the route's state object, popstate listener and timeout callback.
++function enterRoute(router, index) {
++  const controller = new AbortController();
++  const state = { index, scratch: new Array(256).fill(index), visits: 0 };
++  state.render = () => state.index + state.scratch.length;
++  const onPopState = () => { state.visits++; router.routeVisits++; };
++  addEventListener("popstate", onPopState, { signal: controller.signal });
++  const onTimeout = () => { state.visits = -1; router.expiredTimers++; };
++  const timer = setTimeout(onTimeout, PENDING_TIMEOUT_MS);
++  router.leave = routeCleanup(controller, timer);
++  const url = new URL(router.baseURL);
++  url.searchParams.set("route", String(index));
++  history.pushState({ route: index }, "", url);
++  router.store.set(index, state.render());
++  return [new WeakRef(state), new WeakRef(onPopState), new WeakRef(onTimeout)];
++}
++
++function leaveRoute(router) {
++  if (router.leave) router.leave();
++  router.leave = null;
++}
++
++async function checkRouteStateRetention() {
++  const savedState = history.state;
++  const router = { baseURL: location.href, store: new Map(), leave: null,
++                   routeVisits: 0, controlVisits: 0, expiredTimers: 0 };
++  router.onControlPopState = () => { router.controlVisits++; };
++  addEventListener("popstate", router.onControlPopState);
++  const controlRef = new WeakRef(router.onControlPopState);
++  const refs = [];
++  let active = [], traversals = 0;
++  try {
++    for (let index = 0; index < ROUTE_TRANSITIONS; index++) {
++      leaveRoute(router);
++      active = enterRoute(router, index);
++      refs.push(...active);
++      // Traversals fire popstate in the same document: only the active route's listener may run.
++      if (index % ROUTE_TRAVERSE_EVERY === ROUTE_TRAVERSE_EVERY - 1) {
++        for (const method of ["back", "forward"]) {
++          if (!await traverseHistory(method)) fail("route traversal " + method + " timed out");
++          traversals++;
++        }
++      }
++      await collectOnce();
++    }
++    // Each aliveCount() runs in the task after a collection, as in checkTimerCallbackOwnership().
++    let activeAlive = 0;
++    for (let round = 0; round < 3; round++) {
++      await collectOnce();
++      activeAlive += aliveCount(active);
++    }
++    check("route active state retained", activeAlive === 3 * active.length && router.expiredTimers === 0,
++      `alive ${activeAlive}/${3 * active.length} expired ${router.expiredTimers}`);
++    leaveRoute(router);
++    history.replaceState(savedState, "", router.baseURL);
++    await expectCollected("route ephemeral state", refs);
++    // Aborted route listeners must not run; the control listener must still be the same function.
++    for (const method of ["back", "forward"]) {
++      if (!await traverseHistory(method)) fail("route control traversal " + method + " timed out");
++    }
++    const identity = controlRef.deref() === router.onControlPopState;
++    check("route control after collection",
++      identity && router.controlVisits === traversals + 2 && router.routeVisits === traversals &&
++        router.store.size === ROUTE_TRANSITIONS && router.expiredTimers === 0 &&
++        location.href === router.baseURL && JSON.stringify(history.state) === JSON.stringify(savedState),
++      `identity=${identity} control=${router.controlVisits} route=${router.routeVisits} ` +
++        `traversals=${traversals} store=${router.store.size} expired=${router.expiredTimers} url=${location.href}`);
++  } finally {
++    leaveRoute(router);
++    removeEventListener("popstate", router.onControlPopState);
++    history.replaceState(savedState, "", router.baseURL);
++  }
++}
++
+ // The live document must remain usable after collections. This does not prove graph
+@@ -390,2 +489,3 @@ async function main() {
+   await checkTimerCallbackOwnership();
++  await checkRouteStateRetention();
+   checkKept("retained nodes final");
+diff --git a/support/v8-smoke/run.sh b/support/v8-smoke/run.sh
+index 50909bf16b4..ede792ccbf3 100755
+--- a/support/v8-smoke/run.sh
++++ b/support/v8-smoke/run.sh
+@@ -266,6 +266,6 @@ fi
+ # hidden in test.html), so it gets its own process. The single-document scene preserves
+-# DOM/closure/handler/importer/timer-callback collection controls and module/eval/resolve behavior across GC.
++# DOM/closure/handler/importer/timer-callback/route-state collection controls and module/eval/resolve behavior across GC.
+ # The old removed-frame groups are archived, not claimed as passing under the new policy.
+ run_page gc-lifecycle.html 40 gc-lifecycle.log "http://127.0.0.1:$HTTP_PORT/gc-lifecycle.html" '^ROVES-V8 gc result ' --pref dom_testutils_enabled=true
+-for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc timeout callback pending retained true" "ROVES-V8 gc cancelled timeout callback collected true" "ROVES-V8 gc timeout control after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
++for expected in "ROVES-V8 gc api true" "ROVES-V8 gc unreachable dom collected true" "ROVES-V8 gc unreachable cycles collected true" "ROVES-V8 gc retained nodes true true true" "ROVES-V8 gc importer compiled true" "ROVES-V8 gc dynamic import after collection 42" "ROVES-V8 gc dropped importer collected true" "ROVES-V8 gc self-capturing listener nodes collected true" "ROVES-V8 gc signal listener nodes collected true" "ROVES-V8 gc aborted signal listener nodes collected true" "ROVES-V8 gc listener control after collection true" "ROVES-V8 gc self-capturing inline handler nodes collected true" "ROVES-V8 gc inline handler control after collection true" "ROVES-V8 gc window inline handlers after collection true" "ROVES-V8 gc timeout callback pending retained true" "ROVES-V8 gc cancelled timeout callback collected true" "ROVES-V8 gc timeout control after collection true" "ROVES-V8 gc route active state retained true" "ROVES-V8 gc route ephemeral state collected true" "ROVES-V8 gc route control after collection true" "ROVES-V8 gc retained nodes final true true true" "ROVES-V8 gc cleanup callback entry settings true" "ROVES-V8 gc single document module owner before true" "ROVES-V8 gc single document module owner after true" "ROVES-V8 gc single document module resolve before true" "ROVES-V8 gc single document module resolve after true" "ROVES-V8 gc single document remains live true" "ROVES-V8 gc result pass"; do
+   if grep -aFxq "$expected" gc-lifecycle.log; then echo "::notice::gc-lifecycle.html: $expected"; else STATUS=1; echo "::error::gc-lifecycle.html: missing '$expected' ($(grep -aF 'ROVES-V8 gc ' gc-lifecycle.log | tr '\n' ' '))"; fi
+diff --git a/support/v8-smoke/test_runner.py b/support/v8-smoke/test_runner.py
+index aa6ae95ca5b..aabc0baa326 100644
+--- a/support/v8-smoke/test_runner.py
++++ b/support/v8-smoke/test_runner.py
+@@ -793,2 +793,90 @@ vm.runInContext("checkTimerCallbackOwnership()", context)
+ 
++    # Runs only checkRouteStateRetention() under Node's V8 with --expose-gc, against a mock
++    # same-document session history whose back()/forward() dispatch popstate in a later task on
++    # a real EventTarget. The mock never stores JS objects from the page; it checks fixture logic,
++    # not Servo's History implementation or native retention.
++    # The `signal` option is handled here, not by Node: Node registers the abort handler with its
++    # internal kWeakHandler, which keeps the latest handler in a WeakMap keyed by the (always live)
++    # target, so the last aborted route listener and its state stayed reachable (2/36 alive). As in
++    # the DOM spec, the abort step here lives only on the signal and dies with the controller.
++    ROUTE_SETUP = r'''
++const win = new EventTarget();
++function addEventListener(type, listener, options) {
++  const signal = options !== null && typeof options === "object" ? options.signal : undefined;
++  if (signal === undefined) return win.addEventListener(type, listener, options);
++  if (signal.aborted) return;
++  const { signal: _signal, ...rest } = options;
++  win.addEventListener(type, listener, rest);
++  signal.addEventListener("abort", () => win.removeEventListener(type, listener, rest), { once: true });
++}
++Object.assign(context, { AbortController, URL, addEventListener,
++                         removeEventListener: win.removeEventListener.bind(win) });
++const entries = [{ state: null, url: "http://127.0.0.1:18765/gc-lifecycle.html" }];
++let current = 0;
++const traverse = delta => setTimeout(() => {
++  if (entries[current + delta]) { current += delta; win.dispatchEvent(new Event("popstate")); }
++}, 0);
++context.location = { get href() { return entries[current].url; } };
++context.history = {
++  get state() { return entries[current].state; },
++  pushState(state, _, url) { entries.splice(current + 1); entries.push({ state: structuredClone(state), url: String(url) }); current++; },
++  replaceState(state, _, url) { entries[current] = { state: structuredClone(state), url: String(url) }; },
++  back() { traverse(-1); },
++  forward() { traverse(1); },
++};
++'''
++    ROUTE_RUN = r'''
++context.TestUtils = { gc: () => new Promise(resolve => setTimeout(() => { gc(); resolve(); }, 0)) };
++vm.runInContext("checkRouteStateRetention()", context)
++  .catch(error => lines.push("thrown " + error.name + " " + error.message))
++  .then(() => lines.push("entries " + entries.length + " url " + context.location.href))
++  // Exits explicitly: an uncancelled route timer would otherwise keep Node running.
++  .finally(() => process.stdout.write(lines.filter(line => /route|thrown|entries/.test(line)).join("\n"), () => process.exit(0)));
++'''
++
++    def run_route_check(self, script):
++        return run_page_in_node(script, self.ROUTE_SETUP, self.ROUTE_RUN, node_args=('--expose-gc',))
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_route_state_retention(self):
++        result = self.run_route_check(gc_page_script())
++        self.assertEqual('', result.stderr)
++        self.assertEqual(['ROVES-V8 gc route active state retained true',
++                          'ROVES-V8 gc route ephemeral state collected true',
++                          'ROVES-V8 gc route control after collection true',
++                          'entries 13 url http://127.0.0.1:18765/gc-lifecycle.html'],
++                         result.stdout.splitlines())
++
++    @unittest.skipUnless(shutil.which('node'), 'needs Node')
++    def test_route_state_retention_catches_retention(self):
++        script = gc_page_script()
++        collected_false = 'ROVES-V8 gc route ephemeral state collected false'
++        control_false = 'ROVES-V8 gc route control after collection false'
++        active_false = 'ROVES-V8 gc route active state retained false'
++        mutations = (
++            # Leaving a route no longer removes its popstate listener.
++            ('  return () => { controller.abort(); clearTimeout(timer); };',
++             '  return () => { clearTimeout(timer); };', (collected_false, control_false)),
++            # Leaving a route no longer cancels its pending timeout.
++            ('  return () => { controller.abort(); clearTimeout(timer); };',
++             '  return () => { controller.abort(); };', (collected_false,)),
++            # The retained router store keeps the route state instead of a plain summary.
++            ('router.store.set(index, state.render());', 'router.store.set(index, state);', (collected_false,)),
++            # A cleanup closure the router keeps, created in the route's own scope, shares the
++            # route's closure context and so roots the state of the last route.
++            ('  router.leave = routeCleanup(controller, timer);',
++             '  router.leave = () => { controller.abort(); clearTimeout(timer); };\n'
++             '  router.keepLast = router.leave;', (collected_false,)),
++            # The active route registers no listener, so it is not kept alive while active.
++            ('  addEventListener("popstate", onPopState, { signal: controller.signal });\n', '',
++             (active_false, control_false)),
++        )
++        for original, replacement, expected in mutations:
++            with self.subTest(replacement=replacement):
++                self.assertEqual(1, script.count(original))
++                lines = self.run_route_check(script.replace(original, replacement)).stdout.splitlines()
++                for prefix in expected:
++                    self.assertTrue(any(line.startswith(prefix) for line in lines), lines)
++                self.assertTrue(any(line.startswith('ROVES-V8 gc failure route') for line in lines), lines)
++
+     def test_main_runs_both_frame_groups(self):
+@@ -1544,2 +1632,5 @@ if page == 'gc-lifecycle.html':
+                      'timeout control after collection true',
++                     'route active state retained true',
++                     'route ephemeral state collected true',
++                     'route control after collection true',
+                      'retained nodes final true true true',

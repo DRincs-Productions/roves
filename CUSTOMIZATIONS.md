@@ -19247,3 +19247,24 @@ remains open.
 ## 2026-11-05 - Run Apple CI on versioned tags
 
 Move iOS simulator and signing checks to versioned tags. Refresh the rolling iOS template on those tags for existing consumers. Move the macOS SDL3 probe into the release workflow alongside the existing V8 checks and desktop bundles.
+
+## 2026-11-06 - Check single-document route state retention
+
+Extend `support/v8-smoke/gc-lifecycle.html` with a bounded History API route lifecycle in the
+one live document: 12 `pushState` route transitions, with `back`/`forward` popstate traversals
+every fourth route. Each route owns ephemeral JS state (a self-capturing object, a popstate
+listener registered with an `AbortSignal` and a pending timeout); leaving aborts the signal and
+clears the timer. The active route must stay reachable across collections, all 36 WeakRef targets
+must be collected after cleanup, and a retained router control (its own popstate listener and a
+store of plain summaries) must remain the same usable function, with aborted route listeners no
+longer firing. The cleanup closure is built in a separate function because V8 shares one closure
+context per function scope. No DOM nodes are created, so the detached-node fixture is not
+duplicated. `run.sh` requires the three new markers and the mock servoshell reports them;
+`test_runner.py` runs the check under Node `--expose-gc` with a mock session history and five
+negative mutations (no abort, no `clearTimeout`, state kept in the router store, a kept cleanup
+closure sharing the route scope, no active listener). The Node mock handles the listener `signal`
+option itself: Node's own `EventTarget` keeps the latest abort handler in an internal WeakMap keyed
+by the live target, which kept the last aborted route listener and its state reachable (2/36 alive)
+although no page code retained them. It checks JS reachability only, not native
+memory, Servo session-history storage or overall retention. Patch:
+`patches/servo-v0.5.0/0460-route-state-retention.patch`.

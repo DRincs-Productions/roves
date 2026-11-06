@@ -791,6 +791,94 @@ vm.runInContext("checkTimerCallbackOwnership()", context)
                 self.assertIn('ROVES-V8 gc cancelled timeout callback collected false 1/1 alive after 8 collections',
                               result.stdout.splitlines(), result.stdout)
 
+    # Runs only checkRouteStateRetention() under Node's V8 with --expose-gc, against a mock
+    # same-document session history whose back()/forward() dispatch popstate in a later task on
+    # a real EventTarget. The mock never stores JS objects from the page; it checks fixture logic,
+    # not Servo's History implementation or native retention.
+    # The `signal` option is handled here, not by Node: Node registers the abort handler with its
+    # internal kWeakHandler, which keeps the latest handler in a WeakMap keyed by the (always live)
+    # target, so the last aborted route listener and its state stayed reachable (2/36 alive). As in
+    # the DOM spec, the abort step here lives only on the signal and dies with the controller.
+    ROUTE_SETUP = r'''
+const win = new EventTarget();
+function addEventListener(type, listener, options) {
+  const signal = options !== null && typeof options === "object" ? options.signal : undefined;
+  if (signal === undefined) return win.addEventListener(type, listener, options);
+  if (signal.aborted) return;
+  const { signal: _signal, ...rest } = options;
+  win.addEventListener(type, listener, rest);
+  signal.addEventListener("abort", () => win.removeEventListener(type, listener, rest), { once: true });
+}
+Object.assign(context, { AbortController, URL, addEventListener,
+                         removeEventListener: win.removeEventListener.bind(win) });
+const entries = [{ state: null, url: "http://127.0.0.1:18765/gc-lifecycle.html" }];
+let current = 0;
+const traverse = delta => setTimeout(() => {
+  if (entries[current + delta]) { current += delta; win.dispatchEvent(new Event("popstate")); }
+}, 0);
+context.location = { get href() { return entries[current].url; } };
+context.history = {
+  get state() { return entries[current].state; },
+  pushState(state, _, url) { entries.splice(current + 1); entries.push({ state: structuredClone(state), url: String(url) }); current++; },
+  replaceState(state, _, url) { entries[current] = { state: structuredClone(state), url: String(url) }; },
+  back() { traverse(-1); },
+  forward() { traverse(1); },
+};
+'''
+    ROUTE_RUN = r'''
+context.TestUtils = { gc: () => new Promise(resolve => setTimeout(() => { gc(); resolve(); }, 0)) };
+vm.runInContext("checkRouteStateRetention()", context)
+  .catch(error => lines.push("thrown " + error.name + " " + error.message))
+  .then(() => lines.push("entries " + entries.length + " url " + context.location.href))
+  // Exits explicitly: an uncancelled route timer would otherwise keep Node running.
+  .finally(() => process.stdout.write(lines.filter(line => /route|thrown|entries/.test(line)).join("\n"), () => process.exit(0)));
+'''
+
+    def run_route_check(self, script):
+        return run_page_in_node(script, self.ROUTE_SETUP, self.ROUTE_RUN, node_args=('--expose-gc',))
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_route_state_retention(self):
+        result = self.run_route_check(gc_page_script())
+        self.assertEqual('', result.stderr)
+        self.assertEqual(['ROVES-V8 gc route active state retained true',
+                          'ROVES-V8 gc route ephemeral state collected true',
+                          'ROVES-V8 gc route control after collection true',
+                          'entries 13 url http://127.0.0.1:18765/gc-lifecycle.html'],
+                         result.stdout.splitlines())
+
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_route_state_retention_catches_retention(self):
+        script = gc_page_script()
+        collected_false = 'ROVES-V8 gc route ephemeral state collected false'
+        control_false = 'ROVES-V8 gc route control after collection false'
+        active_false = 'ROVES-V8 gc route active state retained false'
+        mutations = (
+            # Leaving a route no longer removes its popstate listener.
+            ('  return () => { controller.abort(); clearTimeout(timer); };',
+             '  return () => { clearTimeout(timer); };', (collected_false, control_false)),
+            # Leaving a route no longer cancels its pending timeout.
+            ('  return () => { controller.abort(); clearTimeout(timer); };',
+             '  return () => { controller.abort(); };', (collected_false,)),
+            # The retained router store keeps the route state instead of a plain summary.
+            ('router.store.set(index, state.render());', 'router.store.set(index, state);', (collected_false,)),
+            # A cleanup closure the router keeps, created in the route's own scope, shares the
+            # route's closure context and so roots the state of the last route.
+            ('  router.leave = routeCleanup(controller, timer);',
+             '  router.leave = () => { controller.abort(); clearTimeout(timer); };\n'
+             '  router.keepLast = router.leave;', (collected_false,)),
+            # The active route registers no listener, so it is not kept alive while active.
+            ('  addEventListener("popstate", onPopState, { signal: controller.signal });\n', '',
+             (active_false, control_false)),
+        )
+        for original, replacement, expected in mutations:
+            with self.subTest(replacement=replacement):
+                self.assertEqual(1, script.count(original))
+                lines = self.run_route_check(script.replace(original, replacement)).stdout.splitlines()
+                for prefix in expected:
+                    self.assertTrue(any(line.startswith(prefix) for line in lines), lines)
+                self.assertTrue(any(line.startswith('ROVES-V8 gc failure route') for line in lines), lines)
+
     def test_main_runs_both_frame_groups(self):
         main = gc_page_script("legacy-multidocument/gc-lifecycle.html").split('async function main() {', 1)[1].split('\n}\n', 1)[0]
         self.assertLess(main.index('await checkModuleOwners();'), main.index('await checkPlainFrames();'))
@@ -1542,6 +1630,9 @@ if page == 'gc-lifecycle.html':
                      'timeout callback pending retained true',
                      'cancelled timeout callback collected true',
                      'timeout control after collection true',
+                     'route active state retained true',
+                     'route ephemeral state collected true',
+                     'route control after collection true',
                      'retained nodes final true true true',
                      'cleanup callback entry settings true',
                      # Retained frames, as in CI so far: diagnostic, not a failure.
