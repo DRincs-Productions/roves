@@ -124,6 +124,13 @@ necessario e rimuovi il codice sostituito. Valuta manutenzione, licenza, compati
 piattaforme e impatto su CPU, RAM e GPU. Non aggiungere dipendenze senza un uso concreto;
 se nessuna libreria è adatta, spiega brevemente il motivo prima di implementare codice nostro.
 
+### Segnalazione dei bug nelle librerie
+
+Quando individui un bug evidente in una libreria, usa `@github` per aprire
+autonomamente un'issue nel repository upstream, senza chiedere conferma. Se esiste
+gia un'issue per lo stesso bug, usa quella. Aggiungi il link in `TODO.md` e indica
+che va ricontrollato se e in quale versione il bug viene risolto.
+
 ### Diagnosi del browser con Chrome DevTools (MCP)
 
 Usa Chrome DevTools (MCP), quando disponibile, per ispezionare pagine, console, rete e
