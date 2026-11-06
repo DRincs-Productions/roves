@@ -879,6 +879,24 @@ vm.runInContext("checkRouteStateRetention()", context)
                     self.assertTrue(any(line.startswith(prefix) for line in lines), lines)
                 self.assertTrue(any(line.startswith('ROVES-V8 gc failure route') for line in lines), lines)
 
+    @unittest.skipUnless(shutil.which('node'), 'needs Node')
+    def test_route_state_retention_catches_stale_replaced_entry(self):
+        # Mirrors the session-history bug CI hit before patch 0461: replaceState() rewrote the
+        # oldest pushed entry instead of the current one, so back() then forward() restored the
+        # last pushed route URL and state. The strict URL/state check must report it.
+        original = '  replaceState(state, _, url) { entries[current] = { state: structuredClone(state), url: String(url) }; },'
+        self.assertEqual(1, self.ROUTE_SETUP.count(original))
+        setup = self.ROUTE_SETUP.replace(
+            original,
+            '  replaceState(state, _, url) { entries[Math.min(1, current)] = { state: structuredClone(state), url: String(url) }; },')
+        lines = run_page_in_node(gc_page_script(), setup, self.ROUTE_RUN, node_args=('--expose-gc',)).stdout.splitlines()
+        self.assertIn('ROVES-V8 gc route ephemeral state collected true', lines)
+        control = [line for line in lines if line.startswith('ROVES-V8 gc route control after collection ')]
+        self.assertEqual(1, len(control), lines)
+        self.assertTrue(control[0].startswith('ROVES-V8 gc route control after collection false identity=true '
+                                              'control=8 route=6 traversals=6 store=12 expired=0 url='), control)
+        self.assertTrue(control[0].endswith('route=11'), control)
+
     def test_main_runs_both_frame_groups(self):
         main = gc_page_script("legacy-multidocument/gc-lifecycle.html").split('async function main() {', 1)[1].split('\n}\n', 1)[0]
         self.assertLess(main.index('await checkModuleOwners();'), main.index('await checkPlainFrames();'))

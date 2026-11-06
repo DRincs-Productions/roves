@@ -56,11 +56,14 @@ impl JointSessionHistory {
         history_state_id: HistoryStateId,
         url: ServoUrl,
     ) {
+        // `past` and `future` are stacks whose last element is the diff adjacent to the
+        // current entry (traversal drains and pushes at the end), so the diffs describing the
+        // current entry are the nearest ones, not the oldest.
         if let Some(SessionHistoryDiff::Pipeline {
             new_history_state_id,
             new_url,
             ..
-        }) = self.past.iter_mut().find(|diff| match diff {
+        }) = self.past.iter_mut().rev().find(|diff| match diff {
             SessionHistoryDiff::Pipeline {
                 pipeline_reloader: NeedsToReload::No(id),
                 ..
@@ -75,7 +78,7 @@ impl JointSessionHistory {
             old_history_state_id,
             old_url,
             ..
-        }) = self.future.iter_mut().find(|diff| match diff {
+        }) = self.future.iter_mut().rev().find(|diff| match diff {
             SessionHistoryDiff::Pipeline {
                 pipeline_reloader: NeedsToReload::No(id),
                 ..

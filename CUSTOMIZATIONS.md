@@ -19268,3 +19268,20 @@ by the live target, which kept the last aborted route listener and its state rea
 although no page code retained them. It checks JS reachability only, not native
 memory, Servo session-history storage or overall retention. Patch:
 `patches/servo-v0.5.0/0460-route-state-retention.patch`.
+
+## 2026-11-06 - Make replaceState update the current session-history entry
+
+`components/constellation/session_history.rs`: `JointSessionHistory::replace_history_state`
+searched `past` and `future` with `iter_mut().find(..)`, i.e. from the oldest diff. Both vectors
+are stacks whose last element is adjacent to the current entry (traversal drains from and pushes
+to the end), so after several `pushState` calls `replaceState` rewrote the first pushed entry
+instead of the current one. The document URL and stored state changed immediately, but a later
+`back()` then `forward()` restored the last pushed URL. The 0460 route smoke hit this on Ubuntu
+normal and JIT-less: retention checks passed, but the route control reported
+`url=...gc-lifecycle.html?route=11` after `replaceState(saved, "", baseURL)` and one back/forward
+round trip. Upstream Servo v0.5.0 has the same code. The search now uses `.rev()` so it updates
+the nearest `Pipeline` diff for the pipeline on each side. Unchanged: a more recent `Hash` diff
+(fragment navigation) after the nearest `Pipeline` diff still keeps its own URL. The strict URL
+and state assertion in `gc-lifecycle.html` is unchanged; `test_runner.py` adds a negative control
+whose mock `replaceState` rewrites the oldest pushed entry and must reproduce the CI failure line.
+Patch: `patches/servo-v0.5.0/0461-session-history-replace-current-entry.patch`.
