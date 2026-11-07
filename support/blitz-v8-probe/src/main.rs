@@ -10,6 +10,8 @@ use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
 use style::properties::{PropertyDeclarationId, PropertyId};
 
+mod window;
+
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
@@ -20,6 +22,7 @@ const GC_TEST: &str = include_str!("gc_test.js");
 const DOM_API_TEST: &str = include_str!("dom_api_test.js");
 const EVENTS_TEST: &str = include_str!("events_test.js");
 const EVENTS_CHECK: &str = include_str!("events_check.js");
+const WINDOW_TEST: &str = include_str!("window_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
@@ -874,9 +877,30 @@ fn write_png(path: &str, pixels: &[u8]) {
     writer.write_image_data(pixels).expect("png data");
 }
 
+/// One frame of the JS side: rAF callbacks, a microtask checkpoint and one
+/// non-blocking poll of the deno_core event loop (timers, op completions). Style
+/// and layout are resolved by the caller (headless loop) or the window shell.
+fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Function>) {
+    {
+        deno_core::scope!(scope, runtime);
+        let function = v8::Local::new(scope, run_animation_frame);
+        let receiver = v8::undefined(scope).into();
+        function
+            .call(scope, receiver, &[])
+            .expect("animation frame should not throw past reportException");
+        scope.perform_microtask_checkpoint();
+    }
+    let waker = std::task::Waker::noop();
+    let mut context = std::task::Context::from_waker(waker);
+    if let std::task::Poll::Ready(Err(error)) =
+        runtime.poll_event_loop(&mut context, Default::default())
+    {
+        panic!("event loop error: {error}");
+    }
+}
+
 /// Drives `frames` frames without a window, paced at 60 Hz in real time so timers
-/// become due: rAF callbacks, a microtask checkpoint, one non-blocking poll of the
-/// deno_core event loop (timers, op completions), then Blitz layout.
+/// become due: `frame_step`, then Blitz layout.
 fn drive_frames(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -890,22 +914,7 @@ fn drive_frames(
         if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
             std::thread::sleep(wait);
         }
-        {
-            deno_core::scope!(scope, runtime);
-            let function = v8::Local::new(scope, run_animation_frame);
-            let receiver = v8::undefined(scope).into();
-            function
-                .call(scope, receiver, &[])
-                .expect("animation frame should not throw past reportException");
-            scope.perform_microtask_checkpoint();
-        }
-        let waker = std::task::Waker::noop();
-        let mut context = std::task::Context::from_waker(waker);
-        if let std::task::Poll::Ready(Err(error)) =
-            runtime.poll_event_loop(&mut context, Default::default())
-        {
-            panic!("event loop error in frame {frame}: {error}");
-        }
+        frame_step(runtime, run_animation_frame);
         resolve_layout(document);
     }
 }
@@ -1260,8 +1269,23 @@ fn main() {
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"gc_frees_unreferenced_detached_nodes\",\"status\":\"passed\",\"nodes_before\":{nodes_before},\"nodes_created\":{nodes_created},\"nodes_after\":{nodes_after}}}"
         );
-        println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_implemented\"}}"
-        );
+        if !std::env::args().any(|arg| arg == "--window") {
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_run\",\"reason\":\"pass --window\"}}"
+            );
+            return;
+        }
+        // Real window: blitz-shell presents the same document and runtime and
+        // routes OS input; the process exits once the window test settles.
+        stage("window");
+        runtime
+            .execute_script("roves-blitz-window-test.js", WINDOW_TEST)
+            .expect("window test setup should run");
+        window::run(window::RovesDocument::new(
+            document,
+            runtime,
+            dispatcher,
+            run_animation_frame,
+        ));
     });
 }

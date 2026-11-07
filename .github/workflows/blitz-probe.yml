@@ -72,6 +72,60 @@ jobs:
           grep -v -E -e '^[[:space:]]*$' -e 'Compiling|Downloaded|Downloading|Checking|Finished|Locking|Updating' "$RUNNER_TEMP/blitz-probe.log" \
             | tail -n 9 \
             | while IFS= read -r line; do echo "::notice::${line:0:900}"; done
+      # Real window: the probe opens an undecorated blitz-shell window at a known
+      # position; this step screenshots it and sends a real OS click at the
+      # button the probe reports. The probe exits 0 once the trusted click
+      # reached the JS listeners (winit -> blitz-shell -> EventDriver -> JS).
+      - name: window mode with a real OS click
+        shell: pwsh
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'blitz-probe-target/debug/roves-blitz-v8-probe.exe'
+          $log = Join-Path $env:RUNNER_TEMP 'blitz-window.log'
+          $err = Join-Path $env:RUNNER_TEMP 'blitz-window.err'
+          $process = Start-Process -FilePath $exe -ArgumentList '--window' -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -NoNewWindow
+          $ready = $null
+          for ($i = 0; $i -lt 240 -and -not $ready -and -not $process.HasExited; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (Test-Path $log) { $ready = Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY (.*)' | Select-Object -First 1 }
+          }
+          if (-not $ready) {
+            Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 20
+            Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
+            throw 'the probe window never reported ready'
+          }
+          $info = $ready.Matches[0].Groups[1].Value | ConvertFrom-Json
+          $scale = [double]$info.scale
+          Start-Sleep -Milliseconds 700
+          Add-Type -AssemblyName System.Drawing
+          $left = [int]($info.origin[0] * $scale)
+          $top = [int]($info.origin[1] * $scale)
+          $bitmap = New-Object System.Drawing.Bitmap ([int](640 * $scale)), ([int](360 * $scale))
+          $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+          $graphics.CopyFromScreen($left, $top, 0, 0, $bitmap.Size)
+          $bitmap.Save((Join-Path $env:RUNNER_TEMP 'blitz-window.png'))
+          Add-Type -TypeDefinition @"
+          using System;
+          using System.Runtime.InteropServices;
+          public static class RovesInput {
+            [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+            [DllImport("user32.dll")] public static extern void mouse_event(uint flags, uint dx, uint dy, uint data, UIntPtr extra);
+          }
+          "@
+          $x = [int](($info.origin[0] + $info.target.x) * $scale)
+          $y = [int](($info.origin[1] + $info.target.y) * $scale)
+          [RovesInput]::SetCursorPos($x, $y) | Out-Null
+          Start-Sleep -Milliseconds 300
+          [RovesInput]::mouse_event(0x0002, 0, 0, 0, [UIntPtr]::Zero)
+          Start-Sleep -Milliseconds 100
+          [RovesInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
+          if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'the window run timed out' }
+          Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY|window_presentation_real_input' | ForEach-Object { $_.Line }
+          if ($process.ExitCode -ne 0) {
+            Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
+            throw "window mode failed with exit code $($process.ExitCode)"
+          }
       - name: upload probe log and offscreen screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -80,6 +134,9 @@ jobs:
           path: |
             ${{ runner.temp }}/blitz-probe.log
             ${{ runner.temp }}/blitz-probe.png
+            ${{ runner.temp }}/blitz-window.png
+            ${{ runner.temp }}/blitz-window.log
+            ${{ runner.temp }}/blitz-window.err
           retention-days: 7
           if-no-files-found: warn
 

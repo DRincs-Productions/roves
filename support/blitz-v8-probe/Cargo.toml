@@ -13,7 +13,7 @@ deno_error = "=0.7.1"
 blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts"] }
 blitz-html = { version = "=0.3.0-beta.4", default-features = false }
 blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
-anyrender_vello_cpu = "=0.18.0"
+anyrender_vello_cpu = { version = "=0.18.0", features = ["softbuffer_window_renderer"] }
 blitz-traits = "=0.3.0-beta.4"
 tokio = { version = "1.47.1", default-features = false, features = ["rt"] }
 deno_web = "=0.291.0"
@@ -23,3 +23,7 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
 png = "=0.17.16"
 # Same Stylo as blitz-dom 0.3.0-beta.4 (already in the graph): PropertyId for getComputedStyle.
 style = { package = "stylo", version = "=0.22.0", default-features = false }
+# Same versions as blitz-shell/blitz-traits 0.3.0-beta.4 (already in the graph): window
+# attributes and modifier flags for the --window mode.
+winit = "=0.31.0-beta.3"
+keyboard-types = { version = "=0.8.3", default-features = false }
