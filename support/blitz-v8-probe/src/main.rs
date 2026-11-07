@@ -2,9 +2,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use blitz_dom::{
-    BaseDocument, DocumentConfig, LocalName, Node, NodeData, QualName, RestyleHint, ns,
-};
+use blitz_dom::{BaseDocument, DocumentConfig, LocalName, Node, NodeData, NodeId, QualName, ns};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
@@ -16,8 +14,8 @@ const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
-/// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_CHECK: &str = include_str!("motion_check.js");
+/// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 
 const ELEMENT_NODE: i32 = 1;
@@ -31,6 +29,9 @@ const OK: i32 = 0;
 const HIERARCHY_REQUEST_ERROR: i32 = 1;
 const NOT_FOUND_ERROR: i32 = 2;
 
+/// "No node" handle returned to JS.
+const NO_NODE: f64 = -1.0;
+
 struct ProbeDocument(Rc<RefCell<HtmlDocument>>);
 
 /// Clones the shared document handle out of `OpState`; the `RefCell` borrow is
@@ -40,16 +41,30 @@ fn probe_document(state: &Rc<RefCell<OpState>>) -> Rc<RefCell<HtmlDocument>> {
     state.borrow().borrow::<ProbeDocument>().0.clone()
 }
 
-fn attached_node(document: &BaseDocument, node_id: u32) -> Result<&Node, JsErrorBox> {
+/// Blitz 0.3 node ids are versioned (slot index + generation), so a handle kept
+/// by a JS wrapper never resolves to a different node after its slot is reused:
+/// `get_node` returns `None` for a stale handle. Handles cross into JS as numbers
+/// (exact while the generation stays below 2^21).
+fn to_handle(id: NodeId) -> f64 {
+    id.as_u64() as f64
+}
+
+fn from_handle(handle: f64) -> NodeId {
+    NodeId::from_u64(handle as u64)
+}
+
+fn attached_node(document: &BaseDocument, handle: f64) -> Result<&Node, JsErrorBox> {
+    if !(handle >= 0.0) {
+        return Err(JsErrorBox::type_error("invalid Blitz node handle"));
+    }
     document
-        .get_node(node_id as usize)
+        .get_node(from_handle(handle))
         .ok_or_else(|| JsErrorBox::type_error("unknown Blitz node handle"))
 }
 
 /// DOM `getElementById`: first element in tree order whose `id` equals `id`.
-/// Walks the public node tree instead of Blitz's crate-private `nodes_to_id`
-/// map, so no selector parsing or escaping is involved.
-fn find_element_by_id(document: &BaseDocument, id: &str) -> Option<usize> {
+/// Walks the public node tree, so no selector parsing or escaping is involved.
+fn find_element_by_id(document: &BaseDocument, id: &str) -> Option<NodeId> {
     let mut stack = vec![document.root_node().id];
     while let Some(node_id) = stack.pop() {
         let node = document.get_node(node_id)?;
@@ -70,45 +85,49 @@ fn html_name(name: &str) -> QualName {
 }
 
 #[op2(fast)]
-fn op_blitz_get_element_by_id(state: Rc<RefCell<OpState>>, #[string] id: &str) -> i32 {
-    if id.is_empty() {
-        return -1;
-    }
+fn op_blitz_document_root(state: Rc<RefCell<OpState>>) -> f64 {
     let document = probe_document(&state);
     let document = document.borrow();
-    find_element_by_id(&document, id).map_or(-1, |node_id| node_id as i32)
+    to_handle(document.root_node().id)
 }
 
 #[op2(fast)]
-fn op_blitz_node_type(state: Rc<RefCell<OpState>>, #[smi] node_id: u32) -> Result<i32, JsErrorBox> {
+fn op_blitz_get_element_by_id(state: Rc<RefCell<OpState>>, #[string] id: &str) -> f64 {
+    if id.is_empty() {
+        return NO_NODE;
+    }
     let document = probe_document(&state);
     let document = document.borrow();
-    Ok(match attached_node(&document, node_id)?.data {
-        NodeData::Document => DOCUMENT_NODE,
+    find_element_by_id(&document, id).map_or(NO_NODE, to_handle)
+}
+
+#[op2(fast)]
+fn op_blitz_node_type(state: Rc<RefCell<OpState>>, handle: f64) -> Result<i32, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    Ok(match attached_node(&document, handle)?.data {
+        NodeData::Document(_) => DOCUMENT_NODE,
         NodeData::Element(_) | NodeData::AnonymousBlock(_) => ELEMENT_NODE,
         NodeData::Text(_) => TEXT_NODE,
-        NodeData::Comment => COMMENT_NODE,
+        NodeData::Comment { .. } => COMMENT_NODE,
     })
 }
 
 #[op2(fast)]
-fn op_blitz_parent(state: Rc<RefCell<OpState>>, #[smi] node_id: u32) -> Result<i32, JsErrorBox> {
+fn op_blitz_parent(state: Rc<RefCell<OpState>>, handle: f64) -> Result<f64, JsErrorBox> {
     let document = probe_document(&state);
     let document = document.borrow();
-    Ok(attached_node(&document, node_id)?
+    Ok(attached_node(&document, handle)?
         .parent
-        .map_or(-1, |parent| parent as i32))
+        .map_or(NO_NODE, to_handle))
 }
 
 #[op2]
 #[string]
-fn op_blitz_local_name(
-    state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
-) -> Result<String, JsErrorBox> {
+fn op_blitz_local_name(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let document = document.borrow();
-    let node = attached_node(&document, node_id)?;
+    let node = attached_node(&document, handle)?;
     Ok(node
         .element_data()
         .map(|element| element.name.local.to_string())
@@ -117,28 +136,25 @@ fn op_blitz_local_name(
 
 #[op2]
 #[string]
-fn op_blitz_text_content(
-    state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
-) -> Result<String, JsErrorBox> {
+fn op_blitz_text_content(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let document = document.borrow();
-    Ok(attached_node(&document, node_id)?.text_content())
+    Ok(attached_node(&document, handle)?.text_content())
 }
 
 /// DOM `textContent` setter. Text nodes are updated in place. Element children are
-/// detached with `remove_node`, not dropped: Blitz stores nodes in a slab that
-/// reuses ids of dropped nodes, which would let a cached JS wrapper alias an
-/// unrelated new node. Dropping needs a GC-aware wrapper lifecycle first.
+/// detached with `remove_node`, not dropped: a detached node stays reachable from
+/// its JS wrapper (like a removed DOM node). Freeing nodes needs a GC-aware
+/// wrapper lifecycle; versioned ids make a stale handle fail instead of aliasing.
 #[op2(fast)]
 fn op_blitz_set_text_content(
     state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
+    handle: f64,
     #[string] value: &str,
 ) -> Result<(), JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    let node = attached_node(&document, node_id)?;
+    let node = attached_node(&document, handle)?;
     let node_id = node.id;
     if node.is_text_node() {
         document.mutate().set_node_text(node_id, value);
@@ -149,7 +165,7 @@ fn op_blitz_set_text_content(
             "textContent is only supported on elements and text nodes",
         ));
     }
-    let children = node.children.clone();
+    let children: Vec<NodeId> = node.children.iter().copied().collect();
     let mut mutator = document.mutate();
     for child in children {
         mutator.remove_node(child);
@@ -164,19 +180,21 @@ fn op_blitz_set_text_content(
 /// `document.createElement` for the HTML namespace; `dom.js` lowercases and
 /// validates the name before calling.
 #[op2(fast)]
-fn op_blitz_create_element(state: Rc<RefCell<OpState>>, #[string] local_name: &str) -> i32 {
+fn op_blitz_create_element(state: Rc<RefCell<OpState>>, #[string] local_name: &str) -> f64 {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    document
+    let id = document
         .mutate()
-        .create_element(html_name(local_name), Vec::new()) as i32
+        .create_element(html_name(local_name), Vec::new());
+    to_handle(id)
 }
 
 #[op2(fast)]
-fn op_blitz_create_text_node(state: Rc<RefCell<OpState>>, #[string] data: &str) -> i32 {
+fn op_blitz_create_text_node(state: Rc<RefCell<OpState>>, #[string] data: &str) -> f64 {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    document.mutate().create_text_node(data) as i32
+    let id = document.mutate().create_text_node(data);
+    to_handle(id)
 }
 
 /// `appendChild`: rejects inserting a node into itself or its descendants and
@@ -185,32 +203,34 @@ fn op_blitz_create_text_node(state: Rc<RefCell<OpState>>, #[string] data: &str) 
 #[op2(fast)]
 fn op_blitz_append_child(
     state: Rc<RefCell<OpState>>,
-    #[smi] parent_id: u32,
-    #[smi] child_id: u32,
+    parent_handle: f64,
+    child_handle: f64,
 ) -> Result<i32, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    let child = attached_node(&document, child_id)?;
-    if matches!(child.data, NodeData::Document) {
+    let child = attached_node(&document, child_handle)?;
+    let child_id = child.id;
+    if matches!(child.data, NodeData::Document(_)) {
         return Ok(HIERARCHY_REQUEST_ERROR);
     }
-    let parent = attached_node(&document, parent_id)?;
-    if matches!(parent.data, NodeData::Text(_) | NodeData::Comment) {
+    let had_parent = child.parent.is_some();
+    let parent = attached_node(&document, parent_handle)?;
+    let parent_id = parent.id;
+    if matches!(parent.data, NodeData::Text(_) | NodeData::Comment { .. }) {
         return Ok(HIERARCHY_REQUEST_ERROR);
     }
-    let mut ancestor = Some(parent.id);
+    let mut ancestor = Some(parent_id);
     while let Some(id) = ancestor {
-        if id == child_id as usize {
+        if id == child_id {
             return Ok(HIERARCHY_REQUEST_ERROR);
         }
         ancestor = document.get_node(id).and_then(|node| node.parent);
     }
-    let had_parent = child.parent.is_some();
     let mut mutator = document.mutate();
     if had_parent {
-        mutator.remove_node(child_id as usize);
+        mutator.remove_node(child_id);
     }
-    mutator.append_children(parent_id as usize, &[child_id as usize]);
+    mutator.append_children(parent_id, &[child_id]);
     Ok(OK)
 }
 
@@ -218,16 +238,18 @@ fn op_blitz_append_child(
 #[op2(fast)]
 fn op_blitz_remove_child(
     state: Rc<RefCell<OpState>>,
-    #[smi] parent_id: u32,
-    #[smi] child_id: u32,
+    parent_handle: f64,
+    child_handle: f64,
 ) -> Result<i32, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    attached_node(&document, parent_id)?;
-    if attached_node(&document, child_id)?.parent != Some(parent_id as usize) {
+    let parent_id = attached_node(&document, parent_handle)?.id;
+    let child = attached_node(&document, child_handle)?;
+    let child_id = child.id;
+    if child.parent != Some(parent_id) {
         return Ok(NOT_FOUND_ERROR);
     }
-    document.mutate().remove_node(child_id as usize);
+    document.mutate().remove_node(child_id);
     Ok(OK)
 }
 
@@ -235,12 +257,12 @@ fn op_blitz_remove_child(
 #[string]
 fn op_blitz_get_attribute(
     state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
+    handle: f64,
     #[string] name: &str,
 ) -> Result<Option<String>, JsErrorBox> {
     let document = probe_document(&state);
     let document = document.borrow();
-    let node = attached_node(&document, node_id)?;
+    let node = attached_node(&document, handle)?;
     Ok(node.attrs().and_then(|attrs| {
         attrs
             .iter()
@@ -252,30 +274,29 @@ fn op_blitz_get_attribute(
 #[op2(fast)]
 fn op_blitz_set_attribute(
     state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
+    handle: f64,
     #[string] name: &str,
     #[string] value: &str,
 ) -> Result<(), JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    if attached_node(&document, node_id)?.element_data().is_none() {
+    let node = attached_node(&document, handle)?;
+    if node.element_data().is_none() {
         return Err(JsErrorBox::type_error("setAttribute on a non-element"));
     }
+    let node_id = node.id;
     document
         .mutate()
-        .set_attribute(node_id as usize, html_name(name), value);
+        .set_attribute(node_id, html_name(name), value);
     Ok(())
 }
 
 #[op2]
 #[string]
-fn op_blitz_namespace(
-    state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
-) -> Result<String, JsErrorBox> {
+fn op_blitz_namespace(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let document = document.borrow();
-    let node = attached_node(&document, node_id)?;
+    let node = attached_node(&document, handle)?;
     Ok(node
         .element_data()
         .map(|element| element.name.ns.to_string())
@@ -292,16 +313,18 @@ fn op_blitz_namespace(
 #[string]
 fn op_blitz_computed_style(
     state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
+    handle: f64,
     #[string] name: &str,
 ) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    if attached_node(&document, node_id)?.element_data().is_none() {
+    let node = attached_node(&document, handle)?;
+    if node.element_data().is_none() {
         return Err(JsErrorBox::type_error("getComputedStyle on a non-element"));
     }
+    let node_id = node.id;
     document.resolve_stylist(0.0);
-    let node = document.get_node(node_id as usize).unwrap();
+    let node = document.get_node(node_id).unwrap();
     let Some(styles) = node.primary_styles() else {
         return Ok(String::new());
     };
@@ -319,40 +342,35 @@ fn op_blitz_computed_style(
 }
 
 /// Inline style write (`element.style.x = v`); an empty value removes the
-/// declaration, like `style.removeProperty`.
+/// declaration, like `style.removeProperty`. Blitz 0.3 marks the element for
+/// restyle itself (0.2.1 did not).
 #[op2(fast)]
 fn op_blitz_set_style_property(
     state: Rc<RefCell<OpState>>,
-    #[smi] node_id: u32,
+    handle: f64,
     #[string] name: &str,
     #[string] value: &str,
 ) -> Result<(), JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    if attached_node(&document, node_id)?.element_data().is_none() {
+    let node = attached_node(&document, handle)?;
+    if node.element_data().is_none() {
         return Err(JsErrorBox::type_error("style on a non-element"));
     }
-    {
-        let mut mutator = document.mutate();
-        if value.is_empty() {
-            mutator.remove_style_property(node_id as usize, name);
-        } else {
-            mutator.set_style_property(node_id as usize, name, value);
-        }
+    let node_id = node.id;
+    let mut mutator = document.mutate();
+    if value.is_empty() {
+        mutator.remove_style_property(node_id, name);
+    } else {
+        mutator.set_style_property(node_id, name, value);
     }
-    // blitz-dom 0.2.1 does not mark the element for restyle after an inline style
-    // change (set_attribute does), so the write could stay invisible until something
-    // else restyles it. 0.3.0-beta.4 sets this same hint itself; drop this then.
-    document
-        .get_node(node_id as usize)
-        .unwrap()
-        .set_restyle_hint(RestyleHint::RESTYLE_STYLE_ATTRIBUTE);
     Ok(())
 }
 
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
+        op_blitz_document_root,
         op_blitz_get_element_by_id,
         op_blitz_node_type,
         op_blitz_parent,
@@ -382,37 +400,23 @@ fn resolve_layout(document: &Rc<RefCell<HtmlDocument>>) {
     document.resolve(0.0);
 }
 
-/// Hit-tests a point with Blitz and returns the event target: the hit node, or
-/// its parent element when the hit lands on a text node (text is never a
-/// mouse event target).
-fn hit_target(document: &Rc<RefCell<HtmlDocument>>, x: f32, y: f32) -> Option<usize> {
-    let document = document.borrow();
-    let hit = document.hit(x, y)?;
-    let node = document.get_node(hit.node_id)?;
-    if node.is_text_node() {
-        node.parent
-    } else {
-        Some(hit.node_id)
-    }
+/// Hit-tests a point with Blitz's `elementFromPoint` semantics (text and
+/// anonymous boxes resolve to their element), which is the mouse event target.
+fn hit_target(document: &Rc<RefCell<HtmlDocument>>, x: f32, y: f32) -> Option<NodeId> {
+    document.borrow().element_from_point(x, y)
 }
 
 const VIEWPORT: (u32, u32) = (640, 360);
 
 /// Border-box rectangle `(x, y, width, height)` of the element with `id`, in
-/// viewport pixels. Blitz `final_layout` locations are relative to the parent.
+/// document pixels (`Node::absolute_position` walks the containing blocks).
 fn element_rect(document: &Rc<RefCell<HtmlDocument>>, id: &str) -> (f32, f32, f32, f32) {
     let document = document.borrow();
     let node_id = find_element_by_id(&document, id).expect("element present");
-    let size = document.get_node(node_id).unwrap().final_layout.size;
-    let (mut x, mut y) = (0.0, 0.0);
-    let mut current = Some(node_id);
-    while let Some(id) = current {
-        let node = document.get_node(id).unwrap();
-        x += node.final_layout.location.x;
-        y += node.final_layout.location.y;
-        current = node.parent;
-    }
-    (x, y, size.width, size.height)
+    let node = document.get_node(node_id).unwrap();
+    let size = node.final_layout().size;
+    let origin = node.absolute_position(0.0, 0.0);
+    (origin.x, origin.y, size.width, size.height)
 }
 
 /// Paints the resolved document into an RGBA8 buffer with Vello's CPU renderer.
@@ -421,9 +425,10 @@ fn element_rect(document: &Rc<RefCell<HtmlDocument>>, id: &str) -> (f32, f32, f3
 /// deterministic everywhere. Presenting to a real window is a separate step.
 fn render_rgba(document: &Rc<RefCell<HtmlDocument>>) -> Vec<u8> {
     let (width, height) = VIEWPORT;
-    let document = document.borrow();
+    let mut document = document.borrow_mut();
+    let document: &mut BaseDocument = &mut document;
     anyrender::render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
-        |scene| blitz_paint::paint_scene(scene, &document, 1.0, width, height),
+        |scene| blitz_paint::paint_scene(scene, document, 1.0, width, height, 0, 0),
         width,
         height,
     )
@@ -615,7 +620,7 @@ fn main() {
             deno_core::scope!(scope, runtime);
             let function = v8::Local::new(scope, &dispatcher);
             let receiver = v8::undefined(scope).into();
-            let node = v8::Integer::new(scope, target as i32).into();
+            let node = v8::Number::new(scope, to_handle(target)).into();
             let kind = v8::String::new(scope, "click").unwrap().into();
             function
                 .call(scope, receiver, &[node, kind])
@@ -661,7 +666,7 @@ fn main() {
         let fading_rect = element_rect(&document, "fading");
 
         resolve_layout(&document);
-        let root_layout = document.borrow().root_element().final_layout;
+        let root_layout = *document.borrow().root_element().final_layout();
         assert!(root_layout.size.width > 0.0 && root_layout.size.height > 0.0);
 
         // Offscreen paint of the mutated document (Blitz painter + Vello on wgpu).
@@ -698,14 +703,20 @@ fn main() {
         let origin_pixel = pixel(&pixels, motion_centre.0, motion_centre.1);
         assert_color(moved_pixel, [90, 120, 220], "Motion-translated #motion background");
         assert_color(origin_pixel, [24, 32, 48], "#motion must have left its layout position");
-        // Known gap, not asserted: blitz-paint 0.2.1 paints an element's own
-        // background before its opacity layer, so only children/text fade. White
-        // at 0.5 over rgb(24, 32, 48) would be about rgb(140, 144, 152); fixed in
-        // blitz-paint 0.3.0-beta.4, which draws the background inside the layer.
+        // White at opacity 0.5 over rgb(24, 32, 48) is about rgb(140, 144, 152).
+        // blitz-paint 0.2.1 left the element's own background opaque; 0.3 draws it
+        // inside the opacity layer.
         let fading_pixel = pixel(
             &pixels,
             fading_rect.0 + fading_rect.2 / 2.0,
             fading_rect.1 + fading_rect.3 / 2.0,
+        );
+        assert!(
+            fading_pixel[..3]
+                .iter()
+                .zip([140u8, 144, 152])
+                .all(|(actual, expected)| actual.abs_diff(expected) <= 4),
+            "#fading must be painted at opacity 0.5: {fading_pixel:?}"
         );
         // Text must be painted inside the boxes; insets skip the UA button border.
         let inset = |rect: (f32, f32, f32, f32), by: f32| {
@@ -731,7 +742,8 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"js_tree_mutation_text_attributes_blitz_document\",\"status\":\"passed\"}}"
         );
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"blitz_hit_test_dispatches_deno_web_event_capture_target_bubble\",\"status\":\"passed\",\"target\":{target},\"x\":{x},\"y\":{y}}}"
+            "ROVES_PROBE_RESULT {{\"check\":\"blitz_hit_test_dispatches_deno_web_event_capture_target_bubble\",\"status\":\"passed\",\"target\":{},\"x\":{x},\"y\":{y}}}",
+            target.as_u64()
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"blitz_stylesheet_layout_pass\",\"status\":\"passed\",\"width\":{},\"height\":{}}}",
@@ -748,7 +760,7 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"motion_12_38_0_animate_transform_opacity\",\"status\":\"passed\",\"moved_pixel\":{moved_pixel:?}}}"
         );
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"opacity_on_element_background\",\"status\":\"known_gap_blitz_paint_0_2_1\",\"computed_opacity\":\"0.5\",\"painted\":{fading_pixel:?}}}"
+            "ROVES_PROBE_RESULT {{\"check\":\"opacity_on_element_background\",\"status\":\"passed\",\"computed_opacity\":\"0.5\",\"painted\":{fading_pixel:?}}}"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input_wrapper_gc\",\"status\":\"not_implemented\"}}"

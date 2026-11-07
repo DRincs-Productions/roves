@@ -218,7 +218,7 @@ Aggiunti poi: render offscreen con controllo pixel e screenshot artifact, e moda
 `element.style` in scrittura, e Motion 12.38.0 `animate()` completato con transform visibile nel paint
 (API mancanti trovate: `window`, `performance`, `HTMLElement`/`SVGElement`, `NodeList`), e `getComputedStyle`.
 Blitz 0.2.1 ha tre difetti già corretti in 0.3.0-beta.4 (restyle dopo `style` inline, opacità sullo
-sfondo, `render_to_vec`): valutare il passaggio della probe alla linea 0.3. Restano:
+sfondo, `render_to_vec`): la probe è passata alla linea 0.3 (`0.3.0-beta.4`, `NodeId` versionati, render CPU). Restano:
 shell/finestra, input reale, `classList`/`style`, Motion,
 ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati).
 

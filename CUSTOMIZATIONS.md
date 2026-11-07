@@ -19395,3 +19395,11 @@ STATUS_ACCESS_VIOLATION; flushed `ROVES_PROBE_STAGE` markers showed every phase 
 probe now paints with `anyrender_vello_cpu 0.8.1` (`VelloCpuImageRenderer`), which drops the
 whole wgpu stack from its lockfile. The workflow re-emits the last meaningful log lines as
 public annotations on failure.
+
+Eighth 2026-11-07 follow-up: the probe moves to Blitz `0.3.0-beta.4` (exact pins, with
+`stylo 0.22.0`, `anyrender 0.14.0`, `anyrender_vello_cpu 0.18.0`), which fixes the three 0.2
+defects above. Ops take and return versioned `NodeId` handles as JS numbers (new
+`op_blitz_document_root`, since the document id is no longer 0); hit-testing uses
+`element_from_point`; rects use `Node::absolute_position`; `paint_scene` takes the document
+mutably. The manual restyle hint is removed and the opacity paint check is asserted. Not
+compiled locally by request; the lockfile was resolved with `cargo tree` and CI builds it.

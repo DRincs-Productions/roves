@@ -6,7 +6,7 @@ Isolated Windows feasibility probe; it is not production code and is not connect
 
 Deno `deno_core` and its V8 isolate are the only JavaScript runtime. Guest JavaScript runs through that runtime. No privileged `Deno.*` APIs are exposed. Blitz supplies HTML parsing, DOM, CSS/style resolution, layout, painting and the candidate native shell. The high-level `blitz` launcher is intentionally avoided because Roves needs to own its event loop and embedder policies.
 
-The selected crates are the official DioxusLabs line: `blitz-dom 0.2.1`, `blitz-html 0.2.0`, `blitz-shell 0.2.2`, `blitz-paint 0.2.1`, `anyrender_vello 0.6.0`, `blitz-traits 0.2.0`, and `deno_core 0.413.0`. These versions follow the official `blitz 0.2.1` lockfile where available and are pinned in this probe's Cargo.lock. `cargo tree -i v8` reports one `v8 150.4.0` through `deno_v8 0.5.0`. The PathScale 0.6.5 graph was rejected because its transitive `nagoya 0.1.19` fails compilation on Windows with POSIX-only APIs.
+The selected crates are the official DioxusLabs line, moved on 2026-11-07 from the stable 0.2 releases to `0.3.0-beta.4` (`blitz-dom`, `blitz-html`, `blitz-shell`, `blitz-paint`, `blitz-traits`) with `stylo 0.22.0`, `anyrender 0.14.0`, `anyrender_vello_cpu 0.18.0` and `deno_core 0.413.0`, all pinned exactly. The 0.2 line had three defects that 0.3.0-beta.4 already fixes (below). The port was checked by CI only (no local build, by request). `cargo tree -i v8` reports one `v8 150.4.0` through `deno_v8 0.5.0`. The PathScale 0.6.5 graph was rejected because its transitive `nagoya 0.1.19` fails compilation on Windows with POSIX-only APIs.
 
 ## What the current executable verifies
 
@@ -33,15 +33,19 @@ Cost of deno_web here: 15 more crates in the probe lockfile, including a second 
 
 The technical handoff left open a JS DOM library mirrored into Blitz (option B). Checked on 2026-11-07: `happy-dom 21.0.4` imports Node built-ins (`vm`, `fs`, `buffer`, `stream`, `url`), unusable in this runtime without exposing a Node layer. `linkedom 0.18.15` is pure JS, but its `dispatchEvent` is "intentionally simplified" (no real capture phase, which React's root listeners rely on) and its `MutationObserver` uses non-standard record matching, so mirroring into Blitz would need hooks into its internals, plus a second tree in memory. The probe therefore keeps Blitz as the single tree and reuses deno_web for Event/EventTarget/DOMException.
 
-### Blitz 0.2.1 gaps found (fixed in 0.3.0-beta.4)
+### Blitz 0.2.1 gaps found (fixed in 0.3.0-beta.4, which the probe now uses)
 
-- `DocumentMutator::set_style_property` sets no restyle hint (`set_attribute` does), so inline style writes may never be restyled. The probe sets `RestyleHint::RESTYLE_STYLE_ATTRIBUTE` itself; 0.3.0-beta.4 does the same inside Blitz. Negative check: without the hint, `computed style must be live and flush pending writes` fails.
-- `blitz-paint` draws an element's own background and border before its opacity layer, so `opacity` only fades children and text. Reported as `known_gap_blitz_paint_0_2_1` (computed opacity 0.5, painted fully opaque), not asserted. 0.3.0-beta.4 draws the background inside the layer.
+- `DocumentMutator::set_style_property` sets no restyle hint (`set_attribute` does), so inline style writes may never be restyled. On 0.2.1 the probe set `RestyleHint::RESTYLE_STYLE_ATTRIBUTE` itself; 0.3.0-beta.4 does it inside Blitz, so the workaround is gone. Negative check: without the hint, `computed style must be live and flush pending writes` fails.
+- `blitz-paint` draws an element's own background and border before its opacity layer, so `opacity` only fades children and text. On 0.2.1 this was reported as a known gap; on 0.3 the probe asserts the faded pixel. 0.3.0-beta.4 draws the background inside the layer.
 - `anyrender_vello 0.6.0` `render_to_vec` (see above; the probe no longer uses the GPU renderer).
 
 These argue for moving the probe to the Blitz 0.3 line once its betas are usable here; that changes Stylo/anyrender versions and needs its own check.
 
 ### Identity constraint found
+
+Update for Blitz 0.3: `NodeId` is versioned (slot index + generation), so a handle held by a wrapper resolves to `None` once its node is freed instead of aliasing a new node. The probe passes handles to JS as numbers and still detaches instead of freeing; the remaining work is to free nodes when wrappers are collected.
+
+Original 0.2 finding:
 
 Blitz stores nodes in a slab and **reuses the ids of dropped nodes**. A wrapper cache keyed by node id is therefore only sound while no referenced node is dropped. The probe's setter uses `DocumentMutator::remove_node` (detach) instead of `remove_and_drop_*`, so detached nodes stay allocated, and the cache is strong. That leaks detached nodes; production needs a GC-aware lifecycle (e.g. dropping a Blitz node only after its wrapper is collected, possibly via deno_core cppgc objects) before nodes can be freed.
 

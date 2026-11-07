@@ -29,6 +29,7 @@
     op_blitz_set_style_property,
     op_blitz_namespace,
     op_blitz_computed_style,
+    op_blitz_document_root,
   } = core.ops;
   const {
     Event,
@@ -51,7 +52,8 @@
   const ELEMENT_NODE = 1;
   const TEXT_NODE = 3;
   const DOCUMENT_NODE = 9;
-  const DOCUMENT_ID = 0;
+  // Versioned Blitz node id of the document node, as a number handle.
+  const DOCUMENT_ID = op_blitz_document_root();
   // XML Name production is broader; this ASCII subset covers HTML elements and
   // custom elements and rejects everything the probe does not handle.
   const VALID_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/;
