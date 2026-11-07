@@ -914,9 +914,9 @@ fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Func
     }
 }
 
-/// Drives `frames` frames without a window, paced at 60 Hz in real time so timers
-/// become due: `frame_step`, then Blitz layout.
-fn drive_frames(
+/// Drives `frames` frames without a window, paced at 60 Hz in real time (awaiting
+/// tokio, so its timers advance too) so timers become due: `frame_step`, then Blitz layout.
+async fn drive_frames(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
@@ -927,7 +927,9 @@ fn drive_frames(
     for frame in 0..frames {
         let deadline = start + frame_interval * frame;
         if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
-            std::thread::sleep(wait);
+            // Await (not thread::sleep) so tokio's timer driver runs: deno_webgpu's
+            // mapAsync and other tokio-based ops only progress while it does.
+            tokio::time::sleep(wait).await;
         }
         frame_step(runtime, run_animation_frame);
         resolve_layout(document);
@@ -1171,7 +1173,7 @@ fn main() {
             .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
             .expect("frame test setup should run");
         let frames = frame_count();
-        drive_frames(&mut runtime, &document, &run_animation_frame, frames);
+        drive_frames(&mut runtime, &document, &run_animation_frame, frames).await;
         runtime
             .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
             .expect("frame loop checks should pass");
@@ -1187,7 +1189,7 @@ fn main() {
         runtime
             .execute_script("roves-blitz-motion-scenario.js", MOTION_SCENARIO)
             .expect("Motion scenario should load");
-        drive_frames(&mut runtime, &document, &run_animation_frame, 20);
+        drive_frames(&mut runtime, &document, &run_animation_frame, 20).await;
         runtime
             .execute_script(
                 "roves-blitz-motion-check.js",
@@ -1219,7 +1221,7 @@ fn main() {
             // A full collection through the V8 API: no `gc` global is ever
             // exposed to guest code (an --expose-gc global is not deletable).
             runtime.v8_isolate().low_memory_notification();
-            drive_frames(&mut runtime, &document, &run_animation_frame, 2);
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2).await;
         }
         let nodes_after = live_nodes(&document);
         assert!(
@@ -1351,7 +1353,7 @@ fn main() {
                 .expect("WebGPU scenario should load");
             let mut status = String::from("running");
             for _ in 0..600 {
-                drive_frames(&mut runtime, &document, &run_animation_frame, 1);
+                drive_frames(&mut runtime, &document, &run_animation_frame, 1).await;
                 status = evaluate_string(&mut runtime, "webgpuResult.status");
                 if status != "running" {
                     break;

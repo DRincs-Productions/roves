@@ -958,10 +958,38 @@
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
   // Minimal navigator: WebGPU plus the fields libraries probe.
+  // Workaround for deno_webgpu 0.227.0 (wgpu-core 29.0.1): as soon as a second
+  // GPUDevice exists, texture creation fails with "not enough memory left" on
+  // every device (reproduced on a GTX 1050). PixiJS always creates a probe device
+  // in isWebGPUSupported before its real one, so each adapter hands out a single
+  // shared device, created with every texture-compression feature it supports.
+  let sharedDevice = null;
+  let patchedGpu = null;
+  function gpuWithSharedDevice() {
+    webgpu.initGPU();
+    const gpu = webgpu.gpu;
+    if (patchedGpu !== null) return patchedGpu;
+    const requestAdapter = gpu.requestAdapter.bind(gpu);
+    gpu.requestAdapter = async (options) => {
+      const adapter = await requestAdapter(options);
+      if (adapter === null) return null;
+      const requestDevice = adapter.requestDevice.bind(adapter);
+      adapter.requestDevice = () => {
+        if (sharedDevice === null) {
+          const requiredFeatures = ["texture-compression-bc", "texture-compression-astc", "texture-compression-etc2"]
+            .filter((feature) => adapter.features.has(feature));
+          sharedDevice = requestDevice({ requiredFeatures });
+        }
+        return sharedDevice;
+      };
+      return adapter;
+    };
+    patchedGpu = gpu;
+    return gpu;
+  }
   const navigator = Object.freeze({
     get gpu() {
-      webgpu.initGPU();
-      return webgpu.gpu;
+      return gpuWithSharedDevice();
     },
     userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Roves-Blitz-probe",
     platform: "Win32",
