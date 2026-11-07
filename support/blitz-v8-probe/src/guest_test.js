@@ -91,6 +91,17 @@
     }
   });
 
+  // Ancestor listeners must run even when the target has no listener for the
+  // type (deno_web's EventTarget.dispatchEvent skips them in that case).
+  let reachedAncestor = false;
+  const onAncestor = () => {
+    reachedAncestor = true;
+  };
+  document.addEventListener("probe-bubble", onAncestor);
+  button.dispatchEvent(new Event("probe-bubble", { bubbles: true }));
+  document.removeEventListener("probe-bubble", onAncestor);
+  check(reachedAncestor, "an event must bubble to ancestors when the target has no listener");
+
   // A guest-dispatched event is untrusted, so the listeners above ignore it.
   check(button.dispatchEvent(new Event("click", { bubbles: true })) === true, "guest dispatch must work");
   check(order.length === 0, "untrusted events must be distinguishable");

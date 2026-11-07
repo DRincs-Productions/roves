@@ -46,19 +46,6 @@
       focusLog.push(`${type}:${event.target.localName}:${event.isTrusted}:${event instanceof FocusEvent}`);
     }, true);
   }
-  // Diagnostics for the focus sequence: target-phase listeners, capture listeners
-  // registered with an options object, and errors thrown by listeners.
-  const focusDiagnostics = [];
-  const listenerErrors = [];
-  globalThis.__rovesListenerErrors = listenerErrors;
-  addEventListener("error", (event) => {
-    listenerErrors.push(String(event.error?.message ?? event.message));
-    event.preventDefault();
-  });
-  for (const type of ["focus", "blur", "focusin", "focusout"]) {
-    button.addEventListener(type, () => focusDiagnostics.push(`target:${type}`));
-    app.addEventListener(type, () => focusDiagnostics.push(`capture-options:${type}`), { capture: true });
-  }
   check(document.activeElement === document.body, `nothing focused: activeElement is body, got ${document.activeElement?.localName}`);
   app.focus();
   check(document.activeElement === document.body, "a non-focusable element does not take focus");
@@ -76,7 +63,7 @@
       "focus:button:true:true",
       "focusin:button:true:true",
     ].join(),
-    `focus event sequence: ${focusLog.join()} | diagnostics: ${focusDiagnostics.join()} | listener errors: ${listenerErrors.join(" / ")} | fired: ${globalThis.__rovesFireLog?.join()}`,
+    `focus event sequence: ${focusLog.join()}`,
   );
 
   // Guest-constructed events are untrusted and carry their init values.
@@ -109,16 +96,14 @@
   }
   for (const type of ["keydown", "keyup"]) {
     document.addEventListener(type, (event) => {
-      const record = { type, keyboard: event instanceof KeyboardEvent };
-      try {
-        record.trusted = event.isTrusted;
-        record.key = event.key;
-        record.code = event.code;
-        record.onFocused = event.target === document.activeElement;
-      } catch (error) {
-        record.error = String(error?.stack ?? error);
-      }
-      received.push(record);
+      received.push({
+        type,
+        trusted: event.isTrusted,
+        keyboard: event instanceof KeyboardEvent,
+        key: event.key,
+        code: event.code,
+        onFocused: event.target === document.activeElement,
+      });
     });
   }
 })();

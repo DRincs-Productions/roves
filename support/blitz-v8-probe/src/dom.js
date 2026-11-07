@@ -61,6 +61,7 @@
     setEventTargetData,
     saveGlobalThisReference,
     reportException,
+    dispatch,
   } = core.loadExtScript("ext:deno_web/02_event.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
@@ -130,6 +131,19 @@
     constructor() {
       if (!constructing) throw new TypeError("Illegal constructor");
       super();
+    }
+    // deno_web's EventTarget.dispatchEvent returns early when the target itself
+    // has no listener for the type, which skips every ancestor; correct for
+    // Deno's tree-less targets, wrong for DOM nodes. Nodes call deno_web's
+    // spec dispatch (the path is built from parentNode) directly.
+    dispatchEvent(event) {
+      if (!(event instanceof Event)) {
+        throw new TypeError("Failed to execute 'dispatchEvent': parameter 1 is not of type 'Event'.");
+      }
+      if (event.eventPhase !== Event.NONE) {
+        throw new DOMException("Invalid event state", "InvalidStateError");
+      }
+      return dispatch(this, event);
     }
     get nodeType() {
       return op_blitz_node_type(handleOf(this, "nodeType"));
@@ -357,20 +371,10 @@
     if (FOCUS_EVENTS.has(type)) return FocusEvent;
     return Event;
   }
-  // TEMPORARY diagnostics for the missing focusin/focusout (remove once fixed).
-  const fireLog = [];
-  globalThis.__rovesFireLog = fireLog;
   function fireTrusted(target, type, Class, init) {
-    try {
-      const event = new Class(type, { cancelable: false, composed: true, view: globalThis, ...init });
-      setIsTrusted(event, true);
-      const result = target.dispatchEvent(event);
-      fireLog.push(`${type}:${result}:${event.bubbles}`);
-      return result;
-    } catch (error) {
-      fireLog.push(`${type}:threw:${error}`);
-      throw error;
-    }
+    const event = new Class(type, { cancelable: false, composed: true, view: globalThis, ...init });
+    setIsTrusted(event, true);
+    return target.dispatchEvent(event);
   }
 
   // matchMedia over the probe viewport. Evaluates media types (all/screen/print),
@@ -913,13 +917,7 @@
         ...JSON.parse(init),
       });
       setIsTrusted(event, true);
-      const target = wrap(handle);
-      const result = target.dispatchEvent(event);
-      // TEMPORARY diagnostics (see fireLog).
-      if (type.startsWith("key")) {
-        fireLog.push(`${type}:${handle}:${result}:${target.localName}:${event.composedPath().map((node) => node.localName ?? node.nodeType ?? "?").join(">")}`);
-      }
-      return result;
+      return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
     // Navigations the single-document policy blocked (assign/replace/reload).
