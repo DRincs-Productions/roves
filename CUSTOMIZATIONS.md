@@ -19388,3 +19388,10 @@ dependency, same version as blitz-dom 0.2.1, no new crates); the JS object is li
 probe sets `RESTYLE_STYLE_ATTRIBUTE` itself; a negative run without it fails), and blitz-paint
 applies `opacity` only to children, not the element's own background (reported as a known gap,
 not asserted). A second Motion animation reads its start opacity through getComputedStyle.
+
+Seventh 2026-11-07 follow-up: CI crash fix. On the Windows runners the probe exited with
+STATUS_ACCESS_VIOLATION; flushed `ROVES_PROBE_STAGE` markers showed every phase passing up to
+`offscreen_paint`, i.e. the wgpu renderer of anyrender_vello 0.6.0 on GPU-less runners. The
+probe now paints with `anyrender_vello_cpu 0.8.1` (`VelloCpuImageRenderer`), which drops the
+whole wgpu stack from its lockfile. The workflow re-emits the last meaningful log lines as
+public annotations on failure.

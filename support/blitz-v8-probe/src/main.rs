@@ -415,20 +415,18 @@ fn element_rect(document: &Rc<RefCell<HtmlDocument>>, id: &str) -> (f32, f32, f3
     (x, y, size.width, size.height)
 }
 
-/// Paints the resolved document into an RGBA8 buffer. Uses `ImageRenderer::render`
-/// on a pre-sized buffer: `render_to_vec`/`render_to_buffer` in anyrender_vello
-/// 0.6.0 pass a zero-length vector to the copy-out step.
+/// Paints the resolved document into an RGBA8 buffer with Vello's CPU renderer.
+/// CPU on purpose: the wgpu path (anyrender_vello 0.6) crashed with
+/// STATUS_ACCESS_VIOLATION on GPU-less Windows CI runners, and a CPU raster is
+/// deterministic everywhere. Presenting to a real window is a separate step.
 fn render_rgba(document: &Rc<RefCell<HtmlDocument>>) -> Vec<u8> {
-    use anyrender::ImageRenderer;
     let (width, height) = VIEWPORT;
     let document = document.borrow();
-    let mut renderer = anyrender_vello::VelloImageRenderer::new(width, height);
-    let mut pixels = vec![0; (width * height * 4) as usize];
-    renderer.render(
+    anyrender::render_to_buffer::<anyrender_vello_cpu::VelloCpuImageRenderer, _>(
         |scene| blitz_paint::paint_scene(scene, &document, 1.0, width, height),
-        &mut pixels,
-    );
-    pixels
+        width,
+        height,
+    )
 }
 
 fn pixel(pixels: &[u8], x: f32, y: f32) -> [u8; 4] {
