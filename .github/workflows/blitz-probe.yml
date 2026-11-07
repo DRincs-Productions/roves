@@ -69,6 +69,30 @@ jobs:
           set -o pipefail
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
+      # Discovery run on the real game: visual-novel-template's production build
+      # (the game roves-action tests with) loaded with --game. Report-only: the
+      # result lists script errors and how much of the page rendered.
+      - name: checkout visual-novel-template
+        uses: actions/checkout@v4
+        with:
+          repository: DRincs-Productions/visual-novel-template
+          path: visual-novel-template
+      - name: build visual-novel-template
+        working-directory: visual-novel-template
+        shell: bash
+        run: |
+          npm install
+          npm run build
+      - name: run the probe on the game (report only)
+        shell: bash
+        continue-on-error: true
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-game-storage
+          ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-game.png
+        run: |
+          "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" --game visual-novel-template/dist > "$RUNNER_TEMP/blitz-game.log" 2>&1 || echo "probe exited with $?"
+          grep -E 'ROVES_PROBE_RESULT|ROVES_PROBE_GAME_MISSING_RESOURCE|panicked' "$RUNNER_TEMP/blitz-game.log" | cut -c1-3000
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
       # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
       - name: annotate probe log tail on failure
@@ -148,6 +172,8 @@ jobs:
             ${{ runner.temp }}/blitz-window.png
             ${{ runner.temp }}/blitz-window.log
             ${{ runner.temp }}/blitz-window.err
+            ${{ runner.temp }}/blitz-game.log
+            ${{ runner.temp }}/blitz-game.png
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn

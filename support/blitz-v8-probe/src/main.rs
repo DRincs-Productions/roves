@@ -10,6 +10,7 @@ use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
 use style::properties::{PropertyDeclarationId, PropertyId};
 
+mod game;
 mod window;
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
@@ -807,6 +808,8 @@ deno_core::extension!(
 
 fn resolve_layout(document: &Rc<RefCell<HtmlDocument>>) {
     let mut document = document.borrow_mut();
+    // Apply resources (stylesheets, fonts) delivered by the NetProvider.
+    document.handle_messages();
     document.set_viewport(Viewport::new(
         VIEWPORT.0,
         VIEWPORT.1,
@@ -1022,14 +1025,18 @@ fn main() {
     std::fs::create_dir_all(&storage_dir).expect("storage directory");
     tokio.block_on(async {
         stage("parse_html");
-        let document = Rc::new(RefCell::new(HtmlDocument::from_html(
-            FIXTURE,
-            // The html5ever provider enables `innerHTML` fragment parsing.
-            DocumentConfig {
-                html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
-                ..Default::default()
-            },
-        )));
+        let game = game::GameContent::from_args();
+        let document = Rc::new(RefCell::new(match &game {
+            Some(game) => game.document(),
+            None => HtmlDocument::from_html(
+                FIXTURE,
+                // The html5ever provider enables `innerHTML` fragment parsing.
+                DocumentConfig {
+                    html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
+                    ..Default::default()
+                },
+            ),
+        }));
         stage("create_js_runtime");
         let mut runtime = JsRuntime::new(RuntimeOptions {
             extensions: vec![
@@ -1046,6 +1053,7 @@ fn main() {
                 deno_webgpu::deno_webgpu::init(),
                 roves_blitz_v8_probe::init(),
             ],
+            module_loader: game.as_ref().map(|game| game.module_loader()),
             ..Default::default()
         });
         runtime
@@ -1081,6 +1089,14 @@ fn main() {
                 function("blockedNavigations"),
             )
         };
+
+        if game.is_some() {
+            // A real game page instead of the fixture tests.
+            stage("game_page");
+            resolve_layout(&document);
+            game::run(&mut runtime, &document, &run_animation_frame, frame_count().max(120)).await;
+            return;
+        }
 
         stage("guest_dom_test");
         runtime

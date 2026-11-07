@@ -62,7 +62,9 @@
     saveGlobalThisReference,
     reportException,
     dispatch,
+    PromiseRejectionEvent,
   } = core.loadExtScript("ext:deno_web/02_event.js");
+  const { Console } = core.loadExtScript("ext:deno_web/01_console.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
   const { performance, setTimeOrigin } = core.loadExtScript("ext:deno_web/15_performance.js");
@@ -911,6 +913,15 @@
   saveGlobalThisReference(globalThis);
   // deno_core's own queueMicrotask wrapper reports through this callback.
   core.setReportExceptionCallback(reportException);
+  // Unhandled promise rejections become `unhandledrejection` events (as in
+  // browsers) instead of terminating the runtime.
+  core.setUnhandledPromiseRejectionHandler((promise, reason) => {
+    const event = new PromiseRejectionEvent("unhandledrejection", { cancelable: true, promise, reason });
+    if (globalThis.dispatchEvent(event)) {
+      core.print(`Uncaught (in promise) ${reason?.stack ?? reason}\n`, true);
+    }
+    return true;
+  });
 
   const globals = {
     Node,
@@ -948,6 +959,7 @@
     URLSearchParams,
     structuredClone,
     Storage: webStorage.Storage,
+    PromiseRejectionEvent,
     History: historyApi.History,
     Location: historyApi.Location,
     PopStateEvent: historyApi.PopStateEvent,
@@ -1005,6 +1017,7 @@
   }
   Object.defineProperties(globalThis, {
     navigator: { value: navigator, enumerable: true, configurable: true },
+    console: { value: new Console((message, level) => core.print(message, level > 1)), writable: true, configurable: true },
     history: { value: historyApi.history, enumerable: true, configurable: true },
     location: { get: () => historyApi.location, set: (url) => historyApi.location.assign(url), enumerable: true, configurable: true },
     localStorage: { get: () => webStorage.localStorage(), enumerable: true, configurable: true },
