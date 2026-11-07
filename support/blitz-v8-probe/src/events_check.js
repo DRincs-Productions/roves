@@ -2,7 +2,22 @@
 (() => {
   "use strict";
   const fail = (message) => {
-    throw new Error(`${message}: ${JSON.stringify(receivedInput)} | fired: ${globalThis.__rovesFireLog?.join(" ; ")} | listener errors: ${globalThis.__rovesListenerErrors?.join(" / ")}`);
+    // Diagnostics: parent chain identity and an untrusted JS-dispatched keydown.
+    const chain = [];
+    for (let node = document.getElementById("button"); node !== null; node = node.parentNode) {
+      chain.push(node === document ? "#document(global)" : node.nodeType === 9 ? "#document(other)" : node.localName);
+    }
+    const phases = [];
+    const probe = (event) => phases.push(`${event.eventPhase}:${event.bubbles}`);
+    document.addEventListener("keydown", probe);
+    document.getElementById("button").dispatchEvent(new KeyboardEvent("keydown", { bubbles: true }));
+    document.removeEventListener("keydown", probe);
+    const plain = [];
+    const probePlain = (event) => plain.push(`${event.eventPhase}`);
+    document.addEventListener("keydown", probePlain);
+    document.getElementById("button").dispatchEvent(new Event("keydown", { bubbles: true }));
+    document.removeEventListener("keydown", probePlain);
+    throw new Error(`${message}: ${JSON.stringify(receivedInput)} | fired: ${globalThis.__rovesFireLog?.join(" ; ")} | listener errors: ${globalThis.__rovesListenerErrors?.join(" / ")} | chain: ${chain.join(">")} | js KeyboardEvent at document: ${phases.join()} | js Event at document: ${plain.join()}`);
   };
   const mouse = receivedInput.filter((event) => "mouse" in event);
   const keys = receivedInput.filter((event) => "keyboard" in event);
