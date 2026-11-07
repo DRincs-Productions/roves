@@ -272,8 +272,13 @@
     if (FORM_CONTROLS.includes(name)) return !element.hasAttribute("disabled");
     return (name === "a" && element.hasAttribute("href")) || element.hasAttribute("tabindex");
   }
+  // Blitz may report the document, <html> or <body> as focused before anything
+  // focusable took focus; for the DOM that is "no focused element".
   function focusedElement() {
-    return wrapOrNull(op_blitz_focused());
+    const focused = wrapOrNull(op_blitz_focused());
+    if (!(focused instanceof Element)) return null;
+    const name = focused.localName;
+    return name === "html" || name === "body" ? null : focused;
   }
 
   // UI event classes on top of deno_web's Event. Values come from the init

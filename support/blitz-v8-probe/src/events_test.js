@@ -46,7 +46,7 @@
       focusLog.push(`${type}:${event.target.localName}:${event.isTrusted}:${event instanceof FocusEvent}`);
     }, true);
   }
-  check(document.activeElement === document.body, "nothing focused: activeElement is body");
+  check(document.activeElement === document.body, `nothing focused: activeElement is body, got ${document.activeElement?.localName}`);
   app.focus();
   check(document.activeElement === document.body, "a non-focusable element does not take focus");
   button.focus();
