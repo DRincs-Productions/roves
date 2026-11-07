@@ -67,9 +67,11 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          tail -n 60 "$RUNNER_TEMP/blitz-probe.log" | grep -v '^\s*$' | while IFS= read -r line; do
-            echo "::notice::${line:0:900}"
-          done
+          # GitHub keeps at most 10 notice annotations per step: emit only the last
+          # meaningful lines, never cargo's Compiling/Downloaded progress.
+          grep -v -E -e '^[[:space:]]*$' -e '(Compiling|Downloaded|Downloading|Checking) ' "$RUNNER_TEMP/blitz-probe.log" \
+            | tail -n 9 \
+            | while IFS= read -r line; do echo "::notice::${line:0:900}"; done
       - name: upload probe log and offscreen screenshot
         if: always()
         uses: actions/upload-artifact@v4
