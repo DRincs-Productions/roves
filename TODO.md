@@ -85,6 +85,20 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 - [ ] **iOS su dispositivo/simulatore reale:** mai verificato — nessun macOS/Xcode/simulatore/dispositivo disponibile in nessuna sessione finora. Il codice (`App.swift`) è stato riletto riga per riga contro gli stessi bug trovati su Android (URL di boot, logica di fallback) e non li ha — carica già la radice nuda `game://content/`, fallback con vero `FileManager.fileExists` — ma resta un'analisi statica, mai confermata su un device/simulatore reale. Fare lo stesso test fatto su Android (build reale via `roves-action`'s `ios: 'true'` o `support/ios/bundle.py`, avvio su device/simulatore reale, ispezione con Safari Web Inspector).
 - [ ] **Manifest residuo:** definire quali campi hanno un equivalente mobile sensato (`background_color`, display, lingua ed entry point) e testarli. Name/short_name/orientation, candidati manifest e risoluzione icona sono già presenti: non reimplementarli. Non reintrodurre la status bar contro il design precedente.
 
+## Migrazione autorizzata Servo → Blitz con Deno/V8
+
+L'utente ha autorizzato il 6 novembre 2026 la migrazione del motore browser verso Blitz,
+mantenendo Deno + V8 come runtime JS prioritario. Piano operativo e stato della probe:
+[handoff Blitz/V8](./docs/handoff/2026-11-06-blitz-v8-migration.md). Servo resta il fallback
+di produzione fino alla parità verificata.
+
+- [x] T1a: probe Windows isolata con `deno_core`/V8 unico, Blitz HTML/DOM e resolve style/layout; `cargo check --locked`, run e singola V8 verificati.
+- [x] T1b: mutazione DOM da JavaScript Deno/V8 a Blitz via op; `document.getElementById` e `textContent` con wrapper JS stabili (`===`) nella probe (7 novembre).
+- [ ] T1c: ciclo di vita wrapper/nodo legato al GC (Blitz riusa gli id dei nodi eliminati), poi eventi, finestra/render e frame loop. PS Blitz 0.6.5 è escluso per errori POSIX di `nagoya 0.1.19` su Windows.
+- [ ] Verificare interop GPU WebGL/WebGL2 e PixiJS sulla stessa superficie senza readback CPU.
+- [ ] Completare la matrice API sul commit corrente di visual-novel-template: Motion/WAAPI, Pixi'VN, markdown-typewriter, audio, storage/saves, History, asset, resize, input e sicurezza.
+- [ ] Portare API Web mancanti riusando estensioni Deno e librerie mantenute; non esporre API privilegiate Deno né introdurre un secondo runtime.
+- [ ] Migrare il prodotto su branch dedicato solo dopo i gate del handoff; mantenere Servo fino alla parità verificata.
 ## Desktop: prestazioni, contenuti e salvataggi
 
 - [ ] **Baseline hardware:** confermare GPU/renderer e assenza di fallback software sui target reali Windows/macOS/Linux; fissare giochi, risoluzioni, cache e metodologia di misura.

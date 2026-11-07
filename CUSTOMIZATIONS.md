@@ -19296,3 +19296,31 @@ the nearest `Pipeline` diff for the pipeline on each side. Unchanged: a more rec
 and state assertion in `gc-lifecycle.html` is unchanged; `test_runner.py` adds a negative control
 whose mock `replaceState` rewrites the oldest pushed entry and must reproduce the CI failure line.
 Patch: `patches/servo-v0.5.0/0461-session-history-replace-current-entry.patch`.
+## 2026-11-06 - Start isolated Blitz + Deno/V8 migration probe
+
+Added the standalone `support/blitz-v8-probe` workspace and a Windows-only, manually
+runnable GitHub Actions check in `.github/workflows/blitz-probe.yml`. The probe pins the
+official DioxusLabs Blitz DOM/HTML/shell/paint graph with deno_core 0.413.0, executes one
+Deno/V8 script, mutates a Blitz text node through a synchronous deno_core op, then resolves
+and checks a 640x360 layout. `cargo check --locked`, `cargo run --locked`, and `cargo tree -i
+v8` pass locally; the tree has one V8 150.4.0. The op is explicitly on deno_core's
+fast-compatible path.
+
+PS Blitz 0.6.5 was compared and rejected for this Windows probe: its graph fails to compile
+inside `nagoya 0.1.19` with POSIX-only APIs. The official high-level `blitz` launcher is not
+used because it owns the event loop, which Roves needs to coordinate with Deno/V8. The
+probe does not yet implement guest DOM objects/wrapper identity, listeners/events, a visible
+window, painting, frame integration, Motion or WebGL, and supplies no performance result.
+It remains isolated and is not imported by production. Handoff: `docs/handoff/2026-11-06-blitz-v8-migration.md`.
+
+2026-11-07 follow-up: the fixture-specific op was replaced by a minimal DOM surface.
+`src/dom.js` installs `document.getElementById` and `Node.prototype.textContent` over three
+deno_core ops (`op_blitz_get_element_by_id`, `op_blitz_text_content`,
+`op_blitz_set_text_content`), each borrowing the Blitz document for one synchronous call. A
+JS-side map gives one wrapper per Blitz node id (`===` identity, expandos survive mutation);
+handles are class-private and wrappers are not guest-constructible. `getElementById` walks the
+public node tree because Blitz's `nodes_to_id` is crate-private. Blitz's node slab reuses ids
+of dropped nodes, so the setter detaches children with `remove_node` instead of dropping them;
+freeing nodes needs a GC-aware wrapper lifecycle first. `src/guest_test.js` checks identity,
+coercion, null/missing ids and illegal construction; disabling the wrapper cache makes it
+fail. fmt/check/run pass on Windows with one V8 150.4.0.

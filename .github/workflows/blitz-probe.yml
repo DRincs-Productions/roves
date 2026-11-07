@@ -1,0 +1,59 @@
+name: Blitz + Deno/V8 probe
+
+# Isolated feasibility check only; this does not build or gate the production engine.
+'on':
+  push:
+    paths:
+      - 'support/blitz-v8-probe/**'
+      - '.github/workflows/blitz-probe.yml'
+  workflow_dispatch: {}
+
+concurrency:
+  group: blitz-probe-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, jitless]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - name: restore Cargo and build cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ${{ runner.temp }}/blitz-probe-target
+          key: blitz-probe-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/blitz-v8-probe/Cargo.lock') }}
+      - name: check locked dependency graph
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+        run: cargo check --locked --manifest-path support/blitz-v8-probe/Cargo.toml
+      - name: run probe
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+        run: |
+          set -o pipefail
+          cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
+      - name: upload probe log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blitz-probe
+          path: ${{ runner.temp }}/blitz-probe.log
+          retention-days: 7
+          if-no-files-found: warn
+
+

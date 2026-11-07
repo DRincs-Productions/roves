@@ -1,0 +1,18 @@
+[package]
+name = "roves-blitz-v8-probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[dependencies]
+deno_core = "=0.413.0"
+deno_error = "=0.7.1"
+blitz-dom = { version = "=0.2.1", default-features = false }
+blitz-html = { version = "=0.2.0", default-features = false }
+blitz-shell = { version = "=0.2.2", default-features = false }
+anyrender_vello = "=0.6.0"
+blitz-traits = "=0.2.0"
+tokio = { version = "1.47.1", default-features = false, features = ["rt"] }

@@ -69,7 +69,17 @@ map ed event loop. `roves-js` mantiene la superficie JSAPI compatibile con Servo
 l'integrazione DOM; `roves-v8` inizializza V8. Cargo.lock contiene una sola versione V8 e
 nessuna dipendenza `mozjs`. `support/deno-core-probe` resta un esperimento isolato, non un
 secondo backend. Non installare Deno o Chromium separatamente né esporre le API privilegiate
-Deno ai giochi. La shell Servo e DOM/layout/rendering Servo restano.
+Deno ai giochi. Fino al superamento dei gate di migrazione il runtime distribuito Servo resta il
+fallback funzionante. Eccezione autorizzata dall'utente il 6 novembre 2026: il nuovo target è
+Blitz per DOM/CSS/layout/rendering, integrato con il runtime Deno/V8 esistente. Questa decisione
+supera, per la migrazione descritta in
+[handoff Blitz/V8](docs/handoff/2026-11-06-blitz-v8-migration.md), il vincolo di mantenere Servo
+come engine; non autorizza un secondo runtime JS. Deno/V8 resta proprietario dell'esecuzione JS,
+moduli e microtask, e le API Web standard vanno affidate a estensioni Deno mantenute quando
+compatibili. Blitz riceve DOM, eventi e frame tramite un ponte integrato. Conservare policy
+single-document, sicurezza CSP/origini, protocollo game://, JITless e divieto di API privilegiate
+Deno. Migrare per fasi su branch separato; non rimuovere Servo dalla produzione prima di parità
+funzionale, sicurezza e piattaforme verificata secondo l'handoff.
 
 Il caricamento statico deno_core usa il poll cooperativo 0457/0458; gli import dinamici sono
 asincroni. Fetch e sorgenti già pronte cedono al loop del gioco, ma compilazione di una
