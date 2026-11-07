@@ -1340,8 +1340,14 @@ fn main() {
         // machine with a GPU.
         if std::env::var("ROVES_PROBE_WEBGPU").is_ok_and(|value| value == "1") {
             stage("webgpu_pixi");
+            // ROVES_PROBE_WEBGPU_SCENARIO=<bundle.js> overrides the embedded bundle,
+            // so the scenario can be iterated on with a downloaded executable.
+            let scenario = match std::env::var("ROVES_PROBE_WEBGPU_SCENARIO") {
+                Ok(path) => std::fs::read_to_string(&path).expect("WebGPU scenario override"),
+                Err(_) => WEBGPU_SCENARIO.to_string(),
+            };
             runtime
-                .execute_script("roves-blitz-webgpu-scenario.js", WEBGPU_SCENARIO)
+                .execute_script("roves-blitz-webgpu-scenario.js", scenario)
                 .expect("WebGPU scenario should load");
             let mut status = String::from("running");
             for _ in 0..600 {

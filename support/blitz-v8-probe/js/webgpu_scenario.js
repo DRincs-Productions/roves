@@ -6,7 +6,7 @@ import { Application, Graphics } from "pixi.js";
 
 (() => {
   "use strict";
-  const result = { status: "running", detail: null, renderer: null };
+  const result = { status: "running", detail: null, renderer: null, step: "start" };
   globalThis.webgpuResult = result;
 
   const finish = (status, detail = null) => {
@@ -33,6 +33,7 @@ import { Application, Graphics } from "pixi.js";
   }
 
   (async () => {
+    result.step = "adapter";
     if (!navigator.gpu) return finish("no_webgpu");
     const adapter = await navigator.gpu.requestAdapter();
     if (adapter === null) return finish("no_adapter");
@@ -40,13 +41,16 @@ import { Application, Graphics } from "pixi.js";
     const canvas = document.createElement("canvas");
     canvas.width = 256;
     canvas.height = 256;
+    result.step = "init";
     const app = new Application();
     await app.init({ canvas, width: 256, height: 256, resolution: 1, background: "#204060", autoStart: false });
     result.renderer = app.renderer.name ?? String(app.renderer.type);
 
+    result.step = "render";
     app.stage.addChild(new Graphics().rect(0, 0, 128, 128).fill(0xff0000).circle(192, 192, 40).fill(0x00ff00));
     app.render();
 
+    result.step = "readback";
     const context = canvas.getContext("webgpu");
     const texture = context.getCurrentTexture();
     const { device, format } = context.getConfiguration();
@@ -60,5 +64,5 @@ import { Application, Graphics } from "pixi.js";
     } else {
       finish("failed", pixels);
     }
-  })().catch((error) => finish("failed", String(error?.stack ?? error)));
+  })().catch((error) => finish("failed", `${result.step}: ${error?.stack ?? error?.message ?? String(error)} (${Object.prototype.toString.call(error)})`));
 })();
