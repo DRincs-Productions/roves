@@ -913,7 +913,13 @@
         ...JSON.parse(init),
       });
       setIsTrusted(event, true);
-      return wrap(handle).dispatchEvent(event);
+      const target = wrap(handle);
+      const result = target.dispatchEvent(event);
+      // TEMPORARY diagnostics (see fireLog).
+      if (type.startsWith("key")) {
+        fireLog.push(`${type}:${handle}:${result}:${target.localName}:${event.composedPath().map((node) => node.localName ?? node.nodeType ?? "?").join(">")}`);
+      }
+      return result;
     },
     runAnimationFrame,
     // Navigations the single-document policy blocked (assign/replace/reload).
