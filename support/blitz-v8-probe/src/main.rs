@@ -139,6 +139,13 @@ fn html_name(name: &str) -> QualName {
     QualName::new(None, ns!(html), LocalName::from(name))
 }
 
+/// Attribute names have no namespace in the DOM (only element names are in the
+/// HTML namespace); using `ns!(html)` here would create a second attribute next
+/// to the parser's one instead of replacing it.
+fn attribute_name(name: &str) -> QualName {
+    QualName::new(None, ns!(), LocalName::from(name))
+}
+
 #[op2(fast)]
 fn op_blitz_document_root(state: Rc<RefCell<OpState>>) -> f64 {
     let document = probe_document(&state);
@@ -327,7 +334,7 @@ fn op_blitz_set_attribute(
     let node_id = node.id;
     document
         .mutate()
-        .set_attribute(node_id, html_name(name), value);
+        .set_attribute(node_id, attribute_name(name), value);
     Ok(())
 }
 
@@ -672,7 +679,9 @@ fn op_blitz_remove_attribute(
         return Err(JsErrorBox::type_error("removeAttribute on a non-element"));
     }
     let node_id = node.id;
-    document.mutate().clear_attribute(node_id, html_name(name));
+    document
+        .mutate()
+        .clear_attribute(node_id, attribute_name(name));
     Ok(())
 }
 
