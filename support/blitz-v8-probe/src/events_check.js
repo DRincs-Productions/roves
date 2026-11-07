@@ -27,6 +27,12 @@
       }
     }
     button.dispatchEvent(new Event("keydown", { bubbles: true }));
+    seen.push("--- KeyboardEvent:");
+    button.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, key: "x" }));
+    seen.push("--- FocusEvent focusin:");
+    for (const [node, watcher, capture] of watchers) node.addEventListener("focusin", watcher, capture);
+    button.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+    for (const [node, watcher, capture] of watchers) node.removeEventListener("focusin", watcher, capture);
     button.removeEventListener("keydown", atTarget);
     for (const [node, watcher, capture] of watchers) node.removeEventListener("keydown", watcher, capture);
     const plain = [];
