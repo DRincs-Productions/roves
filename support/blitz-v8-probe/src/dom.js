@@ -1,9 +1,11 @@
 // Minimal DOM wrapper layer over one Blitz document (probe only).
 //
 // - Blitz owns the only node tree; wrappers hold a class-private node handle.
-// - Each Blitz node id maps to exactly one wrapper (=== identity). The cache is
-//   strong because this probe never drops Blitz nodes (Blitz reuses dropped ids);
-//   production needs a GC-aware lifecycle instead.
+// - Each live Blitz node maps to at most one wrapper (=== identity). Wrappers of
+//   nodes connected to the document are held strongly (expandos survive, as in
+//   browsers); wrappers of detached nodes only weakly. When V8 collects a wrapper,
+//   a FinalizationRegistry callback releases its handle and Rust frees the detached
+//   Blitz subtree once no wrapper references any node in it.
 // - Event and EventTarget come from deno_web. Its dispatch builds the event path
 //   from `parentNode` of objects that have a `nodeType`, so capture/target/bubble
 //   follow the Blitz tree without event code of our own.
@@ -30,6 +32,9 @@
     op_blitz_namespace,
     op_blitz_computed_style,
     op_blitz_document_root,
+    op_blitz_retain,
+    op_blitz_release,
+    op_blitz_is_connected,
   } = core.ops;
   const {
     Event,
@@ -58,8 +63,31 @@
   // custom elements and rejects everything the probe does not handle.
   const VALID_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/;
 
-  const wrappers = new Map();
+  // handle -> { ref: WeakRef<wrapper>, strong: wrapper | null, token }
+  const cache = new Map();
   const handles = new WeakMap();
+  const finalizers = new FinalizationRegistry(({ handle, token }) => {
+    const entry = cache.get(handle);
+    if (entry !== undefined && entry.token === token) cache.delete(handle);
+    op_blitz_release(handle);
+  });
+  function cached(handle) {
+    const entry = cache.get(handle);
+    return entry === undefined ? undefined : entry.strong ?? entry.ref.deref();
+  }
+  // Re-evaluates strong vs weak retention for one cached wrapper.
+  function retainIfConnected(handle) {
+    const entry = cache.get(handle);
+    if (entry === undefined) return;
+    const wrapper = entry.strong ?? entry.ref.deref();
+    if (wrapper === undefined) return;
+    entry.strong = handle === DOCUMENT_ID || op_blitz_is_connected(handle) ? wrapper : null;
+  }
+  // Once per frame: wrappers of nodes that left the document become collectable,
+  // wrappers of nodes that joined it become strong.
+  function sweepWrappers() {
+    for (const handle of cache.keys()) retainIfConnected(handle);
+  }
   let constructing = false;
 
   function checkStatus(status) {
@@ -105,7 +133,9 @@
       op_blitz_set_text_content(handleOf(this, "textContent"), value === null ? "" : String(value));
     }
     appendChild(child) {
-      checkStatus(op_blitz_append_child(handleOf(this, "appendChild"), handleOf(child, "appendChild")));
+      const childHandle = handleOf(child, "appendChild");
+      checkStatus(op_blitz_append_child(handleOf(this, "appendChild"), childHandle));
+      retainIfConnected(childHandle);
       return child;
     }
     removeChild(child) {
@@ -230,7 +260,7 @@
   }
 
   function wrap(handle) {
-    let wrapper = wrappers.get(handle);
+    let wrapper = cached(handle);
     if (wrapper !== undefined) return wrapper;
     const type = op_blitz_node_type(handle);
     const Class = handle === DOCUMENT_ID
@@ -247,7 +277,11 @@
       constructing = false;
     }
     handles.set(wrapper, handle);
-    wrappers.set(handle, wrapper);
+    const token = {};
+    cache.set(handle, { ref: new WeakRef(wrapper), strong: null, token });
+    finalizers.register(wrapper, { handle, token });
+    op_blitz_retain(handle);
+    retainIfConnected(handle);
     return wrapper;
   }
 
@@ -281,6 +315,7 @@
         reportException(error);
       }
     }
+    sweepWrappers();
   }
 
   // The global object is an EventTarget (like Window) so reported exceptions
@@ -326,6 +361,9 @@
   // for lazily loaded extension scripts, so removing these is safe.
   delete globalThis.Deno;
   delete globalThis.__bootstrap;
+  // The probe starts V8 with --expose-gc for its GC test; only the embedder keeps it.
+  const collectGarbage = globalThis.gc;
+  delete globalThis.gc;
 
   return {
     // Trusted UI event from the embedder (Blitz hit-test result).
@@ -335,5 +373,9 @@
       return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
+    collectGarbage() {
+      if (typeof collectGarbage !== "function") throw new Error("V8 was not started with --expose-gc");
+      collectGarbage();
+    },
   };
 })();

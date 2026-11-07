@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -15,6 +16,8 @@ const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
 const MOTION_CHECK: &str = include_str!("motion_check.js");
+const GC_TEST: &str = include_str!("gc_test.js");
+const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 
@@ -33,6 +36,52 @@ const NOT_FOUND_ERROR: i32 = 2;
 const NO_NODE: f64 = -1.0;
 
 struct ProbeDocument(Rc<RefCell<HtmlDocument>>);
+
+/// Number of live JS wrappers per Blitz node (a node can briefly have two: a
+/// collected wrapper whose finalizer has not run yet, and its replacement).
+#[derive(Default)]
+struct WrappedNodes(HashMap<NodeId, u32>);
+
+fn is_connected(document: &BaseDocument, node_id: NodeId) -> bool {
+    let root = document.root_node().id;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == root {
+            return true;
+        }
+        current = document.get_node(id).and_then(|node| node.parent);
+    }
+    false
+}
+
+/// Frees the detached subtree containing `node_id` when no node in it has a live
+/// JS wrapper. Connected nodes are never freed here: they live with the document.
+/// Returns whether a subtree was dropped.
+fn drop_if_unreferenced(
+    document: &mut HtmlDocument,
+    wrapped: &WrappedNodes,
+    node_id: NodeId,
+) -> bool {
+    let root = document.root_node().id;
+    let mut top = node_id;
+    while let Some(parent) = document.get_node(top).and_then(|node| node.parent) {
+        top = parent;
+    }
+    if top == root || document.get_node(top).is_none() {
+        return false;
+    }
+    let mut stack = vec![top];
+    while let Some(id) = stack.pop() {
+        if wrapped.0.get(&id).is_some_and(|count| *count > 0) {
+            return false;
+        }
+        if let Some(node) = document.get_node(id) {
+            stack.extend(node.children.iter().copied());
+        }
+    }
+    document.mutate().remove_and_drop_node(top);
+    true
+}
 
 /// Clones the shared document handle out of `OpState`; the `RefCell` borrow is
 /// taken by each op only for the duration of that synchronous call, never across
@@ -166,13 +215,21 @@ fn op_blitz_set_text_content(
         ));
     }
     let children: Vec<NodeId> = node.children.iter().copied().collect();
-    let mut mutator = document.mutate();
-    for child in children {
-        mutator.remove_node(child);
+    {
+        let mut mutator = document.mutate();
+        for child in children.iter().copied() {
+            mutator.remove_node(child);
+        }
+        if !value.is_empty() {
+            let text = mutator.create_text_node(value);
+            mutator.append_children(node_id, &[text]);
+        }
     }
-    if !value.is_empty() {
-        let text = mutator.create_text_node(value);
-        mutator.append_children(node_id, &[text]);
+    // Replaced children nobody references from JS are freed right away.
+    let state = state.borrow();
+    let wrapped = state.borrow::<WrappedNodes>();
+    for child in children {
+        drop_if_unreferenced(&mut document, wrapped, child);
     }
     Ok(())
 }
@@ -250,6 +307,8 @@ fn op_blitz_remove_child(
         return Ok(NOT_FOUND_ERROR);
     }
     document.mutate().remove_node(child_id);
+    let state = state.borrow();
+    drop_if_unreferenced(&mut document, state.borrow::<WrappedNodes>(), child_id);
     Ok(OK)
 }
 
@@ -367,10 +426,51 @@ fn op_blitz_set_style_property(
     Ok(())
 }
 
+/// A JS wrapper was created for this node.
+#[op2(fast)]
+fn op_blitz_retain(state: Rc<RefCell<OpState>>, handle: f64) {
+    let id = from_handle(handle);
+    *state
+        .borrow_mut()
+        .borrow_mut::<WrappedNodes>()
+        .0
+        .entry(id)
+        .or_default() += 1;
+}
+
+/// A JS wrapper of this node was garbage-collected (FinalizationRegistry).
+#[op2(fast)]
+fn op_blitz_release(state: Rc<RefCell<OpState>>, handle: f64) {
+    let id = from_handle(handle);
+    let document = probe_document(&state);
+    let mut state = state.borrow_mut();
+    let wrapped = state.borrow_mut::<WrappedNodes>();
+    if let Some(count) = wrapped.0.get_mut(&id) {
+        *count -= 1;
+        if *count == 0 {
+            wrapped.0.remove(&id);
+        }
+    }
+    let mut document = document.borrow_mut();
+    if document.get_node(id).is_some() {
+        drop_if_unreferenced(&mut document, wrapped, id);
+    }
+}
+
+#[op2(fast)]
+fn op_blitz_is_connected(state: Rc<RefCell<OpState>>, handle: f64) -> bool {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    handle >= 0.0 && is_connected(&document, from_handle(handle))
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
         op_blitz_document_root,
+        op_blitz_retain,
+        op_blitz_release,
+        op_blitz_is_connected,
         op_blitz_get_element_by_id,
         op_blitz_node_type,
         op_blitz_parent,
@@ -542,10 +642,14 @@ fn main() {
     // Same switch production uses (roves-v8's `jitless` feature): it must be set
     // before the first JsRuntime initializes V8.
     let jitless = std::env::var("ROVES_PROBE_JITLESS").is_ok_and(|value| value == "1");
+    // --expose-gc lets the GC test force collections; the bootstrap moves `gc` from
+    // the guest global into an embedder hook.
+    let mut flags = vec![String::new(), "--expose-gc".to_string()];
     if jitless {
-        let rejected = deno_core::v8_set_flags(vec![String::new(), "--jitless".into()]);
-        assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
+        flags.push("--jitless".into());
     }
+    let rejected = deno_core::v8_set_flags(flags);
+    assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
     tokio.block_on(async {
         stage("parse_html");
         let document = Rc::new(RefCell::new(HtmlDocument::from_html(
@@ -570,6 +674,7 @@ fn main() {
             .op_state()
             .borrow_mut()
             .put(ProbeDocument(document.clone()));
+        runtime.op_state().borrow_mut().put(WrappedNodes::default());
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
@@ -577,7 +682,7 @@ fn main() {
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let (dispatcher, run_animation_frame) = {
+        let (dispatcher, run_animation_frame, collect_garbage) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
             let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
@@ -587,7 +692,11 @@ fn main() {
                 let function = v8::Local::<v8::Function>::try_from(value).expect(name);
                 v8::Global::new(scope, function)
             };
-            (function("dispatchTrustedEvent"), function("runAnimationFrame"))
+            (
+                function("dispatchTrustedEvent"),
+                function("runAnimationFrame"),
+                function("collectGarbage"),
+            )
         };
 
         stage("guest_dom_test");
@@ -670,6 +779,37 @@ fn main() {
         assert!(root_layout.size.width > 0.0 && root_layout.size.height > 0.0);
 
         // Offscreen paint of the mutated document (Blitz painter + Vello on wgpu).
+        // GC lifecycle: detached nodes whose wrappers V8 collects are freed in
+        // Blitz; connected nodes and still-referenced wrappers survive.
+        stage("gc_lifecycle");
+        let live_nodes = |document: &Rc<RefCell<HtmlDocument>>| document.borrow().tree().len();
+        let nodes_before = live_nodes(&document);
+        runtime
+            .execute_script("roves-blitz-gc-test.js", GC_TEST)
+            .expect("GC test setup should run");
+        let nodes_created = live_nodes(&document);
+        assert!(
+            nodes_created >= nodes_before + 1000,
+            "GC test must create its detached nodes: {nodes_before} -> {nodes_created}"
+        );
+        for _ in 0..3 {
+            {
+                deno_core::scope!(scope, runtime);
+                let function = v8::Local::new(scope, &collect_garbage);
+                let receiver = v8::undefined(scope).into();
+                function.call(scope, receiver, &[]).expect("gc() should run");
+            }
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2);
+        }
+        let nodes_after = live_nodes(&document);
+        assert!(
+            nodes_after <= nodes_before + 10,
+            "unreferenced detached nodes must be freed: before {nodes_before}, created {nodes_created}, after {nodes_after}"
+        );
+        runtime
+            .execute_script("roves-blitz-gc-check.js", GC_CHECK)
+            .expect("retained wrappers must survive GC");
+
         stage("offscreen_paint");
         let pixels = render_rgba(&document);
         stage("pixel_checks");
@@ -763,7 +903,10 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"opacity_on_element_background\",\"status\":\"passed\",\"computed_opacity\":\"0.5\",\"painted\":{fading_pixel:?}}}"
         );
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input_wrapper_gc\",\"status\":\"not_implemented\"}}"
+            "ROVES_PROBE_RESULT {{\"check\":\"gc_frees_unreferenced_detached_nodes\",\"status\":\"passed\",\"nodes_before\":{nodes_before},\"nodes_created\":{nodes_created},\"nodes_after\":{nodes_after}}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_implemented\"}}"
         );
     });
 }
