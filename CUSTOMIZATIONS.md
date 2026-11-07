@@ -19360,3 +19360,14 @@ enables `system_fonts`; without it Parley has no fonts and text is silently not 
 anyrender_vello 0.6.0 (fixed in 0.15.0). `ROVES_PROBE_JITLESS=1` sets V8 `--jitless`; the
 workflow's `jitless` leg previously ran with the JIT enabled. The workflow now uploads the log
 and PNG per mode under distinct artifact names.
+
+Fourth 2026-11-07 follow-up: headless frame loop. The bootstrap now returns
+`{dispatchTrustedEvent, runAnimationFrame}`. `requestAnimationFrame`/`cancelAnimationFrame`
+follow the HTML snapshot rules; deno_web timers and deno_core's `queueMicrotask` are exposed;
+the global object becomes a branded `EventTarget` so `reportException` reaches `error`
+listeners, and `core.setReportExceptionCallback` routes microtask errors the same way.
+`element.style` writes go through a new `op_blitz_set_style_property`. Rust drives
+`--exit-after-frames N` frames at 60 Hz: rAF callbacks, microtask checkpoint, one
+non-blocking `poll_event_loop`, layout. Guest checks cover ordering, cancellation, error
+isolation and timers; the animated box is verified in layout and pixels. Two negative runs
+(live rAF map, no microtask drain) fail with the expected messages.

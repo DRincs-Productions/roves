@@ -8,8 +8,8 @@
 //   from `parentNode` of objects that have a `nodeType`, so capture/target/bubble
 //   follow the Blitz tree without event code of our own.
 //
-// Evaluates to the trusted-event dispatcher, which Rust keeps; nothing privileged
-// stays reachable from the guest global.
+// Evaluates to the embedder hooks (trusted-event dispatch, animation frame), which
+// Rust keeps; nothing privileged stays reachable from the guest global.
 (() => {
   "use strict";
   const core = globalThis.Deno.core;
@@ -26,10 +26,20 @@
     op_blitz_remove_child,
     op_blitz_get_attribute,
     op_blitz_set_attribute,
+    op_blitz_set_style_property,
   } = core.ops;
-  const { Event, EventTarget, CustomEvent, setIsTrusted } = core.loadExtScript(
-    "ext:deno_web/02_event.js",
-  );
+  const {
+    Event,
+    EventTarget,
+    CustomEvent,
+    ErrorEvent,
+    setIsTrusted,
+    setEventTargetData,
+    saveGlobalThisReference,
+    reportException,
+  } = core.loadExtScript("ext:deno_web/02_event.js");
+  const timers = core.loadExtScript("ext:deno_web/02_timers.js");
+  const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
   const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 
   const ELEMENT_NODE = 1;
@@ -109,6 +119,9 @@
     set id(value) {
       this.setAttribute("id", value);
     }
+    get style() {
+      return styleFor(this);
+    }
     getAttribute(name) {
       return op_blitz_get_attribute(handleOf(this, "getAttribute"), String(name).toLowerCase());
     }
@@ -119,6 +132,33 @@
       }
       op_blitz_set_attribute(handleOf(this, "setAttribute"), name.toLowerCase(), String(value));
     }
+  }
+
+  // Inline style writes go to Blitz's style attribute declarations. Reads are not
+  // implemented yet (they need the declaration block or computed style).
+  const styles = new WeakMap();
+  const toKebab = (name) => name.startsWith("--") ? name : name.replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
+  function styleFor(element) {
+    let style = styles.get(element);
+    if (style !== undefined) return style;
+    const handle = handleOf(element, "style");
+    const methods = {
+      setProperty(name, value) {
+        op_blitz_set_style_property(handle, toKebab(String(name)), value === null ? "" : String(value));
+      },
+      removeProperty(name) {
+        op_blitz_set_style_property(handle, toKebab(String(name)), "");
+      },
+    };
+    style = new Proxy(methods, {
+      set(target, name, value) {
+        if (typeof name !== "string") return false;
+        target.setProperty(name, value);
+        return true;
+      },
+    });
+    styles.set(element, style);
+    return style;
   }
 
   class Text extends Node {}
@@ -163,7 +203,61 @@
   }
 
   const document = wrap(DOCUMENT_ID);
-  const globals = { Node, Element, Text, Document, Event, CustomEvent, EventTarget, DOMException };
+  // requestAnimationFrame per the HTML "run the animation frame callbacks" steps:
+  // the handles are snapshotted at frame start, so callbacks requested during the
+  // frame run in the next one, and a callback cancelled by an earlier one is skipped.
+  let animationFrameCallbacks = new Map();
+  let nextAnimationFrameHandle = 0;
+  function requestAnimationFrame(callback) {
+    if (typeof callback !== "function") {
+      throw new TypeError("Failed to execute 'requestAnimationFrame': parameter 1 is not of type 'Function'.");
+    }
+    const handle = ++nextAnimationFrameHandle;
+    animationFrameCallbacks.set(handle, callback);
+    return handle;
+  }
+  function cancelAnimationFrame(handle) {
+    animationFrameCallbacks.delete(handle);
+  }
+  function runAnimationFrame(timestamp) {
+    for (const handle of [...animationFrameCallbacks.keys()]) {
+      const callback = animationFrameCallbacks.get(handle);
+      if (callback === undefined) continue;
+      animationFrameCallbacks.delete(handle);
+      try {
+        callback(timestamp);
+      } catch (error) {
+        reportException(error);
+      }
+    }
+  }
+
+  // The global object is an EventTarget (like Window) so reported exceptions
+  // reach `error` listeners.
+  setEventTargetData(globalThis);
+  globalThis[webidl.brand] = webidl.brand;
+  Object.setPrototypeOf(globalThis, EventTarget.prototype);
+  saveGlobalThisReference(globalThis);
+  // deno_core's own queueMicrotask wrapper reports through this callback.
+  core.setReportExceptionCallback(reportException);
+
+  const globals = {
+    Node,
+    Element,
+    Text,
+    Document,
+    Event,
+    CustomEvent,
+    ErrorEvent,
+    EventTarget,
+    DOMException,
+    requestAnimationFrame,
+    cancelAnimationFrame,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
+  };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   }
@@ -174,10 +268,13 @@
   delete globalThis.Deno;
   delete globalThis.__bootstrap;
 
-  // Trusted UI event from the embedder (Blitz hit-test result).
-  return function dispatchTrustedEvent(handle, type) {
-    const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
-    setIsTrusted(event, true);
-    return wrap(handle).dispatchEvent(event);
+  return {
+    // Trusted UI event from the embedder (Blitz hit-test result).
+    dispatchTrustedEvent(handle, type) {
+      const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
+      setIsTrusted(event, true);
+      return wrap(handle).dispatchEvent(event);
+    },
+    runAnimationFrame,
   };
 })();

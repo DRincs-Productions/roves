@@ -11,6 +11,8 @@ use deno_error::JsErrorBox;
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
+const FRAME_TEST: &str = include_str!("frame_test.js");
+const FRAME_CHECK: &str = include_str!("frame_check.js");
 
 const ELEMENT_NODE: i32 = 1;
 const TEXT_NODE: i32 = 3;
@@ -259,6 +261,29 @@ fn op_blitz_set_attribute(
     Ok(())
 }
 
+/// Inline style write (`element.style.x = v`); an empty value removes the
+/// declaration, like `style.removeProperty`.
+#[op2(fast)]
+fn op_blitz_set_style_property(
+    state: Rc<RefCell<OpState>>,
+    #[smi] node_id: u32,
+    #[string] name: &str,
+    #[string] value: &str,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    if attached_node(&document, node_id)?.element_data().is_none() {
+        return Err(JsErrorBox::type_error("style on a non-element"));
+    }
+    let mut mutator = document.mutate();
+    if value.is_empty() {
+        mutator.remove_style_property(node_id as usize, name);
+    } else {
+        mutator.set_style_property(node_id as usize, name, value);
+    }
+    Ok(())
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
@@ -274,6 +299,7 @@ deno_core::extension!(
         op_blitz_remove_child,
         op_blitz_get_attribute,
         op_blitz_set_attribute,
+        op_blitz_set_style_property,
     ]
 );
 
@@ -379,6 +405,20 @@ fn write_png(path: &str, pixels: &[u8]) {
     writer.write_image_data(pixels).expect("png data");
 }
 
+/// `--exit-after-frames N` (default 8): frames driven by the headless loop.
+fn frame_count() -> u32 {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--exit-after-frames" {
+            let value = args.next().expect("--exit-after-frames needs a value");
+            return value
+                .parse()
+                .expect("--exit-after-frames must be a positive integer");
+        }
+    }
+    8
+}
+
 fn main() {
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -414,17 +454,22 @@ fn main() {
             .borrow_mut()
             .put(ProbeDocument(document.clone()));
 
-        // The bootstrap evaluates to the trusted-event dispatcher. Keeping it as a
-        // Rust-held handle means no dispatch entry point is left on the guest global.
-        let dispatcher = runtime
+        // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
+        // handles means no dispatch or frame entry point is left on the guest global.
+        let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let dispatcher: v8::Global<v8::Function> = {
+        let (dispatcher, run_animation_frame) = {
             deno_core::scope!(scope, runtime);
-            let local = v8::Local::new(scope, dispatcher);
-            let function = v8::Local::<v8::Function>::try_from(local)
-                .expect("bootstrap must evaluate to the dispatcher function");
-            v8::Global::new(scope, function)
+            let hooks = v8::Local::new(scope, hooks);
+            let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
+            let function = |name: &str| {
+                let key = v8::String::new(scope, name).unwrap();
+                let value = hooks.get(scope, key.into()).expect(name);
+                let function = v8::Local::<v8::Function>::try_from(value).expect(name);
+                v8::Global::new(scope, function)
+            };
+            (function("dispatchTrustedEvent"), function("runAnimationFrame"))
         };
 
         runtime
@@ -469,6 +514,46 @@ fn main() {
             )
             .expect("click must run capture, target and bubble listeners");
 
+        // Frame loop without a window: each frame runs the rAF callbacks, drains
+        // microtasks, polls the deno_core event loop once (timers) and resolves
+        // layout. Frames are paced in real time so timers can become due.
+        runtime
+            .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
+            .expect("frame test setup should run");
+        let frames = frame_count();
+        let frame_interval = std::time::Duration::from_micros(16_667);
+        let start = std::time::Instant::now();
+        for frame in 0..frames {
+            let deadline = start + frame_interval * frame;
+            if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
+                std::thread::sleep(wait);
+            }
+            let timestamp = start.elapsed().as_secs_f64() * 1000.0;
+            {
+                deno_core::scope!(scope, runtime);
+                let function = v8::Local::new(scope, &run_animation_frame);
+                let receiver = v8::undefined(scope).into();
+                let timestamp = v8::Number::new(scope, timestamp).into();
+                function
+                    .call(scope, receiver, &[timestamp])
+                    .expect("animation frame should not throw past reportException");
+                scope.perform_microtask_checkpoint();
+            }
+            let waker = std::task::Waker::noop();
+            let mut context = std::task::Context::from_waker(waker);
+            if let std::task::Poll::Ready(Err(error)) =
+                runtime.poll_event_loop(&mut context, Default::default())
+            {
+                panic!("event loop error in frame {frame}: {error}");
+            }
+            resolve_layout(&document);
+        }
+        runtime
+            .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
+            .expect("frame loop checks should pass");
+        let box_rect = element_rect(&document, "box");
+        assert_eq!(box_rect.2, 60.0, "rAF style writes must reach Blitz layout");
+
         resolve_layout(&document);
         let root_layout = document.borrow().root_element().final_layout;
         assert!(root_layout.size.width > 0.0 && root_layout.size.height > 0.0);
@@ -489,6 +574,12 @@ fn main() {
         );
         assert_color(app_pixel, [24, 32, 48], "#app background");
         assert_color(button_pixel, [200, 80, 40], "JS-created #button background");
+        let box_pixel = pixel(
+            &pixels,
+            box_rect.0 + box_rect.2 - 2.0,
+            box_rect.1 + box_rect.3 / 2.0,
+        );
+        assert_color(box_pixel, [40, 160, 90], "rAF-animated #box background");
         // Text must be painted inside the boxes; insets skip the UA button border.
         let inset = |rect: (f32, f32, f32, f32), by: f32| {
             (rect.0 + by, rect.1 + by, rect.2 - 2.0 * by, rect.3 - 2.0 * by)
@@ -523,7 +614,11 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"offscreen_paint_reflects_js_mutations\",\"status\":\"passed\",\"app\":{app_pixel:?},\"button\":{button_pixel:?},\"button_text_pixels\":{text_pixels},\"app_text_pixels\":{app_text_pixels}}}"
         );
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"window_frames_raf_wrapper_gc\",\"status\":\"not_implemented\"}}"
+            "ROVES_PROBE_RESULT {{\"check\":\"headless_frames_raf_microtasks_timers_style\",\"status\":\"passed\",\"frames\":{frames},\"box_width\":{}}}",
+            box_rect.2
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input_wrapper_gc\",\"status\":\"not_implemented\"}}"
         );
     });
 }
