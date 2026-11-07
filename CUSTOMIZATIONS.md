@@ -1,3 +1,12 @@
+## 2026-11-06 - Consolidate the gameplay smoothness plan
+
+`docs/ROVES_PERFORMANCE.md` now owns the gameplay smoothness backlog consolidated from
+`TODO.md`. It prioritizes frame delivery and input response on packaged games, updates
+the runtime investigation for V8 and deno_core, and retains earlier measurements as
+historical evidence. The visual-novel-template test matrix specifies transition input,
+foreground recovery, and long-session comparisons against Chrome. The plan records the
+first exploratory Windows run, including its packaging and measurement limits.
+
 ## 2026-11-03 - Bounded heap snapshot series for the document retention scene
 
 The V8 migration handoff was retired after the route retention checks passed on Ubuntu in both V8 modes. Historical references below describe the files as they existed at the time. The remaining memory work is tracked in TODO.md.

@@ -1,10 +1,10 @@
-# Roves — piano unificato di prestazioni e fluidità (Deno / V8)
+# Roves — fluidità di gioco con V8 e deno_core
 
-> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 1 novembre 2026.
+> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 6 novembre 2026.
 
 ## Obiettivo di prodotto
 
-**Roves deve offrire fluidità percepita, stabilità e prestazioni il più possibile equivalenti a Google Chrome**, eseguendo la **stessa visual novel di produzione**, con identici contenuti web, asset, risoluzione, impostazioni e percorso di interazione. Il riferimento primario è **60 FPS**, ma il numero medio di FPS da solo non è un criterio di accettazione. Non si promette parità prima delle misurazioni. La differenza deve essere quantificata e ogni regressione rilevante spiegata.
+**La priorità è la fluidità percepita durante il gioco.** Dialoghi, animazioni, transizioni e input devono mantenere una cadenza regolare, anche sotto carico. Il confronto usa la stessa visual novel di produzione in Roves e Chrome. A 60 Hz il riferimento è un frame ogni 16,67 ms quando il carico lo consente. Valutare prima sequenze di frame mancati, scatti visibili e ritardo dall'input al display. CPU, GPU, memoria e tempi di avvio servono a spiegare i problemi e a verificare il costo degli interventi.
 
 **Ambito:** Windows, Linux, macOS; hardware prioritario: portatili/desktop di fascia media, inclusa grafica integrata. Confrontare su *stessa macchina e sistema operativo*, non confrontare numeri fra runner diversi. Documentare CPU/GPU, RAM, driver, display, refresh, alimentazione, build e versioni.
 
@@ -12,7 +12,7 @@
 
 Il riferimento attuale è **Deno + V8** nel runtime JS integrato in Servo, con SDL3, WebRender e overlay egui per la shell desktop. Verificare versioni e commit effettivi del binario sotto test: le vecchie misure SpiderMonkey, JITless, headless e di micro-API non rappresentano automaticamente la build distribuita. Il pacchetto generato da `DRincs-Productions/roves-action` usa normalmente una **shell precompilata** e impacchetta contenuti web già costruiti: non assumere che l'azione compili il motore. Registrare il pin dell'action, la versione della shell, il commit Roves, la build dei contenuti e l'hash dell'archivio; evitare alias mobili non risolti nelle prove riproducibili.
 
-Il candidato principale è `DRincs-Productions/visual-novel-template`, dopo la build web effettiva e il packaging con `roves-action`. Aggiungere scene di stress realistiche **dentro lo stesso contenuto compilato**; non sostituire il gioco con una pagina sintetica. Confrontare con Chrome che apre gli stessi file/asset tramite un'origine equivalente; registrare le eventuali differenze inevitabili fra packaging nativo e browser.
+Il progetto principale per la campagna è [visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template), dopo la build web effettiva e il packaging con `roves-action`. Aggiungere scene di stress realistiche **dentro lo stesso contenuto compilato**; non sostituire il gioco con una pagina sintetica. Confrontare con Chrome che apre gli stessi file/asset tramite un'origine equivalente; registrare le eventuali differenze inevitabili fra packaging nativo e browser.
 
 ## Regola di evidenza: testare l'artefatto finale
 
@@ -28,7 +28,7 @@ Il candidato principale è `DRincs-Productions/visual-novel-template`, dopo la b
 Dopo le verifiche mirate dei singoli casi, eseguire obbligatoriamente il confronto sulla visual novel reale. Questa seconda verifica è necessaria anche quando i test isolati passano: il checkpoint resta aperto finché il gioco distribuito non è stato scaricato, avviato e confrontato con Chrome.
 
 1. **Build con la release Roves:** compilare la visual novel tramite `roves-action`, usando esplicitamente la release Roves da verificare. Registrare repository e commit del gioco, pin risolto dell'action, versione della shell e run CI. Attendere il packaging riuscito, scaricare il bundle prodotto, verificarne l'hash, estrarlo/installarlo e avviare il gioco distribuito.
-2. **Build web per Chrome:** scaricare o clonare il repository Git della stessa visual novel e fare checkout dello stesso commit usato dall'Action. Installare le dipendenze dal lockfile, compilare normalmente la build di produzione con gli stessi parametri e asset della CI, quindi avviare il risultato con `serve` e aprirlo in Chrome. Registrare i comandi e le versioni utilizzate; verificare che i contenuti delle due build corrispondano.
+2. **Build web per Chrome:** scaricare o clonare il repository Git della stessa visual novel e fare checkout dello stesso commit usato dall'Action. Preferire lo stesso output web usato dal packaging. Se occorre ricostruirlo, installare dal lockfile con `npm ci --include=optional` come indicato dal template, compilare la build di produzione con gli stessi parametri e asset della CI, quindi avviare il risultato con `serve` e aprirlo in Chrome. Registrare i comandi e le versioni utilizzate; verificare che i contenuti delle due build corrispondano.
 3. **Confronto prestazioni:** misurare entrambe le versioni sulla stessa macchina, con uguali viewport, DPR, impostazioni, stato iniziale e percorso di gioco, secondo le metriche sotto. Portare in primo piano la versione misurata, alternare l'ordine delle prove e ripetere le sessioni. Raccogliere avvio, caricamenti, CPU/RAM/GPU disponibili e frame pacing, distinguendo avvio freddo e caldo.
 4. **Avanzamento passo per passo:** avviare una nuova partita in entrambe le versioni e applicare la stessa sequenza di clic, tasti e scelte. A ogni passo attendere lo stesso stato narrativo e confrontare testo, personaggi, sfondi, posizione/dimensione degli elementi, colori, trasparenze e overlay. Durante typewriter, animazioni e transizioni osservare anche movimento, tempi, scatti, pause e risposta all'input; una schermata statica da sola non dimostra fluidità equivalente.
 5. **Evidenze e risultato:** conservare misure per sessione, screenshot degli stessi passi e catture delle sequenze dinamiche quando disponibili. Per ogni differenza riportare passo/scena, azione che la provoca, comportamento Chrome e Roves, log e riproduzione. Dichiarare esplicitamente se la resa grafica coincide e quali differenze di fluidità sono state osservate. Se mancano il bundle riuscito, l'avvio reale o il confronto interattivo, registrare il blocco e lasciare questa verifica incompleta.
@@ -49,6 +49,125 @@ Le prove specifiche descritte nel resto del documento servono ad approfondire le
 | Lungo periodo | sessione continua con cambi scena ripetuti, pause/ripresa, crescita memoria, crash e leak |
 
 Automatizzare percorsi deterministici con timestamp/marker condivisi nel contenuto, ma includere almeno una valutazione visiva/interattiva reale per OS. Le scene stress sono complementari alla partita rappresentativa, non sostitutive.
+
+## Prima campagna sul visual-novel-template
+
+Al commit scelto, registrare una sequenza di salvataggi iniziali, scene, azioni e stati visivi attesi. Partire dai dialoghi, dalle animazioni e dalle transizioni già disponibili. Se manca una scena che esercita un carico necessario, aggiungerla alla build di prova del template e usarla identica in Roves e Chrome. Usare i contatori della shell e la cattura già disponibili. Usare Chrome DevTools MCP per il riferimento Chrome quando accessibile e annotare quando è indisponibile.
+
+| Verifica | Procedura | Evidenza da conservare |
+| --- | --- | --- |
+| Input durante la transizione | Dallo stesso salvataggio, attivare il cambio scena e ripetere un comando consentito a un punto riproducibile del caricamento. Provare a cache fredda, a cache calda e nella scena già stabile. Registrare anche la policy attesa per gli input che il gioco blocca durante il fade. | Timestamp di input e primo effetto visibile, input persi o duplicati, frame consecutivi oltre budget. Correlare con fetch, compilazione/link dei moduli, decode e upload degli asset. |
+| Ritorno in primo piano | Su una scena animata, provare separatamente perdita di focus e minimizzazione, con uguale durata in background nei due prodotti. Ripristinare la finestra, poi dare un comando ripetibile. | Tempo dal ripristino al primo frame aggiornato e dal comando al primo effetto visibile. Registrare la regolarità dei frame successivi, lo stato del gioco e la continuità audio secondo la policy prevista. |
+| Sessione lunga | Ripetere una sequenza fissa di dialoghi e cambi scena nello stesso documento. Fissare prima del confronto durata e numero di cicli uguali per entrambi. Eseguire lo stesso tratto misurato all'inizio e alla fine, senza riavviare. | Andamento di frame pacing, latenza, hitch, memoria residente/privata e VRAM se disponibile. Correlare gli scatti con GC V8/cppgc e attività di rendering quando il trace lo permette. |
+
+Per ogni prova conservare le corse individuali, le condizioni iniziali e il primo punto di divergenza. Se la cattura consente solo una stima della latenza al display, riportarne risoluzione e metodo. Eseguire la prima baseline con diagnostica spenta, poi profilare i casi riproducibili. Lo stato iniziale delle tre verifiche è **da eseguire**.
+
+
+### Indagine Motion, Pixi'VN e motori di animazione — 6 novembre 2026
+
+**Checkout del gioco verificato:** `D:/roves-template-bb9ea779`, commit
+`bb9ea77910dda74aced20b001131c8daa22e7cfc` (4 novembre 2026). I file generati nel checkout
+erano modificati/non tracciati prima dell'ispezione; nessun file del gioco è stato cambiato.
+Il `package.json` usa Pixi'VN `^1.9.8`, PixiJS tramite Pixi'VN e `markdown-typewriter` 2.2.0;
+Motion è presente transitivamente alla versione effettiva 12.38.0. Nel template Motion è usato
+principalmente dall'interfaccia React; animazioni dei personaggi/scena sono orchestrate dalle
+API canvas di Pixi'VN, con esempi in `src/content/labels/start.label.ts` e
+`src/content/labels/animations.label.ts`. Non sono lo stesso percorso di rendering.
+
+#### Evidenze raccolte e limiti
+
+- Chrome DevTools MCP, fixture isolate, viewport 929×861 CSS, DPR 1, una sola corsa, 180
+  intervalli rAF: blank P95/max 17/17,3 ms; solo Motion 17/17,1; Pixi animato 17,1/17,4;
+  Pixi + typewriter 17/17,3. Sono callback rAF, non frame presentati; campioni singoli senza
+  intervalli di confidenza. Non confrontarli con dati storici in altre condizioni o con il
+  P99/max Roves della prova Start precedente.
+- La diagnosi del bundle reale in Roves v0.7.16 ha trovato `e.getAnimations is not a function`
+  nel viewport usato dal dialogo/typewriter; Chrome espone il metodo. `Animatable.webidl` in
+  questo checkout lascia `getAnimations()` commentato. Ciò rende il percorso reale non
+  equivalente e invalida un confronto della fluidità typewriter finché il problema funzionale
+  non è risolto; non prova che `getAnimations` sia causa dei picchi.
+- I log packed/loose disponibili contengono telemetria paint/present del gioco reale ma non
+  marcatori per Motion, Pixi'VN o typewriter. Non consentono attribuzione per libreria. Le
+  finestre di diagnosi mostrano WebRender paint generalmente nell'ordine di 4–9 ms con almeno
+  un campione oltre 200 ms, ma il percorso narrativo, la fase e l'attività concorrente non sono
+  controllati: dato esplorativo, non baseline.
+- Motion 12.38.0 seleziona WAAPI solo per proprietà/casi supportati (tra cui alcune animazioni
+  transform/opacity), quando `Element.prototype.animate` è disponibile. Senza WAAPI usa il
+  proprio frameloop JS. Chrome può quindi eseguire il campione Motion sul percorso browser
+  nativo, ma i valori rAF sopra non misurano il risparmio CPU né isolano il compositing.
+  Roves non ha ancora un percorso WAAPI completo: `animate()` è incompleto e
+  `getAnimations()` non è esposto.
+
+#### Confronto architetturale: sostituti di Servo/Stylo
+
+Non è emersa una libreria singola che sostituisca l'animazione web mantenendo giochi JS, DOM,
+WebGL PixiJS, Web Audio e il contratto `Animation`/`getAnimations()`.
+
+| Opzione | Cosa fornisce | Valutazione per Roves |
+| --- | --- | --- |
+| Servo + Stylo + WebRender | DOM/WebIDL, CSS, ciclo script V8 integrato, stato CSS transitions/animations, display list e compositing | Unica soluzione attuale integrata. Completare WAAPI e collegare transform/opacity a WebRender DynamicProperties prima di sostituirla. |
+| Blitz + Stylo/Taffy/Vello | DOM/rendering HTML-CSS modulare, ma Stylo resta; il progetto dichiara di non fornire binding JS e l'interattività JS non è il suo obiettivo attuale | Non sostituisce Stylo e non offre il contratto runtime/WebGL richiesto. Migrare ricreerebbe binding DOM↔V8, Web APIs e composizione Canvas. Nessun vantaggio prestazionale dimostrato per questa scena. |
+| Bevy ECS | ECS/scheduler per sistemi su dati nativi | Non implementa DOM, WAAPI o renderer browser. Un ponte che aggiorna DOM/Pixi a ogni frame aggiunge sincronizzazione; un guadagno richiederebbe spostare scena e rendering in Rust, fuori dal vincolo dei giochi JS. |
+| Crate Rust tween/interpolazione | Calcolo di valori interpolati, curve e timeline | Potrebbero aiutare un sistema nativo che possiede i target, ma non sostituiscono Motion, DOM, Pixi o Web Animations. Senza spostare il rendering il ponte per frame può costare più del calcolo. |
+| WebRender DynamicProperties | Aggiornamento compositor-side di proprietà già supportate | Candidato mirato più promettente: Roves passa attualmente liste `transforms` e `floats` vuote nel percorso descritto sopra. Richiede WAAPI e corretta integrazione con stacking, hit testing e invalidazione; beneficio ancora da misurare. |
+
+La documentazione upstream di [Blitz](https://github.com/DioxusLabs/blitz) dichiara beta,
+assenza di binding per JavaScript e riuso di Stylo, Taffy e Parley. Non è dunque un motore CSS
+alternativo per testare la qualità di Stylo né un rimpiazzo drop-in di Servo. `getAnimations()`
+è parte del contratto WAAPI e restituisce animazioni DOM; una libreria tween Rust non può
+soddisfarlo senza un livello DOM/runtime equivalente.
+
+#### Prossimo benchmark controllato
+
+Da eseguire dopo aver ripristinato un percorso di gioco funzionante con `getAnimations()` e
+aver aggiunto fixture identificabili al bundle derivato dal commit corrente. Usare un solo
+bundle e hash, stessa macchina, viewport 1024×740 DPR 1, finestra visibile e in primo piano,
+stesso refresh, cache e stato; alternare Chrome/Roves e fare almeno cinque corse indipendenti
+per condizione dopo warm-up. Separare la raccolta baseline senza profiler dai trace diagnostici.
+
+| Caso | Carico isolato |
+| --- | --- |
+| DOM quieto | riferimento, nessuna animazione o canvas continuo |
+| Motion | 48 elementi DOM, sole transform/opacity; Motion standard e variante che forza il fallback JS |
+| JS diretto | stessi elementi e keyframe con un rAF che scrive direttamente gli stili |
+| WAAPI | stessi elementi/keyframe con `element.animate`, verificando lista e stato via `getAnimations()` |
+| Pixi'VN | scena personaggio e transizione dai label del template, senza UI Motion/typewriter |
+| PixiJS baseline | stesso numero di sprite/texture e stessa traiettoria con API PixiJS dirette, senza Pixi'VN |
+| Typewriter | dialogo reale isolato, quindi typewriter + Motion UI, senza animazione Pixi |
+| Combinati | Motion + Pixi'VN; poi Motion + Pixi'VN + typewriter, per misurare interazione e contesa |
+
+Per ogni caso registrare p50/p95/p99/max e sequenze >20/>33 ms di rAF, CPU per thread/processo,
+memoria privata/RSS e memoria GPU se disponibile; catturare trace samply una volta sulle
+condizioni che mostrano differenze ripetibili, annotando quota V8, Stylo/reflow, display list,
+WebRender paint/present, messaggi WebGL e GC. rAF non equivale a present: aggiungere contatori
+di present disponibili e cattura visiva sincronizzata. Verificare se Motion ha effettivamente
+creato animazioni WAAPI e le proprietà accelerate, non inferirlo dalla presenza del metodo.
+
+Lettura dei risultati: tempo Motion alto ma JS diretto basso → costo library/frameloop; JS diretto
+e Motion entrambi alti prima del rendering → costo binding/stile; reflow/display-list/paint alti
+con WAAPI e valori dinamici → manca o non funziona il percorso compositor; Pixi isolato alto con
+molti messaggi → profilare il bridge WebGL; typewriter lento con DOM/observer dominante → ridurre
+il costo di aggiornamento testo/scroll. Il trace samply è misura diagnostica costosa: annunciare
+prima l'avvio e non usarlo come run baseline.
+
+**Raccomandazione attuale:** mantenere Servo/Stylo/WebRender e V8; non adottare Bevy ECS o
+sostituire Servo con Blitz per questo obiettivo. Prima correggere/esporre `getAnimations()` e
+completare WAAPI a perimetro ristretto per transform/opacity; solo dopo valutare DynamicProperties
+con test Motion in Chrome e Roves. Per Pixi'VN, profilare il percorso WebGL separatamente. Non è
+dimostrato che questa sequenza migliori già i frame: è la pista con minore riscrittura e ipotesi
+più direttamente verificabile.
+### Prima prova Windows — 6 novembre 2026
+
+La shell ufficiale v0.7.16 con la stessa cartella web servita a Chrome 157 ha aperto il menu e raggiunto la prima battuta di James con Start. Il pacchetto locale è stato ricomposto a mano dalla shell di release e dai file dell'archivio del 30 ottobre. Il pin dell'action e il commit esatto dei contenuti compilati non sono stati verificati. La shell precedente dell'archivio, provata via HTTP, si fermava invece con `indexedDB is not defined`.
+
+Diagnostica esplorativa su Windows, display a 60 Hz, 300 intervalli rAF per prodotto a partire da Start, nessun callback campionato senza focus. Probe esterno su Roves e iniezione Chrome DevTools MCP su Chrome.
+
+| Build | Viewport CSS, DPR | P50 | P95 | P99 | Picco | Intervalli >25 ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| Roves v0.7.16 | 1280×720, 1 | 16,65 ms | 18,18 ms | 53,31 ms | 164,98 ms | 4 |
+| Chrome 157 | 1280×860, 1 | 16,70 ms | 16,80 ms | 17,20 ms | 50,00 ms | 3 |
+
+Il campione singolo usa viewport diverse, origine locale del bundle contro HTTP loopback e stato cache non controllato. I valori rAF non misurano i frame presentati né la latenza input-to-display. Il picco Roves individua il percorso Start → prima battuta da ripetere con viewport uguale e campioni alternati. Se ricorre, correlare prima caricamento asset/moduli, script e composizione. Le prove di ripresa e sessione lunga restano aperte.
 
 ## Metriche e confronto con Chrome
 
@@ -106,10 +225,11 @@ Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{h
 
 ### P1 — Pause nel runtime Deno/V8 e caricamento scene
 
+- Il caricamento statico cooperativo (0457/0458) cede tra fetch e sorgenti pronte. Compilazione della singola sorgente, risoluzione e link finale possono ancora occupare il thread della pagina. Gli import dinamici sono asincroni, ma il lavoro JS eseguito durante il poll può occupare lo stesso thread. Le misure su scene reali appartengono a questo piano e sono separate dai gate della migrazione V8.
 - Profilare i tempi di caricamento dei moduli, valutazione, microtask e polling in `deno_impl.rs`; il `poll_module_event_loop` avanza valutazioni e dynamic imports e può eseguire script. Separare attese di rete/disco, lavoro JS e pause sul thread della pagina.
 - Verificare se il caricamento statico/dinamico introduce blocchi visibili durante transizioni, typewriter e animazioni; misurare con una scena reale che carica moduli e asset mentre rAF e input sono attivi.
 - Cercare operazioni sincrone, decode di immagini, parsing e accesso a pack/salvataggi sul percorso critico; valutare prefetch, caricamento differito e spostamento del lavoro solo dopo profiling e con test di correttezza.
-- Profilare pause GC, frequenza e dimensione delle allocazioni e retention in sessioni lunghe. Non trattare uno snapshot o un WeakRef rilasciato come prova di riduzione RAM o assenza di leak.
+- Correlare pause V8/cppgc e allocazioni con i frame lunghi, distinguendo GC, script, style/layout e paint. Ripetere il typewriter sul bundle attuale. I sette frame coincidenti con GC e il mancato beneficio dell’heap iniziale appartengono alla baseline storica. Non trattare uno snapshot o un WeakRef rilasciato come prova di riduzione RAM o assenza di leak.
 - Conservare i test di correttezza normal/JITless e worker come regressioni, ma non equipararli al comportamento della build finale.
 
 **Esperimento:** dialoghi rapidi, transizioni ripetute, caricamento asset cold/warm, sessioni prolungate e input durante il load; Chrome e bundle Roves sullo stesso hardware. **Rischi:** ordine dei moduli, race, lifecycle e differenze web-platform.
@@ -124,6 +244,18 @@ Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{h
 ### P2 — Worker, audio, intrinsics e altre micro-ottimizzazioni
 
 Eseguire i benchmark in `support/perf` **solo** quando un trace del gioco compilato indica un collo di bottiglia corrispondente. Valutare parallelismo worker, overhead messaggi/clone/transfer, audio analyser, WebGL getters, lookup di intrinsics e allocator senza confondere miglioramenti micro con guadagni di CPU/GPU/RAM dell'intero gioco. Non cambiare toolkit egui o introdurre un nuovo motore grafico senza evidenze misurate.
+
+### Verifiche consolidate dal TODO e dagli handoff
+
+- **GPU e ripresa.** Confermare renderer hardware e assenza di fallback software su Windows, Linux e macOS, con le fixture PixiJS e Three.js come diagnosi. Confrontare refresh, VSync e repaint di shell e contenuto. Misurare il primo frame utile dopo occlusione, minimizzazione o ritorno in focus. Qualsiasi throttling deve preservare audio e multiplayer.
+- **Asset e input durante le transizioni.** Misurare letture, copie, attese in coda, decompressione, decode e upload delle texture a cache fredda e calda. Ripetere lo stesso input durante la transizione e a regime, registrando il primo effetto visibile. Se il profilo indica I/O, valutare prefetch o pack per livello con cancellazione e invalidazione della cache.
+- **Sessioni lunghe nel documento unico.** Ripetere le route di gioco e confrontare finestre equivalenti a inizio e fine sessione per frame pacing, latenza, memoria residente/privata e risorse GPU. La smoke controllata con 12 transizioni e 36 riferimenti deboli, verde su Ubuntu normale e JITless dopo il fix di `replaceState`, fornisce una regressione funzionale. Le patch in `docs/handoff/` sono prove storiche. Per investigare uno scatto usare anche le evidenze in `measurements/` su caricamento statico, startup, retention e timer.
+- **Diagnostica.** Riusare i contatori della shell, samply e le integrazioni Tracy/Perfetto. Per correlare gli scatti, valutare clock monotono e buffer circolare preallocato con ID di frame. Evitare log, allocazioni e serializzazione per frame. Tenere la diagnostica di release opt-in e spenta per default, senza upload automatico e con URL, percorsi e dati sensibili omessi per default. Un eventuale overlay legge gli aggregati esistenti. Confrontare diagnostica spenta, attiva e profiling completo, registrando overhead e campioni persi.
+- **Interventi condizionati dal trace.** Se il typewriter spende tempo in animazioni gestite da script, verificare il supporto Web Animations necessario a motion e il riuso di Stylo/WebRender per transform e opacity, con timing, eventi, hit testing e costo GPU. Se emergono attese WebGL, misurarle prima del batching. Per i worker, misurare messaggi oltre al calcolo e verificare l'uso di BackingStore/serializer V8 per evitare copie del payload trasferito, preservando IPC, errori, ownership e teardown. Confrontare 1/2/4/8 worker, CPU totale, memoria e fluidità, valutando pool, coda e batch limitati solo se motivati dai dati.
+- **Audio sotto carico.** Se il trace indica un contributo audio, estendere i test AnalyserNode Crossbeam a letture per frame e sessioni lunghe. Verificare howler.js e Tone.js con playback, automazione, loop, sospensione e rilascio. Valutare AudioWorklet sul grafo servo-media esistente, con isolate V8 dedicato e senza un callback DOM per ogni blocco audio.
+- **Fast path WebGPU futuro.** Considerarlo dopo baseline e telemetria se composizione, clear, blit o copie GPU pesano sui frame. Limitare la prova alla singola WebView con canvas fullscreen e mantenere il percorso WebRender per DOM/CSS, overlay e feature incompatibili. Verificare resize, HiDPI, colore/alpha, cattura, context loss e accessibilità sui tre desktop.
+
+Il preload JSON resta nel backlog runtime. Le eventuali misure su avvio, primo uso e memoria appartengono alla verifica di quel lavoro quando verrà ripreso.
 
 ### Sequenza operativa e criteri di decisione
 
