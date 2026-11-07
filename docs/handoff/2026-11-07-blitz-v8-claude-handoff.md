@@ -29,6 +29,21 @@ Per dettagli implementativi e fonti usare il README del probe e il handoff tecni
 
 Claude è stato incaricato di creare il probe circoscritto. Due tentativi si sono fermati per diniego degli strumenti: inizialmente accesso web/Cargo, poi scrittura nella cartella `support/blitz-v8-probe/`. **Claude non ha prodotto modifiche**; il probe attuale è stato creato e verificato direttamente da Codex. Se il workspace o i permessi disponibili a Claude consentono di lavorare, procedere con un incarico singolo e limitato; se la scrittura viene nuovamente negata, fermarsi e riferire il blocco, senza aggirare il diniego.
 
+## Stato a fine sessione (7 novembre, Claude)
+
+Pubblicato fino a `94c40965ebc` (commit locale successivo: solo TODO). La probe ora copre wrapper DOM,
+albero/attributi, eventi trusted via `deno_web`, paint offscreen con controllo pixel, frame loop
+headless (rAF, microtask, timer), `element.style`, `getComputedStyle` e Motion 12.38.0; scelta
+l'opzione A (niente libreria DOM JS). Dettagli e verifiche negative nel README della probe.
+
+- CI da controllare: run `42373739478` (Blitz probe, prima esecuzione del render GPU offscreen su
+  runner Windows: se manca un adapter wgpu il passo di paint fallisce e va deciso un fallback,
+  ad esempio WARP o `anyrender_vello_cpu`). Android `42373739406` verde.
+- **Vincolo utente del 7 novembre: non compilare in locale, nemmeno la probe.** Fare commit piccoli
+  e verificare nella CI della probe.
+- Prossimi passi: passaggio a Blitz 0.3 beta (elenco delle modifiche nel TODO), poi finestra
+  `blitz-shell` e input reale.
+
 ## Incarico completato il 7 novembre (wrapper DOM minimi)
 
 L'incarico sotto è stato eseguito; dettagli nel README del probe. Prossimo passo proposto: progettare il ciclo di vita wrapper/nodo legato al GC (valutando oggetti cppgc di deno_core) prima di ampliare la superficie DOM, poi eventi e frame.
