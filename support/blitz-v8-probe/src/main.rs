@@ -13,7 +13,11 @@ use style::properties::{PropertyDeclarationId, PropertyId};
 mod window;
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
+const HISTORY: &str = include_str!("history.js");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
+const STORAGE_TEST: &str = include_str!("storage_test.js");
+const HISTORY_TEST: &str = include_str!("history_test.js");
+const HISTORY_CHECK: &str = include_str!("history_check.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
@@ -949,6 +953,27 @@ fn dispatch_trusted(
         .expect("trusted event dispatch should not throw");
 }
 
+/// Evaluates a script that returns a string.
+fn evaluate_string(runtime: &mut JsRuntime, source: &'static str) -> String {
+    let value = runtime
+        .execute_script("roves-blitz-evaluate.js", source)
+        .expect("evaluation should succeed");
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, value);
+    value.to_rust_string_lossy(scope)
+}
+
+/// Calls a bootstrap hook that returns a string.
+fn evaluate_hook(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>) -> String {
+    deno_core::scope!(scope, runtime);
+    let function = v8::Local::new(scope, hook);
+    let receiver = v8::undefined(scope).into();
+    let value = function
+        .call(scope, receiver, &[])
+        .expect("hook should not throw");
+    value.to_rust_string_lossy(scope)
+}
+
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
 fn frame_count() -> u32 {
     let mut args = std::env::args().skip(1);
@@ -985,6 +1010,12 @@ fn main() {
     }
     let rejected = deno_core::v8_set_flags(flags);
     assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
+    // Origin storage for deno_webstorage; CI points two runs at the same directory
+    // to check that localStorage persists across processes.
+    let storage_dir = std::env::var_os("ROVES_PROBE_STORAGE_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::env::temp_dir().join("roves-blitz-probe-storage"));
+    std::fs::create_dir_all(&storage_dir).expect("storage directory");
     tokio.block_on(async {
         stage("parse_html");
         let document = Rc::new(RefCell::new(HtmlDocument::from_html(
@@ -1005,6 +1036,8 @@ fn main() {
                     false,
                     deno_web::InMemoryBroadcastChannel::default(),
                 ),
+                // localStorage in SQLite under the origin directory; sessionStorage in memory.
+                deno_webstorage::deno_webstorage::init(Some(storage_dir.clone())),
                 roves_blitz_v8_probe::init(),
             ],
             ..Default::default()
@@ -1019,11 +1052,14 @@ fn main() {
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
+        runtime
+            .execute_script("roves-blitz-history.js", HISTORY)
+            .expect("history factory should load");
         stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let (dispatcher, run_animation_frame) = {
+        let (dispatcher, run_animation_frame, blocked_navigations) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
             let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
@@ -1036,6 +1072,7 @@ fn main() {
             (
                 function("dispatchTrustedEvent"),
                 function("runAnimationFrame"),
+                function("blockedNavigations"),
             )
         };
 
@@ -1063,6 +1100,15 @@ fn main() {
             button_rect.0 + button_rect.2 / 2.0,
             button_rect.1 + button_rect.3 / 2.0,
         );
+        stage("storage_and_history");
+        runtime
+            .execute_script("roves-blitz-storage-test.js", STORAGE_TEST)
+            .expect("localStorage/sessionStorage checks should pass");
+        runtime
+            .execute_script("roves-blitz-history-test.js", HISTORY_TEST)
+            .expect("History/Location checks should pass");
+        let storage_runs = evaluate_string(&mut runtime, "String(storageRuns)");
+
         stage("dom_api_test");
         runtime
             .execute_script("roves-blitz-dom-api-test.js", DOM_API_TEST)
@@ -1125,6 +1171,9 @@ fn main() {
         runtime
             .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
             .expect("frame loop checks should pass");
+        runtime
+            .execute_script("roves-blitz-history-check.js", HISTORY_CHECK)
+            .expect("asynchronous popstate/hashchange must have fired");
         let box_rect = element_rect(&document, "box");
         assert_eq!(box_rect.2, 60.0, "rAF style writes must reach Blitz layout");
 
@@ -1277,6 +1326,10 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"gc_frees_unreferenced_detached_nodes\",\"status\":\"passed\",\"nodes_before\":{nodes_before},\"nodes_created\":{nodes_created},\"nodes_after\":{nodes_after}}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"storage_history_single_document\",\"status\":\"passed\",\"local_storage_runs\":{storage_runs},\"blocked_navigations\":{}}}",
+            evaluate_hook(&mut runtime, &blocked_navigations)
         );
         if !std::env::args().any(|arg| arg == "--window") {
             println!(

@@ -56,6 +56,7 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
           ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-probe.png
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-storage
           RUST_BACKTRACE: '1'
         run: |
           set -o pipefail
@@ -80,6 +81,7 @@ jobs:
         shell: pwsh
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-storage
         run: |
           $exe = Join-Path $env:RUNNER_TEMP 'blitz-probe-target/debug/roves-blitz-v8-probe.exe'
           $log = Join-Path $env:RUNNER_TEMP 'blitz-window.log'
@@ -121,7 +123,9 @@ jobs:
           Start-Sleep -Milliseconds 100
           [RovesInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
           if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'the window run timed out' }
-          Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY|window_presentation_real_input' | ForEach-Object { $_.Line }
+          Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY|window_presentation_real_input|storage_history' | ForEach-Object { $_.Line }
+          # Second process on the same storage directory: localStorage persisted.
+          if (-not (Select-String -Path $log -Pattern '"local_storage_runs":2' -Quiet)) { throw 'localStorage did not persist across processes' }
           if ($process.ExitCode -ne 0) {
             Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
             throw "window mode failed with exit code $($process.ExitCode)"

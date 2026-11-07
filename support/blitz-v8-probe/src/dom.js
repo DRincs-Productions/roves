@@ -69,6 +69,9 @@
   const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
+  const { URL, URLSearchParams } = core.loadExtScript("ext:deno_web/00_url.js");
+  const { structuredClone } = core.loadExtScript("ext:deno_web/02_structured_clone.js");
+  const webStorage = core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
 
   const ELEMENT_NODE = 1;
   const TEXT_NODE = 3;
@@ -769,6 +772,17 @@
   }
 
   const document = wrap(DOCUMENT_ID);
+
+  // Single-document History/Location (src/history.js) and deno_webstorage.
+  const createHistory = globalThis.__rovesCreateHistory;
+  delete globalThis.__rovesCreateHistory;
+  const historyApi = createHistory(globalThis, {
+    URL,
+    structuredClone,
+    DOMException,
+    Event,
+    setTimeout: timers.setTimeout,
+  });
   // requestAnimationFrame per the HTML "run the animation frame callbacks" steps:
   // the handles are snapshotted at frame start, so callbacks requested during the
   // frame run in the next one, and a callback cancelled by an earlier one is skipped.
@@ -841,12 +855,24 @@
     clearTimeout: timers.clearTimeout,
     setInterval: timers.setInterval,
     clearInterval: timers.clearInterval,
+    URL,
+    URLSearchParams,
+    structuredClone,
+    Storage: webStorage.Storage,
+    History: historyApi.History,
+    Location: historyApi.Location,
+    PopStateEvent: historyApi.PopStateEvent,
+    HashChangeEvent: historyApi.HashChangeEvent,
   };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
   Object.defineProperties(globalThis, {
+    history: { value: historyApi.history, enumerable: true, configurable: true },
+    location: { get: () => historyApi.location, set: (url) => historyApi.location.assign(url), enumerable: true, configurable: true },
+    localStorage: { get: () => webStorage.localStorage(), enumerable: true, configurable: true },
+    sessionStorage: { get: () => webStorage.sessionStorage(), enumerable: true, configurable: true },
     innerWidth: { get: () => op_blitz_viewport_size(0), enumerable: true, configurable: true },
     innerHeight: { get: () => op_blitz_viewport_size(1), enumerable: true, configurable: true },
     devicePixelRatio: { value: 1, enumerable: true, configurable: true },
@@ -875,5 +901,9 @@
       return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
+    // Navigations the single-document policy blocked (assign/replace/reload).
+    blockedNavigations() {
+      return JSON.stringify(historyApi.blockedNavigations);
+    },
   };
 })();

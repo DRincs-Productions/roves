@@ -27,3 +27,5 @@ style = { package = "stylo", version = "=0.22.0", default-features = false }
 # attributes and modifier flags for the --window mode.
 winit = "=0.31.0-beta.3"
 keyboard-types = { version = "=0.8.3", default-features = false }
+# deno_core 0.413-paired release: localStorage (SQLite) and sessionStorage.
+deno_webstorage = "=0.255.0"
