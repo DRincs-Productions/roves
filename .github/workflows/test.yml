@@ -1103,6 +1103,60 @@ jobs:
           done
           exit 1
 
+      # Windows package of the real visual novel roves-action tests with
+      # (DRincs-Productions/visual-novel-template), built on every push from this
+      # commit's shell, so the game can be tried without cutting a release.
+      - name: checkout visual-novel-template (Windows portable only)
+        if: matrix.os_name == 'windows' && matrix.package_mode == 'portable'
+        uses: actions/checkout@v4
+        with:
+          repository: DRincs-Productions/visual-novel-template
+          path: visual-novel-template
+
+      - name: build visual-novel-template content (Windows portable only)
+        if: matrix.os_name == 'windows' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: visual-novel-template
+        run: |
+          npm install
+          npm run build
+
+      - name: bundle the visual novel (Windows portable only)
+        if: matrix.os_name == 'windows' && matrix.package_mode == 'portable'
+        shell: bash
+        working-directory: servo-src
+        run: |
+          ./mach bundle --content-dir ../visual-novel-template/dist --output ../release-vn             --package-name visual-novel-template --package-version "${SERVO_TAG}"
+          cat > ../release-vn/NOTE.txt << 'EOF'
+          Debug build of DRincs-Productions/visual-novel-template on this commit's
+          Roves shell (Servo + V8), rebuilt on every push. Run play.exe.
+          EOF
+
+      - name: zip and upload the visual novel (Windows portable only)
+        if: matrix.os_name == 'windows' && matrix.package_mode == 'portable'
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          Rename-Item -Path release-vn -NewName visual-novel-template
+          Compress-Archive -Path visual-novel-template -DestinationPath visual-novel-template_windows.zip
+          for ($attempt = 1; $attempt -le 3; $attempt++) {
+            gh release upload $env:TEST_RELEASE_TAG visual-novel-template_windows.zip --clobber
+            if ($LASTEXITCODE -eq 0) { exit 0 }
+            Write-Host "upload attempt $attempt failed, retrying in $($attempt * 10)s..."
+            Start-Sleep -Seconds ($attempt * 10)
+          }
+          exit 1
+
+      - name: keep the visual novel as a workflow artifact (Windows portable only)
+        if: matrix.os_name == 'windows' && matrix.package_mode == 'portable'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-novel-template_windows
+          path: visual-novel-template_windows.zip
+          retention-days: 7
+
   # ── Steam: exercise the real steamworks round trip against a mocked backend ────
   # `--features steam` has been built on every platform in build-and-publish above
   # since steam.rs itself landed, but that only ever confirmed steamworks-sys
