@@ -56,10 +56,20 @@ jobs:
           CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
           ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-probe.png
+          RUST_BACKTRACE: '1'
         run: |
           set -o pipefail
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
+      # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
+      # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
+      - name: annotate probe log tail on failure
+        if: failure()
+        shell: bash
+        run: |
+          tail -n 60 "$RUNNER_TEMP/blitz-probe.log" | grep -v '^\s*$' | while IFS= read -r line; do
+            echo "::notice::${line:0:900}"
+          done
       - name: upload probe log and offscreen screenshot
         if: always()
         uses: actions/upload-artifact@v4
