@@ -17,6 +17,7 @@ const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
 const MOTION_CHECK: &str = include_str!("motion_check.js");
 const GC_TEST: &str = include_str!("gc_test.js");
+const DOM_API_TEST: &str = include_str!("dom_api_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
@@ -254,9 +255,7 @@ fn op_blitz_create_text_node(state: Rc<RefCell<OpState>>, #[string] data: &str) 
     to_handle(id)
 }
 
-/// `appendChild`: rejects inserting a node into itself or its descendants and
-/// a document node anywhere, then detaches the child from any previous parent
-/// (Blitz's `append_children` does not) and appends it.
+/// `appendChild`; see `insert_child`.
 #[op2(fast)]
 fn op_blitz_append_child(
     state: Rc<RefCell<OpState>>,
@@ -265,30 +264,7 @@ fn op_blitz_append_child(
 ) -> Result<i32, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
-    let child = attached_node(&document, child_handle)?;
-    let child_id = child.id;
-    if matches!(child.data, NodeData::Document(_)) {
-        return Ok(HIERARCHY_REQUEST_ERROR);
-    }
-    let had_parent = child.parent.is_some();
-    let parent = attached_node(&document, parent_handle)?;
-    let parent_id = parent.id;
-    if matches!(parent.data, NodeData::Text(_) | NodeData::Comment { .. }) {
-        return Ok(HIERARCHY_REQUEST_ERROR);
-    }
-    let mut ancestor = Some(parent_id);
-    while let Some(id) = ancestor {
-        if id == child_id {
-            return Ok(HIERARCHY_REQUEST_ERROR);
-        }
-        ancestor = document.get_node(id).and_then(|node| node.parent);
-    }
-    let mut mutator = document.mutate();
-    if had_parent {
-        mutator.remove_node(child_id);
-    }
-    mutator.append_children(parent_id, &[child_id]);
-    Ok(OK)
+    insert_child(&mut document, parent_handle, child_handle, None)
 }
 
 /// `removeChild`: detaches without dropping (see `op_blitz_set_text_content`).
@@ -464,10 +440,251 @@ fn op_blitz_is_connected(state: Rc<RefCell<OpState>>, handle: f64) -> bool {
     handle >= 0.0 && is_connected(&document, from_handle(handle))
 }
 
+/// Result list of the last `op_blitz_query`; read back with `op_blitz_query_result`
+/// so no array has to cross the op boundary.
+#[derive(Default)]
+struct QueryResults(Vec<NodeId>);
+
+/// Shared by `appendChild` (`reference == None`) and `insertBefore`. Rejects a
+/// document child, a text/comment parent and inserting a node into itself or its
+/// descendants; a reference that is not a child of `parent` is NotFoundError.
+/// The child is detached from its old parent first (Blitz's insert does not).
+fn insert_child(
+    document: &mut HtmlDocument,
+    parent_handle: f64,
+    child_handle: f64,
+    reference_handle: Option<f64>,
+) -> Result<i32, JsErrorBox> {
+    let child = attached_node(document, child_handle)?;
+    let child_id = child.id;
+    if matches!(child.data, NodeData::Document(_)) {
+        return Ok(HIERARCHY_REQUEST_ERROR);
+    }
+    let had_parent = child.parent.is_some();
+    let parent = attached_node(document, parent_handle)?;
+    let parent_id = parent.id;
+    if matches!(parent.data, NodeData::Text(_) | NodeData::Comment { .. }) {
+        return Ok(HIERARCHY_REQUEST_ERROR);
+    }
+    let mut reference = match reference_handle {
+        None => None,
+        Some(handle) => {
+            let reference = attached_node(document, handle)?;
+            if reference.parent != Some(parent_id) {
+                return Ok(NOT_FOUND_ERROR);
+            }
+            Some(reference.id)
+        },
+    };
+    let mut ancestor = Some(parent_id);
+    while let Some(id) = ancestor {
+        if id == child_id {
+            return Ok(HIERARCHY_REQUEST_ERROR);
+        }
+        ancestor = document.get_node(id).and_then(|node| node.parent);
+    }
+    // DOM: inserting a node before itself means before its next sibling.
+    if reference == Some(child_id) {
+        let siblings = &document.get_node(parent_id).unwrap().children;
+        let index = siblings.iter().position(|id| *id == child_id).unwrap();
+        reference = siblings.get(index + 1).copied();
+    }
+    let mut mutator = document.mutate();
+    if had_parent {
+        mutator.remove_node(child_id);
+    }
+    match reference {
+        Some(reference) => mutator.insert_nodes_before(reference, &[child_id]),
+        None => mutator.append_children(parent_id, &[child_id]),
+    }
+    Ok(OK)
+}
+
+#[op2(fast)]
+fn op_blitz_insert_before(
+    state: Rc<RefCell<OpState>>,
+    parent_handle: f64,
+    child_handle: f64,
+    reference_handle: f64,
+) -> Result<i32, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let reference = (reference_handle >= 0.0).then_some(reference_handle);
+    insert_child(&mut document, parent_handle, child_handle, reference)
+}
+
+#[op2(fast)]
+fn op_blitz_child_count(state: Rc<RefCell<OpState>>, handle: f64) -> Result<u32, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    Ok(attached_node(&document, handle)?.children.len() as u32)
+}
+
+#[op2(fast)]
+fn op_blitz_child_at(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    index: u32,
+) -> Result<f64, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    Ok(node
+        .children
+        .get(index as usize)
+        .copied()
+        .map_or(NO_NODE, to_handle))
+}
+
+/// `nextSibling` (`next == true`) or `previousSibling`.
+#[op2(fast)]
+fn op_blitz_sibling(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    next: bool,
+) -> Result<f64, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    let Some(parent) = node.parent else {
+        return Ok(NO_NODE);
+    };
+    let siblings = &document.get_node(parent).unwrap().children;
+    let index = siblings.iter().position(|id| *id == node.id).unwrap();
+    let sibling = if next {
+        siblings.get(index + 1)
+    } else {
+        index.checked_sub(1).and_then(|index| siblings.get(index))
+    };
+    Ok(sibling.copied().map_or(NO_NODE, to_handle))
+}
+
+/// `querySelector` (`all == false`) / `querySelectorAll` on the descendants of
+/// `scope` with Blitz's Stylo-based matching. Returns the number of matches, or
+/// -1 for an invalid selector (SyntaxError in JS).
+#[op2(fast)]
+fn op_blitz_query(
+    state: Rc<RefCell<OpState>>,
+    scope_handle: f64,
+    #[string] selector: &str,
+    all: bool,
+) -> Result<i32, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let scope = attached_node(&document, scope_handle)?.id;
+    let found: Vec<NodeId> = if all {
+        match document.query_selector_all_in(scope, selector) {
+            Ok(found) => found.into_iter().collect(),
+            Err(_) => return Ok(-1),
+        }
+    } else {
+        match document.query_selector_in(scope, selector) {
+            Ok(found) => found.into_iter().collect(),
+            Err(_) => return Ok(-1),
+        }
+    };
+    let count = found.len() as i32;
+    state.borrow_mut().borrow_mut::<QueryResults>().0 = found;
+    Ok(count)
+}
+
+#[op2(fast)]
+fn op_blitz_query_result(state: Rc<RefCell<OpState>>, index: u32) -> f64 {
+    state
+        .borrow()
+        .borrow::<QueryResults>()
+        .0
+        .get(index as usize)
+        .copied()
+        .map_or(NO_NODE, to_handle)
+}
+
+#[op2]
+#[string]
+fn op_blitz_outer_html(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    Ok(attached_node(&document, handle)?.outer_html())
+}
+
+#[op2]
+#[string]
+fn op_blitz_inner_html(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    let mut html = String::new();
+    for child in node.children.iter() {
+        if let Some(child) = document.get_node(*child) {
+            child.write_outer_html(&mut html);
+        }
+    }
+    Ok(html)
+}
+
+/// `innerHTML` setter: detaches the old children (wrapped ones survive detached,
+/// unreferenced ones are freed) and parses the fragment with Blitz's html5ever
+/// provider.
+#[op2(fast)]
+fn op_blitz_set_inner_html(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    #[string] html: &str,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node = attached_node(&document, handle)?;
+    if node.element_data().is_none() {
+        return Err(JsErrorBox::type_error("innerHTML on a non-element"));
+    }
+    let node_id = node.id;
+    let children: Vec<NodeId> = node.children.iter().copied().collect();
+    {
+        let mut mutator = document.mutate();
+        for child in children.iter().copied() {
+            mutator.remove_node(child);
+        }
+        mutator.set_inner_html(node_id, html);
+    }
+    let state = state.borrow();
+    let wrapped = state.borrow::<WrappedNodes>();
+    for child in children {
+        drop_if_unreferenced(&mut document, wrapped, child);
+    }
+    Ok(())
+}
+
+#[op2(fast)]
+fn op_blitz_remove_attribute(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    #[string] name: &str,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node = attached_node(&document, handle)?;
+    if node.element_data().is_none() {
+        return Err(JsErrorBox::type_error("removeAttribute on a non-element"));
+    }
+    let node_id = node.id;
+    document.mutate().clear_attribute(node_id, html_name(name));
+    Ok(())
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
         op_blitz_document_root,
+        op_blitz_insert_before,
+        op_blitz_child_count,
+        op_blitz_child_at,
+        op_blitz_sibling,
+        op_blitz_query,
+        op_blitz_query_result,
+        op_blitz_outer_html,
+        op_blitz_inner_html,
+        op_blitz_set_inner_html,
+        op_blitz_remove_attribute,
         op_blitz_retain,
         op_blitz_release,
         op_blitz_is_connected,
@@ -654,7 +871,11 @@ fn main() {
         stage("parse_html");
         let document = Rc::new(RefCell::new(HtmlDocument::from_html(
             FIXTURE,
-            DocumentConfig::default(),
+            // The html5ever provider enables `innerHTML` fragment parsing.
+            DocumentConfig {
+                html_parser_provider: Some(Arc::new(blitz_html::HtmlProvider)),
+                ..Default::default()
+            },
         )));
         stage("create_js_runtime");
         let mut runtime = JsRuntime::new(RuntimeOptions {
@@ -675,6 +896,7 @@ fn main() {
             .borrow_mut()
             .put(ProbeDocument(document.clone()));
         runtime.op_state().borrow_mut().put(WrappedNodes::default());
+        runtime.op_state().borrow_mut().put(QueryResults::default());
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
@@ -723,6 +945,11 @@ fn main() {
             button_rect.0 + button_rect.2 / 2.0,
             button_rect.1 + button_rect.3 / 2.0,
         );
+        stage("dom_api_test");
+        runtime
+            .execute_script("roves-blitz-dom-api-test.js", DOM_API_TEST)
+            .expect("tree navigation, selectors, classList and innerHTML checks should pass");
+
         stage("hit_test_and_click");
         let target = hit_target(&document, x, y).expect("hit-test should find a node");
         {
@@ -901,6 +1128,9 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"opacity_on_element_background\",\"status\":\"passed\",\"computed_opacity\":\"0.5\",\"painted\":{fading_pixel:?}}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"dom_tree_navigation_selectors_classlist_innerhtml\",\"status\":\"passed\"}}"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"gc_frees_unreferenced_detached_nodes\",\"status\":\"passed\",\"nodes_before\":{nodes_before},\"nodes_created\":{nodes_created},\"nodes_after\":{nodes_after}}}"

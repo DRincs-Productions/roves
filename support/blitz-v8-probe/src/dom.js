@@ -35,6 +35,16 @@
     op_blitz_retain,
     op_blitz_release,
     op_blitz_is_connected,
+    op_blitz_insert_before,
+    op_blitz_child_count,
+    op_blitz_child_at,
+    op_blitz_sibling,
+    op_blitz_query,
+    op_blitz_query_result,
+    op_blitz_outer_html,
+    op_blitz_inner_html,
+    op_blitz_set_inner_html,
+    op_blitz_remove_attribute,
   } = core.ops;
   const {
     Event,
@@ -142,6 +152,88 @@
       checkStatus(op_blitz_remove_child(handleOf(this, "removeChild"), handleOf(child, "removeChild")));
       return child;
     }
+    insertBefore(node, child) {
+      const nodeHandle = handleOf(node, "insertBefore");
+      const reference = child === null || child === undefined ? -1 : handleOf(child, "insertBefore");
+      checkStatus(op_blitz_insert_before(handleOf(this, "insertBefore"), nodeHandle, reference));
+      retainIfConnected(nodeHandle);
+      return node;
+    }
+    get ownerDocument() {
+      return this.nodeType === DOCUMENT_NODE ? null : document;
+    }
+    get isConnected() {
+      return op_blitz_is_connected(handleOf(this, "isConnected"));
+    }
+    get childNodes() {
+      const handle = handleOf(this, "childNodes");
+      const count = op_blitz_child_count(handle);
+      const nodes = [];
+      for (let index = 0; index < count; index++) nodes.push(wrap(op_blitz_child_at(handle, index)));
+      return createNodeList(nodes);
+    }
+    hasChildNodes() {
+      return op_blitz_child_count(handleOf(this, "hasChildNodes")) > 0;
+    }
+    get firstChild() {
+      return wrapOrNull(op_blitz_child_at(handleOf(this, "firstChild"), 0));
+    }
+    get lastChild() {
+      const handle = handleOf(this, "lastChild");
+      const count = op_blitz_child_count(handle);
+      return count === 0 ? null : wrap(op_blitz_child_at(handle, count - 1));
+    }
+    get nextSibling() {
+      return wrapOrNull(op_blitz_sibling(handleOf(this, "nextSibling"), true));
+    }
+    get previousSibling() {
+      return wrapOrNull(op_blitz_sibling(handleOf(this, "previousSibling"), false));
+    }
+    contains(other) {
+      if (other === null || other === undefined) return false;
+      handleOf(other, "contains");
+      for (let node = other; node !== null; node = node.parentNode) if (node === this) return true;
+      return false;
+    }
+    // ParentNode mixin (Element and Document).
+    get children() {
+      return createNodeList(this.childNodes.filter((node) => node.nodeType === ELEMENT_NODE));
+    }
+    get firstElementChild() {
+      return this.children[0] ?? null;
+    }
+    querySelector(selectors) {
+      const count = query(this, selectors, false);
+      return count === 0 ? null : wrap(op_blitz_query_result(0));
+    }
+    querySelectorAll(selectors) {
+      const count = query(this, selectors, true);
+      const nodes = [];
+      for (let index = 0; index < count; index++) nodes.push(wrap(op_blitz_query_result(index)));
+      return createNodeList(nodes);
+    }
+    append(...nodes) {
+      for (const node of nodes) {
+        this.appendChild(typeof node === "string" ? document.createTextNode(node) : node);
+      }
+    }
+    // ChildNode mixin.
+    remove() {
+      const parent = this.parentNode;
+      if (parent !== null) parent.removeChild(this);
+    }
+  }
+
+  function wrapOrNull(handle) {
+    return handle < 0 ? null : wrap(handle);
+  }
+
+  function query(node, selectors, all) {
+    const count = op_blitz_query(handleOf(node, "querySelector"), String(selectors), all);
+    if (count < 0) {
+      throw new DOMException(`'${selectors}' is not a valid selector.`, "SyntaxError");
+    }
+    return count;
   }
 
   class Element extends Node {
@@ -162,6 +254,40 @@
     }
     getAttribute(name) {
       return op_blitz_get_attribute(handleOf(this, "getAttribute"), String(name).toLowerCase());
+    }
+    hasAttribute(name) {
+      return this.getAttribute(name) !== null;
+    }
+    removeAttribute(name) {
+      op_blitz_remove_attribute(handleOf(this, "removeAttribute"), String(name).toLowerCase());
+    }
+    get className() {
+      return this.getAttribute("class") ?? "";
+    }
+    set className(value) {
+      this.setAttribute("class", value);
+    }
+    get classList() {
+      let list = classLists.get(this);
+      if (list === undefined) {
+        constructing = true;
+        try {
+          list = new DOMTokenList(this);
+        } finally {
+          constructing = false;
+        }
+        classLists.set(this, list);
+      }
+      return list;
+    }
+    get innerHTML() {
+      return op_blitz_inner_html(handleOf(this, "innerHTML"));
+    }
+    set innerHTML(value) {
+      op_blitz_set_inner_html(handleOf(this, "innerHTML"), value === null ? "" : String(value));
+    }
+    get outerHTML() {
+      return op_blitz_outer_html(handleOf(this, "outerHTML"));
     }
     setAttribute(name, value) {
       name = String(name);
@@ -199,11 +325,112 @@
     return style;
   }
 
-  // Interface only: no API of the probe returns a NodeList yet, but libraries
-  // test `instanceof NodeList` (Motion's subject resolution).
+  // Static NodeList snapshot (querySelectorAll is static per spec; childNodes and
+  // children are live in browsers, a known simplification here). Supports index
+  // access, length, item(), iteration and forEach; filter is internal.
   class NodeList {
-    constructor() {
-      throw new TypeError("Illegal constructor");
+    #nodes;
+    constructor(nodes) {
+      if (!constructing) throw new TypeError("Illegal constructor");
+      this.#nodes = nodes;
+      nodes.forEach((node, index) => {
+        Object.defineProperty(this, index, { value: node, enumerable: true });
+      });
+    }
+    get length() {
+      return this.#nodes.length;
+    }
+    item(index) {
+      return this.#nodes[index] ?? null;
+    }
+    forEach(callback, thisArg) {
+      this.#nodes.forEach((node, index) => callback.call(thisArg, node, index, this));
+    }
+    filter(predicate) {
+      return this.#nodes.filter(predicate);
+    }
+    [Symbol.iterator]() {
+      return this.#nodes[Symbol.iterator]();
+    }
+  }
+  function createNodeList(nodes) {
+    constructing = true;
+    try {
+      return new NodeList(nodes);
+    } finally {
+      constructing = false;
+    }
+  }
+
+  // classList over the `class` attribute (Blitz restyles on attribute changes).
+  const classLists = new WeakMap();
+  class DOMTokenList {
+    #element;
+    constructor(element) {
+      if (!constructing) throw new TypeError("Illegal constructor");
+      this.#element = element;
+    }
+    #tokens() {
+      return this.#element.className.split(/[\t\n\f\r ]+/).filter(Boolean);
+    }
+    #write(tokens) {
+      this.#element.setAttribute("class", [...new Set(tokens)].join(" "));
+    }
+    #check(token) {
+      token = String(token);
+      if (token === "") throw new DOMException("The token must not be empty.", "SyntaxError");
+      if (/[\t\n\f\r ]/.test(token)) {
+        throw new DOMException("The token must not contain whitespace.", "InvalidCharacterError");
+      }
+      return token;
+    }
+    get length() {
+      return this.#tokens().length;
+    }
+    get value() {
+      return this.#element.className;
+    }
+    item(index) {
+      return this.#tokens()[index] ?? null;
+    }
+    contains(token) {
+      return this.#tokens().includes(String(token));
+    }
+    add(...tokens) {
+      const list = this.#tokens();
+      for (const token of tokens) {
+        const checked = this.#check(token);
+        if (!list.includes(checked)) list.push(checked);
+      }
+      this.#write(list);
+    }
+    remove(...tokens) {
+      const checked = tokens.map((token) => this.#check(token));
+      this.#write(this.#tokens().filter((token) => !checked.includes(token)));
+    }
+    toggle(token, force) {
+      const checked = this.#check(token);
+      const present = this.contains(checked);
+      const wanted = force === undefined ? !present : Boolean(force);
+      if (wanted && !present) this.add(checked);
+      if (!wanted && present) this.remove(checked);
+      return wanted;
+    }
+    replace(token, replacement) {
+      const from = this.#check(token);
+      const to = this.#check(replacement);
+      const list = this.#tokens();
+      const index = list.indexOf(from);
+      if (index < 0) return false;
+      list[index] = to;
+      this.#write(list);
+      return true;
+    }
+    [Symbol.iterator]() {
+      return this.#tokens()[Symbol.iterator]();
+    }
+    toString() {
+      return this.value;
     }
   }
   // Live computed style: every read flushes Blitz styles and serializes the
@@ -247,6 +474,15 @@
         throw new DOMException(`'${name}' is not a valid element name.`, "InvalidCharacterError");
       }
       return wrap(op_blitz_create_element(name.toLowerCase()));
+    }
+    get documentElement() {
+      return this.firstElementChild;
+    }
+    get body() {
+      return this.querySelector("body");
+    }
+    get head() {
+      return this.querySelector("head");
     }
     createTextNode(data) {
       return wrap(op_blitz_create_text_node(String(data)));
@@ -333,6 +569,7 @@
     HTMLElement,
     SVGElement,
     NodeList,
+    DOMTokenList,
     Text,
     Document,
     Event,
