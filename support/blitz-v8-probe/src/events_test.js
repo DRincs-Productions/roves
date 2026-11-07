@@ -109,14 +109,16 @@
   }
   for (const type of ["keydown", "keyup"]) {
     document.addEventListener(type, (event) => {
-      received.push({
-        type,
-        trusted: event.isTrusted,
-        keyboard: event instanceof KeyboardEvent,
-        key: event.key,
-        code: event.code,
-        onFocused: event.target === document.activeElement,
-      });
+      const record = { type, keyboard: event instanceof KeyboardEvent };
+      try {
+        record.trusted = event.isTrusted;
+        record.key = event.key;
+        record.code = event.code;
+        record.onFocused = event.target === document.activeElement;
+      } catch (error) {
+        record.error = String(error?.stack ?? error);
+      }
+      received.push(record);
     });
   }
 })();
