@@ -18,6 +18,13 @@ permissions:
 jobs:
   windows:
     runs-on: windows-latest
+    # deno_core 0.413 without a startup snapshot reads extension JS (deno_web,
+    # deno_webgpu, ...) at run time from the absolute crate paths of the build
+    # machine. A neutral CARGO_HOME lets the CI-built executable also run on a
+    # developer machine that mirrors C:/roves-cargo/registry/src (junction).
+    # Production must use a startup snapshot instead (see TODO.md).
+    env:
+      CARGO_HOME: C:/roves-cargo
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -41,8 +48,8 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: |
-            ~/.cargo/registry/index
-            ~/.cargo/registry/cache
+            C:/roves-cargo/registry/index
+            C:/roves-cargo/registry/cache
             ${{ runner.temp }}/blitz-probe-target
           key: blitz-probe-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/blitz-v8-probe/Cargo.lock') }}
       - name: check locked dependency graph
