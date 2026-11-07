@@ -31,18 +31,20 @@ Claude è stato incaricato di creare il probe circoscritto. Due tentativi si son
 
 ## Stato a fine sessione (7 novembre, Claude)
 
-Pubblicato fino a `94c40965ebc` (commit locale successivo: solo TODO). La probe ora copre wrapper DOM,
-albero/attributi, eventi trusted via `deno_web`, paint offscreen con controllo pixel, frame loop
-headless (rAF, microtask, timer), `element.style`, `getComputedStyle` e Motion 12.38.0; scelta
-l'opzione A (niente libreria DOM JS). Dettagli e verifiche negative nel README della probe.
+Pubblicato e verde in CI Windows (normale e JIT-less) fino a `ae1efc866d5`, run `42378443215`.
+La probe usa Blitz `0.3.0-beta.4` (Stylo 0.22, anyrender 0.14, `NodeId` versionati) e copre wrapper
+DOM, albero/attributi, eventi trusted via `deno_web`, frame loop headless (rAF, microtask, timer),
+`element.style`, `getComputedStyle`, Motion 12.38.0 e paint offscreen su CPU (`anyrender_vello_cpu`)
+con controlli pixel, opacità compresa. Scelta l'opzione A (niente libreria DOM JS). Dettagli e
+verifiche negative nel README della probe.
 
-- CI da controllare: run `42373739478` (Blitz probe, prima esecuzione del render GPU offscreen su
-  runner Windows: se manca un adapter wgpu il passo di paint fallisce e va deciso un fallback,
-  ad esempio WARP o `anyrender_vello_cpu`). Android `42373739406` verde.
-- **Vincolo utente del 7 novembre: non compilare in locale, nemmeno la probe.** Fare commit piccoli
-  e verificare nella CI della probe.
-- Prossimi passi: passaggio a Blitz 0.3 beta (elenco delle modifiche nel TODO), poi finestra
-  `blitz-shell` e input reale.
+- Il render GPU (wgpu) andava in `STATUS_ACCESS_VIOLATION` sui runner senza GPU: sostituito dal
+  render CPU. La presentazione in una finestra reale resta da fare.
+- **Vincolo utente del 7 novembre: non compilare in locale, nemmeno la probe.** Commit piccoli,
+  verifica nella CI della probe; i log completi richiedono un PAT in sola lettura passato inline.
+- Prossimi passi: ciclo di vita dei wrapper legato al GC (con `NodeId` versionati un handle
+  scaduto non aliasa più); finestra `blitz-shell` e input reale; superficie DOM richiesta dal
+  template (classList, querySelector, innerHTML) secondo la matrice dell'handoff tecnico.
 
 ## Incarico completato il 7 novembre (wrapper DOM minimi)
 
