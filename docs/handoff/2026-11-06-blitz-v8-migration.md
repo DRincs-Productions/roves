@@ -168,7 +168,7 @@ i crate pubblicati (il codice sorgente scaricato da Cargo è fonte primaria) e a
 | Rete | `blitz-net` / `NetProvider` | [RICORDO] basato su reqwest | provider `game://`, CSP, origini, nessun accesso di rete non autorizzato |
 | JS | `deno_core` fork vendorizzato, `v8 150.4.0` | [CONFERMATO] runtime di produzione unico | ponte DOM da scrivere; event loop da legare al frame Blitz |
 | API Web base | estensioni `deno_web` (timer, URL, encoding, streams, structuredClone, event target) | [RICORDO] MIT, mantenute da Deno | verificare che non espongano `Deno.*`; compatibilità con il fork 0.413 |
-| DOM per JS | Opzione A: facciata sottile su op `deno_core` verso `blitz-dom`. Opzione B: DOM JS mantenuto (`linkedom` ISC, `happy-dom` MIT) [RICORDO] con mutazioni rispecchiate in `blitz-dom` | [INFERENZA] B riduce il codice nostro per l'API DOM, A riduce memoria e doppio stato | decidere in M1 con misura su template (RAM, tempo mutazioni, correttezza) |
+| DOM per JS | Opzione A: facciata sottile su op `deno_core` verso `blitz-dom`. Opzione B: DOM JS mantenuto (`linkedom` ISC, `happy-dom` MIT) [RICORDO] con mutazioni rispecchiate in `blitz-dom` | [INFERENZA] B riduce il codice nostro per l'API DOM, A riduce memoria e doppio stato | **Deciso il 7 novembre: opzione A.** `happy-dom` richiede built-in Node (`vm`, `fs`, `buffer`); `linkedom` ha dispatch eventi semplificata senza vera fase capture e MutationObserver non standard. Event/EventTarget/DOMException da `deno_web 0.291.0` (dispatch spec sul `parentNode` dei nodi). Dettagli nel README della probe |
 | WebGL/WebGL2 | Nessuna libreria Rust mantenuta che implementi WebGL su wgpu [RICORDO]. Candidati: (1) ANGLE/EGL + texture condivisa D3D11→D3D12 importata in wgpu; (2) backend GLES di wgpu su ANGLE con FBO nello stesso contesto; (3) riuso del codice WebGL di Servo (resta codice nostro) | **lacuna principale**, [IGNOTO] | spike T2; nessun readback CPU per frame |
 | WebGPU (alternativa) | `deno_webgpu` (wgpu) [RICORDO]; PixiJS v8 ha un renderer WebGPU [RICORDO] | [INFERENZA] può condividere il device wgpu di Blitz se le versioni coincidono | verificare se Pixi'VN consente di scegliere WebGPU; non sostituisce WebGL finché il template non lo usa |
 | Canvas 2D | Vello o `tiny-skia` [RICORDO] | [IGNOTO] | serve se il template/typewriter lo usa (da matrice) |
@@ -208,7 +208,15 @@ conferma coesistenza Deno/V8 + documento Blitz + style/layout e una chiamata JS�
 testo Blitz. Non verifica ancora oggetti DOM esposti ai giochi né completa T1. PS Blitz 0.6.5
 è escluso temporaneamente per il fallimento Windows in `nagoya`.
 
-**Prossima sottofase:** sostituire l'op fixture-specifico con metodi DOM usabili dagli script;
+**Checkpoint del 7 novembre (Claude):** wrapper DOM stabili, `getElementById`, `createElement`,
+`createTextNode`, `appendChild` (con spostamento), `removeChild`, `textContent`, attributi,
+errori `DOMException`, e clic da hit-test Blitz a listener JS in ordine capture/target/bubble con
+`isTrusted`, tramite l'EventTarget di `deno_web`. `Deno`/`__bootstrap` rimossi dal global del
+gioco. Verifiche locali Windows e due verifiche negative registrate nel README della probe.
+Restano: shell/finestra, paint, rAF/microtask per frame, input reale, `classList`/`style`, Motion,
+ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati).
+
+**Sottofase precedente (storica):** sostituire l'op fixture-specifico con metodi DOM usabili dagli script;
 valutare librerie mantenute per identità dei wrapper V8↔DOM e poi aggiungere eventi/listener.
 Non importare Boa.
 
@@ -359,6 +367,7 @@ incarichi. Codex completa lockfile, workflow e controlli Cargo/CI.
 1. Codex registra la direzione in `AGENTS.md`/`TODO.md` (completato).
 2. Claude ha tentato T1 due volte senza produrre file; Codex ha costruito e verificato in locale
    la probe Windows e il primo op DOM. Il grafo scelto è Blitz DioxusLabs senza Boa.
-3. Prossimo passo Codex: valutare binding V8 mantenuti per wrapper Node stabili e implementare
-   API DOM effettive; poi eventi, shell/frame. Workflow non pubblicato e CI pendente. Non avviare
+3. Completato il 7 novembre: wrapper Node stabili, API DOM di base ed eventi (vedi T1). Prossimo
+   passo: shell/finestra Blitz, frame loop con rAF e microtask, input reale; poi `classList`/`style`
+   e Motion. Workflow non pubblicato e CI pendente. Non avviare
    T2 WebGL o misure di performance finché non c'è una pagina interattiva.

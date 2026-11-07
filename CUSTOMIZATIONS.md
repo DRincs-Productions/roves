@@ -19339,3 +19339,15 @@ of dropped nodes, so the setter detaches children with `remove_node` instead of 
 freeing nodes needs a GC-aware wrapper lifecycle first. `src/guest_test.js` checks identity,
 coercion, null/missing ids and illegal construction; disabling the wrapper cache makes it
 fail. fmt/check/run pass on Windows with one V8 150.4.0.
+
+Second 2026-11-07 follow-up: the probe adds `deno_webidl 0.260.0` and `deno_web 0.291.0` (paired
+with deno_core 0.413). Wrappers now extend deno_web's `EventTarget`, whose spec dispatch walks
+`parentNode`/`getRootNode`, and DOM errors use its `DOMException`. New ops cover node type,
+parent, local name, element/text creation, `appendChild` (detaching a previously attached
+child first, which Blitz's `append_children` does not), `removeChild` and attributes. The
+bootstrap evaluates to a trusted-event dispatcher kept by Rust and deletes `Deno` and
+`__bootstrap` from the guest global. Rust resolves layout, hit-tests the JS-created button
+with `BaseDocument::hit` and dispatches a trusted click; the guest verifies capture, target and
+bubble order. Disabling bubbling makes the run fail. JS DOM libraries were rejected as the
+DOM source: happy-dom needs Node built-ins and linkedom simplifies event dispatch. deno_web
+adds 15 crates to the probe lock, including a second cssparser (0.36.0).
