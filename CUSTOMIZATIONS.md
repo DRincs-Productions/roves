@@ -19403,3 +19403,14 @@ defects above. Ops take and return versioned `NodeId` handles as JS numbers (new
 `element_from_point`; rects use `Node::absolute_position`; `paint_scene` takes the document
 mutably. The manual restyle hint is removed and the opacity paint check is asserted. Not
 compiled locally by request; the lockfile was resolved with `cargo tree` and CI builds it.
+
+Ninth 2026-11-07 follow-up (all verified only in CI, run 42389990508 green in both V8 modes):
+GC-driven freeing of detached nodes (WeakRef + FinalizationRegistry, collections forced with
+`Isolate::low_memory_notification`); tree/selector/classList/innerHTML ops; geometry,
+matchMedia, focus and UI event classes with trusted pointer/mouse/keyboard dispatch from Rust;
+`localStorage`/`sessionStorage` via deno_webstorage 0.255.0 (persistence across two processes
+checked) and a single-document History/Location; a `--window` mode presenting the document in a
+real blitz-shell window, where CI screenshots the screen and injects a real OS click. Fixes found
+on the way: attribute names must have no namespace, Blitz reports document/html/body as focused
+before any focus, and deno_web's `dispatchEvent` skips ancestors when the target has no listener
+(DOM nodes now call deno_web's `dispatch` directly; upstream issue still to open).

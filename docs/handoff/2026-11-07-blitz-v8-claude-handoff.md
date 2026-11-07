@@ -31,20 +31,19 @@ Claude è stato incaricato di creare il probe circoscritto. Due tentativi si son
 
 ## Stato a fine sessione (7 novembre, Claude)
 
-Pubblicato e verde in CI Windows (normale e JIT-less) fino a `ae1efc866d5`, run `42378443215`.
-La probe usa Blitz `0.3.0-beta.4` (Stylo 0.22, anyrender 0.14, `NodeId` versionati) e copre wrapper
-DOM, albero/attributi, eventi trusted via `deno_web`, frame loop headless (rAF, microtask, timer),
-`element.style`, `getComputedStyle`, Motion 12.38.0 e paint offscreen su CPU (`anyrender_vello_cpu`)
-con controlli pixel, opacità compresa. Scelta l'opzione A (niente libreria DOM JS). Dettagli e
-verifiche negative nel README della probe.
+Pubblicato e verde in CI Windows (normale e JIT-less) fino al commit della correzione dispatch,
+run `42389990508`. La probe (Blitz `0.3.0-beta.4`, deno_core/V8 unico) copre: wrapper DOM con GC dei
+nodi staccati, albero/selettori/`classList`/`innerHTML`, geometria, `matchMedia`, focus, eventi
+pointer/mouse/tastiera trusted, frame loop (rAF/microtask/timer), `style`/`getComputedStyle`,
+Motion 12.38.0, paint CPU con controlli pixel, `localStorage`/`sessionStorage` persistenti
+(deno_webstorage), History/Location a documento unico e una finestra reale `blitz-shell` con clic OS
+iniettato e screenshot. Dettagli, test e verifiche negative nel README della probe.
 
-- Il render GPU (wgpu) andava in `STATUS_ACCESS_VIOLATION` sui runner senza GPU: sostituito dal
-  render CPU. La presentazione in una finestra reale resta da fare.
-- **Vincolo utente del 7 novembre: non compilare in locale, nemmeno la probe.** Commit piccoli,
-  verifica nella CI della probe; i log completi richiedono un PAT in sola lettura passato inline.
-- Prossimi passi: ciclo di vita dei wrapper legato al GC (con `NodeId` versionati un handle
-  scaduto non aliasa più); finestra `blitz-shell` e input reale; superficie DOM richiesta dal
-  template (classList, querySelector, innerHTML) secondo la matrice dell'handoff tecnico.
+- **Vincolo utente: non compilare in locale, nemmeno la probe.** Commit piccoli, verifica in CI; i log
+  completi richiedono un PAT in sola lettura passato inline.
+- Bug deno_web 0.291.0 aggirato (dispatch che salta gli antenati): issue upstream da aprire, vedi TODO.
+- Restano: WebGL/Pixi (serve GPU), Web Audio, scroll/wheel/testo/IME/touch nella finestra,
+  Linux/macOS/mobile, compatibilità salvataggi.
 
 ## Incarico completato il 7 novembre (wrapper DOM minimi)
 
