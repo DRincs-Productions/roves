@@ -1139,8 +1139,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
         run: |
-          Rename-Item -Path release-vn -NewName visual-novel-template
-          Compress-Archive -Path visual-novel-template -DestinationPath visual-novel-template_windows.zip
+          # Not "visual-novel-template": that is the checkout of the game's source.
+          Rename-Item -Path release-vn -NewName visual-novel-template-windows
+          Compress-Archive -Path visual-novel-template-windows -DestinationPath visual-novel-template_windows.zip
           for ($attempt = 1; $attempt -le 3; $attempt++) {
             gh release upload $env:TEST_RELEASE_TAG visual-novel-template_windows.zip --clobber
             if ($LASTEXITCODE -eq 0) { exit 0 }
