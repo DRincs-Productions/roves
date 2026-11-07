@@ -357,10 +357,20 @@
     if (FOCUS_EVENTS.has(type)) return FocusEvent;
     return Event;
   }
+  // TEMPORARY diagnostics for the missing focusin/focusout (remove once fixed).
+  const fireLog = [];
+  globalThis.__rovesFireLog = fireLog;
   function fireTrusted(target, type, Class, init) {
-    const event = new Class(type, { cancelable: false, composed: true, view: globalThis, ...init });
-    setIsTrusted(event, true);
-    return target.dispatchEvent(event);
+    try {
+      const event = new Class(type, { cancelable: false, composed: true, view: globalThis, ...init });
+      setIsTrusted(event, true);
+      const result = target.dispatchEvent(event);
+      fireLog.push(`${type}:${result}:${event.bubbles}`);
+      return result;
+    } catch (error) {
+      fireLog.push(`${type}:threw:${error}`);
+      throw error;
+    }
   }
 
   // matchMedia over the probe viewport. Evaluates media types (all/screen/print),

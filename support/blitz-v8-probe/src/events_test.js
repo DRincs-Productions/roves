@@ -54,7 +54,7 @@
     listenerErrors.push(String(event.error?.message ?? event.message));
     event.preventDefault();
   });
-  for (const type of ["focus", "blur"]) {
+  for (const type of ["focus", "blur", "focusin", "focusout"]) {
     button.addEventListener(type, () => focusDiagnostics.push(`target:${type}`));
     app.addEventListener(type, () => focusDiagnostics.push(`capture-options:${type}`), { capture: true });
   }
@@ -75,7 +75,7 @@
       "focus:button:true:true",
       "focusin:button:true:true",
     ].join(),
-    `focus event sequence: ${focusLog.join()} | diagnostics: ${focusDiagnostics.join()} | listener errors: ${listenerErrors.join(" / ")}`,
+    `focus event sequence: ${focusLog.join()} | diagnostics: ${focusDiagnostics.join()} | listener errors: ${listenerErrors.join(" / ")} | fired: ${globalThis.__rovesFireLog?.join()}`,
   );
 
   // Guest-constructed events are untrusted and carry their init values.
