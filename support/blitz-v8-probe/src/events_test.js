@@ -50,6 +50,7 @@
   // registered with an options object, and errors thrown by listeners.
   const focusDiagnostics = [];
   const listenerErrors = [];
+  globalThis.__rovesListenerErrors = listenerErrors;
   addEventListener("error", (event) => {
     listenerErrors.push(String(event.error?.message ?? event.message));
     event.preventDefault();

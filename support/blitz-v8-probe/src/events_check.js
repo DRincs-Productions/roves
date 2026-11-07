@@ -2,7 +2,7 @@
 (() => {
   "use strict";
   const fail = (message) => {
-    throw new Error(`${message}: ${JSON.stringify(receivedInput)} | fired: ${globalThis.__rovesFireLog?.join(" ; ")}`);
+    throw new Error(`${message}: ${JSON.stringify(receivedInput)} | fired: ${globalThis.__rovesFireLog?.join(" ; ")} | listener errors: ${globalThis.__rovesListenerErrors?.join(" / ")}`);
   };
   const mouse = receivedInput.filter((event) => "mouse" in event);
   const keys = receivedInput.filter((event) => "keyboard" in event);
