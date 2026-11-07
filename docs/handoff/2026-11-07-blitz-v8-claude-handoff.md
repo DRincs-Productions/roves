@@ -42,7 +42,8 @@ iniettato e screenshot. Dettagli, test e verifiche negative nel README della pro
 - **Vincolo utente: non compilare in locale, nemmeno la probe.** Commit piccoli, verifica in CI; i log
   completi richiedono un PAT in sola lettura passato inline.
 - Bug deno_web 0.291.0 aggirato (dispatch che salta gli antenati): issue upstream da aprire, vedi TODO.
-- Restano: WebGL/Pixi (serve GPU), Web Audio, scroll/wheel/testo/IME/touch nella finestra,
+- WebGPU/PixiJS 8.19.0 verificato su GPU reale (GTX 1050) con l'eseguibile CI eseguito in locale; due bug/limiti Deno documentati nel TODO.
+- Restano: presentazione del canvas WebGPU nella finestra Blitz (wgpu 29 vs 30), Canvas 2D (testo Pixi), Web Audio, scroll/wheel/testo/IME/touch nella finestra,
   Linux/macOS/mobile, compatibilità salvataggi.
 
 ## Incarico completato il 7 novembre (wrapper DOM minimi)
