@@ -46,6 +46,14 @@ iniettato e screenshot. Dettagli, test e verifiche negative nel README della pro
 - Restano: presentazione del canvas WebGPU nella finestra Blitz (wgpu 29 vs 30), Canvas 2D (testo Pixi), Web Audio, scroll/wheel/testo/IME/touch nella finestra,
   Linux/macOS/mobile, compatibilità salvataggi.
 
+### Prossimi passi (fine 7 novembre)
+
+Ordine per far girare il template, con analisi e candidati nel TODO ("Template sulla probe"):
+presentazione del canvas WebGPU nella finestra (architettura proposta: compositing con il wgpu di
+deno_webgpu), caricamento immagini (`deno_image` più polyfill `copyExternalImageToTexture`), Web Audio,
+Canvas 2D per il testo Pixi. Verifica: CI per build e test headless; GPU e finestra eseguendo in
+locale l'eseguibile CI (junction `C:/roves-cargo/registry/src/...` già creata su questa macchina).
+
 ## Incarico completato il 7 novembre (wrapper DOM minimi)
 
 L'incarico sotto è stato eseguito; dettagli nel README del probe. Prossimo passo proposto: progettare il ciclo di vita wrapper/nodo legato al GC (valutando oggetti cppgc di deno_core) prima di ampliare la superficie DOM, poi eventi e frame.
