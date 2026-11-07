@@ -279,7 +279,12 @@ deno_core::extension!(
 
 fn resolve_layout(document: &Rc<RefCell<HtmlDocument>>) {
     let mut document = document.borrow_mut();
-    document.set_viewport(Viewport::new(640, 360, 1.0, ColorScheme::Light));
+    document.set_viewport(Viewport::new(
+        VIEWPORT.0,
+        VIEWPORT.1,
+        1.0,
+        ColorScheme::Light,
+    ));
     document.resolve(0.0);
 }
 
@@ -297,11 +302,95 @@ fn hit_target(document: &Rc<RefCell<HtmlDocument>>, x: f32, y: f32) -> Option<us
     }
 }
 
+const VIEWPORT: (u32, u32) = (640, 360);
+
+/// Border-box rectangle `(x, y, width, height)` of the element with `id`, in
+/// viewport pixels. Blitz `final_layout` locations are relative to the parent.
+fn element_rect(document: &Rc<RefCell<HtmlDocument>>, id: &str) -> (f32, f32, f32, f32) {
+    let document = document.borrow();
+    let node_id = find_element_by_id(&document, id).expect("element present");
+    let size = document.get_node(node_id).unwrap().final_layout.size;
+    let (mut x, mut y) = (0.0, 0.0);
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let node = document.get_node(id).unwrap();
+        x += node.final_layout.location.x;
+        y += node.final_layout.location.y;
+        current = node.parent;
+    }
+    (x, y, size.width, size.height)
+}
+
+/// Paints the resolved document into an RGBA8 buffer. Uses `ImageRenderer::render`
+/// on a pre-sized buffer: `render_to_vec`/`render_to_buffer` in anyrender_vello
+/// 0.6.0 pass a zero-length vector to the copy-out step.
+fn render_rgba(document: &Rc<RefCell<HtmlDocument>>) -> Vec<u8> {
+    use anyrender::ImageRenderer;
+    let (width, height) = VIEWPORT;
+    let document = document.borrow();
+    let mut renderer = anyrender_vello::VelloImageRenderer::new(width, height);
+    let mut pixels = vec![0; (width * height * 4) as usize];
+    renderer.render(
+        |scene| blitz_paint::paint_scene(scene, &document, 1.0, width, height),
+        &mut pixels,
+    );
+    pixels
+}
+
+fn pixel(pixels: &[u8], x: f32, y: f32) -> [u8; 4] {
+    let index = ((y as usize) * VIEWPORT.0 as usize + x as usize) * 4;
+    pixels[index..index + 4].try_into().unwrap()
+}
+
+fn close(actual: [u8; 4], expected: [u8; 3]) -> bool {
+    actual[..3]
+        .iter()
+        .zip(expected)
+        .all(|(a, e)| a.abs_diff(e) <= 2)
+        && actual[3] == 255
+}
+
+fn assert_color(actual: [u8; 4], expected: [u8; 3], what: &str) {
+    assert!(
+        close(actual, expected),
+        "{what}: expected {expected:?}, painted {actual:?}"
+    );
+}
+
+fn count_differing(pixels: &[u8], rect: (f32, f32, f32, f32), background: [u8; 3]) -> usize {
+    let (x0, y0, width, height) = rect;
+    let mut count = 0;
+    for y in y0 as usize..(y0 + height) as usize {
+        for x in x0 as usize..(x0 + width) as usize {
+            if !close(pixel(pixels, x as f32, y as f32), background) {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+fn write_png(path: &str, pixels: &[u8]) {
+    let file = std::io::BufWriter::new(std::fs::File::create(path).expect("screenshot path"));
+    let mut encoder = png::Encoder::new(file, VIEWPORT.0, VIEWPORT.1);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("png header");
+    writer.write_image_data(pixels).expect("png data");
+}
+
 fn main() {
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .expect("Tokio runtime should initialize");
+    // Same switch production uses (roves-v8's `jitless` feature): it must be set
+    // before the first JsRuntime initializes V8.
+    let jitless = std::env::var("ROVES_PROBE_JITLESS").is_ok_and(|value| value == "1");
+    if jitless {
+        let rejected = deno_core::v8_set_flags(vec![String::new(), "--jitless".into()]);
+        assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
+    }
     tokio.block_on(async {
         let document = Rc::new(RefCell::new(HtmlDocument::from_html(
             FIXTURE,
@@ -356,25 +445,11 @@ fn main() {
         // Click: Blitz layout + hit-test pick the target, the trusted event is
         // dispatched through deno_web's EventTarget along the Blitz parent chain.
         resolve_layout(&document);
-        let (x, y) = {
-            let document = document.borrow();
-            let button = find_element_by_id(&document, "button").unwrap();
-            let layout = document.get_node(button).unwrap().final_layout;
-            let app = document.get_node(find_element_by_id(&document, "app").unwrap()).unwrap();
-            // final_layout locations are relative to the parent box.
-            let mut origin = (layout.location.x, layout.location.y);
-            let mut ancestor = Some(app.id);
-            while let Some(id) = ancestor {
-                let node = document.get_node(id).unwrap();
-                origin.0 += node.final_layout.location.x;
-                origin.1 += node.final_layout.location.y;
-                ancestor = node.parent;
-            }
-            (
-                origin.0 + layout.size.width / 2.0,
-                origin.1 + layout.size.height / 2.0,
-            )
-        };
+        let button_rect = element_rect(&document, "button");
+        let (x, y) = (
+            button_rect.0 + button_rect.2 / 2.0,
+            button_rect.1 + button_rect.3 / 2.0,
+        );
         let target = hit_target(&document, x, y).expect("hit-test should find a node");
         {
             deno_core::scope!(scope, runtime);
@@ -398,6 +473,39 @@ fn main() {
         let root_layout = document.borrow().root_element().final_layout;
         assert!(root_layout.size.width > 0.0 && root_layout.size.height > 0.0);
 
+        // Offscreen paint of the mutated document (Blitz painter + Vello on wgpu).
+        let pixels = render_rgba(&document);
+        if let Ok(path) = std::env::var("ROVES_PROBE_SCREENSHOT") {
+            write_png(&path, &pixels);
+        }
+        let app_rect = element_rect(&document, "app");
+        let button_rect = element_rect(&document, "button");
+        // Bottom-right corners stay clear of the text, which starts top-left.
+        let app_pixel = pixel(&pixels, app_rect.0 + app_rect.2 - 4.0, app_rect.1 + app_rect.3 - 4.0);
+        let button_pixel = pixel(
+            &pixels,
+            button_rect.0 + button_rect.2 - 4.0,
+            button_rect.1 + button_rect.3 - 4.0,
+        );
+        assert_color(app_pixel, [24, 32, 48], "#app background");
+        assert_color(button_pixel, [200, 80, 40], "JS-created #button background");
+        // Text must be painted inside the boxes; insets skip the UA button border.
+        let inset = |rect: (f32, f32, f32, f32), by: f32| {
+            (rect.0 + by, rect.1 + by, rect.2 - 2.0 * by, rect.3 - 2.0 * by)
+        };
+        let text_pixels = count_differing(&pixels, inset(button_rect, 4.0), [200, 80, 40]);
+        assert!(text_pixels > 0, "the button text must be painted over its background");
+        let app_text_band = (
+            app_rect.0 + 12.0,
+            app_rect.1 + 12.0,
+            app_rect.2 - 24.0,
+            button_rect.1 - app_rect.1 - 12.0,
+        );
+        assert!(app_text_band.3 > 0.0, "#app text must occupy a line above the button");
+        let app_text_pixels = count_differing(&pixels, app_text_band, [24, 32, 48]);
+        assert!(app_text_pixels > 0, "the #app text must be painted");
+
+        println!("ROVES_PROBE_RESULT {{\"check\":\"v8_mode\",\"jitless\":{jitless}}}");
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"js_get_element_by_id_stable_wrapper_identity\",\"status\":\"passed\"}}"
         );
@@ -412,7 +520,10 @@ fn main() {
             root_layout.size.width, root_layout.size.height
         );
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"window_paint_frames_raf_wrapper_gc\",\"status\":\"not_implemented\"}}"
+            "ROVES_PROBE_RESULT {{\"check\":\"offscreen_paint_reflects_js_mutations\",\"status\":\"passed\",\"app\":{app_pixel:?},\"button\":{button_pixel:?},\"button_text_pixels\":{text_pixels},\"app_text_pixels\":{app_text_pixels}}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"window_frames_raf_wrapper_gc\",\"status\":\"not_implemented\"}}"
         );
     });
 }

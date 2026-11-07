@@ -213,7 +213,8 @@ testo Blitz. Non verifica ancora oggetti DOM esposti ai giochi né completa T1. 
 errori `DOMException`, e clic da hit-test Blitz a listener JS in ordine capture/target/bubble con
 `isTrusted`, tramite l'EventTarget di `deno_web`. `Deno`/`__bootstrap` rimossi dal global del
 gioco. Verifiche locali Windows e due verifiche negative registrate nel README della probe.
-Restano: shell/finestra, paint, rAF/microtask per frame, input reale, `classList`/`style`, Motion,
+Aggiunti poi: render offscreen con controllo pixel e screenshot artifact, e modalità JIT-less reale in CI
+(prima la gamba `jitless` girava con JIT). Restano: shell/finestra, rAF/microtask per frame, input reale, `classList`/`style`, Motion,
 ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati).
 
 **Sottofase precedente (storica):** sostituire l'op fixture-specifico con metodi DOM usabili dagli script;

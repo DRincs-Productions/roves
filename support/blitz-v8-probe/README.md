@@ -17,8 +17,12 @@ The selected crates are the official DioxusLabs line: `blitz-dom 0.2.1`, `blitz-
 - DOM errors use deno_web's `DOMException`: `HierarchyRequestError` (self/ancestor/document insertion), `NotFoundError` (`removeChild` of a non-child), `InvalidCharacterError` (names). `appendChild` moves an attached node (Blitz's `append_children` alone does not detach it).
 - Events: `Node` extends deno_web's `EventTarget`. Its spec dispatch builds the path from `parentNode`/`getRootNode` of objects with a `nodeType`, so capture/target/bubble follow the Blitz tree with no event code of ours. Rust resolves layout, hit-tests the centre of the JS-created `#button` with `BaseDocument::hit` (text hits retarget to the parent element) and calls the dispatcher; the guest verifies `isTrusted`, `target` and the order capture → target → bubble. A guest-dispatched event is untrusted.
 - Parses `fixtures/layout.html`, sets a 640×360 viewport and runs Blitz's style/layout resolve.
+- Offscreen paint: `blitz_paint::paint_scene` into `anyrender_vello::VelloImageRenderer` (wgpu, GPU or the platform's software adapter). Pixel checks: `#app` and the JS-created button backgrounds have their CSS colours, and both the `#app` text line and the button's inner area (inset past its UA border) contain painted text. `ROVES_PROBE_SCREENSHOT=<path>` also writes a PNG (the CI artifact). Text needs `blitz-dom`'s `system_fonts` feature: without it no font is loaded and nothing is drawn.
+- `ROVES_PROBE_JITLESS=1` sets V8 `--jitless` before the runtime starts, like production's `roves-v8` `jitless` feature; the CI matrix runs both modes and checks the reported mode.
 
-Negative checks performed on 2026-11-07: disabling the wrapper cache fails with `same node must return the same wrapper`; dispatching the click with `bubbles: false` fails with `click listeners did not run in DOM order`.
+Negative checks performed on 2026-11-07: disabling the wrapper cache fails with `same node must return the same wrapper`; dispatching the click with `bubbles: false` fails with `click listeners did not run in DOM order`; building without `system_fonts` fails with `the button text must be painted over its background`. The offscreen screenshot was inspected visually on the local Windows machine (text and boxes as expected); that is an offscreen render, not a window presented on screen.
+
+`anyrender::render_to_buffer` with `VelloImageRenderer` panics in `anyrender_vello 0.6.0` (zero-length buffer: `range end index 2560 out of range for slice of length 0`); `anyrender_vello 0.15.0` already resizes the buffer, so the probe calls `ImageRenderer::render` on a pre-sized buffer until the Blitz line it uses moves past 0.6.0.
 
 Cost of deno_web here: 15 more crates in the probe lockfile, including a second `cssparser` (0.36.0, Stylo uses 0.35.0) and `brotli`. Not measured: binary size, startup, memory.
 
@@ -45,7 +49,7 @@ CI entry: `.github/workflows/blitz-probe.yml` (Windows, `cargo check --locked` a
 ## Next steps
 
 1. Design the wrapper/node lifecycle (GC-aware freeing of Blitz nodes, see above) before adding many more DOM methods; extend the surface only as concrete games need it.
-2. Open a real `blitz-shell` window, drive frames and `requestAnimationFrame` from it, drain microtasks/timers once per frame without re-entering a borrowed `JsRuntime`, and route real pointer input through the same dispatcher.
+2. Open a real `blitz-shell` window (offscreen paint already works), drive frames and `requestAnimationFrame` from it, drain microtasks/timers once per frame without re-entering a borrowed `JsRuntime`, and route real pointer input through the same dispatcher.
 3. Exercise a real window and paint path; capture a screenshot on a Windows CI runner.
 4. Test Motion after DOM methods and frame scheduling work. Test Pixi/WebGL separately because GPU surface sharing is not established.
 

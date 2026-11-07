@@ -19351,3 +19351,12 @@ with `BaseDocument::hit` and dispatches a trusted click; the guest verifies capt
 bubble order. Disabling bubbling makes the run fail. JS DOM libraries were rejected as the
 DOM source: happy-dom needs Node built-ins and linkedom simplifies event dispatch. deno_web
 adds 15 crates to the probe lock, including a second cssparser (0.36.0).
+
+Third 2026-11-07 follow-up: offscreen paint. The probe paints the mutated document with
+`blitz_paint::paint_scene` into `anyrender_vello::VelloImageRenderer` and checks pixels (box
+colours and painted text inside the JS-created button and the `#app` line). `blitz-dom` now
+enables `system_fonts`; without it Parley has no fonts and text is silently not drawn.
+`ImageRenderer::render` is used on a pre-sized buffer because `render_to_buffer` panics in
+anyrender_vello 0.6.0 (fixed in 0.15.0). `ROVES_PROBE_JITLESS=1` sets V8 `--jitless`; the
+workflow's `jitless` leg previously ran with the JIT enabled. The workflow now uploads the log
+and PNG per mode under distinct artifact names.

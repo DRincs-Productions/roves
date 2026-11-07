@@ -95,7 +95,9 @@ di produzione fino alla parità verificata.
 - [x] T1a: probe Windows isolata con `deno_core`/V8 unico, Blitz HTML/DOM e resolve style/layout; `cargo check --locked`, run e singola V8 verificati.
 - [x] T1b: mutazione DOM da JavaScript Deno/V8 a Blitz via op; `document.getElementById` e `textContent` con wrapper JS stabili (`===`) nella probe (7 novembre).
 - [x] T1c-eventi: `createElement`/`appendChild`/`removeChild`/attributi e clic da hit-test Blitz ai listener JS (capture/target/bubble) via EventTarget di `deno_web`; scelta l'opzione A (niente libreria DOM JS: happy-dom dipende da Node, linkedom ha eventi semplificati).
-- [ ] T1d: finestra `blitz-shell`, paint, frame loop con rAF/microtask, input reale; poi `classList`/`style`, Motion e ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati). PS Blitz 0.6.5 è escluso per errori POSIX di `nagoya 0.1.19` su Windows.
+- [x] T1d-paint: render offscreen (Blitz paint + Vello/wgpu) con controllo pixel e screenshot come artifact CI; modalità JIT-less reale nella matrice CI della probe.
+- [ ] Ricontrollare al passaggio a Blitz 0.3 (oggi 0.3.0-beta.4) che `anyrender::render_to_buffer` con `VelloImageRenderer` non vada più in panic: bug presente in `anyrender_vello 0.6.0` (buffer di lunghezza zero), già corretto in 0.15.0; la probe usa `ImageRenderer::render` su buffer pre-dimensionato. Nessuna issue upstream necessaria.
+- [ ] T1e: finestra `blitz-shell`, frame loop con rAF/microtask, input reale; poi `classList`/`style`, Motion e ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati). PS Blitz 0.6.5 è escluso per errori POSIX di `nagoya 0.1.19` su Windows.
 - [ ] Verificare interop GPU WebGL/WebGL2 e PixiJS sulla stessa superficie senza readback CPU.
 - [ ] Completare la matrice API sul commit corrente di visual-novel-template: Motion/WAAPI, Pixi'VN, markdown-typewriter, audio, storage/saves, History, asset, resize, input e sicurezza.
 - [ ] Portare API Web mancanti riusando estensioni Deno e librerie mantenute; non esporre API privilegiate Deno né introdurre un secondo runtime.

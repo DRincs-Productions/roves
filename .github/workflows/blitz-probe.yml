@@ -44,15 +44,20 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-probe.png
         run: |
           set -o pipefail
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
-      - name: upload probe log
+          grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
+      - name: upload probe log and offscreen screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: blitz-probe
-          path: ${{ runner.temp }}/blitz-probe.log
+          name: blitz-probe-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/blitz-probe.log
+            ${{ runner.temp }}/blitz-probe.png
           retention-days: 7
           if-no-files-found: warn
 
