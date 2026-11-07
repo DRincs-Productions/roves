@@ -28,6 +28,7 @@
     op_blitz_set_attribute,
     op_blitz_set_style_property,
     op_blitz_namespace,
+    op_blitz_computed_style,
   } = core.ops;
   const {
     Event,
@@ -173,6 +174,32 @@
       throw new TypeError("Illegal constructor");
     }
   }
+  // Live computed style: every read flushes Blitz styles and serializes the
+  // current computed value. Pseudo-elements are not supported (empty values).
+  function getComputedStyle(element, pseudoElement = null) {
+    if (!(element instanceof Element)) {
+      throw new TypeError("Failed to execute 'getComputedStyle': parameter 1 is not of type 'Element'.");
+    }
+    const handle = handleOf(element, "getComputedStyle");
+    const pseudo = pseudoElement !== null && pseudoElement !== undefined && String(pseudoElement) !== "";
+    const read = (name) => (pseudo ? "" : op_blitz_computed_style(handle, name));
+    const declaration = {
+      getPropertyValue(name) {
+        name = String(name);
+        return read(name.startsWith("--") ? name : name.toLowerCase());
+      },
+    };
+    return new Proxy(declaration, {
+      get(target, name) {
+        if (name in target) return target[name];
+        return typeof name === "string" ? read(toKebab(name)) : undefined;
+      },
+      set() {
+        return false;
+      },
+    });
+  }
+
   class HTMLElement extends Element {}
   class SVGElement extends Element {}
   class Text extends Node {}
@@ -277,6 +304,7 @@
     EventTarget,
     DOMException,
     performance,
+    getComputedStyle,
     requestAnimationFrame,
     cancelAnimationFrame,
     setTimeout: timers.setTimeout,

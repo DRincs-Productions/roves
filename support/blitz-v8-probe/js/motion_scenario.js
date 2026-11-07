@@ -13,16 +13,23 @@ import { animate } from "motion";
   element.style.backgroundColor = "rgb(90, 120, 220)";
   app.appendChild(element);
 
+  // No start value: Motion reads the current opacity (1) through getComputedStyle.
+  const fading = document.createElement("div");
+  fading.setAttribute("id", "fading");
+  fading.style.width = "40px";
+  fading.style.height = "40px";
+  fading.style.backgroundColor = "rgb(255, 255, 255)";
+  app.appendChild(fading);
+
   const result = { started: false, finished: false, error: null };
   globalThis.motionResult = result;
   try {
-    const controls = animate(
-      element,
-      { x: [0, 100], opacity: [0.2, 1] },
-      { duration: 0.1, ease: "linear" },
-    );
+    const controls = Promise.all([
+      animate(element, { x: [0, 100], opacity: [0.2, 1] }, { duration: 0.1, ease: "linear" }),
+      animate(fading, { opacity: 0.5 }, { duration: 0.1, ease: "linear" }),
+    ].map((animation) => animation.finished));
     result.started = true;
-    controls.finished.then(
+    controls.then(
       () => {
         result.finished = true;
       },

@@ -3125,6 +3125,7 @@ dependencies = [
  "deno_web",
  "deno_webidl",
  "png",
+ "stylo",
  "tokio",
 ]
 

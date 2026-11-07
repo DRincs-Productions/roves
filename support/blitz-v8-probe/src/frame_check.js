@@ -13,4 +13,29 @@
   check(result.reported, "a throwing callback must reach error listeners");
   check(result.log.includes("after boom"), "a throwing callback must not stop later callbacks");
   check(result.timerFired, "setTimeout must fire while frames are driven");
+
+  // getComputedStyle reads Blitz/Stylo computed values, flushed on read.
+  const app = document.getElementById("app");
+  const box = document.getElementById("box");
+  const computed = getComputedStyle(box);
+  const fail = (message) => {
+    throw new Error(message);
+  };
+  if (getComputedStyle(app).backgroundColor !== "rgb(24, 32, 48)") fail("stylesheet colour must be computed");
+  if (getComputedStyle(app).getPropertyValue("padding-top") !== "12px") fail("getPropertyValue must read longhands");
+  if (computed.width !== "60px") fail(`rAF style write must be computed: ${computed.width}`);
+  box.style.width = "70px";
+  if (computed.width !== "70px") fail("computed style must be live and flush pending writes");
+  box.style.width = "60px";
+  box.style.setProperty("--accent", "rgb(1, 2, 3)");
+  if (computed.getPropertyValue("--accent") !== "rgb(1, 2, 3)") fail("custom properties must be readable");
+  if (computed.getPropertyValue("margin") !== "") fail("shorthands are not serialized yet");
+  if (getComputedStyle(box, "::before").width !== "") fail("pseudo-elements are not supported yet");
+  let typeError = false;
+  try {
+    getComputedStyle({});
+  } catch (error) {
+    typeError = error instanceof TypeError;
+  }
+  if (!typeError) fail("getComputedStyle must reject non-elements");
 })();

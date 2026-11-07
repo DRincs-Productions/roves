@@ -19380,3 +19380,11 @@ sets up Node and builds it before Cargo. The DOM layer adds `window`/`self`, den
 wrappers chosen by element namespace (new `op_blitz_namespace`) and a `NodeList` interface.
 Motion's JS frameloop animates `x`/`opacity` to completion within the driven frames; the paint
 check confirms the 100 px translation and full opacity. A run without frames fails.
+
+Sixth 2026-11-07 follow-up: `getComputedStyle`. New `op_blitz_computed_style` flushes styles
+with `resolve_stylist` and serializes Stylo's computed value (`stylo 0.8.0` is now a direct
+dependency, same version as blitz-dom 0.2.1, no new crates); the JS object is live. Two Blitz
+0.2.1 gaps surfaced, both fixed in 0.3.0-beta.4: inline style writes set no restyle hint (the
+probe sets `RESTYLE_STYLE_ATTRIBUTE` itself; a negative run without it fails), and blitz-paint
+applies `opacity` only to children, not the element's own background (reported as a known gap,
+not asserted). A second Motion animation reads its start opacity through getComputedStyle.

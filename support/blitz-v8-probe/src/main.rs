@@ -2,11 +2,14 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use blitz_dom::{BaseDocument, DocumentConfig, LocalName, Node, NodeData, QualName, ns};
+use blitz_dom::{
+    BaseDocument, DocumentConfig, LocalName, Node, NodeData, QualName, RestyleHint, ns,
+};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
+use style::properties::{PropertyDeclarationId, PropertyId};
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
@@ -14,6 +17,7 @@ const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
+const MOTION_CHECK: &str = include_str!("motion_check.js");
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 
 const ELEMENT_NODE: i32 = 1;
@@ -278,6 +282,42 @@ fn op_blitz_namespace(
         .unwrap_or_default())
 }
 
+/// `getComputedStyle(element).getPropertyValue(name)`: flushes styles only
+/// (`resolve_stylist`, no layout), then serializes Stylo's computed value.
+/// Longhands and custom properties are supported; shorthands, unknown names and
+/// elements without styles (detached, or inside `display: none`) return "".
+/// Values are computed, not CSSOM "resolved" ones (e.g. `width: auto` stays
+/// `auto` instead of the used pixel width).
+#[op2]
+#[string]
+fn op_blitz_computed_style(
+    state: Rc<RefCell<OpState>>,
+    #[smi] node_id: u32,
+    #[string] name: &str,
+) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    if attached_node(&document, node_id)?.element_data().is_none() {
+        return Err(JsErrorBox::type_error("getComputedStyle on a non-element"));
+    }
+    document.resolve_stylist(0.0);
+    let node = document.get_node(node_id as usize).unwrap();
+    let Some(styles) = node.primary_styles() else {
+        return Ok(String::new());
+    };
+    let Ok(property) = PropertyId::parse_enabled_for_all_content(name) else {
+        return Ok(String::new());
+    };
+    let declaration = match &property {
+        PropertyId::Custom(custom) => PropertyDeclarationId::Custom(custom),
+        PropertyId::NonCustom(_) => match property.longhand_id() {
+            Some(longhand) => PropertyDeclarationId::Longhand(longhand),
+            None => return Ok(String::new()),
+        },
+    };
+    Ok(styles.computed_value_to_string(declaration))
+}
+
 /// Inline style write (`element.style.x = v`); an empty value removes the
 /// declaration, like `style.removeProperty`.
 #[op2(fast)]
@@ -292,12 +332,21 @@ fn op_blitz_set_style_property(
     if attached_node(&document, node_id)?.element_data().is_none() {
         return Err(JsErrorBox::type_error("style on a non-element"));
     }
-    let mut mutator = document.mutate();
-    if value.is_empty() {
-        mutator.remove_style_property(node_id as usize, name);
-    } else {
-        mutator.set_style_property(node_id as usize, name, value);
+    {
+        let mut mutator = document.mutate();
+        if value.is_empty() {
+            mutator.remove_style_property(node_id as usize, name);
+        } else {
+            mutator.set_style_property(node_id as usize, name, value);
+        }
     }
+    // blitz-dom 0.2.1 does not mark the element for restyle after an inline style
+    // change (set_attribute does), so the write could stay invisible until something
+    // else restyles it. 0.3.0-beta.4 sets this same hint itself; drop this then.
+    document
+        .get_node(node_id as usize)
+        .unwrap()
+        .set_restyle_hint(RestyleHint::RESTYLE_STYLE_ATTRIBUTE);
     Ok(())
 }
 
@@ -318,6 +367,7 @@ deno_core::extension!(
         op_blitz_set_attribute,
         op_blitz_set_style_property,
         op_blitz_namespace,
+        op_blitz_computed_style,
     ]
 );
 
@@ -591,11 +641,11 @@ fn main() {
         runtime
             .execute_script(
                 "roves-blitz-motion-check.js",
-                "if (motionResult.error !== null || !motionResult.started || !motionResult.finished) \
-                 throw new Error('Motion animation did not finish: ' + JSON.stringify(motionResult));",
+                MOTION_CHECK,
             )
             .expect("Motion animation should finish");
         let motion_rect = element_rect(&document, "motion");
+        let fading_rect = element_rect(&document, "fading");
 
         resolve_layout(&document);
         let root_layout = document.borrow().root_element().final_layout;
@@ -633,6 +683,15 @@ fn main() {
         let origin_pixel = pixel(&pixels, motion_centre.0, motion_centre.1);
         assert_color(moved_pixel, [90, 120, 220], "Motion-translated #motion background");
         assert_color(origin_pixel, [24, 32, 48], "#motion must have left its layout position");
+        // Known gap, not asserted: blitz-paint 0.2.1 paints an element's own
+        // background before its opacity layer, so only children/text fade. White
+        // at 0.5 over rgb(24, 32, 48) would be about rgb(140, 144, 152); fixed in
+        // blitz-paint 0.3.0-beta.4, which draws the background inside the layer.
+        let fading_pixel = pixel(
+            &pixels,
+            fading_rect.0 + fading_rect.2 / 2.0,
+            fading_rect.1 + fading_rect.3 / 2.0,
+        );
         // Text must be painted inside the boxes; insets skip the UA button border.
         let inset = |rect: (f32, f32, f32, f32), by: f32| {
             (rect.0 + by, rect.1 + by, rect.2 - 2.0 * by, rect.3 - 2.0 * by)
@@ -672,6 +731,9 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"motion_12_38_0_animate_transform_opacity\",\"status\":\"passed\",\"moved_pixel\":{moved_pixel:?}}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"opacity_on_element_background\",\"status\":\"known_gap_blitz_paint_0_2_1\",\"computed_opacity\":\"0.5\",\"painted\":{fading_pixel:?}}}"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input_wrapper_gc\",\"status\":\"not_implemented\"}}"

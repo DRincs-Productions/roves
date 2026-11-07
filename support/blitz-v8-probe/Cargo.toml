@@ -21,3 +21,5 @@ deno_webidl = "=0.260.0"
 anyrender = "=0.6.2"
 blitz-paint = { version = "=0.2.1", default-features = false }
 png = "=0.17.16"
+# Same Stylo as blitz-dom 0.2.1 (already in the graph): PropertyId for getComputedStyle.
+style = { package = "stylo", version = "=0.8.0", default-features = false }
