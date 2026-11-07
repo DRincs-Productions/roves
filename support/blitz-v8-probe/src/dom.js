@@ -53,6 +53,9 @@
     op_blitz_focused,
     op_blitz_game_read,
     op_blitz_image_bitmap_rgba,
+    op_blitz_matches,
+    op_blitz_create_comment,
+    op_blitz_clone_node,
   } = core.ops;
   const {
     Event,
@@ -71,6 +74,7 @@
   const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
+  const { MessageChannel, MessagePort } = core.loadExtScript("ext:deno_web/13_message_port.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
   const { performance, setTimeOrigin } = core.loadExtScript("ext:deno_web/15_performance.js");
   setTimeOrigin();
@@ -218,6 +222,23 @@
     get nodeType() {
       return op_blitz_node_type(handleOf(this, "nodeType"));
     }
+    get nodeName() {
+      switch (this.nodeType) {
+        case ELEMENT_NODE:
+          return this.tagName;
+        case TEXT_NODE:
+          return "#text";
+        case 8:
+          return "#comment";
+        case DOCUMENT_NODE:
+          return "#document";
+        default:
+          return "";
+      }
+    }
+    cloneNode(deep = false) {
+      return wrap(op_blitz_clone_node(handleOf(this, "cloneNode"), Boolean(deep)));
+    }
     get parentNode() {
       const parent = op_blitz_parent(handleOf(this, "parentNode"));
       return parent < 0 ? null : wrap(parent);
@@ -233,23 +254,53 @@
     }
     set textContent(value) {
       if (this.nodeType === DOCUMENT_NODE) return;
-      op_blitz_set_text_content(handleOf(this, "textContent"), value === null ? "" : String(value));
+      const handle = handleOf(this, "textContent");
+      const text = value === null ? "" : String(value);
+      if (this.nodeType === TEXT_NODE) {
+        const oldValue = mutationObserversActive() ? op_blitz_text_content(handle) : null;
+        op_blitz_set_text_content(handle, text);
+        queueMutation(this, "characterData", { oldValue });
+        return;
+      }
+      const removed = mutationObserversActive() ? [...this.childNodes] : [];
+      op_blitz_set_text_content(handle, text);
+      const added = text === "" || !mutationObserversActive() ? [] : [...this.childNodes];
+      queueMutation(this, "childList", { addedNodes: added, removedNodes: removed });
+    }
+    get data() {
+      return this.nodeType === TEXT_NODE ? this.textContent : undefined;
+    }
+    set data(value) {
+      if (this.nodeType === TEXT_NODE) this.textContent = value;
+    }
+    get nodeValue() {
+      return this.nodeType === TEXT_NODE ? this.textContent : null;
+    }
+    set nodeValue(value) {
+      if (this.nodeType === TEXT_NODE) this.textContent = value;
     }
     appendChild(child) {
       const childHandle = handleOf(child, "appendChild");
+      const oldParent = mutationObserversActive() ? child.parentNode : null;
       checkStatus(op_blitz_append_child(handleOf(this, "appendChild"), childHandle));
       retainIfConnected(childHandle);
+      if (oldParent !== null) queueMutation(oldParent, "childList", { removedNodes: [child] });
+      queueMutation(this, "childList", { addedNodes: [child] });
       return child;
     }
     removeChild(child) {
       checkStatus(op_blitz_remove_child(handleOf(this, "removeChild"), handleOf(child, "removeChild")));
+      queueMutation(this, "childList", { removedNodes: [child] });
       return child;
     }
     insertBefore(node, child) {
       const nodeHandle = handleOf(node, "insertBefore");
       const reference = child === null || child === undefined ? -1 : handleOf(child, "insertBefore");
+      const oldParent = mutationObserversActive() ? node.parentNode : null;
       checkStatus(op_blitz_insert_before(handleOf(this, "insertBefore"), nodeHandle, reference));
       retainIfConnected(nodeHandle);
+      if (oldParent !== null) queueMutation(oldParent, "childList", { removedNodes: [node] });
+      queueMutation(this, "childList", { addedNodes: [node] });
       return node;
     }
     get ownerDocument() {
@@ -544,7 +595,40 @@
       return op_blitz_local_name(handleOf(this, "localName"));
     }
     get tagName() {
-      return this.localName.toUpperCase();
+      return this.namespaceURI === HTML_NAMESPACE ? this.localName.toUpperCase() : this.localName;
+    }
+    get namespaceURI() {
+      return op_blitz_namespace(handleOf(this, "namespaceURI")) || null;
+    }
+    matches(selectors) {
+      const result = op_blitz_matches(handleOf(this, "matches"), String(selectors));
+      if (result < 0) throw new DOMException(`'${selectors}' is not a valid selector.`, "SyntaxError");
+      return result === 1;
+    }
+    webkitMatchesSelector(selectors) {
+      return this.matches(selectors);
+    }
+    closest(selectors) {
+      for (let node = this; node !== null; node = node.parentNode) {
+        if (node.nodeType === ELEMENT_NODE && node.matches(selectors)) return node;
+      }
+      return null;
+    }
+    get dataset() {
+      const element = this;
+      const toAttribute = (key) => "data-" + String(key).replace(/[A-Z]/g, (c) => "-" + c.toLowerCase());
+      return new Proxy({}, {
+        get: (_, key) => (typeof key === "string" ? element.getAttribute(toAttribute(key)) ?? undefined : undefined),
+        set: (_, key, value) => {
+          element.setAttribute(toAttribute(key), String(value));
+          return true;
+        },
+        deleteProperty: (_, key) => {
+          element.removeAttribute(toAttribute(key));
+          return true;
+        },
+        has: (_, key) => element.hasAttribute(toAttribute(key)),
+      });
     }
     get id() {
       return this.getAttribute("id") ?? "";
@@ -562,7 +646,10 @@
       return this.getAttribute(name) !== null;
     }
     removeAttribute(name) {
-      op_blitz_remove_attribute(handleOf(this, "removeAttribute"), String(name).toLowerCase());
+      const attribute = String(name).toLowerCase();
+      const oldValue = this.getAttribute(attribute);
+      op_blitz_remove_attribute(handleOf(this, "removeAttribute"), attribute);
+      if (oldValue !== null) queueMutation(this, "attributes", { attributeName: attribute, oldValue });
     }
     get className() {
       return this.getAttribute("class") ?? "";
@@ -587,7 +674,10 @@
       return op_blitz_inner_html(handleOf(this, "innerHTML"));
     }
     set innerHTML(value) {
+      const removed = mutationObserversActive() ? [...this.childNodes] : [];
       op_blitz_set_inner_html(handleOf(this, "innerHTML"), value === null ? "" : String(value));
+      const added = mutationObserversActive() ? [...this.childNodes] : [];
+      queueMutation(this, "childList", { addedNodes: added, removedNodes: removed });
     }
     get outerHTML() {
       return op_blitz_outer_html(handleOf(this, "outerHTML"));
@@ -630,7 +720,10 @@
       if (!VALID_NAME.test(name)) {
         throw new DOMException(`'${name}' is not a valid attribute name.`, "InvalidCharacterError");
       }
-      op_blitz_set_attribute(handleOf(this, "setAttribute"), name.toLowerCase(), String(value));
+      const attribute = name.toLowerCase();
+      const oldValue = mutationObserversActive() ? this.getAttribute(attribute) : null;
+      op_blitz_set_attribute(handleOf(this, "setAttribute"), attribute, String(value));
+      queueMutation(this, "attributes", { attributeName: attribute, oldValue });
     }
   }
 
@@ -689,6 +782,101 @@
       return this.#nodes[Symbol.iterator]();
     }
   }
+  // MutationObserver: every DOM mutation the game can make goes through the
+  // methods above, which queue records here. Records are delivered in a
+  // microtask, per observer, as the DOM specifies (childList, attributes with
+  // attributeFilter/oldValue, characterData with oldValue, subtree).
+  const mutationObservers = new Set();
+  let mutationDeliveryQueued = false;
+  function mutationObserversActive() {
+    return mutationObservers.size > 0;
+  }
+  function queueMutation(target, type, details) {
+    if (mutationObservers.size === 0) return;
+    if (type === "childList" && !(details.addedNodes?.length || details.removedNodes?.length)) return;
+    let queued = false;
+    for (const observer of mutationObservers) {
+      if (observer._consider(target, type, details)) queued = true;
+    }
+    if (queued && !mutationDeliveryQueued) {
+      mutationDeliveryQueued = true;
+      queueMicrotask(() => {
+        mutationDeliveryQueued = false;
+        for (const observer of [...mutationObservers]) observer._deliver();
+      });
+    }
+  }
+  class MutationRecord {
+    constructor(init) {
+      Object.assign(this, {
+        type: init.type,
+        target: init.target,
+        addedNodes: createNodeList(init.addedNodes ?? []),
+        removedNodes: createNodeList(init.removedNodes ?? []),
+        previousSibling: null,
+        nextSibling: null,
+        attributeName: init.attributeName ?? null,
+        attributeNamespace: null,
+        oldValue: init.oldValue ?? null,
+      });
+    }
+  }
+  class MutationObserver {
+    #callback;
+    #targets = new Map();
+    #records = [];
+    constructor(callback) {
+      if (typeof callback !== "function") {
+        throw new TypeError("Failed to construct 'MutationObserver': parameter 1 is not of type 'Function'.");
+      }
+      this.#callback = callback;
+    }
+    observe(target, options = {}) {
+      handleOf(target, "observe");
+      const normalized = { ...options };
+      if (normalized.attributeOldValue || normalized.attributeFilter) normalized.attributes ??= true;
+      if (normalized.characterDataOldValue) normalized.characterData ??= true;
+      if (!normalized.childList && !normalized.attributes && !normalized.characterData) {
+        throw new TypeError("The options object must set at least one of 'attributes', 'characterData', or 'childList' to true.");
+      }
+      this.#targets.set(target, normalized);
+      mutationObservers.add(this);
+    }
+    disconnect() {
+      this.#targets.clear();
+      this.#records = [];
+      mutationObservers.delete(this);
+    }
+    takeRecords() {
+      return this.#records.splice(0);
+    }
+    _consider(target, type, details) {
+      for (const [observed, options] of this.#targets) {
+        const matches = observed === target || (options.subtree && observed.contains(target));
+        if (!matches) continue;
+        if (type === "childList" && !options.childList) continue;
+        if (type === "attributes") {
+          if (!options.attributes) continue;
+          if (options.attributeFilter && !options.attributeFilter.includes(details.attributeName)) continue;
+        }
+        if (type === "characterData" && !options.characterData) continue;
+        const keepOld = (type === "attributes" && options.attributeOldValue) || (type === "characterData" && options.characterDataOldValue);
+        this.#records.push(new MutationRecord({ ...details, type, target, oldValue: keepOld ? details.oldValue : null }));
+        return true;
+      }
+      return false;
+    }
+    _deliver() {
+      const records = this.takeRecords();
+      if (records.length === 0) return;
+      try {
+        this.#callback.call(this, records, this);
+      } catch (error) {
+        reportException(error);
+      }
+    }
+  }
+
   function createNodeList(nodes) {
     constructing = true;
     try {
@@ -865,6 +1053,7 @@
     }
   }
   class Text extends Node {}
+  class Comment extends Node {}
 
   class Document extends Node {
     getElementById(id) {
@@ -890,6 +1079,24 @@
     get head() {
       return this.querySelector("head");
     }
+    createComment(data) {
+      return wrap(op_blitz_create_comment(String(data)));
+    }
+    get readyState() {
+      return documentReadyState;
+    }
+    get defaultView() {
+      return globalThis;
+    }
+    get characterSet() {
+      return "UTF-8";
+    }
+    get compatMode() {
+      return "CSS1Compat";
+    }
+    hasFocus() {
+      return true;
+    }
     createTextNode(data) {
       return wrap(op_blitz_create_text_node(String(data)));
     }
@@ -911,6 +1118,8 @@
       ? elementClass(op_blitz_namespace(handle), op_blitz_local_name(handle))
       : type === TEXT_NODE
       ? Text
+      : type === 8
+      ? Comment
       : Node;
     constructing = true;
     try {
@@ -928,6 +1137,7 @@
   }
 
   const document = wrap(DOCUMENT_ID);
+  let documentReadyState = "loading";
 
   // Single-document History/Location (src/history.js) and deno_webstorage.
   const createHistory = globalThis.__rovesCreateHistory;
@@ -1000,6 +1210,17 @@
     HTMLCanvasElement,
     NodeList,
     DOMTokenList,
+    MutationObserver,
+    MutationRecord,
+    Comment,
+    MessageChannel,
+    MessagePort,
+    requestIdleCallback: (callback, options = {}) =>
+      timers.setTimeout(() => {
+        const start = performance.now();
+        callback({ didTimeout: false, timeRemaining: () => Math.max(0, 16 - (performance.now() - start)) });
+      }, Math.min(Number(options.timeout ?? 1), 1)),
+    cancelIdleCallback: (handle) => timers.clearTimeout(handle),
     DOMRect,
     UIEvent,
     MouseEvent,
@@ -1132,6 +1353,16 @@
       return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
+    // After the page's scripts: readyState interactive -> DOMContentLoaded ->
+    // complete -> load (on the window), as a browser does.
+    documentLoaded() {
+      documentReadyState = "interactive";
+      document.dispatchEvent(new Event("readystatechange"));
+      document.dispatchEvent(new Event("DOMContentLoaded", { bubbles: true }));
+      documentReadyState = "complete";
+      document.dispatchEvent(new Event("readystatechange"));
+      globalThis.dispatchEvent(new Event("load"));
+    },
     // Navigations the single-document policy blocked (assign/replace/reload).
     blockedNavigations() {
       return JSON.stringify(historyApi.blockedNavigations);

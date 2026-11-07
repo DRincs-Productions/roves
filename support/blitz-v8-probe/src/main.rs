@@ -776,6 +776,57 @@ fn op_blitz_image_bitmap_rgba(#[cppgc] bitmap: &deno_image::bitmap::ImageBitmap)
     bitmap.data.borrow().to_rgba8().into_raw()
 }
 
+/// `element.matches(selector)` with Blitz's Stylo matching: 1 / 0, or -1 for an
+/// invalid selector (SyntaxError in JS).
+#[op2(fast)]
+fn op_blitz_matches(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    #[string] selector: &str,
+) -> Result<i32, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node_id = attached_node(&document, handle)?.id;
+    Ok(match document.matches_selector(node_id, selector) {
+        Ok(true) => 1,
+        Ok(false) => 0,
+        Err(_) => -1,
+    })
+}
+
+#[op2(fast)]
+fn op_blitz_create_comment(state: Rc<RefCell<OpState>>, #[string] data: &str) -> f64 {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let id = document.mutate().create_comment_node(data);
+    to_handle(id)
+}
+
+/// `node.cloneNode(deep)`: Blitz deep-clones; a shallow clone detaches the
+/// cloned children again (they stay unreferenced and are freed on GC paths).
+#[op2(fast)]
+fn op_blitz_clone_node(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    deep: bool,
+) -> Result<f64, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    let clone = document.mutate().deep_clone_node(node_id);
+    if !deep {
+        let children: Vec<NodeId> = document
+            .get_node(clone)
+            .map(|node| node.children.iter().copied().collect())
+            .unwrap_or_default();
+        let mut mutator = document.mutate();
+        for child in children {
+            mutator.remove_and_drop_node(child);
+        }
+    }
+    Ok(to_handle(clone))
+}
+
 /// Game files reachable through `fetch` (only in `--game` mode).
 struct GameFiles(Option<Arc<game::GameContent>>);
 
@@ -796,6 +847,9 @@ deno_core::extension!(
     ops = [
         op_blitz_document_root,
         op_blitz_game_read,
+        op_blitz_matches,
+        op_blitz_create_comment,
+        op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
         op_blitz_measure,
         op_blitz_rect_component,
@@ -1110,7 +1164,7 @@ fn main() {
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let (dispatcher, run_animation_frame, blocked_navigations) = {
+        let (dispatcher, run_animation_frame, blocked_navigations, document_loaded) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
             let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
@@ -1124,6 +1178,7 @@ fn main() {
                 function("dispatchTrustedEvent"),
                 function("runAnimationFrame"),
                 function("blockedNavigations"),
+                function("documentLoaded"),
             )
         };
 
@@ -1131,7 +1186,14 @@ fn main() {
             // A real game page instead of the fixture tests.
             stage("game_page");
             resolve_layout(&document);
-            game::run(&mut runtime, &document, &run_animation_frame, frame_count().max(120)).await;
+            game::run(
+                &mut runtime,
+                &document,
+                &run_animation_frame,
+                &document_loaded,
+                frame_count().max(120),
+            )
+            .await;
             return;
         }
 

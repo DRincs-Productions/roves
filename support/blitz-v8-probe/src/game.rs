@@ -190,6 +190,7 @@ pub async fn run(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
+    document_loaded: &v8::Global<v8::Function>,
     frames: u32,
 ) {
     runtime
@@ -250,6 +251,14 @@ addEventListener("unhandledrejection", (event) => {
         if let Err(error) = result {
             load_errors.push(format!("{kind} {}: {error}", src.unwrap_or_default()));
         }
+    }
+
+    // Scripts ran: readyState interactive/complete, DOMContentLoaded and load.
+    {
+        deno_core::scope!(scope, runtime);
+        let function = v8::Local::new(scope, document_loaded);
+        let receiver = v8::undefined(scope).into();
+        function.call(scope, receiver, &[]);
     }
 
     crate::drive_frames(runtime, document, run_animation_frame, frames).await;

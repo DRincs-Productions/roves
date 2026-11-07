@@ -89,6 +89,27 @@
   host.innerHTML = "";
   check(!host.hasChildNodes(), "empty innerHTML clears");
 
+  // nodeName / namespaceURI / matches / closest / dataset / cloneNode / comments.
+  const probe = document.createElement("div");
+  probe.setAttribute("class", "outer");
+  probe.innerHTML = '<p class="inner"><b>bold</b></p>';
+  const bold = probe.querySelector("b");
+  check(probe.nodeName === "DIV" && bold.firstChild.nodeName === "#text" && document.nodeName === "#document", "nodeName");
+  check(probe.namespaceURI === "http://www.w3.org/1999/xhtml", "namespaceURI");
+  check(bold.matches("p.inner > b") && !bold.matches("i"), "matches");
+  throwsDom(() => bold.matches("<<"), "SyntaxError", "matches invalid selector");
+  check(bold.closest(".inner").localName === "p" && bold.closest(".missing") === null, "closest");
+  probe.dataset.userName = "ada";
+  check(probe.getAttribute("data-user-name") === "ada" && probe.dataset.userName === "ada", "dataset");
+  const shallow = probe.cloneNode(false);
+  const deep = probe.cloneNode(true);
+  check(shallow !== probe && shallow.className === "outer" && !shallow.hasChildNodes(), "shallow cloneNode");
+  check(deep.querySelector("b").textContent === "bold" && deep.querySelector("b") !== bold, "deep cloneNode");
+  const comment = document.createComment("note");
+  check(comment instanceof Comment && comment.nodeType === 8 && comment.nodeName === "#comment", "createComment");
+  check(document.readyState === "loading" && document.defaultView === globalThis, "readyState / defaultView");
+  check(typeof MessageChannel === "function" && typeof requestIdleCallback === "function", "MessageChannel / requestIdleCallback");
+
   // Attributes.
   host.setAttribute("data-x", "1");
   check(host.hasAttribute("data-x"), "hasAttribute");
