@@ -523,6 +523,14 @@ fn frame_count() -> u32 {
     8
 }
 
+/// Progress marker printed and flushed immediately, so a hard crash (no panic
+/// message) still shows the last phase reached in the CI log.
+fn stage(name: &str) {
+    use std::io::Write;
+    println!("ROVES_PROBE_STAGE {name}");
+    let _ = std::io::stdout().flush();
+}
+
 fn main() {
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -536,10 +544,12 @@ fn main() {
         assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
     }
     tokio.block_on(async {
+        stage("parse_html");
         let document = Rc::new(RefCell::new(HtmlDocument::from_html(
             FIXTURE,
             DocumentConfig::default(),
         )));
+        stage("create_js_runtime");
         let mut runtime = JsRuntime::new(RuntimeOptions {
             extensions: vec![
                 deno_webidl::deno_webidl::init(),
@@ -560,6 +570,7 @@ fn main() {
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
+        stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
@@ -576,6 +587,7 @@ fn main() {
             (function("dispatchTrustedEvent"), function("runAnimationFrame"))
         };
 
+        stage("guest_dom_test");
         runtime
             .execute_script("roves-blitz-guest-test.js", GUEST_TEST)
             .expect("guest DOM checks should pass");
@@ -599,6 +611,7 @@ fn main() {
             button_rect.0 + button_rect.2 / 2.0,
             button_rect.1 + button_rect.3 / 2.0,
         );
+        stage("hit_test_and_click");
         let target = hit_target(&document, x, y).expect("hit-test should find a node");
         {
             deno_core::scope!(scope, runtime);
@@ -621,6 +634,7 @@ fn main() {
         // Frame loop without a window: each frame runs the rAF callbacks, drains
         // microtasks, polls the deno_core event loop once (timers) and resolves
         // layout. Frames are paced in real time so timers can become due.
+        stage("frame_loop");
         runtime
             .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
             .expect("frame test setup should run");
@@ -634,6 +648,7 @@ fn main() {
 
         // Motion: its JS frameloop (no WAAPI here) runs on rAF + performance.now and
         // writes inline transform/opacity. 0.1 s needs ~6 frames; 20 leave margin.
+        stage("motion");
         runtime
             .execute_script("roves-blitz-motion-scenario.js", MOTION_SCENARIO)
             .expect("Motion scenario should load");
@@ -652,7 +667,9 @@ fn main() {
         assert!(root_layout.size.width > 0.0 && root_layout.size.height > 0.0);
 
         // Offscreen paint of the mutated document (Blitz painter + Vello on wgpu).
+        stage("offscreen_paint");
         let pixels = render_rgba(&document);
+        stage("pixel_checks");
         if let Ok(path) = std::env::var("ROVES_PROBE_SCREENSHOT") {
             write_png(&path, &pixels);
         }
