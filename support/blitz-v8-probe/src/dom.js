@@ -73,6 +73,8 @@
   const { URL, URLSearchParams } = core.loadExtScript("ext:deno_web/00_url.js");
   const { structuredClone } = core.loadExtScript("ext:deno_web/02_structured_clone.js");
   const webStorage = core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
+  // WebGPU from deno_webgpu (lazy ESM, as Deno loads it); `gpu` exists after initGPU.
+  const webgpu = core.createLazyLoader("ext:deno_webgpu/01_webgpu.js")();
 
   const ELEMENT_NODE = 1;
   const TEXT_NODE = 3;
@@ -727,6 +729,73 @@
 
   class HTMLElement extends Element {}
   class SVGElement extends Element {}
+
+  // Offscreen GPUCanvasContext: the "current texture" is a texture of the canvas
+  // size that the page renders into. Presenting it inside the Blitz window is a
+  // later step (deno_webgpu uses wgpu 29, Blitz's GPU painter wgpu 30).
+  const canvasContexts = new WeakMap();
+  class OffscreenGPUCanvasContext {
+    #canvas;
+    #configuration = null;
+    #texture = null;
+    constructor(canvas) {
+      this.#canvas = canvas;
+    }
+    get canvas() {
+      return this.#canvas;
+    }
+    configure(configuration) {
+      this.#configuration = { alphaMode: "opaque", ...configuration };
+      this.#texture = null;
+    }
+    unconfigure() {
+      this.#configuration = null;
+      this.#texture = null;
+    }
+    getConfiguration() {
+      return this.#configuration;
+    }
+    getCurrentTexture() {
+      if (this.#configuration === null) {
+        throw new DOMException("The context is not configured.", "InvalidStateError");
+      }
+      const { width, height } = this.#canvas;
+      if (this.#texture === null || this.#texture.width !== width || this.#texture.height !== height) {
+        const { device, format, usage = GPUTextureUsage.RENDER_ATTACHMENT } = this.#configuration;
+        this.#texture = device.createTexture({
+          size: [width, height],
+          format,
+          usage: usage | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+        });
+      }
+      return this.#texture;
+    }
+  }
+  class HTMLCanvasElement extends HTMLElement {
+    get width() {
+      return Number(this.getAttribute("width") ?? 300);
+    }
+    set width(value) {
+      this.setAttribute("width", String(Math.max(0, Math.trunc(Number(value)) || 0)));
+    }
+    get height() {
+      return Number(this.getAttribute("height") ?? 150);
+    }
+    set height(value) {
+      this.setAttribute("height", String(Math.max(0, Math.trunc(Number(value)) || 0)));
+    }
+    // Only "webgpu" is available; WebGL and 2D return null (so libraries such as
+    // PixiJS fall back to WebGPU).
+    getContext(type) {
+      if (String(type) !== "webgpu" || !navigator.gpu) return null;
+      let context = canvasContexts.get(this);
+      if (context === undefined) {
+        context = new OffscreenGPUCanvasContext(this);
+        canvasContexts.set(this, context);
+      }
+      return context;
+    }
+  }
   class Text extends Node {}
 
   class Document extends Node {
@@ -758,8 +827,8 @@
     }
   }
 
-  function elementClass(namespace) {
-    if (namespace === HTML_NAMESPACE) return HTMLElement;
+  function elementClass(namespace, localName) {
+    if (namespace === HTML_NAMESPACE) return localName === "canvas" ? HTMLCanvasElement : HTMLElement;
     if (namespace === SVG_NAMESPACE) return SVGElement;
     return Element;
   }
@@ -771,7 +840,7 @@
     const Class = handle === DOCUMENT_ID
       ? Document
       : type === ELEMENT_NODE
-      ? elementClass(op_blitz_namespace(handle))
+      ? elementClass(op_blitz_namespace(handle), op_blitz_local_name(handle))
       : type === TEXT_NODE
       ? Text
       : Node;
@@ -848,6 +917,7 @@
     Element,
     HTMLElement,
     SVGElement,
+    HTMLCanvasElement,
     NodeList,
     DOMTokenList,
     DOMRect,
@@ -887,7 +957,26 @@
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
+  // Minimal navigator: WebGPU plus the fields libraries probe.
+  const navigator = Object.freeze({
+    get gpu() {
+      webgpu.initGPU();
+      return webgpu.gpu;
+    },
+    userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Roves-Blitz-probe",
+    platform: "Win32",
+    language: "en",
+    languages: ["en"],
+    maxTouchPoints: 0,
+    hardwareConcurrency: 4,
+  });
+  for (const name of ["GPUBufferUsage", "GPUTextureUsage", "GPUMapMode", "GPUShaderStage", "GPUColorWrite"]) {
+    if (webgpu[name] !== undefined) {
+      Object.defineProperty(globalThis, name, { value: webgpu[name], writable: true, configurable: true });
+    }
+  }
   Object.defineProperties(globalThis, {
+    navigator: { value: navigator, enumerable: true, configurable: true },
     history: { value: historyApi.history, enumerable: true, configurable: true },
     location: { get: () => historyApi.location, set: (url) => historyApi.location.assign(url), enumerable: true, configurable: true },
     localStorage: { get: () => webStorage.localStorage(), enumerable: true, configurable: true },

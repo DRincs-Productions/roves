@@ -141,6 +141,7 @@ jobs:
             ${{ runner.temp }}/blitz-window.png
             ${{ runner.temp }}/blitz-window.log
             ${{ runner.temp }}/blitz-window.err
+            ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn
 

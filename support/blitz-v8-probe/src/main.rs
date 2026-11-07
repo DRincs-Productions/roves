@@ -30,6 +30,8 @@ const WINDOW_TEST: &str = include_str!("window_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
+/// PixiJS 8.19.0 on WebGPU (bundled with esbuild in `js/`).
+const WEBGPU_SCENARIO: &str = include_str!("../js/dist/webgpu-scenario.js");
 
 const ELEMENT_NODE: i32 = 1;
 const TEXT_NODE: i32 = 3;
@@ -1038,6 +1040,8 @@ fn main() {
                 ),
                 // localStorage in SQLite under the origin directory; sessionStorage in memory.
                 deno_webstorage::deno_webstorage::init(Some(storage_dir.clone())),
+                // WebGPU (navigator.gpu) from Deno's maintained extension.
+                deno_webgpu::deno_webgpu::init(),
                 roves_blitz_v8_probe::init(),
             ],
             ..Default::default()
@@ -1331,6 +1335,32 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"storage_history_single_document\",\"status\":\"passed\",\"local_storage_runs\":{storage_runs},\"blocked_navigations\":{}}}",
             evaluate_hook(&mut runtime, &blocked_navigations)
         );
+        // WebGPU + PixiJS: opt-in (ROVES_PROBE_WEBGPU=1) because it needs a GPU;
+        // the CI runners have none, so this runs from the CI-built artifact on a
+        // machine with a GPU.
+        if std::env::var("ROVES_PROBE_WEBGPU").is_ok_and(|value| value == "1") {
+            stage("webgpu_pixi");
+            runtime
+                .execute_script("roves-blitz-webgpu-scenario.js", WEBGPU_SCENARIO)
+                .expect("WebGPU scenario should load");
+            let mut status = String::from("running");
+            for _ in 0..600 {
+                drive_frames(&mut runtime, &document, &run_animation_frame, 1);
+                status = evaluate_string(&mut runtime, "webgpuResult.status");
+                if status != "running" {
+                    break;
+                }
+            }
+            let detail = evaluate_string(&mut runtime, "JSON.stringify(webgpuResult)");
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"{status}\",\"detail\":{detail}}}"
+            );
+            assert!(status == "passed", "WebGPU/Pixi scenario did not pass: {detail}");
+        } else {
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"not_run\",\"reason\":\"set ROVES_PROBE_WEBGPU=1 on a machine with a GPU\"}}"
+            );
+        }
         if !std::env::args().any(|arg| arg == "--window") {
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_run\",\"reason\":\"pass --window\"}}"

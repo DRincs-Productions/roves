@@ -134,6 +134,12 @@ gestito da Roves: preferisci riuso e integrazione, conserva solo il codice di co
 necessario e rimuovi il codice sostituito. Valuta manutenzione, licenza, compatibilità con le
 piattaforme e impatto su CPU, RAM e GPU. Non aggiungere dipendenze senza un uso concreto;
 se nessuna libreria è adatta, spiega brevemente il motivo prima di implementare codice nostro.
+Questo vale in particolare per l'ecosistema Deno e V8: quando un'estensione Deno mantenuta
+(`deno_web`, `deno_webstorage`, `deno_webgpu`, `deno_fetch`, `deno_url`, …) o una libreria
+basata su V8/deno_core può sostituire un componente di Roves (codice nostro, parti di Servo o
+della probe Blitz), è obbligatorio valutarla, scegliendo la release abbinata alla versione di
+`deno_core` in uso, verificando che non esponga API privilegiate `Deno.*` ai giochi, e
+registrare l'esito (adottata, scartata con motivo, o rinviata nel TODO).
 
 ### Segnalazione dei bug nelle librerie
 
