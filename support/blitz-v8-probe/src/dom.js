@@ -45,6 +45,12 @@
     op_blitz_inner_html,
     op_blitz_set_inner_html,
     op_blitz_remove_attribute,
+    op_blitz_measure,
+    op_blitz_rect_component,
+    op_blitz_viewport_size,
+    op_blitz_focus,
+    op_blitz_blur,
+    op_blitz_focused,
   } = core.ops;
   const {
     Event,
@@ -224,6 +230,211 @@
     }
   }
 
+  // Geometry reads force style + layout in Rust, like browsers.
+  class DOMRect {
+    constructor(x = 0, y = 0, width = 0, height = 0) {
+      Object.assign(this, { x, y, width, height });
+    }
+    get left() {
+      return Math.min(this.x, this.x + this.width);
+    }
+    get top() {
+      return Math.min(this.y, this.y + this.height);
+    }
+    get right() {
+      return Math.max(this.x, this.x + this.width);
+    }
+    get bottom() {
+      return Math.max(this.y, this.y + this.height);
+    }
+    toJSON() {
+      const { x, y, width, height, left, top, right, bottom } = this;
+      return { x, y, width, height, left, top, right, bottom };
+    }
+  }
+  function measure(element, offset) {
+    if (!op_blitz_measure(handleOf(element, "getBoundingClientRect"), offset)) return new DOMRect();
+    return new DOMRect(
+      op_blitz_rect_component(0),
+      op_blitz_rect_component(1),
+      op_blitz_rect_component(2),
+      op_blitz_rect_component(3),
+    );
+  }
+
+  // HTML focusability, reduced to the cases the probe handles.
+  const FORM_CONTROLS = ["button", "input", "select", "textarea"];
+  function isFocusable(element) {
+    const name = element.localName;
+    if (FORM_CONTROLS.includes(name)) return !element.hasAttribute("disabled");
+    return (name === "a" && element.hasAttribute("href")) || element.hasAttribute("tabindex");
+  }
+  function focusedElement() {
+    return wrapOrNull(op_blitz_focused());
+  }
+
+  // UI event classes on top of deno_web's Event. Values come from the init
+  // dictionary, with the DOM defaults.
+  function defineInitGetters(Class, defaults) {
+    for (const [name, fallback] of Object.entries(defaults)) {
+      Object.defineProperty(Class.prototype, name, {
+        get() {
+          return eventInits.get(this)?.[name] ?? fallback;
+        },
+        configurable: true,
+        enumerable: true,
+      });
+    }
+  }
+  const eventInits = new WeakMap();
+  class UIEvent extends Event {
+    constructor(type, init = {}) {
+      super(type, init);
+      eventInits.set(this, { ...init });
+    }
+  }
+  defineInitGetters(UIEvent, { detail: 0, view: null });
+  const MODIFIERS = { ctrlKey: false, shiftKey: false, altKey: false, metaKey: false };
+  function getModifierState(key) {
+    return { Control: this.ctrlKey, Shift: this.shiftKey, Alt: this.altKey, Meta: this.metaKey }[key] ?? false;
+  }
+  class MouseEvent extends UIEvent {}
+  defineInitGetters(MouseEvent, {
+    ...MODIFIERS,
+    screenX: 0,
+    screenY: 0,
+    clientX: 0,
+    clientY: 0,
+    button: 0,
+    buttons: 0,
+    relatedTarget: null,
+  });
+  Object.defineProperties(MouseEvent.prototype, {
+    pageX: { get() { return this.clientX; } },
+    pageY: { get() { return this.clientY; } },
+    x: { get() { return this.clientX; } },
+    y: { get() { return this.clientY; } },
+    getModifierState: { value: getModifierState },
+  });
+  class PointerEvent extends MouseEvent {}
+  defineInitGetters(PointerEvent, {
+    pointerId: 0,
+    width: 1,
+    height: 1,
+    pressure: 0,
+    tangentialPressure: 0,
+    tiltX: 0,
+    tiltY: 0,
+    twist: 0,
+    pointerType: "",
+    isPrimary: false,
+  });
+  class WheelEvent extends MouseEvent {}
+  defineInitGetters(WheelEvent, { deltaX: 0, deltaY: 0, deltaZ: 0, deltaMode: 0 });
+  class KeyboardEvent extends UIEvent {}
+  defineInitGetters(KeyboardEvent, { ...MODIFIERS, key: "", code: "", location: 0, repeat: false, isComposing: false });
+  Object.defineProperty(KeyboardEvent.prototype, "getModifierState", { value: getModifierState });
+  class FocusEvent extends UIEvent {}
+  defineInitGetters(FocusEvent, { relatedTarget: null });
+
+  const POINTER_EVENTS = new Set(["pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave", "pointercancel"]);
+  const MOUSE_EVENTS = new Set(["click", "dblclick", "auxclick", "contextmenu", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]);
+  const KEYBOARD_EVENTS = new Set(["keydown", "keyup", "keypress"]);
+  const FOCUS_EVENTS = new Set(["focus", "blur", "focusin", "focusout"]);
+  function eventClassFor(type) {
+    if (POINTER_EVENTS.has(type)) return PointerEvent;
+    if (MOUSE_EVENTS.has(type)) return MouseEvent;
+    if (type === "wheel") return WheelEvent;
+    if (KEYBOARD_EVENTS.has(type)) return KeyboardEvent;
+    if (FOCUS_EVENTS.has(type)) return FocusEvent;
+    return Event;
+  }
+  function fireTrusted(target, type, Class, init) {
+    const event = new Class(type, { cancelable: false, composed: true, view: globalThis, ...init });
+    setIsTrusted(event, true);
+    return target.dispatchEvent(event);
+  }
+
+  // matchMedia over the probe viewport. Evaluates media types (all/screen/print),
+  // `not`, `and`, comma lists and the features width/height (min/max), orientation,
+  // prefers-reduced-motion, prefers-color-scheme, hover and pointer. Unknown
+  // features never match. Not live: `change` never fires (no resize yet).
+  function evaluateFeature(feature) {
+    const match = /^\(\s*([a-z-]+)\s*(?::\s*([^)]+?))?\s*\)$/.exec(feature.trim());
+    if (match === null) return false;
+    const [, name, rawValue] = match;
+    const value = rawValue?.trim();
+    const width = op_blitz_viewport_size(0);
+    const height = op_blitz_viewport_size(1);
+    const pixels = (text) => {
+      const parsed = /^(-?[\d.]+)(px)?$/.exec(text ?? "");
+      return parsed === null ? NaN : Number(parsed[1]);
+    };
+    switch (name) {
+      case "min-width": return width >= pixels(value);
+      case "max-width": return width <= pixels(value);
+      case "width": return width === pixels(value);
+      case "min-height": return height >= pixels(value);
+      case "max-height": return height <= pixels(value);
+      case "height": return height === pixels(value);
+      case "orientation": return value === (width >= height ? "landscape" : "portrait");
+      case "prefers-reduced-motion": return value === undefined ? false : value === "no-preference";
+      case "prefers-color-scheme": return value === "light";
+      case "hover": return value === undefined || value === "hover";
+      case "pointer": return value === undefined || value === "fine";
+      default: return false;
+    }
+  }
+  function evaluateMediaQuery(query) {
+    let text = query.trim().toLowerCase();
+    let negate = false;
+    if (text.startsWith("not ")) {
+      negate = true;
+      text = text.slice(4).trim();
+    } else if (text.startsWith("only ")) {
+      text = text.slice(5).trim();
+    }
+    const parts = text.split(/\s+and\s+/);
+    let result = true;
+    for (const part of parts) {
+      if (part === "all" || part === "screen") continue;
+      if (part === "print" || part === "speech") {
+        result = false;
+        continue;
+      }
+      if (!evaluateFeature(part)) result = false;
+    }
+    return negate ? !result : result;
+  }
+  class MediaQueryList extends EventTarget {
+    #media;
+    constructor(media) {
+      if (!constructing) throw new TypeError("Illegal constructor");
+      super();
+      this.#media = media;
+    }
+    get media() {
+      return this.#media;
+    }
+    get matches() {
+      return this.#media.split(",").some(evaluateMediaQuery);
+    }
+    addListener(listener) {
+      this.addEventListener("change", listener);
+    }
+    removeListener(listener) {
+      this.removeEventListener("change", listener);
+    }
+  }
+  function matchMedia(query) {
+    constructing = true;
+    try {
+      return new MediaQueryList(String(query));
+    } finally {
+      constructing = false;
+    }
+  }
+
   function wrapOrNull(handle) {
     return handle < 0 ? null : wrap(handle);
   }
@@ -288,6 +499,39 @@
     }
     get outerHTML() {
       return op_blitz_outer_html(handleOf(this, "outerHTML"));
+    }
+    getBoundingClientRect() {
+      return measure(this, false);
+    }
+    get offsetLeft() {
+      return Math.round(measure(this, true).x);
+    }
+    get offsetTop() {
+      return Math.round(measure(this, true).y);
+    }
+    get offsetWidth() {
+      return Math.round(measure(this, true).width);
+    }
+    get offsetHeight() {
+      return Math.round(measure(this, true).height);
+    }
+    focus() {
+      if (!this.isConnected || !isFocusable(this)) return;
+      const previous = focusedElement();
+      if (previous === this) return;
+      if (!op_blitz_focus(handleOf(this, "focus"))) return;
+      if (previous !== null) {
+        fireTrusted(previous, "blur", FocusEvent, { relatedTarget: this });
+        fireTrusted(previous, "focusout", FocusEvent, { bubbles: true, relatedTarget: this });
+      }
+      fireTrusted(this, "focus", FocusEvent, { relatedTarget: previous });
+      fireTrusted(this, "focusin", FocusEvent, { bubbles: true, relatedTarget: previous });
+    }
+    blur() {
+      if (focusedElement() !== this) return;
+      op_blitz_blur();
+      fireTrusted(this, "blur", FocusEvent, {});
+      fireTrusted(this, "focusout", FocusEvent, { bubbles: true });
     }
     setAttribute(name, value) {
       name = String(name);
@@ -481,6 +725,9 @@
     get body() {
       return this.querySelector("body");
     }
+    get activeElement() {
+      return focusedElement() ?? this.body;
+    }
     get head() {
       return this.querySelector("head");
     }
@@ -570,6 +817,15 @@
     SVGElement,
     NodeList,
     DOMTokenList,
+    DOMRect,
+    UIEvent,
+    MouseEvent,
+    PointerEvent,
+    WheelEvent,
+    KeyboardEvent,
+    FocusEvent,
+    MediaQueryList,
+    matchMedia,
     Text,
     Document,
     Event,
@@ -590,6 +846,11 @@
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
+  Object.defineProperties(globalThis, {
+    innerWidth: { get: () => op_blitz_viewport_size(0), enumerable: true, configurable: true },
+    innerHeight: { get: () => op_blitz_viewport_size(1), enumerable: true, configurable: true },
+    devicePixelRatio: { value: 1, enumerable: true, configurable: true },
+  });
   for (const name of ["window", "self"]) {
     Object.defineProperty(globalThis, name, { value: globalThis, enumerable: true, configurable: true });
   }
@@ -598,21 +859,21 @@
   // for lazily loaded extension scripts, so removing these is safe.
   delete globalThis.Deno;
   delete globalThis.__bootstrap;
-  // The probe starts V8 with --expose-gc for its GC test; only the embedder keeps it.
-  const collectGarbage = globalThis.gc;
-  delete globalThis.gc;
 
   return {
     // Trusted UI event from the embedder (Blitz hit-test result).
-    dispatchTrustedEvent(handle, type) {
-      const event = new Event(type, { bubbles: true, cancelable: true, composed: true });
+    dispatchTrustedEvent(handle, type, init = "{}") {
+      const Class = eventClassFor(type);
+      const event = new Class(type, {
+        bubbles: true,
+        cancelable: true,
+        composed: true,
+        view: globalThis,
+        ...JSON.parse(init),
+      });
       setIsTrusted(event, true);
       return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
-    collectGarbage() {
-      if (typeof collectGarbage !== "function") throw new Error("V8 was not started with --expose-gc");
-      collectGarbage();
-    },
   };
 })();

@@ -18,6 +18,8 @@ const FRAME_CHECK: &str = include_str!("frame_check.js");
 const MOTION_CHECK: &str = include_str!("motion_check.js");
 const GC_TEST: &str = include_str!("gc_test.js");
 const DOM_API_TEST: &str = include_str!("dom_api_test.js");
+const EVENTS_TEST: &str = include_str!("events_test.js");
+const EVENTS_CHECK: &str = include_str!("events_check.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
@@ -671,10 +673,89 @@ fn op_blitz_remove_attribute(
     Ok(())
 }
 
+/// Last rectangle measured by `op_blitz_measure` (x, y, width, height).
+#[derive(Default)]
+struct LastRect([f64; 4]);
+
+/// Forces style + layout (as browsers do for geometry reads), then stores the
+/// client bounding rect (`offset == false`) or the offset rect of the node.
+/// Returns false when the node has no box.
+#[op2(fast)]
+fn op_blitz_measure(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    offset: bool,
+) -> Result<bool, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    document.resolve(0.0);
+    let rect = if offset {
+        document.offset_rect(node_id)
+    } else {
+        document.get_client_bounding_rect(node_id)
+    };
+    let Some(rect) = rect else {
+        state.borrow_mut().borrow_mut::<LastRect>().0 = [0.0; 4];
+        return Ok(false);
+    };
+    state.borrow_mut().borrow_mut::<LastRect>().0 = [rect.x, rect.y, rect.width, rect.height];
+    Ok(true)
+}
+
+#[op2(fast)]
+fn op_blitz_rect_component(state: Rc<RefCell<OpState>>, index: u32) -> f64 {
+    state.borrow().borrow::<LastRect>().0[(index as usize).min(3)]
+}
+
+/// Viewport size in CSS pixels: 0 = width, 1 = height.
+#[op2(fast)]
+fn op_blitz_viewport_size(state: Rc<RefCell<OpState>>, component: u32) -> f64 {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let viewport = document.viewport();
+    let scale = f64::from(viewport.hidpi_scale.max(f32::MIN_POSITIVE));
+    let size = if component == 0 {
+        viewport.window_size.0
+    } else {
+        viewport.window_size.1
+    };
+    f64::from(size) / scale
+}
+
+/// Moves Blitz focus (`:focus` styling, later keyboard routing). `dom.js` checks
+/// focusability and fires the focus events.
+#[op2(fast)]
+fn op_blitz_focus(state: Rc<RefCell<OpState>>, handle: f64) -> Result<bool, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    Ok(document.set_focus_to(node_id))
+}
+
+#[op2(fast)]
+fn op_blitz_blur(state: Rc<RefCell<OpState>>) {
+    let document = probe_document(&state);
+    document.borrow_mut().clear_focus();
+}
+
+#[op2(fast)]
+fn op_blitz_focused(state: Rc<RefCell<OpState>>) -> f64 {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    document.get_focussed_node_id().map_or(NO_NODE, to_handle)
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
         op_blitz_document_root,
+        op_blitz_measure,
+        op_blitz_rect_component,
+        op_blitz_viewport_size,
+        op_blitz_focus,
+        op_blitz_blur,
+        op_blitz_focused,
         op_blitz_insert_before,
         op_blitz_child_count,
         op_blitz_child_at,
@@ -829,6 +910,27 @@ fn drive_frames(
     }
 }
 
+/// Dispatches a trusted UI event of `kind` with a JSON init dictionary to `target`
+/// through the bootstrap's dispatcher (which picks MouseEvent, PointerEvent,
+/// KeyboardEvent or FocusEvent by type).
+fn dispatch_trusted(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    target: NodeId,
+    kind: &str,
+    init: &str,
+) {
+    deno_core::scope!(scope, runtime);
+    let function = v8::Local::new(scope, dispatcher);
+    let receiver = v8::undefined(scope).into();
+    let node = v8::Number::new(scope, to_handle(target)).into();
+    let kind = v8::String::new(scope, kind).unwrap().into();
+    let init = v8::String::new(scope, init).unwrap().into();
+    function
+        .call(scope, receiver, &[node, kind, init])
+        .expect("trusted event dispatch should not throw");
+}
+
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
 fn frame_count() -> u32 {
     let mut args = std::env::args().skip(1);
@@ -859,9 +961,7 @@ fn main() {
     // Same switch production uses (roves-v8's `jitless` feature): it must be set
     // before the first JsRuntime initializes V8.
     let jitless = std::env::var("ROVES_PROBE_JITLESS").is_ok_and(|value| value == "1");
-    // --expose-gc lets the GC test force collections; the bootstrap moves `gc` from
-    // the guest global into an embedder hook.
-    let mut flags = vec![String::new(), "--expose-gc".to_string()];
+    let mut flags = vec![String::new()];
     if jitless {
         flags.push("--jitless".into());
     }
@@ -897,6 +997,7 @@ fn main() {
             .put(ProbeDocument(document.clone()));
         runtime.op_state().borrow_mut().put(WrappedNodes::default());
         runtime.op_state().borrow_mut().put(QueryResults::default());
+        runtime.op_state().borrow_mut().put(LastRect::default());
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
@@ -904,7 +1005,7 @@ fn main() {
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let (dispatcher, run_animation_frame, collect_garbage) = {
+        let (dispatcher, run_animation_frame) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
             let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
@@ -917,7 +1018,6 @@ fn main() {
             (
                 function("dispatchTrustedEvent"),
                 function("runAnimationFrame"),
-                function("collectGarbage"),
             )
         };
 
@@ -950,17 +1050,29 @@ fn main() {
             .execute_script("roves-blitz-dom-api-test.js", DOM_API_TEST)
             .expect("tree navigation, selectors, classList and innerHTML checks should pass");
 
+        // Geometry, matchMedia, focus and event classes; registers listeners for
+        // the trusted pointer/mouse/keyboard events Rust sends below.
+        resolve_layout(&document);
+        stage("events_test");
+        runtime
+            .execute_script("roves-blitz-events-test.js", EVENTS_TEST)
+            .expect("geometry, matchMedia and focus checks should pass");
+
         stage("hit_test_and_click");
         let target = hit_target(&document, x, y).expect("hit-test should find a node");
-        {
-            deno_core::scope!(scope, runtime);
-            let function = v8::Local::new(scope, &dispatcher);
-            let receiver = v8::undefined(scope).into();
-            let node = v8::Number::new(scope, to_handle(target)).into();
-            let kind = v8::String::new(scope, "click").unwrap().into();
-            function
-                .call(scope, receiver, &[node, kind])
-                .expect("click dispatch should not throw");
+        // What a window's input layer would send for a primary-button click.
+        let mouse = format!(
+            r#"{{"clientX":{x},"clientY":{y},"screenX":{x},"screenY":{y},"button":0,"buttons":1,"pointerId":1,"pointerType":"mouse","isPrimary":true}}"#
+        );
+        let released = mouse.replace(r#""buttons":1"#, r#""buttons":0"#);
+        for (kind, init) in [
+            ("pointerdown", &mouse),
+            ("mousedown", &mouse),
+            ("pointerup", &released),
+            ("mouseup", &released),
+            ("click", &released),
+        ] {
+            dispatch_trusted(&mut runtime, &dispatcher, target, kind, init);
         }
         runtime
             .execute_script(
@@ -973,6 +1085,19 @@ fn main() {
         // Frame loop without a window: each frame runs the rAF callbacks, drains
         // microtasks, polls the deno_core event loop once (timers) and resolves
         // layout. Frames are paced in real time so timers can become due.
+        // Keyboard input goes to the focused element (focused by events_test.js).
+        stage("keyboard");
+        let focused = document
+            .borrow()
+            .get_focussed_node_id()
+            .expect("events_test.js must leave a focused element");
+        let key = r#"{"key":"Enter","code":"Enter"}"#;
+        dispatch_trusted(&mut runtime, &dispatcher, focused, "keydown", key);
+        dispatch_trusted(&mut runtime, &dispatcher, focused, "keyup", key);
+        runtime
+            .execute_script("roves-blitz-events-check.js", EVENTS_CHECK)
+            .expect("trusted pointer, mouse and keyboard events should reach listeners");
+
         stage("frame_loop");
         runtime
             .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
@@ -1020,12 +1145,9 @@ fn main() {
             "GC test must create its detached nodes: {nodes_before} -> {nodes_created}"
         );
         for _ in 0..3 {
-            {
-                deno_core::scope!(scope, runtime);
-                let function = v8::Local::new(scope, &collect_garbage);
-                let receiver = v8::undefined(scope).into();
-                function.call(scope, receiver, &[]).expect("gc() should run");
-            }
+            // A full collection through the V8 API: no `gc` global is ever
+            // exposed to guest code (an --expose-gc global is not deletable).
+            runtime.v8_isolate().low_memory_notification();
             drive_frames(&mut runtime, &document, &run_animation_frame, 2);
         }
         let nodes_after = live_nodes(&document);
@@ -1131,6 +1253,9 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"dom_tree_navigation_selectors_classlist_innerhtml\",\"status\":\"passed\"}}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"geometry_matchmedia_focus_pointer_keyboard_events\",\"status\":\"passed\"}}"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"gc_frees_unreferenced_detached_nodes\",\"status\":\"passed\",\"nodes_before\":{nodes_before},\"nodes_created\":{nodes_created},\"nodes_after\":{nodes_after}}}"
