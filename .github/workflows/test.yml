@@ -1,40 +1,45 @@
-name: 'Build Servo Test Binaries (from source, with local patches)'
+name: 'Build Servo Test Binaries (from source)'
 
-# Note: this workflow only triggers on pushes touching the paths listed below, so an empty
-# commit does NOT retrigger it (unlike release.yml/android.yml/ios.yml) -- a real change
-# somewhere in patches/**, test-page/**, or this file itself is needed.
-# For transient runner/download failures, use the workflow_dispatch trigger below to retry
-# without manufacturing a source change.
+# Note: this workflow only triggers on pushes touching non-documentation paths (see
+# paths-ignore below), so an empty commit does NOT retrigger it (unlike
+# release.yml/android.yml/ios.yml). For transient runner/download failures, use the
+# workflow_dispatch trigger below to retry without manufacturing a source change.
 #
-# This workflow builds Servo *from source* — pristine upstream tag + our own patches/
-# applied on top — purely to smoke-test local customizations (see ../CUSTOMIZATIONS.md) on
-# real Windows/Linux machines, without needing to compile Servo (a very heavy,
-# hours-long build) on a dev machine. Every run overwrites the same "test" GitHub Release —
-# it is not versioned, not meant to be depended on, and is not the real distributable shell
-# (see release.yml for that).
+# This workflow builds the engine *from source*, directly from this repository's checkout
+# (the same tree release.yml builds), to smoke-test changes on real Windows/Linux machines
+# without compiling the engine (a very heavy, hours-long build) on a dev machine. Every run
+# overwrites the same "test" GitHub Release — it is not versioned, not meant to be depended
+# on, and is not the real distributable shell (see release.yml for that).
 #
-# Why build from a fresh download instead of just using the working tree directly: most of
-# this repo's own pristine content (~1.3GB, almost entirely the WPT test suite) is itself
-# gitignored (see ../.gitignore) and so isn't guaranteed to exist wherever this workflow
-# runs. patches/servo-v<tag>/*.patch is the tracked source of truth for our customizations;
-# this workflow downloads the pristine tag fresh on every run and applies them, so nothing
-# bulky needs to be committed anywhere.
+# Since 2026-11-07 Roves no longer tracks its divergence from upstream Servo as a patch
+# series: the old "download pristine Servo + apply patches/servo-v<tag>/" reconstruction was
+# removed together with those patches.
 #
 # Apple CI policy (2026-11-05): no macOS/iOS job runs per commit. The macOS SDL3 gamepad probe
 # and the macOS shell bundles are verified only by release.yml on versioned `v*.*.*` tags, and
 # the iOS simulator build only by ios.yml on the same tags. The macOS-only steps left below
-# (`--dmg`, BSD patch, ROVES_MACOS_GAMEPAD sampling) are inactive here because the matrix has
+# (`--dmg`, ROVES_MACOS_GAMEPAD sampling) are inactive here because the matrix has
 # no macOS entry; they are kept as reference for re-deriving a release-time macOS smoke test.
 
 on:
   push:
-    paths:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
       - 'patches/**'
-      - 'test-page/**'
-      - 'support/sdl3-gamepad-probe/**'
-      - 'support/xvfb_window_cycle_smoke.sh'
-      - 'support/check_sdl3_windowing_contracts.py'
-      - '.github/workflows/test.yml'
+      - 'roves-action'
+      - 'roves-packmaster'
+      - 'roves-wiki'
+      - 'support/blitz-v8-probe/**'
+      - 'support/deno-core-probe/**'
+      - '.github/workflows/android.yml'
+      - '.github/workflows/blitz-probe.yml'
+      - '.github/workflows/deno-core-probe.yml'
+      - '.github/workflows/gstreamer-mirror.yml'
+      - '.github/workflows/ios.yml'
+      - '.github/workflows/perf-ab.yml'
+      - '.github/workflows/release.yml'
+      - '.github/workflows/v8.yml'
   workflow_dispatch: {}
 
 # A new SDL3 checkpoint supersedes the previous one. Without this, every push keeps an entire
@@ -49,43 +54,12 @@ env:
   TEST_RELEASE_TAG: 'test'
 
 jobs:
-  # Validate the full ordered patch series against a clean pinned Servo release.
-  validate-servo-patches:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: apply local patches to pristine Servo
-        shell: bash
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
-          unzip -q servo-src.zip -d servo-src-tmp
-          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
-          shopt -s nullglob
-          patches=(patches/servo-v${SERVO_TAG}/*.patch)
-          for p in "${patches[@]}"; do
-            # 0042 updates the locally tracked CI-only SDL probe, not the clean
-            # Servo archive. Its matching crate is already present after checkout.
-            case $(basename "$p") in
-              0042-sdl3-macos-gamepad-probe.patch)
-                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
-                continue
-                ;;
-            esac
-            echo "Applying $(basename "$p")..."
-            patch --batch --forward -p1 -d servo-src < "$p"
-          done
-          # Upstream paths Roves deleted (a patch can't cheaply carry whole-tree deletions).
-          # After the patches: 0185 still edits python/servo/try_parser.py.
-          grep -v '^#' "patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
-            if [ -n "$rp" ]; then rm -rf "servo-src/$rp"; fi
-          done
-
   # Check SDL3 event and native virtual-gamepad contracts independently.
   sdl3-windowing-contracts:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: validate SDL3 event and patch contracts
+      - name: validate SDL3 event contracts
         run: python3 support/check_sdl3_windowing_contracts.py
 
   # Exercise SDL3's native virtual-gamepad API on Windows and Linux. This
@@ -111,7 +85,7 @@ jobs:
 
   # ── Create the rolling "test" release exactly once before the matrix starts ────
   ensure-test-release:
-    needs: [validate-servo-patches, sdl3-windowing-contracts]
+    needs: [sdl3-windowing-contracts]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -124,12 +98,12 @@ jobs:
           gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
           gh release create "$TEST_RELEASE_TAG" \
             --title "Servo customization test build" \
-            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/. Not a real release — see embedded.yml for that. Latest build: commit ${{ github.sha }}." \
+            --notes "Rolling test build from source. Overwritten on every push touching engine sources. Not a real release — see release.yml for that. Latest build: commit ${{ github.sha }}." \
             --prerelease \
             2>/dev/null || \
           gh release view "$TEST_RELEASE_TAG" > /dev/null
 
-  # ── Build Servo from source (pristine tag + our patches) and upload per platform ─
+  # ── Build the engine from this checkout and upload per platform ──────────────
   build-and-publish:
     needs: [ensure-test-release, sdl3-gamepad-probe]
     permissions:
@@ -185,104 +159,25 @@ jobs:
           npm install
           npm run build
 
-      # rustup ships preinstalled on all 3 GitHub-hosted runner images. We don't
-      # install a toolchain explicitly: rustup auto-detects and fetches whatever
-      # `rust-toolchain.toml` in the downloaded Servo source pins, the first time
-      # cargo/mach runs inside that directory. This just forces that fetch early,
-      # with its own clear log output, instead of burying it inside the build step.
+      # rustup ships preinstalled on all 3 GitHub-hosted runner images and auto-detects the
+      # pinned toolchain from this repo's own rust-toolchain.toml the first time cargo/mach
+      # runs — this just forces that fetch early, with its own clear log output.
       - name: prefetch pinned rust toolchain
         shell: bash
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
-          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
-          cd /tmp/toolchain-probe && rustup show
+        run: rustup show
 
-      # ── Download pristine upstream Servo source for the pinned tag, then apply
-      #    every patch under patches/servo-v${SERVO_TAG}/ on top, in order. This
-      #    reconstructs this same directory's tree (minus what ../.gitignore
-      #    excludes) plus our customizations — see ../CUSTOMIZATIONS.md for what
-      #    each patch does and why.
-      - name: download + patch Servo source
+      - name: prepare source tree
+        uses: actions/checkout@v4
+        with:
+          path: servo-src
+      - name: add built test-page and mark mach executable
         shell: bash
         run: |
-          # --retry-all-errors: Windows runners' schannel curl intermittently fails with exit 35
-          # (CRYPT_E_REVOCATION_OFFLINE, the certificate revocation server unreachable), which
-          # plain --retry does not treat as transient. Seen on run 37231672272.
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
-          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
-          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
-          rm -rf servo-src-tmp servo-src.zip
-
-          shopt -s nullglob
-          patches=(patches/servo-v${SERVO_TAG}/*.patch)
-          if [ ${#patches[@]} -eq 0 ]; then
-            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
-            exit 1
-          fi
-          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
-          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
-          PATCH=patch
-          if [ "$(uname)" = "Darwin" ]; then
-            command -v gpatch >/dev/null || brew install gpatch
-            PATCH=gpatch
-          fi
-          cd servo-src
-          chmod +x mach
-          for p in "${patches[@]}"; do
-            # 0042 updates the locally tracked CI-only SDL probe, not the clean
-            # Servo archive. The probe crate is already present from checkout.
-            case $(basename "$p") in
-              0042-sdl3-macos-gamepad-probe.patch)
-                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
-                continue
-                ;;
-            esac
-            echo "Applying $(basename "$p")..."
-            "$PATCH" -p1 < "../$p"
-          done
-          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
-          # after the patches because 0185 still edits python/servo/try_parser.py.
-          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
-            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
-          done
-
-          # test-page/ isn't part of any patch (../CUSTOMIZATIONS.md: plain test
-          # fixtures, not derived from any upstream file, same reasoning as the
-          # icon.png/icon.ico entry there) — the patch-apply loop above never
-          # recreates it inside servo-src. Mirror it in ourselves so this tree
-          # actually matches this repo's real layout (test-page/ next to
-          # ports/servoshell/), which ports/servoshell/build.rs's game-icon
-          # fallback depends on: it reads test-page/public/icon.{png,ico} via a
-          # path relative to its own crate dir, same as a real in-place build,
-          # so that file has to genuinely be there — not just reachable one
-          # directory further up, the way the bundle step below can get away
-          # with. Only public/ (icons) and dist/ (built by the step above) are
-          # needed; node_modules is deliberately left out.
-          mkdir -p test-page
-          cp -r ../test-page/public test-page/public
-          cp -r ../test-page/dist test-page/dist
-
-          # Same reasoning, for resources/fonts/ (see CUSTOMIZATIONS.md's boot-splash
-          # wordmark entry): the bundled Metal Mania font is a new binary asset a text
-          # patch can't carry, but unlike test-page/'s fixtures, gui.rs's
-          # include_bytes!("../../../resources/fonts/MetalMania-Regular.ttf") needs it to
-          # genuinely exist on disk at that path for mach build to compile at all.
-          mkdir -p resources/fonts
-          cp -r ../resources/fonts/. resources/fonts/
-
-          # Same reasoning again, for the Roves-branded icon rasters (see
-          # CUSTOMIZATIONS.md's "boot splash still shows Servo's icon" entry): these are
-          # also new binary assets no text patch can carry, and without this copy step
-          # this tree still had *upstream Servo's own* resources/servo_64.png/servo.ico
-          # sitting at these exact paths (same filenames, real Servo ships its own icon
-          # there too) — gui.rs's include_bytes!/build.rs's icon embedding compiled fine
-          # either way, silently baking in the wrong (upstream) icon instead of failing
-          # loudly, which is exactly how this went unnoticed. `roves_wordmark.svg` isn't
-          # read by any Rust code (no build failure risk if it's missing), but is copied
-          # here anyway so this tree matches the real repo layout, same as everything
-          # else in this step.
-          cp ../resources/servo_64.png ../resources/servo_1024.png ../resources/servo.ico \
-             ../resources/servo.icns ../resources/servo.svg ../resources/roves_wordmark.svg resources/
+          # ports/servoshell/build.rs reads test-page/public icons (already in the checkout);
+          # the bundle step needs the test-page dist/ built above.
+          mkdir -p servo-src/test-page
+          cp -r test-page/dist servo-src/test-page/dist
+          chmod +x servo-src/mach
 
       # Windows only: install the real GStreamer runtime+devel ourselves, to the exact path
       # `./mach bootstrap`'s own installer would use (see python/servo/platform/windows.py's
@@ -456,8 +351,6 @@ jobs:
             macos) target=x86_64-apple-darwin; expects_x11=no ;;
             *) echo "::error::unexpected target OS: ${{ matrix.os_name }}"; exit 1 ;;
           esac
-          # No --locked: patches/ carries no Cargo.lock diff, so servo-src's lockfile is
-          # still pristine upstream's and `mach build` below re-resolves it anyway.
           cargo tree -p servoshell --target "$target" -e features -i surfman > /tmp/surfman-features.txt
           if [ "$expects_x11" = yes ]; then
             grep -Fq 'surfman feature "sm-x11"' /tmp/surfman-features.txt || {
@@ -514,13 +407,12 @@ jobs:
       # The SDL3 windowing migration (see ../CUSTOMIZATIONS.md's 2026-09-19/20 entries)
       # added real `#[cfg(test)]` unit tests for keyboard/mouse/IME mapping, the adaptive
       # gamepad polling cadence, immediate-vs-delayed egui repaint decisions, and the
-      # opt-in performance-counter parser/reset contract
-      # (0026-sdl3-keyboard-tests.patch, 0029-sdl3-egui-input-tests.patch) but nothing
+      # opt-in performance-counter parser/reset contract, but nothing
       # in this workflow ever actually compiled or ran them -- `mach build` only builds
       # the binary, never test targets, and `check_sdl3_windowing_contracts.py`'s gate
       # only checks source text, not real `cargo`/`rustc` behavior. Run them for real on
       # one leg (Linux portable -- cheapest, and every leg already reuses the same
-      # patched source and dependency graph, so one is enough to catch a real
+      # source and dependency graph, so one is enough to catch a real
       # regression). These tests don't create a window or touch SDL video (see the
       # CUSTOMIZATIONS.md entries above), so they're safe to run headless here.
       - name: run servoshell unit tests (SDL3 input and polling)
@@ -615,7 +507,7 @@ jobs:
       # `mach bundle` (see ../CUSTOMIZATIONS.md) is what actually builds the
       # single play.exe/play.app/play executable — this step's only job is
       # to hand it the diagnostic page built above (test-page/dist, copied
-      # into servo-src by the "download + patch" step so this tree mirrors
+      # into servo-src by the "add built test-page" step so this tree mirrors
       # this repo's real layout — a real run would point --content-dir at
       # the parent project's own `dist/` instead) and, for the linux-deb
       # matrix entry, ask for --deb instead of the default self-contained
@@ -902,7 +794,7 @@ jobs:
       # Repeats the launch 4 times in the same job (instead of relying on 4 separate pushes) so a
       # single CI run produces a statistically useful sample of the intermittent stall — pushing 4
       # times to gather the same evidence would burn 4x the CI minutes across all matrix legs for
-      # no reason, and this workflow only retriggers on a real patches/**/test-page/** change, not
+      # no reason, and this workflow only retriggers on a real source change, not
       # on an empty commit (see the note at the top of this file), so repeated pushes aren't a
       # cheap way to resample this anyway.
       - name: macOS opt-in gamepad and synthetic input (ROVES_MACOS_GAMEPAD=1)
@@ -1239,7 +1131,7 @@ jobs:
   # this was validated against) -- extend to Windows/macOS once this first pass is
   # proven out for real by a green run.
   steam-emulator-smoke-test:
-    needs: [validate-servo-patches, sdl3-windowing-contracts, sdl3-gamepad-probe]
+    needs: [sdl3-windowing-contracts, sdl3-gamepad-probe]
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -1268,60 +1160,20 @@ jobs:
 
       - name: prefetch pinned rust toolchain
         shell: bash
-        run: |
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o /tmp/rust-toolchain.toml "https://raw.githubusercontent.com/servo/servo/v${SERVO_TAG}/rust-toolchain.toml"
-          mkdir -p /tmp/toolchain-probe && cp /tmp/rust-toolchain.toml /tmp/toolchain-probe/
-          cd /tmp/toolchain-probe && rustup show
+        run: rustup show
 
-      # Same reconstruction as build-and-publish's own "download + patch Servo
-      # source" step above (see that step for the full reasoning) -- kept as its
-      # own copy rather than a shared step/action since the two jobs diverge right
-      # after this point (no matrix here, only one mach build/bundle instead of six).
-      - name: download + patch Servo source
+      - name: prepare source tree
+        uses: actions/checkout@v4
+        with:
+          path: servo-src
+      - name: add built test-page and mark mach executable
         shell: bash
         run: |
-          curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors -o servo-src.zip "https://github.com/servo/servo/archive/refs/tags/v${SERVO_TAG}.zip"
-          python3 -c "import zipfile; zipfile.ZipFile('servo-src.zip').extractall('servo-src-tmp')"
-          mv "servo-src-tmp/servo-${SERVO_TAG}" servo-src
-          rm -rf servo-src-tmp servo-src.zip
-
-          shopt -s nullglob
-          patches=(patches/servo-v${SERVO_TAG}/*.patch)
-          if [ ${#patches[@]} -eq 0 ]; then
-            echo "::error::No patches found in patches/servo-v${SERVO_TAG}/ — nothing to test."
-            exit 1
-          fi
-          # macOS ships BSD patch, which rejects some of the generated patches that GNU patch
-          # (what validate-servo-patches checks with) applies cleanly: use GNU patch there too.
-          PATCH=patch
-          if [ "$(uname)" = "Darwin" ]; then
-            command -v gpatch >/dev/null || brew install gpatch
-            PATCH=gpatch
-          fi
-          cd servo-src
-          chmod +x mach
-          for p in "${patches[@]}"; do
-            case $(basename "$p") in
-              0042-sdl3-macos-gamepad-probe.patch)
-                echo "Skipping repository-only $(basename "$p") in the upstream source overlay."
-                continue
-                ;;
-            esac
-            echo "Applying $(basename "$p")..."
-            "$PATCH" -p1 < "../$p"
-          done
-          # Upstream paths Roves deleted (see patches/servo-v<tag>/REMOVED_PATHS.txt); removed
-          # after the patches because 0185 still edits python/servo/try_parser.py.
-          grep -v '^#' "../patches/servo-v${SERVO_TAG}/REMOVED_PATHS.txt" | while read -r rp; do
-            if [ -n "$rp" ]; then rm -rf "./$rp"; fi
-          done
-
-          mkdir -p test-page
-          cp -r ../test-page/public test-page/public
-          cp -r ../test-page/dist test-page/dist
-
-          mkdir -p resources/fonts
-          cp -r ../resources/fonts/. resources/fonts/
+          # ports/servoshell/build.rs reads test-page/public icons (already in the checkout);
+          # the bundle step needs the test-page dist/ built above.
+          mkdir -p servo-src/test-page
+          cp -r test-page/dist servo-src/test-page/dist
+          chmod +x servo-src/mach
 
       # Same dpkg-lock wait as build-and-publish's own Linux step above.
       - name: stop background apt processes and wait for the dpkg lock

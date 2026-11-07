@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -16,7 +15,6 @@ GUI = ROOT / "ports/servoshell/desktop/gui.rs"
 ACCESSIBILITY = ROOT / "ports/servoshell/desktop/accessibility.rs"
 ACCELERATED_GL_MEDIA = ROOT / "ports/servoshell/desktop/accelerated_gl_media.rs"
 SERVOSHELL_MANIFEST = ROOT / "ports/servoshell/Cargo.toml"
-PATCH = ROOT / "patches/servo-v0.5.0/0001-desktop-shell-core.patch"
 
 
 def braced_body(source: str, marker: str) -> str:
@@ -146,12 +144,6 @@ def main() -> None:
         input_result_handler.index("editing_action_from_keyboard_event(&keyboard_event)")
     ), "page-cancelled clipboard shortcuts must not run their default action"
 
-    subprocess.run(
-        ["git", "apply", "--numstat", str(PATCH)],
-        cwd=ROOT,
-        check=True,
-        stdout=subprocess.DEVNULL,
-    )
     print(f"SDL3 windowing contracts OK ({len(variants)} WindowEvent variants)")
 
 

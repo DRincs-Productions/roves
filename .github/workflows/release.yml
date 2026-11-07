@@ -1,11 +1,8 @@
 name: 'Release'
 
 # Builds and publishes a real, versioned Roves release — distinct from test.yml's rolling
-# "test" build (which reconstructs a tree from a pristine upstream download + patches/, purely
-# to smoke-test that the patch set itself still applies/works). This workflow builds directly
-# from the tagged ref of THIS repo, which already tracks the full patched Servo source (see
-# ../AGENTS.md) — exactly what a real consumer (e.g. roves-action, pinning its `roves-ref`
-# input to one of these tags) would get.
+# "test" build. Both build directly from this repository's source; this one builds the tagged
+# ref — exactly what a real consumer (e.g. roves-action, pinning one of these tags) gets.
 #
 # Triggered by pushing a tag matching v<major>.<minor>.<patch> (e.g. v0.1.0). See AGENTS.md's
 # "Cutting a versioned release" section for the full procedure, including how to retry a

@@ -48,7 +48,7 @@ jobs:
           gh release view "$TEST_RELEASE_TAG" 2>/dev/null || \
           gh release create "$TEST_RELEASE_TAG" \
             --title "Servo customization test build" \
-            --notes "Rolling test build from source (Servo v${SERVO_TAG} + patches/). Overwritten on every push touching patches/ or android.yml. Not a real release — see release.yml for that." \
+            --notes "Rolling test build from source. Overwritten on every push touching engine sources. Not a real release — see release.yml for that." \
             --prerelease \
             2>/dev/null || \
           gh release view "$TEST_RELEASE_TAG" > /dev/null

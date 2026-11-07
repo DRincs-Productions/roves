@@ -12,7 +12,8 @@ Le righe indicate sono stime, non misure di codice eseguibile o di peso nel bina
   dichiarazioni generate e script di build quando specificato.
 - Per i file Servo modificati, il numero di righe del file completo non rappresenta il
   contributo Roves. In quei casi si riportano, quando utili, le aggiunte e rimozioni viste
-  nelle patch `patches/servo-v0.5.0/`.
+  nelle patch `patches/servo-v0.5.0/` (rimosse il 7 novembre 2026; consultarle nella
+  cronologia Git).
 - Le aggiunte e le rimozioni nelle patch possono includere riscritture e successive modifiche
   allo stesso file. Non sono quindi conteggi di codice attuale e non vanno sommati alle righe
   correnti.

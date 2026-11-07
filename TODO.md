@@ -198,8 +198,8 @@ hardware ancora aperta (IME CJK/dead key, screen reader, ecc.).
   riprodotto, ma lo step resta informational-only e il gamepad macOS resta spento per default:
   5 campioni CI non sostituiscono un controller fisico (IOKit HID) su un Mac reale, che l'utente
   non ha. Prossimo passo, se si vuole più confidenza prima di un eventuale controller reale:
-  ripetere il campionamento 4x su un secondo run futuro (qualunque prossimo push a
-  `patches/**`/`test-page/**` lo farà automaticamente) per accumulare altri campioni nel tempo.
+  ripetere il campionamento 4x su un secondo run futuro (qualunque prossimo push che
+  tocca i sorgenti lo farà automaticamente) per accumulare altri campioni nel tempo.
 ## Rendering futuro: fast path wgpu — backlog
 
 - [ ] Progettare un fast path interno a Servo per il caso di una singola

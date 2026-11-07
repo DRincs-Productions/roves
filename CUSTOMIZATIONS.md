@@ -1,3 +1,18 @@
+## 2026-11-07 - Stop tracking the divergence from upstream Servo as patches
+
+Roves has permanently diverged from Servo, so the per-change patch series is retired. Deleted
+`patches/servo-v0.4.0/`, `patches/servo-v0.5.0/` (including `REMOVED_PATHS.txt`) and
+`patches/blitz-probe/`. `.github/workflows/test.yml` no longer downloads pristine Servo and
+applies the series: the `validate-servo-patches` job is gone, both build jobs check this
+repository out into `servo-src` (the same tree `release.yml` builds), copy the built
+`test-page/dist` into it and use the repo's own `rust-toolchain.toml`. The workflow now runs on
+any push that is not documentation, probes, submodule pointers or other workflows
+(`paths-ignore`). `support/check_sdl3_windowing_contracts.py` no longer checks that
+`0001-desktop-shell-core.patch` applies. `AGENTS.md` drops the patch obligation and the Servo
+upgrade procedure. `patches/deno_core-0.413.0/` stays: it documents the authorized deno_core
+library fork, not a difference from Servo. Earlier entries below that cite patch files describe
+the history; the files remain available in Git history.
+
 ## 2026-11-06 - Consolidate the gameplay smoothness plan
 
 `docs/ROVES_PERFORMANCE.md` now owns the gameplay smoothness backlog consolidated from

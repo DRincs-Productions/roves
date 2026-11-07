@@ -43,8 +43,9 @@ restano respinti. Non riproporre il workaround side-module che altera questo con
 
 ## Lingua e direzione del progetto
 
-- **In chat rispondi sempre in italiano.** Codice, commit, `CUSTOMIZATIONS.md` e patch restano
-  in inglese come oggi.
+- **In chat rispondi sempre in italiano.** Codice, commit e `CUSTOMIZATIONS.md` restano
+  in inglese come oggi. Non si creano più patch di tracciamento verso Servo upstream
+  (decisione del 7 novembre 2026, vedi sotto).
 - **Allontanarsi da Servo upstream non è un problema.** L'obiettivo è avere meno codice nostro:
   delegare il più possibile a librerie mantenute da altri e scrivere solo il codice che serve a
   farle lavorare insieme. Togli il codice non usato e, quando una libreria esistente copre una
@@ -225,7 +226,7 @@ ordinaria di conferma. Ripetere questi passi finché resta lavoro utile e autori
 2. Claude implementa e verifica l'incarico, poi consegna e si ferma senza commit o push.
    Codex revisiona diff ed evidenze; se il risultato è incompleto o errato, delega la
    correzione e ripete questa fase fino a ottenere una modifica completa.
-3. Aggiornare documentazione e patch applicabili, completare le verifiche necessarie e
+3. Aggiornare documentazione (e i record dei fork di librerie, se toccati), completare le verifiche necessarie e
    creare il commit locale. Controllare insieme le run del precedente push.
 4. Se una run è rossa, analizzarla e completare le correzioni da includere nel prossimo
    push; attendere anche la conclusione delle altre run. Se nessuna è rossa ma alcune
@@ -289,7 +290,7 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   patch, output API e log. Usare rg con percorsi limitati, escludendo target, .git e node_modules
   salvo una ricerca esplicita su un artefatto preciso.
 - Salvare output estesi nei log e riportare esito, conteggi ed estratti pertinenti degli
-  errori. Non riversare stream JSON completi nel contesto. Aggiornare documentazione e patch
+  errori. Non riversare stream JSON completi nel contesto. Aggiornare la documentazione
   una sola volta per implementazione completa, includendo le integrazioni della revisione.
 - Non mantenere un ciclo di risvegli del modello per osservare un processo Claude.
   Attendere il risultato dell'incarico o un blocco; nessuna analisi duplicata durante l'attesa.
@@ -355,30 +356,22 @@ senza chiedere conferma. Le build pesanti vanno eseguite online in CI, come rich
 dall'utente; mantenere locali soltanto le verifiche leggere appropriate.
 
 
-This directory is a **vendored copy** of [Servo](https://github.com/servo/servo), currently
-tracking upstream tag `v0.5.0` (migrated from the original `v0.4.0` import — see
-`CUSTOMIZATIONS.md`'s 2026-09-04 entry for that migration's own write-up) — not a git clone,
-not a GitHub fork, not a submodule. It is the rendering engine used by the parent project's
-"embedded" distribution target (see `../.github/workflows/embedded.yml`, `SERVO_TAG`), as an
-alternative to the Tauri build.
+This repository started as a **vendored copy** of [Servo](https://github.com/servo/servo)
+(upstream tag `v0.5.0`, after an initial `v0.4.0` import) and has since diverged permanently:
+it is now Roves' own engine/shell codebase, not a tracked derivative of Servo.
 
-## Why vendored instead of forked/submoduled
+## No upstream-Servo patch tracking (since 2026-11-07)
 
-Servo's full repository is enormous (~1.3GB unpacked), almost entirely `tests/` (the Web
-Platform Tests conformance mirror + perf benchmarks — irrelevant to this project). A GitHub
-fork was tried first and abandoned: cloning/maintaining a fork of a repo this size for what
-is meant to be a handful of small, surgical UI/behavior tweaks was overkill. Downloading the
-tagged source zip and applying targeted patches locally is far cheaper to maintain.
+The user decided on 2026-11-07 that Roves no longer tracks its differences from upstream
+Servo. The former `patches/servo-v0.4.0/` and `patches/servo-v0.5.0/` series (and
+`REMOVED_PATHS.txt`) were deleted, and `test.yml` now builds directly from this checkout
+like `release.yml`. **Do not create new Servo patch files** and do not reconstruct the tree
+from a pristine Servo download. Future Servo releases are not merged as a whole; pick
+individual upstream fixes by hand only when concretely useful.
 
-## Local git repo
-
-`servo/.git` is a **standalone, local-only** git repository — no remote, not connected to
-`servo/servo` or any fork. It was `git init`-ed here purely so the customizations layered on
-top of pristine upstream Servo can be diffed/tracked locally. `servo/.gitignore` extends
-upstream's own `.gitignore` to additionally exclude upstream bulk/noise we'll never touch
-(`tests/`, `docs/`, `.devcontainer/`, project governance files) — see that file for the full
-list. Everything else (`ports/`, `components/`, `python/`, `resources/`, `support/`, build
-files, and our own `.github/` and `patches/` — see below) stays trackable.
+This does not cover forks of third-party libraries authorized above (e.g. the deno_core fork
+in `components/roves-js/vendor/deno_core`, documented by `patches/deno_core-0.413.0/` for
+upstream issues/PRs and eventual removal): keep those records accurate.
 
 ## Standing authorization: autonomous CI/push/release loop
 
@@ -429,62 +422,12 @@ Strict rules for it, every time one is provided, in any repo in this ecosystem:
 - **It expires.** When a call starts failing with 401/"Bad credentials", say so explicitly
   and ask for a fresh one — don't guess or keep retrying with a dead token.
 
-## This directory is meant to be self-contained and separable
+## Keep CUSTOMIZATIONS.md up to date
 
-Everything Servo-specific — patches, and the CI that tests them — lives inside `servo/`
-itself (`patches/`, `.github/workflows/`), not in the parent project's own `.github/` or
-repo root. The intent is that `servo/` will eventually have nothing to do with the parent
-pixi-vn-react-template project and could be lifted out wholesale (e.g. pushed as its own
-`BlackRam-oss/servo` repo) without leaving anything behind. Keep that in mind before adding
-anything Servo-related outside this directory.
-
-One consequence: **`servo/.github/workflows/servo-test-build.yml` does not currently run
-anywhere.** GitHub Actions only auto-discovers workflows under `.github/workflows/` at an
-actual repository root. Today `servo/` is just a gitignored subfolder of the parent repo —
-not its own pushed repository — so this workflow is dormant until `servo/` is pushed as a
-real top-level GitHub repo. See the note at the top of that file.
-
-**Watch out: the `v0.4.0` git tag no longer points at the pristine Servo import.** The very
-first commit in this history (message `v0.4.0`, hash starting `dd340af`) is the true,
-unmodified baseline every patch is meant to be diffed against — but the *tag* `v0.4.0` was
-later reused for this project's own 4th versioned engine release (see "Cutting a versioned
-release" below), a pure version-number coincidence between Servo's baseline and this repo's
-independent release numbering, and now points at whatever commit that release was cut from
-instead. `git diff v0.4.0 -- <file>` therefore silently gives a **wrong** (too-small) diff
-for any file touched by an earlier patch — it happened to still work once, for a file no
-prior patch had touched, which is how this went unnoticed. When generating or re-verifying a
-patch, either diff against the `dd340af` commit hash directly (not the `v0.4.0` tag), or —
-for a *new* patch's own isolated diff — just use a plain `git diff -- <file>` (working tree
-vs. `HEAD`), which is unaffected by this and is what patches 0050+ were generated with.
-
-## CRITICAL: keep CUSTOMIZATIONS.md *and* patches/ up to date
-
-**Every time you change a file under this `servo/` directory, in the same turn:**
-
-1. Add or update an entry in [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) — file touched, what
-   changed, why (prose, for humans and for the "reapply on upgrade" workflow below).
-2. Regenerate the matching patch file under `patches/servo-v<TAG>/` (one file per logical
-   change, numbered `0001-`, `0002-`, ...) — a real, machine-applicable unified diff against
-   the pristine upstream file for the current tag. Verify it applies cleanly to a fresh
-   pristine copy before moving on (`patch -p1 --dry-run < the.patch` from a clean extraction).
-
-Do this unprompted; don't wait to be asked. **The patch files are not optional documentation
-— `.github/workflows/servo-test-build.yml` (once running — see that file for why it's
-currently dormant) downloads a pristine copy of this same tag on every run and applies every
-`.patch` file under `patches/servo-v<TAG>/` to it.** If a change here isn't reflected as an
-up-to-date patch, that CI silently tests something other than what's actually in this
-directory.
-
-This two-file setup (prose changelog + real patches) is the entire point of vendoring
-instead of forking: when the Servo version gets bumped later, the workflow is "download the
-new tag's zip, extract it, read `CUSTOMIZATIONS.md` for context on intent, then try applying
-each patch from `patches/` — for any that fail to apply cleanly (upstream code moved or
-changed shape), manually re-derive that one change against the new source." Without an
-accurate, current changelog and patch set, every future upgrade means re-deriving each
-customization from scratch by re-diffing behavior against vanilla Servo — exactly the
-tedious work this setup exists to avoid. A stale or incomplete `CUSTOMIZATIONS.md`/patch is
-worse than an honest gap: if a change here isn't reflected there, fix it as soon as you
-notice, even for changes you didn't make yourself.
+For every significant change (behavior, build/bundle surface, platform support, dependencies),
+add or update an entry in [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) in the same turn: files
+touched, what changed and why. It is the prose changelog of the engine; no matching patch
+file is required anymore.
 
 ## CRITICAL: keep `roves-action` in sync with CI/CD changes here
 
@@ -503,9 +446,8 @@ change here that touches this repo's CI/CD or build/bundle surface must be refle
 `roves-action` in the same turn**, not deferred. Concretely, this includes:
 
 - A new, removed, renamed, or redefaulted `mach build` or `mach bundle` flag (the command
-  lives in `python/servo/post_build_commands.py`; see the `## CRITICAL: keep
-  CUSTOMIZATIONS.md` section above — those same changes already need a `CUSTOMIZATIONS.md`
-  entry and patch).
+  lives in `python/servo/post_build_commands.py`; those same changes already need a
+  `CUSTOMIZATIONS.md` entry).
 - A new `mach bundle` output format/target (e.g. the existing `--deb`, or anything added
   after it) — `roves-action`'s `action.yml` needs a matching input, and its `README.md`
   needs a matching example/row in its input tables.
@@ -527,7 +469,7 @@ see that project's own `CLAUDE.md` and `src/lib/settings.ts` for its current set
 (portable platforms, installer formats, Steam, content compression).
 
 **Any time you add, remove, or change the meaning of a `mach bundle` flag or default (see
-the `CUSTOMIZATIONS.md`/patches section above — those same changes already need an entry
+the `CUSTOMIZATIONS.md` section above — those same changes already need an entry
 there), ask explicitly whether it should also be reflected in `roves-packmaster`'s settings** —
 don't assume it does or doesn't; the answer depends on whether the new option is something
 a game developer using the GUI would plausibly want to control, which isn't always obvious
@@ -536,8 +478,7 @@ rather than silently skipping the question.
 
 ## CRITICAL: the wiki must always be kept up to date — for anything, not just features
 
-`CUSTOMIZATIONS.md`/`patches/` (above) capture *what changed relative to upstream Servo*, for
-the next version upgrade. That's a different audience from *someone using Roves right now* —
+`CUSTOMIZATIONS.md` (above) records *what changed and why*, for maintainers. That's a different audience from *someone using Roves right now* —
 a game developer bundling their game, or a player hitting a problem — who reads
 [`README.md`](./README.md) and the [`roves-wiki`](https://github.com/DRincs-Productions/roves-wiki)
 docs site instead, and neither of those updates automatically just because
@@ -598,9 +539,7 @@ ask rather than silently leaving `main` ahead of the last cut tag indefinitely.*
 `.github/workflows/release.yml` builds and publishes a real, versioned GitHub Release —
 distinct from `.github/workflows/test.yml`'s rolling "test" release (see that file's own
 comment for why it exists separately). It triggers on pushing a tag matching `v*.*.*` (e.g.
-`v0.1.0`), builds directly from that tagged checkout of this repo — not a pristine-download-
-plus-`patches/` reconstruction the way `test.yml` does, since this repo already tracks the
-full patched source (see the top of this file) — and publishes a portable bundle per platform
+`v0.1.0`), builds directly from that tagged checkout of this repo, and publishes a portable bundle per platform
 (Windows/macOS/Linux, no `.msi`/`.dmg`/`.deb` installers) to that Release, named
 `roves_shell_<platform>.zip`. The first cut, `v0.1.0`, is the engine shell only: no bundled
 UI/game content (`roves-packmaster` content lands in a future release).
@@ -715,93 +654,8 @@ at its `html_url`.
   with "Permission denied" (exit 126). `release.yml` does this explicitly; if this ever
   regresses (e.g. a future commit re-adds `mach` without the bit), re-run `git update-index
   --chmod=+x mach`.
-- **`mach` no longer needs `tests/wpt/tests/tools/`** (since 2026-10-14, patch 0216): the
+- **`mach` no longer needs `tests/wpt/tests/tools/`** (since 2026-10-14): the
   upstream `tidy`/`wpt` packages, `package`/`devenv` command modules and every
   `testing_commands.py` command except `test-unit`/`fmt` were deleted, so `bootstrap`,
   `build`, `bundle` and `test-unit` run from a plain checkout. The old sparse-checkout
-  workaround is gone from every workflow and from `roves-action`. Deleted upstream paths are
-  listed in `patches/servo-v0.5.0/REMOVED_PATHS.txt`; workflows that rebuild the tree from
-  pristine Servo delete them after applying the patches.
-
-## Upgrading to a newer Servo version (rough steps)
-
-**Updated 2026-09-04, after actually doing the v0.4.0 → v0.5.0 migration** (see
-`CUSTOMIZATIONS.md`'s entry of that date for the full write-up) — the steps below reflect what
-actually worked, not the untested plan that preceded it. The single biggest lesson: **do not
-try to sequentially reapply `patches/servo-v<old>/*.patch` against the new tag with
-`patch`/`git apply`.** It looks like the obvious approach, but cascades — the moment one patch
-fails to apply (upstream moved the code it targets), every later patch touching the same file
-fails too, even when its own hunk would have applied fine on its own. `post_build_commands.py`
-alone is touched by more than a dozen old patches; one early failure there poisons the rest.
-
-1. Get a full clone of the new tag (`git clone --depth 1 --branch v<NEW> https://github.com/servo/servo.git`
-   into a scratch directory, sibling to this repo — do **not** overwrite this directory
-   directly) — a real git repo, not just an extracted zip, is what step 3 needs.
-2. **Per-file 3-way merge, not sequential patch replay.** For every file `patches/servo-v<old>/`
-   touches (`grep -h "^diff --git" patches/servo-v<old>/*.patch | sed ...` to get the list),
-   run a 3-way merge with `git merge-file`: base = the pristine old-tag version of the file
-   (this repo's own root commit, `git log --oneline | tail -1` finds its hash — **not** the
-   `v<old>` tag, which gets reused for this project's own versioned releases and no longer
-   points at the pristine import, see the warning above), ours = this repo's current
-   fully-patched version of the file, theirs = the new tag's pristine version (`git show
-   v<new>:<path>` from the scratch clone). This reconciles upstream's evolution against the
-   *entire* accumulated customization for that file in one step, regardless of how many old
-   patches touched it — no cascading, and files that merge with zero conflicts need no manual
-   attention at all. Files with real conflicts (upstream and this fork's own patches touching
-   the exact same region) need hand resolution — read both sides' diffs from base, understand
-   each one's intent, reconcile by hand.
-3. **Watch for files patches never touched at all.** Two categories, both real: (a) genuinely
-   new binary/text-placeholder assets no unified diff can carry (icons, fonts, the OpenHarmony
-   symlink-placeholders — CUSTOMIZATIONS.md's "not part of any patch" mentions collect the
-   full list as of the last migration) — the 3-way merge above skips these since they have no
-   patched history to diff against; carry them over by hand (`git checkout <old-tag-commit> --
-   <path>` from this repo's own history) whenever the new tag's own copy differs. (b) Files
-   whose *only* difference is something a Windows checkout mangles that `cargo build` doesn't
-   care about but `git diff`/`patch` do: the executable bit (NTFS has no concept of it — lost
-   on every file touched by a plain recursive copy if no `rsync` is available) and git-tracked
-   symlinks (a Windows `cp` dereferences them into a plain-file copy of the target's actual
-   bytes, not the symlink's own tiny "relative path" content) both showed up as real diffs
-   against pristine that were pure copy-mechanism noise, not customizations — verify with
-   `git diff <old> <new> -- <path>` per file that looks suspiciously large-but-boring before
-   deciding it needs a patch at all.
-4. Re-reason about the default-on experimental prefs (`CUSTOMIZATIONS.md`'s "Default-on
-   experimental web platform features" entry — as of the v0.5.0 migration, folded into
-   `patches/servo-v0.5.0/0011-storage-and-origin.patch`, not its own numbered patch anymore;
-   check that file's own header comment in `CUSTOMIZATIONS.md`'s migration entry for whichever
-   patch currently owns `components/config/prefs.rs`) — **don't just mechanically reapply the
-   current field list.** It's a snapshot of one Servo version's `EXPERIMENTAL_PREFS`
-   (`ports/servoshell/prefs.rs`) and `Preferences` struct (`components/config/prefs.rs`), not
-   a fixed policy. The new tag's versions of both will likely differ — new prefs added, some
-   removed, some graduated from experimental to stable (already `true` upstream, so nothing to
-   do). For every pref that's new in either place compared to the old tag, reason about it the
-   same way that entry did: would a real video game plausibly want this (graphics/audio/input/
-   storage/UI capability), or is it dev-tooling, testing-only, or unrelated to running a game?
-   Default the former to `true` here, leave the latter alone, and update the entry's field
-   list and reasoning to match — don't leave it describing the previous version's set.
-5. Swap the new, merged tree in for this directory — same exclusion list as before (don't
-   touch `.github/`, `CUSTOMIZATIONS.md`, `patches/`, `README.md`, `TODO.md`, `AGENTS.md`, the
-   sibling project checkouts, or anything else this repo adds on top of vanilla Servo).
-6. Regenerate `patches/servo-v<new>/` from the merged result (`git diff <pristine-new-tag> --
-   <files>`, grouped however makes sense — the v0.5.0 migration grouped by
-   subsystem/directory instead of by logical change specifically so a file only ever needs
-   reconciling in one place on the *next* upgrade too) and verify each one applies cleanly to
-   a fresh pristine extraction of the new tag before moving on.
-7. Update `SERVO_TAG` in `test.yml`/`android.yml` (this directory's own, plus
-   `../.github/workflows/embedded.yml` if that's ever wired to the patched build instead of
-   upstream's stock binary — see TODO.md #1) — but only *after* step 6, since those workflows
-   look for `patches/servo-v${SERVO_TAG}/*.patch` and will fail outright if that directory
-   doesn't exist yet for the new tag.
-8. **Verify via CI too, not only a local build** — a local Windows `cargo build`/`./mach build`
-   toolchain is set up and confirmed working as of 2026-09-29 (LLVM `lld-link.exe`/`libclang`,
-   MSVC Build Tools, real GStreamer, `depot_tools`), so `./mach build --release` locally is a
-   real option for fast iteration on this one platform. It still doesn't replace CI: push to a
-   branch and either wait for `test.yml`'s own path-triggered run (touching `patches/**`
-   triggers it) or watch a manual `workflow_dispatch` run — it exercises the real
-   reconstruction path (download pristine + apply `patches/servo-v<new>/` + `mach build` +
-   `mach bundle`) end to end, across all 3 platforms, which is a stronger check than anything
-   achievable locally on one machine anyway. Don't stop at "it compiled" — a clean compile
-   doesn't catch a merge that silently dropped an import your own code needed (see the
-   migration entry's own "two real bugs" writeup) if nothing else in the file happened to also
-   reference that symbol; only an actual build catches that.
-9. Update `CUSTOMIZATIONS.md` with the new baseline version at the top, and this file's own
-   intro paragraph (which names the currently-tracked tag).
+  workaround is gone from every workflow and from `roves-action`.
