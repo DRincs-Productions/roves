@@ -768,6 +768,14 @@ fn op_blitz_focused(state: Rc<RefCell<OpState>>) -> f64 {
     document.get_focussed_node_id().map_or(NO_NODE, to_handle)
 }
 
+/// RGBA8 pixels of a deno_image `ImageBitmap`, for the probe's
+/// `GPUQueue.copyExternalImageToTexture` polyfill (deno_webgpu 0.227 lacks it).
+#[op2]
+#[buffer]
+fn op_blitz_image_bitmap_rgba(#[cppgc] bitmap: &deno_image::bitmap::ImageBitmap) -> Vec<u8> {
+    bitmap.data.borrow().to_rgba8().into_raw()
+}
+
 /// Game files reachable through `fetch` (only in `--game` mode).
 struct GameFiles(Option<Arc<game::GameContent>>);
 
@@ -788,6 +796,7 @@ deno_core::extension!(
     ops = [
         op_blitz_document_root,
         op_blitz_game_read,
+        op_blitz_image_bitmap_rgba,
         op_blitz_measure,
         op_blitz_rect_component,
         op_blitz_viewport_size,
@@ -1070,6 +1079,8 @@ fn main() {
                 deno_webstorage::deno_webstorage::init(Some(storage_dir.clone())),
                 // WebGPU (navigator.gpu) from Deno's maintained extension.
                 deno_webgpu::deno_webgpu::init(),
+                // createImageBitmap (image decoding) from Deno's maintained extension.
+                deno_image::deno_image::init(),
                 roves_blitz_v8_probe::init(),
             ],
             module_loader: game.as_ref().map(|game| game.module_loader()),

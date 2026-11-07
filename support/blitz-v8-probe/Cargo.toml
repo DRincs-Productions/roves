@@ -20,7 +20,7 @@ deno_web = "=0.291.0"
 deno_webidl = "=0.260.0"
 anyrender = "=0.14.0"
 blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
-png = "=0.17.16"
+png = "=0.18.1"
 # Same Stylo as blitz-dom 0.3.0-beta.4 (already in the graph): PropertyId for getComputedStyle.
 style = { package = "stylo", version = "=0.22.0", default-features = false }
 # Same versions as blitz-shell/blitz-traits 0.3.0-beta.4 (already in the graph): window
@@ -31,3 +31,5 @@ keyboard-types = { version = "=0.8.3", default-features = false }
 deno_webstorage = "=0.255.0"
 # deno_core 0.413-paired release: WebGPU (navigator.gpu) on wgpu 29.
 deno_webgpu = "=0.227.0"
+# deno_core 0.413-paired release: createImageBitmap/ImageBitmap (PNG/JPEG decoding).
+deno_image = "=0.36.0"

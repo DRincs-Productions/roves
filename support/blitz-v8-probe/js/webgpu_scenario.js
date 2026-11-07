@@ -2,7 +2,7 @@
 // probe's WebGPU (deno_webgpu). The probe exposes no WebGL context, so Pixi's
 // autoDetectRenderer falls back to WebGPU exactly as it would for a game.
 // Pixels are read back here, through standard WebGPU calls, for the check only.
-import { Application, Graphics } from "pixi.js";
+import { Application, Assets, Graphics, Sprite } from "pixi.js";
 
 (() => {
   "use strict";
@@ -48,6 +48,16 @@ import { Application, Graphics } from "pixi.js";
 
     result.step = "render";
     app.stage.addChild(new Graphics().rect(0, 0, 128, 128).fill(0xff0000).circle(192, 192, 40).fill(0x00ff00));
+    // An image texture: fetch(data:) -> createImageBitmap (deno_image) ->
+    // copyExternalImageToTexture (probe polyfill) -> sprite.
+    result.step = "image";
+    const imageTexture = await Assets.load("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=");
+    const sprite = new Sprite(imageTexture);
+    sprite.position.set(200, 20);
+    sprite.width = 32;
+    sprite.height = 32;
+    app.stage.addChild(sprite);
+    result.step = "render";
     app.render();
 
     result.step = "readback";
@@ -57,9 +67,10 @@ import { Application, Graphics } from "pixi.js";
     const red = await readPixel(device, texture, format, 64, 64);
     const green = await readPixel(device, texture, format, 192, 192);
     const background = await readPixel(device, texture, format, 10, 240);
+    const image = await readPixel(device, texture, format, 216, 36);
     const close = (actual, expected) => expected.every((value, index) => Math.abs(actual[index] - value) <= 3);
-    const pixels = { red, green, background };
-    if (close(red, [255, 0, 0]) && close(green, [0, 255, 0]) && close(background, [0x20, 0x40, 0x60])) {
+    const pixels = { red, green, background, image };
+    if (close(red, [255, 0, 0]) && close(green, [0, 255, 0]) && close(background, [0x20, 0x40, 0x60]) && close(image, [255, 0, 0])) {
       finish("passed", pixels);
     } else {
       finish("failed", pixels);

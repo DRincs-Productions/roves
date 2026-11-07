@@ -42,6 +42,11 @@
     expect(blob instanceof Blob && blob.size === 3, "Response.blob()");
     expect(new Uint8Array(await copy.arrayBuffer())[0] === 97, "Response.clone() keeps the body");
     expect((await Response.json({ b: 2 }).json()).b === 2, "Response.json()");
+
+    // Image decoding through deno_image: a 2x2 red PNG from a data: URL.
+    const png = await fetch("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=");
+    const bitmap = await createImageBitmap(await png.blob());
+    expect(bitmap instanceof ImageBitmap && bitmap.width === 2 && bitmap.height === 2, `createImageBitmap ${bitmap?.width}x${bitmap?.height}`);
     result.done = true;
   })().catch((error) => {
     result.failures.push(`threw: ${error?.stack ?? error}`);

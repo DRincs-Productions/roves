@@ -52,6 +52,7 @@
     op_blitz_blur,
     op_blitz_focused,
     op_blitz_game_read,
+    op_blitz_image_bitmap_rgba,
   } = core.ops;
   const {
     Event,
@@ -81,6 +82,67 @@
   const webStorage = core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
   // WebGPU from deno_webgpu (lazy ESM, as Deno loads it); `gpu` exists after initGPU.
   const webgpu = core.createLazyLoader("ext:deno_webgpu/01_webgpu.js")();
+  // createImageBitmap/ImageBitmap (PNG/JPEG decoding) from deno_image.
+  const imageApi = core.createLazyLoader("ext:deno_image/01_image.js")();
+
+  // deno_webgpu 0.227 has no GPUQueue.copyExternalImageToTexture, which PixiJS
+  // uses for every image texture. Polyfill it over writeTexture for ImageBitmap
+  // (pixels through op_blitz_image_bitmap_rgba) and ImageData sources, with
+  // origin, flipY, premultipliedAlpha and bgra destinations.
+  function installCopyExternalImage() {
+    const proto = webgpu.GPUQueue?.prototype;
+    if (!proto || typeof proto.copyExternalImageToTexture === "function") return;
+    const xy = (value) => (Array.isArray(value) ? [value[0] ?? 0, value[1] ?? 0] : [value?.x ?? 0, value?.y ?? 0]);
+    proto.copyExternalImageToTexture = function (source, destination, copySize) {
+      const image = source.source;
+      let width;
+      let pixels;
+      if (image instanceof imageApi.ImageBitmap) {
+        width = image.width;
+        pixels = op_blitz_image_bitmap_rgba(image);
+      } else if (image?.data instanceof Uint8ClampedArray && typeof image.width === "number") {
+        width = image.width;
+        pixels = image.data;
+      } else {
+        throw new TypeError("copyExternalImageToTexture: only ImageBitmap and ImageData sources are supported");
+      }
+      const [copyWidth, copyHeight] = Array.isArray(copySize)
+        ? [copySize[0], copySize[1] ?? 1]
+        : [copySize.width, copySize.height ?? 1];
+      const [originX, originY] = xy(source.origin);
+      const out = new Uint8Array(copyWidth * copyHeight * 4);
+      for (let row = 0; row < copyHeight; row++) {
+        const sourceRow = originY + (source.flipY ? copyHeight - 1 - row : row);
+        const from = (sourceRow * width + originX) * 4;
+        out.set(pixels.subarray(from, from + copyWidth * 4), row * copyWidth * 4);
+      }
+      const bgra = String(destination.texture.format).startsWith("bgra");
+      for (let index = 0; index < out.length; index += 4) {
+        if (destination.premultipliedAlpha) {
+          const alpha = out[index + 3] / 255;
+          out[index] = Math.round(out[index] * alpha);
+          out[index + 1] = Math.round(out[index + 1] * alpha);
+          out[index + 2] = Math.round(out[index + 2] * alpha);
+        }
+        if (bgra) {
+          const red = out[index];
+          out[index] = out[index + 2];
+          out[index + 2] = red;
+        }
+      }
+      this.writeTexture(
+        {
+          texture: destination.texture,
+          mipLevel: destination.mipLevel ?? 0,
+          origin: destination.origin ?? [0, 0, 0],
+          aspect: destination.aspect ?? "all",
+        },
+        out,
+        { offset: 0, bytesPerRow: copyWidth * 4, rowsPerImage: copyHeight },
+        [copyWidth, copyHeight, 1],
+      );
+    };
+  }
 
   const ELEMENT_NODE = 1;
   const TEXT_NODE = 3;
@@ -967,6 +1029,8 @@
     structuredClone,
     Storage: webStorage.Storage,
     fetch: fetchApi.fetch,
+    createImageBitmap: imageApi.createImageBitmap,
+    ImageBitmap: imageApi.ImageBitmap,
     Headers: fetchApi.Headers,
     Request: fetchApi.Request,
     Response: fetchApi.Response,
@@ -998,6 +1062,7 @@
     webgpu.initGPU();
     const gpu = webgpu.gpu;
     if (patchedGpu !== null) return patchedGpu;
+    installCopyExternalImage();
     const requestAdapter = gpu.requestAdapter.bind(gpu);
     gpu.requestAdapter = async (options) => {
       const adapter = await requestAdapter(options);
