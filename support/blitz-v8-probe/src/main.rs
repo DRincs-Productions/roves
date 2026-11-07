@@ -15,7 +15,10 @@ mod window;
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const HISTORY: &str = include_str!("history.js");
+const FETCH: &str = include_str!("fetch.js");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
+const FETCH_TEST: &str = include_str!("fetch_test.js");
+const FETCH_CHECK: &str = include_str!("fetch_check.js");
 const STORAGE_TEST: &str = include_str!("storage_test.js");
 const HISTORY_TEST: &str = include_str!("history_test.js");
 const HISTORY_CHECK: &str = include_str!("history_check.js");
@@ -765,10 +768,26 @@ fn op_blitz_focused(state: Rc<RefCell<OpState>>) -> f64 {
     document.get_focussed_node_id().map_or(NO_NODE, to_handle)
 }
 
+/// Game files reachable through `fetch` (only in `--game` mode).
+struct GameFiles(Option<Arc<game::GameContent>>);
+
+/// `fetch("game://content/...")`: the file's bytes, or an error (404 in JS).
+#[op2]
+#[buffer]
+fn op_blitz_game_read(state: &mut OpState, #[string] url: &str) -> Result<Vec<u8>, JsErrorBox> {
+    state
+        .borrow::<GameFiles>()
+        .0
+        .as_ref()
+        .and_then(|game| game.read(url))
+        .ok_or_else(|| JsErrorBox::type_error(format!("not found: {url}")))
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
         op_blitz_document_root,
+        op_blitz_game_read,
         op_blitz_measure,
         op_blitz_rect_component,
         op_blitz_viewport_size,
@@ -1063,12 +1082,19 @@ fn main() {
         runtime.op_state().borrow_mut().put(WrappedNodes::default());
         runtime.op_state().borrow_mut().put(QueryResults::default());
         runtime.op_state().borrow_mut().put(LastRect::default());
+        runtime
+            .op_state()
+            .borrow_mut()
+            .put(GameFiles(game.clone()));
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
         runtime
             .execute_script("roves-blitz-history.js", HISTORY)
             .expect("history factory should load");
+        runtime
+            .execute_script("roves-blitz-fetch.js", FETCH)
+            .expect("fetch factory should load");
         stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
@@ -1186,6 +1212,9 @@ fn main() {
 
         stage("frame_loop");
         runtime
+            .execute_script("roves-blitz-fetch-test.js", FETCH_TEST)
+            .expect("fetch test setup should run");
+        runtime
             .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
             .expect("frame test setup should run");
         let frames = frame_count();
@@ -1193,6 +1222,9 @@ fn main() {
         runtime
             .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
             .expect("frame loop checks should pass");
+        runtime
+            .execute_script("roves-blitz-fetch-check.js", FETCH_CHECK)
+            .expect("fetch checks should pass");
         runtime
             .execute_script("roves-blitz-history-check.js", HISTORY_CHECK)
             .expect("asynchronous popstate/hashchange must have fired");

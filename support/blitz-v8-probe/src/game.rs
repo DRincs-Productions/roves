@@ -58,6 +58,13 @@ impl GameContent {
         Some(full)
     }
 
+    /// Bytes of a `game://content/...` file (the probe's `fetch`), if it exists.
+    pub fn read(&self, url: &str) -> Option<Vec<u8>> {
+        let url = deno_core::url::Url::parse(url).ok()?;
+        let path = self.path_for(url.scheme(), url.host_str(), url.path())?;
+        std::fs::read(path).ok()
+    }
+
     pub fn document(self: &Arc<Self>) -> HtmlDocument {
         let html = std::fs::read_to_string(self.root.join("index.html"))
             .expect("the game directory must contain index.html");

@@ -51,6 +51,7 @@
     op_blitz_focus,
     op_blitz_blur,
     op_blitz_focused,
+    op_blitz_game_read,
   } = core.ops;
   const {
     Event,
@@ -65,6 +66,9 @@
     PromiseRejectionEvent,
   } = core.loadExtScript("ext:deno_web/02_event.js");
   const { Console } = core.loadExtScript("ext:deno_web/01_console.js");
+  const { Blob, File } = core.loadExtScript("ext:deno_web/09_file.js");
+  const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
+  const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
   const { performance, setTimeOrigin } = core.loadExtScript("ext:deno_web/15_performance.js");
@@ -873,6 +877,9 @@
     Event,
     setTimeout: timers.setTimeout,
   });
+  const createFetch = globalThis.__rovesCreateFetch;
+  delete globalThis.__rovesCreateFetch;
+  const fetchApi = createFetch({ op_blitz_game_read, Blob, TextDecoder, TextEncoder, URL, location: historyApi.location });
   // requestAnimationFrame per the HTML "run the animation frame callbacks" steps:
   // the handles are snapshotted at frame start, so callbacks requested during the
   // frame run in the next one, and a callback cancelled by an earlier one is skipped.
@@ -959,6 +966,16 @@
     URLSearchParams,
     structuredClone,
     Storage: webStorage.Storage,
+    fetch: fetchApi.fetch,
+    Headers: fetchApi.Headers,
+    Request: fetchApi.Request,
+    Response: fetchApi.Response,
+    Blob,
+    File,
+    TextDecoder,
+    TextEncoder,
+    atob,
+    btoa,
     PromiseRejectionEvent,
     History: historyApi.History,
     Location: historyApi.Location,
