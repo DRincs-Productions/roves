@@ -13,6 +13,8 @@ const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
+/// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
+const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 
 const ELEMENT_NODE: i32 = 1;
 const TEXT_NODE: i32 = 3;
@@ -261,6 +263,21 @@ fn op_blitz_set_attribute(
     Ok(())
 }
 
+#[op2]
+#[string]
+fn op_blitz_namespace(
+    state: Rc<RefCell<OpState>>,
+    #[smi] node_id: u32,
+) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, node_id)?;
+    Ok(node
+        .element_data()
+        .map(|element| element.name.ns.to_string())
+        .unwrap_or_default())
+}
+
 /// Inline style write (`element.style.x = v`); an empty value removes the
 /// declaration, like `style.removeProperty`.
 #[op2(fast)]
@@ -300,6 +317,7 @@ deno_core::extension!(
         op_blitz_get_attribute,
         op_blitz_set_attribute,
         op_blitz_set_style_property,
+        op_blitz_namespace,
     ]
 );
 
@@ -403,6 +421,42 @@ fn write_png(path: &str, pixels: &[u8]) {
     encoder.set_depth(png::BitDepth::Eight);
     let mut writer = encoder.write_header().expect("png header");
     writer.write_image_data(pixels).expect("png data");
+}
+
+/// Drives `frames` frames without a window, paced at 60 Hz in real time so timers
+/// become due: rAF callbacks, a microtask checkpoint, one non-blocking poll of the
+/// deno_core event loop (timers, op completions), then Blitz layout.
+fn drive_frames(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    frames: u32,
+) {
+    let frame_interval = std::time::Duration::from_micros(16_667);
+    let start = std::time::Instant::now();
+    for frame in 0..frames {
+        let deadline = start + frame_interval * frame;
+        if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
+            std::thread::sleep(wait);
+        }
+        {
+            deno_core::scope!(scope, runtime);
+            let function = v8::Local::new(scope, run_animation_frame);
+            let receiver = v8::undefined(scope).into();
+            function
+                .call(scope, receiver, &[])
+                .expect("animation frame should not throw past reportException");
+            scope.perform_microtask_checkpoint();
+        }
+        let waker = std::task::Waker::noop();
+        let mut context = std::task::Context::from_waker(waker);
+        if let std::task::Poll::Ready(Err(error)) =
+            runtime.poll_event_loop(&mut context, Default::default())
+        {
+            panic!("event loop error in frame {frame}: {error}");
+        }
+        resolve_layout(document);
+    }
 }
 
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
@@ -521,38 +575,27 @@ fn main() {
             .execute_script("roves-blitz-frame-test.js", FRAME_TEST)
             .expect("frame test setup should run");
         let frames = frame_count();
-        let frame_interval = std::time::Duration::from_micros(16_667);
-        let start = std::time::Instant::now();
-        for frame in 0..frames {
-            let deadline = start + frame_interval * frame;
-            if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
-                std::thread::sleep(wait);
-            }
-            let timestamp = start.elapsed().as_secs_f64() * 1000.0;
-            {
-                deno_core::scope!(scope, runtime);
-                let function = v8::Local::new(scope, &run_animation_frame);
-                let receiver = v8::undefined(scope).into();
-                let timestamp = v8::Number::new(scope, timestamp).into();
-                function
-                    .call(scope, receiver, &[timestamp])
-                    .expect("animation frame should not throw past reportException");
-                scope.perform_microtask_checkpoint();
-            }
-            let waker = std::task::Waker::noop();
-            let mut context = std::task::Context::from_waker(waker);
-            if let std::task::Poll::Ready(Err(error)) =
-                runtime.poll_event_loop(&mut context, Default::default())
-            {
-                panic!("event loop error in frame {frame}: {error}");
-            }
-            resolve_layout(&document);
-        }
+        drive_frames(&mut runtime, &document, &run_animation_frame, frames);
         runtime
             .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
             .expect("frame loop checks should pass");
         let box_rect = element_rect(&document, "box");
         assert_eq!(box_rect.2, 60.0, "rAF style writes must reach Blitz layout");
+
+        // Motion: its JS frameloop (no WAAPI here) runs on rAF + performance.now and
+        // writes inline transform/opacity. 0.1 s needs ~6 frames; 20 leave margin.
+        runtime
+            .execute_script("roves-blitz-motion-scenario.js", MOTION_SCENARIO)
+            .expect("Motion scenario should load");
+        drive_frames(&mut runtime, &document, &run_animation_frame, 20);
+        runtime
+            .execute_script(
+                "roves-blitz-motion-check.js",
+                "if (motionResult.error !== null || !motionResult.started || !motionResult.finished) \
+                 throw new Error('Motion animation did not finish: ' + JSON.stringify(motionResult));",
+            )
+            .expect("Motion animation should finish");
+        let motion_rect = element_rect(&document, "motion");
 
         resolve_layout(&document);
         let root_layout = document.borrow().root_element().final_layout;
@@ -580,6 +623,16 @@ fn main() {
             box_rect.1 + box_rect.3 / 2.0,
         );
         assert_color(box_pixel, [40, 160, 90], "rAF-animated #box background");
+        // Layout ignores transforms; paint must show the box translated by 100px
+        // at full opacity, with nothing left at its untransformed position.
+        let motion_centre = (
+            motion_rect.0 + motion_rect.2 / 2.0,
+            motion_rect.1 + motion_rect.3 / 2.0,
+        );
+        let moved_pixel = pixel(&pixels, motion_centre.0 + 100.0, motion_centre.1);
+        let origin_pixel = pixel(&pixels, motion_centre.0, motion_centre.1);
+        assert_color(moved_pixel, [90, 120, 220], "Motion-translated #motion background");
+        assert_color(origin_pixel, [24, 32, 48], "#motion must have left its layout position");
         // Text must be painted inside the boxes; insets skip the UA button border.
         let inset = |rect: (f32, f32, f32, f32), by: f32| {
             (rect.0 + by, rect.1 + by, rect.2 - 2.0 * by, rect.3 - 2.0 * by)
@@ -616,6 +669,9 @@ fn main() {
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"headless_frames_raf_microtasks_timers_style\",\"status\":\"passed\",\"frames\":{frames},\"box_width\":{}}}",
             box_rect.2
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"motion_12_38_0_animate_transform_opacity\",\"status\":\"passed\",\"moved_pixel\":{moved_pixel:?}}}"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input_wrapper_gc\",\"status\":\"not_implemented\"}}"

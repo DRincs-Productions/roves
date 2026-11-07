@@ -26,6 +26,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: support/blitz-v8-probe/js/package-lock.json
+      - name: bundle the Motion scenario (include_str! input)
+        working-directory: support/blitz-v8-probe/js
+        run: |
+          npm ci
+          npm run build
       - name: restore Cargo and build cache
         id: cache
         uses: actions/cache/restore@v4

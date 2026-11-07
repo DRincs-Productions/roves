@@ -215,7 +215,9 @@ errori `DOMException`, e clic da hit-test Blitz a listener JS in ordine capture/
 gioco. Verifiche locali Windows e due verifiche negative registrate nel README della probe.
 Aggiunti poi: render offscreen con controllo pixel e screenshot artifact, e modalità JIT-less reale in CI
 (prima la gamba `jitless` girava con JIT), e frame loop headless con rAF/microtask/timer e
-`element.style` in scrittura. Restano: shell/finestra, input reale, `classList`/`style`, Motion,
+`element.style` in scrittura, e Motion 12.38.0 `animate()` completato con transform visibile nel paint
+(API mancanti trovate: `window`, `performance`, `HTMLElement`/`SVGElement`, `NodeList`). Restano:
+shell/finestra, input reale, `classList`/`style`, Motion,
 ciclo di vita GC dei wrapper (Blitz riusa gli id dei nodi eliminati).
 
 **Sottofase precedente (storica):** sostituire l'op fixture-specifico con metodi DOM usabili dagli script;

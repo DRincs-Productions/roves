@@ -27,6 +27,7 @@
     op_blitz_get_attribute,
     op_blitz_set_attribute,
     op_blitz_set_style_property,
+    op_blitz_namespace,
   } = core.ops;
   const {
     Event,
@@ -40,6 +41,10 @@
   } = core.loadExtScript("ext:deno_web/02_event.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
+  const { performance, setTimeOrigin } = core.loadExtScript("ext:deno_web/15_performance.js");
+  setTimeOrigin();
+  const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
+  const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
 
   const ELEMENT_NODE = 1;
@@ -161,6 +166,15 @@
     return style;
   }
 
+  // Interface only: no API of the probe returns a NodeList yet, but libraries
+  // test `instanceof NodeList` (Motion's subject resolution).
+  class NodeList {
+    constructor() {
+      throw new TypeError("Illegal constructor");
+    }
+  }
+  class HTMLElement extends Element {}
+  class SVGElement extends Element {}
   class Text extends Node {}
 
   class Document extends Node {
@@ -180,6 +194,12 @@
     }
   }
 
+  function elementClass(namespace) {
+    if (namespace === HTML_NAMESPACE) return HTMLElement;
+    if (namespace === SVG_NAMESPACE) return SVGElement;
+    return Element;
+  }
+
   function wrap(handle) {
     let wrapper = wrappers.get(handle);
     if (wrapper !== undefined) return wrapper;
@@ -187,7 +207,7 @@
     const Class = handle === DOCUMENT_ID
       ? Document
       : type === ELEMENT_NODE
-      ? Element
+      ? elementClass(op_blitz_namespace(handle))
       : type === TEXT_NODE
       ? Text
       : Node;
@@ -219,7 +239,9 @@
   function cancelAnimationFrame(handle) {
     animationFrameCallbacks.delete(handle);
   }
-  function runAnimationFrame(timestamp) {
+  // The timestamp is the frame start on the performance timeline, as in browsers.
+  function runAnimationFrame() {
+    const timestamp = performance.now();
     for (const handle of [...animationFrameCallbacks.keys()]) {
       const callback = animationFrameCallbacks.get(handle);
       if (callback === undefined) continue;
@@ -244,6 +266,9 @@
   const globals = {
     Node,
     Element,
+    HTMLElement,
+    SVGElement,
+    NodeList,
     Text,
     Document,
     Event,
@@ -251,6 +276,7 @@
     ErrorEvent,
     EventTarget,
     DOMException,
+    performance,
     requestAnimationFrame,
     cancelAnimationFrame,
     setTimeout: timers.setTimeout,
@@ -262,6 +288,9 @@
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
+  for (const name of ["window", "self"]) {
+    Object.defineProperty(globalThis, name, { value: globalThis, enumerable: true, configurable: true });
+  }
 
   // The guest only sees the DOM surface. deno_core keeps its own captured view
   // for lazily loaded extension scripts, so removing these is safe.

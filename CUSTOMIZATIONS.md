@@ -19371,3 +19371,12 @@ listeners, and `core.setReportExceptionCallback` routes microtask errors the sam
 non-blocking `poll_event_loop`, layout. Guest checks cover ordering, cancellation, error
 isolation and timers; the animated box is verified in layout and pixels. Two negative runs
 (live rAF map, no microtask drain) fail with the expected messages.
+
+Fifth 2026-11-07 follow-up: Motion. `support/blitz-v8-probe/js/` pins `motion 12.38.0` and
+`esbuild 0.28.2` (package-lock committed, `dist/` and `node_modules/` ignored); `npm run build`
+bundles `motion_scenario.js`, which the probe embeds with `include_str!`, so the workflow now
+sets up Node and builds it before Cargo. The DOM layer adds `window`/`self`, deno_web's
+`performance` (time origin set at bootstrap; rAF timestamps use it), `HTMLElement`/`SVGElement`
+wrappers chosen by element namespace (new `op_blitz_namespace`) and a `NodeList` interface.
+Motion's JS frameloop animates `x`/`opacity` to completion within the driven frames; the paint
+check confirms the 100 px translation and full opacity. A run without frames fails.

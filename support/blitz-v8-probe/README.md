@@ -19,9 +19,10 @@ The selected crates are the official DioxusLabs line: `blitz-dom 0.2.1`, `blitz-
 - Parses `fixtures/layout.html`, sets a 640×360 viewport and runs Blitz's style/layout resolve.
 - Offscreen paint: `blitz_paint::paint_scene` into `anyrender_vello::VelloImageRenderer` (wgpu, GPU or the platform's software adapter). Pixel checks: `#app` and the JS-created button backgrounds have their CSS colours, and both the `#app` text line and the button's inner area (inset past its UA border) contain painted text. `ROVES_PROBE_SCREENSHOT=<path>` also writes a PNG (the CI artifact). Text needs `blitz-dom`'s `system_fonts` feature: without it no font is loaded and nothing is drawn.
 - Headless frame loop (`--exit-after-frames N`, default 8, paced at 60 Hz in real time): each frame runs `requestAnimationFrame` callbacks, performs a microtask checkpoint, polls the deno_core event loop once (deno_web timers) and resolves Blitz layout. `src/frame_test.js`/`src/frame_check.js` verify: one rAF chain step per frame with increasing timestamps; microtasks drained before the next frame; callbacks of one frame share a timestamp; a callback requested during a frame runs in a later one; a handle cancelled by an earlier callback is skipped; a throwing callback reaches a global `error` listener (deno_web `reportException`, global object made an `EventTarget`) without stopping the others; `setTimeout(…, 0)` fires. `element.style.x = v` / `setProperty` / `removeProperty` write Blitz inline declarations (reads are not implemented); the rAF-animated box reaches width 60 in layout and paint.
+- Motion 12.38.0 (the visual-novel-template version), bundled from `js/` with esbuild: `animate(element, { x: [0, 100], opacity: [0.2, 1] }, { duration: 0.1 })` runs on its JS frameloop (no `element.animate` here, so no WAAPI path) over rAF and `performance.now`, finishes within the driven frames, and the paint shows the box translated by 100 px (Blitz layout ignores transforms; paint applies them) at full opacity. APIs it needed beyond the earlier surface: `window`, `performance` (deno_web, `setTimeOrigin` at bootstrap), `HTMLElement`/`SVGElement` classes (elements are now wrapped by namespace) and a `NodeList` interface for an `instanceof` test. With explicit keyframes it did not call `getComputedStyle` or `matchMedia`, which remain missing; rAF timestamps now come from `performance.now()`.
 - `ROVES_PROBE_JITLESS=1` sets V8 `--jitless` before the runtime starts, like production's `roves-v8` `jitless` feature; the CI matrix runs both modes and checks the reported mode.
 
-Negative checks performed on 2026-11-07: disabling the wrapper cache fails with `same node must return the same wrapper`; dispatching the click with `bubbles: false` fails with `click listeners did not run in DOM order`; iterating the live rAF map instead of a snapshot fails with `rAF timestamps must increase`; skipping the microtask checkpoint and event-loop poll fails with `microtasks must drain before the next frame`; building without `system_fonts` fails with `the button text must be painted over its background`. The offscreen screenshot was inspected visually on the local Windows machine (text and boxes as expected); that is an offscreen render, not a window presented on screen.
+Negative checks performed on 2026-11-07: disabling the wrapper cache fails with `same node must return the same wrapper`; dispatching the click with `bubbles: false` fails with `click listeners did not run in DOM order`; iterating the live rAF map instead of a snapshot fails with `rAF timestamps must increase`; skipping the microtask checkpoint and event-loop poll fails with `microtasks must drain before the next frame`; driving no frames after starting Motion fails with `Motion animation did not finish`; building without `system_fonts` fails with `the button text must be painted over its background`. The offscreen screenshot was inspected visually on the local Windows machine (text and boxes as expected); that is an offscreen render, not a window presented on screen.
 
 `anyrender::render_to_buffer` with `VelloImageRenderer` panics in `anyrender_vello 0.6.0` (zero-length buffer: `range end index 2560 out of range for slice of length 0`); `anyrender_vello 0.15.0` already resizes the buffer, so the probe calls `ImageRenderer::render` on a pre-sized buffer until the Blitz line it uses moves past 0.6.0.
 
@@ -40,6 +41,8 @@ The probe does not open a browser window, inspect pixels or measure frame pacing
 ## Run
 
 ```powershell
+npm ci --prefix support/blitz-v8-probe/js
+npm run build --prefix support/blitz-v8-probe/js   # js/dist/motion-scenario.js, read by include_str!
 cargo check --manifest-path support/blitz-v8-probe/Cargo.toml --locked
 cargo run --manifest-path support/blitz-v8-probe/Cargo.toml --locked
 cargo tree --manifest-path support/blitz-v8-probe/Cargo.toml -i v8
@@ -52,7 +55,7 @@ CI entry: `.github/workflows/blitz-probe.yml` (Windows, `cargo check --locked` a
 1. Design the wrapper/node lifecycle (GC-aware freeing of Blitz nodes, see above) before adding many more DOM methods; extend the surface only as concrete games need it.
 2. Open a real `blitz-shell` window and drive the existing frame step (rAF, microtasks, timers, layout, paint) from its redraw/vsync instead of the headless timer, and route real pointer/keyboard input through the trusted-event dispatcher.
 3. Exercise a real window and paint path; capture a screenshot on a Windows CI runner.
-4. Test Motion after DOM methods and frame scheduling work. Test Pixi/WebGL separately because GPU surface sharing is not established.
+4. Motion with values read from the page (`getComputedStyle`), springs/gestures, and React-driven Motion from the template. Test Pixi/WebGL separately because GPU surface sharing is not established.
 
 ## Removal
 
