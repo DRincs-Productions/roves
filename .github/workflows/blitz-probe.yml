@@ -90,6 +90,7 @@ jobs:
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_v8_context","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"web_audio_tone_15_1_22","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
       # Discovery run on the real game: visual-novel-template's production build
       # (the game roves-action tests with) loaded with --game. Report-only: the
       # result lists script errors and how much of the page rendered.
@@ -114,6 +115,8 @@ jobs:
         run: |
           "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" --game visual-novel-template/dist > "$RUNNER_TEMP/blitz-game.log" 2>&1 || echo "probe exited with $?"
           grep -E 'ROVES_PROBE_RESULT|ROVES_PROBE_GAME_MISSING_RESOURCE|panicked' "$RUNNER_TEMP/blitz-game.log" | cut -c1-3000
+          # Mount report (fresh storage directory) as a public annotation.
+          grep -F '"check":"game_page"' "$RUNNER_TEMP/blitz-game.log" | cut -c1-900 | sed 's/^/::notice::/' || true
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
       # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
       - name: annotate probe log tail on failure

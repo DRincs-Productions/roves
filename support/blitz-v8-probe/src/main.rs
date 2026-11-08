@@ -17,6 +17,7 @@ mod window;
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const HISTORY: &str = include_str!("history.js");
 const FETCH: &str = include_str!("fetch.js");
+const WEB_AUDIO: &str = include_str!("web_audio.js");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const FETCH_TEST: &str = include_str!("fetch_test.js");
 const FETCH_CHECK: &str = include_str!("fetch_check.js");
@@ -37,6 +38,8 @@ const GC_CHECK: &str = include_str!("gc_check.js");
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 /// PixiJS 8.19.0 on WebGPU (bundled with esbuild in `js/`).
 const WEBGPU_SCENARIO: &str = include_str!("../js/dist/webgpu-scenario.js");
+// Tone.js 15.1.22 + standardized-audio-context bundled by js/package.json.
+const TONE_SCENARIO: &str = include_str!("../js/dist/tone-scenario.js");
 
 const ELEMENT_NODE: i32 = 1;
 const TEXT_NODE: i32 = 3;
@@ -1173,6 +1176,9 @@ fn main() {
         runtime
             .execute_script("roves-blitz-fetch.js", FETCH)
             .expect("fetch factory should load");
+        runtime
+            .execute_script("roves-blitz-web-audio.js", WEB_AUDIO)
+            .expect("Web Audio factory should load");
         stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
@@ -1332,6 +1338,28 @@ fn main() {
             .expect("Motion animation should finish");
         let motion_rect = element_rect(&document, "motion");
         let fading_rect = element_rect(&document, "fading");
+
+        // Tone.js bootstrap on the Web Audio bridge: context start, destination
+        // volume through native automation, `ended` delivered on the V8 thread.
+        stage("web_audio_tone");
+        runtime
+            .execute_script("roves-blitz-tone-scenario.js", TONE_SCENARIO)
+            .expect("Tone.js scenario should load");
+        let tone_status = "globalThis.__rovesToneScenario.status";
+        let mut tone_frames = 0;
+        while tone_frames < 360 && evaluate_string(&mut runtime, tone_status) == "running" {
+            drive_frames(&mut runtime, &document, &run_animation_frame, 10).await;
+            tone_frames += 10;
+        }
+        assert_eq!(
+            evaluate_string(&mut runtime, tone_status),
+            "passed",
+            "Tone.js scenario: {}",
+            evaluate_string(&mut runtime, "JSON.stringify(globalThis.__rovesToneScenario)")
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"web_audio_tone_15_1_22\",\"status\":\"passed\",\"frames\":{tone_frames}}}"
+        );
 
         resolve_layout(&document);
         let root_layout = *document.borrow().root_element().final_layout();

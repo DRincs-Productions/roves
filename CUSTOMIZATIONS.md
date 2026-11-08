@@ -1,3 +1,38 @@
+## 2026-11-08 - Blitz probe: Web Audio API for Tone.js on web-audio-api
+
+**Files touched:** `support/blitz-v8-probe/src/{audio.rs,web_audio.js,audio_test.js,dom.js,main.rs}`,
+`support/blitz-v8-probe/js/{tone_scenario.js,package.json,package-lock.json}`,
+`support/blitz-v8-probe/README.md`, `.github/workflows/blitz-probe.yml`, `TODO.md`.
+
+The template's bootstrap read `destination.volume.value` from Tone.js, which stays on its
+DummyContext without a native `AudioContext`. No Deno extension implements Web Audio, so the
+probe builds the Web API (`src/web_audio.js`) over the already pinned `web-audio-api` 1.7.0
+through private cppgc ops (`src/audio.rs`). Surface: `AudioContext` (control-thread state with
+`statechange`, `resume`/`suspend`/`close`, `currentTime`, latencies), `AudioParam` with every
+automation method, `AudioListener`, `AudioDestinationNode`, `GainNode`, `ConstantSourceNode`,
+`OscillatorNode` and the `connect`/`disconnect` overloads. That is what Tone.js 15.1.22 and
+standardized-audio-context 25.3.77 touch while starting (Destination, Transport, Listener,
+SAC's oscillator self-tests). Other node types, buffers, `decodeAudioData`,
+`OfflineAudioContext`, `PeriodicWave`, `ScriptProcessorNode` and `AudioWorklet` are absent, not
+stubbed.
+
+- Threads: the context uses the crate's `"none"` sink (real-time rendering, no device; the cpal
+  backend stays disabled). `ended` callbacks run on the crate's event thread and only push the
+  node id into a mutex-protected queue; the frame loop drains it and polls context state on the
+  V8 thread. No V8 call from audio or event threads.
+- Errors: the crate panics with the spec exception name; ops catch the panic and JS rethrows
+  `DOMException`/`RangeError`. JS validates arguments first.
+- ScriptProcessor: without `ScriptProcessorNode`/`AudioWorkletNode`, SAC's disconnect self-test
+  fails and SAC wraps `disconnect` with its own connection bookkeeping (works, extra work per
+  call). A future ScriptProcessor must deliver `audioprocess` through the same V8-thread queue.
+- Tests: `audio_test.js` now exercises the generic node/param ops and checks that a backend
+  panic becomes a JS error. `js/tone_scenario.js` bundles Tone 15.1.22 (lock entries added by hand
+  without `integrity`, as npm install was not available; regenerate online to add the hashes).
+  CI requires `web_audio_tone_15_1_22` in both Windows modes. The template's game run emits its
+  mount report (fresh storage directory) as a public annotation. Not verified locally (no local
+  build by request); the crate API signatures come from memory because registry and docs access
+  were not available in the implementing session, so CI is the first compile check.
+
 ## 2026-11-08 - Blitz probe: offline Web Audio backend check
 
 The isolated probe pins `web-audio-api` 1.7.0 with device backends disabled.

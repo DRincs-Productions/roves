@@ -1152,6 +1152,18 @@
   const createFetch = globalThis.__rovesCreateFetch;
   delete globalThis.__rovesCreateFetch;
   const fetchApi = createFetch({ op_blitz_game_read, Blob, TextDecoder, TextEncoder, URL, location: historyApi.location });
+  // Web Audio on web-audio-api (src/web_audio.js); its events are dispatched per frame.
+  const createWebAudio = globalThis.__rovesCreateWebAudio;
+  delete globalThis.__rovesCreateWebAudio;
+  const webAudio = createWebAudio({
+    ops: core.ops,
+    webidl,
+    EventTarget,
+    Event,
+    DOMException,
+    setIsTrusted,
+    setTimeout: timers.setTimeout,
+  });
   // requestAnimationFrame per the HTML "run the animation frame callbacks" steps:
   // the handles are snapshotted at frame start, so callbacks requested during the
   // frame run in the next one, and a callback cancelled by an earlier one is skipped.
@@ -1170,6 +1182,7 @@
   }
   // The timestamp is the frame start on the performance timeline, as in browsers.
   function runAnimationFrame() {
+    webAudio.dispatchPendingEvents();
     const timestamp = performance.now();
     for (const handle of [...animationFrameCallbacks.keys()]) {
       const callback = animationFrameCallbacks.get(handle);
@@ -1266,6 +1279,7 @@
     Location: historyApi.Location,
     PopStateEvent: historyApi.PopStateEvent,
     HashChangeEvent: historyApi.HashChangeEvent,
+    ...webAudio.globals,
   };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });

@@ -305,6 +305,12 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   non fare polling continuo. Nessuna automazione periodica predefinita. Un eventuale
   ricontrollo programmato deve essere esplicitamente richiesto, circoscritto e disattivato
   quando termina il motivo del controllo.
+- Nel loop attivo richiesto dall'utente, se la CI e ancora in corso e non resta altro lavoro
+  utile autorizzato, impostare un timer una tantum pari alla durata di esecuzione dell'ultima
+  CI completata con successo piu 10 minuti. Alla scadenza fare un solo controllo aggregato
+  delle run del commit e proseguire: scaricare gli artifact necessari e testarli, correggere
+  eventuali fallimenti tramite Claude e ripetere il loop. Non fare polling intermedio. Se non
+  e disponibile un timer, dichiararlo e lasciare il checkpoint con link alla run.
 - Per controllare GitHub Actions, preferire il plugin `@github` disponibile in Codex:
   leggere in una singola richiesta aggregata le run associate allo SHA e i riepiloghi dei job,
   riportando solo nome, stato ed esito. Scaricare i log soltanto per i job falliti o quando
