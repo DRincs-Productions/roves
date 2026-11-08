@@ -1,3 +1,28 @@
+## 2026-11-08 - Blitz probe: offline Web Audio backend check
+
+The isolated probe pins `web-audio-api` 1.7.0 with device backends disabled.
+The default probe run renders a constant source through a gain node and checks
+all 256 output samples. This checks the Rust audio graph on CI without an audio
+device. The Web Audio bindings for Tone.js and the game startup check are pending.
+
+## 2026-11-08 - Blitz probe CI: retry transient V8 prebuilt download failures
+
+**Files touched:** `.github/workflows/blitz-probe.yml`.
+
+Run 42470758193 failed in `cargo check` because GitHub returned HTTP 504 repeatedly while
+rusty_v8 150.4.0's build script downloaded `rusty_v8_simdutf_release_x86_64-pc-windows-msvc.lib.gz`.
+The crate has no official mirror: `RUSTY_V8_MIRROR`/`RUSTY_V8_ARCHIVE` only point to a host we
+would provide, and its Python downloader already retries 3 times internally. Changes:
+
+- `cargo check --locked` now runs up to 3 times. It retries (after 60 s, then 120 s) only
+  when the attempt's log contains both rusty_v8's "Failed to download V8 prebuilt archive"
+  and `HTTP Error 502/503/504`. Any other failure, Rust errors included, exits immediately
+  with cargo's status. `--locked`, the target dir and all later gates are unchanged.
+- Each attempt keeps its own log, `$RUNNER_TEMP/cargo-check-<n>.log`. The logs are uploaded
+  with the per-mode artifact.
+- The failure-annotation step no longer fails when `blitz-probe.log` is missing. It
+  annotates the tail of the latest cargo check log instead, or notes that no log exists.
+
 ## 2026-11-07 - Stop tracking the divergence from upstream Servo as patches
 
 Roves has permanently diverged from Servo, so the per-change patch series is retired. Deleted

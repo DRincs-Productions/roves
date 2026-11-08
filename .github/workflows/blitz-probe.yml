@@ -56,7 +56,26 @@ jobs:
         shell: bash
         env:
           CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
-        run: cargo check --locked --manifest-path support/blitz-v8-probe/Cargo.toml
+        # rusty_v8's build script downloads the prebuilt V8 from GitHub releases
+        # (no official mirror). Retry only a transient 502/503/504 of that
+        # download; any other failure (Rust errors included) exits immediately.
+        run: |
+          for attempt in 1 2 3; do
+            log="$RUNNER_TEMP/cargo-check-$attempt.log"
+            set +e
+            cargo check --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$log"
+            status=${PIPESTATUS[0]}
+            set -e
+            [ "$status" -eq 0 ] && exit 0
+            if [ "$attempt" -lt 3 ] \
+              && grep -q 'Failed to download V8 prebuilt archive' "$log" \
+              && grep -qE 'HTTP Error 50[234]' "$log"; then
+              echo "::warning::V8 prebuilt download failed with HTTP 502/503/504 (attempt $attempt); retrying"
+              sleep $((attempt * 60))
+              continue
+            fi
+            exit "$status"
+          done
       - name: run probe
         shell: bash
         env:
@@ -101,9 +120,17 @@ jobs:
         run: |
           # GitHub keeps at most 10 notice annotations per step: emit only the last
           # meaningful lines, never cargo's Compiling/Downloaded progress.
-          grep -v -E -e '^[[:space:]]*$' -e 'Compiling|Downloaded|Downloading|Checking|Finished|Locking|Updating' "$RUNNER_TEMP/blitz-probe.log" \
+          # If cargo check failed before the probe ran, show its last attempt.
+          log="$RUNNER_TEMP/blitz-probe.log"
+          [ -f "$log" ] || log=$(ls -1 "$RUNNER_TEMP"/cargo-check-*.log 2>/dev/null | sort | tail -n 1)
+          if [ -z "$log" ] || [ ! -f "$log" ]; then
+            echo "::notice::no probe or cargo check log was produced"
+            exit 0
+          fi
+          echo "::notice::tail of $(basename "$log")"
+          grep -v -E -e '^[[:space:]]*$' -e 'Compiling|Downloaded|Downloading|Checking|Finished|Locking|Updating' "$log" \
             | tail -n 9 \
-            | while IFS= read -r line; do echo "::notice::${line:0:900}"; done
+            | while IFS= read -r line; do echo "::notice::${line:0:900}"; done || true
       # Real window: the probe opens an undecorated blitz-shell window at a known
       # position; this step screenshots it and sends a real OS click at the
       # button the probe reports. The probe exits 0 once the trusted click
@@ -167,6 +194,7 @@ jobs:
         with:
           name: blitz-probe-${{ matrix.mode }}
           path: |
+            ${{ runner.temp }}/cargo-check-*.log
             ${{ runner.temp }}/blitz-probe.log
             ${{ runner.temp }}/blitz-probe.png
             ${{ runner.temp }}/blitz-window.png

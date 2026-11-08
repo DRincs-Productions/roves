@@ -10,6 +10,7 @@ use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
 use style::properties::{PropertyDeclarationId, PropertyId};
 
+mod audio;
 mod game;
 mod window;
 
@@ -1086,6 +1087,9 @@ fn stage(name: &str) {
 }
 
 fn main() {
+    if std::env::args().len() == 1 {
+        audio::check_offline_render();
+    }
     let tokio = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()

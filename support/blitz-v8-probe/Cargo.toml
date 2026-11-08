@@ -33,3 +33,5 @@ deno_webstorage = "=0.255.0"
 deno_webgpu = "=0.227.0"
 # deno_core 0.413-paired release: createImageBitmap/ImageBitmap (PNG/JPEG decoding).
 deno_image = "=0.36.0"
+# Start with offline rendering; the probe does not require an audio device in CI.
+web-audio-api = { version = "=1.7.0", default-features = false }
