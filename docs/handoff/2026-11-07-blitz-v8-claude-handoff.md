@@ -29,6 +29,39 @@ Per dettagli implementativi e fonti usare il README del probe e il handoff tecni
 
 Claude è stato incaricato di creare il probe circoscritto. Due tentativi si sono fermati per diniego degli strumenti: inizialmente accesso web/Cargo, poi scrittura nella cartella `support/blitz-v8-probe/`. **Claude non ha prodotto modifiche**; il probe attuale è stato creato e verificato direttamente da Codex. Se il workspace o i permessi disponibili a Claude consentono di lavorare, procedere con un incarico singolo e limitato; se la scrittura viene nuovamente negata, fermarsi e riferire il blocco, senza aggirare il diniego.
 
+## Stato all'8 novembre (handoff corrente, Claude)
+
+- **Git:** `main` pubblicato fino a `71eb318aa71`; run di quel commit tutte verdi (blitz-probe
+  `42419238504`, test.yml `42419238573`, android `42419238472`). Il commit `d40009db20c`
+  (MutationObserver e superficie DOM per React/Vite) viene pubblicato con questo handoff, quindi
+  va controllata la sua CI. I submodule `roves-action` e `roves-wiki` risultano modificati da prima e
+  non vanno inclusi per errore.
+- **Decisioni dell'utente:**
+  - nessun rilascio: si finisce lo sviluppo;
+  - nessuna build locale, nemmeno della probe; si può però scaricare ed eseguire ciò che produce la CI;
+  - i test li fa Claude quando possibile;
+  - per WebGPU usare le estensioni Deno, con nel TODO l'opzione di passare a Deno per la presentazione.
+- **CI per commit (test.yml):** oltre alla test page, la gamba Windows portable impacchetta
+  DRincs-Productions/visual-novel-template e pubblica `visual-novel-template_windows.zip` sulla
+  release rolling `test`, insieme all'artifact omonimo. Scaricato ed estratto l'8 novembre in `C:oves-vnisual-novel-template-windows` (`play.exe`; l'URL diretto della release dava 504, funziona l'endpoint API dell'asset con `Accept: application/octet-stream`); avviato, il processo resta vivo ma il rendering non è verificato (finestra non in primo piano nello screenshot). Il pacchetto gira sul motore di produzione
+  attuale (Servo + V8), non su Blitz. Va scaricato in `C:\roves-vn` e avviato. Il download
+  diretto della release ha restituito una volta un 504 di GitHub; in quel caso riprovare.
+- **Coda di test locale** in `C:\roves-probe`: exe CI della probe, `1-finestra-clic.cmd`,
+  `2-webgpu-pixi.cmd`, `3-jitless.cmd`, `LEGGIMI.txt`. Tutti e tre sono passati in locale (GTX 1050, scala 100%).
+- **Scoperta `--game`:** blitz-probe.yml esegue `--game visual-novel-template/dist` in sola
+  segnalazione. Al primo giro pagina e modulo si caricavano, mancava `MutationObserver` e
+  `#root` restava vuoto. `d40009db20c` aggiunge MutationObserver e altre API di avvio
+  (readyState, DOMContentLoaded/load, MessageChannel, requestIdleCallback, commenti, cloneNode).
+- **Prossimo passo concreto:**
+  1. leggere il report `game_page` della nuova run blitz-probe, dal log o dall'artifact `game` (serve un PAT inline);
+  2. implementare le API mancanti successive, ripetendo finché React non monta `#root`;
+  3. dopo l'avvio di React, nell'ordine: presentazione del canvas WebGPU nella finestra, Canvas 2D per il testo Pixi, Web Audio per Tone.js (candidato crate `web-audio-api`), scroll/wheel/IME/touch, loop finestra integrato con tokio, snapshot di avvio (gli exe senza snapshot leggono il JS delle estensioni dai percorsi crate assoluti; per questo la CI usa `CARGO_HOME=C:/roves-cargo` e in locale esiste una junction).
+- **Issue upstream ancora da aprire** (il PAT è in sola lettura e `gh` non è installato):
+  - deno_web 0.291.0, `dispatchEvent` senza listener sul target salta gli antenati;
+  - deno_webgpu 0.227.0, un secondo GPUDevice porta all'OOM in `createTexture`.
+
+  Entrambe sono descritte nel TODO.
+
 ## Stato a fine sessione (7 novembre, Claude)
 
 Pubblicato e verde in CI Windows (normale e JIT-less) fino al commit della correzione dispatch,
