@@ -1,3 +1,38 @@
+## 2026-11-08 - Blitz probe: minimal persistent IndexedDB for the template's save store
+
+**Files touched:** `support/blitz-v8-probe/src/{indexeddb.js,indexeddb_test.js,dom.js,main.rs}`,
+`.github/workflows/blitz-probe.yml`, `support/blitz-v8-probe/README.md`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+With `AbortController` fixed (CI 42528533765 green, normal and JITless), the Windows artifact
+against the original visual-novel-template (`bb9ea77910dda74aced20b001131c8daa22e7cfc`, fresh
+storage) rendered its error screen because `indexedDB` is undefined in `narration-hooks`.
+**Reuse evaluation:** deno_core 0.413 / deno_web 0.291 / deno_webstorage 0.255 have no IndexedDB;
+`deno_kv` is the privileged `Deno.openKv`; `fake-indexeddb` is memory-only (no durable adapter);
+`indexeddbshim` needs a WebSQL backend; `idb`/`localforage` wrap a native IndexedDB. Rejected.
+A first general-purpose shim (1,489 lines) was cut after review to the calls the template's
+bundle (`narration-hooks-LJVJnQ7D.js`) makes: `indexedDB.open(name[, version])` with
+`onupgradeneeded`/`onsuccess`/`onerror`, `objectStoreNames.contains`, `createObjectStore` with an
+in-line `keyPath` and `autoIncrement`, `createIndex(name, keyPath, { unique })`,
+`db.transaction(stores, mode).objectStore()`, store `put(value)`/`get(key)`/`delete(key)`/
+`openCursor()`, `index(name).openCursor(null, direction)`, cursor `value`/`continue()`.
+Everything else is absent or throws `NotSupportedError` (out-of-line keys, key ranges, `add`,
+`getAll`, `count`, `clear`, `deleteDatabase`, `abort`, `versionchange`/`blocked`, array/binary
+keys, dotted key paths, `multiEntry`, unique cursor directions). Values use V8's structured
+serializer (`core.serialize`/`deserialize`, `forStorage`), stored base64 one record per entry in
+the existing SQLite-backed `localStorage` (`__roves_idb:1:<db>/<store>/<key>`) plus a JSON schema
+entry. Each `put`/`delete` is written when its request runs: transactions are neither atomic nor
+rolled back. Requests run in creation order, one deno_web timer task each, on the V8 thread;
+events fire on the request only. Storage limits are not hidden (README): deno_webstorage's
+10 MiB origin quota is shared with the game's own `localStorage` (failures surface as
+`QuotaExceededError` on the request), `localStorage.clear()` deletes the saves, and the records
+are visible through `localStorage.key()`. Whether the template's save records fit the quota has
+not been measured. No new dependency, no `Deno.*` exposure, template unchanged. Test
+`src/indexeddb_test.js` (schema upgrade and indexes, generated keys, get/delete, ordered
+store/index cursors with consumer-side pagination, reopen without a version) prints
+`"indexed_db_runs"`; the CI `--window` step, a second process on the same storage directory,
+requires `"indexed_db_runs":2`. Not compiled or run locally.
+
 ## 2026-11-08 - Blitz probe: AbortController/AbortSignal from deno_web
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,

@@ -1537,7 +1537,7 @@
   const document = wrap(DOCUMENT_ID);
   let documentReadyState = "loading";
 
-  // Single-document History/Location (src/history.js) and deno_webstorage.
+  // Single-document History/Location (src/history.js).
   const createHistory = globalThis.__rovesCreateHistory;
   delete globalThis.__rovesCreateHistory;
   const historyApi = createHistory(globalThis, {
@@ -1558,6 +1558,22 @@
     webidl,
     EventTarget,
     Event,
+    DOMException,
+    setIsTrusted,
+    setTimeout: timers.setTimeout,
+  });
+  // IndexedDB subset (src/indexeddb.js) persisted through deno_webstorage's
+  // localStorage; V8 structured serialization stores the values.
+  const createIndexedDB = globalThis.__rovesCreateIndexedDB;
+  delete globalThis.__rovesCreateIndexedDB;
+  const indexedDbApi = createIndexedDB({
+    storage: () => webStorage.localStorage(),
+    serialize: core.serialize,
+    deserialize: core.deserialize,
+    atob,
+    btoa,
+    Event,
+    EventTarget,
     DOMException,
     setIsTrusted,
     setTimeout: timers.setTimeout,
@@ -1688,6 +1704,7 @@
     PopStateEvent: historyApi.PopStateEvent,
     HashChangeEvent: historyApi.HashChangeEvent,
     ...webAudio.globals,
+    ...indexedDbApi.globals,
   };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
@@ -1747,6 +1764,7 @@
     location: { get: () => historyApi.location, set: (url) => historyApi.location.assign(url), enumerable: true, configurable: true },
     localStorage: { get: () => webStorage.localStorage(), enumerable: true, configurable: true },
     sessionStorage: { get: () => webStorage.sessionStorage(), enumerable: true, configurable: true },
+    indexedDB: { value: indexedDbApi.indexedDB, enumerable: true, configurable: true },
     innerWidth: { get: () => op_blitz_viewport_size(0), enumerable: true, configurable: true },
     innerHeight: { get: () => op_blitz_viewport_size(1), enumerable: true, configurable: true },
     devicePixelRatio: { value: 1, enumerable: true, configurable: true },

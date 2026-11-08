@@ -188,9 +188,10 @@ jobs:
           Start-Sleep -Milliseconds 100
           [RovesInput]::mouse_event(0x0004, 0, 0, 0, [UIntPtr]::Zero)
           if (-not $process.WaitForExit(60000)) { $process.Kill(); throw 'the window run timed out' }
-          Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY|window_presentation_real_input|storage_history' | ForEach-Object { $_.Line }
-          # Second process on the same storage directory: localStorage persisted.
+          Select-String -Path $log -Pattern 'ROVES_PROBE_WINDOW_READY|window_presentation_real_input|storage_history|indexed_db' | ForEach-Object { $_.Line }
+          # Second process on the same storage directory: localStorage and IndexedDB persisted.
           if (-not (Select-String -Path $log -Pattern '"local_storage_runs":2' -Quiet)) { throw 'localStorage did not persist across processes' }
+          if (-not (Select-String -Path $log -Pattern '"indexed_db_runs":2' -Quiet)) { throw 'IndexedDB did not persist across processes' }
           if ($process.ExitCode -ne 0) {
             Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
             throw "window mode failed with exit code $($process.ExitCode)"

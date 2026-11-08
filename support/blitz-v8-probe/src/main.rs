@@ -18,6 +18,8 @@ const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const HISTORY: &str = include_str!("history.js");
 const FETCH: &str = include_str!("fetch.js");
 const WEB_AUDIO: &str = include_str!("web_audio.js");
+const INDEXED_DB: &str = include_str!("indexeddb.js");
+const INDEXED_DB_TEST: &str = include_str!("indexeddb_test.js");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const FETCH_TEST: &str = include_str!("fetch_test.js");
 const FETCH_CHECK: &str = include_str!("fetch_check.js");
@@ -1228,6 +1230,9 @@ fn main() {
         runtime
             .execute_script("roves-blitz-web-audio.js", WEB_AUDIO)
             .expect("Web Audio factory should load");
+        runtime
+            .execute_script("roves-blitz-indexeddb.js", INDEXED_DB)
+            .expect("IndexedDB factory should load");
         stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
@@ -1371,6 +1376,28 @@ fn main() {
             .expect("asynchronous popstate/hashchange must have fired");
         let box_rect = element_rect(&document, "box");
         assert_eq!(box_rect.2, 60.0, "rAF style writes must reach Blitz layout");
+
+        // IndexedDB requests complete from timer tasks: drive frames until the
+        // asynchronous test chain reports done (bounded), then check its result.
+        stage("indexed_db");
+        runtime
+            .execute_script("roves-blitz-indexeddb-test.js", INDEXED_DB_TEST)
+            .expect("IndexedDB test setup should run");
+        for _ in 0..150 {
+            if evaluate_string(&mut runtime, "String(indexedDbResult.done)") == "true" {
+                break;
+            }
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2).await;
+        }
+        let indexed_db_runs = evaluate_string(
+            &mut runtime,
+            "if (!indexedDbResult.done) throw new Error('IndexedDB tests did not finish at ' + indexedDbResult.step); \
+             if (indexedDbResult.failures.length > 0) throw new Error('IndexedDB: ' + indexedDbResult.failures.join(' | ')); \
+             String(indexedDbResult.runs)",
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"indexed_db\",\"status\":\"passed\",\"indexed_db_runs\":{indexed_db_runs}}}"
+        );
 
         // ResizeObserver: observations are processed by runAnimationFrame after
         // the rAF callbacks; each phase checks the frames driven before it.
