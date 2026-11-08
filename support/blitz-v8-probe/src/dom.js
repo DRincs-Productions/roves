@@ -1435,6 +1435,12 @@
       return context;
     }
   }
+  // Nominal interface only: the single-document policy creates no nested browsing
+  // context, so there is no contentWindow/contentDocument/src navigation. It exists
+  // so `x instanceof HTMLIFrameElement` works (React's getActiveElementDeep walks
+  // document.activeElement while it is an iframe; with no contentWindow its
+  // same-origin check throws, is caught, and the walk stops at the element).
+  class HTMLIFrameElement extends HTMLElement {}
   class Text extends Node {}
   class Comment extends Node {}
 
@@ -1490,7 +1496,9 @@
   }
 
   function elementClass(namespace, localName) {
-    if (namespace === HTML_NAMESPACE) return localName === "canvas" ? HTMLCanvasElement : HTMLElement;
+    if (namespace === HTML_NAMESPACE) {
+      return localName === "canvas" ? HTMLCanvasElement : localName === "iframe" ? HTMLIFrameElement : HTMLElement;
+    }
     if (namespace === SVG_NAMESPACE) return SVGElement;
     return Element;
   }
@@ -1610,6 +1618,7 @@
     HTMLElement,
     SVGElement,
     HTMLCanvasElement,
+    HTMLIFrameElement,
     NodeList,
     HTMLCollection,
     DOMTokenList,

@@ -1,3 +1,32 @@
+## 2026-11-08 - Blitz probe: nominal `HTMLIFrameElement` without a browsing context
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+After the Web Audio nodes, CI run 42523261576 (and its artifact run locally) stopped the original
+visual-novel-template with `TypeError: Right-hand side of 'instanceof' is not an object`
+(`index-mzyslO5I.js:27:23687`, in `zr()`). The bundled code is React DOM's
+`getActiveElementDeep`: `for (var t = Fr(e.document); t instanceof e.HTMLIFrameElement;) ...`,
+where `Fr` returns `document.activeElement || document.body` and `e` is the global. The probe had
+no `HTMLIFrameElement` global. `dom.js` now wraps HTML-namespace element nodes whose local name is
+`iframe` (parsed or `createElement("iframe"/"IFRAME")`) as a new `HTMLIFrameElement extends
+HTMLElement`, exported as a global; every other element keeps its class (`<iframe>` inside SVG
+stays an `SVGElement`). Tag name casing is unchanged (`tagName` `IFRAME`, `localName` `iframe`).
+
+**Implicit technical decision for the original template: this is a nominal interface with no
+browsing context.** Under the single-document policy the probe creates no nested document or
+window, so the class has no members of its own — no `contentWindow`, `contentDocument`, `src`
+reflection or navigation, and no fake frame objects. What `Fr` can return: `activeElement` is the
+focused element (only focusable ones: form controls, `a[href]`, `[tabindex]`) or `body`, so with
+the template's markup it is not an iframe and the loop exits immediately. If a game did focus an
+`<iframe tabindex>`, React's same-origin test reads `element.contentWindow.location.href`, throws
+`TypeError` on the missing property, catches it and stops at the iframe element: no nested
+document is ever entered. `dom_api_test.js` covers the global and prototype chain, `instanceof`
+for parsed/created iframes and for `div`/`canvas`/`body`/`html`/document/text/SVG `iframe` nodes,
+casing, absence of browsing-context members, illegal constructor, and the exact React loop with
+nothing focused, a focused `div`, and a focused iframe. No library involved: the DOM classes are
+the probe's own wrappers over Blitz. Not run locally (no local build; Node not authorized).
+
 ## 2026-11-08 - Blitz probe: ChannelMerger, ChannelSplitter and native StereoPanner
 
 **Files touched:** `support/blitz-v8-probe/src/{audio.rs,web_audio.js,audio_test.js}`,

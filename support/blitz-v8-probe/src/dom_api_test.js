@@ -110,6 +110,67 @@
   check(document.readyState === "loading" && document.defaultView === globalThis, "readyState / defaultView");
   check(typeof MessageChannel === "function" && typeof requestIdleCallback === "function", "MessageChannel / requestIdleCallback");
 
+  // HTMLIFrameElement: nominal interface only (single-document policy, no nested
+  // browsing context). React's getActiveElementDeep tests activeElement against it.
+  check(typeof globalThis.HTMLIFrameElement === "function" && HTMLIFrameElement.prototype instanceof HTMLElement,
+    "HTMLIFrameElement global extends HTMLElement");
+  const created = document.createElement("IFRAME");
+  check(created instanceof HTMLIFrameElement && created instanceof HTMLElement && created.tagName === "IFRAME"
+    && created.localName === "iframe" && created.nodeName === "IFRAME", "createElement('IFRAME') is an HTMLIFrameElement");
+  check(document.createElement("iframe") instanceof HTMLIFrameElement, "createElement('iframe') is an HTMLIFrameElement");
+  // A visible container, since focus is exercised below; no src, so nothing is fetched.
+  const frames = body.appendChild(document.createElement("div"));
+  frames.innerHTML = '<iframe id="frame" tabindex="0"></iframe><div id="plain" tabindex="0"></div><canvas></canvas><svg><iframe></iframe></svg>';
+  const parsedFrame = frames.querySelector("#frame");
+  const plain = frames.querySelector("#plain");
+  check(parsedFrame instanceof HTMLIFrameElement && parsedFrame.tagName === "IFRAME", "parsed <iframe> is an HTMLIFrameElement");
+  check(!(plain instanceof HTMLIFrameElement) && !(frames instanceof HTMLIFrameElement)
+    && !(frames.querySelector("canvas") instanceof HTMLIFrameElement) && !(body instanceof HTMLIFrameElement)
+    && !(document.documentElement instanceof HTMLIFrameElement) && !(document instanceof HTMLIFrameElement)
+    && !(document.createTextNode("iframe") instanceof HTMLIFrameElement), "other nodes are not HTMLIFrameElement");
+  // <iframe> is not an HTML breakout tag, so inside <svg> it stays an SVG-namespace element.
+  const svgFrame = frames.querySelector("svg").firstChild;
+  check(svgFrame !== null && svgFrame.namespaceURI === "http://www.w3.org/2000/svg" && svgFrame.tagName === "iframe"
+    && svgFrame instanceof SVGElement && !(svgFrame instanceof HTMLIFrameElement), "only HTML-namespace iframes get the brand");
+  check(!("contentWindow" in parsedFrame) && !("contentDocument" in parsedFrame) && !("src" in parsedFrame),
+    "no browsing-context API on HTMLIFrameElement");
+  check(parsedFrame.ownerDocument === document && document.defaultView === globalThis, "the iframe belongs to the single document");
+  let illegal = null;
+  try {
+    new HTMLIFrameElement();
+  } catch (error) {
+    illegal = error;
+  }
+  check(illegal instanceof TypeError, "HTMLIFrameElement is not constructible");
+  // The template loop (React getActiveElementDeep, `zr` in the bundle) with
+  // `Fr` = activeElement || body; `win` is the global, as `e` in the bundle.
+  const activeDeep = () => {
+    const getActive = (doc) => doc.activeElement || doc.body;
+    let win = globalThis;
+    let element = getActive(win.document);
+    while (element instanceof win.HTMLIFrameElement) {
+      let sameOrigin;
+      try {
+        sameOrigin = typeof element.contentWindow.location.href === "string";
+      } catch {
+        sameOrigin = false;
+      }
+      if (!sameOrigin) break;
+      win = element.contentWindow;
+      element = getActive(win.document);
+    }
+    return element;
+  };
+  check(document.activeElement === body && activeDeep() === body, "activeElement deep: body when nothing is focused");
+  plain.focus();
+  check(document.activeElement === plain && activeDeep() === plain, "activeElement deep: focused non-iframe element");
+  parsedFrame.focus();
+  check(document.activeElement === parsedFrame && activeDeep() === parsedFrame,
+    "activeElement deep stops at a focused iframe (no nested document)");
+  parsedFrame.blur();
+  check(document.activeElement === body, "blur returns activeElement to body");
+  frames.remove();
+
   // getElementsByTagName: live HTMLCollection (Motion 12 calls it during init).
   host.innerHTML = '<div id="tags"><p id="p1">a</p><span><p name="second">b</p></span><svg><foreignObject></foreignObject></svg></div>';
   const tags = host.querySelector("#tags");
