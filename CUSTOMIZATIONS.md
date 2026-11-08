@@ -1,3 +1,45 @@
+## 2026-11-09 - Blitz probe: viewport and element scrolling on Blitz's scroll state
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,scroll_test.js}`,
+`.github/workflows/blitz-probe.yml`, `support/blitz-v8-probe/README.md`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The next known blocker of the visual-novel-template on the probe is
+`ReferenceError: scrollTo is not defined` in the router's scroll restoration
+(`narration-hooks-LJVJnQ7D.js`): global `scrollTo({top, left, behavior})` and the reset to 0,0,
+`element.scrollTo({top, behavior: "smooth"})` on the scroll-area viewport to centre animated
+text (`rect.top - viewportRect.top + scrollTop - clientHeight / 2`), reads of `scrollX/Y`,
+`scrollTop/Left`, `scrollWidth/Height`, `clientWidth/Height`, and `scrollIntoView(options)` for
+hash navigation.
+
+**Reuse decision:** the pinned `blitz-dom 0.3.0-beta.4` (the probe is on the 0.3 beta line, not
+0.2.1) already owns scrolling state: `BaseDocument::viewport_scroll`/`set_viewport_scroll` and
+each node's `scroll_offset`; Taffy's `Layout::scroll_width`/`scroll_height` give the scroll
+extent Blitz itself uses for wheel scrolling. Three narrow ops read and write that state
+(`op_blitz_scroll_metrics` stores scrollLeft/Top, scroll and client sizes, client border and
+returns the scrolling axes; `op_blitz_scroll_component` reads them back; `op_blitz_scroll_to`
+clamps and writes). No new dependency and no scroll engine of our own. The ops hold the document
+`RefCell` only for the synchronous call and never call into V8, so there is no reentry from a
+Blitz borrow.
+
+`dom.js` adds `window.scroll/scrollTo/scrollBy`, `scrollX/Y`, `pageX/YOffset`,
+`Element.scroll/scrollTo/scrollBy` (`ScrollToOptions` with omitted axes kept, or `(x, y)`;
+`TypeError` for a single non-object argument or an invalid `behavior`; non-finite values become
+0), `scrollLeft/Top` (read/write), `scrollWidth/Height`, `clientWidth/Height/Left/Top`,
+`document.scrollingElement`, `Node.parentElement` and `scrollIntoView` (boolean or
+`block`/`inline` `start|center|end|nearest`, scroll-container ancestors inner to outer, then the
+viewport). The root element is the viewport. Elements scroll only on axes whose computed
+overflow is not `visible`/`clip`. `getBoundingClientRect` now reads Blitz's rect with the viewport
+scroll and the element's own offset zeroed and then subtracts the viewport scroll, so it follows
+CSSOM regardless of which offsets Blitz's rect already applies.
+
+Limits: `behavior: "smooth"` is applied immediately (no animation in Blitz); no `scroll` events;
+no snapping, anchoring, scroll margins/padding, writing modes or RTL; wheel input in the window
+is still not forwarded. `src/scroll_test.js` runs as stage `scroll` and CI requires
+`scroll_viewport_and_elements`. Not compiled or run locally: the crate source, `node --check` and
+`cargo fmt` were not available in the session, so field and method names are from memory and
+CI is the first check.
+
 ## 2026-11-08 - Blitz probe: minimal persistent IndexedDB for the template's save store
 
 **Files touched:** `support/blitz-v8-probe/src/{indexeddb.js,indexeddb_test.js,dom.js,main.rs}`,

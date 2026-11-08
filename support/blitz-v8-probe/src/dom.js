@@ -49,6 +49,9 @@
     op_blitz_box_sizes,
     op_blitz_rect_component,
     op_blitz_viewport_size,
+    op_blitz_scroll_metrics,
+    op_blitz_scroll_component,
+    op_blitz_scroll_to,
     op_blitz_focus,
     op_blitz_blur,
     op_blitz_focused,
@@ -246,6 +249,10 @@
     get parentNode() {
       const parent = op_blitz_parent(handleOf(this, "parentNode"));
       return parent < 0 ? null : wrap(parent);
+    }
+    get parentElement() {
+      const parent = this.parentNode;
+      return parent instanceof Element ? parent : null;
     }
     // No shadow trees exist yet, so the `composed` option has no effect.
     getRootNode() {
@@ -454,6 +461,94 @@
       op_blitz_rect_component(3),
     );
   }
+
+  // CSSOM View scrolling over Blitz's own scroll state (viewport scroll and per-node
+  // scroll offsets, see op_blitz_scroll_*). The root element stands for the
+  // viewport. Offsets are clamped by Rust to 0..max per axis; elements whose
+  // overflow is visible/clip do not scroll. `behavior: "smooth"` is accepted and
+  // applied immediately (no animation). No `scroll` events are dispatched yet.
+  const SCROLL_LEFT = 0, SCROLL_TOP = 1, SCROLL_WIDTH = 2, SCROLL_HEIGHT = 3;
+  const CLIENT_WIDTH = 4, CLIENT_HEIGHT = 5, CLIENT_LEFT = 6, CLIENT_TOP = 7;
+  function scrollMetric(element, index, method) {
+    op_blitz_scroll_metrics(handleOf(element, method));
+    return op_blitz_scroll_component(index);
+  }
+  // WebIDL unrestricted double, then CSSOM "normalize non-finite values" (-> 0).
+  function finiteOrZero(value) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : 0;
+  }
+  const SCROLL_BEHAVIORS = ["auto", "instant", "smooth"];
+  function enumMember(value, allowed, what) {
+    const text = String(value);
+    if (!allowed.includes(text)) {
+      throw new TypeError(`The provided value '${text}' is not a valid enum value of type ${what}.`);
+    }
+    return text;
+  }
+  // scroll()/scrollTo()/scrollBy() overloads: (ScrollToOptions?) or (x, y).
+  // Returns [left, top] with NaN for an axis the options leave unchanged.
+  function scrollTarget(args, method) {
+    if (args.length >= 2) return [finiteOrZero(args[0]), finiteOrZero(args[1])];
+    const options = args[0];
+    if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+      throw new TypeError(`Failed to execute '${method}': The provided value is not of type 'ScrollToOptions'.`);
+    }
+    if (options?.behavior !== undefined) enumMember(options.behavior, SCROLL_BEHAVIORS, "ScrollBehavior");
+    return [
+      options?.left === undefined ? NaN : finiteOrZero(options.left),
+      options?.top === undefined ? NaN : finiteOrZero(options.top),
+    ];
+  }
+  function scrollElement(element, args, method, relative) {
+    const handle = handleOf(element, method);
+    let [left, top] = scrollTarget(args, method);
+    if (relative) {
+      op_blitz_scroll_metrics(handle);
+      left = Number.isNaN(left) ? NaN : op_blitz_scroll_component(SCROLL_LEFT) + left;
+      top = Number.isNaN(top) ? NaN : op_blitz_scroll_component(SCROLL_TOP) + top;
+    }
+    op_blitz_scroll_to(handle, left, top);
+  }
+  // scrollIntoView alignment of [start, start + size) inside [areaStart, areaStart
+  // + areaSize): the scroll delta for "start" | "center" | "end" | "nearest".
+  function alignDelta(start, size, areaStart, areaSize, mode) {
+    const end = start + size;
+    const areaEnd = areaStart + areaSize;
+    switch (mode) {
+      case "start": return start - areaStart;
+      case "end": return end - areaEnd;
+      case "center": return start + size / 2 - (areaStart + areaSize / 2);
+      default:
+        // "nearest": nothing when fully inside or covering the area; otherwise the
+        // edge that needs the smaller move (CSSOM View's case analysis).
+        if ((start >= areaStart && end <= areaEnd) || (start < areaStart && end > areaEnd)) return 0;
+        if (start < areaStart) return size <= areaSize ? start - areaStart : end - areaEnd;
+        return size <= areaSize ? end - areaEnd : start - areaStart;
+    }
+  }
+  // Aligns `element` inside one scrolling box (the viewport for the root element),
+  // measuring after the previous (inner) boxes have scrolled.
+  function scrollIntoBox(element, box, isViewport, block, inline) {
+    const handle = handleOf(box, "scrollIntoView");
+    if (op_blitz_scroll_metrics(handle) === 0) return;
+    const left = op_blitz_scroll_component(SCROLL_LEFT);
+    const top = op_blitz_scroll_component(SCROLL_TOP);
+    const borderLeft = op_blitz_scroll_component(CLIENT_LEFT);
+    const borderTop = op_blitz_scroll_component(CLIENT_TOP);
+    const areaWidth = op_blitz_scroll_component(CLIENT_WIDTH);
+    const areaHeight = op_blitz_scroll_component(CLIENT_HEIGHT);
+    const target = element.getBoundingClientRect();
+    const boxRect = isViewport ? null : box.getBoundingClientRect();
+    const areaLeft = isViewport ? 0 : boxRect.x + borderLeft;
+    const areaTop = isViewport ? 0 : boxRect.y + borderTop;
+    op_blitz_scroll_to(
+      handle,
+      left + alignDelta(target.x, target.width, areaLeft, areaWidth, inline),
+      top + alignDelta(target.y, target.height, areaTop, areaHeight, block),
+    );
+  }
+  const SCROLL_ALIGNMENTS = ["start", "center", "end", "nearest"];
 
   // HTML focusability, reduced to the cases the probe handles.
   const FORM_CONTROLS = ["button", "input", "select", "textarea"];
@@ -755,6 +850,65 @@
     }
     get offsetHeight() {
       return Math.round(measure(this, true).height);
+    }
+    get scrollLeft() {
+      return scrollMetric(this, SCROLL_LEFT, "scrollLeft");
+    }
+    set scrollLeft(value) {
+      op_blitz_scroll_to(handleOf(this, "scrollLeft"), finiteOrZero(value), NaN);
+    }
+    get scrollTop() {
+      return scrollMetric(this, SCROLL_TOP, "scrollTop");
+    }
+    set scrollTop(value) {
+      op_blitz_scroll_to(handleOf(this, "scrollTop"), NaN, finiteOrZero(value));
+    }
+    get scrollWidth() {
+      return Math.round(scrollMetric(this, SCROLL_WIDTH, "scrollWidth"));
+    }
+    get scrollHeight() {
+      return Math.round(scrollMetric(this, SCROLL_HEIGHT, "scrollHeight"));
+    }
+    get clientWidth() {
+      return Math.round(scrollMetric(this, CLIENT_WIDTH, "clientWidth"));
+    }
+    get clientHeight() {
+      return Math.round(scrollMetric(this, CLIENT_HEIGHT, "clientHeight"));
+    }
+    get clientLeft() {
+      return Math.round(scrollMetric(this, CLIENT_LEFT, "clientLeft"));
+    }
+    get clientTop() {
+      return Math.round(scrollMetric(this, CLIENT_TOP, "clientTop"));
+    }
+    scroll(...args) {
+      scrollElement(this, args, "scroll", false);
+    }
+    scrollTo(...args) {
+      scrollElement(this, args, "scrollTo", false);
+    }
+    scrollBy(...args) {
+      scrollElement(this, args, "scrollBy", true);
+    }
+    // block/inline alignment through every scroll-container ancestor, inner to
+    // outer, then the viewport. Detached elements and elements without a box do
+    // not scroll anything.
+    scrollIntoView(arg = undefined) {
+      let block = "start";
+      let inline = "nearest";
+      if (arg !== null && (typeof arg === "object" || typeof arg === "function")) {
+        if (arg.behavior !== undefined) enumMember(arg.behavior, SCROLL_BEHAVIORS, "ScrollBehavior");
+        if (arg.block !== undefined) block = enumMember(arg.block, SCROLL_ALIGNMENTS, "ScrollLogicalPosition");
+        if (arg.inline !== undefined) inline = enumMember(arg.inline, SCROLL_ALIGNMENTS, "ScrollLogicalPosition");
+      } else if (arg !== undefined && arg !== null) {
+        block = arg ? "start" : "end";
+      }
+      if (!this.isConnected || !op_blitz_measure(handleOf(this, "scrollIntoView"), false)) return;
+      const root = document.documentElement;
+      for (let box = this.parentElement; box !== null && box !== root; box = box.parentElement) {
+        scrollIntoBox(this, box, false, block, inline);
+      }
+      if (root !== null) scrollIntoBox(this, root, true, block, inline);
     }
     focus() {
       if (!this.isConnected || !isFocusable(this)) return;
@@ -1466,6 +1620,10 @@
     get documentElement() {
       return this.firstElementChild;
     }
+    // Standards mode: the root element scrolls the viewport.
+    get scrollingElement() {
+      return this.documentElement;
+    }
     get body() {
       return this.querySelector("body");
     }
@@ -1631,6 +1789,16 @@
     return true;
   });
 
+  function viewportScroll(args, method, relative) {
+    const root = document.documentElement;
+    if (root !== null) scrollElement(root, args, method, relative);
+    else scrollTarget(args, method);
+  }
+  function viewportOffset(index) {
+    const root = document.documentElement;
+    return root === null ? 0 : scrollMetric(root, index, "scrollX");
+  }
+
   const globals = {
     Node,
     Element,
@@ -1676,6 +1844,10 @@
     DOMException,
     performance,
     getComputedStyle,
+    // Window scrolling is the root element's (viewport) scrolling.
+    scroll: (...args) => viewportScroll(args, "scroll", false),
+    scrollTo: (...args) => viewportScroll(args, "scrollTo", false),
+    scrollBy: (...args) => viewportScroll(args, "scrollBy", true),
     requestAnimationFrame,
     cancelAnimationFrame,
     setTimeout: timers.setTimeout,
@@ -1767,6 +1939,10 @@
     indexedDB: { value: indexedDbApi.indexedDB, enumerable: true, configurable: true },
     innerWidth: { get: () => op_blitz_viewport_size(0), enumerable: true, configurable: true },
     innerHeight: { get: () => op_blitz_viewport_size(1), enumerable: true, configurable: true },
+    scrollX: { get: () => viewportOffset(SCROLL_LEFT), enumerable: true, configurable: true },
+    scrollY: { get: () => viewportOffset(SCROLL_TOP), enumerable: true, configurable: true },
+    pageXOffset: { get: () => viewportOffset(SCROLL_LEFT), enumerable: true, configurable: true },
+    pageYOffset: { get: () => viewportOffset(SCROLL_TOP), enumerable: true, configurable: true },
     devicePixelRatio: { value: 1, enumerable: true, configurable: true },
   });
   for (const name of ["window", "self"]) {

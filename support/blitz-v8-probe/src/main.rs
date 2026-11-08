@@ -36,6 +36,7 @@ const DOM_API_TEST: &str = include_str!("dom_api_test.js");
 const EVENTS_TEST: &str = include_str!("events_test.js");
 const EVENTS_CHECK: &str = include_str!("events_check.js");
 const WINDOW_TEST: &str = include_str!("window_test.js");
+const SCROLL_TEST: &str = include_str!("scroll_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
@@ -721,17 +722,201 @@ fn op_blitz_measure(
     let node_id = attached_node(&document, handle)?.id;
     document.resolve(0.0);
     let rect = if offset {
-        document.offset_rect(node_id)
+        document
+            .offset_rect(node_id)
+            .map(|rect| [rect.x, rect.y, rect.width, rect.height])
     } else {
-        document.get_client_bounding_rect(node_id)
+        client_rect(&mut document, node_id)
     };
-    let Some(rect) = rect else {
+    let Some([x, y, width, height]) = rect else {
         state.borrow_mut().borrow_mut::<LastRect>().0 = [0.0; 6];
         return Ok(false);
     };
-    state.borrow_mut().borrow_mut::<LastRect>().0 =
-        [rect.x, rect.y, rect.width, rect.height, 0.0, 0.0];
+    state.borrow_mut().borrow_mut::<LastRect>().0 = [x, y, width, height, 0.0, 0.0];
     Ok(true)
+}
+
+/// `getBoundingClientRect` in viewport coordinates. Blitz's rect is read with the
+/// viewport scroll and the node's own scroll offset temporarily set to zero (an
+/// element's border box does not move when its own content scrolls; ancestors'
+/// offsets, which do move it, stay applied), then the viewport scroll is
+/// subtracted. This makes the result independent of whether Blitz's rect already
+/// accounts for either offset.
+fn client_rect(document: &mut BaseDocument, node_id: NodeId) -> Option<[f64; 4]> {
+    let viewport = document.viewport_scroll();
+    let own = document.get_node(node_id).map(|node| *node.scroll_offset());
+    let mut unscrolled = viewport;
+    unscrolled.x = Default::default();
+    unscrolled.y = Default::default();
+    document.set_viewport_scroll(unscrolled);
+    if let Some(node) = document.get_node_mut(node_id) {
+        let offset = node.scroll_offset_mut();
+        offset.x = Default::default();
+        offset.y = Default::default();
+    }
+    let rect = document
+        .get_client_bounding_rect(node_id)
+        .map(|rect| [rect.x, rect.y, rect.width, rect.height]);
+    document.set_viewport_scroll(viewport);
+    if let (Some(own), Some(node)) = (own, document.get_node_mut(node_id)) {
+        *node.scroll_offset_mut() = own;
+    }
+    let (scroll_x, scroll_y) = (viewport.x as f64, viewport.y as f64);
+    rect.map(|[x, y, width, height]| [x - scroll_x, y - scroll_y, width, height])
+}
+
+/// Viewport size in CSS pixels.
+fn viewport_css_size(document: &BaseDocument) -> (f64, f64) {
+    let viewport = document.viewport();
+    let scale = f64::from(viewport.hidpi_scale.max(f32::MIN_POSITIVE));
+    (
+        f64::from(viewport.window_size.0) / scale,
+        f64::from(viewport.window_size.1) / scale,
+    )
+}
+
+/// Whether computed `overflow-x`/`overflow-y` (`longhand`) makes the element a
+/// scroll container on that axis (anything but `visible` and `clip`; `hidden`
+/// still scrolls programmatically, as in browsers).
+fn overflow_scrolls(node: &Node, longhand: &str) -> bool {
+    let Some(styles) = node.primary_styles() else {
+        return false;
+    };
+    let property = PropertyId::parse_enabled_for_all_content(longhand);
+    let Some(longhand) = property.ok().and_then(|property| property.longhand_id()) else {
+        return false;
+    };
+    let value = styles.computed_value_to_string(PropertyDeclarationId::Longhand(longhand));
+    !matches!(value.as_str(), "visible" | "clip")
+}
+
+/// Scroll state of one element (the root element stands for the viewport).
+struct ScrollBox {
+    offset: (f64, f64),
+    /// Largest scroll offset per axis: Taffy's scroll extent (the bound Blitz uses
+    /// for wheel scrolling), or document extent minus viewport for the root.
+    max: (f64, f64),
+    client: (f64, f64),
+    border: (f64, f64),
+    scrolls: (bool, bool),
+}
+
+fn scroll_box(document: &BaseDocument, node_id: NodeId) -> Option<ScrollBox> {
+    let node = document.get_node(node_id)?;
+    let layout = node.final_layout();
+    if node_id == document.root_element().id {
+        let (width, height) = viewport_css_size(document);
+        let extent_x = layout.location.x + layout.size.width + layout.scroll_width();
+        let extent_y = layout.location.y + layout.size.height + layout.scroll_height();
+        let scroll = document.viewport_scroll();
+        return Some(ScrollBox {
+            offset: (scroll.x as f64, scroll.y as f64),
+            max: (
+                (f64::from(extent_x) - width).max(0.0),
+                (f64::from(extent_y) - height).max(0.0),
+            ),
+            client: (width, height),
+            border: (0.0, 0.0),
+            scrolls: (true, true),
+        });
+    }
+    let (size, border) = (layout.size, layout.border);
+    Some(ScrollBox {
+        offset: (node.scroll_offset().x, node.scroll_offset().y),
+        max: (
+            f64::from(layout.scroll_width().max(0.0)),
+            f64::from(layout.scroll_height().max(0.0)),
+        ),
+        client: (
+            f64::from(
+                (size.width - border.left - border.right - layout.scrollbar_size.width).max(0.0),
+            ),
+            f64::from(
+                (size.height - border.top - border.bottom - layout.scrollbar_size.height).max(0.0),
+            ),
+        ),
+        border: (f64::from(border.left), f64::from(border.top)),
+        scrolls: (
+            overflow_scrolls(node, "overflow-x"),
+            overflow_scrolls(node, "overflow-y"),
+        ),
+    })
+}
+
+/// Last values read by `op_blitz_scroll_metrics`: scrollLeft, scrollTop,
+/// scrollWidth, scrollHeight, clientWidth, clientHeight, clientLeft, clientTop.
+#[derive(Default)]
+struct ScrollMetrics([f64; 8]);
+
+/// Forces style + layout, stores the element's scroll metrics (read back with
+/// `op_blitz_scroll_component`) and returns which axes scroll (bit 0 = x,
+/// bit 1 = y). The root element reports the viewport (`scrollingElement`).
+#[op2(fast)]
+fn op_blitz_scroll_metrics(state: Rc<RefCell<OpState>>, handle: f64) -> Result<u32, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    document.resolve(0.0);
+    let Some(scroll) = scroll_box(&document, node_id) else {
+        state.borrow_mut().borrow_mut::<ScrollMetrics>().0 = [0.0; 8];
+        return Ok(0);
+    };
+    state.borrow_mut().borrow_mut::<ScrollMetrics>().0 = [
+        scroll.offset.0,
+        scroll.offset.1,
+        scroll.client.0 + scroll.max.0,
+        scroll.client.1 + scroll.max.1,
+        scroll.client.0,
+        scroll.client.1,
+        scroll.border.0,
+        scroll.border.1,
+    ];
+    Ok(u32::from(scroll.scrolls.0) | (u32::from(scroll.scrolls.1) << 1))
+}
+
+#[op2(fast)]
+fn op_blitz_scroll_component(state: Rc<RefCell<OpState>>, index: u32) -> f64 {
+    state.borrow().borrow::<ScrollMetrics>().0[(index as usize).min(7)]
+}
+
+/// Sets the scroll offset of an element (the viewport for the root element),
+/// clamped to `0..=max` per axis; NaN keeps an axis, and axes that do not scroll
+/// are left unchanged. Applies immediately (no smooth animation, no `scroll`
+/// event). Only Blitz state is written: no JS runs while the document is borrowed.
+#[op2(fast)]
+fn op_blitz_scroll_to(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    x: f64,
+    y: f64,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    document.resolve(0.0);
+    let Some(scroll) = scroll_box(&document, node_id) else {
+        return Ok(());
+    };
+    let axis = |value: f64, current: f64, max: f64, scrolls: bool| {
+        if scrolls && !value.is_nan() {
+            value.clamp(0.0, max)
+        } else {
+            current
+        }
+    };
+    let x = axis(x, scroll.offset.0, scroll.max.0, scroll.scrolls.0);
+    let y = axis(y, scroll.offset.1, scroll.max.1, scroll.scrolls.1);
+    if node_id == document.root_element().id {
+        let mut viewport = document.viewport_scroll();
+        viewport.x = x as _;
+        viewport.y = y as _;
+        document.set_viewport_scroll(viewport);
+    } else if let Some(node) = document.get_node_mut(node_id) {
+        let offset = node.scroll_offset_mut();
+        offset.x = x as _;
+        offset.y = y as _;
+    }
+    Ok(())
 }
 
 /// Box sizes for ResizeObserver, from the Taffy layout Blitz already computed:
@@ -789,14 +974,8 @@ fn op_blitz_rect_component(state: Rc<RefCell<OpState>>, index: u32) -> f64 {
 fn op_blitz_viewport_size(state: Rc<RefCell<OpState>>, component: u32) -> f64 {
     let document = probe_document(&state);
     let document = document.borrow();
-    let viewport = document.viewport();
-    let scale = f64::from(viewport.hidpi_scale.max(f32::MIN_POSITIVE));
-    let size = if component == 0 {
-        viewport.window_size.0
-    } else {
-        viewport.window_size.1
-    };
-    f64::from(size) / scale
+    let (width, height) = viewport_css_size(&document);
+    if component == 0 { width } else { height }
 }
 
 /// Moves Blitz focus (`:focus` styling, later keyboard routing). `dom.js` checks
@@ -909,6 +1088,9 @@ deno_core::extension!(
         op_blitz_box_sizes,
         op_blitz_rect_component,
         op_blitz_viewport_size,
+        op_blitz_scroll_metrics,
+        op_blitz_scroll_component,
+        op_blitz_scroll_to,
         op_blitz_focus,
         op_blitz_blur,
         op_blitz_focused,
@@ -1206,6 +1388,7 @@ fn main() {
         runtime.op_state().borrow_mut().put(WrappedNodes::default());
         runtime.op_state().borrow_mut().put(QueryResults::default());
         runtime.op_state().borrow_mut().put(LastRect::default());
+        runtime.op_state().borrow_mut().put(ScrollMetrics::default());
         runtime
             .op_state()
             .borrow_mut()
@@ -1355,6 +1538,16 @@ fn main() {
         runtime
             .execute_script("roves-blitz-events-check.js", EVENTS_CHECK)
             .expect("trusted pointer, mouse and keyboard events should reach listeners");
+
+        // Viewport and overflow-element scrolling on Blitz's scroll state; the
+        // test restores scroll 0,0 and removes its elements before the pixel checks.
+        stage("scroll");
+        runtime
+            .execute_script("roves-blitz-scroll-test.js", SCROLL_TEST)
+            .expect("scroll offsets, dimensions, scrollTo and scrollIntoView checks should pass");
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"scroll_viewport_and_elements\",\"status\":\"passed\"}}"
+        );
 
         stage("frame_loop");
         runtime
