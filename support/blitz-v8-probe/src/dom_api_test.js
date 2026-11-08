@@ -214,4 +214,58 @@
   check(host.hasAttribute("data-x"), "hasAttribute");
   host.removeAttribute("data-x");
   check(!host.hasAttribute("data-x") && host.getAttribute("data-x") === null, "removeAttribute");
+
+  // AbortController/AbortSignal (deno_web 03_abort_signal.js). Pixi'VN narration
+  // hooks create one at startup. Scoped checks, not full spec coverage.
+  check(typeof AbortController === "function" && typeof AbortSignal === "function", "AbortController/AbortSignal globals");
+  const controller = new AbortController();
+  const signal = controller.signal;
+  check(signal instanceof AbortSignal && signal instanceof EventTarget, "controller.signal is an AbortSignal");
+  check(controller.signal === signal, "controller.signal identity");
+  check(signal.aborted === false && signal.reason === undefined, "signal starts not aborted");
+  signal.throwIfAborted();
+  let abortEvents = 0;
+  let handlerCalls = 0;
+  let eventSeen = null;
+  signal.addEventListener("abort", (event) => {
+    abortEvents += 1;
+    eventSeen = event;
+  });
+  signal.onabort = () => {
+    handlerCalls += 1;
+  };
+  // An Element listener registered with { signal } is removed on abort.
+  let clicks = 0;
+  host.addEventListener("click", () => (clicks += 1), { signal });
+  host.dispatchEvent(new Event("click"));
+  check(clicks === 1, "listener with a live signal fires");
+  const reason = new Error("stop");
+  controller.abort(reason);
+  check(signal.aborted === true && signal.reason === reason, "abort sets aborted and reason");
+  check(abortEvents === 1 && handlerCalls === 1, `abort event fires once: ${abortEvents}/${handlerCalls}`);
+  check(eventSeen instanceof Event && eventSeen.type === "abort" && eventSeen.target === signal, "abort event type/target");
+  controller.abort(new Error("again"));
+  check(abortEvents === 1 && signal.reason === reason, "a second abort is a no-op");
+  try {
+    signal.throwIfAborted();
+    throw new Error("throwIfAborted must throw after abort");
+  } catch (error) {
+    check(error === reason, `throwIfAborted throws the reason: ${error}`);
+  }
+  host.dispatchEvent(new Event("click"));
+  check(clicks === 1, "listener with an aborted signal is removed");
+  const defaultReason = new AbortController();
+  defaultReason.abort();
+  check(defaultReason.signal.reason instanceof DOMException && defaultReason.signal.reason.name === "AbortError", "default reason is an AbortError");
+  const preAborted = AbortSignal.abort("why");
+  check(preAborted.aborted && preAborted.reason === "why", "AbortSignal.abort()");
+  const combined = AbortSignal.any([new AbortController().signal, preAborted]);
+  check(combined.aborted && combined.reason === "why", "AbortSignal.any() follows an aborted input");
+  let threw = false;
+  try {
+    new AbortSignal();
+  } catch (error) {
+    threw = error instanceof TypeError;
+  }
+  check(threw, "AbortSignal is not constructible");
 })();

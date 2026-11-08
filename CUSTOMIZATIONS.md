@@ -1,3 +1,25 @@
+## 2026-11-08 - Blitz probe: AbortController/AbortSignal from deno_web
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI run 42526030667 was green, but its Windows artifact run against the original
+visual-novel-template (commit `bb9ea77910dda74aced20b001131c8daa22e7cfc`) reached `game_page` and
+stopped with `ReferenceError: AbortController is not defined` from Pixi'VN `narration-hooks`
+during initialization. The probe bootstrap loads selected deno_web scripts by hand and never
+loaded `03_abort_signal.js`. **Reuse decision:** the pinned `deno_web 0.291.0` (paired with
+`deno_core 0.413`) already ships the maintained implementation, so `dom.js` now loads
+`ext:deno_web/03_abort_signal.js` after `02_event.js`/`02_timers.js` (its dependencies) and
+exposes `AbortController` and `AbortSignal` as globals. No homemade polyfill, no new dependency,
+no `Deno.*` API exposed, template unchanged. `deno_web`'s `EventTarget.addEventListener` already
+honours the `signal` option, so DOM nodes get it through inheritance.
+`dom_api_test.js` covers (scoped, not full spec coverage): globals, `controller.signal` identity
+and `instanceof`, initial `aborted`/`reason`, `throwIfAborted` before/after, the `abort` event
+(listener and `onabort`, fired once, type/target), reason preservation and no-op second abort,
+default `AbortError` reason, `AbortSignal.abort()`/`any()`, illegal constructor, and an element
+listener removed by `{ signal }`. Not run locally (no local build); next verification is the probe
+CI plus the Windows artifact against the same template commit.
+
 ## 2026-11-08 - Blitz probe: nominal `HTMLIFrameElement` without a browsing context
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,

@@ -75,6 +75,9 @@
   const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
+  // AbortController/AbortSignal from deno_web (needs 02_event and 02_timers,
+  // loaded above). Pixi'VN narration hooks construct an AbortController at startup.
+  const { AbortController, AbortSignal } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
   const { MessageChannel, MessagePort } = core.loadExtScript("ext:deno_web/13_message_port.js");
   const webidl = core.loadExtScript("ext:deno_webidl/00_webidl.js");
   const { performance, setTimeOrigin } = core.loadExtScript("ext:deno_web/15_performance.js");
@@ -1652,6 +1655,8 @@
     CustomEvent,
     ErrorEvent,
     EventTarget,
+    AbortController,
+    AbortSignal,
     DOMException,
     performance,
     getComputedStyle,
