@@ -5,7 +5,10 @@
 // thread by `dispatchPendingEvents`, which the frame loop calls once per frame.
 // Covered: what Tone.js 15.1.22 and standardized-audio-context 25.3.77 need to
 // start (AudioContext lifecycle, AudioParam automation, AudioListener, gain,
-// constant source and oscillator nodes, connect/disconnect). Not yet: buffers and
+// constant source and oscillator nodes, connect/disconnect), plus the channel
+// merger/splitter and the native stereo panner (without createStereoPanner,
+// standardized-audio-context fakes it with a merger, wave shapers and a looping
+// buffer source, which Pixi'VN's sound init hit). Not yet: buffers and
 // decodeAudioData, the other node types, OfflineAudioContext, ScriptProcessorNode
 // and AudioWorklet (see TODO.md); those globals are absent rather than faked.
 globalThis.__rovesCreateWebAudio = (dependencies) => {
@@ -16,6 +19,9 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
   const NODE_GAIN = 0;
   const NODE_CONSTANT_SOURCE = 1;
   const NODE_OSCILLATOR = 2;
+  const NODE_CHANNEL_MERGER = 3;
+  const NODE_CHANNEL_SPLITTER = 4;
+  const NODE_STEREO_PANNER = 5;
   const CHANNEL_COUNT_MODES = ["max", "clamped-max", "explicit"];
   const CHANNEL_INTERPRETATIONS = ["speakers", "discrete"];
   const OSCILLATOR_TYPES = ["sine", "square", "sawtooth", "triangle", "custom"];
@@ -212,6 +218,7 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       if (this instanceof AudioDestinationNode && count > this.maxChannelCount) {
         throw domError("IndexSizeError", `channelCount ${count} exceeds maxChannelCount ${this.maxChannelCount}`);
       }
+      channelRules.get(this)?.count?.(count);
       backend(() => ops.op_audio_node_set_channel_count(handle, count));
     }
     get channelCountMode() {
@@ -220,7 +227,9 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     set channelCountMode(value) {
       const { handle } = brand(nodes, this);
       const mode = CHANNEL_COUNT_MODES.indexOf(String(value));
-      if (mode >= 0) backend(() => ops.op_audio_node_set_channel_count_mode(handle, mode));
+      if (mode < 0) return;
+      channelRules.get(this)?.mode?.(CHANNEL_COUNT_MODES[mode]);
+      backend(() => ops.op_audio_node_set_channel_count_mode(handle, mode));
     }
     get channelInterpretation() {
       return CHANNEL_INTERPRETATIONS[ops.op_audio_node_channel_interpretation(brand(nodes, this).handle)];
@@ -228,7 +237,9 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     set channelInterpretation(value) {
       const { handle } = brand(nodes, this);
       const interpretation = CHANNEL_INTERPRETATIONS.indexOf(String(value));
-      if (interpretation >= 0) backend(() => ops.op_audio_node_set_channel_interpretation(handle, interpretation));
+      if (interpretation < 0) return;
+      channelRules.get(this)?.interpretation?.(CHANNEL_INTERPRETATIONS[interpretation]);
+      backend(() => ops.op_audio_node_set_channel_interpretation(handle, interpretation));
     }
     connect(destination, output = 0, input = 0) {
       const source = brand(nodes, this);
@@ -305,9 +316,20 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       node[name] = options[name];
     }
   }
-  function createNode(context, kind) {
+  function createNode(context, kind, count = 0) {
     const { handle } = brand(contexts, context);
-    return backend(() => ops.op_audio_context_create_node(handle, kind));
+    return backend(() => ops.op_audio_context_create_node(handle, kind, count));
+  }
+  // Node-specific channel constraints (Web Audio §1.14, §1.15, §1.31), checked
+  // before the backend, which only panics on them.
+  const channelRules = new WeakMap();
+  const fixed = (what, expected, name) => (value) => {
+    if (value !== expected) throw domError(name, `${what} must be ${expected}, got ${value}`);
+  };
+  function nodeCount(value, what, prefix) {
+    const count = unsignedLong(value, prefix);
+    if (count < 1 || count > 32) throw domError("IndexSizeError", `${prefix}: ${what} ${count} is outside [1, 32]`);
+    return count;
   }
 
   class AudioDestinationNode extends AudioNode {
@@ -394,6 +416,59 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       if (kind < 0) return;
       if (OSCILLATOR_TYPES[kind] === "custom") throw domError("InvalidStateError", "use setPeriodicWave() for a custom waveform");
       backend(() => ops.op_audio_oscillator_set_type(handle, kind));
+    }
+  }
+
+  // Each input is down-mixed to mono and becomes one channel of the single output.
+  class ChannelMergerNode extends AudioNode {
+    constructor(context, options) {
+      options = dictionary(options, "ChannelMergerOptions");
+      const prefix = "Failed to construct 'ChannelMergerNode'";
+      const inputs = nodeCount(options.numberOfInputs === undefined ? 6 : options.numberOfInputs, "numberOfInputs", prefix);
+      super(INTERNAL, context, createNode(context, NODE_CHANNEL_MERGER, inputs));
+      channelRules.set(this, {
+        count: fixed("ChannelMergerNode channelCount", 1, "InvalidStateError"),
+        mode: fixed("ChannelMergerNode channelCountMode", "explicit", "InvalidStateError"),
+      });
+      applyNodeOptions(this, options);
+    }
+  }
+
+  // Channel N of the input becomes output N.
+  class ChannelSplitterNode extends AudioNode {
+    constructor(context, options) {
+      options = dictionary(options, "ChannelSplitterOptions");
+      const prefix = "Failed to construct 'ChannelSplitterNode'";
+      const outputs = nodeCount(options.numberOfOutputs === undefined ? 6 : options.numberOfOutputs, "numberOfOutputs", prefix);
+      super(INTERNAL, context, createNode(context, NODE_CHANNEL_SPLITTER, outputs));
+      channelRules.set(this, {
+        count: fixed("ChannelSplitterNode channelCount", outputs, "InvalidStateError"),
+        mode: fixed("ChannelSplitterNode channelCountMode", "explicit", "InvalidStateError"),
+        interpretation: fixed("ChannelSplitterNode channelInterpretation", "discrete", "InvalidStateError"),
+      });
+      applyNodeOptions(this, options);
+    }
+  }
+
+  // Equal-power panning of a mono or stereo input to a stereo output.
+  class StereoPannerNode extends AudioNode {
+    constructor(context, options) {
+      options = dictionary(options, "StereoPannerOptions");
+      super(INTERNAL, context, createNode(context, NODE_STEREO_PANNER));
+      nodeParam(this, context, 0);
+      channelRules.set(this, {
+        count(count) {
+          if (count > 2) throw domError("NotSupportedError", `StereoPannerNode channelCount ${count} exceeds 2`);
+        },
+        mode(mode) {
+          if (mode === "max") throw domError("NotSupportedError", "StereoPannerNode channelCountMode cannot be 'max'");
+        },
+      });
+      applyNodeOptions(this, options);
+      if (options.pan !== undefined) this.pan.value = options.pan;
+    }
+    get pan() {
+      return ownParam(this, StereoPannerNode, 0);
     }
   }
 
@@ -485,6 +560,15 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     createOscillator() {
       return new OscillatorNode(this);
     }
+    createChannelMerger(numberOfInputs = 6) {
+      return new ChannelMergerNode(this, { numberOfInputs });
+    }
+    createChannelSplitter(numberOfOutputs = 6) {
+      return new ChannelSplitterNode(this, { numberOfOutputs });
+    }
+    createStereoPanner() {
+      return new StereoPannerNode(this);
+    }
   }
   defineEventHandler(BaseAudioContext.prototype, "statechange");
 
@@ -562,6 +646,9 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       GainNode,
       ConstantSourceNode,
       OscillatorNode,
+      ChannelMergerNode,
+      ChannelSplitterNode,
+      StereoPannerNode,
     },
     dispatchPendingEvents,
   };

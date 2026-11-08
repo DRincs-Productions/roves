@@ -40,8 +40,52 @@ async function waitFor(predicate, what, timeoutMs = 3000) {
   await waitFor(() => Math.abs(nativeGain.value - expected) < 1e-4, `native gain ${expected} (now ${nativeGain.value})`);
   check(context.currentTime > startedAt, "currentTime must advance while running");
 
-  // `ended` travels from the audio event thread to a listener on the V8 thread.
   const raw = context.rawContext;
+
+  // Pixi'VN's sound init creates stereo panners: with a native createStereoPanner
+  // standardized-audio-context uses it instead of its merger/wave-shaper faker.
+  const panner = new Tone.Panner(0.5).toDestination();
+  check(Math.abs(panner.pan.value - 0.5) < 1e-6, `panner pan ${panner.pan.value}, expected 0.5`);
+  const nativePan = panner.pan._param;
+  check(nativePan.minValue === -1 && nativePan.maxValue === 1, `pan range [${nativePan.minValue}, ${nativePan.maxValue}]`);
+  await waitFor(() => Math.abs(nativePan.value - 0.5) < 1e-4, `native pan 0.5 (now ${nativePan.value})`);
+  let panError = null;
+  try {
+    raw.createStereoPanner().channelCountMode = "max";
+  } catch (error) {
+    panError = error;
+  }
+  check(panError?.name === "NotSupportedError", `StereoPanner mode 'max' threw ${panError}`);
+
+  // ChannelMergerNode contract (Tone.Merge and the faker path both use it).
+  const merge = new Tone.Merge({ channels: 2 }).toDestination();
+  const merger = merge.input;
+  check(merger.numberOfInputs === 2 && merger.numberOfOutputs === 1, `merger ${merger.numberOfInputs} in, ${merger.numberOfOutputs} out`);
+  check(merger.channelCount === 1 && merger.channelCountMode === "explicit", `merger ${merger.channelCount} ch, ${merger.channelCountMode}`);
+  let mergerError = null;
+  try {
+    merger.channelCount = 2;
+  } catch (error) {
+    mergerError = error;
+  }
+  check(mergerError?.name === "InvalidStateError", `merger channelCount 2 threw ${mergerError}`);
+  const defaultMerger = raw.createChannelMerger();
+  check(defaultMerger.numberOfInputs === 6, `default merger has ${defaultMerger.numberOfInputs} inputs`);
+  let countError = null;
+  try {
+    raw.createChannelMerger(33);
+  } catch (error) {
+    countError = error;
+  }
+  check(countError?.name === "IndexSizeError", `createChannelMerger(33) threw ${countError}`);
+  const right = raw.createConstantSource();
+  right.connect(merger, 0, 1);
+  right.start();
+  right.stop(raw.currentTime + 0.02);
+  merge.dispose();
+  panner.dispose();
+
+  // `ended` travels from the audio event thread to a listener on the V8 thread.
   const source = raw.createConstantSource();
   let ended = false;
   source.onended = () => {

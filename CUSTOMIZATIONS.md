@@ -1,3 +1,44 @@
+## 2026-11-08 - Blitz probe: ChannelMerger, ChannelSplitter and native StereoPanner
+
+**Files touched:** `support/blitz-v8-probe/src/{audio.rs,web_audio.js,audio_test.js}`,
+`support/blitz-v8-probe/js/tone_scenario.js`, `support/blitz-v8-probe/README.md`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+After `ResizeObserver`, CI run 42520628833 and its artifact run locally on the unmodified
+visual-novel-template stopped in Pixi'VN's sound init with
+`TypeError: n.createChannelMerger is not a function` (`pixi-vn-CzUJeT_J.js:4:58216`, via
+`createStereoPanner`). Reading the template's standardized-audio-context 25.3.77 code: when the
+native context has no `createStereoPanner`, SAC builds a StereoPanner faker from
+`createChannelMerger(2)` (channels 0/1 from two gain nodes), three `WaveShaperNode`s with
+cos/sin/DC curves and, for the DC-curve shaper, a looping `AudioBufferSourceNode` started on
+connect. Implementing only the merger would just move the failure to `createWaveShaper` and then to
+buffers, and would render panning through a JS-built graph. The probe therefore exposes the
+crate's real nodes (same pinned `web-audio-api` 1.7.0, no new dependency):
+
+- `ChannelMergerNode` (`createChannelMerger(numberOfInputs = 6)` and constructor): 1..32 inputs
+  (`IndexSizeError` otherwise), one output with one channel per input; `channelCount` must stay 1
+  and `channelCountMode` `"explicit"` (`InvalidStateError`).
+- `ChannelSplitterNode` (`createChannelSplitter(numberOfOutputs = 6)`), its counterpart used by
+  Tone's `Split` and SAC's stereo faker path: `channelCount` fixed to `numberOfOutputs`, mode
+  `"explicit"`, interpretation `"discrete"` (`InvalidStateError`).
+- `StereoPannerNode` (`createStereoPanner()`, `pan` AudioParam, `StereoPannerOptions.pan`): the
+  crate's equal-power panner; `channelCount > 2` and mode `"max"` throw `NotSupportedError`. With
+  it SAC (and so Tone's `Panner`, Pixi'VN's sound init) uses the native node, not the faker.
+
+`op_audio_context_create_node` gains a `count` argument (inputs/outputs for merger/splitter);
+node-specific channel rules are checked in JS before the backend (which only panics). Tests: the
+offline backend check now also renders two constant sources through merger -> splitter ->
+swapped merger (`web_audio_channel_routing_offline`: L 0.75, R 0.25) and a mono source through a
+panner at pan 0.5 (`web_audio_stereo_panner_offline`: cos/sin(3π/8)); both are required by the
+probe workflow. `audio_test.js` checks the native merger's inputs/outputs/channel mode and its
+connections; `tone_scenario.js` creates a `Tone.Panner` (native pan reaches 0.5, range [-1, 1],
+mode `"max"` rejected) and a `Tone.Merge` (2 in/1 out, mono explicit, `InvalidStateError` on
+`channelCount = 2`, default 6 inputs, `IndexSizeError` for 33) and connects a source to input 1.
+Not compiled or run locally (no local build; node/rustfmt not authorized in the session); the
+crate's `create_channel_merger`/`create_channel_splitter`/`create_stereo_panner`/`pan()` signatures
+come from memory (registry and docs.rs not readable in the session), so CI is the first compile
+check.
+
 ## 2026-11-08 - Blitz probe: `ResizeObserver` over Blitz layout
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,resize_observer_test.js}`,

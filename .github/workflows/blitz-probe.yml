@@ -89,6 +89,8 @@ jobs:
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"web_audio_channel_routing_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"web_audio_stereo_panner_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_v8_context","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_tone_15_1_22","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
       # Discovery run on the real game: visual-novel-template's production build

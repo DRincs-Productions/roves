@@ -25,13 +25,17 @@ use web_audio_api::context::{
 };
 use web_audio_api::node::{
     AudioDestinationNode, AudioNode, AudioScheduledSourceNode, ChannelCountMode,
-    ChannelInterpretation, ConstantSourceNode, GainNode, OscillatorNode, OscillatorType,
+    ChannelInterpretation, ChannelMergerNode, ChannelSplitterNode, ConstantSourceNode, GainNode,
+    OscillatorNode, OscillatorType, StereoPannerNode,
 };
 use web_audio_api::{AudioListener, AudioParam};
 
 const NODE_GAIN: u32 = 0;
 const NODE_CONSTANT_SOURCE: u32 = 1;
 const NODE_OSCILLATOR: u32 = 2;
+const NODE_CHANNEL_MERGER: u32 = 3;
+const NODE_CHANNEL_SPLITTER: u32 = 4;
+const NODE_STEREO_PANNER: u32 = 5;
 
 /// Ids of finished sources, pushed by the crate's event thread and drained on
 /// the V8 thread.
@@ -79,6 +83,9 @@ enum Node {
     Gain(GainNode),
     ConstantSource(ConstantSourceNode),
     Oscillator(OscillatorNode),
+    ChannelMerger(ChannelMergerNode),
+    ChannelSplitter(ChannelSplitterNode),
+    StereoPanner(StereoPannerNode),
 }
 
 impl Node {
@@ -88,14 +95,21 @@ impl Node {
             Self::Gain(node) => node,
             Self::ConstantSource(node) => node,
             Self::Oscillator(node) => node,
+            Self::ChannelMerger(node) => node,
+            Self::ChannelSplitter(node) => node,
+            Self::StereoPanner(node) => node,
         }
     }
 
-    /// Index of the node's AudioParams: gain, offset, frequency (0) and detune (1).
+    /// Index of the node's AudioParams: gain, offset, pan, frequency (0) and
+    /// detune (1).
     fn has_param(&self, index: u32) -> bool {
         matches!(
             (self, index),
-            (Self::Gain(_), 0) | (Self::ConstantSource(_), 0) | (Self::Oscillator(_), 0 | 1)
+            (Self::Gain(_), 0)
+                | (Self::ConstantSource(_), 0)
+                | (Self::StereoPanner(_), 0)
+                | (Self::Oscillator(_), 0 | 1)
         )
     }
 }
@@ -119,6 +133,7 @@ impl NativeAudioParam {
                 operation(match (&*node, *index) {
                     (Node::Gain(node), 0) => node.gain(),
                     (Node::ConstantSource(node), 0) => node.offset(),
+                    (Node::StereoPanner(node), 0) => node.pan(),
                     (Node::Oscillator(node), 0) => node.frequency(),
                     (Node::Oscillator(node), 1) => node.detune(),
                     _ => unreachable!("checked by op_audio_node_param"),
@@ -246,17 +261,26 @@ fn op_audio_context_destination(#[cppgc] context: &NativeAudioContext) -> Native
     wrap_node(Node::Destination(context.context.destination()))
 }
 
+/// `count`: numberOfInputs (merger) or numberOfOutputs (splitter), validated
+/// against [1, 32] by web_audio.js; ignored by the other kinds.
 #[op2]
 #[cppgc]
 fn op_audio_context_create_node(
     #[cppgc] context: &NativeAudioContext,
     kind: u32,
+    count: u32,
 ) -> Result<NativeAudioNode, JsErrorBox> {
     let context = &context.context;
+    let count = count as usize;
     let node = guarded(|| match kind {
         NODE_GAIN => Some(Node::Gain(context.create_gain())),
         NODE_CONSTANT_SOURCE => Some(Node::ConstantSource(context.create_constant_source())),
         NODE_OSCILLATOR => Some(Node::Oscillator(context.create_oscillator())),
+        NODE_CHANNEL_MERGER => Some(Node::ChannelMerger(context.create_channel_merger(count))),
+        NODE_CHANNEL_SPLITTER => Some(Node::ChannelSplitter(
+            context.create_channel_splitter(count),
+        )),
+        NODE_STEREO_PANNER => Some(Node::StereoPanner(context.create_stereo_panner())),
         _ => None,
     })?;
     node.map(wrap_node)
@@ -724,5 +748,82 @@ pub fn check_offline_render() {
     );
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"web_audio_backend_offline\",\"status\":\"passed\",\"frames\":{FRAMES}}}"
+    );
+    check_offline_channel_routing();
+    check_offline_stereo_panner();
+}
+
+fn assert_channel(
+    rendered: &web_audio_api::AudioBuffer,
+    channel: usize,
+    expected: f32,
+    what: &str,
+) {
+    let samples = rendered.get_channel_data(channel);
+    assert!(
+        samples
+            .iter()
+            .all(|sample| (sample - expected).abs() < 2e-3),
+        "{what}: channel {channel} should render {expected}, got {:?}",
+        &samples[..4.min(samples.len())]
+    );
+}
+
+/// Two mono sources merged into stereo, split again and re-merged swapped: the
+/// node kinds web_audio.js exposes as ChannelMerger/ChannelSplitter.
+fn check_offline_channel_routing() {
+    const FRAMES: usize = 256;
+    let mut context = OfflineAudioContext::new(2, FRAMES, 48_000.0);
+    let mut left = context.create_constant_source();
+    let mut right = context.create_constant_source();
+    left.offset().set_value(0.25);
+    right.offset().set_value(0.75);
+    let merger = context.create_channel_merger(2);
+    let splitter = context.create_channel_splitter(2);
+    let swapped = context.create_channel_merger(2);
+    assert_eq!(
+        (merger.number_of_inputs(), merger.number_of_outputs()),
+        (2, 1)
+    );
+    assert_eq!(
+        (splitter.number_of_inputs(), splitter.number_of_outputs()),
+        (1, 2)
+    );
+
+    left.connect_from_output_to_input(&merger, 0, 0);
+    right.connect_from_output_to_input(&merger, 0, 1);
+    merger.connect(&splitter);
+    splitter.connect_from_output_to_input(&swapped, 1, 0);
+    splitter.connect_from_output_to_input(&swapped, 0, 1);
+    swapped.connect(&context.destination());
+    left.start();
+    right.start();
+
+    let rendered = context.start_rendering_sync();
+    assert_channel(&rendered, 0, 0.75, "merger/splitter routing");
+    assert_channel(&rendered, 1, 0.25, "merger/splitter routing");
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"web_audio_channel_routing_offline\",\"status\":\"passed\",\"frames\":{FRAMES}}}"
+    );
+}
+
+/// Equal-power panning of a mono source (Web Audio §1.31.4): pan 0.5 gives
+/// cos(3π/8) left and sin(3π/8) right.
+fn check_offline_stereo_panner() {
+    const FRAMES: usize = 256;
+    let mut context = OfflineAudioContext::new(2, FRAMES, 48_000.0);
+    let mut source = context.create_constant_source();
+    let panner = context.create_stereo_panner();
+    panner.pan().set_value(0.5);
+    source.connect(&panner);
+    panner.connect(&context.destination());
+    source.start();
+
+    let rendered = context.start_rendering_sync();
+    let angle = 0.75 * std::f32::consts::FRAC_PI_2;
+    assert_channel(&rendered, 0, angle.cos(), "stereo panner");
+    assert_channel(&rendered, 1, angle.sin(), "stereo panner");
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"web_audio_stereo_panner_offline\",\"status\":\"passed\",\"frames\":{FRAMES}}}"
     );
 }
