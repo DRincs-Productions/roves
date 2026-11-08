@@ -89,6 +89,7 @@ jobs:
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"web_audio_v8_context","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
       # Discovery run on the real game: visual-novel-template's production build
       # (the game roves-action tests with) loaded with --game. Report-only: the
       # result lists script errors and how much of the page rendered.

@@ -6,6 +6,11 @@ all 256 output samples. This checks the Rust audio graph on CI without an audio
 device. Both Windows CI modes require the offline check result in the probe log.
 The Web Audio bindings for Tone.js and the game startup check are pending.
 
+The probe also checks the native context bridge through V8. Its private ops
+create a headless Rust context, read its sample rate and state, and close it.
+The handle is managed by V8's C++ garbage collector. Both Windows CI modes
+require this result. The probe exposes these ops only to the embedder check.
+
 ## 2026-11-08 - Blitz probe CI: retry transient V8 prebuilt download failures
 
 **Files touched:** `.github/workflows/blitz-probe.yml`.

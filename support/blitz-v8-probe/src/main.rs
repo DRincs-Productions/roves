@@ -1139,6 +1139,7 @@ fn main() {
                 deno_webgpu::deno_webgpu::init(),
                 // createImageBitmap (image decoding) from Deno's maintained extension.
                 deno_image::deno_image::init(),
+                audio::roves_blitz_audio::init(),
                 roves_blitz_v8_probe::init(),
             ],
             module_loader: game.as_ref().map(|game| game.module_loader()),
@@ -1158,6 +1159,14 @@ fn main() {
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
+        if std::env::args().len() == 1 {
+            runtime
+                .execute_script("roves-blitz-audio-test.js", include_str!("audio_test.js"))
+                .expect("V8 should create and close a headless audio context");
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"web_audio_v8_context\",\"status\":\"passed\"}}"
+            );
+        }
         runtime
             .execute_script("roves-blitz-history.js", HISTORY)
             .expect("history factory should load");

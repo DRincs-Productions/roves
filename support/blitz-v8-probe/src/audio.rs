@@ -1,7 +1,66 @@
 //! Offline backend check for the Web Audio bridge.
 
-use web_audio_api::context::{BaseAudioContext, OfflineAudioContext};
+use deno_core::{
+    op2,
+    v8::cppgc::{GarbageCollected, Visitor},
+};
+use deno_error::JsErrorBox;
+use web_audio_api::context::{
+    AudioContext, AudioContextOptions, AudioContextState, BaseAudioContext, OfflineAudioContext,
+};
 use web_audio_api::node::{AudioNode, AudioScheduledSourceNode};
+
+pub struct NativeAudioContext(AudioContext);
+
+// SAFETY: the Rust audio context owns no V8 references.
+unsafe impl GarbageCollected for NativeAudioContext {
+    fn trace(&self, _visitor: &mut Visitor) {}
+
+    fn get_name(&self) -> &'static std::ffi::CStr {
+        c"RovesNativeAudioContext"
+    }
+}
+
+#[op2]
+#[cppgc]
+fn op_audio_context_create() -> Result<NativeAudioContext, JsErrorBox> {
+    AudioContext::try_new(AudioContextOptions {
+        sink_id: "none".into(),
+        ..Default::default()
+    })
+    .map(NativeAudioContext)
+    .map_err(|error| JsErrorBox::generic(error.to_string()))
+}
+
+#[op2(fast)]
+fn op_audio_context_sample_rate(#[cppgc] context: &NativeAudioContext) -> f64 {
+    f64::from(context.0.sample_rate())
+}
+
+#[op2]
+#[string]
+fn op_audio_context_state(#[cppgc] context: &NativeAudioContext) -> &'static str {
+    match context.0.state() {
+        AudioContextState::Suspended => "suspended",
+        AudioContextState::Running => "running",
+        AudioContextState::Closed => "closed",
+    }
+}
+
+#[op2(nofast)]
+fn op_audio_context_close_for_probe(#[cppgc] context: &NativeAudioContext) {
+    context.0.close_sync();
+}
+
+deno_core::extension!(
+    roves_blitz_audio,
+    ops = [
+        op_audio_context_create,
+        op_audio_context_sample_rate,
+        op_audio_context_state,
+        op_audio_context_close_for_probe,
+    ],
+);
 
 pub fn check_offline_render() {
     const FRAMES: usize = 256;
