@@ -89,6 +89,7 @@
   let growObserver;
   let growing;
   let deep;
+  let removable;
   const phases = {
     1() {
       // Initial reports: every observed target once, in observation order, with
@@ -102,7 +103,20 @@
       check(targetEntry.borderBox === "100x34", `border-box size: ${targetEntry.borderBox}`);
       check(hiddenEntry.content === "0,0,0,0" && hiddenEntry.borderBox === "0x0", "display:none reports 0x0 once");
       check(calls.border.length === 1 && calls.border[0][0].borderBox === "100x34", "border-box observer");
-      check(calls.detached.length === 1 && calls.detached[0][0].contentBox === "0x0", "a disconnected target reports 0x0 once");
+      // Spec depth counts the node itself, so a never-inserted target (the root
+      // of its own tree, depth 1) is deeper than the initial gather depth 0.
+      check(
+        calls.detached.length === 1 && calls.detached[0].length === 1 && calls.detached[0][0].id === "ro-detached" && calls.detached[0][0].contentBox === "0x0",
+        "a disconnected target reports 0x0 once",
+      );
+
+      // A connected target that is later removed from the tree: it reports its
+      // laid-out size first, then 0x0 once removed (no longer rendered).
+      removable = document.createElement("div");
+      removable.setAttribute("id", "ro-removable");
+      removable.setAttribute("style", "width: 30px; height: 7px;");
+      container.appendChild(removable);
+      detachedObserver.observe(removable);
 
       // Next frames: the container resizes the target through layout; the
       // border-box observer is disconnected; hidden is unobserved, then shown.
@@ -138,7 +152,11 @@
       check(calls.content.length === 2 && calls.content[1].length === 1, "one callback for the layout-driven resize, hidden unobserved");
       check(calls.content[1][0].content === "5,5,136,20" && calls.content[1][0].borderBox === "150x34", "resized sizes");
       check(calls.border.length === 1, "a disconnected observer gets no callbacks");
-      check(calls.detached.length === 1, "no callback without a size change");
+      check(
+        calls.detached.length === 2 && calls.detached[1].length === 1 && calls.detached[1][0].id === "ro-removable" && calls.detached[1][0].contentBox === "30x7",
+        "only the newly observed target reports; the disconnected one has no size change",
+      );
+      removable.remove();
       const grow = calls.grow.map((entries) => entries.map((entry) => `${entry.id}:${entry.contentBox}`).join(" "));
       check(grow.join("|") === "ro-growing:40x10 ro-deep:10x5|ro-deep:20x5|ro-growing:40x11", `depth-limited delivery: ${grow.join("|")}`);
       check(loopErrors === 1, `one loop error for the skipped shallower target, got ${loopErrors}`);
@@ -149,6 +167,10 @@
     3() {
       log.push({ phase: 3, calls });
       check(calls.content.length === 3 && calls.content[2][0].contentBox === "136x20", "re-observe reports again");
+      check(
+        calls.detached.length === 3 && calls.detached[2].length === 1 && calls.detached[2][0].id === "ro-removable" && calls.detached[2][0].content === "0,0,0,0" && calls.detached[2][0].borderBox === "0x0",
+        "a target removed from the tree reports 0x0 once",
+      );
       contentObserver.disconnect();
       growObserver.disconnect();
       detachedObserver.disconnect();

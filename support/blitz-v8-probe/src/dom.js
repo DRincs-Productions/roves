@@ -1033,9 +1033,13 @@
       return this.#devicePixelContentBoxSize;
     }
   }
-  // Depth in the tree, for the spec's shallowest-depth rule against loops.
+  // Spec "calculate depth for node": the number of nodes on the path from the
+  // node up to the root of its tree, the node itself included, so every element
+  // has depth >= 1. A disconnected target is the root of its own tree (depth 1)
+  // and must stay deeper than the initial gather depth 0, otherwise its first
+  // 0 x 0 report would be skipped as a loop instead of delivered.
   function nodeDepth(node) {
-    let depth = 0;
+    let depth = 1;
     for (let parent = node.parentNode; parent !== null; parent = parent.parentNode) depth++;
     return depth;
   }
@@ -1106,7 +1110,8 @@
       let flush = true;
       for (const { target, observation } of this.#active) {
         const boxes = resizeBoxes(target, flush);
-        flush = false;
+        // Disconnected targets skip layout, so they must not consume the flush.
+        if (target.isConnected) flush = false;
         entries.push(ResizeObserverEntry._create(target, boxes));
         observation.lastReported = observedSize(boxes, observation.box);
         shallowest = Math.min(shallowest, nodeDepth(target));
