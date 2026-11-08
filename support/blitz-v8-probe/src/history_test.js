@@ -17,14 +17,27 @@
   check(location.href === "game://content/index.html" && location.protocol === "game:", `initial URL ${location.href}`);
   check(history.length === 1 && history.state === null && history instanceof History, "initial history");
 
+  // Regression: the original template assigns scrollRestoration in strict-mode code,
+  // which threw "only a getter" before the setter existed.
+  const restoration = Object.getOwnPropertyDescriptor(History.prototype, "scrollRestoration");
+  check(typeof restoration?.get === "function" && typeof restoration.set === "function", "scrollRestoration accessor");
+  check(history.scrollRestoration === "auto", `initial scrollRestoration ${history.scrollRestoration}`);
+  history.scrollRestoration = "manual";
+  check(history.scrollRestoration === "manual", "scrollRestoration = manual");
+  for (const invalid of ["smooth", "", "AUTO", null, undefined]) history.scrollRestoration = invalid;
+  check(history.scrollRestoration === "manual", "invalid scrollRestoration values are ignored");
+  throws(() => (history.scrollRestoration = Symbol("auto")), "TypeError", "Symbol scrollRestoration");
+
   const state = { scene: 2, flags: ["a"] };
   history.pushState(state, "", "/scene/2?x=1");
+  check(history.scrollRestoration === "manual", "pushState copies scrollRestoration");
+  history.scrollRestoration = "auto";
   check(location.pathname === "/scene/2" && location.search === "?x=1" && history.length === 2, `pushState URL ${location.href}`);
   check(history.state.scene === 2 && history.state !== state, "pushState stores a structured clone");
 
   history.replaceState({ scene: 3 }, "", "#top");
   check(location.hash === "#top" && location.pathname === "/scene/2" && history.length === 2, "replaceState");
-  check(history.state.scene === 3, "replaceState state");
+  check(history.state.scene === 3 && history.scrollRestoration === "auto", "replaceState state and scrollRestoration");
 
   throws(() => history.pushState(null, "", "https://example.com/"), "SecurityError", "cross-origin pushState");
   throws(() => history.pushState({ callback() {} }, ""), undefined, "uncloneable state");
@@ -46,6 +59,8 @@
 
   location.hash = "menu";
   check(history.length === 3 && location.hash === "#menu", "a fragment change adds an entry");
+  check(history.scrollRestoration === "auto", "a fragment entry copies scrollRestoration");
+  history.scrollRestoration = "manual";
   history.back();
   check(location.hash === "#menu", "traversal is asynchronous");
 })();

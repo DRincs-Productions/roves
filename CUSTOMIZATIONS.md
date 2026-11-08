@@ -1,3 +1,22 @@
+## 2026-11-08 - Blitz probe: writable `history.scrollRestoration`
+
+**Files touched:** `support/blitz-v8-probe/src/{history.js,history_test.js,history_check.js}`,
+`TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+After Tone.js started (run 42510350982), the original visual-novel-template stopped with
+`TypeError: Cannot set property scrollRestoration of #<History> which has only a getter`
+(`narration-hooks-LJVJnQ7D.js:1:195585`, `lb.update`; `root_children` 0): the probe's `History`
+only had a getter returning `"manual"`. It now follows the HTML/WebIDL contract: initial value
+`"auto"`; the setter stores `"auto"`/`"manual"` on the current session history entry and silently
+ignores any other string (WebIDL enum attributes do not throw; only a `Symbol` throws `TypeError`
+from string conversion); `pushState` and fragment navigations copy the current entry's mode,
+`replaceState` keeps it, and traversal reads the target entry's mode. The probe still does not
+restore scroll positions (the value is stored, not acted on). No library covers this: deno_web has
+no History, and `deno_webidl`'s enum converter throws `TypeError`, which is the operation-argument
+rule, not the attribute-setter one. `history_test.js`/`history_check.js` cover the strict-mode
+assignment, invalid values and per-entry persistence after `back()`; the CI `game_page` report is
+unchanged. Not run locally (no local build, and Node was not available in the session).
+
 ## 2026-11-08 - Blitz probe: Web Audio API for Tone.js on web-audio-api
 
 **Files touched:** `support/blitz-v8-probe/src/{audio.rs,web_audio.js,audio_test.js,dom.js,main.rs}`,

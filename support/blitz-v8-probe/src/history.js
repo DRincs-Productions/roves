@@ -38,7 +38,9 @@ globalThis.__rovesCreateHistory = (globalThis, dependencies) => {
     }
   }
 
-  const entries = [{ url: new URL(DOCUMENT_URL), state: null }];
+  // Each entry keeps its scroll restoration mode (HTML: initial "auto"; pushState and
+  // fragment navigations copy it from the current entry, replaceState keeps it).
+  const entries = [{ url: new URL(DOCUMENT_URL), state: null, scrollRestoration: "auto" }];
   let index = 0;
   const blockedNavigations = [];
   const current = () => entries[index];
@@ -70,17 +72,23 @@ globalThis.__rovesCreateHistory = (globalThis, dependencies) => {
       return current().state;
     }
     get scrollRestoration() {
-      return "manual";
+      return current().scrollRestoration;
+    }
+    // WebIDL enum attribute: values other than "auto"/"manual" are ignored, not thrown.
+    set scrollRestoration(value) {
+      const mode = `${value}`;
+      if (mode === "auto" || mode === "manual") current().scrollRestoration = mode;
     }
     pushState(state, _unused, url = null) {
       const target = url === null || url === undefined ? new URL(current().url.href) : resolveSameOrigin(url, "pushState");
+      const entry = { url: target, state: structuredClone(state), scrollRestoration: current().scrollRestoration };
       entries.splice(index + 1);
-      entries.push({ url: target, state: structuredClone(state) });
+      entries.push(entry);
       index = entries.length - 1;
     }
     replaceState(state, _unused, url = null) {
       const target = url === null || url === undefined ? current().url : resolveSameOrigin(url, "replaceState");
-      entries[index] = { url: target, state: structuredClone(state) };
+      entries[index] = { url: target, state: structuredClone(state), scrollRestoration: current().scrollRestoration };
     }
     go(delta = 0) {
       delta = Math.trunc(Number(delta)) || 0;
@@ -110,9 +118,9 @@ globalThis.__rovesCreateHistory = (globalThis, dependencies) => {
 
   // Same-document fragment navigation: a new entry plus an async hashchange.
   function navigateToFragment(target) {
-    const from = current().url;
+    const { url: from, scrollRestoration } = current();
     entries.splice(index + 1);
-    entries.push({ url: target, state: null });
+    entries.push({ url: target, state: null, scrollRestoration });
     index = entries.length - 1;
     setTimeout(() => {
       globalThis.dispatchEvent(new HashChangeEvent("hashchange", { oldURL: from.href, newURL: target.href }));
