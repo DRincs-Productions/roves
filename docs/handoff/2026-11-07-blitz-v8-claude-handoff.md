@@ -135,3 +135,7 @@ La sessione Claude non interattiva con acceptEdits ha negato npm install, lettur
 ### Primo passo implementato da Codex
 
 Il probe ora esegue un controllo offline su web-audio-api 1.7.0, senza backend dispositivo. Render di 256 campioni a 0,25 da sorgente costante e gain. Lockfile risolto senza aggiornare le dipendenze esistenti. Restano il ponte JS AudioContext, la regressione Tone e il mount del template originale. Nessuna build locale.
+
+### Ponte V8, checkpoint corrente
+
+Il gate offline e verde in entrambe le modalita Windows nella run 42496314721. Il commit fbc680feb5d pubblica il test V8 di creazione, lettura e chiusura del contesto headless. Run 42497588883 in corso. Il commit locale successivo estende il test al GainNode nativo con valore di default, scrittura e lettura, e rifiuto di Infinity. Il bridge e ancora privato. Il prossimo passo e aggiungere i wrapper Web per il grafo di Tone e verificare il bootstrap sul template originale. La delega resta sospesa fino alla verifica della parte critica.

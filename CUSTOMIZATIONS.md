@@ -10,6 +10,8 @@ The probe also checks the native context bridge through V8. Its private ops
 create a headless Rust context, read its sample rate and state, and close it.
 The handle is managed by V8's C++ garbage collector. Both Windows CI modes
 require this result. The probe exposes these ops only to the embedder check.
+The same check creates a native gain node, verifies its default value, writes
+and reads its gain through V8, and rejects nonfinite inputs.
 
 ## 2026-11-08 - Blitz probe CI: retry transient V8 prebuilt download failures
 

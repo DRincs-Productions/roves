@@ -8,9 +8,19 @@ use deno_error::JsErrorBox;
 use web_audio_api::context::{
     AudioContext, AudioContextOptions, AudioContextState, BaseAudioContext, OfflineAudioContext,
 };
-use web_audio_api::node::{AudioNode, AudioScheduledSourceNode};
+use web_audio_api::node::{AudioNode, AudioScheduledSourceNode, GainNode};
 
 pub struct NativeAudioContext(AudioContext);
+pub struct NativeGainNode(GainNode);
+
+// SAFETY: the Rust node owns no V8 references.
+unsafe impl GarbageCollected for NativeGainNode {
+    fn trace(&self, _visitor: &mut Visitor) {}
+
+    fn get_name(&self) -> &'static std::ffi::CStr {
+        c"RovesNativeGainNode"
+    }
+}
 
 // SAFETY: the Rust audio context owns no V8 references.
 unsafe impl GarbageCollected for NativeAudioContext {
@@ -52,6 +62,27 @@ fn op_audio_context_close_for_probe(#[cppgc] context: &NativeAudioContext) {
     context.0.close_sync();
 }
 
+#[op2]
+#[cppgc]
+fn op_audio_context_create_gain(#[cppgc] context: &NativeAudioContext) -> NativeGainNode {
+    NativeGainNode(context.0.create_gain())
+}
+
+#[op2(fast)]
+fn op_audio_gain_value(#[cppgc] node: &NativeGainNode) -> f64 {
+    f64::from(node.0.gain().value())
+}
+
+#[op2(fast)]
+fn op_audio_gain_set_value(#[cppgc] node: &NativeGainNode, value: f64) -> Result<(), JsErrorBox> {
+    let value = value as f32;
+    if !value.is_finite() {
+        return Err(JsErrorBox::type_error("Gain must be a finite float"));
+    }
+    node.0.gain().set_value(value);
+    Ok(())
+}
+
 deno_core::extension!(
     roves_blitz_audio,
     ops = [
@@ -59,6 +90,9 @@ deno_core::extension!(
         op_audio_context_sample_rate,
         op_audio_context_state,
         op_audio_context_close_for_probe,
+        op_audio_context_create_gain,
+        op_audio_gain_value,
+        op_audio_gain_set_value,
     ],
 );
 
