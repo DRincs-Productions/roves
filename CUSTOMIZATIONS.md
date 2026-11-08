@@ -1,3 +1,37 @@
+## 2026-11-08 - Blitz probe: `ResizeObserver` over Blitz layout
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,resize_observer_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+After `getElementsByTagName`, CI run 42515709777 (both Windows modes) and its artifact run locally
+on the unmodified visual-novel-template stopped in Motion 12.38.0 init with
+`ReferenceError: ResizeObserver is not defined` (`motion-C7hs86Fb.js:7669:12330`, `root_children` 0).
+No maintained Deno extension provides ResizeObserver (deno_web has no DOM/layout) and Blitz exposes
+no observer API, so the probe implements the CSSWG Resize Observer 1 processing model in `dom.js`
+on top of the layout Blitz already computes. A new op `op_blitz_box_sizes` reads the node's Taffy
+`final_layout` (border-box size, border, padding, scrollbar) and returns the content rect
+(padding-left/top, content width/height) and the border-box size; it flushes style + layout only
+when asked (once per observation pass). Observations are processed in `runAnimationFrame` after
+the rAF callbacks, as in HTML "update the rendering": gather at depth, broadcast, repeat for deeper
+targets, then dispatch `ErrorEvent("ResizeObserver loop completed with undelivered
+notifications.")` when shallower changes were skipped (they are delivered next frame). Callbacks
+therefore always run asynchronously in the embedder's frame entry on the V8 thread, never from an
+op or while Blitz is borrowed. API: `observe(target, { box })` (`content-box`, `border-box`,
+`device-pixel-content-box`; re-observing re-arms the first report), `unobserve`, `disconnect`;
+`ResizeObserverEntry` with `target`, `contentRect` (`DOMRectReadOnly`), frozen
+`borderBoxSize`/`contentBoxSize`/`devicePixelContentBoxSize` of `ResizeObserverSize`. The first
+report fires for every target, 0x0 ones included (`lastReportedSizes` starts at -1x-1; the spec
+text could not be re-read in this session, so this follows Chrome's behaviour from memory).
+`DOMRect` now extends a new `DOMRectReadOnly` global with prototype accessors (previously own
+data properties; `toJSON` unchanged). Simplifications: horizontal writing mode only, SVG elements
+use their CSS layout box instead of the SVG bbox, `devicePixelRatio` is 1, disconnected and
+`display: none` targets report 0x0, and observed targets are held strongly until
+`unobserve`/`disconnect` (browsers hold them weakly). With no observers the per-frame cost is one
+`Set` size check. Regression: `resize_observer_test.js`, a new `resize_observer` stage driving
+frames between four phases (initial reports and sizes, layout-driven resize through a parent,
+`disconnect`/`unobserve`, depth rule with loop error, re-observe, no callbacks after disconnect).
+Not compiled or run locally (no local build; `node --check` not authorized in the session).
+
 ## 2026-11-08 - Blitz probe: `getElementsByTagName` with a live `HTMLCollection`
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,

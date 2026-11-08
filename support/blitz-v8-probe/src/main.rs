@@ -27,6 +27,7 @@ const HISTORY_CHECK: &str = include_str!("history_check.js");
 const GUEST_TEST: &str = include_str!("guest_test.js");
 const FRAME_TEST: &str = include_str!("frame_test.js");
 const FRAME_CHECK: &str = include_str!("frame_check.js");
+const RESIZE_OBSERVER_TEST: &str = include_str!("resize_observer_test.js");
 const MOTION_CHECK: &str = include_str!("motion_check.js");
 const GC_TEST: &str = include_str!("gc_test.js");
 const DOM_API_TEST: &str = include_str!("dom_api_test.js");
@@ -699,9 +700,10 @@ fn op_blitz_remove_attribute(
     Ok(())
 }
 
-/// Last rectangle measured by `op_blitz_measure` (x, y, width, height).
+/// Last values measured by `op_blitz_measure` (x, y, width, height) or
+/// `op_blitz_box_sizes` (content x, y, width, height, border-box width, height).
 #[derive(Default)]
-struct LastRect([f64; 4]);
+struct LastRect([f64; 6]);
 
 /// Forces style + layout (as browsers do for geometry reads), then stores the
 /// client bounding rect (`offset == false`) or the offset rect of the node.
@@ -722,16 +724,62 @@ fn op_blitz_measure(
         document.get_client_bounding_rect(node_id)
     };
     let Some(rect) = rect else {
-        state.borrow_mut().borrow_mut::<LastRect>().0 = [0.0; 4];
+        state.borrow_mut().borrow_mut::<LastRect>().0 = [0.0; 6];
         return Ok(false);
     };
-    state.borrow_mut().borrow_mut::<LastRect>().0 = [rect.x, rect.y, rect.width, rect.height];
+    state.borrow_mut().borrow_mut::<LastRect>().0 =
+        [rect.x, rect.y, rect.width, rect.height, 0.0, 0.0];
     Ok(true)
+}
+
+/// Box sizes for ResizeObserver, from the Taffy layout Blitz already computed:
+/// stores the content rect relative to the border box (padding-left,
+/// padding-top, content width, content height) and the border-box size.
+/// `flush` forces style + layout first (once per observation pass in `dom.js`).
+/// Elements without a box (e.g. `display: none`) have a zero layout.
+#[op2(fast)]
+fn op_blitz_box_sizes(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    flush: bool,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    if flush {
+        document.resolve(0.0);
+    }
+    let layout = *document
+        .get_node(node_id)
+        .ok_or_else(|| JsErrorBox::type_error("node is gone"))?
+        .final_layout();
+    let (size, border, padding) = (layout.size, layout.border, layout.padding);
+    let content_width = size.width
+        - border.left
+        - border.right
+        - padding.left
+        - padding.right
+        - layout.scrollbar_size.width;
+    let content_height = size.height
+        - border.top
+        - border.bottom
+        - padding.top
+        - padding.bottom
+        - layout.scrollbar_size.height;
+    state.borrow_mut().borrow_mut::<LastRect>().0 = [
+        f64::from(padding.left),
+        f64::from(padding.top),
+        f64::from(content_width.max(0.0)),
+        f64::from(content_height.max(0.0)),
+        f64::from(size.width),
+        f64::from(size.height),
+    ];
+    Ok(())
 }
 
 #[op2(fast)]
 fn op_blitz_rect_component(state: Rc<RefCell<OpState>>, index: u32) -> f64 {
-    state.borrow().borrow::<LastRect>().0[(index as usize).min(3)]
+    state.borrow().borrow::<LastRect>().0[(index as usize).min(5)]
 }
 
 /// Viewport size in CSS pixels: 0 = width, 1 = height.
@@ -856,6 +904,7 @@ deno_core::extension!(
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
         op_blitz_measure,
+        op_blitz_box_sizes,
         op_blitz_rect_component,
         op_blitz_viewport_size,
         op_blitz_focus,
@@ -1322,6 +1371,24 @@ fn main() {
             .expect("asynchronous popstate/hashchange must have fired");
         let box_rect = element_rect(&document, "box");
         assert_eq!(box_rect.2, 60.0, "rAF style writes must reach Blitz layout");
+
+        // ResizeObserver: observations are processed by runAnimationFrame after
+        // the rAF callbacks; each phase checks the frames driven before it.
+        stage("resize_observer");
+        runtime
+            .execute_script("roves-blitz-resize-observer-test.js", RESIZE_OBSERVER_TEST)
+            .expect("ResizeObserver setup should run");
+        for phase in [
+            "resizeObserverPhase(1)",
+            "resizeObserverPhase(2)",
+            "resizeObserverPhase(3)",
+            "resizeObserverPhase(4)",
+        ] {
+            drive_frames(&mut runtime, &document, &run_animation_frame, 3).await;
+            runtime
+                .execute_script("roves-blitz-resize-observer-check.js", phase)
+                .expect("ResizeObserver observe/resize/disconnect checks should pass");
+        }
 
         // Motion: its JS frameloop (no WAAPI here) runs on rAF + performance.now and
         // writes inline transform/opacity. 0.1 s needs ~6 frames; 20 leave margin.

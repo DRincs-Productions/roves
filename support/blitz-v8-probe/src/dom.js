@@ -46,6 +46,7 @@
     op_blitz_set_inner_html,
     op_blitz_remove_attribute,
     op_blitz_measure,
+    op_blitz_box_sizes,
     op_blitz_rect_component,
     op_blitz_viewport_size,
     op_blitz_focus,
@@ -369,9 +370,34 @@
   }
 
   // Geometry reads force style + layout in Rust, like browsers.
-  class DOMRect {
+  // DOMRectReadOnly/DOMRect per Geometry Interfaces: accessors on the
+  // prototype, DOMRect adds the setters (ResizeObserverEntry.contentRect is
+  // read-only).
+  let setRectValue;
+  class DOMRectReadOnly {
+    #values;
     constructor(x = 0, y = 0, width = 0, height = 0) {
-      Object.assign(this, { x, y, width, height });
+      this.#values = [Number(x), Number(y), Number(width), Number(height)];
+    }
+    static {
+      setRectValue = (rect, index, value) => {
+        rect.#values[index] = Number(value);
+      };
+    }
+    static fromRect(other = {}) {
+      return new this(other.x, other.y, other.width, other.height);
+    }
+    get x() {
+      return this.#values[0];
+    }
+    get y() {
+      return this.#values[1];
+    }
+    get width() {
+      return this.#values[2];
+    }
+    get height() {
+      return this.#values[3];
     }
     get left() {
       return Math.min(this.x, this.x + this.width);
@@ -388,6 +414,32 @@
     toJSON() {
       const { x, y, width, height, left, top, right, bottom } = this;
       return { x, y, width, height, left, top, right, bottom };
+    }
+  }
+  class DOMRect extends DOMRectReadOnly {
+    get x() {
+      return super.x;
+    }
+    set x(value) {
+      setRectValue(this, 0, value);
+    }
+    get y() {
+      return super.y;
+    }
+    set y(value) {
+      setRectValue(this, 1, value);
+    }
+    get width() {
+      return super.width;
+    }
+    set width(value) {
+      setRectValue(this, 2, value);
+    }
+    get height() {
+      return super.height;
+    }
+    set height(value) {
+      setRectValue(this, 3, value);
     }
   }
   function measure(element, offset) {
@@ -886,6 +938,219 @@
     }
   }
 
+  // ResizeObserver (CSSWG Resize Observer 1). Sizes come from the Taffy layout
+  // Blitz already computes (op_blitz_box_sizes); nothing is measured in JS.
+  // Observations are processed from runAnimationFrame, after the rAF callbacks,
+  // as in HTML "update the rendering": callbacks always run asynchronously on
+  // the V8 thread inside the embedder's frame entry, never from an op.
+  // Horizontal writing mode only (inlineSize = width, blockSize = height); SVG
+  // elements use their CSS layout box, not the SVG bounding box.
+  const RESIZE_OBSERVER_BOXES = ["content-box", "border-box", "device-pixel-content-box"];
+  const resizeObservers = new Set();
+  class ResizeObserverSize {
+    #inlineSize;
+    #blockSize;
+    constructor() {
+      if (!constructing) throw new TypeError("Illegal constructor");
+    }
+    static _create(inlineSize, blockSize) {
+      constructing = true;
+      try {
+        const size = new ResizeObserverSize();
+        size.#inlineSize = inlineSize;
+        size.#blockSize = blockSize;
+        return Object.freeze(size);
+      } finally {
+        constructing = false;
+      }
+    }
+    get inlineSize() {
+      return this.#inlineSize;
+    }
+    get blockSize() {
+      return this.#blockSize;
+    }
+  }
+  const ZERO_BOXES = Object.freeze({ x: 0, y: 0, width: 0, height: 0, borderWidth: 0, borderHeight: 0 });
+  function resizeBoxes(target, flush) {
+    if (!target.isConnected) return ZERO_BOXES;
+    op_blitz_box_sizes(handleOf(target, "observe"), flush);
+    return {
+      x: op_blitz_rect_component(0),
+      y: op_blitz_rect_component(1),
+      width: op_blitz_rect_component(2),
+      height: op_blitz_rect_component(3),
+      borderWidth: op_blitz_rect_component(4),
+      borderHeight: op_blitz_rect_component(5),
+    };
+  }
+  // "calculate box size" for the observed box; devicePixelRatio is 1 here.
+  function observedSize(boxes, box) {
+    if (box === "border-box") return [boxes.borderWidth, boxes.borderHeight];
+    if (box === "device-pixel-content-box") {
+      return [Math.round(boxes.width * devicePixelRatio), Math.round(boxes.height * devicePixelRatio)];
+    }
+    return [boxes.width, boxes.height];
+  }
+  class ResizeObserverEntry {
+    #target;
+    #contentRect;
+    #borderBoxSize;
+    #contentBoxSize;
+    #devicePixelContentBoxSize;
+    constructor() {
+      if (!constructing) throw new TypeError("Illegal constructor");
+    }
+    static _create(target, boxes) {
+      constructing = true;
+      let entry;
+      try {
+        entry = new ResizeObserverEntry();
+      } finally {
+        constructing = false;
+      }
+      const sizes = (box) => Object.freeze([ResizeObserverSize._create(...observedSize(boxes, box))]);
+      entry.#target = target;
+      entry.#contentRect = new DOMRectReadOnly(boxes.x, boxes.y, boxes.width, boxes.height);
+      entry.#borderBoxSize = sizes("border-box");
+      entry.#contentBoxSize = sizes("content-box");
+      entry.#devicePixelContentBoxSize = sizes("device-pixel-content-box");
+      return entry;
+    }
+    get target() {
+      return this.#target;
+    }
+    get contentRect() {
+      return this.#contentRect;
+    }
+    get borderBoxSize() {
+      return this.#borderBoxSize;
+    }
+    get contentBoxSize() {
+      return this.#contentBoxSize;
+    }
+    get devicePixelContentBoxSize() {
+      return this.#devicePixelContentBoxSize;
+    }
+  }
+  // Depth in the tree, for the spec's shallowest-depth rule against loops.
+  function nodeDepth(node) {
+    let depth = 0;
+    for (let parent = node.parentNode; parent !== null; parent = parent.parentNode) depth++;
+    return depth;
+  }
+  class ResizeObserver {
+    #callback;
+    // target -> { box, lastReported: [inline, block] }, in observation order.
+    #observations = new Map();
+    #active = [];
+    #skipped = false;
+    constructor(callback) {
+      if (typeof callback !== "function") {
+        throw new TypeError("Failed to construct 'ResizeObserver': parameter 1 is not of type 'Function'.");
+      }
+      this.#callback = callback;
+    }
+    observe(target, options = {}) {
+      if (!(target instanceof Element)) {
+        throw new TypeError("Failed to execute 'observe' on 'ResizeObserver': parameter 1 is not of type 'Element'.");
+      }
+      const box = options?.box === undefined ? "content-box" : String(options.box);
+      if (!RESIZE_OBSERVER_BOXES.includes(box)) {
+        throw new TypeError(`Failed to execute 'observe' on 'ResizeObserver': The provided value '${box}' is not a valid enum value of type ResizeObserverBoxOptions.`);
+      }
+      // Re-observing replaces the observation (and re-arms the first report).
+      this.#observations.delete(target);
+      // -1 x -1 so the first pass reports every target, including 0 x 0 ones.
+      this.#observations.set(target, { box, lastReported: [-1, -1] });
+      resizeObservers.add(this);
+    }
+    unobserve(target) {
+      if (!(target instanceof Element)) {
+        throw new TypeError("Failed to execute 'unobserve' on 'ResizeObserver': parameter 1 is not of type 'Element'.");
+      }
+      this.#observations.delete(target);
+      this.#active = this.#active.filter((observation) => observation.target !== target);
+      if (this.#observations.size === 0) resizeObservers.delete(this);
+    }
+    disconnect() {
+      this.#observations.clear();
+      this.#active = [];
+      resizeObservers.delete(this);
+    }
+    // "gather active observations at depth": `measure` flushes layout once per pass.
+    _gather(depth, measure) {
+      this.#active = [];
+      this.#skipped = false;
+      for (const [target, observation] of this.#observations) {
+        const [inline, block] = observedSize(measure(target), observation.box);
+        if (inline === observation.lastReported[0] && block === observation.lastReported[1]) continue;
+        if (nodeDepth(target) > depth) {
+          this.#active.push({ target, observation });
+        } else {
+          this.#skipped = true;
+        }
+      }
+    }
+    _hasActive() {
+      return this.#active.length > 0;
+    }
+    _hasSkipped() {
+      return this.#skipped;
+    }
+    // "broadcast active observations": returns the shallowest delivered depth.
+    _broadcast() {
+      let shallowest = Infinity;
+      if (this.#active.length === 0) return shallowest;
+      const entries = [];
+      let flush = true;
+      for (const { target, observation } of this.#active) {
+        const boxes = resizeBoxes(target, flush);
+        flush = false;
+        entries.push(ResizeObserverEntry._create(target, boxes));
+        observation.lastReported = observedSize(boxes, observation.box);
+        shallowest = Math.min(shallowest, nodeDepth(target));
+      }
+      this.#active = [];
+      try {
+        this.#callback.call(this, entries, this);
+      } catch (error) {
+        reportException(error);
+      }
+      return shallowest;
+    }
+  }
+  // Steps 14-16 of "update the rendering" for the document.
+  function processResizeObservations() {
+    if (resizeObservers.size === 0) return;
+    const gather = (depth) => {
+      // One style + layout flush per pass; callbacks may have changed the tree.
+      const cache = new Map();
+      let flush = true;
+      const measure = (target) => {
+        let boxes = cache.get(target);
+        if (boxes === undefined) {
+          boxes = resizeBoxes(target, flush);
+          if (target.isConnected) flush = false;
+          cache.set(target, boxes);
+        }
+        return boxes;
+      };
+      for (const observer of resizeObservers) observer._gather(depth, measure);
+    };
+    gather(0);
+    while ([...resizeObservers].some((observer) => observer._hasActive())) {
+      let depth = Infinity;
+      for (const observer of [...resizeObservers]) depth = Math.min(depth, observer._broadcast());
+      gather(depth);
+    }
+    if ([...resizeObservers].some((observer) => observer._hasSkipped())) {
+      const message = "ResizeObserver loop completed with undelivered notifications.";
+      const event = new ErrorEvent("error", { message, cancelable: true });
+      if (globalThis.dispatchEvent(event)) core.print(`${message}\n`, true);
+    }
+  }
+
   // Live HTMLCollection (DOM §4.2.10.2): the element list is recomputed lazily
   // whenever the tree changed since the last read (treeVersion), so nodes
   // inserted or removed after the call are reflected like in browsers. A Proxy
@@ -1311,6 +1576,8 @@
         reportException(error);
       }
     }
+    // After the rAF callbacks, as in "update the rendering".
+    processResizeObservations();
     sweepWrappers();
   }
 
@@ -1353,6 +1620,10 @@
       }, Math.min(Number(options.timeout ?? 1), 1)),
     cancelIdleCallback: (handle) => timers.clearTimeout(handle),
     DOMRect,
+    DOMRectReadOnly,
+    ResizeObserver,
+    ResizeObserverEntry,
+    ResizeObserverSize,
     UIEvent,
     MouseEvent,
     PointerEvent,
