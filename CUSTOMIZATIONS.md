@@ -3,7 +3,8 @@
 The isolated probe pins `web-audio-api` 1.7.0 with device backends disabled.
 The default probe run renders a constant source through a gain node and checks
 all 256 output samples. This checks the Rust audio graph on CI without an audio
-device. The Web Audio bindings for Tone.js and the game startup check are pending.
+device. Both Windows CI modes require the offline check result in the probe log.
+The Web Audio bindings for Tone.js and the game startup check are pending.
 
 ## 2026-11-08 - Blitz probe CI: retry transient V8 prebuilt download failures
 
