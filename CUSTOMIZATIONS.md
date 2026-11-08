@@ -1,3 +1,29 @@
+## 2026-11-08 - Blitz probe: `getElementsByTagName` with a live `HTMLCollection`
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+After `history.scrollRestoration`, CI run 42512658832 (and its artifact run locally) stopped the
+original visual-novel-template in Motion 12.38.0 init with
+`TypeError: document.getElementsByTagName is not a function` (`motion-C7hs86Fb.js:2:42603`,
+Motion load -> init, `root_children` 0). `Document` and `Element` now implement it per DOM
+("list of elements with qualified name"): `"*"` returns every descendant element, HTML-namespace
+elements match the ASCII-lowercased name, other elements match it exactly; the root is excluded,
+results are in tree order. The result is a new `HTMLCollection` global (`length`, `item()`,
+`namedItem()` by `id`/HTML `name`, indexed properties via a Proxy, iteration). It is **live**, as
+the spec requires: each collection recomputes lazily when a tree-version counter changed. The
+counter is bumped by every `childList` mutation; all tree mutations in the probe go through the
+`dom.js` wrappers (`appendChild`/`insertBefore`/`removeChild`/`textContent`/`innerHTML`), so reads
+without intervening mutations reuse the cached list. Matching reuses Blitz/Stylo selectors:
+`"*"` and plain lowercase names are a `querySelectorAll` type selector (equal semantics regardless
+of Stylo's HTML case folding); other names filter `querySelectorAll("*")` by `localName`.
+Simplifications: no named properties on the collection object (only `namedItem`), no prefixed
+qualified names (the probe creates no prefixed elements), and a new object per call. No library
+needed: the DOM is the probe's own wrapper over Blitz, and deno_web has no DOM. `dom_api_test.js`
+covers single tag, case rules (HTML vs `foreignObject`), wildcard, document scope, and liveness
+after `appendChild`/`remove`/`innerHTML` and on a detached root. Not run locally (no local build;
+Node was not authorized in the session).
+
 ## 2026-11-08 - Blitz probe: writable `history.scrollRestoration`
 
 **Files touched:** `support/blitz-v8-probe/src/{history.js,history_test.js,history_check.js}`,

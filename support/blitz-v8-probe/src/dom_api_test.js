@@ -110,6 +110,44 @@
   check(document.readyState === "loading" && document.defaultView === globalThis, "readyState / defaultView");
   check(typeof MessageChannel === "function" && typeof requestIdleCallback === "function", "MessageChannel / requestIdleCallback");
 
+  // getElementsByTagName: live HTMLCollection (Motion 12 calls it during init).
+  host.innerHTML = '<div id="tags"><p id="p1">a</p><span><p name="second">b</p></span><svg><foreignObject></foreignObject></svg></div>';
+  const tags = host.querySelector("#tags");
+  const paragraphs = tags.getElementsByTagName("p");
+  check(paragraphs instanceof HTMLCollection && !(paragraphs instanceof NodeList), "getElementsByTagName returns an HTMLCollection");
+  check(Object.prototype.toString.call(paragraphs) === "[object HTMLCollection]", "HTMLCollection toStringTag");
+  check(paragraphs.length === 2 && paragraphs[0].id === "p1" && paragraphs.item(1).textContent === "b", "single tag in tree order");
+  check(paragraphs[2] === undefined && paragraphs.item(2) === null && !(2 in paragraphs) && 1 in paragraphs, "out of range");
+  check(paragraphs.namedItem("p1") === paragraphs[0] && paragraphs.namedItem("second") === paragraphs[1], "namedItem by id/name");
+  check(paragraphs.namedItem("") === null && paragraphs.namedItem("missing") === null, "namedItem miss");
+  check([...paragraphs].length === 2 && Object.keys(paragraphs).join() === "0,1", "iteration and indexed keys");
+  check(tags.getElementsByTagName("P").length === 2, "HTML elements match the lowercased name");
+  check(tags.getElementsByTagName("foreignObject").length === 1 && tags.getElementsByTagName("foreignobject").length === 0,
+    "non-HTML elements match the exact name");
+  check(tags.getElementsByTagName("table").length === 0, "no match is empty");
+  const all = tags.getElementsByTagName("*");
+  check(all.length === 5 && all[0].localName === "p" && all[1].localName === "span", `wildcard descendants in tree order: ${all.length}`);
+  check(!Array.prototype.includes.call(all, tags), "the root itself is excluded");
+  const heads = document.getElementsByTagName("head");
+  check(heads.length === 1 && heads[0] === document.querySelector("head"), "document.getElementsByTagName");
+  check(document.getElementsByTagName("*")[0] === document.documentElement, "document wildcard starts at <html>");
+  // Liveness: later insertions and removals are reflected by the same object.
+  const later = document.createElement("p");
+  tags.appendChild(later);
+  check(paragraphs.length === 3 && paragraphs[2] === later && all.length === 6, "live after appendChild");
+  tags.firstChild.remove();
+  check(paragraphs.length === 2 && paragraphs[0].textContent === "b", "live after remove");
+  tags.querySelector("span").innerHTML = "<p>c</p><p>d</p>";
+  check(paragraphs.length === 3 && paragraphs[1].textContent === "d", "live after innerHTML");
+  const detached = document.createElement("div");
+  const detachedParagraphs = detached.getElementsByTagName("p");
+  check(detachedParagraphs.length === 0, "detached root starts empty");
+  detached.appendChild(document.createElement("p"));
+  check(detachedParagraphs.length === 1, "live on a detached root");
+  tags.innerHTML = "";
+  check(paragraphs.length === 0 && all.length === 0, "live after clearing the root");
+  host.innerHTML = "";
+
   // Attributes.
   host.setAttribute("data-x", "1");
   check(host.hasAttribute("data-x"), "hasAttribute");

@@ -608,6 +608,10 @@
     webkitMatchesSelector(selectors) {
       return this.matches(selectors);
     }
+    getElementsByTagName(qualifiedName) {
+      handleOf(this, "getElementsByTagName");
+      return elementsByTagName(this, qualifiedName);
+    }
     closest(selectors) {
       for (let node = this; node !== null; node = node.parentNode) {
         if (node.nodeType === ELEMENT_NODE && node.matches(selectors)) return node;
@@ -788,10 +792,15 @@
   // attributeFilter/oldValue, characterData with oldValue, subtree).
   const mutationObservers = new Set();
   let mutationDeliveryQueued = false;
+  // Bumped on every childList change; invalidates live HTMLCollections.
+  let treeVersion = 0;
   function mutationObserversActive() {
     return mutationObservers.size > 0;
   }
   function queueMutation(target, type, details) {
+    // Every tree change in the probe goes through the wrapper methods that call
+    // this, so the counter is a sound invalidation key for live HTMLCollections.
+    if (type === "childList") treeVersion++;
     if (mutationObservers.size === 0) return;
     if (type === "childList" && !(details.addedNodes?.length || details.removedNodes?.length)) return;
     let queued = false;
@@ -875,6 +884,110 @@
         reportException(error);
       }
     }
+  }
+
+  // Live HTMLCollection (DOM §4.2.10.2): the element list is recomputed lazily
+  // whenever the tree changed since the last read (treeVersion), so nodes
+  // inserted or removed after the call are reflected like in browsers. A Proxy
+  // provides the indexed properties; state lives in a WeakMap keyed by the proxy.
+  const collectionState = new WeakMap();
+  const isIndex = (key) => typeof key === "string" && /^(0|[1-9]\d*)$/.test(key);
+  function collectionElements(collection) {
+    const state = collectionState.get(collection);
+    if (state === undefined) throw new TypeError("Illegal invocation");
+    if (state.version !== treeVersion) {
+      state.elements = state.compute();
+      state.version = treeVersion;
+    }
+    return state.elements;
+  }
+  class HTMLCollection {
+    constructor() {
+      if (!constructing) throw new TypeError("Illegal constructor");
+    }
+    get length() {
+      return collectionElements(this).length;
+    }
+    item(index) {
+      return collectionElements(this)[index >>> 0] ?? null;
+    }
+    namedItem(name) {
+      const key = String(name);
+      if (key === "") return null;
+      return collectionElements(this).find((element) =>
+        element.getAttribute("id") === key ||
+        (element.namespaceURI === HTML_NAMESPACE && element.getAttribute("name") === key)) ?? null;
+    }
+    [Symbol.iterator]() {
+      return collectionElements(this)[Symbol.iterator]();
+    }
+    get [Symbol.toStringTag]() {
+      return "HTMLCollection";
+    }
+  }
+  function createHTMLCollection(compute) {
+    constructing = true;
+    let target;
+    try {
+      target = new HTMLCollection();
+    } finally {
+      constructing = false;
+    }
+    const proxy = new Proxy(target, {
+      get(object, key, receiver) {
+        if (isIndex(key)) return collectionElements(proxy)[key];
+        return Reflect.get(object, key, receiver);
+      },
+      has(object, key) {
+        if (isIndex(key)) return Number(key) < collectionElements(proxy).length;
+        return Reflect.has(object, key);
+      },
+      set(object, key, value, receiver) {
+        if (isIndex(key)) return false;
+        return Reflect.set(object, key, value, receiver);
+      },
+      defineProperty(object, key, descriptor) {
+        if (isIndex(key)) return false;
+        return Reflect.defineProperty(object, key, descriptor);
+      },
+      deleteProperty(object, key) {
+        if (isIndex(key)) return !(Number(key) < collectionElements(proxy).length);
+        return Reflect.deleteProperty(object, key);
+      },
+      getOwnPropertyDescriptor(object, key) {
+        if (isIndex(key)) {
+          const element = collectionElements(proxy)[key];
+          return element === undefined
+            ? undefined
+            : { value: element, writable: false, enumerable: true, configurable: true };
+        }
+        return Reflect.getOwnPropertyDescriptor(object, key);
+      },
+      ownKeys(object) {
+        const indices = collectionElements(proxy).map((_, index) => String(index));
+        return [...indices, ...Reflect.ownKeys(object)];
+      },
+    });
+    collectionState.set(proxy, { compute, elements: [], version: -1 });
+    return proxy;
+  }
+  // getElementsByTagName (DOM §4.4 "list of elements with qualified name"):
+  // "*" matches every descendant element; otherwise HTML-namespace elements match
+  // the ASCII-lowercased name and other elements match it exactly. For "*" and
+  // plain lowercase names both rules reduce to an exact CSS type selector, so
+  // those (the common "head"/"style"/"script" case) go through Blitz/Stylo
+  // matching without depending on Stylo's HTML case folding; any other name
+  // (uppercase, prefixed, needing escapes) is filtered by localName in JS.
+  const PLAIN_LOWERCASE_TAG = /^[a-z_][a-z0-9_-]*$/;
+  function elementsByTagName(root, qualifiedName) {
+    const name = String(qualifiedName);
+    if (name === "*" || PLAIN_LOWERCASE_TAG.test(name)) {
+      return createHTMLCollection(() => [...root.querySelectorAll(name)]);
+    }
+    const lower = name.replace(/[A-Z]/g, (c) => c.toLowerCase());
+    return createHTMLCollection(() =>
+      [...root.querySelectorAll("*")].filter((element) =>
+        element.localName === (element.namespaceURI === HTML_NAMESPACE ? lower : name)));
   }
 
   function createNodeList(nodes) {
@@ -1060,6 +1173,10 @@
       const handle = op_blitz_get_element_by_id(String(id));
       return handle < 0 ? null : wrap(handle);
     }
+    getElementsByTagName(qualifiedName) {
+      handleOf(this, "getElementsByTagName");
+      return elementsByTagName(this, qualifiedName);
+    }
     createElement(name) {
       name = String(name);
       if (!VALID_NAME.test(name)) {
@@ -1222,6 +1339,7 @@
     SVGElement,
     HTMLCanvasElement,
     NodeList,
+    HTMLCollection,
     DOMTokenList,
     MutationObserver,
     MutationRecord,
