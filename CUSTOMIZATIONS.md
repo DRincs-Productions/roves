@@ -1,3 +1,51 @@
+## 2026-11-09 - Blitz probe: dedicated `Worker` on a separate deno_core isolate
+
+**Files touched:** `support/blitz-v8-probe/src/{worker.rs,worker.js,worker_scope.js,worker_test.js,dom.js,main.rs}`,
+`.github/workflows/blitz-probe.yml`, `support/blitz-v8-probe/README.md`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The normal Windows artifact of CI run 42587204259 (green in normal and JITless), on the
+unchanged visual-novel-template `main` (`bb9ea779`) with fresh storage, passes `canPlayType` and
+stops with `ReferenceError: Worker is not defined` at
+`game://content/assets/motion-C7hs86Fb.js:1253:443`. The function is PixiJS's
+`WorkerManager.isImageBitmapSupported` (bundled into the template's `motion` chunk; PixiJS 8.19.0
+source `lib/assets/loader/workers/WorkerManager.mjs`), reached from `loadTextures.load` because the
+probe has `createImageBitmap` (deno_image) and `preferWorkers` defaults to true: it starts a
+blob-URL worker running `checkImageBitmap` and awaits its first message.
+
+**Reuse evaluation:** no deno_core 0.413-paired extension provides `Worker`. deno_web 0.291 has
+`MessageChannel`/`MessagePort`/`structuredClone` but not workers; Deno's `Worker` is in
+`deno_runtime` (web worker bootstrap, permissions, `Deno.*`, deno_fs/deno_net), which games must
+not get and which would add a privileged runtime graph. No new dependency. The probe implements
+the smallest real worker: `src/worker.rs` spawns a thread per worker with its own `JsRuntime`
+(own V8 isolate, same process-wide JITless flag) loading only deno_webidl and deno_web;
+`src/worker_scope.js` builds a `DedicatedWorkerGlobalScope` from deno_web events/timers/console/
+structuredClone/URL/Blob/text encoding/base64/performance and deletes `Deno`; the script runs with
+`core.evalContext`. Messages cross threads as V8 structured-serialization bytes over
+`futures` mpsc channels (re-exported by deno_core); the owner receives events through an
+unref'd async op resolved when the frame loop polls the event loop, so no V8 call crosses threads
+and nothing re-enters the main isolate. `terminate()` cancels the channels and calls
+`IsolateHandle::terminate_execution`. Uncaught worker errors go through deno_web's
+`reportException` (worker `onerror`/`error` listeners can cancel); uncancelled ones end the
+worker, as in Deno, and fire a cancelable `ErrorEvent` at the `Worker`, then at the page.
+`src/worker.js` implements the owner `Worker` (WebIDL argument checks, `SyntaxError` for bad URLs,
+script from blob:/data:/`game://content/` with a JavaScript MIME type, otherwise an `error`
+Event). `dom.js` also exposes deno_web's `MessageEvent` and loads deno_web's `11_blob_url.js` when
+`URL.createObjectURL` is missing.
+
+Not faked: the worker scope has no `createImageBitmap`, `fetch`, DOM, WebGPU or storage, so Pixi's
+check truthfully answers `false` and Pixi decodes images on the main thread with deno_image.
+Limits: classic workers only (module workers throw `TypeError`), no transfer lists
+(`DataCloneError`), no nested/shared workers, no `importScripts`/`navigator`/`location` in the
+worker, close() ends the worker after the current event-loop turn. Regression `worker_test.js`
+(stage `worker`, required CI check `dedicated_worker_pixi_image_bitmap_probe` in both modes):
+Pixi 8.19.0's check worker verbatim answering `false` while the page keeps `createImageBitmap`,
+worker scope surface, queued message order, structured clone round trip, `DataCloneError`,
+uncaught and worker-cancelled errors, MIME/revoked-URL fetch failures, `terminate()` of a busy
+isolate and of an interval, `close()`, restart. Not compiled or run locally; deno_web exports
+`MessageEvent`, `defineEventHandler`, `blobFromObjectUrl` and `11_blob_url.js` were not readable in
+the session (deno_core 0.413 APIs checked against the vendored copy).
+
 ## 2026-11-09 - Blitz probe: `HTMLMediaElement.canPlayType` capability query, no playback
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,

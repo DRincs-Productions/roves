@@ -13,6 +13,7 @@ use style::properties::{PropertyDeclarationId, PropertyId};
 mod audio;
 mod game;
 mod window;
+mod worker;
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
 const HISTORY: &str = include_str!("history.js");
@@ -20,6 +21,8 @@ const FETCH: &str = include_str!("fetch.js");
 const WEB_AUDIO: &str = include_str!("web_audio.js");
 const INDEXED_DB: &str = include_str!("indexeddb.js");
 const INDEXED_DB_TEST: &str = include_str!("indexeddb_test.js");
+const WORKER: &str = include_str!("worker.js");
+const WORKER_TEST: &str = include_str!("worker_test.js");
 const DOM_BOOTSTRAP: &str = include_str!("dom.js");
 const FETCH_TEST: &str = include_str!("fetch_test.js");
 const FETCH_CHECK: &str = include_str!("fetch_check.js");
@@ -1376,6 +1379,8 @@ fn main() {
                 // createImageBitmap (image decoding) from Deno's maintained extension.
                 deno_image::deno_image::init(),
                 audio::roves_blitz_audio::init(),
+                // Dedicated workers: one isolate and thread each (src/worker.rs).
+                worker::roves_blitz_worker::init(),
                 roves_blitz_v8_probe::init(),
             ],
             module_loader: game.as_ref().map(|game| game.module_loader()),
@@ -1416,6 +1421,9 @@ fn main() {
         runtime
             .execute_script("roves-blitz-indexeddb.js", INDEXED_DB)
             .expect("IndexedDB factory should load");
+        runtime
+            .execute_script("roves-blitz-worker.js", WORKER)
+            .expect("Worker factory should load");
         stage("dom_bootstrap");
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
@@ -1590,6 +1598,28 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"indexed_db\",\"status\":\"passed\",\"indexed_db_runs\":{indexed_db_runs}}}"
+        );
+
+        // Dedicated workers run on their own threads; their messages and errors
+        // arrive through the event loop polled by each frame (bounded wait).
+        stage("worker");
+        runtime
+            .execute_script("roves-blitz-worker-test.js", WORKER_TEST)
+            .expect("Worker test setup should run");
+        for _ in 0..300 {
+            if evaluate_string(&mut runtime, "String(workerResult.done)") == "true" {
+                break;
+            }
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2).await;
+        }
+        let worker_checks = evaluate_string(
+            &mut runtime,
+            "if (!workerResult.done) throw new Error('Worker tests did not finish at ' + workerResult.step); \
+             if (workerResult.failures.length > 0) throw new Error('Worker: ' + workerResult.failures.join(' | ')); \
+             String(workerResult.checks)",
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"dedicated_worker_pixi_image_bitmap_probe\",\"status\":\"passed\",\"checks\":{worker_checks}}}"
         );
 
         // ResizeObserver: observations are processed by runAnimationFrame after

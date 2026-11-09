@@ -72,9 +72,11 @@
     reportException,
     dispatch,
     PromiseRejectionEvent,
+    MessageEvent,
+    defineEventHandler,
   } = core.loadExtScript("ext:deno_web/02_event.js");
   const { Console } = core.loadExtScript("ext:deno_web/01_console.js");
-  const { Blob, File } = core.loadExtScript("ext:deno_web/09_file.js");
+  const { Blob, File, blobFromObjectUrl } = core.loadExtScript("ext:deno_web/09_file.js");
   const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
@@ -89,6 +91,9 @@
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
   const { URL, URLSearchParams } = core.loadExtScript("ext:deno_web/00_url.js");
+  // URL.createObjectURL/revokeObjectURL come from deno_web's blob URL script
+  // (PixiJS starts its workers from blob: URLs).
+  if (typeof URL.createObjectURL !== "function") core.loadExtScript("ext:deno_web/11_blob_url.js");
   const { structuredClone } = core.loadExtScript("ext:deno_web/02_structured_clone.js");
   const webStorage = core.loadExtScript("ext:deno_webstorage/01_webstorage.js");
   // WebGPU from deno_webgpu (lazy ESM, as Deno loads it); `gpu` exists after initGPU.
@@ -1728,6 +1733,24 @@
   const createFetch = globalThis.__rovesCreateFetch;
   delete globalThis.__rovesCreateFetch;
   const fetchApi = createFetch({ op_blitz_game_read, Blob, TextDecoder, TextEncoder, URL, location: historyApi.location });
+  // Dedicated workers (src/worker.js, src/worker.rs): own isolate and thread each.
+  const createWorker = globalThis.__rovesCreateWorker;
+  delete globalThis.__rovesCreateWorker;
+  const workerApi = createWorker({
+    core,
+    webidl,
+    EventTarget,
+    ErrorEvent,
+    MessageEvent,
+    Event,
+    DOMException,
+    setIsTrusted,
+    defineEventHandler,
+    URL,
+    blobFromObjectUrl,
+    fetch: fetchApi.fetch,
+    baseUrl: () => historyApi.location.href,
+  });
   // Web Audio on web-audio-api (src/web_audio.js); its events are dispatched per frame.
   const createWebAudio = globalThis.__rovesCreateWebAudio;
   delete globalThis.__rovesCreateWebAudio;
@@ -1861,6 +1884,7 @@
     Event,
     CustomEvent,
     ErrorEvent,
+    MessageEvent,
     EventTarget,
     AbortController,
     AbortSignal,
@@ -1900,6 +1924,7 @@
     HashChangeEvent: historyApi.HashChangeEvent,
     ...webAudio.globals,
     ...indexedDbApi.globals,
+    ...workerApi.globals,
   };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
