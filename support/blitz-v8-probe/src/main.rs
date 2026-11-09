@@ -1055,6 +1055,39 @@ fn op_blitz_image_bitmap_rgba(#[cppgc] bitmap: &deno_image::bitmap::ImageBitmap)
     bitmap.data.borrow().to_rgba8().into_raw()
 }
 
+/// Teardown only (captured by the bootstrap's `shutdownGpu`, never exposed to
+/// the guest): blocks until the device's queue has no pending submission,
+/// within `GPU_SHUTDOWN_TIMEOUT`. The pinned deno_webgpu 0.227 has no
+/// `GPUQueue.onSubmittedWorkDone`, so this polls wgpu-core directly; the
+/// caller destroys the device only after it succeeds. Returns the poll status
+/// and wait time as JSON; a wgpu error or timeout throws.
+#[op2]
+#[string]
+fn op_blitz_gpu_wait_idle(
+    #[cppgc] device: &deno_webgpu::device::GPUDevice,
+) -> Result<String, JsErrorBox> {
+    let start = std::time::Instant::now();
+    let status = device
+        .instance
+        .device_poll(
+            device.id,
+            deno_webgpu::wgpu_types::PollType::Wait {
+                submission_index: None,
+                timeout: Some(GPU_SHUTDOWN_TIMEOUT),
+            },
+        )
+        .map_err(|error| {
+            JsErrorBox::generic(format!(
+                "WebGPU queue did not become idle at teardown after {} ms: {error}",
+                start.elapsed().as_millis()
+            ))
+        })?;
+    Ok(format!(
+        "{{\"poll_status\":\"{status:?}\",\"queue_idle_wait_ms\":{}}}",
+        start.elapsed().as_millis()
+    ))
+}
+
 /// `element.matches(selector)` with Blitz's Stylo matching: 1 / 0, or -1 for an
 /// invalid selector (SyntaxError in JS).
 #[op2(fast)]
@@ -1262,6 +1295,7 @@ deno_core::extension!(
         op_blitz_create_comment,
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
+        op_blitz_gpu_wait_idle,
         op_blitz_measure,
         op_blitz_box_sizes,
         op_blitz_rect_component,
@@ -1480,6 +1514,41 @@ fn evaluate_hook(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>) -> St
     value.to_rust_string_lossy(scope)
 }
 
+/// Upper bound for the GPU queue to drain at teardown (native `device_poll` in
+/// `op_blitz_gpu_wait_idle`) and for a still-pending `requestDevice` to settle.
+/// Far above wgpu-core 29's own ~6 s Queue Drop budget so a slow (software)
+/// adapter can finish; exceeding it fails the run loudly.
+const GPU_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Orderly WebGPU teardown before the runtime (and with it deno_webgpu's wgpu
+/// Instance, Device and Queue) is dropped: awaits the bootstrap's `shutdownGpu`
+/// (settles a pending `requestDevice`, waits for the queue to be idle through
+/// `op_blitz_gpu_wait_idle`, then `GPUDevice.destroy`) while the event loop
+/// runs, so wgpu-core's Queue Drop finds no pending submission instead of
+/// panicking after its fixed wait. Prints a `gpu_teardown` result line.
+async fn shutdown_gpu_before_drop(
+    runtime: &mut JsRuntime,
+    shutdown_gpu: &v8::Global<v8::Function>,
+) {
+    stage("gpu_teardown");
+    let start = std::time::Instant::now();
+    let value = tokio::time::timeout(GPU_SHUTDOWN_TIMEOUT, runtime.call_and_await(shutdown_gpu))
+        .await
+        .unwrap_or_else(|_| {
+            panic!("WebGPU queue did not become idle within {GPU_SHUTDOWN_TIMEOUT:?} at teardown")
+        })
+        .unwrap_or_else(|error| panic!("WebGPU teardown failed: {error}"));
+    let detail = {
+        deno_core::scope!(scope, runtime);
+        let value = v8::Local::new(scope, value);
+        value.to_rust_string_lossy(scope)
+    };
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"gpu_teardown\",\"status\":\"passed\",\"elapsed_ms\":{},\"detail\":{detail}}}",
+        start.elapsed().as_millis()
+    );
+}
+
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
 fn frame_count() -> u32 {
     let mut args = std::env::args().skip(1);
@@ -1641,7 +1710,13 @@ fn main() {
         let hooks = runtime
             .execute_script("roves-blitz-dom.js", DOM_BOOTSTRAP)
             .expect("DOM wrapper bootstrap should install");
-        let (dispatcher, run_animation_frame, blocked_navigations, document_loaded) = {
+        let (
+            dispatcher,
+            run_animation_frame,
+            blocked_navigations,
+            document_loaded,
+            shutdown_gpu,
+        ) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
             let hooks = v8::Local::<v8::Object>::try_from(hooks).expect("bootstrap hooks object");
@@ -1656,6 +1731,7 @@ fn main() {
                 function("runAnimationFrame"),
                 function("blockedNavigations"),
                 function("documentLoaded"),
+                function("shutdownGpu"),
             )
         };
 
@@ -1671,6 +1747,7 @@ fn main() {
                 frame_count().max(120),
             )
             .await;
+            shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu).await;
             return;
         }
 
@@ -2097,6 +2174,7 @@ fn main() {
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_run\",\"reason\":\"pass --window\"}}"
             );
+            shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu).await;
             return;
         }
         // Real window: blitz-shell presents the same document and runtime and

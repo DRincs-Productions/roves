@@ -1,3 +1,23 @@
+## 2026-11-09 - Blitz probe: orderly WebGPU teardown before the runtime drops
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI run 42679143051 (after the root-URL fix) showed the unmodified visual-novel-template reaching
+its start menu (`pathname` `/`, `navigator.onLine` true, Start/Continue/Load/Settings, 0 errors),
+then the GPU-less Windows runner panicked while dropping the runtime: wgpu-core 29's
+`impl Drop for Queue` waits about 6 s for the last successful submission and then panics. A
+local run of the artifact exited with code 0. Before the headless fixture and `--game` runs
+return, Rust now awaits the bootstrap hook `shutdownGpu` (bounded by 120 s): it settles a
+still-pending shared `requestDevice`, then calls the private op `op_blitz_gpu_wait_idle`
+(`#[cppgc] &deno_webgpu::device::GPUDevice`, captured by `dom.js` before `Deno` is deleted, so
+unreachable from the guest), which blocks on `Global::device_poll(id, PollType::Wait {
+submission_index: None, timeout: Some(120 s) })` and throws on any wgpu error or timeout; the
+device is destroyed only after success. deno_webgpu 0.227.0 has no
+`GPUQueue.onSubmittedWorkDone`, so no maintained JS-level API covers the wait. The run prints
+`gpu_teardown` (submits, poll status, wait time), required by CI in both runs; failures panic.
+`--window` exits through the shell and is not covered.
+
 ## 2026-11-09 - Blitz probe: root document URL and `navigator.onLine`
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/game.rs,src/history.js,src/history_test.js,src/dom.js}`,

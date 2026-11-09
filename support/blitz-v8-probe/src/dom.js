@@ -60,6 +60,7 @@
     op_blitz_game_read,
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
+    op_blitz_gpu_wait_idle,
     op_blitz_matches,
     op_blitz_create_comment,
     op_blitz_clone_node,
@@ -2009,11 +2010,23 @@
   // shared device, created with every texture-compression feature it supports.
   let sharedDevice = null;
   let patchedGpu = null;
+  // Teardown diagnostics: queue submissions made by the page (see shutdownGpu).
+  let gpuSubmits = 0;
+  function countSubmits() {
+    const proto = webgpu.GPUQueue?.prototype;
+    const submit = proto?.submit;
+    if (typeof submit !== "function") return;
+    proto.submit = function (commandBuffers) {
+      gpuSubmits++;
+      return submit.call(this, commandBuffers);
+    };
+  }
   function gpuWithSharedDevice() {
     webgpu.initGPU();
     const gpu = webgpu.gpu;
     if (patchedGpu !== null) return patchedGpu;
     installCopyExternalImage();
+    countSubmits();
     const requestAdapter = gpu.requestAdapter.bind(gpu);
     gpu.requestAdapter = async (options) => {
       const adapter = await requestAdapter(options);
@@ -2106,6 +2119,29 @@
     // Navigations the single-document policy blocked (assign/replace/reload).
     blockedNavigations() {
       return JSON.stringify(historyApi.blockedNavigations);
+    },
+    // Orderly WebGPU teardown, awaited by the embedder before it drops the
+    // runtime. wgpu-core 29's Queue Drop waits only ~6 s (100..3200 ms steps) for
+    // the last successful submission and then panics, so the queue must already be
+    // idle. deno_webgpu 0.227 has no GPUQueue.onSubmittedWorkDone, so the private
+    // op_blitz_gpu_wait_idle polls wgpu-core natively (bounded, throws on error or
+    // timeout); the shared device is destroyed only after it succeeds. Async only
+    // to settle a still-pending requestDevice. Resolves to a JSON diagnostic; a
+    // failure rejects and fails the run.
+    async shutdownGpu() {
+      if (sharedDevice === null) {
+        return JSON.stringify({ device: false, submits: gpuSubmits });
+      }
+      let device;
+      try {
+        device = await sharedDevice;
+      } catch (error) {
+        // requestDevice failed: no queue exists, nothing was submitted.
+        return JSON.stringify({ device: false, device_error: String(error), submits: gpuSubmits });
+      }
+      const idle = JSON.parse(op_blitz_gpu_wait_idle(device));
+      device.destroy();
+      return JSON.stringify({ device: true, submits: gpuSubmits, ...idle });
     },
   };
 })();

@@ -97,6 +97,7 @@ jobs:
           grep -Fq '"check":"dedicated_worker_pixi_image_bitmap_probe","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_public_address_policy","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_resolver_refuses_non_public","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"gpu_teardown","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
       # Smoke run on the real game: visual-novel-template's production build (the
       # game roves-action tests with), unmodified, loaded with --game and the
       # default fetch policy (any safe https origin, no allow-list or extra flag).
@@ -139,6 +140,13 @@ jobs:
           fi
           grep -Fq '"check":"game_page","status":"ran"' "$RUNNER_TEMP/blitz-game.log" || {
             echo "::error::the probe produced no game_page report for visual-novel-template"
+            exit 1
+          }
+          # Orderly WebGPU teardown (queue idle + device destroyed) before the
+          # runtime drops; its wait time and submit count are public evidence.
+          grep -F '"check":"gpu_teardown"' "$RUNNER_TEMP/blitz-game.log" | cut -c1-500 | sed 's/^/::notice::/' || true
+          grep -Fq '"check":"gpu_teardown","status":"passed"' "$RUNNER_TEMP/blitz-game.log" || {
+            echo "::error::the probe did not tear WebGPU down before exiting"
             exit 1
           }
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
