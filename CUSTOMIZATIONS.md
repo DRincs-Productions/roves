@@ -1,3 +1,21 @@
+## 2026-11-09 - Blitz probe: WebGPU teardown diagnostics and backend comparison
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Run 42684745291 (af6cf0e7a5b): Windows normal reached the template menu, then the teardown
+`device_poll` Wait timed out after 120 s; JITless passed. Before that blocking wait,
+`shutdownGpu` now prints `ROVES_PROBE_RESULT {"check":"gpu_adapter",...}` with the page's
+submissions (count, command buffers, ms since the last submit) and the new private op
+`op_blitz_gpu_adapter_info` (same capture rule as `op_blitz_gpu_wait_idle`): wgpu-core
+`Global::adapter_get_info(device.adapter)` (backend, device type, name, vendor/device ids,
+driver) plus one non-blocking `PollType::Poll` status. JSON via `deno_core::serde_json`; no new
+dependency. `gpu_teardown` also carries backend and device type. CI annotates `gpu_adapter` in the
+template smoke step before its panic check; a new normal-mode step re-runs the unmodified
+template with `DENO_WEBGPU_BACKEND` = `dx12`, `vulkan`, `gl` (200 s each, one notice per backend,
+logs uploaded). It is `continue-on-error`: the primary smoke step remains the gate and is not
+skipped or masked. Job timeout raised from 30 to 45 minutes for that step.
+
 ## 2026-11-09 - Blitz probe: orderly WebGPU teardown before the runtime drops
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,

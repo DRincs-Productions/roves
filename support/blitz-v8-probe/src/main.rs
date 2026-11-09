@@ -1088,6 +1088,35 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
+/// Teardown diagnostics only (captured by the bootstrap's `shutdownGpu`, never
+/// exposed to the guest): the device's adapter as wgpu-core reports it
+/// (backend, device type, name, driver) plus one non-blocking queue poll, taken
+/// before `op_blitz_gpu_wait_idle` blocks so a timeout still leaves evidence of
+/// which adapter and backend hung. A wgpu error in the poll is reported, not thrown.
+#[op2]
+#[string]
+fn op_blitz_gpu_adapter_info(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
+    let info = device.instance.adapter_get_info(device.adapter);
+    let poll = device
+        .instance
+        .device_poll(device.id, deno_webgpu::wgpu_types::PollType::Poll)
+        .map_or_else(
+            |error| format!("error: {error}"),
+            |status| format!("{status:?}"),
+        );
+    deno_core::serde_json::json!({
+        "backend": format!("{:?}", info.backend),
+        "device_type": format!("{:?}", info.device_type),
+        "name": info.name,
+        "vendor": info.vendor,
+        "device": info.device,
+        "driver": info.driver,
+        "driver_info": info.driver_info,
+        "pre_wait_poll": poll,
+    })
+    .to_string()
+}
+
 /// `element.matches(selector)` with Blitz's Stylo matching: 1 / 0, or -1 for an
 /// invalid selector (SyntaxError in JS).
 #[op2(fast)]
@@ -1296,6 +1325,7 @@ deno_core::extension!(
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
         op_blitz_gpu_wait_idle,
+        op_blitz_gpu_adapter_info,
         op_blitz_measure,
         op_blitz_box_sizes,
         op_blitz_rect_component,

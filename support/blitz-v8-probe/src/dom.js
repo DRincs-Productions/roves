@@ -61,6 +61,7 @@
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
     op_blitz_gpu_wait_idle,
+    op_blitz_gpu_adapter_info,
     op_blitz_matches,
     op_blitz_create_comment,
     op_blitz_clone_node,
@@ -2012,12 +2013,16 @@
   let patchedGpu = null;
   // Teardown diagnostics: queue submissions made by the page (see shutdownGpu).
   let gpuSubmits = 0;
+  let gpuCommandBuffers = 0;
+  let gpuLastSubmitAt = null;
   function countSubmits() {
     const proto = webgpu.GPUQueue?.prototype;
     const submit = proto?.submit;
     if (typeof submit !== "function") return;
     proto.submit = function (commandBuffers) {
       gpuSubmits++;
+      gpuCommandBuffers += commandBuffers?.length ?? 0;
+      gpuLastSubmitAt = performance.now();
       return submit.call(this, commandBuffers);
     };
   }
@@ -2139,9 +2144,18 @@
         // requestDevice failed: no queue exists, nothing was submitted.
         return JSON.stringify({ device: false, device_error: String(error), submits: gpuSubmits });
       }
+      // Printed before the blocking wait, so a timeout still records which
+      // adapter/backend hung and what the page had submitted.
+      const adapter = JSON.parse(op_blitz_gpu_adapter_info(device));
+      const submissions = {
+        submits: gpuSubmits,
+        command_buffers: gpuCommandBuffers,
+        last_submit_ms_ago: gpuLastSubmitAt === null ? null : Math.round(performance.now() - gpuLastSubmitAt),
+      };
+      core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_adapter", status: "ran", ...submissions, adapter })}\n`, false);
       const idle = JSON.parse(op_blitz_gpu_wait_idle(device));
       device.destroy();
-      return JSON.stringify({ device: true, submits: gpuSubmits, ...idle });
+      return JSON.stringify({ device: true, ...submissions, backend: adapter.backend, device_type: adapter.device_type, ...idle });
     },
   };
 })();
