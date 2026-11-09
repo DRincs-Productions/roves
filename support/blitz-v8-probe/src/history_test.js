@@ -14,7 +14,14 @@
     throw new Error(`${message}: no exception`);
   };
 
-  check(location.href === "game://content/index.html" && location.protocol === "game:", `initial URL ${location.href}`);
+  // Regression (CI 42672941726): the document URL is the content root, so SPA routers
+  // match their "/" route instead of rendering "Not Found" for "/index.html".
+  check(location.href === "game://content/" && location.protocol === "game:", `initial URL ${location.href}`);
+  check(location.pathname === "/" && location.search === "" && location.hash === "", `initial pathname ${location.pathname}`);
+  check(new URL("./assets/a.js", location.href).href === "game://content/assets/a.js", "relative URLs resolve against the content root");
+  // Regression: the template reads navigator.onLine to decide whether to show its
+  // "No internet connection" notice; it was undefined (falsy).
+  check(navigator.onLine === true, `navigator.onLine ${navigator.onLine}`);
   check(history.length === 1 && history.state === null && history instanceof History, "initial history");
 
   // Regression: the original template assigns scrollRestoration in strict-mode code,

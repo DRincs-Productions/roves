@@ -126,6 +126,12 @@ jobs:
           # Mount report (fresh storage directory) and fetches the policy refused as
           # public annotations.
           grep -F '"check":"game_page"' "$RUNNER_TEMP/blitz-game.log" | cut -c1-900 | sed 's/^/::notice::/' || true
+          # Route/connectivity summary (document pathname, navigator.onLine, router
+          # "Not Found"/offline notice text, start-menu-like buttons), independent
+          # of how long the error list in the full report is.
+          grep -F '"check":"game_page"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 \
+            | grep -oE '"(location|pathname|navigator_online|not_found_text|offline_text|start_menu_like)":("[^"]*"|[a-z]+)|"buttons":\[[^]]*\]' \
+            | paste -sd ' ' - | cut -c1-600 | sed 's/^/::notice::game route: /' || true
           grep -F 'ROVES_PROBE_FETCH_BLOCKED' "$RUNNER_TEMP/blitz-game.log" | head -n 5 | cut -c1-500 | sed 's/^/::notice::/' || true
           if grep -q 'panicked' "$RUNNER_TEMP/blitz-game.log"; then
             echo "::error::the probe panicked on visual-novel-template"

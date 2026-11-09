@@ -10,7 +10,10 @@
 globalThis.__rovesCreateHistory = (globalThis, dependencies) => {
   "use strict";
   const { URL, structuredClone, DOMException, Event, setTimeout } = dependencies;
-  const DOCUMENT_URL = "game://content/index.html";
+  // The content root, like the Servo shell's boot URL: a client-side router matches
+  // its root route against "/", never "/index.html" (game.rs still serves the
+  // directory's index.html for it). Keep in sync with game.rs GAME_URL.
+  const DOCUMENT_URL = "game://content/";
 
   class PopStateEvent extends Event {
     #state;

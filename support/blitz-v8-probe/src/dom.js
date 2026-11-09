@@ -2042,6 +2042,11 @@
     languages: ["en"],
     maxTouchPoints: 0,
     hardwareConcurrency: 4,
+    // Browser-style connectivity hint, same as the Servo shell's Navigator.onLine
+    // (always true): it only says the device is not known to be offline, never that
+    // a remote request will succeed. Games (visual-novel-template) initialise their
+    // "No internet connection" state from it, so it must not be undefined.
+    onLine: true,
   });
   for (const name of ["GPUBufferUsage", "GPUTextureUsage", "GPUMapMode", "GPUShaderStage", "GPUColorWrite"]) {
     if (webgpu[name] !== undefined) {

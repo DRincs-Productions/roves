@@ -1,3 +1,21 @@
+## 2026-11-09 - Blitz probe: root document URL and `navigator.onLine`
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/game.rs,src/history.js,src/history_test.js,src/dom.js}`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The unmodified visual-novel-template still rendered "No internet connection … Not Found" in
+green CI run 42672941726 with no JS errors. Two probe mismatches with the production shell:
+the document URL was `game://content/index.html`, whereas the Servo shell boots at the content
+root `game://content/` (serving `index.html` for it) so client-side routers match `/`; and the
+probe's `navigator` had no `onLine`, which the template reads to initialise its offline state.
+The probe now uses `game://content/` as document/base URL (`GAME_URL`, history `DOCUMENT_URL`)
+while still parsing the directory's `index.html`; module, stylesheet and fetch URLs resolve to
+the same files. `navigator.onLine` is `true`, matching Servo's `Navigator::OnLine`: a
+connectivity hint, not a remote-success guarantee. `history_test.js` asserts the root URL,
+pathname, relative resolution and `onLine`. The `game_page` report gains `location`,
+`pathname`, `navigator_online`, `not_found_text`, `offline_text`, `start_menu_like` and
+`buttons`, re-emitted by CI as a separate annotation. No game, audio or Fetch policy change.
+
 ## 2026-11-09 - Blitz probe: `fetch` on deno_fetch 0.284.0 with a safe-destination policy
 
 **Files touched:** `support/blitz-v8-probe/{Cargo.toml,README.md,fixtures/layout.html}`,

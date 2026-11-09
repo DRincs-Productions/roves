@@ -21,8 +21,12 @@ use deno_core::{
 };
 use deno_error::JsErrorBox;
 
-/// The document URL games see (matches `src/history.js`).
-pub const GAME_URL: &str = "game://content/index.html";
+/// The document URL games see (matches `src/history.js`): the content root, as
+/// the Servo shell boots (`ports/servoshell/protocols/game.rs`), so a client-side
+/// router matches its `/` route. The document itself is still the directory's
+/// `index.html` (`GameContent::document`); module scripts, stylesheets and
+/// relative fetches resolve against the same directory as before.
+pub const GAME_URL: &str = "game://content/";
 
 pub struct GameContent {
     root: PathBuf,
@@ -265,13 +269,34 @@ addEventListener("unhandledrejection", (event) => {
 
     let report = crate::evaluate_string(
         runtime,
-        r#"JSON.stringify({
-  errors: __rovesGameErrors.slice(0, 30),
-  error_count: __rovesGameErrors.length,
-  root_children: document.getElementById("root")?.childNodes.length ?? -1,
-  body_elements: document.body?.querySelectorAll("*").length ?? -1,
-  text: (document.body?.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 300),
-})"#,
+        // Route/connectivity diagnostics (also extracted into a separate CI
+        // annotation). `start_menu_like` is a text heuristic over the rendered
+        // buttons, not a guarantee the menu works.
+        r#"(() => {
+  const text = (document.body?.textContent ?? "").replace(/\s+/g, " ").trim();
+  let buttons = [];
+  try {
+    buttons = Array.from(document.body?.querySelectorAll("button, [role=button]") ?? [])
+      .map((button) => (button.textContent ?? "").replace(/\s+/g, " ").trim())
+      .filter((label) => label !== "");
+  } catch (error) {
+    buttons = ["<query failed: " + error + ">"];
+  }
+  return JSON.stringify({
+    location: location.href,
+    pathname: location.pathname,
+    navigator_online: navigator.onLine,
+    not_found_text: /not found/i.test(text),
+    offline_text: /no internet connection/i.test(text),
+    start_menu_like: buttons.some((label) => /\b(start|new game|continue|load)\b/i.test(label)),
+    buttons: buttons.slice(0, 8).map((label) => label.slice(0, 40)),
+    errors: __rovesGameErrors.slice(0, 30),
+    error_count: __rovesGameErrors.length,
+    root_children: document.getElementById("root")?.childNodes.length ?? -1,
+    body_elements: document.body?.querySelectorAll("*").length ?? -1,
+    text: text.slice(0, 300),
+  });
+})()"#,
     );
     let load_errors = format!(
         "[{}]",
