@@ -75,7 +75,7 @@ struct Workers {
 }
 
 /// `new Worker`: spawns the worker thread with the already fetched script.
-#[op2]
+#[op2(fast)]
 fn op_worker_start(
     state: &mut OpState,
     #[string] source: String,
@@ -368,7 +368,7 @@ fn run_worker(
                 })
                 .await
             },
-            Err(error) => Err(error),
+            Err(error) => Err(CoreErrorKind::Js(error).into_box()),
         };
         if let Err(error) = result {
             if !lock(&termination).terminated {
