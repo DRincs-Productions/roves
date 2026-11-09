@@ -33,6 +33,13 @@ deno_fetch JS internals were written without access to the crate sources; `Cargo
 build are resolved by Codex/CI (see TODO). The production servoshell is unaffected; no `mach`
 flag changed.
 
+Follow-up (CI run 42664312495, bootstrap failed in both modes): deno_fetch's
+`22_http_client.js` calls `loadExtScript("ext:deno_net/02_tls.js")`, so deno_net 0.252.0 (the
+release published with deno_fetch 0.284.0) is now registered after deno_fetch, as in Deno's
+runtime, with no root store and no certificate-error override. It is wired only to provide that
+script: its socket/TLS ops stay behind `Deno.core`, which the bootstrap deletes from the guest
+global, so games get no `Deno.connect`/`listen`/`startTls` surface.
+
 ## 2026-11-09 - Blitz probe: `Document.createElementNS` on Blitz's qualified-name nodes
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,dom_api_test.js}`,

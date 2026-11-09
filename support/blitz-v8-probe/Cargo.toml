@@ -41,6 +41,10 @@ deno_fetch = "=0.284.0"
 # (net granted, everything else denied) and the Mozilla root store (webpki-roots).
 deno_permissions = "=0.119.0"
 deno_tls = "=0.247.0"
+# Released with deno_fetch 0.284.0: its 22_http_client.js loads ext:deno_net/02_tls.js
+# during bootstrap. Registered only for that script; `Deno` (and its net/TLS ops) is
+# removed from the guest global, so no Deno.connect/listen surface reaches games.
+deno_net = "=0.252.0"
 # RealSys for deno_permissions' descriptor parser (version unified with deno_permissions').
 sys_traits = { version = "0.1", features = ["real", "libc", "winapi"] }
 # Already in the graph through deno_fetch: the request type of deno_fetch's

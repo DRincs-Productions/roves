@@ -1580,6 +1580,12 @@ fn main() {
                     )),
                     ..Default::default()
                 }),
+                // Only because deno_fetch's 22_http_client.js loads
+                // ext:deno_net/02_tls.js at bootstrap (same position as in Deno's
+                // runtime, after deno_fetch). Its socket/TLS ops are reachable only
+                // through `Deno.core`, which dom.js deletes from the guest global; no
+                // root store or certificate-error override is given to them.
+                deno_net::deno_net::init(None, None),
                 audio::roves_blitz_audio::init(),
                 // Dedicated workers: one isolate and thread each (src/worker.rs).
                 worker::roves_blitz_worker::init(),
