@@ -3,7 +3,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use blitz_dom::{BaseDocument, DocumentConfig, LocalName, Node, NodeData, NodeId, QualName, ns};
+use blitz_dom::{
+    BaseDocument, DocumentConfig, LocalName, Namespace, Node, NodeData, NodeId, Prefix, QualName,
+    ns,
+};
 use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
@@ -278,6 +281,43 @@ fn op_blitz_create_element(state: Rc<RefCell<OpState>>, #[string] local_name: &s
         .mutate()
         .create_element(html_name(local_name), Vec::new());
     to_handle(id)
+}
+
+/// `document.createElementNS`: `dom.js` validates the qualified name and the
+/// namespace/prefix constraints, then passes the parts verbatim (no case
+/// folding); "" means a null namespace or prefix. Blitz's own namespace-qualified
+/// `create_element` builds the node, so SVG and foreign elements share the tree.
+#[op2(fast)]
+fn op_blitz_create_element_ns(
+    state: Rc<RefCell<OpState>>,
+    #[string] namespace: &str,
+    #[string] prefix: &str,
+    #[string] local_name: &str,
+) -> f64 {
+    let prefix = (!prefix.is_empty()).then(|| Prefix::from(prefix));
+    let name = QualName::new(
+        prefix,
+        Namespace::from(namespace),
+        LocalName::from(local_name),
+    );
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let id = document.mutate().create_element(name, Vec::new());
+    to_handle(id)
+}
+
+/// Element prefix ("" when none), for `prefix` and the qualified `tagName`.
+#[op2]
+#[string]
+fn op_blitz_prefix(state: Rc<RefCell<OpState>>, handle: f64) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    Ok(node
+        .element_data()
+        .and_then(|element| element.name.prefix.as_ref())
+        .map(|prefix| prefix.to_string())
+        .unwrap_or_default())
 }
 
 #[op2(fast)]
@@ -1117,6 +1157,8 @@ deno_core::extension!(
         op_blitz_text_content,
         op_blitz_set_text_content,
         op_blitz_create_element,
+        op_blitz_create_element_ns,
+        op_blitz_prefix,
         op_blitz_create_text_node,
         op_blitz_append_child,
         op_blitz_remove_child,

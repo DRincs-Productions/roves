@@ -1,3 +1,31 @@
+## 2026-11-09 - Blitz probe: `Document.createElementNS` on Blitz's qualified-name nodes
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,dom_api_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The Worker change below is verified by CI run 42600619976 (normal and JITless, 27 checks green).
+Its artifact, on the unchanged visual-novel-template `main` (`bb9ea77910dda74aced20b001131c8daa22e7cfc`),
+reaches the game but renders "Something went wrong!": `blitz-game.log` records
+`TypeError: s.createElementNS is not a function` in the React/Pixi bundle. The same log shows
+remote audio fetches being denied; that is the intended `game://`-only, no-network policy and is
+unchanged.
+
+**Reuse:** the pinned `blitz-dom 0.3.0-beta.4` re-exports `QualName`, `Namespace`, `Prefix`,
+`LocalName` and builds namespace-qualified nodes with `DocumentMutator::create_element`;
+deno_web/deno_webidl provide no document DOM. No dependency, no duplicated tree.
+
+`src/main.rs` adds `op_blitz_create_element_ns(namespace, prefix, local_name)` (parts passed
+verbatim, "" for null) and `op_blitz_prefix`. `src/dom.js` adds `createElementNS`, whose
+arguments go through the existing deno_webidl helpers (`requiredArguments` with 2,
+`converters.DOMString`, so a Symbol throws `TypeError`; nullable namespace: null/undefined and ""
+map to null), then DOM
+"validate and extract" (XML QName, NCName approximated to BMP NameChar ranges;
+`InvalidCharacterError`; `NamespaceError` for a prefix without namespace and for xml/xmlns misuse),
+`Element.prefix`, a qualified `tagName`, and namespace-aware attribute names: ASCII lowercase on
+HTML-namespace elements only, case preserved for SVG/other namespaces in get/set/remove and
+mutation records. Wrapper classes are unchanged (`SVGElement`, `Element`, HTML brands by local
+name). Limits: no `setAttributeNS`/`getAttributeNS`. Regression tests in `dom_api_test.js`.
+
 ## 2026-11-09 - Blitz probe: dedicated `Worker` on a separate deno_core isolate
 
 **Files touched:** `support/blitz-v8-probe/src/{worker.rs,worker.js,worker_scope.js,worker_test.js,dom.js,main.rs}`,

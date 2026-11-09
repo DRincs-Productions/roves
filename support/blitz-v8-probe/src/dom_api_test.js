@@ -110,6 +110,76 @@
   check(document.readyState === "loading" && document.defaultView === globalThis, "readyState / defaultView");
   check(typeof MessageChannel === "function" && typeof requestIdleCallback === "function", "MessageChannel / requestIdleCallback");
 
+  // createElementNS: React/Pixi create SVG through it; names keep their case.
+  const SVG = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(SVG, "svg");
+  check(svg instanceof SVGElement && !(svg instanceof HTMLElement) && svg.localName === "svg"
+    && svg.namespaceURI === SVG && svg.prefix === null && svg.tagName === "svg" && svg.parentNode === null,
+    `createElementNS(svg): ${svg.tagName} ${svg.namespaceURI}`);
+  const gradient = document.createElementNS(SVG, "linearGradient");
+  check(gradient.localName === "linearGradient" && gradient.tagName === "linearGradient" && gradient instanceof SVGElement,
+    "createElementNS keeps the local name case");
+  svg.appendChild(gradient);
+  check(svg.firstChild === gradient && gradient.parentNode === svg, "SVG children attach");
+  const svgRecords = [];
+  const svgObserver = new MutationObserver(() => {});
+  svgObserver.observe(svg, { attributes: true, attributeOldValue: true });
+  svg.setAttribute("viewBox", "0 0 10 10");
+  check(svg.getAttribute("viewBox") === "0 0 10 10" && svg.getAttribute("viewbox") === null && svg.hasAttribute("viewBox"),
+    "SVG attributes preserve case");
+  svg.setAttribute("viewBox", "0 0 20 20");
+  svg.removeAttribute("viewBox");
+  check(!svg.hasAttribute("viewBox"), "SVG removeAttribute preserves case");
+  svgRecords.push(...svgObserver.takeRecords());
+  svgObserver.disconnect();
+  check(svgRecords.map((record) => `${record.attributeName}:${record.oldValue}`).join() === "viewBox:null,viewBox:0 0 10 10,viewBox:0 0 20 20",
+    `SVG mutation records keep case: ${svgRecords.map((record) => record.attributeName).join()}`);
+  const htmlCased = document.createElement("div");
+  htmlCased.setAttribute("DATA-Mixed", "x");
+  check(htmlCased.getAttribute("data-mixed") === "x" && htmlCased.getAttribute("DATA-MIXED") === "x"
+    && htmlCased.outerHTML.includes("data-mixed="), "HTML attributes are still lowercased");
+  const nsHtml = document.createElementNS("http://www.w3.org/1999/xhtml", "VIDEO");
+  check(nsHtml instanceof HTMLElement && nsHtml.localName === "VIDEO" && !(nsHtml instanceof HTMLVideoElement)
+    && document.createElementNS("http://www.w3.org/1999/xhtml", "video") instanceof HTMLVideoElement,
+    "createElementNS(HTML) does not fold case and still picks HTML brands");
+  const MATH = "http://www.w3.org/1998/Math/MathML";
+  const math = document.createElementNS(MATH, "m:mRow");
+  check(math.constructor === Element && math.namespaceURI === MATH && math.prefix === "m" && math.localName === "mRow"
+    && math.tagName === "m:mRow" && math.nodeName === "m:mRow", `other namespace with prefix: ${math.tagName}`);
+  math.setAttribute("mathVariant", "bold");
+  check(math.getAttribute("mathVariant") === "bold" && math.getAttribute("mathvariant") === null, "other namespaces preserve attribute case");
+  const nullNs = document.createElementNS(null, "Plain");
+  check(nullNs.namespaceURI === null && nullNs.localName === "Plain" && nullNs.constructor === Element
+    && document.createElementNS("", "plain").namespaceURI === null, "null/empty namespace");
+  check(document.createElementNS("http://www.w3.org/XML/1998/namespace", "xml:lang").prefix === "xml"
+    && document.createElementNS("http://www.w3.org/2000/xmlns/", "xmlns").localName === "xmlns", "xml/xmlns in their namespaces");
+  for (const bad of ["", "1svg", "a b", "a:", ":a", "a:b:c", "a:1b", "<svg>"]) {
+    throwsDom(() => document.createElementNS(SVG, bad), "InvalidCharacterError", `invalid qualified name '${bad}'`);
+  }
+  throwsDom(() => document.createElementNS(null, "svg:rect"), "NamespaceError", "prefix without namespace");
+  throwsDom(() => document.createElementNS(SVG, "xml:rect"), "NamespaceError", "xml prefix outside the XML namespace");
+  throwsDom(() => document.createElementNS(SVG, "xmlns"), "NamespaceError", "xmlns outside the XMLNS namespace");
+  throwsDom(() => document.createElementNS(SVG, "xmlns:rect"), "NamespaceError", "xmlns prefix outside the XMLNS namespace");
+  throwsDom(() => document.createElementNS("http://www.w3.org/2000/xmlns/", "rect"), "NamespaceError", "XMLNS namespace without xmlns");
+  // WebIDL argument handling: two required arguments, DOMString conversion
+  // (Symbol throws TypeError), nullable namespace (undefined -> null).
+  const throwsType = (fn, message) => {
+    try {
+      fn();
+    } catch (error) {
+      check(error instanceof TypeError, `${message}: got ${error}`);
+      return;
+    }
+    throw new Error(`${message}: no exception`);
+  };
+  throwsType(() => document.createElementNS(), "createElementNS with no arguments");
+  throwsType(() => document.createElementNS(SVG), "createElementNS with one argument");
+  throwsType(() => document.createElementNS(SVG, Symbol("svg")), "createElementNS rejects a Symbol qualified name");
+  throwsType(() => document.createElementNS(Symbol("ns"), "svg"), "createElementNS rejects a Symbol namespace");
+  const undefinedNs = document.createElementNS(undefined, "Plain");
+  check(undefinedNs.namespaceURI === null && undefinedNs.localName === "Plain", "undefined namespace maps to null");
+  check(document.createElementNS(SVG, undefined).localName === "undefined", "undefined qualified name converts to 'undefined'");
+
   // HTMLIFrameElement: nominal interface only (single-document policy, no nested
   // browsing context). React's getActiveElementDeep tests activeElement against it.
   check(typeof globalThis.HTMLIFrameElement === "function" && HTMLIFrameElement.prototype instanceof HTMLElement,

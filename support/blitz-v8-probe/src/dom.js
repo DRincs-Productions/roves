@@ -23,6 +23,8 @@
     op_blitz_text_content,
     op_blitz_set_text_content,
     op_blitz_create_element,
+    op_blitz_create_element_ns,
+    op_blitz_prefix,
     op_blitz_create_text_node,
     op_blitz_append_child,
     op_blitz_remove_child,
@@ -168,6 +170,36 @@
   // XML Name production is broader; this ASCII subset covers HTML elements and
   // custom elements and rejects everything the probe does not handle.
   const VALID_NAME = /^[A-Za-z][A-Za-z0-9_.-]*$/;
+  // XML QName ("prefix:local", both NCNames) for createElementNS. NCName chars
+  // are approximated by ASCII letters/digits/_.- plus the non-ASCII BMP ranges
+  // of the XML NameChar production; astral characters are rejected.
+  const NC_START = "A-Za-z_\\u00C0-\\u00D6\\u00D8-\\u00F6\\u00F8-\\u02FF\\u0370-\\u037D\\u037F-\\u1FFF"
+    + "\\u200C\\u200D\\u2070-\\u218F\\u2C00-\\u2FEF\\u3001-\\uD7FF\\uF900-\\uFDCF\\uFDF0-\\uFFFD";
+  const NC_NAME = `[${NC_START}][${NC_START}0-9.\\-\\u00B7\\u0300-\\u036F\\u203F-\\u2040]*`;
+  const QUALIFIED_NAME = new RegExp(`^(?:(${NC_NAME}):)?(${NC_NAME})$`);
+  const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
+  const XMLNS_NAMESPACE = "http://www.w3.org/2000/xmlns/";
+
+  // DOM "validate and extract": InvalidCharacterError for a non-QName,
+  // NamespaceError for a prefix without namespace or misuse of xml/xmlns.
+  // Arguments arrive already converted by the WebIDL layer (DOMString? / DOMString).
+  function validateAndExtract(namespace, qualifiedName) {
+    if (namespace === "") namespace = null;
+    const match = QUALIFIED_NAME.exec(qualifiedName);
+    if (match === null) {
+      throw new DOMException(`'${qualifiedName}' is not a valid qualified name.`, "InvalidCharacterError");
+    }
+    const prefix = match[1] ?? null;
+    const localName = match[2];
+    const fail = (why) => {
+      throw new DOMException(`'${qualifiedName}' in namespace '${namespace}': ${why}`, "NamespaceError");
+    };
+    if (prefix !== null && namespace === null) fail("a prefix requires a namespace");
+    if (prefix === "xml" && namespace !== XML_NAMESPACE) fail("the xml prefix is reserved");
+    const isXmlns = qualifiedName === "xmlns" || prefix === "xmlns";
+    if (isXmlns !== (namespace === XMLNS_NAMESPACE)) fail("xmlns names and the XMLNS namespace go together");
+    return { namespace, prefix, localName };
+  }
 
   // handle -> { ref: WeakRef<wrapper>, strong: wrapper | null, token }
   const cache = new Map();
@@ -745,12 +777,25 @@
     return count;
   }
 
+  // Attribute names are ASCII-lowercased only on HTML-namespace elements (the
+  // document is always an HTML document); SVG and other namespaces keep case,
+  // e.g. React's `viewBox`.
+  function attributeKey(handle, name) {
+    name = String(name);
+    return op_blitz_namespace(handle) === HTML_NAMESPACE ? name.replace(/[A-Z]+/g, (c) => c.toLowerCase()) : name;
+  }
+
   class Element extends Node {
     get localName() {
       return op_blitz_local_name(handleOf(this, "localName"));
     }
     get tagName() {
-      return this.namespaceURI === HTML_NAMESPACE ? this.localName.toUpperCase() : this.localName;
+      const prefix = this.prefix;
+      const name = prefix === null ? this.localName : `${prefix}:${this.localName}`;
+      return this.namespaceURI === HTML_NAMESPACE ? name.toUpperCase() : name;
+    }
+    get prefix() {
+      return op_blitz_prefix(handleOf(this, "prefix")) || null;
     }
     get namespaceURI() {
       return op_blitz_namespace(handleOf(this, "namespaceURI")) || null;
@@ -799,15 +844,17 @@
       return styleFor(this);
     }
     getAttribute(name) {
-      return op_blitz_get_attribute(handleOf(this, "getAttribute"), String(name).toLowerCase());
+      const handle = handleOf(this, "getAttribute");
+      return op_blitz_get_attribute(handle, attributeKey(handle, name));
     }
     hasAttribute(name) {
       return this.getAttribute(name) !== null;
     }
     removeAttribute(name) {
-      const attribute = String(name).toLowerCase();
-      const oldValue = this.getAttribute(attribute);
-      op_blitz_remove_attribute(handleOf(this, "removeAttribute"), attribute);
+      const handle = handleOf(this, "removeAttribute");
+      const attribute = attributeKey(handle, name);
+      const oldValue = op_blitz_get_attribute(handle, attribute);
+      op_blitz_remove_attribute(handle, attribute);
       if (oldValue !== null) queueMutation(this, "attributes", { attributeName: attribute, oldValue });
     }
     get className() {
@@ -938,9 +985,10 @@
       if (!VALID_NAME.test(name)) {
         throw new DOMException(`'${name}' is not a valid attribute name.`, "InvalidCharacterError");
       }
-      const attribute = name.toLowerCase();
-      const oldValue = mutationObserversActive() ? this.getAttribute(attribute) : null;
-      op_blitz_set_attribute(handleOf(this, "setAttribute"), attribute, String(value));
+      const handle = handleOf(this, "setAttribute");
+      const attribute = attributeKey(handle, name);
+      const oldValue = mutationObserversActive() ? op_blitz_get_attribute(handle, attribute) : null;
+      op_blitz_set_attribute(handle, attribute, String(value));
       queueMutation(this, "attributes", { attributeName: attribute, oldValue });
     }
   }
@@ -1641,6 +1689,19 @@
         throw new DOMException(`'${name}' is not a valid element name.`, "InvalidCharacterError");
       }
       return wrap(op_blitz_create_element(name.toLowerCase()));
+    }
+    // No case folding, even in the HTML namespace (as in browsers); the wrapper
+    // class follows the namespace (HTML brands, SVGElement, plain Element).
+    createElementNS(namespace, qualifiedName) {
+      const prefix = "Failed to execute 'createElementNS' on 'Document'";
+      webidl.requiredArguments(arguments.length, 2, prefix);
+      // `DOMString? namespace`: null/undefined stay null, anything else converts.
+      namespace = namespace === null || namespace === undefined
+        ? null
+        : webidl.converters.DOMString(namespace, prefix, "Argument 1");
+      qualifiedName = webidl.converters.DOMString(qualifiedName, prefix, "Argument 2");
+      const parts = validateAndExtract(namespace, qualifiedName);
+      return wrap(op_blitz_create_element_ns(parts.namespace ?? "", parts.prefix ?? "", parts.localName));
     }
     get documentElement() {
       return this.firstElementChild;
