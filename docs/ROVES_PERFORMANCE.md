@@ -201,6 +201,12 @@ Il campione singolo usa viewport diverse, origine locale del bundle contro HTTP 
 
 ## Proposte tecniche per aumentare la fluidità — ipotesi da validare sul compilato
 
+### Composizione Pixi e Blitz sul device WebGPU di Deno
+
+Intervento pianificato. Presentare nella stessa finestra la texture di Pixi e la UI HTML/CSS rasterizzata da Blitz con AnyRender/Vello CPU. Usare il device di `deno_webgpu` per la composizione finale, mantenere la texture Pixi sulla GPU e caricare la UI solo quando cambia. Partire dal canvas sotto la UI, mantenere il percorso di rendering CPU della pagina quando manca un adapter WebGPU e verificare trasparenza, resize e perdita del device.
+
+Provare il template originale con sfondo Pixi animato e UI ferma, poi con testo a comparsa e transizioni Motion. Misurare P95/P99 dei tempi dei frame, frame mancati e byte caricati per frame. Verificare che la presentazione non richieda readback del canvas Pixi. Il beneficio sulla fluidità resta da misurare.
+
 Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{headed_window,event_loop,gui,performance}.rs` e `components/roves-js/src/deno_impl.rs`. **Non sono miglioramenti già dimostrati.** Implementare una modifica alla volta, misurare contro Chrome e confrontare il bundle prima/dopo sulla stessa macchina. Non cambiare la pipeline di produzione sulla sola base di benchmark sintetici.
 
 ### P0 — Frame pacing, redraw e sincronizzazione con il display
