@@ -1,3 +1,38 @@
+## 2026-11-09 - Blitz probe: `fetch` on deno_fetch 0.284.0 with a safe-destination policy
+
+**Files touched:** `support/blitz-v8-probe/{Cargo.toml,README.md,fixtures/layout.html}`,
+`support/blitz-v8-probe/src/{fetch.js,fetch_test.js,dom.js,worker.js,main.rs,net_policy.rs}`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The probe's hand-written `fetch`/`Headers`/`Request`/`Response` are replaced by deno_fetch
+0.284.0 (the deno_core 0.413-paired release), plus `FormData`. `src/fetch.js` is now only the
+policy wrapper around Deno's fetch, which the game never sees: `game://content/` keeps the
+existing `op_blitz_game_read` op but answers with a Deno `Response`; `data:`/`blob:` go through
+Deno. Remote requests are accepted by default to any *safe* origin, with no allow-list (the
+interim `--fetch-origin` flag was dropped before landing): `https:` only, no URL credentials,
+public destinations only — IP literals checked by `op_blitz_fetch_check` before every hop and by
+deno_fetch's `request_builder_hook`, host names by a custom deno_fetch DNS resolver that refuses
+any answer containing a non-public address (hyper connects only to the returned addresses, so
+DNS rebinding is checked per connection) — and the document's `<meta>` CSP enforced as
+`connect-src` through the `content-security-policy` 0.8.1 crate production Roves already uses.
+deno_fetch's `create_http_client` always applies the environment proxies (`proxy::from_env`,
+even with `Options.proxy: None`), which would hide the destination from the resolver, so while
+any variable `from_env` reads is set (`ALL_PROXY`, `HTTPS_PROXY`, `HTTP_PROXY` outside CGI, and
+lowercase forms) every request, fixture loopback included, is refused (fail closed).
+Requests are preflight-free CORS (GET/HEAD, safelisted headers, no credentials, `Origin` sent,
+`Access-Control-Allow-Origin` checked on every response, response headers filtered); redirects
+are followed by hand with every hop revalidated (max 20, `null` origin after a cross-origin
+hop). `op_fetch`'s required `PermissionsContainer` grants net only. Fixture mode alone registers
+its plain-http loopback test server as an exception. Deterministic tests: refused IP forms,
+schemes, credentials, unsafe redirect hops, CSP, `https://localhost` refused by the resolver
+(asserted from Rust) and an address-classification table. The blitz-probe CI now runs the
+unmodified visual-novel-template as a smoke test (fails on panic or missing report; refused
+fetches annotated). No custom address-classification crate fits (std `is_global` is unstable),
+so the IANA special-purpose ranges are listed in `net_policy.rs`. Rust signatures and some
+deno_fetch JS internals were written without access to the crate sources; `Cargo.lock` and the
+build are resolved by Codex/CI (see TODO). The production servoshell is unaffected; no `mach`
+flag changed.
+
 ## 2026-11-09 - Blitz probe: `Document.createElementNS` on Blitz's qualified-name nodes
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,dom_api_test.js}`,

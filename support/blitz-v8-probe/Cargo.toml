@@ -15,7 +15,7 @@ blitz-html = { version = "=0.3.0-beta.4", default-features = false }
 blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
 anyrender_vello_cpu = { version = "=0.18.0", features = ["softbuffer_window_renderer"] }
 blitz-traits = "=0.3.0-beta.4"
-tokio = { version = "1.47.1", default-features = false, features = ["rt"] }
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "net"] }
 deno_web = "=0.291.0"
 deno_webidl = "=0.260.0"
 anyrender = "=0.14.0"
@@ -33,5 +33,22 @@ deno_webstorage = "=0.255.0"
 deno_webgpu = "=0.227.0"
 # deno_core 0.413-paired release: createImageBitmap/ImageBitmap (PNG/JPEG decoding).
 deno_image = "=0.36.0"
+# deno_core 0.413-paired release: Headers/Request/Response/FormData and fetch for
+# data:, blob: and safe https origins (src/fetch.js adds game://, CORS, redirects;
+# src/net_policy.rs the public-address resolver, request hook and CSP).
+deno_fetch = "=0.284.0"
+# Same versions deno_fetch 0.284.0 uses: the PermissionsContainer op_fetch requires
+# (net granted, everything else denied) and the Mozilla root store (webpki-roots).
+deno_permissions = "=0.119.0"
+deno_tls = "=0.247.0"
+# RealSys for deno_permissions' descriptor parser (version unified with deno_permissions').
+sys_traits = { version = "0.1", features = ["real", "libc", "winapi"] }
+# Already in the graph through deno_fetch: the request type of deno_fetch's
+# request_builder_hook and the `Name` its custom DNS resolver receives.
+http = "1"
+hyper-util = { version = "0.1", features = ["client-legacy"] }
+# The CSP implementation Roves' production engine uses (root Cargo.lock 0.8.1):
+# document connect-src for remote fetch.
+content-security-policy = "=0.8.1"
 # Start with offline rendering; the probe does not require an audio device in CI.
 web-audio-api = { version = "=1.7.0", default-features = false }

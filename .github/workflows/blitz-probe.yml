@@ -95,9 +95,14 @@ jobs:
           grep -Fq '"check":"web_audio_tone_15_1_22","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"scroll_viewport_and_elements","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"dedicated_worker_pixi_image_bitmap_probe","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
-      # Discovery run on the real game: visual-novel-template's production build
-      # (the game roves-action tests with) loaded with --game. Report-only: the
-      # result lists script errors and how much of the page rendered.
+          grep -Fq '"check":"fetch_public_address_policy","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"fetch_resolver_refuses_non_public","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+      # Smoke run on the real game: visual-novel-template's production build (the
+      # game roves-action tests with), unmodified, loaded with --game and the
+      # default fetch policy (any safe https origin, no allow-list or extra flag).
+      # The step fails only if the probe panics or produces no page report; the
+      # report itself (script errors, rendered text, blocked fetches) stays
+      # informational until the template runs fully.
       - name: checkout visual-novel-template
         uses: actions/checkout@v4
         with:
@@ -109,18 +114,27 @@ jobs:
         run: |
           npm install
           npm run build
-      - name: run the probe on the game (report only)
+      - name: smoke run of the probe on the unmodified game
         shell: bash
-        continue-on-error: true
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
           ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-game-storage
           ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-game.png
         run: |
           "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" --game visual-novel-template/dist > "$RUNNER_TEMP/blitz-game.log" 2>&1 || echo "probe exited with $?"
-          grep -E 'ROVES_PROBE_RESULT|ROVES_PROBE_GAME_MISSING_RESOURCE|panicked' "$RUNNER_TEMP/blitz-game.log" | cut -c1-3000
-          # Mount report (fresh storage directory) as a public annotation.
+          grep -E 'ROVES_PROBE_RESULT|ROVES_PROBE_GAME_MISSING_RESOURCE|ROVES_PROBE_FETCH_BLOCKED|panicked' "$RUNNER_TEMP/blitz-game.log" | cut -c1-3000 || true
+          # Mount report (fresh storage directory) and fetches the policy refused as
+          # public annotations.
           grep -F '"check":"game_page"' "$RUNNER_TEMP/blitz-game.log" | cut -c1-900 | sed 's/^/::notice::/' || true
+          grep -F 'ROVES_PROBE_FETCH_BLOCKED' "$RUNNER_TEMP/blitz-game.log" | head -n 5 | cut -c1-500 | sed 's/^/::notice::/' || true
+          if grep -q 'panicked' "$RUNNER_TEMP/blitz-game.log"; then
+            echo "::error::the probe panicked on visual-novel-template"
+            exit 1
+          fi
+          grep -Fq '"check":"game_page","status":"ran"' "$RUNNER_TEMP/blitz-game.log" || {
+            echo "::error::the probe produced no game_page report for visual-novel-template"
+            exit 1
+          }
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
       # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
       - name: annotate probe log tail on failure

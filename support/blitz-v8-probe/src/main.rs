@@ -15,7 +15,10 @@ use style::properties::{PropertyDeclarationId, PropertyId};
 
 mod audio;
 mod game;
+mod net_policy;
 mod window;
+
+use net_policy::op_blitz_fetch_check;
 mod worker;
 
 const FIXTURE: &str = include_str!("../fixtures/layout.html");
@@ -1118,11 +1121,143 @@ fn op_blitz_game_read(state: &mut OpState, #[string] url: &str) -> Result<Vec<u8
         .ok_or_else(|| JsErrorBox::type_error(format!("not found: {url}")))
 }
 
+/// The PermissionsContainer op_fetch requires. Net is granted to every host
+/// (`Some(vec![])`): which destinations are safe is decided by src/net_policy.rs
+/// (https, public addresses at resolution time, CSP) and src/fetch.js (CORS),
+/// not by an allow-list. Every other permission stays denied without prompting.
+fn fetch_permissions() -> deno_permissions::PermissionsContainer {
+    use deno_permissions::{
+        Permissions, PermissionsContainer, PermissionsOptions, RuntimePermissionDescriptorParser,
+    };
+    let parser = Arc::new(RuntimePermissionDescriptorParser::new(
+        sys_traits::impls::RealSys,
+    ));
+    let options = PermissionsOptions {
+        allow_net: Some(vec![]),
+        prompt: false,
+        ..Default::default()
+    };
+    let permissions = Permissions::from_options(parser.as_ref(), &options)
+        .expect("net permission options must be valid");
+    PermissionsContainer::new(parser, permissions)
+}
+
+/// Mozilla's root store (webpki-roots via deno_tls) for https, built on first use.
+#[derive(Default)]
+struct WebPkiRoots(std::sync::OnceLock<deno_tls::rustls::RootCertStore>);
+
+impl deno_tls::RootCertStoreProvider for WebPkiRoots {
+    fn get_or_try_init(&self) -> Result<&deno_tls::rustls::RootCertStore, JsErrorBox> {
+        Ok(self.0.get_or_init(deno_tls::create_default_root_cert_store))
+    }
+}
+
+/// Fixture mode only: a loopback HTTP/1.1 server for the remote `fetch` tests, so
+/// they need no network. It is the only non-https, non-public destination the
+/// policy accepts, registered with `net_policy::allow_fixture_loopback` (never in
+/// a `--game` run). Each response closes its connection. Paths: `/cors` (allowed,
+/// echoes the received Origin and whether credentials were sent), `/no-cors` (no
+/// Access-Control-Allow-Origin), `/redirect` (302 to `/cors`), `/redirect-loop`,
+/// `/redirect-no-cors`, and redirects to unsafe destinations (`/redirect-http`,
+/// `/redirect-private`, `/redirect-localhost`, `/redirect-credentials`).
+fn spawn_fetch_test_server() -> deno_core::url::Url {
+    use std::io::{BufRead, BufReader, Write};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+    let address = listener.local_addr().expect("listener address");
+    net_policy::allow_fixture_loopback(address);
+    let port = address.port();
+    std::thread::spawn(move || {
+        for stream in listener.incoming().flatten() {
+            let mut reader = BufReader::new(&stream);
+            let mut request_line = String::new();
+            if reader.read_line(&mut request_line).is_err() {
+                continue;
+            }
+            let mut origin = String::from("(none)");
+            let mut credentials = false;
+            loop {
+                let mut line = String::new();
+                if reader.read_line(&mut line).unwrap_or(0) == 0 || line == "\r\n" {
+                    break;
+                }
+                if let Some((name, value)) = line.split_once(':') {
+                    match name.trim().to_ascii_lowercase().as_str() {
+                        "origin" => origin = value.trim().to_string(),
+                        "authorization" | "cookie" => credentials = true,
+                        _ => {},
+                    }
+                }
+            }
+            let path = request_line.split_whitespace().nth(1).unwrap_or("/");
+            let (status, headers, body) = match path {
+                "/cors" => (
+                    "200 OK",
+                    "Access-Control-Allow-Origin: *\r\nAccess-Control-Expose-Headers: X-Exposed\r\n\
+                     X-Exposed: yes\r\nX-Hidden: no\r\nSet-Cookie: probe=1\r\n",
+                    format!("origin={origin};credentials={credentials}"),
+                ),
+                "/no-cors" => ("200 OK", "", "secret".to_string()),
+                "/redirect" => (
+                    "302 Found",
+                    "Access-Control-Allow-Origin: *\r\nLocation: /cors\r\n",
+                    String::new(),
+                ),
+                "/redirect-loop" => (
+                    "307 Temporary Redirect",
+                    "Access-Control-Allow-Origin: *\r\nLocation: /redirect-loop\r\n",
+                    String::new(),
+                ),
+                "/redirect-no-cors" => ("302 Found", "Location: /cors\r\n", String::new()),
+                // Unsafe hops: every one must be refused before it is contacted.
+                "/redirect-http" => (
+                    "302 Found",
+                    "Access-Control-Allow-Origin: *\r\nLocation: http://example.com/\r\n",
+                    String::new(),
+                ),
+                "/redirect-private" => (
+                    "301 Moved Permanently",
+                    "Access-Control-Allow-Origin: *\r\nLocation: https://169.254.169.254/latest/meta-data/\r\n",
+                    String::new(),
+                ),
+                "/redirect-localhost" => (
+                    "308 Permanent Redirect",
+                    "Access-Control-Allow-Origin: *\r\nLocation: https://localhost:1/\r\n",
+                    String::new(),
+                ),
+                "/redirect-credentials" => (
+                    "302 Found",
+                    "Access-Control-Allow-Origin: *\r\nLocation: https://user:pw@example.com/\r\n",
+                    String::new(),
+                ),
+                _ => (
+                    "404 Not Found",
+                    "Access-Control-Allow-Origin: *\r\n",
+                    String::new(),
+                ),
+            };
+            // HEAD reports the GET length without sending the body.
+            let length = body.len();
+            let sent = if request_line.starts_with("HEAD ") {
+                ""
+            } else {
+                body.as_str()
+            };
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: text/plain\r\nContent-Length: {length}\r\n\
+                 Connection: close\r\n{headers}\r\n{sent}"
+            );
+            let _ = (&stream).write_all(response.as_bytes());
+        }
+    });
+    deno_core::url::Url::parse(&format!("http://127.0.0.1:{port}")).expect("loopback origin")
+}
+
 deno_core::extension!(
     roves_blitz_v8_probe,
     ops = [
         op_blitz_document_root,
         op_blitz_game_read,
+        op_blitz_fetch_check,
         op_blitz_matches,
         op_blitz_create_comment,
         op_blitz_clone_node,
@@ -1393,6 +1528,15 @@ fn main() {
     tokio.block_on(async {
         stage("parse_html");
         let game = game::GameContent::from_args();
+        // Fixture mode only: the loopback server for the remote fetch tests, the one
+        // non-public destination the network policy accepts (never with --game).
+        let fetch_test_server = game.is_none().then(spawn_fetch_test_server);
+        if game.is_none() {
+            net_policy::self_check();
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"fetch_public_address_policy\",\"status\":\"passed\"}}"
+            );
+        }
         let document = Rc::new(RefCell::new(match &game {
             Some(game) => game.document(),
             None => HtmlDocument::from_html(
@@ -1420,6 +1564,22 @@ fn main() {
                 deno_webgpu::deno_webgpu::init(),
                 // createImageBitmap (image decoding) from Deno's maintained extension.
                 deno_image::deno_image::init(),
+                // fetch/Headers/Request/Response/FormData; src/fetch.js wraps fetch
+                // with the game://, CORS and redirect policy. Every connection goes
+                // through net_policy's public-address resolver and request hook. No
+                // client certificate or Deno.createHttpClient; file: keeps
+                // deno_fetch's refusing handler. `proxy: None` does not disable the
+                // environment proxies deno_fetch's create_http_client always reads,
+                // so net_policy refuses every request while one is configured.
+                deno_fetch::deno_fetch::init(deno_fetch::Options {
+                    user_agent: "Roves".to_string(),
+                    root_cert_store_provider: Some(Arc::new(WebPkiRoots::default())),
+                    request_builder_hook: Some(net_policy::request_hook),
+                    resolver: deno_fetch::dns::Resolver::custom(Arc::new(
+                        net_policy::PublicResolver,
+                    )),
+                    ..Default::default()
+                }),
                 audio::roves_blitz_audio::init(),
                 // Dedicated workers: one isolate and thread each (src/worker.rs).
                 worker::roves_blitz_worker::init(),
@@ -1440,6 +1600,11 @@ fn main() {
             .op_state()
             .borrow_mut()
             .put(GameFiles(game.clone()));
+        // op_fetch requires a PermissionsContainer (net only, see fetch_permissions).
+        runtime.op_state().borrow_mut().put(fetch_permissions());
+        // Remote fetch honours the CSP the page declared in <head> when parsed.
+        let document_csp = net_policy::DocumentCsp::from_document(&document.borrow());
+        runtime.op_state().borrow_mut().put(document_csp);
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
@@ -1600,6 +1765,16 @@ fn main() {
         );
 
         stage("frame_loop");
+        let server = fetch_test_server.expect("fixture mode starts the fetch test server");
+        runtime
+            .execute_script(
+                "roves-blitz-fetch-server.js",
+                format!(
+                    "globalThis.fetchTestServer = {:?};",
+                    server.origin().ascii_serialization()
+                ),
+            )
+            .expect("fetch test server origin should be set");
         runtime
             .execute_script("roves-blitz-fetch-test.js", FETCH_TEST)
             .expect("fetch test setup should run");
@@ -1611,9 +1786,27 @@ fn main() {
         runtime
             .execute_script("roves-blitz-frame-check.js", FRAME_CHECK)
             .expect("frame loop checks should pass");
+        // Loopback fetches complete through deno_fetch's tokio ops: drive frames
+        // until the test chain reports done (bounded), then check its result.
+        for _ in 0..150 {
+            if evaluate_string(&mut runtime, "String(fetchResult.done)") == "true" {
+                break;
+            }
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2).await;
+        }
         runtime
             .execute_script("roves-blitz-fetch-check.js", FETCH_CHECK)
             .expect("fetch checks should pass");
+        // The https://localhost:1/ fetches passed the static checks and CSP; they
+        // must have been refused by the resolver on the resolved loopback address.
+        let refused = net_policy::refused_hosts();
+        assert!(
+            refused.iter().any(|host| host == "localhost"),
+            "the public-address resolver should have refused localhost, refused: {refused:?}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"fetch_resolver_refuses_non_public\",\"status\":\"passed\"}}"
+        );
         runtime
             .execute_script("roves-blitz-history-check.js", HISTORY_CHECK)
             .expect("asynchronous popstate/hashchange must have fired");

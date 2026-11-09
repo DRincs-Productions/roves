@@ -66,6 +66,8 @@ globalThis.__rovesCreateWorker = (dependencies) => {
       if (blob === null || !isJavaScriptMime(blob.type)) return null;
       return blob.text();
     }
+    // Worker scripts must be same-origin: never from a remote (CORS) origin.
+    if (url.protocol !== "data:" && url.protocol !== "game:") return null;
     try {
       const response = await fetch(url.href);
       if (!response.ok || !isJavaScriptMime(response.headers.get("content-type") ?? "")) return null;

@@ -58,6 +58,7 @@
     op_blitz_blur,
     op_blitz_focused,
     op_blitz_game_read,
+    op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
     op_blitz_matches,
     op_blitz_create_comment,
@@ -1793,7 +1794,15 @@
   });
   const createFetch = globalThis.__rovesCreateFetch;
   delete globalThis.__rovesCreateFetch;
-  const fetchApi = createFetch({ op_blitz_game_read, Blob, TextDecoder, TextEncoder, URL, location: historyApi.location });
+  const fetchApi = createFetch({
+    core,
+    internals: globalThis.__bootstrap.internals,
+    primordials: globalThis.__bootstrap.primordials,
+    op_blitz_game_read,
+    op_blitz_fetch_check,
+    URL,
+    location: historyApi.location,
+  });
   // Dedicated workers (src/worker.js, src/worker.rs): own isolate and thread each.
   const createWorker = globalThis.__rovesCreateWorker;
   delete globalThis.__rovesCreateWorker;
@@ -1969,6 +1978,7 @@
     fetch: fetchApi.fetch,
     createImageBitmap: imageApi.createImageBitmap,
     ImageBitmap: imageApi.ImageBitmap,
+    FormData: fetchApi.FormData,
     Headers: fetchApi.Headers,
     Request: fetchApi.Request,
     Response: fetchApi.Response,
