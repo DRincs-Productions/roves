@@ -3,7 +3,8 @@
 // fixture mode (`fetchTestServer`), the safe-destination policy (https, public
 // addresses, CSP connect-src from fixtures/layout.html), Response API.
 // No test needs the network: refused requests never leave the process, and
-// https://localhost:1 is refused by the resolver before connecting.
+// https://localhost:8443 is refused by the resolver before connecting (the port
+// must be Fetch-allowed: bad ports such as 1 are rejected before DNS).
 // Async: main.rs drives frames until done, then fetch_check.js verifies.
 (() => {
   "use strict";
@@ -103,7 +104,7 @@
     // A name the static check accepts and CSP allows (https://localhost:*): the
     // resolver refuses it on the resolved loopback address (main.rs asserts that
     // the refusal came from the resolver, whatever message deno_fetch reports).
-    await rejectsWith("TypeError", "localhost name refused at resolution", () => fetch("https://localhost:1/"));
+    await rejectsWith("TypeError", "localhost name refused at resolution", () => fetch("https://localhost:8443/"));
     // The fixture's <meta http-equiv="Content-Security-Policy"> does not list it.
     await refusedWith("document CSP connect-src", /Content-Security-Policy/, () => fetch("https://blocked.invalid/"));
     await rejectsWith("TypeError", "file: URLs", () => fetch("file:///etc/hosts"));

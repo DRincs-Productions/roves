@@ -1221,7 +1221,7 @@ fn spawn_fetch_test_server() -> deno_core::url::Url {
                 ),
                 "/redirect-localhost" => (
                     "308 Permanent Redirect",
-                    "Access-Control-Allow-Origin: *\r\nLocation: https://localhost:1/\r\n",
+                    "Access-Control-Allow-Origin: *\r\nLocation: https://localhost:8443/\r\n",
                     String::new(),
                 ),
                 "/redirect-credentials" => (
@@ -1803,12 +1803,16 @@ fn main() {
         runtime
             .execute_script("roves-blitz-fetch-check.js", FETCH_CHECK)
             .expect("fetch checks should pass");
-        // The https://localhost:1/ fetches passed the static checks and CSP; they
+        // The https://localhost:8443/ fetches passed the static checks and CSP; they
         // must have been refused by the resolver on the resolved loopback address.
+        // The port must not be on the Fetch "bad port" list (e.g. 1): deno_fetch
+        // rejects those before DNS, so the resolver would never run (CI 42668768386).
         let refused = net_policy::refused_hosts();
         assert!(
             refused.iter().any(|host| host == "localhost"),
-            "the public-address resolver should have refused localhost, refused: {refused:?}"
+            "the public-address resolver should have refused localhost, refused: {refused:?}; \
+             if empty, the localhost fetches were rejected before DNS (Fetch bad port, \
+             proxy or CSP) instead of by net_policy::PublicResolver"
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"fetch_resolver_refuses_non_public\",\"status\":\"passed\"}}"
