@@ -1,3 +1,25 @@
+## 2026-11-09 - Blitz probe: `HTMLMediaElement.canPlayType` capability query, no playback
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,dom_api_test.js}`,
+`support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+The Windows artifact of CI run 42534612760, on the unchanged visual-novel-template `main`
+(`bb9ea77910dda74aced20b001131c8daa22e7cfc`), stops with `TypeError:
+document.createElement("video").canPlayType is not a function` during PixiJS video format
+detection (`mp4`, `ogg`, `webm`). **Reuse evaluation:** Deno/deno_web have no HTML media API and
+the probe has no HTML media playback backend, so there is nothing to delegate to; no new
+dependency. `dom.js` adds `HTMLMediaElement extends HTMLElement` with `HTMLAudioElement` and
+`HTMLVideoElement` subclasses (globals, illegal constructors), assigned to HTML-namespace
+`audio`/`video` nodes through the existing wrapper class lookup (now a small local-name map that
+also covers `canvas`/`iframe`). The only member is `canPlayType(type)`: WebIDL argument count and
+`DOMString` conversion through deno_webidl, then `""` for every type, which is the spec answer
+for formats the user agent cannot play. Pixi therefore reports no supported video format instead
+of throwing. No `src`, `load`, `play`, ready state or media events are exposed; a game that needs
+real `<video>`/`<audio>` playback still needs a backend (not in scope). `dom_api_test.js` covers
+the globals and prototype chain, `createElement`/parsed brands (SVG `video` excluded), `""` for
+the Pixi types and others, argument conversion, missing/Symbol argument `TypeError`, absence of
+playback members and the illegal constructor. Not compiled or run locally.
+
 ## 2026-11-09 - Blitz probe: viewport and element scrolling on Blitz's scroll state
 
 **Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,scroll_test.js}`,

@@ -171,6 +171,49 @@
   check(document.activeElement === body, "blur returns activeElement to body");
   frames.remove();
 
+  // HTMLMediaElement: capability query only (no media backend). PixiJS format
+  // detection calls document.createElement("video").canPlayType(...) at startup.
+  check(typeof HTMLMediaElement === "function" && HTMLMediaElement.prototype instanceof HTMLElement
+    && HTMLVideoElement.prototype instanceof HTMLMediaElement && HTMLAudioElement.prototype instanceof HTMLMediaElement,
+    "HTMLMediaElement / HTMLVideoElement / HTMLAudioElement globals");
+  const video = document.createElement("video");
+  const audio = document.createElement("AUDIO");
+  check(video instanceof HTMLVideoElement && video.tagName === "VIDEO" && audio instanceof HTMLAudioElement
+    && audio.tagName === "AUDIO" && !(video instanceof HTMLAudioElement), "createElement video/audio brands");
+  check(typeof video.canPlayType === "function" && typeof audio.canPlayType === "function", "canPlayType is a method");
+  // The Pixi probe: every format answers "" (cannot play), never throws.
+  check(["video/mp4", "video/ogg", "video/webm", 'video/mp4; codecs="avc1.42E01E"', "audio/mpeg", "audio/ogg", ""]
+    .every((type) => video.canPlayType(type) === "" && audio.canPlayType(type) === ""), "canPlayType returns '' for unsupported formats");
+  check(video.canPlayType(undefined) === "" && video.canPlayType(null) === "", "canPlayType converts its argument to DOMString");
+  let missingArgument = null;
+  try {
+    video.canPlayType();
+  } catch (error) {
+    missingArgument = error;
+  }
+  check(missingArgument instanceof TypeError, "canPlayType requires an argument");
+  let symbolArgument = null;
+  try {
+    video.canPlayType(Symbol("mp4"));
+  } catch (error) {
+    symbolArgument = error;
+  }
+  check(symbolArgument instanceof TypeError, "canPlayType rejects a Symbol argument");
+  host.innerHTML = '<video id="parsed-video"></video><svg><video></video></svg>';
+  const parsedVideo = host.querySelector("#parsed-video");
+  check(parsedVideo instanceof HTMLVideoElement && parsedVideo.canPlayType("video/webm") === "", "parsed <video> is an HTMLVideoElement");
+  check(!(host.querySelector("svg").firstChild instanceof HTMLMediaElement), "only HTML-namespace media elements get the brand");
+  check(!(host instanceof HTMLMediaElement) && !("play" in video) && !("src" in video) && !("load" in video),
+    "no playback API on HTMLMediaElement");
+  let mediaIllegal = null;
+  try {
+    new HTMLVideoElement();
+  } catch (error) {
+    mediaIllegal = error;
+  }
+  check(mediaIllegal instanceof TypeError, "HTMLVideoElement is not constructible");
+  host.innerHTML = "";
+
   // getElementsByTagName: live HTMLCollection (Motion 12 calls it during init).
   host.innerHTML = '<div id="tags"><p id="p1">a</p><span><p name="second">b</p></span><svg><foreignObject></foreignObject></svg></div>';
   const tags = host.querySelector("#tags");

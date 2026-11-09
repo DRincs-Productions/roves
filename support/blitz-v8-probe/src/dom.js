@@ -1598,6 +1598,26 @@
   // document.activeElement while it is an iframe; with no contentWindow its
   // same-origin check throws, is caught, and the walk stops at the element).
   class HTMLIFrameElement extends HTMLElement {}
+  // Capability query only: the probe has no HTML media playback backend (Deno
+  // provides none), so canPlayType answers "" ("cannot play") for every type, which
+  // is the spec answer for unsupported formats. Libraries such as PixiJS probe
+  // formats through it; no load/play/src API is exposed.
+  class HTMLMediaElement extends HTMLElement {
+    canPlayType(type) {
+      const prefix = "Failed to execute 'canPlayType' on 'HTMLMediaElement'";
+      webidl.requiredArguments(arguments.length, 1, prefix);
+      webidl.converters.DOMString(type, prefix, "Argument 1");
+      return "";
+    }
+  }
+  class HTMLAudioElement extends HTMLMediaElement {}
+  class HTMLVideoElement extends HTMLMediaElement {}
+  const HTML_ELEMENT_CLASSES = new Map([
+    ["canvas", HTMLCanvasElement],
+    ["iframe", HTMLIFrameElement],
+    ["audio", HTMLAudioElement],
+    ["video", HTMLVideoElement],
+  ]);
   class Text extends Node {}
   class Comment extends Node {}
 
@@ -1658,7 +1678,7 @@
 
   function elementClass(namespace, localName) {
     if (namespace === HTML_NAMESPACE) {
-      return localName === "canvas" ? HTMLCanvasElement : localName === "iframe" ? HTMLIFrameElement : HTMLElement;
+      return HTML_ELEMENT_CLASSES.get(localName) ?? HTMLElement;
     }
     if (namespace === SVG_NAMESPACE) return SVGElement;
     return Element;
@@ -1806,6 +1826,9 @@
     SVGElement,
     HTMLCanvasElement,
     HTMLIFrameElement,
+    HTMLMediaElement,
+    HTMLAudioElement,
+    HTMLVideoElement,
     NodeList,
     HTMLCollection,
     DOMTokenList,
