@@ -1088,22 +1088,16 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
-/// Teardown diagnostics only (captured by the bootstrap's `shutdownGpu`, never
-/// exposed to the guest): the device's adapter as wgpu-core reports it
-/// (backend, device type, name, driver) plus one non-blocking queue poll, taken
-/// before `op_blitz_gpu_wait_idle` blocks so a timeout still leaves evidence of
-/// which adapter and backend hung. A wgpu error in the poll is reported, not thrown.
+/// Diagnostics only (captured by the bootstrap's `navigator.gpu` wrapper, never
+/// exposed to the guest): the adapter as wgpu-core reports it (backend, device
+/// type, name, driver). Called right after `requestAdapter` resolves, while the
+/// `GPUAdapter` is alive: its Drop calls `adapter_drop`, so querying
+/// `GPUDevice::adapter` at teardown panics with "Adapter[Id(0,1)] does not
+/// exist" (CI run 42691099674). The bootstrap caches the JSON for teardown.
 #[op2]
 #[string]
-fn op_blitz_gpu_adapter_info(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
-    let info = device.instance.adapter_get_info(device.adapter);
-    let poll = device
-        .instance
-        .device_poll(device.id, deno_webgpu::wgpu_types::PollType::Poll)
-        .map_or_else(
-            |error| format!("error: {error}"),
-            |status| format!("{status:?}"),
-        );
+fn op_blitz_gpu_adapter_info(#[cppgc] adapter: &deno_webgpu::adapter::GPUAdapter) -> String {
+    let info = adapter.instance.adapter_get_info(adapter.id);
     deno_core::serde_json::json!({
         "backend": format!("{:?}", info.backend),
         "device_type": format!("{:?}", info.device_type),
@@ -1112,7 +1106,6 @@ fn op_blitz_gpu_adapter_info(#[cppgc] device: &deno_webgpu::device::GPUDevice) -
         "device": info.device,
         "driver": info.driver,
         "driver_info": info.driver_info,
-        "pre_wait_poll": poll,
     })
     .to_string()
 }

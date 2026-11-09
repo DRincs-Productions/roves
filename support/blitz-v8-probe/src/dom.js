@@ -2010,6 +2010,9 @@
   // in isWebGPUSupported before its real one, so each adapter hands out a single
   // shared device, created with every texture-compression feature it supports.
   let sharedDevice = null;
+  // wgpu-core info of the adapter that created sharedDevice, queried while that
+  // GPUAdapter was alive (see op_blitz_gpu_adapter_info) and read at teardown.
+  let sharedAdapterInfo = null;
   let patchedGpu = null;
   // Teardown diagnostics: queue submissions made by the page (see shutdownGpu).
   let gpuSubmits = 0;
@@ -2036,9 +2039,12 @@
     gpu.requestAdapter = async (options) => {
       const adapter = await requestAdapter(options);
       if (adapter === null) return null;
+      // Queried now: at teardown the adapter may already be dropped.
+      const adapterInfo = JSON.parse(op_blitz_gpu_adapter_info(adapter));
       const requestDevice = adapter.requestDevice.bind(adapter);
       adapter.requestDevice = () => {
         if (sharedDevice === null) {
+          sharedAdapterInfo = adapterInfo;
           const requiredFeatures = ["texture-compression-bc", "texture-compression-astc", "texture-compression-etc2"]
             .filter((feature) => adapter.features.has(feature));
           sharedDevice = requestDevice({ requiredFeatures });
@@ -2142,11 +2148,12 @@
         device = await sharedDevice;
       } catch (error) {
         // requestDevice failed: no queue exists, nothing was submitted.
-        return JSON.stringify({ device: false, device_error: String(error), submits: gpuSubmits });
+        return JSON.stringify({ device: false, device_error: String(error), submits: gpuSubmits, adapter: sharedAdapterInfo });
       }
       // Printed before the blocking wait, so a timeout still records which
-      // adapter/backend hung and what the page had submitted.
-      const adapter = JSON.parse(op_blitz_gpu_adapter_info(device));
+      // adapter/backend hung and what the page had submitted. The info was
+      // cached when requestAdapter resolved, never re-queried here.
+      const adapter = sharedAdapterInfo;
       const submissions = {
         submits: gpuSubmits,
         command_buffers: gpuCommandBuffers,

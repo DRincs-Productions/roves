@@ -178,7 +178,7 @@ jobs:
               timeout 200 "$exe" --game visual-novel-template/dist > "$log" 2>&1
             status=$?
             adapter=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1 \
-              | grep -oE '"(backend|device_type|name|pre_wait_poll|submits|command_buffers|last_submit_ms_ago)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+              | grep -oE '"(backend|device_type|name|submits|command_buffers|last_submit_ms_ago)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
             menu=$(grep -F '"check":"game_page"' "$log" | head -n 1 | grep -oE '"start_menu_like":[a-z]+')
             teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(poll_status|queue_idle_wait_ms|device)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
             [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-200)"

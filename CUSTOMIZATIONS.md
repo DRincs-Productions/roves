@@ -1,3 +1,19 @@
+## 2026-11-09 - Blitz probe: query adapter info while the GPUAdapter is alive
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Run 42691099674 (72d3fdf9abf): the diagnostic below regressed teardown. `deno_webgpu`'s
+`GPUAdapter` Drop calls `adapter_drop`, so at teardown `adapter_get_info(device.adapter)`
+panicked with `Adapter[Id(0,1)] does not exist` (default backend and forced DX12 alike; forced
+Vulkan/GL got no usable device). `op_blitz_gpu_adapter_info` now takes
+`#[cppgc] &deno_webgpu::adapter::GPUAdapter` (public `instance`/`id`) and is called by the
+`navigator.gpu.requestAdapter` wrapper right after it resolves; the JSON is cached for the
+adapter that creates the shared device and read by `shutdownGpu` (also in its
+`requestDevice`-failed result). The non-blocking `pre_wait_poll` was dropped instead of being
+moved: `op_blitz_gpu_wait_idle` already reports the poll outcome. No new dependency; the
+primary smoke gate is unchanged.
+
 ## 2026-11-09 - Blitz probe: WebGPU teardown diagnostics and backend comparison
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,
