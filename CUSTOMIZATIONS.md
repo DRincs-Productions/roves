@@ -1,3 +1,21 @@
+## 2026-11-10 - Blitz probe: requestIdleCallback receiver, story error-boundary detection
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/frame_test.js,src/frame_check.js,src/game.rs}`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`.
+
+CI 42907305234 (story): Pixi'VN's media `_onended` handler called `requestIdleCallback`, which
+threw `TypeError: Illegal invocation` from deno_web `02_timers.js` `checkThis`: the probe called
+`timers.setTimeout(...)`/`timers.clearTimeout(...)` as methods of the module namespace, and
+deno_web accepts only an undefined/null/global receiver. `dom.js` now destructures the two
+functions once and calls them unbound; no other probe file calls a deno_web timer as a method
+(the other modules destructure their `setTimeout` dependency). Regression in `frame_test.js`/
+`frame_check.js` (smoke gate): bare, `window.` and `globalThis.` `requestIdleCallback` must not
+throw, return positive handles, run with an IdleDeadline while frames are driven, and
+`cancelIdleCallback` (bare and `window.`) must cancel. The `--story` harness now fails at the
+first 10-frame check (or before Start) that shows an error-boundary fallback — "Something went
+wrong" text or a "Show Error"/"Show details" control, alerts included — instead of waiting for
+the state to settle or counting it as dialogue. No new dependency.
+
 ## 2026-11-10 - Blitz probe: decodeAudioData, AudioBuffer and AudioBufferSourceNode
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/audio.rs,src/web_audio.js,src/dom.js,src/main.rs,js/tone_scenario.js}`,

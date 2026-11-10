@@ -255,7 +255,8 @@ jobs:
       # then the first two settled story states (advanced by a "next" control,
       # a click on the dialogue text, Enter or Space, in that order). Each state
       # needs new dialogue text; toasts never count as progress and a visible
-      # error toast fails the step.
+      # error toast fails the step. An error-boundary fallback ("Something went
+      # wrong"/"Show Error") fails it at the first check, never as dialogue.
       # continue-on-error: a failure marks this step and is annotated with its
       # reason, but never changes the job result; the smoke step above stays
       # the gate. Separate storage directory; bounded by timeout 600.

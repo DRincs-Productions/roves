@@ -65,5 +65,26 @@
     timerFired = true;
   }, 0);
 
-  globalThis.frameResults = () => ({ frames, first, second, nested, reported, unexpected, timerFired, log });
+  // requestIdleCallback/cancelIdleCallback through every receiver a game uses
+  // (bare, window., globalThis.) must not throw "Illegal invocation" (deno_web
+  // timers check `this`; CI 42907305234), the idle callback must run with an
+  // IdleDeadline, and a cancelled handle must never run.
+  let idleDeadline = null;
+  const idleHandles = [
+    requestIdleCallback(() => log.push("idle bare")),
+    window.requestIdleCallback((deadline) => {
+      idleDeadline = { didTimeout: deadline.didTimeout, remaining: typeof deadline.timeRemaining() };
+      log.push("idle window");
+    }, { timeout: 50 }),
+    globalThis.requestIdleCallback(() => log.push("idle global")),
+  ];
+  const cancelledIdle = window.requestIdleCallback(() => log.push("idle cancelled ran"));
+  window.cancelIdleCallback(cancelledIdle);
+  const cancelledIdleBare = requestIdleCallback(() => log.push("idle cancelled bare ran"));
+  cancelIdleCallback(cancelledIdleBare);
+  const idleHandlesValid = idleHandles.every((handle) => typeof handle === "number" && handle > 0);
+
+  globalThis.frameResults = () => ({
+    frames, first, second, nested, reported, unexpected, timerFired, idleDeadline, idleHandlesValid, log,
+  });
 })();

@@ -86,6 +86,8 @@
   const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
+  // Unbound: `timers.setTimeout(...)` would pass the module namespace as `this`.
+  const { setTimeout: setTimeoutUnbound, clearTimeout: clearTimeoutUnbound } = timers;
   // AbortController/AbortSignal from deno_web (needs 02_event and 02_timers,
   // loaded above). Pixi'VN narration hooks construct an AbortController at startup.
   const { AbortController, AbortSignal } = core.loadExtScript("ext:deno_web/03_abort_signal.js");
@@ -1944,12 +1946,16 @@
     Comment,
     MessageChannel,
     MessagePort,
+    // deno_web's timer functions reject any receiver other than undefined/null/
+    // globalThis ("Illegal invocation"), so they are called unbound, never as
+    // methods of the `timers` module namespace (CI 42907305234: PixiVN called
+    // requestIdleCallback from a media `ended` handler and the game crashed).
     requestIdleCallback: (callback, options = {}) =>
-      timers.setTimeout(() => {
+      setTimeoutUnbound(() => {
         const start = performance.now();
         callback({ didTimeout: false, timeRemaining: () => Math.max(0, 16 - (performance.now() - start)) });
       }, Math.min(Number(options.timeout ?? 1), 1)),
-    cancelIdleCallback: (handle) => timers.clearTimeout(handle),
+    cancelIdleCallback: (handle) => clearTimeoutUnbound(handle),
     DOMRect,
     DOMRectReadOnly,
     ResizeObserver,

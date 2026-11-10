@@ -433,6 +433,16 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
     lines(menu) {
       return JSON.stringify(dialogueLines(menu));
     },
+    // A React error-boundary fallback ("Something went wrong" text or a "Show
+    // Error" control, as in the PixiVN template) replacing the game UI: page
+    // text including alerts, or "" when absent. It is never a story state.
+    errorBoundary() {
+      const parts = [];
+      if (document.body) walk(document.body, (text) => parts.push(text), (element) => parts.push(norm(element.textContent)));
+      const text = parts.join(" ");
+      const control = buttons().some((element) => /^show (error|details)$/i.test(label(element)));
+      return control || /something went wrong/i.test(text) ? (text.slice(0, 300) || "(error boundary)") : "";
+    },
     // Visible toasts/alerts, each flagged when it reports an error.
     toasts() {
       const found = [];
@@ -451,6 +461,14 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
 enum StoryState {
     Settled(String, u32),
     Timeout(String),
+    /// The page shows an error-boundary fallback (text, frames): fails at once.
+    ErrorBoundary(String, u32),
+}
+
+/// Error-boundary fallback text currently on the page, if any.
+fn error_boundary(runtime: &mut JsRuntime) -> Option<String> {
+    let text = crate::evaluate_string(runtime, "__rovesStory.errorBoundary()");
+    (!text.is_empty()).then_some(text)
 }
 
 /// Records every distinct visible toast (`{text, error}`) the page shows; toasts
@@ -484,6 +502,11 @@ async fn wait_for_state(
         crate::drive_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
+        // Checked before settling: a crash fallback is reported at once, never
+        // waited on or mistaken for dialogue text.
+        if let Some(text) = error_boundary(runtime) {
+            return StoryState::ErrorBoundary(text, frames);
+        }
         let text = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
         if text.is_empty() || previous.contains(&text) {
             candidate.clear();
@@ -554,7 +577,9 @@ fn expected_lines() -> Result<Option<[String; 2]>, String> {
 /// dialogue text that was not on the menu; state 2 must add a dialogue line
 /// absent from state 1 and is reached by the first advance method that works: a
 /// "next" control, a click on the dialogue text, Enter, Space. Toast text never
-/// counts as a state, and any visible error toast fails the run. With
+/// counts as a state, and any visible error toast fails the run. An
+/// error-boundary fallback ("Something went wrong" / "Show Error") fails the
+/// run at the first check that sees it, before Start or while waiting. With
 /// `ROVES_PROBE_STORY_EXPECT='["line 1","line 2"]'` the two states must also
 /// contain those known lines. Prints one `game_story` result; any failure is
 /// reported with its reason, never as a pass.
@@ -587,6 +612,12 @@ async fn story(
             Ok(expected) => expected,
             Err(error) => break 'story Some(error),
         };
+        if let Some(text) = error_boundary(runtime) {
+            break 'story Some(format!(
+                "error boundary shown before Start: {:?}",
+                excerpt(&text)
+            ));
+        }
         crate::resolve_layout(document);
         let start = crate::evaluate_string(runtime, "__rovesStory.start()");
         let Some((x, y, start)) = point(&start) else {
@@ -636,6 +667,13 @@ async fn story(
                     break 'story Some(format!(
                         "no settled state after Start within {STORY_STATE_FRAMES} frames (last text: {:?})",
                         excerpt(&last)
+                    ));
+                },
+                StoryState::ErrorBoundary(text, frames) => {
+                    steps.push(json!({ "after": "click_start", "result": "error boundary", "frames": frames }));
+                    break 'story Some(format!(
+                        "error boundary shown after Start ({frames} frames): {:?}",
+                        excerpt(&text)
                     ));
                 },
             }
@@ -719,6 +757,13 @@ async fn story(
                     if !last.is_empty() {
                         previous.push(last);
                     }
+                },
+                StoryState::ErrorBoundary(text, frames) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "result": "error boundary", "frames": frames }));
+                    break 'story Some(format!(
+                        "error boundary shown after {method} ({frames} frames): {:?}",
+                        excerpt(&text)
+                    ));
                 },
             }
         }

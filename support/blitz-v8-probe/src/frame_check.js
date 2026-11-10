@@ -13,6 +13,13 @@
   check(result.reported, "a throwing callback must reach error listeners");
   check(result.log.includes("after boom"), "a throwing callback must not stop later callbacks");
   check(result.timerFired, "setTimeout must fire while frames are driven");
+  check(result.idleHandlesValid, "requestIdleCallback must return positive numeric handles");
+  check(["idle bare", "idle window", "idle global"].every((entry) => result.log.includes(entry)),
+    "requestIdleCallback must run its callbacks while frames are driven");
+  check(result.idleDeadline?.didTimeout === false && result.idleDeadline.remaining === "number",
+    "requestIdleCallback must pass an IdleDeadline");
+  check(!result.log.includes("idle cancelled ran") && !result.log.includes("idle cancelled bare ran"),
+    "cancelIdleCallback must cancel the handle");
 
   // getComputedStyle reads Blitz/Stylo computed values, flushed on read.
   const app = document.getElementById("app");
