@@ -25,9 +25,10 @@ jobs:
     # Production must use a startup snapshot instead (see TODO.md).
     env:
       CARGO_HOME: C:/roves-cargo
-    # 45: room for the normal-mode backend comparison (up to 3 x 200 s) after the
-    # primary smoke run, so a hang there cannot cancel the job and hide results.
-    timeout-minutes: 45
+    # 50: room for the normal-mode WebGPU fixture (200 s) and backend comparison
+    # (up to 3 x 200 s) after the primary smoke run, so a hang there cannot
+    # cancel the job and hide results.
+    timeout-minutes: 50
     strategy:
       fail-fast: false
       matrix:
@@ -154,6 +155,61 @@ jobs:
             echo "::error::the probe did not tear WebGPU down before exiting"
             exit 1
           }
+      # Diagnostic only (run 42696023336: the template on forced/automatic DX12
+      # got the runner's Cpu adapter "Microsoft Basic Render Driver", submitted
+      # 238 command buffers and timed out at teardown; local GPUs pass). Runs the
+      # existing minimal WebGPU + PixiJS fixture (ROVES_PROBE_WEBGPU=1, fixture
+      # mode, no --game) on forced DX12 to tell whether the hang needs the full
+      # template. Separate storage directory, bounded by timeout 200 and the step
+      # timeout. continue-on-error and !cancelled(): runs even after the primary
+      # smoke step failed and never changes the job result. A missing adapter is
+      # reported as such, never as a fixture pass; a software adapter is run.
+      - name: WebGPU Pixi fixture on forced DX12 (diagnostic, normal mode)
+        if: ${{ !cancelled() && matrix.mode == 'normal' }}
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: '0'
+          ROVES_PROBE_WEBGPU: '1'
+          DENO_WEBGPU_BACKEND: dx12
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-webgpu-fixture-storage
+          RUST_BACKTRACE: '1'
+        run: |
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          [ -x "$exe" ] || { echo "::notice::WebGPU fixture skipped: probe executable missing"; exit 0; }
+          log="$RUNNER_TEMP/blitz-webgpu-fixture-dx12.log"
+          # Empty greps (no adapter, no teardown) are results here, not step errors.
+          set +e +o pipefail
+          timeout 200 "$exe" > "$log" 2>&1
+          status=$?
+          [ "$status" -eq 124 ] && echo "::notice::WebGPU fixture (dx12): killed by timeout 200 s"
+          fixture=$(grep -F '"check":"webgpu_pixi_8_19_0"' "$log" | head -n 1)
+          fixture_status=$(printf '%s' "$fixture" | grep -oE '"status":"[a-z_]+"' | head -n 1 | cut -d'"' -f4)
+          fixture_adapter=$(printf '%s' "$fixture" | grep -oE '"adapter":(null|\{[^}]*\})' | head -n 1)
+          echo "::notice::WebGPU fixture (dx12) exit=$status result=${fixture_status:-no result line (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2))} adapter=${fixture_adapter:-none}"
+          case "$fixture_status" in
+            passed) ;;
+            no_webgpu|no_adapter) echo "::notice::WebGPU fixture (dx12) did NOT run Pixi: $fixture_status (no usable WebGPU adapter; not a pass)" ;;
+            '') ;;
+            *) echo "::notice::WebGPU fixture (dx12) detail: $(printf '%s' "$fixture" | cut -c1-700)" ;;
+          esac
+          # Adapter/backend/device type and page submissions, printed by teardown
+          # before its blocking wait (absent if the fixture panicked before it).
+          gpu=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1)
+          if [ -n "$gpu" ]; then
+            device=$(printf '%s' "$gpu" | grep -oE '"(backend|device_type|name|driver|driver_info)":"[^"]*"' | paste -sd ' ' -)
+            submissions=$(printf '%s' "$gpu" | grep -oE '"(submits|command_buffers|last_submit_ms_ago)":[0-9a-z]+' | paste -sd ' ' -)
+            echo "::notice::WebGPU fixture (dx12) device: $device"
+            echo "::notice::WebGPU fixture (dx12) submissions: $submissions"
+            printf '%s' "$device" | grep -q '"device_type":"Cpu"' \
+              && echo "::notice::WebGPU fixture (dx12) ran on a software (Cpu) adapter, same class as the template run"
+          else
+            echo "::notice::WebGPU fixture (dx12) device: no gpu_adapter line (no shared device, or panic before teardown)"
+          fi
+          teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms|device)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+          [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)"
+          echo "::notice::WebGPU fixture (dx12) teardown: $teardown"
       # Diagnostic only (run 42684745291: normal mode reached the template menu,
       # then the teardown device_poll Wait timed out after 120 s; JITless passed).
       # Re-runs the same unmodified template once per forced wgpu backend
@@ -275,6 +331,7 @@ jobs:
             ${{ runner.temp }}/blitz-window.err
             ${{ runner.temp }}/blitz-game.log
             ${{ runner.temp }}/blitz-game-*.log
+            ${{ runner.temp }}/blitz-webgpu-fixture-*.log
             ${{ runner.temp }}/blitz-game.png
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7

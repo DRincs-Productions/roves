@@ -1,3 +1,21 @@
+## 2026-11-10 - Blitz probe: WebGPU/Pixi fixture on the runner's forced DX12
+
+**Files touched:** `support/blitz-v8-probe/js/webgpu_scenario.js`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Run 42696023336 (856a76ee51e): the template on automatic and forced DX12 got the runner's
+`Dx12`/`Cpu` adapter "Microsoft Basic Render Driver" 10.0.26100.33648, submitted 238 command
+buffers and timed out after 120 s at teardown; local GPUs pass. A new normal-mode diagnostic step
+runs the existing opt-in fixture (`ROVES_PROBE_WEBGPU=1`, fixture mode, no `--game`) with
+`DENO_WEBGPU_BACKEND=dx12`, its own `ROVES_PROBE_STORAGE_DIR`, `timeout 200` and a 5-minute step
+timeout. It is `continue-on-error` with `!cancelled()`, so it runs after a failed primary smoke
+step and never changes the job result; the primary gate is unchanged. Notices report exit code,
+fixture status and adapter, `gpu_adapter` device and submissions, and teardown outcome; the log
+(`blitz-webgpu-fixture-dx12.log`) is uploaded. `no_webgpu`/`no_adapter` are reported as "did not
+run Pixi", never as a pass. The scenario never rejected software adapters; it now also records the
+standard `GPUAdapter.info` fields and fallback flag in its result, so a Cpu/WARP adapter is
+visible even if the fixture fails before teardown. No new dependency. Job timeout 45 -> 50 min.
+
 ## 2026-11-09 - Blitz probe: query adapter info while the GPUAdapter is alive
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,

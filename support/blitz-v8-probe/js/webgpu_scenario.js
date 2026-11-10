@@ -6,7 +6,7 @@ import { Application, Assets, Graphics, Sprite } from "pixi.js";
 
 (() => {
   "use strict";
-  const result = { status: "running", detail: null, renderer: null, step: "start" };
+  const result = { status: "running", detail: null, renderer: null, step: "start", adapter: null };
   globalThis.webgpuResult = result;
 
   const finish = (status, detail = null) => {
@@ -37,6 +37,22 @@ import { Application, Assets, Graphics, Sprite } from "pixi.js";
     if (!navigator.gpu) return finish("no_webgpu");
     const adapter = await navigator.gpu.requestAdapter();
     if (adapter === null) return finish("no_adapter");
+    // Standard adapter info only (diagnostic): lets CI tell a software/fallback
+    // adapter (e.g. WARP on the runner) apart from a hardware GPU even when the
+    // scenario fails before teardown prints the wgpu-core adapter line. A
+    // software adapter is still run, never treated as unavailable.
+    try {
+      const info = adapter.info;
+      result.adapter = {
+        vendor: info?.vendor ?? null,
+        architecture: info?.architecture ?? null,
+        device: info?.device ?? null,
+        description: info?.description ?? null,
+        fallback: info?.isFallbackAdapter ?? adapter.isFallbackAdapter ?? null,
+      };
+    } catch (error) {
+      result.adapter = { error: String(error) };
+    }
 
     const canvas = document.createElement("canvas");
     canvas.width = 256;
