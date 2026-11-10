@@ -307,7 +307,7 @@ Non promettere un risparmio percentuale senza misure confrontabili.
   quando termina il motivo del controllo.
 - Nel loop attivo richiesto dall'utente, se la CI e ancora in corso e non resta altro lavoro
   utile autorizzato, impostare un timer una tantum pari alla durata di esecuzione dell'ultima
-  CI completata con successo piu 10 minuti. Alla scadenza fare un solo controllo aggregato
+  CI completata con successo piu 5 minuti. Alla scadenza fare un solo controllo aggregato
   delle run del commit e proseguire: scaricare gli artifact necessari e testarli, correggere
   eventuali fallimenti tramite Claude e ripetere il loop. Non fare polling intermedio. Se non
   e disponibile un timer, dichiararlo e lasciare il checkpoint con link alla run.

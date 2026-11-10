@@ -243,6 +243,41 @@
     }
   }
 
+  const DOCUMENT_POSITION_DISCONNECTED = 0x01;
+  const DOCUMENT_POSITION_PRECEDING = 0x02;
+  const DOCUMENT_POSITION_FOLLOWING = 0x04;
+  const DOCUMENT_POSITION_CONTAINS = 0x08;
+  const DOCUMENT_POSITION_CONTAINED_BY = 0x10;
+  const DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC = 0x20;
+  // WebIDL constants of the Node interface, exposed on Node and Node.prototype.
+  const NODE_CONSTANTS = {
+    ELEMENT_NODE,
+    ATTRIBUTE_NODE: 2,
+    TEXT_NODE,
+    CDATA_SECTION_NODE: 4,
+    ENTITY_REFERENCE_NODE: 5,
+    ENTITY_NODE: 6,
+    PROCESSING_INSTRUCTION_NODE: 7,
+    COMMENT_NODE: 8,
+    DOCUMENT_NODE,
+    DOCUMENT_TYPE_NODE: 10,
+    DOCUMENT_FRAGMENT_NODE: 11,
+    NOTATION_NODE: 12,
+    DOCUMENT_POSITION_DISCONNECTED,
+    DOCUMENT_POSITION_PRECEDING,
+    DOCUMENT_POSITION_FOLLOWING,
+    DOCUMENT_POSITION_CONTAINS,
+    DOCUMENT_POSITION_CONTAINED_BY,
+    DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC,
+  };
+
+  // Handles from the tree root down to `handle` inclusive.
+  function ancestorPath(handle) {
+    const path = [handle];
+    for (let parent = op_blitz_parent(handle); parent >= 0; parent = op_blitz_parent(parent)) path.push(parent);
+    return path.reverse();
+  }
+
   function handleOf(node, method) {
     const handle = handles.get(node);
     if (handle === undefined) {
@@ -393,6 +428,33 @@
       for (let node = other; node !== null; node = node.parentNode) if (node === this) return true;
       return false;
     }
+    // DOM "compare document position" over Blitz handles (no Attr nodes or
+    // shadow trees exist yet). Nodes in different trees are ordered by their
+    // root handles: stable while the trees stay apart, and consistent with
+    // tree order inside each tree.
+    compareDocumentPosition(other) {
+      const otherHandle = handleOf(other, "compareDocumentPosition");
+      const thisHandle = handleOf(this, "compareDocumentPosition");
+      if (otherHandle === thisHandle) return 0;
+      const otherPath = ancestorPath(otherHandle);
+      const thisPath = ancestorPath(thisHandle);
+      if (otherPath[0] !== thisPath[0]) {
+        return DOCUMENT_POSITION_DISCONNECTED | DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC
+          | (otherPath[0] < thisPath[0] ? DOCUMENT_POSITION_PRECEDING : DOCUMENT_POSITION_FOLLOWING);
+      }
+      let depth = 1;
+      while (depth < otherPath.length && depth < thisPath.length && otherPath[depth] === thisPath[depth]) depth++;
+      if (depth === otherPath.length) return DOCUMENT_POSITION_CONTAINS | DOCUMENT_POSITION_PRECEDING;
+      if (depth === thisPath.length) return DOCUMENT_POSITION_CONTAINED_BY | DOCUMENT_POSITION_FOLLOWING;
+      const parent = otherPath[depth - 1];
+      const count = op_blitz_child_count(parent);
+      for (let index = 0; index < count; index++) {
+        const child = op_blitz_child_at(parent, index);
+        if (child === otherPath[depth]) return DOCUMENT_POSITION_PRECEDING;
+        if (child === thisPath[depth]) return DOCUMENT_POSITION_FOLLOWING;
+      }
+      throw new Error("compareDocumentPosition: inconsistent Blitz tree");
+    }
     // ParentNode mixin (Element and Document).
     get children() {
       return createNodeList(this.childNodes.filter((node) => node.nodeType === ELEMENT_NODE));
@@ -420,6 +482,11 @@
       const parent = this.parentNode;
       if (parent !== null) parent.removeChild(this);
     }
+  }
+  for (const [name, value] of Object.entries(NODE_CONSTANTS)) {
+    const descriptor = { value, enumerable: true, writable: false, configurable: false };
+    Object.defineProperty(Node, name, descriptor);
+    Object.defineProperty(Node.prototype, name, descriptor);
   }
 
   // Geometry reads force style + layout in Rust, like browsers.

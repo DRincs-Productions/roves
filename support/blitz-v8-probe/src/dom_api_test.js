@@ -48,6 +48,49 @@
   check(host.contains(items[1]) && !items[1].contains(host) && host.contains(host), "contains");
   check(!host.contains(null), "contains(null)");
 
+  // compareDocumentPosition and the Node constants.
+  check(Node.ELEMENT_NODE === 1 && Node.TEXT_NODE === 3 && Node.DOCUMENT_NODE === 9, "Node type constants");
+  check(Node.DOCUMENT_FRAGMENT_NODE === 11 && list.COMMENT_NODE === 8, "Node constants on instances");
+  check(Node.DOCUMENT_POSITION_DISCONNECTED === 1 && Node.DOCUMENT_POSITION_PRECEDING === 2
+    && Node.DOCUMENT_POSITION_FOLLOWING === 4 && Node.DOCUMENT_POSITION_CONTAINS === 8
+    && Node.DOCUMENT_POSITION_CONTAINED_BY === 16 && Node.DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC === 32,
+    "DOCUMENT_POSITION constants");
+  const constant = Object.getOwnPropertyDescriptor(Node, "ELEMENT_NODE");
+  check(!constant.writable && !constant.configurable && constant.enumerable, "Node constants are read-only");
+  const { DOCUMENT_POSITION_PRECEDING: PRE, DOCUMENT_POSITION_FOLLOWING: FOL } = Node;
+  const { DOCUMENT_POSITION_CONTAINS: HAS, DOCUMENT_POSITION_CONTAINED_BY: IN } = Node;
+  const { DOCUMENT_POSITION_DISCONNECTED: OUT, DOCUMENT_POSITION_IMPLEMENTATION_SPECIFIC: IMPL } = Node;
+  check(items[0].compareDocumentPosition(items[0]) === 0, "compareDocumentPosition(self)");
+  check(items[0].compareDocumentPosition(items[2]) === FOL && items[2].compareDocumentPosition(items[0]) === PRE,
+    "sibling document order");
+  const tail = host.querySelector("p");
+  check(items[1].compareDocumentPosition(tail) === FOL && tail.compareDocumentPosition(items[1]) === PRE,
+    "document order across subtrees");
+  check(items[1].compareDocumentPosition(host) === (HAS | PRE), "ancestor: CONTAINS | PRECEDING");
+  check(host.compareDocumentPosition(items[1].firstChild) === (IN | FOL), "descendant: CONTAINED_BY | FOLLOWING");
+  check(document.compareDocumentPosition(items[0]) === (IN | FOL) && items[0].compareDocumentPosition(document) === (HAS | PRE),
+    "document is the root ancestor");
+  const loose = document.createElement("div");
+  const looseChild = loose.appendChild(document.createElement("span"));
+  const looseToHost = loose.compareDocumentPosition(host);
+  const hostToLoose = host.compareDocumentPosition(loose);
+  check((looseToHost & (OUT | IMPL)) === (OUT | IMPL) && (hostToLoose & (OUT | IMPL)) === (OUT | IMPL),
+    "disconnected: DISCONNECTED | IMPLEMENTATION_SPECIFIC");
+  check(((looseToHost & PRE) === 0) !== ((looseToHost & FOL) === 0), "disconnected: exactly one direction");
+  check(((looseToHost & PRE) !== 0) === ((hostToLoose & FOL) !== 0), "disconnected ordering is antisymmetric");
+  check(loose.compareDocumentPosition(host) === looseToHost && looseChild.compareDocumentPosition(items[0]) === looseToHost,
+    "disconnected ordering is stable across calls and per tree");
+  check(loose.compareDocumentPosition(looseChild) === (IN | FOL), "tree order inside a disconnected tree");
+  for (const bad of [undefined, null, {}, "node"]) {
+    try {
+      host.compareDocumentPosition(bad);
+    } catch (error) {
+      check(error instanceof TypeError, `compareDocumentPosition(${String(bad)}): got ${error}`);
+      continue;
+    }
+    throw new Error(`compareDocumentPosition(${String(bad)}): no exception`);
+  }
+
   // classList over the class attribute; selectors see the change.
   const first = items[0];
   check(first.classList.contains("a") && first.classList.length === 2, "classList reads the attribute");

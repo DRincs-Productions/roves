@@ -1,3 +1,22 @@
+## 2026-11-10 - Blitz probe: Node.compareDocumentPosition and Node constants
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/dom_api_test.js}`, `TODO.md`.
+
+CI 42911655865 (story): after Start the template failed because `Node.compareDocumentPosition`
+was missing. Reuse: deno_web/deno_webidl have no document tree and Blitz exposes no ordering
+API, so `dom.js` implements the DOM "compare document position" algorithm over the existing
+handle ops (`op_blitz_parent`, `op_blitz_child_count`, `op_blitz_child_at`): ancestor paths
+from the root, `CONTAINS|PRECEDING` / `CONTAINED_BY|FOLLOWING` for ancestors/descendants,
+child order at the divergence point otherwise. Nodes in different trees return
+`DISCONNECTED|IMPLEMENTATION_SPECIFIC` plus `PRECEDING`/`FOLLOWING` decided by comparing the
+two root handles, so the answer is stable, antisymmetric and consistent per tree. A non-`Node`
+argument (or none) throws `TypeError`. The WebIDL `Node` constants (`ELEMENT_NODE`…
+`NOTATION_NODE`, `DOCUMENT_POSITION_*`) were also absent and are now defined read-only,
+enumerable and non-configurable on `Node` and `Node.prototype`. No Attr nodes or shadow trees
+exist in the probe, so those branches of the algorithm are not needed. Regression in
+`dom_api_test.js` (document order, ancestor flags, document root, disconnected stability,
+constants, `TypeError`). No new dependency, no new op.
+
 ## 2026-11-10 - Blitz probe: requestIdleCallback receiver, story error-boundary detection
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/frame_test.js,src/frame_check.js,src/game.rs}`,
