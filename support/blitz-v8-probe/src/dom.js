@@ -61,6 +61,7 @@
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
     op_blitz_gpu_wait_idle,
+    op_blitz_gpu_drain,
     op_blitz_gpu_adapter_info,
     op_blitz_matches,
     op_blitz_create_comment,
@@ -1884,6 +1885,7 @@
     // After the rAF callbacks, as in "update the rendering".
     processResizeObservations();
     sweepWrappers();
+    throttleSoftwareGpu();
   }
 
   // The global object is an EventTarget (like Window) so reported exceptions
@@ -2018,12 +2020,52 @@
   let gpuSubmits = 0;
   let gpuCommandBuffers = 0;
   let gpuLastSubmitAt = null;
+  // Software-adapter backpressure. Run 42869197173 (forced DX12, Cpu adapter
+  // "Microsoft Basic Render Driver"): the minimal Pixi fixture (6 submits) was
+  // idle at once, while the template's 238 submissions took 35.7 s / 45.0 s
+  // (normal) and >120 s (JITless) to drain at teardown. On a Cpu adapter only,
+  // at the end of a frame with at least GPU_SUBMIT_BATCH submissions since the
+  // last drain, op_blitz_gpu_drain waits (natively bounded per batch) for the
+  // queue to empty. Hardware adapters are never throttled; no frame or
+  // submission is skipped. A mid-run timeout or error is reported once and
+  // disables backpressure, so the teardown wait stays the gate.
+  const GPU_SUBMIT_BATCH = 8;
+  let gpuDevice = null; // the resolved shared GPUDevice
+  let gpuSubmitsSinceDrain = 0;
+  const gpuBackpressure = {
+    batch: GPU_SUBMIT_BATCH,
+    active: false,
+    drains: 0,
+    max_drain_ms: 0,
+    total_drain_ms: 0,
+    mid_run_timeouts: 0,
+    mid_run_errors: 0,
+  };
+  function throttleSoftwareGpu() {
+    if (gpuDevice === null || gpuSubmitsSinceDrain < GPU_SUBMIT_BATCH) return;
+    if (sharedAdapterInfo?.device_type !== "Cpu") return;
+    if (gpuBackpressure.mid_run_timeouts + gpuBackpressure.mid_run_errors > 0) return;
+    gpuBackpressure.active = true;
+    const pending = gpuSubmitsSinceDrain;
+    gpuSubmitsSinceDrain = 0;
+    const result = JSON.parse(op_blitz_gpu_drain(gpuDevice));
+    gpuBackpressure.drains++;
+    gpuBackpressure.max_drain_ms = Math.max(gpuBackpressure.max_drain_ms, result.wait_ms);
+    gpuBackpressure.total_drain_ms += result.wait_ms;
+    if (!result.ok) {
+      if (result.timed_out) gpuBackpressure.mid_run_timeouts++;
+      else gpuBackpressure.mid_run_errors++;
+      const status = result.timed_out ? "mid_run_timeout" : "mid_run_error";
+      core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_backpressure", status, pending_submits: pending, ...result, ...gpuBackpressure })}\n`, false);
+    }
+  }
   function countSubmits() {
     const proto = webgpu.GPUQueue?.prototype;
     const submit = proto?.submit;
     if (typeof submit !== "function") return;
     proto.submit = function (commandBuffers) {
       gpuSubmits++;
+      gpuSubmitsSinceDrain++;
       gpuCommandBuffers += commandBuffers?.length ?? 0;
       gpuLastSubmitAt = performance.now();
       return submit.call(this, commandBuffers);
@@ -2048,6 +2090,8 @@
           const requiredFeatures = ["texture-compression-bc", "texture-compression-astc", "texture-compression-etc2"]
             .filter((feature) => adapter.features.has(feature));
           sharedDevice = requestDevice({ requiredFeatures });
+          // A failed requestDevice stays the page's rejection; this branch ignores it.
+          sharedDevice.then((device) => { gpuDevice = device; }, () => {});
         }
         return sharedDevice;
       };
@@ -2158,6 +2202,8 @@
         submits: gpuSubmits,
         command_buffers: gpuCommandBuffers,
         last_submit_ms_ago: gpuLastSubmitAt === null ? null : Math.round(performance.now() - gpuLastSubmitAt),
+        // Before `adapter` so CI's truncated notice keeps it.
+        backpressure: { ...gpuBackpressure, pending_submits: gpuSubmitsSinceDrain },
       };
       core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_adapter", status: "ran", ...submissions, adapter })}\n`, false);
       const idle = JSON.parse(op_blitz_gpu_wait_idle(device));

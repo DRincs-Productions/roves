@@ -140,6 +140,9 @@ jobs:
           # Adapter/backend/device type and page submissions, printed before the
           # teardown wait: present even when that wait times out and panics.
           grep -F '"check":"gpu_adapter"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
+          # Software-adapter backpressure: a mid-run drain timeout/error (printed
+          # once, then backpressure stops); distinct from the teardown wait below.
+          grep -F '"check":"gpu_backpressure"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
           if grep -q 'panicked' "$RUNNER_TEMP/blitz-game.log"; then
             echo "::error::the probe panicked on visual-novel-template"
             exit 1
@@ -234,7 +237,9 @@ jobs:
               timeout 200 "$exe" --game visual-novel-template/dist > "$log" 2>&1
             status=$?
             adapter=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1 \
-              | grep -oE '"(backend|device_type|name|submits|command_buffers|last_submit_ms_ago)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+              | grep -oE '"(backend|device_type|name|submits|command_buffers|last_submit_ms_ago|drains|max_drain_ms|mid_run_timeouts|mid_run_errors)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+            midrun=$(grep -F '"check":"gpu_backpressure"' "$log" | head -n 1 | grep -oE '"status":"[a-z_]+"')
+            [ -n "$midrun" ] && adapter="$adapter backpressure $midrun"
             menu=$(grep -F '"check":"game_page"' "$log" | head -n 1 | grep -oE '"start_menu_like":[a-z]+')
             teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(poll_status|queue_idle_wait_ms|device)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
             [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-200)"

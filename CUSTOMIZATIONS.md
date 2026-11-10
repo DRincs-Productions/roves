@@ -1,3 +1,23 @@
+## 2026-11-10 - Blitz probe: bounded GPU backpressure on software (Cpu) adapters
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,
+`.github/workflows/blitz-probe.yml`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Run 42869197173 (2011a168fb5): the forced-DX12 Pixi readback fixture passed on the runner's
+Microsoft Basic Render Driver (Dx12/Cpu) with 6 submits and an immediate `QueueEmpty`; the
+unmodified template, with 238 submissions on the same adapter, needed 35.7 s and 45.0 s (normal-mode
+runs) to drain at teardown and timed out at 120 s in JITless. Hypothesis: too many
+outstanding submissions on a software device. New private op `op_blitz_gpu_drain` (captured
+like `op_blitz_gpu_wait_idle`, never guest-visible) waits on wgpu-core `device_poll` with
+`PollType::Wait` bounded by `GPU_DRAIN_TIMEOUT` (15 s) and returns JSON without throwing.
+`runAnimationFrame` calls it at the frame boundary only when the cached adapter `device_type`
+is `Cpu` and at least 8 submissions are pending since the last drain. Hardware adapters are
+never throttled; no frame or submission is skipped. The first mid-run timeout/error prints a
+`gpu_backpressure` result (`mid_run_timeout`/`mid_run_error`) and disables further drains, so
+the 120 s teardown wait stays the gate and is reported separately. `gpu_adapter`/`gpu_teardown`
+carry drain count, max/total drain time and mid-run failure counts; CI annotates them. No new
+dependency.
+
 ## 2026-11-10 - Blitz probe: WebGPU/Pixi fixture on the runner's forced DX12
 
 **Files touched:** `support/blitz-v8-probe/js/webgpu_scenario.js`,

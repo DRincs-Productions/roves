@@ -1088,6 +1088,49 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
+/// Per-batch bound for `op_blitz_gpu_drain`. Finite and well below
+/// `GPU_SHUTDOWN_TIMEOUT`: a mid-run drain that exceeds it is reported and
+/// backpressure stops, leaving the teardown wait as the gate.
+const GPU_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// Backpressure for software (`Cpu`) adapters only (captured by the
+/// bootstrap's frame loop, never exposed to the guest): waits, within
+/// `GPU_DRAIN_TIMEOUT`, until the queue has no pending submission, so the page
+/// cannot pile up hundreds of outstanding submissions on a CPU device (run
+/// 42869197173: 238 submissions on "Microsoft Basic Render Driver" took
+/// 35.7-45 s or more to drain at teardown). Never throws: returns JSON with
+/// `ok`, the wait time and the poll status or error, and the caller decides.
+#[op2]
+#[string]
+fn op_blitz_gpu_drain(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
+    let start = std::time::Instant::now();
+    let result = device.instance.device_poll(
+        device.id,
+        deno_webgpu::wgpu_types::PollType::Wait {
+            submission_index: None,
+            timeout: Some(GPU_DRAIN_TIMEOUT),
+        },
+    );
+    let elapsed = start.elapsed();
+    let wait_ms = elapsed.as_millis() as u64;
+    let json = match result {
+        Ok(status) => deno_core::serde_json::json!({
+            "ok": true,
+            "wait_ms": wait_ms,
+            "poll_status": format!("{status:?}"),
+        }),
+        Err(error) => deno_core::serde_json::json!({
+            "ok": false,
+            "wait_ms": wait_ms,
+            // A wait error at (or past) the bound is the timeout; anything
+            // earlier is another wgpu error (e.g. device lost).
+            "timed_out": elapsed >= GPU_DRAIN_TIMEOUT || format!("{error:?}").contains("Timeout"),
+            "error": error.to_string(),
+        }),
+    };
+    json.to_string()
+}
+
 /// Diagnostics only (captured by the bootstrap's `navigator.gpu` wrapper, never
 /// exposed to the guest): the adapter as wgpu-core reports it (backend, device
 /// type, name, driver). Called right after `requestAdapter` resolves, while the
@@ -1318,6 +1361,7 @@ deno_core::extension!(
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
         op_blitz_gpu_wait_idle,
+        op_blitz_gpu_drain,
         op_blitz_gpu_adapter_info,
         op_blitz_measure,
         op_blitz_box_sizes,
