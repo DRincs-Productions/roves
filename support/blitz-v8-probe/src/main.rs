@@ -47,6 +47,7 @@ const EVENTS_CHECK: &str = include_str!("events_check.js");
 const WINDOW_TEST: &str = include_str!("window_test.js");
 const SCROLL_TEST: &str = include_str!("scroll_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
+const GPU_PACING_TEST: &str = include_str!("gpu_pacing_test.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
 const MOTION_SCENARIO: &str = include_str!("../js/dist/motion-scenario.js");
 /// PixiJS 8.19.0 on WebGPU (bundled with esbuild in `js/`).
@@ -1088,43 +1089,28 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
-/// Per-batch bound for `op_blitz_gpu_drain`. Finite and well below
-/// `GPU_SHUTDOWN_TIMEOUT`: a mid-run drain that exceeds it is reported and
-/// backpressure stops, leaving the teardown wait as the gate.
-const GPU_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
-
-/// Backpressure for software (`Cpu`) adapters only (captured by the
-/// bootstrap's frame loop, never exposed to the guest): waits, within
-/// `GPU_DRAIN_TIMEOUT`, until the queue has no pending submission, so the page
-/// cannot pile up hundreds of outstanding submissions on a CPU device (run
-/// 42869197173: 238 submissions on "Microsoft Basic Render Driver" took
-/// 35.7-45 s or more to drain at teardown). Never throws: returns JSON with
-/// `ok`, the wait time and the poll status or error, and the caller decides.
+/// Frame pacing for software (`Cpu`) adapters only (captured by the
+/// bootstrap's frame loop, never exposed to the guest): one NON-blocking
+/// wgpu-core `device_poll(PollType::Poll)`, which runs completed-submission
+/// maintenance and reports whether the queue is empty, without waiting. The
+/// bootstrap defers the rAF queue while it is not empty (run 42874854967: the
+/// previous blocking `PollType::Wait` drain stalled the host for 15 s mid-run).
+/// Never throws: returns JSON with `ok`, `queue_empty` and the poll status, or
+/// the wgpu error; the caller decides.
 #[op2]
 #[string]
-fn op_blitz_gpu_drain(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
-    let start = std::time::Instant::now();
-    let result = device.instance.device_poll(
-        device.id,
-        deno_webgpu::wgpu_types::PollType::Wait {
-            submission_index: None,
-            timeout: Some(GPU_DRAIN_TIMEOUT),
-        },
-    );
-    let elapsed = start.elapsed();
-    let wait_ms = elapsed.as_millis() as u64;
-    let json = match result {
+fn op_blitz_gpu_poll(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
+    let json = match device
+        .instance
+        .device_poll(device.id, deno_webgpu::wgpu_types::PollType::Poll)
+    {
         Ok(status) => deno_core::serde_json::json!({
             "ok": true,
-            "wait_ms": wait_ms,
+            "queue_empty": matches!(status, deno_webgpu::wgpu_types::PollStatus::QueueEmpty),
             "poll_status": format!("{status:?}"),
         }),
         Err(error) => deno_core::serde_json::json!({
             "ok": false,
-            "wait_ms": wait_ms,
-            // A wait error at (or past) the bound is the timeout; anything
-            // earlier is another wgpu error (e.g. device lost).
-            "timed_out": elapsed >= GPU_DRAIN_TIMEOUT || format!("{error:?}").contains("Timeout"),
             "error": error.to_string(),
         }),
     };
@@ -1361,7 +1347,7 @@ deno_core::extension!(
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
         op_blitz_gpu_wait_idle,
-        op_blitz_gpu_drain,
+        op_blitz_gpu_poll,
         op_blitz_gpu_adapter_info,
         op_blitz_measure,
         op_blitz_box_sizes,
@@ -1558,6 +1544,148 @@ fn dispatch_trusted(
     function
         .call(scope, receiver, &[node, kind, init])
         .expect("trusted event dispatch should not throw");
+}
+
+/// What a window's input layer sends for a primary-button click at viewport
+/// point (x, y): Blitz's hit-test picks the target, then pointer/mouse down and
+/// up and click are dispatched through the trusted-event bridge. Returns the
+/// hit node, or `None` (nothing dispatched) when the hit-test finds none.
+pub(crate) fn click_at(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    document: &Rc<RefCell<HtmlDocument>>,
+    x: f32,
+    y: f32,
+) -> Option<NodeId> {
+    let target = hit_target(document, x, y)?;
+    let mouse = format!(
+        r#"{{"clientX":{x},"clientY":{y},"screenX":{x},"screenY":{y},"button":0,"buttons":1,"pointerId":1,"pointerType":"mouse","isPrimary":true}}"#
+    );
+    let released = mouse.replace(r#""buttons":1"#, r#""buttons":0"#);
+    for (kind, init) in [
+        ("pointerdown", &mouse),
+        ("mousedown", &mouse),
+        ("pointerup", &released),
+        ("mouseup", &released),
+        ("click", &released),
+    ] {
+        dispatch_trusted(runtime, dispatcher, target, kind, init);
+    }
+    Some(target)
+}
+
+/// Calls a bootstrap hook with string arguments; returns its string result.
+fn call_hook(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>, args: &[&str]) -> String {
+    deno_core::scope!(scope, runtime);
+    let function = v8::Local::new(scope, hook);
+    let receiver = v8::undefined(scope).into();
+    let args: Vec<v8::Local<v8::Value>> = args
+        .iter()
+        .map(|arg| v8::String::new(scope, arg).unwrap().into())
+        .collect();
+    let value = function
+        .call(scope, receiver, &args)
+        .expect("hook should not throw");
+    value.to_rust_string_lossy(scope)
+}
+
+/// One embedder tick after a real-time pause, so timers become due between
+/// ticks (`drive_frames` with one frame does not wait).
+async fn single_tick(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+) {
+    tokio::time::sleep(std::time::Duration::from_millis(17)).await;
+    drive_frames(runtime, document, run_animation_frame, 1).await;
+}
+
+/// Simulated pacing poll results for `gpuPacingTest("batch", ...)`.
+const PACING_BUSY: &str = r#"{"ok":true,"queue_empty":false,"poll_status":"Poll"}"#;
+const PACING_EMPTY: &str = r#"{"ok":true,"queue_empty":true,"poll_status":"QueueEmpty"}"#;
+
+/// Fixture regression of the software-GPU frame pacing (dom.js): rAF queue
+/// deferred while scripted polls report a busy queue, resumed on QueueEmpty in
+/// order with cancellation and the resuming tick's timestamp, while timers,
+/// microtasks and trusted input continue; a poll error disables pacing without
+/// dropping callbacks. No GPU is used or claimed (see gpu_pacing_test.js).
+async fn gpu_pacing_regression(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    pacing_test: &v8::Global<v8::Function>,
+) {
+    call_hook(runtime, pacing_test, &["begin"]);
+    runtime
+        .execute_script("roves-blitz-gpu-pacing-test.js", GPU_PACING_TEST)
+        .expect("GPU pacing test setup should run");
+    let script = format!("[{PACING_BUSY},{PACING_BUSY},{PACING_BUSY},{PACING_EMPTY}]");
+    call_hook(runtime, pacing_test, &["batch", script.as_str()]);
+    let mut phases = Vec::new();
+    // T1 (runs, starts the deferral), T2 (busy).
+    single_tick(runtime, document, run_animation_frame).await;
+    single_tick(runtime, document, run_animation_frame).await;
+    phases.push(call_hook(runtime, pacing_test, &["stats"]));
+    runtime
+        .execute_script(
+            "roves-blitz-gpu-pacing-deferral.js",
+            "gpuPacingTestState.duringDeferral()",
+        )
+        .expect("pacing deferral step should run");
+    let target = find_element_by_id(&document.borrow(), "pacing-target").expect("#pacing-target");
+    dispatch_trusted(runtime, dispatcher, target, "click", r#"{"button":0}"#);
+    // T3, T4 (busy), T5 (QueueEmpty: resumes).
+    for _ in 0..3 {
+        single_tick(runtime, document, run_animation_frame).await;
+    }
+    phases.push(call_hook(runtime, pacing_test, &["stats"]));
+    // T6 (runs, second deferral), T7 (scripted poll error: disables pacing).
+    runtime
+        .execute_script(
+            "roves-blitz-gpu-pacing-error.js",
+            "gpuPacingTestState.errorPhase()",
+        )
+        .expect("pacing error step should run");
+    call_hook(
+        runtime,
+        pacing_test,
+        &[
+            "batch",
+            r#"[{"ok":false,"error":"scripted poll error (no GPU)"}]"#,
+        ],
+    );
+    single_tick(runtime, document, run_animation_frame).await;
+    single_tick(runtime, document, run_animation_frame).await;
+    phases.push(call_hook(runtime, pacing_test, &["stats"]));
+    // T8: a full batch no longer defers once disabled.
+    runtime
+        .execute_script(
+            "roves-blitz-gpu-pacing-disabled.js",
+            "gpuPacingTestState.disabledPhase()",
+        )
+        .expect("pacing disabled step should run");
+    call_hook(runtime, pacing_test, &["batch", "[]"]);
+    single_tick(runtime, document, run_animation_frame).await;
+    phases.push(call_hook(runtime, pacing_test, &["stats"]));
+    let stats = call_hook(runtime, pacing_test, &["end"]);
+    let summary = runtime
+        .execute_script(
+            "roves-blitz-gpu-pacing-check.js",
+            format!(
+                "gpuPacingTestState.stop(); gpuPacingTestState.check([{}])",
+                phases.join(",")
+            ),
+        )
+        .expect("GPU frame pacing checks should pass");
+    let summary = {
+        deno_core::scope!(scope, runtime);
+        let summary = v8::Local::new(scope, summary);
+        summary.to_rust_string_lossy(scope)
+    };
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"gpu_frame_pacing_simulated_queue\",\"status\":\"passed\",\"gpu\":\"none (scripted poll results)\",\"summary\":{summary},\"stats\":{stats}}}"
+    );
 }
 
 /// Evaluates a script that returns a string.
@@ -1783,6 +1911,8 @@ fn main() {
             blocked_navigations,
             document_loaded,
             shutdown_gpu,
+            gpu_pacing_test,
+            gpu_pacing_stats,
         ) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
@@ -1799,6 +1929,8 @@ fn main() {
                 function("blockedNavigations"),
                 function("documentLoaded"),
                 function("shutdownGpu"),
+                function("gpuPacingTest"),
+                function("gpuPacingStats"),
             )
         };
 
@@ -1811,6 +1943,8 @@ fn main() {
                 &document,
                 &run_animation_frame,
                 &document_loaded,
+                &dispatcher,
+                &gpu_pacing_stats,
                 frame_count().max(120),
             )
             .await;
@@ -1865,21 +1999,8 @@ fn main() {
             .expect("geometry, matchMedia and focus checks should pass");
 
         stage("hit_test_and_click");
-        let target = hit_target(&document, x, y).expect("hit-test should find a node");
-        // What a window's input layer would send for a primary-button click.
-        let mouse = format!(
-            r#"{{"clientX":{x},"clientY":{y},"screenX":{x},"screenY":{y},"button":0,"buttons":1,"pointerId":1,"pointerType":"mouse","isPrimary":true}}"#
-        );
-        let released = mouse.replace(r#""buttons":1"#, r#""buttons":0"#);
-        for (kind, init) in [
-            ("pointerdown", &mouse),
-            ("mousedown", &mouse),
-            ("pointerup", &released),
-            ("mouseup", &released),
-            ("click", &released),
-        ] {
-            dispatch_trusted(&mut runtime, &dispatcher, target, kind, init);
-        }
+        let target = click_at(&mut runtime, &dispatcher, &document, x, y)
+            .expect("hit-test should find a node");
         runtime
             .execute_script(
                 "roves-blitz-click-check.js",
@@ -2028,6 +2149,17 @@ fn main() {
                 .execute_script("roves-blitz-resize-observer-check.js", phase)
                 .expect("ResizeObserver observe/resize/disconnect checks should pass");
         }
+
+        // Software-GPU frame pacing with scripted queue states (no GPU).
+        stage("gpu_frame_pacing");
+        gpu_pacing_regression(
+            &mut runtime,
+            &document,
+            &run_animation_frame,
+            &dispatcher,
+            &gpu_pacing_test,
+        )
+        .await;
 
         // Motion: its JS frameloop (no WAAPI here) runs on rAF + performance.now and
         // writes inline transform/opacity. 0.1 s needs ~6 frames; 20 leave margin.

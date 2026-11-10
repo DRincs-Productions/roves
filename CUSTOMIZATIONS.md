@@ -1,3 +1,31 @@
+## 2026-11-10 - Blitz probe: non-blocking frame pacing on software GPUs, story harness
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js,src/game.rs}`,
+new `support/blitz-v8-probe/src/gpu_pacing_test.js`, `.github/workflows/blitz-probe.yml`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Run 42874854967 showed the blocking mid-frame drain (entry below) stalling the host for 15 s.
+`op_blitz_gpu_drain`/`GPU_DRAIN_TIMEOUT` are removed. The new private op `op_blitz_gpu_poll`
+(captured by `dom.js`, never guest-visible) runs wgpu-core `device_poll(PollType::Poll)`,
+which does not wait, and returns JSON (`ok`, `queue_empty`, `poll_status` or `error`). On a
+`Cpu` adapter only, once 8 submissions were accepted since the queue was last seen empty,
+`runAnimationFrame` defers the rAF queue in the following ticks until a poll reports
+`QueueEmpty`. Callbacks are never dropped: order, `cancelAnimationFrame` and the resuming
+tick's timestamp are preserved; webAudio events, ResizeObserver, the sweep, microtasks,
+timers and input keep running. A poll error is reported once (`gpu_backpressure`
+`poll_error`) and disables pacing. Hardware adapters and the 120 s teardown gate are
+unchanged. New counters (ticks, frames, deferred ticks/episodes, longest episode, max tick
+gap, polls, poll errors, saturation) go into `gpu_adapter`/`gpu_teardown` (`pacing`, replacing
+`backpressure`) and a new `game_frame_pacing` line. Deterministic regression without a GPU:
+fixture stage `gpu_frame_pacing` drives single ticks with scripted busy/empty/error poll
+results through a private `gpuPacingTest` hook; CI requires
+`gpu_frame_pacing_simulated_queue`. New opt-in `--story` mode for `--game`: a Start click
+via Blitz hit-test and the trusted-event bridge (shared `click_at` helper, also used by the
+fixture click), then the first two distinct settled page-text states, reported as
+`game_story` passed/failed with reasons. CI runs it as a separate `continue-on-error`
+diagnostic step in both modes (`timeout 600`, own storage, log and screenshot uploaded); the
+existing smoke gate is unchanged. Job timeout 50 -> 65 min. No new dependency.
+
 ## 2026-11-10 - Blitz probe: bounded GPU backpressure on software (Cpu) adapters
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js}`,

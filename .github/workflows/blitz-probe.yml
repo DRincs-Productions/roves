@@ -25,10 +25,10 @@ jobs:
     # Production must use a startup snapshot instead (see TODO.md).
     env:
       CARGO_HOME: C:/roves-cargo
-    # 50: room for the normal-mode WebGPU fixture (200 s) and backend comparison
-    # (up to 3 x 200 s) after the primary smoke run, so a hang there cannot
-    # cancel the job and hide results.
-    timeout-minutes: 50
+    # 65: room for the normal-mode WebGPU fixture (200 s), backend comparison
+    # (up to 3 x 200 s) and story harness (600 s) after the primary smoke run,
+    # so a hang there cannot cancel the job and hide results.
+    timeout-minutes: 65
     strategy:
       fail-fast: false
       matrix:
@@ -100,6 +100,7 @@ jobs:
           grep -Fq '"check":"dedicated_worker_pixi_image_bitmap_probe","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_public_address_policy","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_resolver_refuses_non_public","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"gpu_frame_pacing_simulated_queue","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"gpu_teardown","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
       # Smoke run on the real game: visual-novel-template's production build (the
       # game roves-action tests with), unmodified, loaded with --game and the
@@ -140,8 +141,11 @@ jobs:
           # Adapter/backend/device type and page submissions, printed before the
           # teardown wait: present even when that wait times out and panics.
           grep -F '"check":"gpu_adapter"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
-          # Software-adapter backpressure: a mid-run drain timeout/error (printed
-          # once, then backpressure stops); distinct from the teardown wait below.
+          # Software-adapter frame pacing over the page run (ticks, frames,
+          # deferred rAF ticks, max tick gap, saturation, poll errors), and a
+          # non-blocking poll error (printed once, then pacing stops); distinct
+          # from the teardown wait below.
+          grep -F '"check":"game_frame_pacing"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
           grep -F '"check":"gpu_backpressure"' "$RUNNER_TEMP/blitz-game.log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
           if grep -q 'panicked' "$RUNNER_TEMP/blitz-game.log"; then
             echo "::error::the probe panicked on visual-novel-template"
@@ -237,14 +241,58 @@ jobs:
               timeout 200 "$exe" --game visual-novel-template/dist > "$log" 2>&1
             status=$?
             adapter=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1 \
-              | grep -oE '"(backend|device_type|name|submits|command_buffers|last_submit_ms_ago|drains|max_drain_ms|mid_run_timeouts|mid_run_errors)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+              | grep -oE '"(backend|device_type|name|submits|command_buffers|last_submit_ms_ago|ticks|frames|deferred_ticks|deferrals|max_deferred_run|max_tick_gap_ms|poll_errors|saturated|saturation)":("[^"]*"|[0-9a-z.]+)' | paste -sd ' ' -)
             midrun=$(grep -F '"check":"gpu_backpressure"' "$log" | head -n 1 | grep -oE '"status":"[a-z_]+"')
-            [ -n "$midrun" ] && adapter="$adapter backpressure $midrun"
+            [ -n "$midrun" ] && adapter="$adapter pacing $midrun"
             menu=$(grep -F '"check":"game_page"' "$log" | head -n 1 | grep -oE '"start_menu_like":[a-z]+')
             teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(poll_status|queue_idle_wait_ms|device)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
             [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-200)"
             echo "::notice::backend=$backend exit=$status ${menu:-no game_page} | adapter: ${adapter:-none} | teardown: $teardown"
           done
+      # Diagnostic, opt-in story harness (--story) on the same unmodified
+      # template: a real Start click (Blitz hit-test + trusted-event bridge),
+      # then the first two distinct settled story states (advanced by a "next"
+      # control, a click on the dialogue text, Enter or Space, in that order).
+      # continue-on-error: a failure marks this step and is annotated with its
+      # reason, but never changes the job result; the smoke step above stays
+      # the gate. Separate storage directory; bounded by timeout 600.
+      - name: template story Start and first two dialogue states (diagnostic)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 12
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-story-storage
+          ROVES_PROBE_STORY_SCREENSHOT: ${{ runner.temp }}/blitz-story.png
+          RUST_BACKTRACE: '1'
+        run: |
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          if [ ! -x "$exe" ] || [ ! -d visual-novel-template/dist ]; then
+            echo "::error::story harness NOT RUN: probe executable or game build missing"
+            exit 1
+          fi
+          log="$RUNNER_TEMP/blitz-story.log"
+          # Empty greps are results here, not step errors.
+          set +e +o pipefail
+          timeout 600 "$exe" --game visual-novel-template/dist --story > "$log" 2>&1
+          status=$?
+          [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 600 s"
+          story=$(grep -F '"check":"game_story"' "$log" | head -n 1)
+          if [ -z "$story" ]; then
+            echo "::error::story harness exit=$status: no game_story result (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 'panicked' "$log" | cut -c1-300))"
+            exit 1
+          fi
+          echo "::notice::story harness exit=$status $(printf '%s' "$story" | cut -c1-900)"
+          printf '%s' "$story" | grep -oE '"states":\[[^]]*\]' | cut -c1-700 | sed 's/^/::notice::story states: /'
+          printf '%s' "$story" | grep -oE '"pacing":\{[^}]*\}' | cut -c1-500 | sed 's/^/::notice::story pacing: /'
+          teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+          echo "::notice::story harness teardown: ${teardown:-NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)}"
+          if ! printf '%s' "$story" | grep -Fq '"check":"game_story","status":"passed"'; then
+            echo "::error::story harness did not reach two distinct story states: $(printf '%s' "$story" | grep -oE '"reason":"([^"\\]|\\.)*"' | cut -c1-500)"
+            exit 1
+          fi
+          [ "$status" -eq 0 ] || { echo "::error::story states reached, but the probe exited with $status"; exit 1; }
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
       # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
       - name: annotate probe log tail on failure
@@ -338,6 +386,8 @@ jobs:
             ${{ runner.temp }}/blitz-game-*.log
             ${{ runner.temp }}/blitz-webgpu-fixture-*.log
             ${{ runner.temp }}/blitz-game.png
+            ${{ runner.temp }}/blitz-story.log
+            ${{ runner.temp }}/blitz-story.png
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn

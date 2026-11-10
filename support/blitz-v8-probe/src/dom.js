@@ -61,7 +61,7 @@
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
     op_blitz_gpu_wait_idle,
-    op_blitz_gpu_drain,
+    op_blitz_gpu_poll,
     op_blitz_gpu_adapter_info,
     op_blitz_matches,
     op_blitz_create_comment,
@@ -1869,23 +1869,32 @@
     animationFrameCallbacks.delete(handle);
   }
   // The timestamp is the frame start on the performance timeline, as in browsers.
+  // On a software GPU with a busy queue (see gpuPacingAllowsFrame) the rAF
+  // queue is deferred for this tick: the callbacks stay queued in order (a
+  // cancellation still removes them) and run in a later tick with that tick's
+  // timestamp. Everything else in the tick still runs, and the embedder's
+  // microtask checkpoint, timers and input are unaffected.
   function runAnimationFrame() {
+    gpuPacingTick();
     webAudio.dispatchPendingEvents();
-    const timestamp = performance.now();
-    for (const handle of [...animationFrameCallbacks.keys()]) {
-      const callback = animationFrameCallbacks.get(handle);
-      if (callback === undefined) continue;
-      animationFrameCallbacks.delete(handle);
-      try {
-        callback(timestamp);
-      } catch (error) {
-        reportException(error);
+    if (gpuPacingAllowsFrame()) {
+      gpuPacing.frames++;
+      const timestamp = performance.now();
+      for (const handle of [...animationFrameCallbacks.keys()]) {
+        const callback = animationFrameCallbacks.get(handle);
+        if (callback === undefined) continue;
+        animationFrameCallbacks.delete(handle);
+        try {
+          callback(timestamp);
+        } catch (error) {
+          reportException(error);
+        }
       }
     }
     // After the rAF callbacks, as in "update the rendering".
     processResizeObservations();
     sweepWrappers();
-    throttleSoftwareGpu();
+    gpuPacingAfterFrame();
   }
 
   // The global object is an EventTarget (like Window) so reported exceptions
@@ -2020,44 +2029,106 @@
   let gpuSubmits = 0;
   let gpuCommandBuffers = 0;
   let gpuLastSubmitAt = null;
-  // Software-adapter backpressure. Run 42869197173 (forced DX12, Cpu adapter
-  // "Microsoft Basic Render Driver"): the minimal Pixi fixture (6 submits) was
-  // idle at once, while the template's 238 submissions took 35.7 s / 45.0 s
-  // (normal) and >120 s (JITless) to drain at teardown. On a Cpu adapter only,
-  // at the end of a frame with at least GPU_SUBMIT_BATCH submissions since the
-  // last drain, op_blitz_gpu_drain waits (natively bounded per batch) for the
-  // queue to empty. Hardware adapters are never throttled; no frame or
-  // submission is skipped. A mid-run timeout or error is reported once and
-  // disables backpressure, so the teardown wait stays the gate.
+  // Software-adapter frame pacing. Run 42869197173 (forced DX12, Cpu adapter
+  // "Microsoft Basic Render Driver"): the template's 238 submissions took
+  // 35.7 s / 45.0 s (normal) and >120 s (JITless) to drain at teardown; run
+  // 42874854967 then showed the blocking mid-frame drain that replaced it
+  // stalling the host for 15 s. Now, on a Cpu adapter only, once
+  // GPU_SUBMIT_BATCH submissions succeeded since the queue was last seen
+  // empty, the next ticks defer the rAF queue until a NON-blocking
+  // op_blitz_gpu_poll (wgpu-core PollType::Poll) reports QueueEmpty. Nothing
+  // waits on the GPU mid-run: the host loop, timers, microtasks and input keep
+  // running, and no rAF callback or submission is dropped. Hardware adapters
+  // are never paced. A poll error is reported once and disables pacing (the
+  // deferred callbacks run in that same tick); the teardown wait stays the gate.
   const GPU_SUBMIT_BATCH = 8;
   let gpuDevice = null; // the resolved shared GPUDevice
-  let gpuSubmitsSinceDrain = 0;
-  const gpuBackpressure = {
-    batch: GPU_SUBMIT_BATCH,
-    active: false,
-    drains: 0,
-    max_drain_ms: 0,
-    total_drain_ms: 0,
-    mid_run_timeouts: 0,
-    mid_run_errors: 0,
-  };
-  function throttleSoftwareGpu() {
-    if (gpuDevice === null || gpuSubmitsSinceDrain < GPU_SUBMIT_BATCH) return;
-    if (sharedAdapterInfo?.device_type !== "Cpu") return;
-    if (gpuBackpressure.mid_run_timeouts + gpuBackpressure.mid_run_errors > 0) return;
-    gpuBackpressure.active = true;
-    const pending = gpuSubmitsSinceDrain;
-    gpuSubmitsSinceDrain = 0;
-    const result = JSON.parse(op_blitz_gpu_drain(gpuDevice));
-    gpuBackpressure.drains++;
-    gpuBackpressure.max_drain_ms = Math.max(gpuBackpressure.max_drain_ms, result.wait_ms);
-    gpuBackpressure.total_drain_ms += result.wait_ms;
-    if (!result.ok) {
-      if (result.timed_out) gpuBackpressure.mid_run_timeouts++;
-      else gpuBackpressure.mid_run_errors++;
-      const status = result.timed_out ? "mid_run_timeout" : "mid_run_error";
-      core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_backpressure", status, pending_submits: pending, ...result, ...gpuBackpressure })}\n`, false);
+  let gpuSubmitsSinceEmpty = 0;
+  let gpuPacingDeferring = false;
+  let gpuPacingDisabled = false;
+  let gpuPacingRun = 0; // consecutive deferred ticks of the current deferral
+  let gpuPacingLastTickAt = null;
+  // Fixture-only scripted poll results (gpuPacingTest hook): replaces the op,
+  // so the pacing logic is tested without a GPU and without claiming one.
+  let gpuPacingScript = null;
+  let gpuPacing = newGpuPacingStats();
+  let savedGpuPacing = null;
+  function newGpuPacingStats() {
+    return {
+      batch: GPU_SUBMIT_BATCH,
+      active: false, // pacing deferred the rAF queue at least once
+      ticks: 0, // embedder frame ticks (runAnimationFrame calls)
+      frames: 0, // ticks that ran the rAF queue
+      deferred_ticks: 0, // ticks whose rAF queue was deferred
+      deferrals: 0, // deferral episodes (busy queue after a batch)
+      max_deferred_run: 0, // longest episode, in ticks
+      max_tick_gap_ms: 0, // longest gap between two consecutive ticks
+      polls: 0,
+      poll_errors: 0,
+      disabled: false,
+    };
+  }
+  // Snapshot with the derived saturation fields: `saturated` = still deferring
+  // (the queue never emptied since the last batch), `saturation` = share of
+  // ticks deferred.
+  function gpuPacingReport() {
+    return {
+      ...gpuPacing,
+      saturated: gpuPacingDeferring,
+      saturation: gpuPacing.ticks === 0 ? 0 : Math.round((gpuPacing.deferred_ticks / gpuPacing.ticks) * 1000) / 1000,
+      pending_submits: gpuSubmitsSinceEmpty,
+    };
+  }
+  function gpuPacingTick() {
+    const now = performance.now();
+    if (gpuPacingLastTickAt !== null) {
+      gpuPacing.max_tick_gap_ms = Math.max(gpuPacing.max_tick_gap_ms, Math.round((now - gpuPacingLastTickAt) * 10) / 10);
     }
+    gpuPacingLastTickAt = now;
+    gpuPacing.ticks++;
+  }
+  function gpuPacingApplies() {
+    if (gpuPacingDisabled) return false;
+    if (gpuPacingScript !== null) return true;
+    return gpuDevice !== null && sharedAdapterInfo?.device_type === "Cpu";
+  }
+  function pollGpuQueue() {
+    if (gpuPacingScript !== null) {
+      return gpuPacingScript.shift() ?? { ok: true, queue_empty: true, poll_status: "QueueEmpty" };
+    }
+    return JSON.parse(op_blitz_gpu_poll(gpuDevice));
+  }
+  // Whether this tick may run the rAF queue.
+  function gpuPacingAllowsFrame() {
+    if (!gpuPacingDeferring) return true;
+    gpuPacing.polls++;
+    const result = pollGpuQueue();
+    if (!result.ok) {
+      gpuPacing.poll_errors++;
+      gpuPacing.disabled = true;
+      gpuPacingDisabled = true;
+      gpuPacingDeferring = false;
+      gpuSubmitsSinceEmpty = 0;
+      // `simulated`: a scripted error from the fixture regression, not a GPU.
+      core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_backpressure", status: "poll_error", simulated: gpuPacingScript !== null, error: result.error, ...gpuPacingReport() })}\n`, false);
+      return true;
+    }
+    if (result.queue_empty) {
+      gpuPacingDeferring = false;
+      gpuSubmitsSinceEmpty = 0;
+      return true;
+    }
+    gpuPacing.deferred_ticks++;
+    gpuPacingRun++;
+    gpuPacing.max_deferred_run = Math.max(gpuPacing.max_deferred_run, gpuPacingRun);
+    return false;
+  }
+  function gpuPacingAfterFrame() {
+    if (gpuPacingDeferring || gpuSubmitsSinceEmpty < GPU_SUBMIT_BATCH || !gpuPacingApplies()) return;
+    gpuPacingDeferring = true;
+    gpuPacingRun = 0;
+    gpuPacing.active = true;
+    gpuPacing.deferrals++;
   }
   function countSubmits() {
     const proto = webgpu.GPUQueue?.prototype;
@@ -2065,10 +2136,12 @@
     if (typeof submit !== "function") return;
     proto.submit = function (commandBuffers) {
       gpuSubmits++;
-      gpuSubmitsSinceDrain++;
       gpuCommandBuffers += commandBuffers?.length ?? 0;
       gpuLastSubmitAt = performance.now();
-      return submit.call(this, commandBuffers);
+      const result = submit.call(this, commandBuffers);
+      // Counted for pacing only once the submission was accepted.
+      gpuSubmitsSinceEmpty++;
+      return result;
     };
   }
   function gpuWithSharedDevice() {
@@ -2175,6 +2248,45 @@
     blockedNavigations() {
       return JSON.stringify(historyApi.blockedNavigations);
     },
+    // Frame-pacing statistics (game reports).
+    gpuPacingStats() {
+      return JSON.stringify(gpuPacingReport());
+    },
+    // Fixture-only regression of the pacing logic, driven tick by tick from
+    // Rust (src/main.rs, stage gpu_frame_pacing). No GPU is involved or
+    // claimed: the poll results are scripted and the batch of successful
+    // submissions is simulated by setting the counter. "begin" saves the real
+    // statistics, "end" restores them and returns the test's own.
+    gpuPacingTest(command, argument = "[]") {
+      switch (command) {
+        case "begin":
+          if (gpuDevice !== null) throw new Error("gpuPacingTest needs a run without a GPU device");
+          savedGpuPacing = gpuPacing;
+          gpuPacing = newGpuPacingStats();
+          gpuPacingScript = [];
+          gpuPacingLastTickAt = null;
+          return "";
+        case "batch": // scripted poll results for the next deferral + a full batch
+          gpuPacingScript = JSON.parse(argument);
+          gpuSubmitsSinceEmpty = GPU_SUBMIT_BATCH;
+          return "";
+        case "stats":
+          return JSON.stringify({ ...gpuPacingReport(), script_left: gpuPacingScript?.length ?? 0 });
+        case "end": {
+          const stats = JSON.stringify(gpuPacingReport());
+          gpuPacing = savedGpuPacing;
+          savedGpuPacing = null;
+          gpuPacingScript = null;
+          gpuPacingDeferring = false;
+          gpuPacingDisabled = false;
+          gpuSubmitsSinceEmpty = 0;
+          gpuPacingLastTickAt = null;
+          return stats;
+        }
+        default:
+          throw new Error(`unknown gpuPacingTest command ${command}`);
+      }
+    },
     // Orderly WebGPU teardown, awaited by the embedder before it drops the
     // runtime. wgpu-core 29's Queue Drop waits only ~6 s (100..3200 ms steps) for
     // the last successful submission and then panics, so the queue must already be
@@ -2203,7 +2315,7 @@
         command_buffers: gpuCommandBuffers,
         last_submit_ms_ago: gpuLastSubmitAt === null ? null : Math.round(performance.now() - gpuLastSubmitAt),
         // Before `adapter` so CI's truncated notice keeps it.
-        backpressure: { ...gpuBackpressure, pending_submits: gpuSubmitsSinceDrain },
+        pacing: gpuPacingReport(),
       };
       core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_adapter", status: "ran", ...submissions, adapter })}\n`, false);
       const idle = JSON.parse(op_blitz_gpu_wait_idle(device));

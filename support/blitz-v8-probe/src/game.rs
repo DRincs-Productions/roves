@@ -195,6 +195,8 @@ pub async fn run(
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
     document_loaded: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    gpu_pacing_stats: &v8::Global<v8::Function>,
     frames: u32,
 ) {
     runtime
@@ -313,4 +315,299 @@ addEventListener("unhandledrejection", (event) => {
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"game_page\",\"status\":\"ran\",\"frames\":{frames},\"load_errors\":{load_errors},\"page\":{report}}}"
     );
+    // Frame pacing over the page run (ticks, frames, deferred rAF ticks, max
+    // tick gap, saturation, poll errors); all zero-deferral on hardware.
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_frame_pacing\",\"status\":\"ran\",\"pacing\":{}}}",
+        crate::call_hook(runtime, gpu_pacing_stats, &[])
+    );
+
+    if std::env::args().any(|arg| arg == "--story") {
+        story(
+            runtime,
+            document,
+            run_animation_frame,
+            dispatcher,
+            gpu_pacing_stats,
+        )
+        .await;
+    }
+}
+
+/// Upper bound, in frames, for each story state to appear and settle.
+const STORY_STATE_FRAMES: u32 = 1800;
+/// A state is settled when the page text is unchanged for this many checks
+/// (one check every 10 frames), so a typewriter effect finishes first.
+const STORY_STABLE_CHECKS: u32 = 3;
+
+/// Page-side helpers of the `--story` harness, evaluated in the page's global.
+/// They only read the DOM (text, button labels, rects); input goes through the
+/// embedder's hit-test and trusted-event bridge.
+const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
+  const norm = (text) => (text ?? "").replace(/\s+/g, " ").trim();
+  const snapshot = () => norm(document.body?.textContent);
+  const center = (element, extra) => {
+    const rect = element.getBoundingClientRect();
+    if (!(rect.width > 0 && rect.height > 0)) return null;
+    return JSON.stringify({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2, w: rect.width, h: rect.height, ...extra });
+  };
+  const buttons = () => Array.from(document.body?.querySelectorAll("button, [role=button]") ?? []);
+  const label = (element) => norm(element.textContent) || norm(element.getAttribute("aria-label")) || norm(element.getAttribute("title"));
+  return {
+    snapshot,
+    // The menu's Start button: exact "Start"/"New game" first, then a label containing it.
+    start() {
+      const all = buttons();
+      const exact = all.find((button) => /^(start|new game)$/i.test(label(button)));
+      const loose = all.find((button) => /\b(start|new game)\b/i.test(label(button)));
+      const button = exact ?? loose;
+      return button ? (center(button, { label: label(button) }) ?? "null") : "null";
+    },
+    // A "next" control of the dialogue UI, by label/aria-label/title.
+    next() {
+      const button = buttons().find((element) => /^(next|›|»|>|→)$/i.test(label(element)) || /\bnext\b/i.test(norm(element.getAttribute("aria-label"))));
+      return button ? (center(button, { label: label(button) }) ?? "null") : "null";
+    },
+    // The element holding the longest text that was not on the menu.
+    dialogue(menu) {
+      let best = null;
+      const visit = (node) => {
+        for (const child of Array.from(node.childNodes)) {
+          if (child.nodeType === 3) {
+            const text = norm(child.textContent);
+            if (text.length >= 3 && !menu.includes(text) && (best === null || text.length > best.text.length)) {
+              best = { text, element: child.parentElement };
+            }
+          } else if (child.nodeType === 1) {
+            visit(child);
+          }
+        }
+      };
+      if (document.body) visit(document.body);
+      if (best === null || best.element === null) return "null";
+      return center(best.element, { label: best.text.slice(0, 60) }) ?? "null";
+    },
+  };
+})();"#;
+
+/// Outcome of waiting for a new settled page state.
+enum StoryState {
+    Settled(String, u32),
+    Timeout(String),
+}
+
+/// Drives frames until the page text differs from every `previous` state and
+/// stays unchanged for `STORY_STABLE_CHECKS` checks, within `STORY_STATE_FRAMES`.
+async fn wait_for_state(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    previous: &[String],
+) -> StoryState {
+    let mut candidate = String::new();
+    let mut stable = 0;
+    let mut frames = 0;
+    while frames < STORY_STATE_FRAMES {
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        frames += 10;
+        let text = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+        if text.is_empty() || previous.contains(&text) {
+            candidate.clear();
+            stable = 0;
+            continue;
+        }
+        if text == candidate {
+            stable += 1;
+            if stable >= STORY_STABLE_CHECKS {
+                return StoryState::Settled(text, frames);
+            }
+        } else {
+            candidate = text;
+            stable = 0;
+        }
+    }
+    StoryState::Timeout(candidate)
+}
+
+/// Center point of a helper result, if the helper found an element.
+fn point(json: &str) -> Option<(f32, f32, deno_core::serde_json::Value)> {
+    let value: deno_core::serde_json::Value = deno_core::serde_json::from_str(json).ok()?;
+    let x = value.get("x")?.as_f64()? as f32;
+    let y = value.get("y")?.as_f64()? as f32;
+    Some((x, y, value))
+}
+
+/// Evaluates a runtime-built script that returns a string.
+fn evaluate_owned(runtime: &mut JsRuntime, source: String) -> String {
+    let value = runtime
+        .execute_script("roves-blitz-story-eval.js", source)
+        .expect("story helper should not throw");
+    deno_core::scope!(scope, runtime);
+    let value = v8::Local::new(scope, value);
+    value.to_rust_string_lossy(scope)
+}
+
+fn excerpt(text: &str) -> String {
+    text.chars().take(240).collect()
+}
+
+/// `--story` (opt-in, separate from the smoke gate): from the start menu, a
+/// real Start click (Blitz hit-test + trusted-event bridge, as a window's input
+/// layer sends it), then the first two distinct settled story states. The
+/// second is reached by the first advance method that works: a "next" control,
+/// a click on the dialogue text, Enter, Space. Prints one `game_story` result;
+/// any failure is reported with its reason, never as a pass.
+async fn story(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    gpu_pacing_stats: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+    crate::stage("game_story");
+    runtime
+        .execute_script("roves-blitz-story-helpers.js", STORY_HELPERS)
+        .expect("story helpers should install");
+    let errors_before: u64 = crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
+        .parse()
+        .unwrap_or(0);
+    let menu = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+    let mut report = json!({ "menu": excerpt(&menu) });
+    let mut steps: Vec<Value> = Vec::new();
+    let mut states: Vec<String> = Vec::new();
+
+    let failure: Option<String> = 'story: {
+        crate::resolve_layout(document);
+        let start = crate::evaluate_string(runtime, "__rovesStory.start()");
+        let Some((x, y, start)) = point(&start) else {
+            break 'story Some("no visible Start/New game button on the page".into());
+        };
+        let Some(hit) = crate::click_at(runtime, dispatcher, document, x, y) else {
+            break 'story Some(format!(
+                "hit-test found no node at the Start button ({x}, {y})"
+            ));
+        };
+        steps.push(json!({ "action": "click_start", "button": start, "hit_node": hit.as_u64() }));
+        let after_start = wait_for_state(
+            runtime,
+            document,
+            run_animation_frame,
+            std::slice::from_ref(&menu),
+        )
+        .await;
+        match after_start {
+            StoryState::Settled(text, frames) => {
+                steps.push(json!({ "state": 1, "frames": frames }));
+                states.push(text);
+            },
+            StoryState::Timeout(last) => {
+                break 'story Some(format!(
+                    "no settled state after Start within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                    excerpt(&last)
+                ));
+            },
+        }
+        let mut previous = vec![menu.clone(), states[0].clone()];
+        for method in ["next_control", "dialogue_click", "enter_key", "space_key"] {
+            crate::resolve_layout(document);
+            let dispatched = match method {
+                "next_control" | "dialogue_click" => {
+                    let helper = if method == "next_control" {
+                        "__rovesStory.next()".to_string()
+                    } else {
+                        format!("__rovesStory.dialogue({})", Value::String(menu.clone()))
+                    };
+                    let found = evaluate_owned(runtime, helper);
+                    match point(&found) {
+                        Some((x, y, element)) => {
+                            crate::click_at(runtime, dispatcher, document, x, y)
+                                .map(|hit| json!({ "element": element, "hit_node": hit.as_u64() }))
+                        },
+                        None => None,
+                    }
+                },
+                _ => {
+                    let key = if method == "enter_key" {
+                        r#"{"key":"Enter","code":"Enter"}"#
+                    } else {
+                        r#"{"key":" ","code":"Space"}"#
+                    };
+                    let target = {
+                        let document = document.borrow();
+                        document.get_focussed_node_id().or_else(|| {
+                            let root = document.root_node().id;
+                            document
+                                .query_selector_all_in(root, "body")
+                                .ok()?
+                                .into_iter()
+                                .next()
+                        })
+                    };
+                    target.map(|target| {
+                        crate::dispatch_trusted(runtime, dispatcher, target, "keydown", key);
+                        crate::dispatch_trusted(runtime, dispatcher, target, "keyup", key);
+                        json!({ "target_node": target.as_u64() })
+                    })
+                },
+            };
+            let Some(dispatched) = dispatched else {
+                steps.push(json!({ "action": method, "result": "no target" }));
+                continue;
+            };
+            match wait_for_state(runtime, document, run_animation_frame, &previous).await {
+                StoryState::Settled(text, frames) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "state": 2, "frames": frames }));
+                    states.push(text);
+                    break;
+                },
+                StoryState::Timeout(last) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "result": "no new settled state", "last_text": excerpt(&last) }));
+                    // A text that appeared without settling (e.g. an animation)
+                    // is not accepted as the second state by the next method.
+                    if !last.is_empty() {
+                        previous.push(last);
+                    }
+                },
+            }
+        }
+        if states.len() < 2 {
+            break 'story Some("no advance method produced a second distinct settled state".into());
+        }
+        None
+    };
+
+    let errors_after: u64 = crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
+        .parse()
+        .unwrap_or(0);
+    let errors = crate::evaluate_string(
+        runtime,
+        "JSON.stringify(__rovesGameErrors.slice(-10).map((e) => e.slice(0, 300)))",
+    );
+    let status = if failure.is_none() {
+        "passed"
+    } else {
+        "failed"
+    };
+    report["reason"] = json!(failure);
+    report["states"] = json!(
+        states
+            .iter()
+            .map(|state| excerpt(state))
+            .collect::<Vec<_>>()
+    );
+    report["steps"] = json!(steps);
+    report["new_errors"] = json!(errors_after.saturating_sub(errors_before));
+    report["recent_errors"] = deno_core::serde_json::from_str(&errors).unwrap_or(Value::Null);
+    report["pacing"] =
+        deno_core::serde_json::from_str(&crate::call_hook(runtime, gpu_pacing_stats, &[]))
+            .unwrap_or(Value::Null);
+    // Fixed key order for CI greps; serde_json sorts the detail's keys.
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_story\",\"status\":\"{status}\",\"detail\":{report}}}"
+    );
+    if let Ok(path) = std::env::var("ROVES_PROBE_STORY_SCREENSHOT") {
+        let pixels = crate::render_rgba(document);
+        crate::write_png(&path, &pixels);
+    }
 }
