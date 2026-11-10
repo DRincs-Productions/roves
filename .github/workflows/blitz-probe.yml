@@ -94,6 +94,7 @@ jobs:
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_channel_routing_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_stereo_panner_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"web_audio_buffer_source_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_v8_context","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_tone_15_1_22","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"scroll_viewport_and_elements","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
@@ -251,8 +252,10 @@ jobs:
           done
       # Diagnostic, opt-in story harness (--story) on the same unmodified
       # template: a real Start click (Blitz hit-test + trusted-event bridge),
-      # then the first two distinct settled story states (advanced by a "next"
-      # control, a click on the dialogue text, Enter or Space, in that order).
+      # then the first two settled story states (advanced by a "next" control,
+      # a click on the dialogue text, Enter or Space, in that order). Each state
+      # needs new dialogue text; toasts never count as progress and a visible
+      # error toast fails the step.
       # continue-on-error: a failure marks this step and is annotated with its
       # reason, but never changes the job result; the smoke step above stays
       # the gate. Separate storage directory; bounded by timeout 600.
@@ -285,11 +288,12 @@ jobs:
           fi
           echo "::notice::story harness exit=$status $(printf '%s' "$story" | cut -c1-900)"
           printf '%s' "$story" | grep -oE '"states":\[[^]]*\]' | cut -c1-700 | sed 's/^/::notice::story states: /'
+          printf '%s' "$story" | grep -oE '"toasts":\[[^]]*\]' | cut -c1-700 | sed 's/^/::notice::story toasts: /'
           printf '%s' "$story" | grep -oE '"pacing":\{[^}]*\}' | cut -c1-500 | sed 's/^/::notice::story pacing: /'
           teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
           echo "::notice::story harness teardown: ${teardown:-NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)}"
           if ! printf '%s' "$story" | grep -Fq '"check":"game_story","status":"passed"'; then
-            echo "::error::story harness did not reach two distinct story states: $(printf '%s' "$story" | grep -oE '"reason":"([^"\\]|\\.)*"' | cut -c1-500)"
+            echo "::error::story harness failed (two dialogue states without error toasts required): $(printf '%s' "$story" | grep -oE '"reason":"([^"\\]|\\.)*"' | cut -c1-500)"
             exit 1
           fi
           [ "$status" -eq 0 ] || { echo "::error::story states reached, but the probe exited with $status"; exit 1; }

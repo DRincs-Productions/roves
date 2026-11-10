@@ -1,3 +1,44 @@
+## 2026-11-10 - Blitz probe: decodeAudioData, AudioBuffer and AudioBufferSourceNode
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/audio.rs,src/web_audio.js,src/dom.js,src/main.rs,js/tone_scenario.js}`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`.
+
+Pixi'VN's `sound.play` in the template failed on `decodeAudioData`/`createBufferSource` (CI
+42898669401). Implemented on the already pinned `web-audio-api 1.7.0` (no new dependency, no
+Deno extension covers Web Audio): `BaseAudioContext::decode_audio_data` (Symphonia, already in
+the graph through `creek`; resamples to the context rate), `create_buffer_source`,
+`AudioBuffer::from`/`get_channel_data[_mut]` and `AudioBufferSourceNode`
+(`set_buffer`, `playback_rate`, `detune`, loop points, `start_at_with_offset_and_duration`,
+`set_onended`). `decodeAudioData` accepts an `ArrayBuffer` only, detaches it, and queues the
+bytes to one lazily started `roves-audio-decode` thread (one job at a time); results are drained
+per frame like `ended`, so no V8 call leaves the V8 thread. Errors reject with `EncodingError`
+(and call the error callback), a detached buffer with `DataCloneError`; nothing resolves with a
+fake buffer. Decoded samples stay in Rust and are shared with sources without copies until the
+game asks for a live `getChannelData` array; from then on the JS arrays are the content and each
+acquisition copies them into a fresh native buffer. The context keeps the headless `"none"`
+sink. Regression: offline `web_audio_buffer_source_offline` (WAV decode, buffer-source render,
+non-audio bytes rejected; required in CI) and `js/tone_scenario.js` (detach, callbacks, errors,
+live arrays, buffer-once/start-once, loop until `stop`, `createBuffer` playback, `Tone.Player`
+on a buffer decoded through standardized-audio-context). Not compiled locally (no builds in this
+session); signatures follow the crate 1.7.0 source excerpts.
+
+## 2026-11-10 - Blitz probe: story harness requires dialogue, fails on error toasts
+
+**Files touched:** `support/blitz-v8-probe/src/game.rs`, `.github/workflows/blitz-probe.yml`,
+`TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI 42898669401 reported `game_story` passed in both modes although the two "states" were the
+menu plus one, then two, identical generic error toasts (Pixi'VN `TypeError`s on
+`decodeAudioData`/`createBufferSource`). The `--story` snapshot now ignores toast/alert
+subtrees (`role=alert|alertdialog`, `aria-live=assertive`, `data-sonner-toast`,
+toast/snackbar/notistack/MuiAlert classes) and script/style text. State 1 must show dialogue
+text not on the menu (non-control text, at least two words and eight characters); state 2
+must add a dialogue line absent from state 1. Visible toasts are sampled at every check and
+any error toast fails the run. Optional `ROVES_PROBE_STORY_EXPECT` (JSON array of two
+strings) requires known story lines. `game_story` adds `dialogue` and `toasts`; the CI step
+annotates toasts. The Web Audio buffer API is evaluated and deferred in `TODO.md` (crate API
+evidence not readable in this session). No new dependency.
+
 ## 2026-11-10 - Blitz probe: non-blocking frame pacing on software GPUs, story harness
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js,src/game.rs}`,

@@ -16,6 +16,45 @@ async function waitFor(predicate, what, timeoutMs = 3000) {
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 }
+async function rejection(promise, name, what) {
+  let error = null;
+  try {
+    await promise;
+  } catch (caught) {
+    error = caught;
+  }
+  check(error?.name === name, `${what} should reject with ${name}, got ${error}`);
+  return error;
+}
+function throws(operation, name, what) {
+  let error = null;
+  try {
+    operation();
+  } catch (caught) {
+    error = caught;
+  }
+  check(error?.name === name, `${what} should throw ${name}, got ${error}`);
+}
+// A 16-bit PCM mono WAV file holding `samples`.
+function pcm16Wav(samples, sampleRate) {
+  const bytes = new ArrayBuffer(44 + samples.length * 2);
+  const view = new DataView(bytes);
+  const text = (offset, value) => [...value].forEach((char, index) => view.setUint8(offset + index, char.charCodeAt(0)));
+  text(0, "RIFF");
+  view.setUint32(4, 36 + samples.length * 2, true);
+  text(8, "WAVEfmt ");
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true); // PCM
+  view.setUint16(22, 1, true); // mono
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true); // block align
+  view.setUint16(34, 16, true); // bits per sample
+  text(36, "data");
+  view.setUint32(40, samples.length * 2, true);
+  samples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
+  return bytes;
+}
 
 (async () => {
   // Without a native AudioContext Tone keeps its DummyContext (sample rate 0 and
@@ -95,6 +134,114 @@ async function waitFor(predicate, what, timeoutMs = 3000) {
   source.start();
   source.stop(raw.currentTime + 0.05);
   await waitFor(() => ended, "the ended event of a stopped ConstantSourceNode");
+
+  // Sound files: decodeAudioData decodes the WAV natively on the decoder thread
+  // (the WAV uses the context rate, so no resampling changes the samples).
+  const native = new AudioContext();
+  await native.resume();
+  const rate = native.sampleRate;
+  const FRAMES = 1024;
+  const pattern = [0, 16384, -16384, 8192];
+  const samples = Array.from({ length: FRAMES }, (_, index) => pattern[index % 4]);
+  const wav = pcm16Wav(samples, rate);
+  let callbackBuffer = null;
+  const decoding = native.decodeAudioData(wav, (buffer) => {
+    callbackBuffer = buffer;
+  });
+  check(wav.detached && wav.byteLength === 0, "decodeAudioData must detach its ArrayBuffer");
+  const decoded = await decoding;
+  check(decoded instanceof AudioBuffer && callbackBuffer === decoded, "decodeAudioData must resolve and call back with one AudioBuffer");
+  check(
+    decoded.numberOfChannels === 1 && decoded.length === FRAMES && decoded.sampleRate === rate,
+    `decoded ${decoded.numberOfChannels} channel(s) × ${decoded.length} at ${decoded.sampleRate} Hz`,
+  );
+  check(Math.abs(decoded.duration - FRAMES / rate) < 1e-9, `decoded duration ${decoded.duration}`);
+  const head = new Float32Array(4);
+  decoded.copyFromChannel(head, 0, 4);
+  check([0, 0.5, -0.5, 0.25].every((value, index) => Math.abs(head[index] - value) < 1e-4), `decoded samples ${[...head]}`);
+  // standardized-audio-context's out-of-bounds probe: copies nothing, throws nothing.
+  decoded.copyToChannel(new Float32Array(1), 0, -1);
+  const live = decoded.getChannelData(0);
+  check(live === decoded.getChannelData(0) && Math.abs(live[5] - 0.5) < 1e-4, "getChannelData must return the same live samples");
+  throws(() => decoded.getChannelData(1), "IndexSizeError", "getChannelData(1) of a mono buffer");
+
+  // Failures are reported, never decoded to silence.
+  let callbackError = null;
+  const encodingError = await rejection(
+    native.decodeAudioData(new Uint8Array(64).buffer, null, (error) => {
+      callbackError = error;
+    }),
+    "EncodingError",
+    "decoding bytes that are not audio",
+  );
+  check(callbackError === encodingError, "the error callback must receive the rejection");
+  await rejection(native.decodeAudioData(wav), "DataCloneError", "decoding a detached ArrayBuffer");
+  await rejection(native.decodeAudioData(new Uint8Array(4)), "TypeError", "decoding a Uint8Array");
+
+  // A decoded buffer plays to its end and fires `ended` without stop().
+  const player = native.createBufferSource();
+  check(player.buffer === null && !player.loop && player.playbackRate.value === 1 && player.detune.value === 0, "buffer source defaults");
+  player.buffer = decoded;
+  throws(() => (player.buffer = decoded), "InvalidStateError", "assigning a second buffer");
+  let playerEnded = false;
+  player.onended = () => {
+    playerEnded = true;
+  };
+  player.connect(native.destination);
+  player.start(0, 0);
+  throws(() => player.start(), "InvalidStateError", "starting a buffer source twice");
+  throws(() => native.createBufferSource().start(0, -1), "RangeError", "a negative offset");
+  await waitFor(() => playerEnded, "the ended event of a buffer source that played to its end");
+
+  // A looping source keeps playing past its buffer until stop().
+  const looping = new AudioBufferSourceNode(native, { buffer: decoded, loop: true, loopStart: 0.001, loopEnd: 0.01, playbackRate: 2 });
+  check(looping.loop && looping.loopStart === 0.001 && looping.loopEnd === 0.01, "loop options");
+  check(looping.playbackRate.value === 2, `playbackRate ${looping.playbackRate.value}`);
+  let loopEnded = false;
+  looping.onended = () => {
+    loopEnded = true;
+  };
+  looping.connect(native.destination);
+  looping.start(0, 0.002);
+  const stopAt = native.currentTime + 0.1;
+  looping.stop(stopAt);
+  await waitFor(() => loopEnded, "the ended event of a stopped looping source");
+  check(native.currentTime >= stopAt - 0.01, `the looping source ended at ${native.currentTime}, before stop(${stopAt})`);
+
+  // Buffers built in JS: samples written there are what the source acquires.
+  const created = native.createBuffer(2, 128, rate);
+  check(created.numberOfChannels === 2 && created.length === 128 && created.sampleRate === rate, "createBuffer shape");
+  created.copyToChannel(Float32Array.of(0.25, 0.5), 1, 126);
+  const tail = new Float32Array(4);
+  created.copyFromChannel(tail, 1, 126);
+  check(tail[0] === 0.25 && tail[1] === 0.5 && tail[2] === 0, `copied samples ${[...tail]}`);
+  throws(() => native.createBuffer(0, 1, rate), "NotSupportedError", "a buffer without channels");
+  throws(() => new AudioBuffer({ length: 1, sampleRate: 1000 }), "NotSupportedError", "a 1000 Hz buffer");
+  const fromJs = native.createBufferSource();
+  let fromJsEnded = false;
+  fromJs.onended = () => {
+    fromJsEnded = true;
+  };
+  fromJs.buffer = created;
+  fromJs.connect(native.destination);
+  fromJs.start();
+  await waitFor(() => fromJsEnded, "the ended event of a buffer built with createBuffer");
+  await native.close();
+
+  // Tone.Player on a file decoded through Tone and standardized-audio-context,
+  // the path Pixi'VN's sound playback takes.
+  const toneBuffer = await context.decodeAudioData(pcm16Wav(samples, context.sampleRate));
+  check(toneBuffer instanceof AudioBuffer && toneBuffer.length === FRAMES, `Tone decoded ${toneBuffer?.length} frames`);
+  const tonePlayer = new Tone.Player(toneBuffer).toDestination();
+  check(tonePlayer.loaded && Math.abs(tonePlayer.buffer.duration - toneBuffer.duration) < 1e-9, "Tone.Player must load the decoded buffer");
+  tonePlayer.playbackRate = 2;
+  let toneStopped = false;
+  tonePlayer.onstop = () => {
+    toneStopped = true;
+  };
+  tonePlayer.start();
+  await waitFor(() => toneStopped, "Tone.Player to stop at the end of its buffer");
+  tonePlayer.dispose();
 
   result.status = "passed";
 })().catch((error) => {

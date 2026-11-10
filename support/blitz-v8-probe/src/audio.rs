@@ -8,12 +8,21 @@
 //! (IndexSizeError, RangeError, …) by panicking; `guarded` turns them into JS
 //! errors carrying that name, and the JS layer validates arguments first so this
 //! stays a safety net.
+//!
+//! `decodeAudioData` hands the bytes to the crate's decoder (Symphonia, resampled
+//! to the context rate) on one dedicated decoder thread, so decoding never runs
+//! on the V8 thread; finished results are queued like `ended` and drained once
+//! per frame (`op_audio_next_decoded`/`op_audio_take_decoded`).
 
+use std::any::Any;
 use std::cell::{OnceCell, RefCell};
 use std::collections::VecDeque;
+use std::future::Future;
+use std::io::Cursor;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::pin::Pin;
 use std::rc::Rc;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, mpsc};
 
 use deno_core::{
     OpState, op2,
@@ -24,11 +33,11 @@ use web_audio_api::context::{
     AudioContext, AudioContextOptions, AudioContextState, BaseAudioContext, OfflineAudioContext,
 };
 use web_audio_api::node::{
-    AudioDestinationNode, AudioNode, AudioScheduledSourceNode, ChannelCountMode,
-    ChannelInterpretation, ChannelMergerNode, ChannelSplitterNode, ConstantSourceNode, GainNode,
-    OscillatorNode, OscillatorType, StereoPannerNode,
+    AudioBufferSourceNode, AudioDestinationNode, AudioNode, AudioScheduledSourceNode,
+    ChannelCountMode, ChannelInterpretation, ChannelMergerNode, ChannelSplitterNode,
+    ConstantSourceNode, GainNode, OscillatorNode, OscillatorType, StereoPannerNode,
 };
-use web_audio_api::{AudioListener, AudioParam};
+use web_audio_api::{AudioBuffer, AudioListener, AudioParam};
 
 const NODE_GAIN: u32 = 0;
 const NODE_CONSTANT_SOURCE: u32 = 1;
@@ -36,6 +45,13 @@ const NODE_OSCILLATOR: u32 = 2;
 const NODE_CHANNEL_MERGER: u32 = 3;
 const NODE_CHANNEL_SPLITTER: u32 = 4;
 const NODE_STEREO_PANNER: u32 = 5;
+const NODE_BUFFER_SOURCE: u32 = 6;
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 /// Ids of finished sources, pushed by the crate's event thread and drained on
 /// the V8 thread.
@@ -44,33 +60,91 @@ struct EndedSources(Arc<Mutex<VecDeque<u32>>>);
 
 impl EndedSources {
     fn push(&self, id: u32) {
-        let mut queue = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.push_back(id);
+        lock(&self.0).push_back(id);
     }
 
     fn pop(&self) -> Option<u32> {
-        let mut queue = self
-            .0
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        queue.pop_front()
+        lock(&self.0).pop_front()
     }
+}
+
+type DecodeResult = Result<AudioBuffer, String>;
+type DecodeJob = Pin<
+    Box<dyn Future<Output = Result<AudioBuffer, Box<dyn std::error::Error + Send + Sync>>> + Send>,
+>;
+
+/// The decoder thread (started on the first `decodeAudioData`, one job at a
+/// time so a burst of preloads cannot saturate every core) and its results,
+/// drained on the V8 thread. The thread exits when the runtime drops the sender.
+#[derive(Default)]
+struct Decoder {
+    jobs: Option<mpsc::Sender<(u32, DecodeJob)>>,
+    finished: Arc<Mutex<VecDeque<(u32, DecodeResult)>>>,
+    /// The result of the id last returned by `op_audio_next_decoded`.
+    taken: Option<DecodeResult>,
+}
+
+impl Decoder {
+    fn submit(&mut self, id: u32, job: DecodeJob) -> Result<(), JsErrorBox> {
+        if self.jobs.is_none() {
+            let (sender, receiver) = mpsc::channel::<(u32, DecodeJob)>();
+            let finished = Arc::clone(&self.finished);
+            std::thread::Builder::new()
+                .name("roves-audio-decode".into())
+                .spawn(move || {
+                    for (id, job) in receiver {
+                        let result = catch_unwind(AssertUnwindSafe(|| block_on(job)))
+                            .map_err(|payload| panic_message(&*payload))
+                            .and_then(|decoded| decoded.map_err(|error| error.to_string()));
+                        lock(&finished).push_back((id, result));
+                    }
+                })
+                .map_err(|error| {
+                    JsErrorBox::generic(format!("Cannot start the audio decoder thread: {error}"))
+                })?;
+            self.jobs = Some(sender);
+        }
+        self.jobs
+            .as_ref()
+            .and_then(|jobs| jobs.send((id, job)).ok())
+            .ok_or_else(|| JsErrorBox::generic("The audio decoder thread has stopped"))
+    }
+}
+
+/// Drives the crate's decode future to completion on the decoder thread (it does
+/// blocking IO and finishes on its first poll, but any wake-up is honoured).
+fn block_on<F: Future>(future: F) -> F::Output {
+    struct ThreadWaker(std::thread::Thread);
+    impl std::task::Wake for ThreadWaker {
+        fn wake(self: Arc<Self>) {
+            self.0.unpark();
+        }
+    }
+    let waker = std::task::Waker::from(Arc::new(ThreadWaker(std::thread::current())));
+    let mut context = std::task::Context::from_waker(&waker);
+    let mut future = std::pin::pin!(future);
+    loop {
+        if let std::task::Poll::Ready(output) = future.as_mut().poll(&mut context) {
+            return output;
+        }
+        std::thread::park();
+    }
+}
+
+fn panic_message(payload: &(dyn Any + Send)) -> String {
+    payload
+        .downcast_ref::<String>()
+        .map(String::as_str)
+        .or_else(|| payload.downcast_ref::<&str>().copied())
+        .unwrap_or("Web Audio backend error")
+        .to_owned()
 }
 
 /// Runs a crate call, turning its spec-error panics into JS errors whose message
 /// starts with the exception name (mapped to DOMException/RangeError in JS).
 fn guarded<R>(operation: impl FnOnce() -> R) -> Result<R, JsErrorBox> {
-    catch_unwind(AssertUnwindSafe(operation)).map_err(|payload| {
-        let message = payload
-            .downcast_ref::<String>()
-            .map(String::as_str)
-            .or_else(|| payload.downcast_ref::<&str>().copied())
-            .unwrap_or("Web Audio backend error");
-        JsErrorBox::generic(message.to_owned())
-    })
+    catch_unwind(AssertUnwindSafe(operation))
+        .map_err(|payload| JsErrorBox::generic(panic_message(&*payload)))
 }
 
 pub struct NativeAudioContext {
@@ -86,6 +160,7 @@ enum Node {
     ChannelMerger(ChannelMergerNode),
     ChannelSplitter(ChannelSplitterNode),
     StereoPanner(StereoPannerNode),
+    BufferSource(AudioBufferSourceNode),
 }
 
 impl Node {
@@ -98,11 +173,12 @@ impl Node {
             Self::ChannelMerger(node) => node,
             Self::ChannelSplitter(node) => node,
             Self::StereoPanner(node) => node,
+            Self::BufferSource(node) => node,
         }
     }
 
-    /// Index of the node's AudioParams: gain, offset, pan, frequency (0) and
-    /// detune (1).
+    /// Index of the node's AudioParams: gain, offset, pan, frequency or
+    /// playbackRate (0) and detune (1).
     fn has_param(&self, index: u32) -> bool {
         matches!(
             (self, index),
@@ -110,7 +186,15 @@ impl Node {
                 | (Self::ConstantSource(_), 0)
                 | (Self::StereoPanner(_), 0)
                 | (Self::Oscillator(_), 0 | 1)
+                | (Self::BufferSource(_), 0 | 1)
         )
+    }
+
+    fn buffer_source(&mut self) -> Result<&mut AudioBufferSourceNode, JsErrorBox> {
+        match self {
+            Self::BufferSource(source) => Ok(source),
+            _ => Err(JsErrorBox::type_error("Not an AudioBufferSourceNode")),
+        }
     }
 }
 
@@ -125,6 +209,10 @@ enum ParamOwner {
 
 pub struct NativeAudioParam(ParamOwner);
 
+/// A decoded (or acquired) buffer. Cloning the crate's AudioBuffer shares its
+/// channel data, so handing it to a source node copies no samples.
+pub struct NativeAudioBuffer(RefCell<AudioBuffer>);
+
 impl NativeAudioParam {
     fn with<R>(&self, operation: impl FnOnce(&AudioParam) -> R) -> R {
         match &self.0 {
@@ -136,6 +224,8 @@ impl NativeAudioParam {
                     (Node::StereoPanner(node), 0) => node.pan(),
                     (Node::Oscillator(node), 0) => node.frequency(),
                     (Node::Oscillator(node), 1) => node.detune(),
+                    (Node::BufferSource(node), 0) => node.playback_rate(),
+                    (Node::BufferSource(node), 1) => node.detune(),
                     _ => unreachable!("checked by op_audio_node_param"),
                 })
             },
@@ -155,7 +245,15 @@ impl NativeAudioParam {
     }
 }
 
-// SAFETY (all three): the Rust objects own no V8 references.
+// SAFETY (all four): the Rust objects own no V8 references.
+unsafe impl GarbageCollected for NativeAudioBuffer {
+    fn trace(&self, _visitor: &mut Visitor) {}
+
+    fn get_name(&self) -> &'static std::ffi::CStr {
+        c"RovesNativeAudioBuffer"
+    }
+}
+
 unsafe impl GarbageCollected for NativeAudioContext {
     fn trace(&self, _visitor: &mut Visitor) {}
 
@@ -281,6 +379,7 @@ fn op_audio_context_create_node(
             context.create_channel_splitter(count),
         )),
         NODE_STEREO_PANNER => Some(Node::StereoPanner(context.create_stereo_panner())),
+        NODE_BUFFER_SOURCE => Some(Node::BufferSource(context.create_buffer_source())),
         _ => None,
     })?;
     node.map(wrap_node)
@@ -307,6 +406,128 @@ fn op_audio_context_listener_param(
 #[op2(nofast)]
 fn op_audio_next_ended(state: &mut OpState) -> f64 {
     state.borrow::<EndedSources>().pop().map_or(-1.0, f64::from)
+}
+
+/// Queues `bytes` (the contents of the detached ArrayBuffer) for decoding at the
+/// context's sample rate; the result is reported under `id`.
+#[op2(nofast)]
+fn op_audio_context_decode(
+    state: &mut OpState,
+    #[cppgc] context: &NativeAudioContext,
+    #[buffer(copy)] bytes: Vec<u8>,
+    id: u32,
+) -> Result<(), JsErrorBox> {
+    // The future owns the bytes and the sample rate only: decoding happens when
+    // the decoder thread polls it.
+    let job: DecodeJob = Box::pin(context.context.decode_audio_data(Cursor::new(bytes)));
+    state.borrow_mut::<Decoder>().submit(id, job)
+}
+
+/// Id of the next finished decode, or -1; its result is then taken with
+/// `op_audio_take_decoded`.
+#[op2(nofast)]
+fn op_audio_next_decoded(state: &mut OpState) -> f64 {
+    let decoder = state.borrow_mut::<Decoder>();
+    let Some((id, result)) = lock(&decoder.finished).pop_front() else {
+        return -1.0;
+    };
+    decoder.taken = Some(result);
+    f64::from(id)
+}
+
+#[op2]
+#[cppgc]
+fn op_audio_take_decoded(state: &mut OpState) -> Result<NativeAudioBuffer, JsErrorBox> {
+    match state.borrow_mut::<Decoder>().taken.take() {
+        Some(Ok(buffer)) => Ok(NativeAudioBuffer(RefCell::new(buffer))),
+        Some(Err(message)) => Err(JsErrorBox::generic(message)),
+        None => Err(JsErrorBox::generic("No decoded audio data pending")),
+    }
+}
+
+// ---- AudioBuffer ----------------------------------------------------------
+
+/// Silent buffer, validated by web_audio.js (1–32 channels, length ≥ 1, sample
+/// rate in [3000, 768000]); filled with `op_audio_buffer_copy_to`.
+#[op2]
+#[cppgc]
+fn op_audio_buffer_create(
+    channels: u32,
+    length: u32,
+    sample_rate: f64,
+) -> Result<NativeAudioBuffer, JsErrorBox> {
+    let samples = vec![vec![0.0_f32; length as usize]; channels as usize];
+    guarded(|| AudioBuffer::from(samples, sample_rate as f32))
+        .map(|buffer| NativeAudioBuffer(RefCell::new(buffer)))
+}
+
+#[op2(fast)]
+fn op_audio_buffer_channels(#[cppgc] buffer: &NativeAudioBuffer) -> u32 {
+    buffer.0.borrow().number_of_channels() as u32
+}
+
+#[op2(fast)]
+fn op_audio_buffer_length(#[cppgc] buffer: &NativeAudioBuffer) -> u32 {
+    buffer.0.borrow().length() as u32
+}
+
+#[op2(fast)]
+fn op_audio_buffer_sample_rate(#[cppgc] buffer: &NativeAudioBuffer) -> f64 {
+    f64::from(buffer.0.borrow().sample_rate())
+}
+
+fn check_channel(buffer: &AudioBuffer, channel: u32) -> Result<usize, JsErrorBox> {
+    let channel = channel as usize;
+    if channel < buffer.number_of_channels() {
+        Ok(channel)
+    } else {
+        Err(JsErrorBox::generic(format!(
+            "IndexSizeError - channel {channel} is out of range"
+        )))
+    }
+}
+
+/// Copies samples from `offset` of `channel` into `destination`, the bytes of a
+/// Float32Array (native endianness), as far as both reach.
+#[op2(nofast)]
+fn op_audio_buffer_copy_from(
+    #[cppgc] buffer: &NativeAudioBuffer,
+    channel: u32,
+    offset: u32,
+    #[buffer] destination: &mut [u8],
+) -> Result<(), JsErrorBox> {
+    let buffer = buffer.0.borrow();
+    let channel = check_channel(&buffer, channel)?;
+    let samples = buffer
+        .get_channel_data(channel)
+        .get(offset as usize..)
+        .unwrap_or_default();
+    for (bytes, sample) in destination.chunks_exact_mut(4).zip(samples) {
+        bytes.copy_from_slice(&sample.to_ne_bytes());
+    }
+    Ok(())
+}
+
+/// Copies the bytes of a Float32Array into `channel` from `offset`, as far as
+/// both reach. Only used to fill a buffer from `op_audio_buffer_create` before it
+/// is handed to a source (web_audio.js keeps game-written samples in JS).
+#[op2(nofast)]
+fn op_audio_buffer_copy_to(
+    #[cppgc] buffer: &NativeAudioBuffer,
+    channel: u32,
+    offset: u32,
+    #[buffer] source: &[u8],
+) -> Result<(), JsErrorBox> {
+    let mut buffer = buffer.0.borrow_mut();
+    let channel = check_channel(&buffer, channel)?;
+    let samples = buffer
+        .get_channel_data_mut(channel)
+        .get_mut(offset as usize..)
+        .unwrap_or_default();
+    for (sample, bytes) in samples.iter_mut().zip(source.chunks_exact(4)) {
+        *sample = f32::from_ne_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]);
+    }
+    Ok(())
 }
 
 // ---- AudioNode ------------------------------------------------------------
@@ -505,6 +726,7 @@ fn op_audio_source_start(#[cppgc] node: &NativeAudioNode, when: f64) -> Result<(
     match &mut *node.0.borrow_mut() {
         Node::ConstantSource(source) => guarded(|| source.start_at(when)),
         Node::Oscillator(source) => guarded(|| source.start_at(when)),
+        Node::BufferSource(source) => guarded(|| source.start_at(when)),
         _ => Err(not_a_source()),
     }
 }
@@ -514,8 +736,54 @@ fn op_audio_source_stop(#[cppgc] node: &NativeAudioNode, when: f64) -> Result<()
     match &mut *node.0.borrow_mut() {
         Node::ConstantSource(source) => guarded(|| source.stop_at(when)),
         Node::Oscillator(source) => guarded(|| source.stop_at(when)),
+        Node::BufferSource(source) => guarded(|| source.stop_at(when)),
         _ => Err(not_a_source()),
     }
+}
+
+// ---- AudioBufferSourceNode --------------------------------------------------
+
+/// `duration` < 0: play to the end of the buffer (or forever when looping).
+#[op2(nofast)]
+fn op_audio_buffer_source_start(
+    #[cppgc] node: &NativeAudioNode,
+    when: f64,
+    offset: f64,
+    duration: f64,
+) -> Result<(), JsErrorBox> {
+    let mut node = node.0.borrow_mut();
+    let source = node.buffer_source()?;
+    let duration = if duration < 0.0 { f64::MAX } else { duration };
+    guarded(|| source.start_at_with_offset_and_duration(when, offset, duration))
+}
+
+/// Hands the buffer's (shared) samples to the render thread; web_audio.js calls
+/// it once, when the content is acquired.
+#[op2(nofast)]
+fn op_audio_buffer_source_set_buffer(
+    #[cppgc] node: &NativeAudioNode,
+    #[cppgc] buffer: &NativeAudioBuffer,
+) -> Result<(), JsErrorBox> {
+    let buffer = buffer.0.borrow().clone();
+    let mut node = node.0.borrow_mut();
+    let source = node.buffer_source()?;
+    guarded(|| source.set_buffer(buffer))
+}
+
+#[op2(nofast)]
+fn op_audio_buffer_source_set_loop(
+    #[cppgc] node: &NativeAudioNode,
+    enabled: bool,
+    start: f64,
+    end: f64,
+) -> Result<(), JsErrorBox> {
+    let mut node = node.0.borrow_mut();
+    let source = node.buffer_source()?;
+    guarded(|| {
+        source.set_loop(enabled);
+        source.set_loop_start(start);
+        source.set_loop_end(end);
+    })
 }
 
 /// Queues `id` as an `ended` notification when the source finishes.
@@ -529,6 +797,7 @@ fn op_audio_source_watch_ended(
     match &mut *node.0.borrow_mut() {
         Node::ConstantSource(source) => source.set_onended(move |_| ended.push(id)),
         Node::Oscillator(source) => source.set_onended(move |_| ended.push(id)),
+        Node::BufferSource(source) => source.set_onended(move |_| ended.push(id)),
         _ => return Err(not_a_source()),
     }
     Ok(())
@@ -688,6 +957,15 @@ deno_core::extension!(
         op_audio_context_create_node,
         op_audio_context_listener_param,
         op_audio_next_ended,
+        op_audio_context_decode,
+        op_audio_next_decoded,
+        op_audio_take_decoded,
+        op_audio_buffer_create,
+        op_audio_buffer_channels,
+        op_audio_buffer_length,
+        op_audio_buffer_sample_rate,
+        op_audio_buffer_copy_from,
+        op_audio_buffer_copy_to,
         op_audio_node_param,
         op_audio_node_inputs,
         op_audio_node_outputs,
@@ -707,6 +985,9 @@ deno_core::extension!(
         op_audio_source_start,
         op_audio_source_stop,
         op_audio_source_watch_ended,
+        op_audio_buffer_source_start,
+        op_audio_buffer_source_set_buffer,
+        op_audio_buffer_source_set_loop,
         op_audio_oscillator_type,
         op_audio_oscillator_set_type,
         op_audio_param_value,
@@ -724,6 +1005,7 @@ deno_core::extension!(
     ],
     state = |state| {
         state.put(EndedSources::default());
+        state.put(Decoder::default());
     },
 );
 
@@ -751,6 +1033,73 @@ pub fn check_offline_render() {
     );
     check_offline_channel_routing();
     check_offline_stereo_panner();
+    check_offline_buffer_source();
+}
+
+/// 16-bit PCM mono WAV holding `samples`.
+fn pcm16_wav(samples: &[i16], sample_rate: u32) -> Vec<u8> {
+    let data_len = (samples.len() * 2) as u32;
+    let mut wav = Vec::with_capacity(44 + samples.len() * 2);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_len).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // PCM
+    wav.extend_from_slice(&1_u16.to_le_bytes()); // mono
+    wav.extend_from_slice(&sample_rate.to_le_bytes());
+    wav.extend_from_slice(&(sample_rate * 2).to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes()); // block align
+    wav.extend_from_slice(&16_u16.to_le_bytes()); // bits per sample
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_len.to_le_bytes());
+    for sample in samples {
+        wav.extend_from_slice(&sample.to_le_bytes());
+    }
+    wav
+}
+
+/// The decoder and source behind decodeAudioData/createBufferSource: a WAV of
+/// 128 frames at 0.5 renders as 128 frames of 0.5 followed by silence, and
+/// bytes that are not audio fail instead of decoding to silence.
+fn check_offline_buffer_source() {
+    const FRAMES: usize = 256;
+    const DECODED: usize = 128;
+    let mut context = OfflineAudioContext::new(1, FRAMES, 48_000.0);
+    let decoded = context
+        .decode_audio_data_sync(Cursor::new(pcm16_wav(&[16_384; DECODED], 48_000)))
+        .expect("a 16-bit PCM WAV should decode");
+    assert_eq!(
+        (decoded.number_of_channels(), decoded.length()),
+        (1, DECODED)
+    );
+    assert_channel(&decoded, 0, 0.5, "decoded WAV");
+    assert!(
+        context
+            .decode_audio_data_sync(Cursor::new(vec![0_u8; 64]))
+            .is_err(),
+        "bytes that are not audio must not decode"
+    );
+
+    let mut source = context.create_buffer_source();
+    source.set_buffer(decoded);
+    source.connect(&context.destination());
+    source.start();
+    let rendered = context.start_rendering_sync();
+    let samples = rendered.get_channel_data(0);
+    assert!(
+        samples[..DECODED - 1]
+            .iter()
+            .all(|sample| (sample - 0.5).abs() < 2e-3)
+            && samples[DECODED + 1..]
+                .iter()
+                .all(|sample| sample.abs() < 1e-6),
+        "the buffer source should play the decoded frames once, got {:?} … {:?}",
+        &samples[..4],
+        &samples[DECODED - 2..DECODED + 2]
+    );
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"web_audio_buffer_source_offline\",\"status\":\"passed\",\"frames\":{FRAMES}}}"
+    );
 }
 
 fn assert_channel(

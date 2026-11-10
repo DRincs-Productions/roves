@@ -342,10 +342,59 @@ const STORY_STABLE_CHECKS: u32 = 3;
 
 /// Page-side helpers of the `--story` harness, evaluated in the page's global.
 /// They only read the DOM (text, button labels, rects); input goes through the
-/// embedder's hit-test and trusted-event bridge.
+/// embedder's hit-test and trusted-event bridge. Toasts/alerts (role alert,
+/// aria-live assertive, sonner/notistack/MUI/"toast"/"snackbar" classes) are
+/// kept out of the page text: accumulating notifications must never count as
+/// story progress (CI 42898669401 passed on two identical error toasts).
 const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
   const norm = (text) => (text ?? "").replace(/\s+/g, " ").trim();
-  const snapshot = () => norm(document.body?.textContent);
+  const attr = (element, name) => element.getAttribute(name) ?? "";
+  const TOAST_CLASS = /toast|snackbar|notistack|MuiAlert/i;
+  const isToast = (element) =>
+    ["alert", "alertdialog"].includes(attr(element, "role")) ||
+    attr(element, "aria-live") === "assertive" ||
+    element.getAttribute("data-sonner-toast") !== null ||
+    TOAST_CLASS.test(attr(element, "class"));
+  const ERROR_MARK = /error|danger|fail/i;
+  const ERROR_TEXT = /\b(error|errore|errors|failed|failure|exception|went wrong|TypeError|ReferenceError|RangeError)\b/i;
+  const isErrorToast = (element, text) =>
+    ERROR_MARK.test(`${attr(element, "class")} ${attr(element, "data-type")} ${attr(element, "data-variant")}`) || ERROR_TEXT.test(text);
+  const isButton = (element) => element.localName === "button" || attr(element, "role") === "button";
+  // Text nodes outside toasts, scripts and styles; `inButton` marks control labels.
+  const walk = (node, onText, onToast, inButton = false) => {
+    for (const child of Array.from(node.childNodes)) {
+      if (child.nodeType === 3) {
+        const text = norm(child.textContent);
+        if (text) onText(text, child.parentElement, inButton);
+      } else if (child.nodeType === 1) {
+        if (isToast(child)) {
+          onToast(child);
+        } else if (child.localName !== "script" && child.localName !== "style") {
+          walk(child, onText, onToast, inButton || isButton(child));
+        }
+      }
+    }
+  };
+  const visible = (element) => {
+    const rect = element.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  };
+  const snapshot = () => {
+    const parts = [];
+    if (document.body) walk(document.body, (text) => parts.push(text), () => {});
+    return parts.join(" ");
+  };
+  // Dialogue-like text not on the menu: not a control label, at least two
+  // words and eight characters.
+  const dialogueLines = (menu) => {
+    const lines = [];
+    if (document.body) {
+      walk(document.body, (text, _, inButton) => {
+        if (!inButton && text.length >= 8 && text.split(" ").length >= 2 && !menu.includes(text) && !lines.includes(text)) lines.push(text);
+      }, () => {});
+    }
+    return lines;
+  };
   const center = (element, extra) => {
     const rect = element.getBoundingClientRect();
     if (!(rect.width > 0 && rect.height > 0)) return null;
@@ -368,24 +417,32 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       const button = buttons().find((element) => /^(next|›|»|>|→)$/i.test(label(element)) || /\bnext\b/i.test(norm(element.getAttribute("aria-label"))));
       return button ? (center(button, { label: label(button) }) ?? "null") : "null";
     },
-    // The element holding the longest text that was not on the menu.
+    // The element holding the longest non-control text that was not on the menu.
     dialogue(menu) {
       let best = null;
-      const visit = (node) => {
-        for (const child of Array.from(node.childNodes)) {
-          if (child.nodeType === 3) {
-            const text = norm(child.textContent);
-            if (text.length >= 3 && !menu.includes(text) && (best === null || text.length > best.text.length)) {
-              best = { text, element: child.parentElement };
-            }
-          } else if (child.nodeType === 1) {
-            visit(child);
+      if (document.body) {
+        walk(document.body, (text, element, inButton) => {
+          if (!inButton && text.length >= 3 && !menu.includes(text) && (best === null || text.length > best.text.length)) {
+            best = { text, element };
           }
-        }
-      };
-      if (document.body) visit(document.body);
+        }, () => {});
+      }
       if (best === null || best.element === null) return "null";
       return center(best.element, { label: best.text.slice(0, 60) }) ?? "null";
+    },
+    lines(menu) {
+      return JSON.stringify(dialogueLines(menu));
+    },
+    // Visible toasts/alerts, each flagged when it reports an error.
+    toasts() {
+      const found = [];
+      if (document.body) {
+        walk(document.body, () => {}, (element) => {
+          const text = norm(element.textContent);
+          if (text && visible(element)) found.push({ text: text.slice(0, 200), error: isErrorToast(element, text) });
+        });
+      }
+      return JSON.stringify(found);
     },
   };
 })();"#;
@@ -396,13 +453,29 @@ enum StoryState {
     Timeout(String),
 }
 
-/// Drives frames until the page text differs from every `previous` state and
-/// stays unchanged for `STORY_STABLE_CHECKS` checks, within `STORY_STATE_FRAMES`.
+/// Records every distinct visible toast (`{text, error}`) the page shows; toasts
+/// can auto-dismiss, so this runs at every check, not only on settled states.
+fn collect_toasts(runtime: &mut JsRuntime, seen: &mut Vec<deno_core::serde_json::Value>) {
+    let found = crate::evaluate_string(runtime, "__rovesStory.toasts()");
+    let found: Vec<deno_core::serde_json::Value> =
+        deno_core::serde_json::from_str(&found).unwrap_or_default();
+    for toast in found {
+        // Bounded: a changing toast text (e.g. a countdown) adds one per check.
+        if seen.len() < 20 && !seen.contains(&toast) {
+            seen.push(toast);
+        }
+    }
+}
+
+/// Drives frames until the toast-free page text differs from every `previous`
+/// state and stays unchanged for `STORY_STABLE_CHECKS` checks, within
+/// `STORY_STATE_FRAMES`.
 async fn wait_for_state(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
     previous: &[String],
+    toasts: &mut Vec<deno_core::serde_json::Value>,
 ) -> StoryState {
     let mut candidate = String::new();
     let mut stable = 0;
@@ -410,6 +483,7 @@ async fn wait_for_state(
     while frames < STORY_STATE_FRAMES {
         crate::drive_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
+        collect_toasts(runtime, toasts);
         let text = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
         if text.is_empty() || previous.contains(&text) {
             candidate.clear();
@@ -451,12 +525,39 @@ fn excerpt(text: &str) -> String {
     text.chars().take(240).collect()
 }
 
+/// Dialogue-like lines currently on the page that were not on the menu.
+fn dialogue_lines(runtime: &mut JsRuntime, menu: &str) -> Vec<String> {
+    let lines = evaluate_owned(
+        runtime,
+        format!(
+            "__rovesStory.lines({})",
+            deno_core::serde_json::Value::String(menu.to_owned())
+        ),
+    );
+    deno_core::serde_json::from_str(&lines).unwrap_or_default()
+}
+
+/// Optional `ROVES_PROBE_STORY_EXPECT`: a JSON array of two strings that the
+/// first and the second story state's new dialogue must contain.
+fn expected_lines() -> Result<Option<[String; 2]>, String> {
+    let Ok(raw) = std::env::var("ROVES_PROBE_STORY_EXPECT") else {
+        return Ok(None);
+    };
+    deno_core::serde_json::from_str::<[String; 2]>(&raw)
+        .map(Some)
+        .map_err(|error| format!("invalid ROVES_PROBE_STORY_EXPECT {raw:?}: {error}"))
+}
+
 /// `--story` (opt-in, separate from the smoke gate): from the start menu, a
 /// real Start click (Blitz hit-test + trusted-event bridge, as a window's input
-/// layer sends it), then the first two distinct settled story states. The
-/// second is reached by the first advance method that works: a "next" control,
-/// a click on the dialogue text, Enter, Space. Prints one `game_story` result;
-/// any failure is reported with its reason, never as a pass.
+/// layer sends it), then the first two settled story states. State 1 must show
+/// dialogue text that was not on the menu; state 2 must add a dialogue line
+/// absent from state 1 and is reached by the first advance method that works: a
+/// "next" control, a click on the dialogue text, Enter, Space. Toast text never
+/// counts as a state, and any visible error toast fails the run. With
+/// `ROVES_PROBE_STORY_EXPECT='["line 1","line 2"]'` the two states must also
+/// contain those known lines. Prints one `game_story` result; any failure is
+/// reported with its reason, never as a pass.
 async fn story(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -476,8 +577,16 @@ async fn story(
     let mut report = json!({ "menu": excerpt(&menu) });
     let mut steps: Vec<Value> = Vec::new();
     let mut states: Vec<String> = Vec::new();
+    // New dialogue lines of state 1 and state 2 (state 2: lines not in state 1).
+    let mut dialogue: Vec<Vec<String>> = Vec::new();
+    let mut toasts: Vec<Value> = Vec::new();
+    collect_toasts(runtime, &mut toasts);
 
     let failure: Option<String> = 'story: {
+        let expected = match expected_lines() {
+            Ok(expected) => expected,
+            Err(error) => break 'story Some(error),
+        };
         crate::resolve_layout(document);
         let start = crate::evaluate_string(runtime, "__rovesStory.start()");
         let Some((x, y, start)) = point(&start) else {
@@ -489,26 +598,48 @@ async fn story(
             ));
         };
         steps.push(json!({ "action": "click_start", "button": start, "hit_node": hit.as_u64() }));
-        let after_start = wait_for_state(
-            runtime,
-            document,
-            run_animation_frame,
-            std::slice::from_ref(&menu),
-        )
-        .await;
-        match after_start {
-            StoryState::Settled(text, frames) => {
-                steps.push(json!({ "state": 1, "frames": frames }));
-                states.push(text);
-            },
-            StoryState::Timeout(last) => {
-                break 'story Some(format!(
-                    "no settled state after Start within {STORY_STATE_FRAMES} frames (last text: {:?})",
-                    excerpt(&last)
-                ));
-            },
+        // State 1 must show dialogue text; up to two settled states without it
+        // (e.g. a loading screen) are skipped first.
+        let mut previous = vec![menu.clone()];
+        loop {
+            match wait_for_state(
+                runtime,
+                document,
+                run_animation_frame,
+                &previous,
+                &mut toasts,
+            )
+            .await
+            {
+                StoryState::Settled(text, frames) => {
+                    let lines = dialogue_lines(runtime, &menu);
+                    if lines.is_empty() {
+                        steps.push(json!({ "after": "click_start", "result": "settled without dialogue text", "frames": frames, "last_text": excerpt(&text) }));
+                        previous.push(text);
+                        if previous.len() > 3 {
+                            break 'story Some(
+                                "no state after Start showed dialogue text, only menu/control text"
+                                    .into(),
+                            );
+                        }
+                        continue;
+                    }
+                    steps.push(
+                        json!({ "state": 1, "frames": frames, "dialogue_lines": lines.len() }),
+                    );
+                    previous.push(text.clone());
+                    states.push(text);
+                    dialogue.push(lines);
+                    break;
+                },
+                StoryState::Timeout(last) => {
+                    break 'story Some(format!(
+                        "no settled state after Start within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                        excerpt(&last)
+                    ));
+                },
+            }
         }
-        let mut previous = vec![menu.clone(), states[0].clone()];
         for method in ["next_control", "dialogue_click", "enter_key", "space_key"] {
             crate::resolve_layout(document);
             let dispatched = match method {
@@ -555,10 +686,30 @@ async fn story(
                 steps.push(json!({ "action": method, "result": "no target" }));
                 continue;
             };
-            match wait_for_state(runtime, document, run_animation_frame, &previous).await {
+            match wait_for_state(
+                runtime,
+                document,
+                run_animation_frame,
+                &previous,
+                &mut toasts,
+            )
+            .await
+            {
                 StoryState::Settled(text, frames) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "state": 2, "frames": frames }));
+                    // Only a dialogue line absent from state 1 is story progress;
+                    // other page changes (UI counters, overlays) are not.
+                    let new_lines: Vec<String> = dialogue_lines(runtime, &menu)
+                        .into_iter()
+                        .filter(|line| !dialogue[0].contains(line))
+                        .collect();
+                    if new_lines.is_empty() {
+                        steps.push(json!({ "action": method, "input": dispatched, "result": "settled without a new dialogue line", "frames": frames, "last_text": excerpt(&text) }));
+                        previous.push(text);
+                        continue;
+                    }
+                    steps.push(json!({ "action": method, "input": dispatched, "state": 2, "frames": frames, "dialogue_lines": new_lines.len() }));
                     states.push(text);
+                    dialogue.push(new_lines);
                     break;
                 },
                 StoryState::Timeout(last) => {
@@ -572,10 +723,36 @@ async fn story(
             }
         }
         if states.len() < 2 {
-            break 'story Some("no advance method produced a second distinct settled state".into());
+            break 'story Some(
+                "no advance method produced a second settled state with a new dialogue line".into(),
+            );
+        }
+        if let Some(expected) = expected {
+            for (index, needle) in expected.iter().enumerate() {
+                if !dialogue[index]
+                    .iter()
+                    .any(|line| line.contains(needle.as_str()))
+                {
+                    break 'story Some(format!(
+                        "state {} dialogue does not contain the expected line {needle:?}",
+                        index + 1
+                    ));
+                }
+            }
         }
         None
     };
+    collect_toasts(runtime, &mut toasts);
+    // A visible error toast fails the run even when two states were reached.
+    let error_toasts: Vec<String> = toasts
+        .iter()
+        .filter(|toast| toast["error"] == Value::Bool(true))
+        .filter_map(|toast| toast["text"].as_str().map(str::to_owned))
+        .collect();
+    let failure = failure.or_else(|| {
+        (!error_toasts.is_empty())
+            .then(|| format!("visible error toast(s) during the story: {error_toasts:?}"))
+    });
 
     let errors_after: u64 = crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
         .parse()
@@ -596,6 +773,13 @@ async fn story(
             .map(|state| excerpt(state))
             .collect::<Vec<_>>()
     );
+    report["dialogue"] = json!(
+        dialogue
+            .iter()
+            .map(|lines| lines.iter().map(|line| excerpt(line)).collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    );
+    report["toasts"] = json!(toasts);
     report["steps"] = json!(steps);
     report["new_errors"] = json!(errors_after.saturating_sub(errors_before));
     report["recent_errors"] = deno_core::serde_json::from_str(&errors).unwrap_or(Value::Null);

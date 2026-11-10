@@ -8,12 +8,17 @@
 // constant source and oscillator nodes, connect/disconnect), plus the channel
 // merger/splitter and the native stereo panner (without createStereoPanner,
 // standardized-audio-context fakes it with a merger, wave shapers and a looping
-// buffer source, which Pixi'VN's sound init hit). Not yet: buffers and
-// decodeAudioData, the other node types, OfflineAudioContext, ScriptProcessorNode
+// buffer source, which Pixi'VN's sound init hit), and what Tone.Player needs to
+// play sound files: AudioBuffer, AudioBufferSourceNode (buffer, loop points,
+// playbackRate/detune, start offset/duration, `ended`) and decodeAudioData,
+// which decodes natively (the crate's Symphonia decoder, resampled to the
+// context rate) on a decoder thread and settles from dispatchPendingEvents.
+// Not yet: the other node types, OfflineAudioContext (standardized-audio-
+// context's own AudioBuffer constructor asks for one), ScriptProcessorNode
 // and AudioWorklet (see TODO.md); those globals are absent rather than faked.
 globalThis.__rovesCreateWebAudio = (dependencies) => {
   "use strict";
-  const { ops, webidl, EventTarget, Event, DOMException, setIsTrusted, setTimeout } = dependencies;
+  const { ops, webidl, EventTarget, Event, DOMException, setIsTrusted, setTimeout, reportException } = dependencies;
 
   const INTERNAL = Symbol("internal");
   const NODE_GAIN = 0;
@@ -22,6 +27,7 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
   const NODE_CHANNEL_MERGER = 3;
   const NODE_CHANNEL_SPLITTER = 4;
   const NODE_STEREO_PANNER = 5;
+  const NODE_BUFFER_SOURCE = 6;
   const CHANNEL_COUNT_MODES = ["max", "clamped-max", "explicit"];
   const CHANNEL_INTERPRETATIONS = ["speakers", "discrete"];
   const OSCILLATOR_TYPES = ["sine", "square", "sawtooth", "triangle", "custom"];
@@ -351,15 +357,20 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     }
   }
 
+  // `start` runs the node-specific native start once the source is watched.
+  function startSource(node, record, start) {
+    if (record.started) throw domError("InvalidStateError", "start() can only be called once");
+    backend(() => ops.op_audio_source_watch_ended(record.handle, record.id));
+    backend(start);
+    record.started = true;
+    playingSources.set(record.id, node);
+  }
+
   class AudioScheduledSourceNode extends AudioNode {
     start(when = 0) {
       const record = brand(nodes, this);
       const time = nonNegative(when, "when", "Failed to execute 'start' on 'AudioScheduledSourceNode'");
-      if (record.started) throw domError("InvalidStateError", "start() can only be called once");
-      backend(() => ops.op_audio_source_watch_ended(record.handle, record.id));
-      backend(() => ops.op_audio_source_start(record.handle, time));
-      record.started = true;
-      playingSources.set(record.id, this);
+      startSource(this, record, () => ops.op_audio_source_start(record.handle, time));
     }
     stop(when = 0) {
       const record = brand(nodes, this);
@@ -472,6 +483,226 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     }
   }
 
+  // ---- AudioBuffer ---------------------------------------------------------
+
+  // A decoded buffer keeps its samples in Rust (`handle`): copyFromChannel reads
+  // them there and a source shares them without copying. The first
+  // getChannelData()/copyToChannel() moves the content into JS Float32Arrays,
+  // which the game may then write at any time, so from there on every
+  // acquisition (Web Audio §1.4.3) copies them into a new native buffer.
+  // Buffers built by the constructor start with JS arrays.
+  const buffers = new WeakMap();
+  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const arrayBufferByteLength = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "byteLength").get;
+  const arrayBufferDetached = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, "detached").get;
+  const arrayBufferTransfer = ArrayBuffer.prototype.transfer;
+  function isArrayBuffer(value) {
+    try {
+      arrayBufferByteLength.call(value); // throws for anything else, SharedArrayBuffer included
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  function float32Array(value, prefix) {
+    if (typedArrayTag.call(value) !== "Float32Array") throw new TypeError(`${prefix}: parameter 1 is not of type 'Float32Array'.`);
+    return value;
+  }
+  const bytesOf = (array, count = array.length) => new Uint8Array(array.buffer, array.byteOffset, count * 4);
+
+  function checkBufferShape(numberOfChannels, length, sampleRate, prefix) {
+    if (numberOfChannels < 1 || numberOfChannels > 32) {
+      throw domError("NotSupportedError", `${prefix}: numberOfChannels ${numberOfChannels} is outside [1, 32]`);
+    }
+    if (length < 1) throw domError("NotSupportedError", `${prefix}: length must be at least 1`);
+    if (!(sampleRate >= 3000 && sampleRate <= 768000)) {
+      throw domError("NotSupportedError", `${prefix}: sampleRate ${sampleRate} is outside [3000, 768000]`);
+    }
+  }
+  function materialize(record) {
+    if (record.channels === null) {
+      const { handle } = record;
+      record.channels = Array.from({ length: record.numberOfChannels }, (_, index) => {
+        const channel = new Float32Array(record.length);
+        backend(() => ops.op_audio_buffer_copy_from(handle, index, 0, bytesOf(channel)));
+        return channel;
+      });
+      record.handle = null;
+    }
+    return record.channels;
+  }
+  // The native buffer a source plays.
+  function acquireContent(record) {
+    if (record.channels === null) return record.handle;
+    const handle = backend(() => ops.op_audio_buffer_create(record.numberOfChannels, record.length, record.sampleRate));
+    record.channels.forEach((channel, index) => backend(() => ops.op_audio_buffer_copy_to(handle, index, 0, bytesOf(channel))));
+    return handle;
+  }
+  function wrapDecodedBuffer(handle) {
+    const buffer = Object.create(AudioBuffer.prototype);
+    buffers.set(buffer, {
+      handle,
+      channels: null,
+      numberOfChannels: ops.op_audio_buffer_channels(handle),
+      length: ops.op_audio_buffer_length(handle),
+      sampleRate: ops.op_audio_buffer_sample_rate(handle),
+    });
+    return buffer;
+  }
+  // Converted arguments of copyFromChannel/copyToChannel, with the number of
+  // samples both sides reach (0 when bufferOffset is past the end).
+  function channelCopy(buffer, array, channelNumber, bufferOffset, prefix) {
+    const record = brand(buffers, buffer);
+    float32Array(array, prefix);
+    const channel = unsignedLong(channelNumber, prefix);
+    const offset = unsignedLong(bufferOffset, prefix);
+    if (channel >= record.numberOfChannels) throw domError("IndexSizeError", `${prefix}: channel ${channel} is out of range`);
+    return { record, channel, offset, count: Math.min(array.length, Math.max(record.length - offset, 0)) };
+  }
+
+  class AudioBuffer {
+    constructor(options) {
+      const prefix = "Failed to construct 'AudioBuffer'";
+      if (options === null || typeof options !== "object") throw new TypeError(`${prefix}: parameter 1 is not of type 'AudioBufferOptions'.`);
+      for (const member of ["length", "sampleRate"]) {
+        if (options[member] === undefined) throw new TypeError(`${prefix}: required member ${member} is undefined.`);
+      }
+      const length = unsignedLong(options.length, prefix);
+      const numberOfChannels = options.numberOfChannels === undefined ? 1 : unsignedLong(options.numberOfChannels, prefix);
+      const sampleRate = float(options.sampleRate, prefix);
+      checkBufferShape(numberOfChannels, length, sampleRate, prefix);
+      const channels = Array.from({ length: numberOfChannels }, () => new Float32Array(length));
+      buffers.set(this, { handle: null, channels, numberOfChannels, length, sampleRate });
+    }
+    get sampleRate() {
+      return brand(buffers, this).sampleRate;
+    }
+    get length() {
+      return brand(buffers, this).length;
+    }
+    get duration() {
+      const { length, sampleRate } = brand(buffers, this);
+      return length / sampleRate;
+    }
+    get numberOfChannels() {
+      return brand(buffers, this).numberOfChannels;
+    }
+    getChannelData(channel) {
+      const record = brand(buffers, this);
+      const prefix = "Failed to execute 'getChannelData' on 'AudioBuffer'";
+      const index = unsignedLong(channel, prefix);
+      if (index >= record.numberOfChannels) throw domError("IndexSizeError", `${prefix}: channel ${index} is out of range`);
+      return materialize(record)[index];
+    }
+    copyFromChannel(destination, channelNumber, bufferOffset = 0) {
+      const prefix = "Failed to execute 'copyFromChannel' on 'AudioBuffer'";
+      const { record, channel, offset, count } = channelCopy(this, destination, channelNumber, bufferOffset, prefix);
+      if (count === 0) return;
+      if (record.channels !== null) {
+        destination.set(record.channels[channel].subarray(offset, offset + count));
+      } else {
+        backend(() => ops.op_audio_buffer_copy_from(record.handle, channel, offset, bytesOf(destination, count)));
+      }
+    }
+    copyToChannel(source, channelNumber, bufferOffset = 0) {
+      const prefix = "Failed to execute 'copyToChannel' on 'AudioBuffer'";
+      const { record, channel, offset, count } = channelCopy(this, source, channelNumber, bufferOffset, prefix);
+      if (count === 0) return;
+      materialize(record)[channel].set(source.subarray(0, count), offset);
+    }
+  }
+
+  // ---- AudioBufferSourceNode -----------------------------------------------
+
+  // The content is acquired once, at start() or, after start(), when the buffer
+  // is set; the crate cannot drop it again, so setting the buffer back to null
+  // after that does not silence a playing source (see TODO.md).
+  const bufferSources = new WeakMap();
+  function acquireBuffer(node, state) {
+    if (state.acquired || state.buffer === null) return;
+    state.acquired = true;
+    const handle = acquireContent(buffers.get(state.buffer));
+    backend(() => ops.op_audio_buffer_source_set_buffer(nodes.get(node).handle, handle));
+  }
+  function syncLoop(node, state) {
+    backend(() => ops.op_audio_buffer_source_set_loop(nodes.get(node).handle, state.loop, state.loopStart, state.loopEnd));
+  }
+
+  class AudioBufferSourceNode extends AudioScheduledSourceNode {
+    constructor(context, options) {
+      options = dictionary(options, "AudioBufferSourceOptions");
+      super(INTERNAL, context, createNode(context, NODE_BUFFER_SOURCE));
+      nodeParam(this, context, 0);
+      nodeParam(this, context, 1);
+      bufferSources.set(this, { buffer: null, bufferSet: false, acquired: false, loop: false, loopStart: 0, loopEnd: 0 });
+      applyNodeOptions(this, options);
+      if (options.buffer !== undefined) this.buffer = options.buffer;
+      if (options.playbackRate !== undefined) this.playbackRate.value = options.playbackRate;
+      if (options.detune !== undefined) this.detune.value = options.detune;
+      if (options.loop !== undefined) this.loop = options.loop;
+      if (options.loopStart !== undefined) this.loopStart = options.loopStart;
+      if (options.loopEnd !== undefined) this.loopEnd = options.loopEnd;
+    }
+    get playbackRate() {
+      return ownParam(this, AudioBufferSourceNode, 0);
+    }
+    get detune() {
+      return ownParam(this, AudioBufferSourceNode, 1);
+    }
+    get buffer() {
+      return brand(bufferSources, this).buffer;
+    }
+    set buffer(value) {
+      const state = brand(bufferSources, this);
+      const prefix = "Failed to set the 'buffer' property on 'AudioBufferSourceNode'";
+      if (value === null || value === undefined) {
+        state.buffer = null;
+        return;
+      }
+      if (!buffers.has(value)) throw new TypeError(`${prefix}: The provided value is not of type 'AudioBuffer'.`);
+      if (state.bufferSet) throw domError("InvalidStateError", `${prefix}: the buffer can only be set once`);
+      state.bufferSet = true;
+      state.buffer = value;
+      if (brand(nodes, this).started) acquireBuffer(this, state);
+    }
+    get loop() {
+      return brand(bufferSources, this).loop;
+    }
+    set loop(value) {
+      const state = brand(bufferSources, this);
+      state.loop = Boolean(value);
+      syncLoop(this, state);
+    }
+    get loopStart() {
+      return brand(bufferSources, this).loopStart;
+    }
+    set loopStart(value) {
+      const state = brand(bufferSources, this);
+      state.loopStart = double(value, "Failed to set the 'loopStart' property on 'AudioBufferSourceNode'");
+      syncLoop(this, state);
+    }
+    get loopEnd() {
+      return brand(bufferSources, this).loopEnd;
+    }
+    set loopEnd(value) {
+      const state = brand(bufferSources, this);
+      state.loopEnd = double(value, "Failed to set the 'loopEnd' property on 'AudioBufferSourceNode'");
+      syncLoop(this, state);
+    }
+    start(when = 0, offset = 0, duration = undefined) {
+      const record = brand(nodes, this);
+      const state = brand(bufferSources, this);
+      const prefix = "Failed to execute 'start' on 'AudioBufferSourceNode'";
+      const time = nonNegative(when, "when", prefix);
+      const from = nonNegative(offset, "offset", prefix);
+      const length = duration === undefined ? -1 : nonNegative(duration, "duration", prefix);
+      startSource(this, record, () => {
+        acquireBuffer(this, state);
+        ops.op_audio_buffer_source_start(record.handle, time, from, length);
+      });
+    }
+  }
+
   // ---- AudioListener -------------------------------------------------------
 
   const listeners = new WeakMap();
@@ -569,8 +800,68 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     createStereoPanner() {
       return new StereoPannerNode(this);
     }
+    createBufferSource() {
+      return new AudioBufferSourceNode(this);
+    }
+    createBuffer(numberOfChannels, length, sampleRate) {
+      brand(contexts, this);
+      return new AudioBuffer({ numberOfChannels, length, sampleRate });
+    }
+    // Web Audio §1.1.3 decodeAudioData: the ArrayBuffer is detached (its bytes
+    // move to the decoder thread) and the promise and callbacks settle from
+    // dispatchPendingEvents, i.e. in a later frame.
+    decodeAudioData(audioData, successCallback, errorCallback) {
+      const { handle } = brand(contexts, this);
+      const prefix = "Failed to execute 'decodeAudioData' on 'BaseAudioContext'";
+      if (!isArrayBuffer(audioData)) return Promise.reject(new TypeError(`${prefix}: parameter 1 is not of type 'ArrayBuffer'.`));
+      for (const callback of [successCallback, errorCallback]) {
+        if (callback !== undefined && callback !== null && typeof callback !== "function") {
+          return Promise.reject(new TypeError(`${prefix}: the callback provided is not a function.`));
+        }
+      }
+      const onSuccess = typeof successCallback === "function" ? successCallback : null;
+      const onError = typeof errorCallback === "function" ? errorCallback : null;
+      if (arrayBufferDetached.call(audioData)) {
+        const error = domError("DataCloneError", `${prefix}: the ArrayBuffer is detached`);
+        if (onError !== null) setTimeout(() => invokeCallback(onError, error), 0);
+        return Promise.reject(error);
+      }
+      return new Promise((resolve, reject) => {
+        const id = nextId++;
+        const bytes = new Uint8Array(arrayBufferTransfer.call(audioData));
+        backend(() => ops.op_audio_context_decode(handle, bytes, id));
+        pendingDecodes.set(id, { resolve, reject, onSuccess, onError });
+      });
+    }
   }
   defineEventHandler(BaseAudioContext.prototype, "statechange");
+
+  // decodeAudioData requests waiting for the decoder thread, by id.
+  const pendingDecodes = new Map();
+  function invokeCallback(callback, argument) {
+    try {
+      callback.call(undefined, argument);
+    } catch (error) {
+      reportException(error);
+    }
+  }
+  function settleDecode(id) {
+    const pending = pendingDecodes.get(id);
+    pendingDecodes.delete(id);
+    let buffer;
+    try {
+      buffer = wrapDecodedBuffer(ops.op_audio_take_decoded());
+    } catch (cause) {
+      if (pending === undefined) return;
+      const error = domError("EncodingError", `Unable to decode audio data: ${String(cause?.message ?? cause)}`);
+      pending.reject(error);
+      if (pending.onError !== null) invokeCallback(pending.onError, error);
+      return;
+    }
+    if (pending === undefined) return;
+    pending.resolve(buffer);
+    if (pending.onSuccess !== null) invokeCallback(pending.onSuccess, buffer);
+  }
 
   class AudioContext extends BaseAudioContext {
     constructor(options) {
@@ -632,6 +923,7 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       playingSources.delete(id);
       fire(source, "ended");
     }
+    for (let id = ops.op_audio_next_decoded(); id >= 0; id = ops.op_audio_next_decoded()) settleDecode(id);
   }
 
   return {
@@ -649,6 +941,8 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       ChannelMergerNode,
       ChannelSplitterNode,
       StereoPannerNode,
+      AudioBuffer,
+      AudioBufferSourceNode,
     },
     dispatchPendingEvents,
   };

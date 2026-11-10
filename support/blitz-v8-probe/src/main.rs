@@ -2178,14 +2178,15 @@ fn main() {
         let fading_rect = element_rect(&document, "fading");
 
         // Tone.js bootstrap on the Web Audio bridge: context start, destination
-        // volume through native automation, `ended` delivered on the V8 thread.
+        // volume through native automation, `ended` delivered on the V8 thread,
+        // then decodeAudioData + AudioBufferSourceNode (native and Tone.Player).
         stage("web_audio_tone");
         runtime
             .execute_script("roves-blitz-tone-scenario.js", TONE_SCENARIO)
             .expect("Tone.js scenario should load");
         let tone_status = "globalThis.__rovesToneScenario.status";
         let mut tone_frames = 0;
-        while tone_frames < 360 && evaluate_string(&mut runtime, tone_status) == "running" {
+        while tone_frames < 600 && evaluate_string(&mut runtime, tone_status) == "running" {
             drive_frames(&mut runtime, &document, &run_animation_frame, 10).await;
             tone_frames += 10;
         }

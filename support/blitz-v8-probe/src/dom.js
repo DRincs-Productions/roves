@@ -1835,6 +1835,7 @@
     DOMException,
     setIsTrusted,
     setTimeout: timers.setTimeout,
+    reportException,
   });
   // IndexedDB subset (src/indexeddb.js) persisted through deno_webstorage's
   // localStorage; V8 structured serialization stores the values.
