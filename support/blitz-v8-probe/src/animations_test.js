@@ -3,8 +3,11 @@
 // with real frames in between, so Blitz's style flushes advance the native state
 // on the page timeline. Covers: a 100 ms transition triggered by a class change,
 // an infinite keyframes animation on a descendant (`subtree`, stable identity
-// across iterations), a finite forwards animation (finished settlement, restart
-// = new object), cancellation by removing the class and by removing the
+// across iterations), a finite forwards animation (finished settlement, kept as a
+// completed fill with the same object although Stylo drops finished entries,
+// retired by removing the name, restart = new object), a `both`-filled one that
+// survives an unrelated class change and retires (idle, still resolved) when its
+// element is removed, cancellation by removing the class and by removing the
 // element (AbortError), and the visual-novel-template's Base UI callers
 // (getFiniteAnimations, ScrollAreaViewport, useAnimationsFinished) de-minified
 // from @base-ui/react 1.9.0. Removes its elements in the last phase.
@@ -60,6 +63,10 @@
     #anim-child { height: 5px; animation: roves-spin 150ms linear infinite; }
     #anim-finite { height: 5px; width: 10px; }
     #anim-finite.run { animation: roves-pulse 150ms linear 1 forwards; }
+    @keyframes roves-grow { from { height: 10px } to { height: 20px } }
+    #anim-hold { height: 5px; }
+    #anim-hold.run { animation: roves-grow 100ms linear both; }
+    #anim-hold.marked { color: red; }
     #anim-cancel { width: 5px; }
     #anim-cancel.run { animation: roves-hold 10s linear; }
     #anim-popup { opacity: 0; transition: opacity 120ms linear; }
@@ -77,6 +84,7 @@
   const finite = box("anim-finite");
   const cancel = box("anim-cancel");
   const popup = box("anim-popup");
+  const hold = box("anim-hold");
   const state = {};
 
   globalThis.animationsPhase = (phase) => {
@@ -143,6 +151,15 @@
       check(finiteTiming.duration === 150 && finiteTiming.iterations === 1 && finiteTiming.fill === "forwards", `finite timing ${JSON.stringify(finiteTiming)}`);
       finiteAnimation?.finished.then((value) => { state.finiteResolved = value === finiteAnimation; });
 
+      hold.classList.add("run");
+      const held2 = hold.getAnimations()[0];
+      state.hold = held2;
+      check(held2?.animationName === "roves-grow" && held2?.effect?.getTiming().fill === "both", "both-filled animation exists");
+      held2?.finished.then(
+        (value) => { state.hold_settled = value === held2 ? "resolved" : "wrong value"; },
+        (error) => { state.hold_settled = `rejected: ${error?.name}`; },
+      );
+
       const held = cancel.getAnimations()[0];
       state.cancel = held;
       check(held?.animationName === "roves-hold", "cancel test animation exists");
@@ -176,10 +193,15 @@
       check(typeof infinite?.startTime === "number" && infinite?.currentTime > 300, `infinite times ${infinite?.startTime} ${infinite?.currentTime}`);
       check(state.cancel?.playState === "running", "long animation still running");
       check(state.cancel_settled === undefined, "running animation's finished is unsettled");
+      check(hold.getAnimations()[0] === state.hold && state.hold?.playState === "finished", `both-filled completed fill stays: ${state.hold?.playState}`);
+      check(state.hold_settled === "resolved", `both-filled finished resolved: ${state.hold_settled}`);
+      // A class change that leaves the animation-* declaration alone keeps it.
+      hold.classList.add("marked");
       cancel.classList.remove("run");
       // Restart: removing the name (flushed) and adding it again is a new animation.
       finite.classList.remove("run");
       getComputedStyle(finite).width;
+      check(finite.getAnimations().length === 0, "removing the name retires the completed fill");
       finite.classList.add("run");
       const restarted = finite.getAnimations()[0];
       state.restarted = restarted;
@@ -190,10 +212,15 @@
       check(cancel.getAnimations().length === 0, "canceled animation is gone");
       check(state.finite?.playState === "idle", "the replaced animation is idle");
       check(finite.getAnimations()[0] === state.restarted, "the restarted animation keeps its identity");
+      const holdNow = hold.getAnimations();
+      check(holdNow.length === 1 && holdNow[0] === state.hold && state.hold?.playState === "finished", `unrelated class change keeps the completed fill: ${holdNow.length} ${state.hold?.playState}`);
       parent.removeChild(child);
+      hold.remove();
     } else if (phase === 4) {
       check(state.infinite_settled === "aborted", `element removal rejects finished with AbortError: ${state.infinite_settled}`);
       check(state.infinite?.playState === "idle", "removed element's animation is idle");
+      check(state.hold?.playState === "idle" && state.hold?.currentTime === null, `removed element's completed fill is idle: ${state.hold?.playState}`);
+      check(state.hold_settled === "resolved", `completed fill keeps its resolved finished: ${state.hold_settled}`);
       for (const element of [parent, finite, cancel, popup, style]) element.remove();
       result.done = true;
     }

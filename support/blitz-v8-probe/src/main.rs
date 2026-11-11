@@ -554,17 +554,103 @@ fn animation_pseudo_name(pseudo: Option<&PseudoElement>) -> Option<&'static str>
     }
 }
 
+/// The `PseudoElement` of a `dom.js` page-pseudo name (inverse of
+/// `animation_pseudo_name`); `None` inside means the element itself.
+fn page_pseudo_element(pseudo: &str) -> Option<Option<PseudoElement>> {
+    match pseudo {
+        "" => Some(None),
+        "::before" => Some(Some(PseudoElement::Before)),
+        "::after" => Some(Some(PseudoElement::After)),
+        _ => None,
+    }
+}
+
+/// Computed `animation-*` longhands Stylo compares (matching.rs
+/// `needs_animations_update`) before updating an element's animations;
+/// `animation-name` first (`declared_animation_index` reads it).
+const ANIMATION_LONGHANDS: &[&str] = &[
+    "animation-name",
+    "animation-duration",
+    "animation-timing-function",
+    "animation-iteration-count",
+    "animation-direction",
+    "animation-fill-mode",
+    "animation-play-state",
+    "animation-delay",
+    "animation-composition",
+    "animation-timeline",
+];
+
+/// Serialized computed `animation-*` declaration of a style, one longhand per
+/// line (unsupported ones empty), or "" when the box is `display: none` (Stylo
+/// cancels its animations). Two equal results mean Stylo saw no reason to
+/// touch the element's animations between the two styles; a difference means
+/// it updated, canceled or restarted them.
+fn animation_declaration(style: &style::properties::ComputedValues) -> String {
+    let serialize = |name: &str| {
+        PropertyId::parse_enabled_for_all_content(name)
+            .ok()
+            .and_then(|property| property.longhand_id())
+            .map(|longhand| {
+                style.computed_value_to_string(PropertyDeclarationId::Longhand(longhand))
+            })
+            .unwrap_or_default()
+    };
+    if serialize("display") == "none" {
+        return String::new();
+    }
+    ANIMATION_LONGHANDS
+        .iter()
+        .map(|name| serialize(name))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The current `animation_declaration` of an attached animation target, or ""
+/// (detached, unstyled, `display: none`).
+fn current_animation_declaration(
+    document: &BaseDocument,
+    node_id: NodeId,
+    pseudo: Option<&PseudoElement>,
+) -> String {
+    if !is_connected(document, node_id) {
+        return String::new();
+    }
+    document
+        .get_node(node_id)
+        .and_then(|node| blitz_dom::animation_target_style(node, pseudo))
+        .map(|style| animation_declaration(&style))
+        .unwrap_or_default()
+}
+
+/// Position of `name` in the `animation-name` line of a declaration (the last
+/// occurrence wins, as for duplicate names in CSS), if it is still listed.
+fn declared_animation_index(declaration: &str, name: &str) -> Option<usize> {
+    declaration
+        .lines()
+        .next()?
+        .split(", ")
+        .map(|listed| listed.trim_matches('"'))
+        .rposition(|listed| listed == name)
+}
+
 /// Entries Blitz's `resolve_stylist` moved to `Finished` since the previous
 /// call (vendored blitz-dom patch 0002), as JSON `[{kind, node, pseudo, name,
-/// start, finished_at}]` with the same identity fields as
-/// `op_blitz_get_animations`. Stylo drops finished transitions from the set in
-/// that same restyle, so this is the only record that they completed rather than
-/// being canceled. Taking them empties the record (one consumer: `dom.js`).
+/// start, finished_at, declaration, still_declared}]` with the same identity
+/// fields as `op_blitz_get_animations`. Stylo drops finished transitions AND
+/// animations from the set in that same restyle (matching.rs retains only
+/// unfinished ones), so this is the only record that they completed rather than
+/// being canceled. For keyframes animations, `declaration` is the target's
+/// `animation_declaration` before that traversal and `still_declared` whether
+/// the current one is identical: `dom.js` keeps a `forwards`/`both` animation
+/// as a completed fill only then. Taking them empties the record (one consumer:
+/// `dom.js`).
 #[op2]
 #[string]
 fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
     let document = probe_document(&state);
     let finished = document.borrow_mut().take_finished_animations();
+    let document = document.borrow();
     let entries: Vec<_> = finished
         .iter()
         .filter_map(|entry| {
@@ -579,6 +665,18 @@ fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
                     entry.delay,
                 )
             };
+            let declaration = entry
+                .style
+                .as_ref()
+                .map(|style| animation_declaration(style))
+                .unwrap_or_default();
+            let still_declared = !declaration.is_empty()
+                && declaration
+                    == current_animation_declaration(
+                        &document,
+                        entry.node_id,
+                        entry.pseudo_element.as_ref(),
+                    );
             Some(deno_core::serde_json::json!({
                 "kind": if entry.is_transition { "transition" } else { "animation" },
                 "node": to_handle(entry.node_id),
@@ -586,6 +684,8 @@ fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
                 "name": entry.name,
                 "start": start,
                 "finished_at": entry.finished_at * 1000.0,
+                "declaration": declaration,
+                "still_declared": still_declared,
             }))
         })
         .collect();
@@ -601,12 +701,23 @@ fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
 /// first, as Web Animations requires. Returns JSON `{now, entries}` in composite
 /// order for a target: transitions before animations, each in tree order
 /// (element, `::before`, descendants, `::after`), then Stylo's list order.
+///
+/// `retained` (JSON `[{node, pseudo, name, start, declaration}]`) lists the
+/// completed fills `dom.js` keeps: finished `forwards`/`both` animations that
+/// Stylo already removed from its set. Each one still valid is emitted as
+/// `{kind: "animation", node, pseudo, name, start, state: "finished",
+/// retained: true}` in the same order (by its `animation-name` position); it is
+/// valid while the target is connected and styled, its current
+/// `animation_declaration` equals the one it finished under and lists the name,
+/// and Stylo has no live animation of that name on the target (a restart). An
+/// invalid one is simply omitted, so `dom.js` cancels it like any vanished entry.
 #[op2]
 #[string]
 fn op_blitz_get_animations(
     state: Rc<RefCell<OpState>>,
     handle: f64,
     subtree: bool,
+    #[string] retained: &str,
 ) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
@@ -624,23 +735,77 @@ fn op_blitz_get_animations(
     let now = animation_clock::page_time();
     let document: &BaseDocument = &document;
     let sets = document.animations().sets.read();
+    let included = |node_id: NodeId, pseudo: &str| match target {
+        None => true,
+        Some(target) if subtree => is_inclusive_descendant(document, node_id, target),
+        Some(target) => node_id == target && pseudo.is_empty(),
+    };
     // (kind rank, tree position, list index, entry)
     let mut entries = Vec::new();
+    let retained: Vec<deno_core::serde_json::Value> =
+        deno_core::serde_json::from_str(retained).unwrap_or_default();
+    for fill in &retained {
+        let (Some(fill_handle), Some(page_pseudo), Some(name), Some(start), Some(declaration)) = (
+            fill["node"].as_f64(),
+            fill["pseudo"].as_str(),
+            fill["name"].as_str(),
+            fill["start"].as_f64(),
+            fill["declaration"].as_str(),
+        ) else {
+            continue;
+        };
+        let Some(pseudo_element) = page_pseudo_element(page_pseudo) else {
+            continue;
+        };
+        let Some(pseudo) = animation_pseudo_name(pseudo_element.as_ref()) else {
+            continue;
+        };
+        let node_id = from_handle(fill_handle);
+        if fill_handle < 0.0 || !included(node_id, pseudo) || declaration.is_empty() {
+            continue;
+        }
+        let current = current_animation_declaration(document, node_id, pseudo_element.as_ref());
+        let Some(index) =
+            declared_animation_index(&current, name).filter(|_| current == declaration)
+        else {
+            continue;
+        };
+        // A live entry of the same name is Stylo restarting it: the fill is over.
+        let restarted = sets.iter().any(|(key, set)| {
+            NodeId::from_u64(key.node.id() as u64) == node_id
+                && key.pseudo_element == pseudo_element
+                && set.animations.iter().any(|animation| {
+                    animation.state != AnimationState::Canceled
+                        && animation.name.to_string() == name
+                })
+        });
+        if restarted {
+            continue;
+        }
+        entries.push((
+            1,
+            node_id,
+            pseudo,
+            index,
+            deno_core::serde_json::json!({
+                "kind": "animation",
+                "node": fill_handle,
+                "pseudo": pseudo,
+                "name": name,
+                "start": start,
+                "state": "finished",
+                "retained": true,
+            }),
+        ));
+    }
     for (key, set) in sets.iter() {
         // Blitz keys animations by `OpaqueNode(node_id.as_u64())` (its stylo.rs).
         let node_id = NodeId::from_u64(key.node.id() as u64);
         let Some(pseudo) = animation_pseudo_name(key.pseudo_element.as_ref()) else {
             continue;
         };
-        if let Some(target) = target {
-            let included = if subtree {
-                is_inclusive_descendant(document, node_id, target)
-            } else {
-                node_id == target && pseudo.is_empty()
-            };
-            if !included {
-                continue;
-            }
+        if !included(node_id, pseudo) {
+            continue;
         }
         let node = to_handle(node_id);
         for (index, transition) in set.transitions.iter().enumerate() {

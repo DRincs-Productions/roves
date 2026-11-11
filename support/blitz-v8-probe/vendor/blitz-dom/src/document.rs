@@ -2072,10 +2072,10 @@ impl BaseDocument {
     }
 
     /// Takes the entries that `resolve_stylist` moved to `Finished` since the
-    /// previous call, oldest first. Stylo removes finished transitions from the
-    /// set during the same restyle, so `animations()` never shows them as
-    /// finished. Keeps at most `FINISHED_ANIMATIONS_CAP` (oldest dropped) when
-    /// nobody takes them. Roves patch.
+    /// previous call, oldest first. Stylo removes finished transitions and
+    /// animations from the set during the same restyle, so `animations()` never
+    /// shows them as finished. Keeps at most `FINISHED_ANIMATIONS_CAP` (oldest
+    /// dropped) when nobody takes them. Roves patch.
     pub fn take_finished_animations(&mut self) -> Vec<FinishedAnimation> {
         std::mem::take(&mut self.finished_animations)
     }

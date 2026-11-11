@@ -1673,10 +1673,13 @@
   // with the animation when Stylo's state machine reports Finished, and rejects
   // with an AbortError (marked handled, as the spec's cancel does) when the
   // entry is canceled or disappears without finishing (class removed, element
-  // removed, restart). Stylo removes a finished transition from its set in the
-  // same restyle that finishes it, so completion comes from Blitz's record of
-  // finished entries (op_blitz_take_finished_animations, drained before any
-  // disappearance is treated as a cancel), not from the set itself.
+  // removed, restart). Stylo removes finished transitions and animations from
+  // its set in the same restyle that finishes them, so completion comes from
+  // Blitz's record of finished entries (op_blitz_take_finished_animations,
+  // drained before any disappearance is treated as a cancel), and a finished
+  // `forwards`/`both` animation stays enumerable as a "completed fill" only
+  // while its computed `animation-*` declaration is unchanged (see
+  // settleFinishedAnimations), not from the set itself.
   // Instances only: no constructible Animation/KeyframeEffect globals, no
   // play/pause/cancel/reverse/animate, document.getAnimations or timelines.
   const animationInternals = new WeakMap(); // Animation or KeyframeEffect -> state
@@ -1795,6 +1798,7 @@
     }
   }
   function cancelCssAnimation(internal) {
+    internal.completedFill = undefined;
     if (internal.finishedState === "pending") {
       internal.finishedState = "rejected";
       internal.rejectFinished(new DOMException("The animation was canceled.", "AbortError"));
@@ -1845,74 +1849,126 @@
     else list.push(animation);
     return animation;
   }
+  function removeLiveAnimation(key, animation) {
+    const list = liveAnimations.get(key);
+    if (list === undefined) return;
+    const remaining = list.filter((candidate) => candidate !== animation);
+    if (remaining.length === 0) liveAnimations.delete(key);
+    else liveAnimations.set(key, remaining);
+  }
   // Entries Stylo finished since the previous call: settle their live objects.
-  // A finished transition is no longer in Stylo's set (and no longer relevant),
-  // so its object leaves the live map, finished; a finished animation stays in
-  // the set (fill modes), so its object stays live and keeps its identity.
+  // Stylo (matching.rs) removes finished transitions AND animations from its
+  // set in the restyle that finishes them, so a finished object never has a
+  // native entry again. A transition (backwards fill) and an animation without
+  // a forwards fill leave the live map, finished and no longer relevant. A
+  // `forwards`/`both` animation whose `animation-*` declaration is unchanged
+  // since it finished (record.still_declared) becomes a completed fill: it stays
+  // live with its identity and `finished` promise, op_blitz_get_animations
+  // re-emits it while that declaration holds, and the sweep cancels it (idle)
+  // once the declaration changes (class/style/name/fill), the node is removed or
+  // hidden, or Stylo restarts the name. One whose declaration already changed in
+  // the finishing flush is canceled at once. Returns how many fills it added.
   function settleFinishedAnimations(now) {
     const records = JSON.parse(op_blitz_take_finished_animations());
+    let retained = 0;
     for (const record of records) {
       const key = animationKey(record);
       const list = liveAnimations.get(key);
       if (list === undefined) continue; // no object was ever handed out
       const animation = list.find((candidate) => Math.abs(animationInternals.get(candidate).entry.start - record.start) < 0.001);
-      logAnimationEvent({ event: "finished-record", now, key, start: record.start, finishedAt: record.finished_at, matched: animation !== undefined });
+      logAnimationEvent({
+        event: "finished-record",
+        now,
+        key,
+        start: record.start,
+        finishedAt: record.finished_at,
+        matched: animation !== undefined,
+        stillDeclared: record.still_declared,
+      });
       if (animation === undefined) continue;
       const internal = animationInternals.get(animation);
       applyAnimationEntry(internal, { ...internal.entry, state: "finished" }, now);
-      if (record.kind === "transition") {
-        const remaining = list.filter((candidate) => candidate !== animation);
-        if (remaining.length === 0) liveAnimations.delete(key);
-        else liveAnimations.set(key, remaining);
+      if (record.kind === "animation" && isRelevantAnimation(internal.entry) && record.still_declared) {
+        internal.completedFill = record.declaration;
+        retained++;
+        continue;
       }
+      removeLiveAnimation(key, animation);
+      if (record.kind === "animation" && !record.still_declared) cancelCssAnimation(internal);
     }
+    return retained;
   }
-  // "Relevant" animations: current or in effect. A finished entry stays in
-  // Stylo while its style holds it, but is relevant only with a forwards fill
-  // (transitions fill backwards, so finished ones are never returned).
+  // "Relevant" animations: current or in effect. A finished one is relevant
+  // only with a forwards fill (transitions fill backwards, so finished ones are
+  // never returned).
   function isRelevantAnimation(entry) {
     if (entry.state === "finished") return entry.fill === "forwards" || entry.fill === "both";
     return true;
   }
-  // Native entries; a Canceled one (Blitz normally drops them inside the same
-  // flush) counts as gone, so its object is canceled.
+  // The completed fills to revalidate (see op_blitz_get_animations).
+  function completedFills() {
+    const fills = [];
+    for (const list of liveAnimations.values()) {
+      for (const animation of list) {
+        const internal = animationInternals.get(animation);
+        if (internal.completedFill === undefined) continue;
+        const { node, pseudo, name, start } = internal.entry;
+        fills.push({ node, pseudo, name, start, declaration: internal.completedFill });
+      }
+    }
+    return JSON.stringify(fills);
+  }
+  // Native entries plus still-valid completed fills; a Canceled entry (Blitz
+  // normally drops them inside the same flush) counts as gone, so its object
+  // is canceled. Settles finished records first: the read flushes styles for a
+  // target, and a fill added by the settlement needs a second read (no flush
+  // for the sweep) to be validated and claimed.
   function animationEntries(handle, subtree) {
-    const snapshot = JSON.parse(op_blitz_get_animations(handle, subtree));
+    const read = () => JSON.parse(op_blitz_get_animations(handle, subtree, completedFills()));
+    let snapshot = read();
+    if (settleFinishedAnimations(snapshot.now) > 0) snapshot = read();
     return { now: snapshot.now, entries: snapshot.entries.filter((entry) => entry.state !== "canceled") };
+  }
+  // The live object of an entry; a completed fill is re-emitted with identity
+  // fields only, so it mirrors the object's own (finished) entry.
+  function claimCssAnimation(entry, claimed, now) {
+    const animation = findCssAnimation(entry, claimed);
+    if (animation === undefined) return undefined;
+    const internal = animationInternals.get(animation);
+    if (entry.retained === true) {
+      if (internal.completedFill === undefined) return undefined;
+      entry = internal.entry;
+    }
+    claimed.add(animation);
+    applyAnimationEntry(internal, entry, now);
+    return animation;
   }
   function cssAnimationsFor(handle, subtree) {
     const { now, entries } = animationEntries(handle, subtree);
-    // The flush above may have finished (and Stylo removed) transitions.
-    settleFinishedAnimations(now);
     const claimed = new Set();
     const result = [];
     for (const entry of entries) {
-      let animation = findCssAnimation(entry, claimed);
-      if (animation !== undefined) applyAnimationEntry(animationInternals.get(animation), entry, now);
-      else if (isRelevantAnimation(entry)) animation = createCssAnimation(entry, now);
-      else continue;
-      claimed.add(animation);
-      if (isRelevantAnimation(entry)) result.push(animation);
+      let animation = claimCssAnimation(entry, claimed, now);
+      if (animation === undefined) {
+        if (entry.retained === true || !isRelevantAnimation(entry)) continue;
+        animation = createCssAnimation(entry, now);
+        claimed.add(animation);
+      }
+      if (isRelevantAnimation(animationInternals.get(animation).entry)) result.push(animation);
     }
     return result;
   }
   // Once per frame, after the previous frame's style flush: settle what Stylo
   // finished, mirror every live object's entry, and cancel objects whose entry
-  // is gone without finishing.
+  // (or completed fill) is gone without finishing.
   function updateCssAnimations() {
     if (liveAnimations.size === 0) {
       op_blitz_take_finished_animations(); // nothing to settle: just drain
       return;
     }
     const { now, entries } = animationEntries(-1, false);
-    settleFinishedAnimations(now);
     const claimed = new Set();
-    for (const entry of entries) {
-      const animation = findCssAnimation(entry, claimed);
-      if (animation === undefined) continue;
-      claimed.add(animation);
-      applyAnimationEntry(animationInternals.get(animation), entry, now);
-    }
+    for (const entry of entries) claimCssAnimation(entry, claimed, now);
     for (const [key, list] of liveAnimations) {
       const remaining = list.filter((animation) => {
         if (claimed.has(animation)) return true;
@@ -1923,6 +1979,7 @@
           key,
           start: internal.entry.start,
           lastState: internal.entry.state,
+          completedFill: internal.completedFill !== undefined,
           // Native entries of the same key: a start mismatch here means the
           // identity drifted instead of the entry disappearing.
           native: entries.filter((entry) => animationKey(entry) === key).map((entry) => ({ start: entry.start, state: entry.state, iteration: entry.current_iteration })),
@@ -2670,10 +2727,10 @@
       for (const [key, list] of liveAnimations) {
         for (const animation of list) {
           const internal = animationInternals.get(animation);
-          live.push({ key, start: internal.entry.start, state: internal.entry.state, playState: internal.playState, finished: internal.finishedState });
+          live.push({ key, start: internal.entry.start, state: internal.entry.state, playState: internal.playState, finished: internal.finishedState, completedFill: internal.completedFill !== undefined });
         }
       }
-      return JSON.stringify({ log: animationDebugLog, live, native: JSON.parse(op_blitz_get_animations(-1, false)) });
+      return JSON.stringify({ log: animationDebugLog, live, native: JSON.parse(op_blitz_get_animations(-1, false, completedFills())) });
     },
     // After the page's scripts: readyState interactive -> DOMContentLoaded ->
     // complete -> load (on the window), as a browser does.

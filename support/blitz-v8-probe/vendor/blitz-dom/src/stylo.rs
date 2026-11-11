@@ -66,9 +66,10 @@ pub(crate) const FINISHED_ANIMATIONS_CAP: usize = 1024;
 
 /// A CSS transition or animation that `resolve_stylist` moved to `Finished`,
 /// captured before the style traversal: Stylo's restyle removes finished
-/// transitions from the set (keeping only animations, for `animation-fill-mode`),
-/// so an embedder reading the set afterwards cannot tell a finished transition
-/// from a canceled one. Values are Stylo's own, in seconds. Roves patch.
+/// transitions and animations from the set (matching.rs keeps only unfinished
+/// entries; a `forwards` fill lives on in the computed style), so an embedder
+/// reading the set afterwards cannot tell a finished entry from a canceled one.
+/// Values are Stylo's own, in seconds. Roves patch.
 pub struct FinishedAnimation {
     /// Node of the `AnimationSetKey` (Blitz keys sets by `OpaqueNode(node_id)`).
     pub node_id: NodeId,
@@ -86,6 +87,29 @@ pub struct FinishedAnimation {
     pub current_iteration: f64,
     /// Animation time of the flush that finished it.
     pub finished_at: f64,
+    /// Keyframes animations only: the target's computed style before this
+    /// flush's traversal, i.e. the `animation-*` declarations that produced the
+    /// animation. The same traversal removes the finished animation from the
+    /// set, so this is what an embedder compares against to tell whether the
+    /// declaration (and so a `forwards`/`both` fill) still applies.
+    pub style: Option<Arc<ComputedValues>>,
+}
+
+/// Computed style of an animation target: the element's primary style, or its
+/// eager `::before`/`::after` style (Stylo stores them after-first, as
+/// `flush_pseudo_elements` reads them). `None` for unstyled nodes and other
+/// pseudo-elements. Roves patch.
+pub fn animation_target_style(
+    node: &Node,
+    pseudo: Option<&PseudoElement>,
+) -> Option<Arc<ComputedValues>> {
+    let data = node.try_stylo_element_data()?.get()?;
+    match pseudo {
+        None => data.styles.get_primary().cloned(),
+        Some(pseudo) if pseudo.is_before() => data.styles.pseudos.as_array()[1].clone(),
+        Some(pseudo) if pseudo.is_after() => data.styles.pseudos.as_array()[0].clone(),
+        Some(_) => None,
+    }
 }
 
 /// Appends `finished` to `queue`, keeping at most `FINISHED_ANIMATIONS_CAP`
@@ -165,6 +189,9 @@ impl crate::document::BaseDocument {
                         duration: animation.duration,
                         current_iteration,
                         finished_at: now,
+                        style: self.nodes.get(node_id).and_then(|node| {
+                            animation_target_style(node, key.pseudo_element.as_ref())
+                        }),
                     });
                 }
             }
@@ -186,6 +213,7 @@ impl crate::document::BaseDocument {
                         duration: property.duration,
                         current_iteration: 0.0,
                         finished_at: now,
+                        style: None,
                     });
                 }
             }

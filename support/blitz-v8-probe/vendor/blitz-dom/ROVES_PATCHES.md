@@ -32,13 +32,21 @@ needed.
 
 `0002-record-finished-animations.patch` (`src/stylo.rs`, `src/document.rs`,
 `src/lib.rs`): Stylo's restyle, which runs in `resolve_stylist` right after Blitz's
-`Running -> Finished` step, removes finished transitions from the set (only animations
-are kept, for fill modes). Read through `animations()` afterwards, a transition that
-completed is indistinguishable from a canceled one, so `getAnimations()` rejected its
-`finished` with `AbortError` (CI 43047120469). The patch records each entry the state
-machine moves to `Finished` (node, pseudo-element, kind, name, Stylo times) before the
-traversal, in `BaseDocument::finished_animations` (capped at 1024, oldest dropped), and
-adds `pub fn take_finished_animations(&mut self) -> Vec<FinishedAnimation>`. Blitz's own
+`Running -> Finished` step, removes finished transitions AND finished animations from
+the set (Stylo 0.22 `matching.rs` retains only entries whose state is not `Finished`;
+the computed style keeps a `forwards` fill without a set entry). Read through
+`animations()` afterwards, a transition that completed is indistinguishable from a
+canceled one, so `getAnimations()` rejected its `finished` with `AbortError` (CI
+43047120469), and a forwards-filled animation vanished (CI 43058658768). The patch
+records each entry the state machine moves to `Finished` (node, pseudo-element, kind,
+name, Stylo times and, for keyframes animations, an `Arc` of the target's computed
+style before the traversal, i.e. the `animation-*` declarations that produced it) in
+`BaseDocument::finished_animations` (capped at 1024, oldest dropped), and adds
+`pub fn take_finished_animations(&mut self) -> Vec<FinishedAnimation>` plus
+`pub fn animation_target_style(node, pseudo)` (primary or eager `::before`/`::after`
+style, read the same way as `flush_pseudo_elements`). The probe compares the recorded
+and current computed `animation-*` longhands to keep a completed `forwards`/`both`
+fill enumerable while its declaration still applies. Blitz's own
 behavior is unchanged; this is the point where Servo emits `transitionend`
 (`components/script/animations.rs`, `finish_running_animations`). It covers headless
 flushes and blitz-shell's own `resolve` in `--window` alike.

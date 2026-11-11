@@ -1,3 +1,41 @@
+## 2026-11-11 - Blitz probe: completed forwards/both CSS animations stay enumerable
+
+**Files touched:** `support/blitz-v8-probe/vendor/blitz-dom/{src/stylo.rs,src/document.rs,src/lib.rs,ROVES_PATCHES.md}`,
+`patches/blitz-dom-0.3.0-beta.4/0002-record-finished-animations.patch`,
+`support/blitz-v8-probe/{README.md,src/main.rs,src/dom.js,src/animations_test.js}`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI 43058658768: every transition and `finished` assertion passed; the two failures were the
+finite `forwards` animation (not the same object, not `finished`). The native debug showed the
+finished record matched exactly and the entry absent right after (`native=[]`): Stylo 0.22
+`matching.rs` retains only non-`Finished` transitions AND animations, so a finished
+`forwards`/`both` fill survives only in the computed style, never in the set, and the sweep
+canceled the object. Fix (no new Stylo fork, no fake native state): patch 0002 now also stores,
+for keyframes animations, an `Arc` of the target's computed style taken before the finishing
+traversal (the declarations that produced the animation) and exports
+`animation_target_style(node, pseudo)`. `main.rs` serializes the computed `animation-*`
+longhands (name, duration, timing function, iteration count, direction, fill mode, play
+state, delay, composition, timeline; "" for `display: none`) through Stylo's own
+`computed_value_to_string`; `op_blitz_take_finished_animations` adds `declaration` and
+`still_declared` (recorded == current). `dom.js` keeps a finished `forwards`/`both` animation
+as a completed fill only when `still_declared`, with its object, `finished` promise and
+`finished` play state; it passes the fills to `op_blitz_get_animations` (new `retained`
+argument), which re-emits each one (`retained: true`, ordered by its `animation-name`
+position) while the target is connected and styled, the declaration is unchanged and still
+lists the name, and Stylo has no live animation of that name there (a restart). An omitted
+fill is canceled by the frame sweep like any vanished entry (`idle`, `finished` stays
+resolved): class/style changes touching `animation-*` (name, fill...), node removal or
+`display: none`, restarts. Unrelated restyles keep it, matching Stylo's own
+`needs_animations_update`. A finished animation without a forwards fill now leaves the live
+map `finished` (no longer turned `idle` by the sweep); one whose declaration already changed in
+the finishing flush is canceled at once. After a settlement adds a fill, the read is repeated
+so the fill is validated and claimed in the same call. Tests (`animations_test.js`): the
+existing forwards checks, name removal retiring the fill (`getAnimations()` empty), restart
+(new object, old one `idle`), a `both` fill surviving an unrelated class change and turning
+`idle` with `finished` still resolved when its element is removed; transition and cancel
+tests unchanged. Not compiled or run locally (no heavy builds; `node --check`/`rustfmt` were
+not permitted in the session): CI is the check.
+
 ## 2026-11-11 - Blitz probe: finished CSS transitions complete instead of canceling
 
 **Files touched:** `support/blitz-v8-probe/vendor/blitz-dom/{src/stylo.rs,src/document.rs,src/lib.rs,ROVES_PATCHES.md}`,
