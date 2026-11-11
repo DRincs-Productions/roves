@@ -88,14 +88,18 @@ pub struct FinishedAnimation {
     pub finished_at: f64,
 }
 
-impl crate::document::BaseDocument {
-    fn push_finished_animation(&mut self, finished: FinishedAnimation) {
-        if self.finished_animations.len() >= FINISHED_ANIMATIONS_CAP {
-            self.finished_animations.remove(0);
-        }
-        self.finished_animations.push(finished);
+/// Appends `finished` to `queue`, keeping at most `FINISHED_ANIMATIONS_CAP`
+/// entries (oldest dropped). Takes the field rather than `&mut BaseDocument`
+/// because `resolve_stylist` still holds `self.guard` read guards. Roves patch.
+fn push_finished_animations(queue: &mut Vec<FinishedAnimation>, finished: Vec<FinishedAnimation>) {
+    queue.extend(finished);
+    if queue.len() > FINISHED_ANIMATIONS_CAP {
+        let excess = queue.len() - FINISHED_ANIMATIONS_CAP;
+        queue.drain(..excess);
     }
+}
 
+impl crate::document::BaseDocument {
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
 
@@ -187,9 +191,8 @@ impl crate::document::BaseDocument {
             }
         }
         drop(sets);
-        for entry in finished {
-            self.push_finished_animation(entry);
-        }
+        // Field-specific borrow: `guards` still holds `self.guard` read locks.
+        push_finished_animations(&mut self.finished_animations, finished);
 
         // Build the style context used by the style traversal
         let context = SharedStyleContext {

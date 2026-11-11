@@ -74,7 +74,7 @@ support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
  use style::applicable_declarations::ApplicableDeclarationBlock;
  use style::bloom::each_relevant_element_hash;
  use style::color::AbsoluteColor;
-@@ -59,7 +60,42 @@ use style_dom::ElementState;
+@@ -59,7 +60,46 @@ use style_dom::ElementState;
 
  use style::values::computed::text::TextAlign as StyloTextAlign;
 
@@ -106,18 +106,22 @@ support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
 +    pub finished_at: f64,
 +}
 +
- impl crate::document::BaseDocument {
-+    fn push_finished_animation(&mut self, finished: FinishedAnimation) {
-+        if self.finished_animations.len() >= FINISHED_ANIMATIONS_CAP {
-+            self.finished_animations.remove(0);
-+        }
-+        self.finished_animations.push(finished);
++/// Appends `finished` to `queue`, keeping at most `FINISHED_ANIMATIONS_CAP`
++/// entries (oldest dropped). Takes the field rather than `&mut BaseDocument`
++/// because `resolve_stylist` still holds `self.guard` read guards. Roves patch.
++fn push_finished_animations(queue: &mut Vec<FinishedAnimation>, finished: Vec<FinishedAnimation>) {
++    queue.extend(finished);
++    if queue.len() > FINISHED_ANIMATIONS_CAP {
++        let excess = queue.len() - FINISHED_ANIMATIONS_CAP;
++        queue.drain(..excess);
 +    }
++}
 +
+ impl crate::document::BaseDocument {
      pub fn resolve_stylist(&mut self, now: f64) {
          style::thread_state::enter(ThreadState::LAYOUT);
 
-@@ -80,6 +116,7 @@ impl crate::document::BaseDocument {
+@@ -80,6 +120,7 @@ impl crate::document::BaseDocument {
              .process_style(root, Some(&self.snapshots));
 
          // Mark actively animating nodes as dirty
@@ -125,7 +129,7 @@ support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
          let mut sets = self.animations.sets.write();
          for (key, set) in sets.iter_mut() {
              let node_id = NodeId::from_u64(key.node.id() as u64);
-@@ -110,6 +147,21 @@ impl crate::document::BaseDocument {
+@@ -110,6 +151,21 @@ impl crate::document::BaseDocument {
 
                  if animation.state == AnimationState::Running && animation.has_ended(now) {
                      animation.state = AnimationState::Finished;
@@ -147,7 +151,7 @@ support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
                  }
              }
 
-@@ -119,10 +171,25 @@ impl crate::document::BaseDocument {
+@@ -119,10 +175,24 @@ impl crate::document::BaseDocument {
                  }
                  if transition.state == AnimationState::Running && transition.has_ended(now) {
                      transition.state = AnimationState::Finished;
@@ -167,9 +171,8 @@ support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
              }
          }
          drop(sets);
-+        for entry in finished {
-+            self.push_finished_animation(entry);
-+        }
++        // Field-specific borrow: `guards` still holds `self.guard` read locks.
++        push_finished_animations(&mut self.finished_animations, finished);
 
          // Build the style context used by the style traversal
          let context = SharedStyleContext {
