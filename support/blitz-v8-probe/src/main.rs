@@ -46,6 +46,13 @@ const RESIZE_OBSERVER_TEST: &str = include_str!("resize_observer_test.js");
 const MOTION_CHECK: &str = include_str!("motion_check.js");
 const GC_TEST: &str = include_str!("gc_test.js");
 const DOM_API_TEST: &str = include_str!("dom_api_test.js");
+const CANVAS_TEST: &str = include_str!("canvas_test.js");
+/// The 3x2 straight-alpha RGBA pixels canvas_test.js uploads (its `PIXELS`).
+#[rustfmt::skip]
+const CANVAS_TEST_PIXELS: [u8; 24] = [
+    255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
+    255, 255, 255, 255, 10, 20, 30, 128, 0, 0, 0, 0,
+];
 const EVENTS_TEST: &str = include_str!("events_test.js");
 const EVENTS_CHECK: &str = include_str!("events_check.js");
 const WINDOW_TEST: &str = include_str!("window_test.js");
@@ -1562,6 +1569,52 @@ fn op_blitz_image_bitmap_rgba(#[cppgc] bitmap: &deno_image::bitmap::ImageBitmap)
     bitmap.data.borrow().to_rgba8().into_raw()
 }
 
+/// Canvas bitmap bounds, the same as `CANVAS_MAX_SIDE`/`CANVAS_MAX_AREA` in dom.js.
+const CANVAS_MAX_SIDE: u32 = 16_384;
+const CANVAS_MAX_AREA: u64 = 16_777_216;
+
+/// PNG encoding (the `png` crate) of a straight-alpha RGBA8 canvas snapshot, for
+/// `HTMLCanvasElement.toDataURL`/`toBlob` (captured by dom.js, never exposed to
+/// the guest). Dimensions must be non-zero, within the canvas bounds and match
+/// the pixel buffer exactly.
+#[op2]
+#[buffer]
+fn op_blitz_encode_png(
+    width: u32,
+    height: u32,
+    #[buffer] rgba: &[u8],
+) -> Result<Vec<u8>, JsErrorBox> {
+    canvas_png(width, height, rgba).map_err(JsErrorBox::range_error)
+}
+
+fn canvas_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
+    if width == 0
+        || height == 0
+        || width > CANVAS_MAX_SIDE
+        || height > CANVAS_MAX_SIDE
+        || u64::from(width) * u64::from(height) > CANVAS_MAX_AREA
+    {
+        return Err(format!("canvas size {width}x{height} cannot be encoded"));
+    }
+    let expected = width as usize * height as usize * 4;
+    if rgba.len() != expected {
+        return Err(format!(
+            "canvas pixels have {} bytes, {width}x{height} RGBA needs {expected}",
+            rgba.len()
+        ));
+    }
+    let mut png_bytes = Vec::new();
+    let mut encoder = png::Encoder::new(&mut png_bytes, width, height);
+    encoder.set_color(png::ColorType::Rgba);
+    encoder.set_depth(png::BitDepth::Eight);
+    let mut writer = encoder.write_header().map_err(|error| error.to_string())?;
+    writer
+        .write_image_data(rgba)
+        .map_err(|error| error.to_string())?;
+    writer.finish().map_err(|error| error.to_string())?;
+    Ok(png_bytes)
+}
+
 /// Teardown only (captured by the bootstrap's `shutdownGpu`, never exposed to
 /// the guest): blocks until the device's queue has no pending submission,
 /// within `GPU_SHUTDOWN_TIMEOUT`. The pinned deno_webgpu 0.227 has no
@@ -1852,6 +1905,7 @@ deno_core::extension!(
         op_blitz_create_comment,
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
+        op_blitz_encode_png,
         op_blitz_gpu_wait_idle,
         op_blitz_gpu_poll,
         op_blitz_gpu_adapter_info,
@@ -2037,6 +2091,33 @@ fn count_differing(pixels: &[u8], rect: (f32, f32, f32, f32), background: [u8; 3
         }
     }
     count
+}
+
+/// Test helper: decodes a hex-encoded PNG to (width, height, RGBA8 pixels).
+fn decode_png_hex(hex: &str) -> (u32, u32, Vec<u8>) {
+    assert!(hex.len() % 2 == 0, "PNG hex has an odd length");
+    let bytes: Vec<u8> = (0..hex.len())
+        .step_by(2)
+        .map(|index| u8::from_str_radix(&hex[index..index + 2], 16).expect("PNG hex digit"))
+        .collect();
+    let mut reader = png::Decoder::new(std::io::Cursor::new(bytes))
+        .read_info()
+        .expect("canvas PNG header");
+    let (width, height) = (reader.info().width, reader.info().height);
+    assert!(
+        u64::from(width) * u64::from(height) <= CANVAS_MAX_AREA,
+        "canvas PNG too large"
+    );
+    // RGBA8 size; a PNG in another format fails to decode into it or below.
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    let info = reader.next_frame(&mut pixels).expect("canvas PNG data");
+    assert_eq!(
+        (info.color_type, info.bit_depth),
+        (png::ColorType::Rgba, png::BitDepth::Eight),
+        "canvas PNG must be RGBA8"
+    );
+    pixels.truncate(info.buffer_size());
+    (info.width, info.height, pixels)
 }
 
 fn write_png(path: &str, pixels: &[u8]) {
@@ -2768,6 +2849,41 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"indexed_db\",\"status\":\"passed\",\"indexed_db_runs\":{indexed_db_runs}}}"
+        );
+
+        // Canvas 2D pixel subset and PNG export: toBlob/FileReader complete from
+        // tasks (bounded wait). The toDataURL PNG is decoded here with the png
+        // crate, independently of the encoder path, and compared pixel by pixel.
+        stage("canvas");
+        runtime
+            .execute_script("roves-blitz-canvas-test.js", CANVAS_TEST)
+            .expect("canvas test setup should run");
+        for _ in 0..150 {
+            if evaluate_string(&mut runtime, "String(canvasResult.done)") == "true" {
+                break;
+            }
+            drive_frames(&mut runtime, &document, &run_animation_frame, 2).await;
+        }
+        let canvas_png_hex = evaluate_string(
+            &mut runtime,
+            "if (!canvasResult.done) throw new Error('canvas tests did not finish at ' + canvasResult.step); \
+             if (canvasResult.failures.length > 0) throw new Error('canvas: ' + canvasResult.failures.join(' | ')); \
+             canvasResult.pngHex",
+        );
+        let canvas_checks = evaluate_string(&mut runtime, "String(canvasResult.checks)");
+        let (png_width, png_height, png_pixels) = decode_png_hex(&canvas_png_hex);
+        assert_eq!(
+            (png_width, png_height, png_pixels.as_slice()),
+            (3, 2, CANVAS_TEST_PIXELS.as_slice()),
+            "canvas.toDataURL PNG must decode to the uploaded pixels"
+        );
+        assert!(
+            canvas_png(1, 1, &[0; 3]).is_err() && canvas_png(16_385, 1, &[]).is_err(),
+            "op_blitz_encode_png must refuse a short buffer and an oversized canvas"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"canvas_2d_pixels_png_export\",\"status\":\"passed\",\"checks\":{canvas_checks},\"png_bytes\":{},\"decoded\":\"{png_width}x{png_height}\"}}",
+            canvas_png_hex.len() / 2
         );
 
         // Dedicated workers run on their own threads; their messages and errors

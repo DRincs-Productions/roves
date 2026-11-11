@@ -102,6 +102,7 @@ jobs:
           grep -Fq '"check":"css_finite_animation_monotonic_timeline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"css_get_animations_stylo_state","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"dedicated_worker_pixi_image_bitmap_probe","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"canvas_2d_pixels_png_export","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_public_address_policy","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"fetch_resolver_refuses_non_public","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"gpu_frame_pacing_simulated_queue","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"

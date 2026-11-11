@@ -64,6 +64,7 @@
     op_blitz_game_read,
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
+    op_blitz_encode_png,
     op_blitz_gpu_wait_idle,
     op_blitz_gpu_poll,
     op_blitz_gpu_adapter_info,
@@ -87,6 +88,13 @@
   } = core.loadExtScript("ext:deno_web/02_event.js");
   const { Console } = core.loadExtScript("ext:deno_web/01_console.js");
   const { Blob, File, blobFromObjectUrl } = core.loadExtScript("ext:deno_web/09_file.js");
+  // FileReader and ImageData from deno_web (Pixi's extract.base64 reads the
+  // toBlob result with FileReader.readAsDataURL; ImageData backs the 2D subset).
+  const { FileReader } = core.loadExtScript("ext:deno_web/10_filereader.js");
+  const { ImageData } = core.loadExtScript("ext:deno_web/16_image_data.js");
+  if (typeof FileReader !== "function" || typeof ImageData !== "function") {
+    throw new Error("deno_web FileReader/ImageData exports changed");
+  }
   const { TextDecoder, TextEncoder } = core.loadExtScript("ext:deno_web/08_text_encoding.js");
   const { atob, btoa } = core.loadExtScript("ext:deno_web/05_base64.js");
   const timers = core.loadExtScript("ext:deno_web/02_timers.js");
@@ -2021,16 +2029,102 @@
     return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
   }
 
+  // Canvas bitmap bounds (also enforced by op_blitz_encode_png in main.rs): at
+  // most 16384 per side and 16 Mi pixels (64 MiB RGBA), so a page cannot make
+  // the probe allocate or encode an unbounded bitmap. Larger bitmaps throw a
+  // RangeError instead of allocating.
+  const CANVAS_MAX_SIDE = 16384;
+  const CANVAS_MAX_AREA = 16777216;
+  function checkBitmapSize(width, height) {
+    if (width > CANVAS_MAX_SIDE || height > CANVAS_MAX_SIDE || width * height > CANVAS_MAX_AREA) {
+      throw new RangeError(`Canvas bitmap ${width}x${height} exceeds the probe limit (${CANVAS_MAX_SIDE} per side, ${CANVAS_MAX_AREA} pixels)`);
+    }
+  }
+  // PNG data: URL of straight-alpha RGBA8 pixels (op_blitz_encode_png uses the
+  // `png` crate). btoa runs over binary-string chunks to keep argument lists short.
+  function encodePng(width, height, rgba) {
+    return op_blitz_encode_png(width, height, new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
+  }
+  function pngDataUrl(png) {
+    let binary = "";
+    for (let offset = 0; offset < png.length; offset += 0x8000) {
+      binary += String.fromCharCode.apply(null, png.subarray(offset, offset + 0x8000));
+    }
+    return `data:image/png;base64,${btoa(binary)}`;
+  }
+  const longOptions = { enforceRange: true };
+  // HTMLCanvasElement context mode: the first successful getContext fixes it;
+  // other context types then return null, as in browsers.
+  const canvasContexts = new WeakMap();
+  const CONTEXT_TOKEN = Symbol("canvas context");
+
   // Offscreen GPUCanvasContext: the "current texture" is a texture of the canvas
   // size that the page renders into. Presenting it inside the Blitz window is a
   // later step (deno_webgpu uses wgpu 29, Blitz's GPU painter wgpu 30).
-  const canvasContexts = new WeakMap();
+  let startGpuCanvasReadback;
   class OffscreenGPUCanvasContext {
     #canvas;
     #configuration = null;
     #texture = null;
     constructor(canvas) {
       this.#canvas = canvas;
+    }
+    // Snapshot for toBlob: the current texture is copied into a buffer at call
+    // time (so later frames do not change the result) and mapped asynchronously.
+    // Returns a function resolving to straight-alpha RGBA8, or null when there is
+    // no drawing buffer yet (transparent black, as for an unconfigured context).
+    static {
+      startGpuCanvasReadback = (context) => {
+        const texture = context.#texture;
+        const configuration = context.#configuration;
+        if (configuration === null || texture === null) return null;
+        const { device, format, alphaMode } = configuration;
+        if (!/^(?:bgra8|rgba8)unorm(?:-srgb)?$/.test(format)) {
+          throw new DOMException(`Canvas readback of the ${format} format is not supported`, "NotSupportedError");
+        }
+        const { width, height } = texture;
+        checkBitmapSize(width, height);
+        const bytesPerRow = Math.ceil((width * 4) / 256) * 256;
+        const buffer = device.createBuffer({
+          size: bytesPerRow * height,
+          usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ,
+        });
+        const encoder = device.createCommandEncoder();
+        encoder.copyTextureToBuffer({ texture }, { buffer, bytesPerRow }, [width, height]);
+        device.queue.submit([encoder.finish()]);
+        return async () => {
+          try {
+            await buffer.mapAsync(GPUMapMode.READ);
+            const mapped = new Uint8Array(buffer.getMappedRange());
+            const rgba = new Uint8Array(width * height * 4);
+            const bgra = format.startsWith("bgra");
+            for (let row = 0; row < height; row++) {
+              rgba.set(mapped.subarray(row * bytesPerRow, row * bytesPerRow + width * 4), row * width * 4);
+            }
+            buffer.unmap();
+            for (let index = 0; index < rgba.length; index += 4) {
+              if (bgra) {
+                const blue = rgba[index];
+                rgba[index] = rgba[index + 2];
+                rgba[index + 2] = blue;
+              }
+              const alpha = rgba[index + 3];
+              if (alphaMode === "opaque") {
+                rgba[index + 3] = 255;
+              } else if (alpha === 0) {
+                rgba[index] = rgba[index + 1] = rgba[index + 2] = 0;
+              } else if (alpha < 255) {
+                rgba[index] = Math.min(255, Math.round((rgba[index] * 255) / alpha));
+                rgba[index + 1] = Math.min(255, Math.round((rgba[index + 1] * 255) / alpha));
+                rgba[index + 2] = Math.min(255, Math.round((rgba[index + 2] * 255) / alpha));
+              }
+            }
+            return { width, height, rgba };
+          } finally {
+            buffer.destroy();
+          }
+        };
+      };
     }
     get canvas() {
       return this.#canvas;
@@ -2062,29 +2156,259 @@
       return this.#texture;
     }
   }
+  // CanvasRenderingContext2D, pixel subset only: canvas, createImageData,
+  // getImageData and putImageData (with the dirty rectangle) over a CPU RGBA8
+  // bitmap. This is what Pixi's WebGL extract and its buffer-backed canvas
+  // sources use; there is no path, text, drawImage, transform or compositing
+  // state. Pixels are stored straight (not premultiplied), so get/put round-trips
+  // are exact where browsers may lose precision on translucent pixels.
+  let resetBitmap2d;
+  let snapshotBitmap2d;
+  class CanvasRenderingContext2D {
+    #canvas;
+    #bitmap = null;
+    #width = 0;
+    #height = 0;
+    constructor(token, canvas) {
+      if (token !== CONTEXT_TOKEN) throw new TypeError("Illegal constructor");
+      this.#canvas = canvas;
+    }
+    static {
+      // Setting canvas width/height (even to the same value) clears the bitmap.
+      resetBitmap2d = (context) => {
+        context.#bitmap = null;
+      };
+      snapshotBitmap2d = (context) => context.#ensureBitmap();
+    }
+    // Allocated lazily at the canvas size, transparent black.
+    #ensureBitmap() {
+      if (this.#bitmap === null) {
+        const { width, height } = this.#canvas;
+        checkBitmapSize(width, height);
+        this.#bitmap = new Uint8ClampedArray(width * height * 4);
+        this.#width = width;
+        this.#height = height;
+      }
+      return { width: this.#width, height: this.#height, rgba: this.#bitmap };
+    }
+    get canvas() {
+      return this.#canvas;
+    }
+    createImageData(sw, sh = undefined) {
+      const prefix = "Failed to execute 'createImageData' on 'CanvasRenderingContext2D'";
+      webidl.requiredArguments(arguments.length, 1, prefix);
+      if (arguments.length === 1) {
+        if (!(sw instanceof ImageData)) {
+          throw new TypeError(`${prefix}: Argument 1 is not of type 'ImageData'`);
+        }
+        return new ImageData(sw.width, sw.height);
+      }
+      const width = Math.abs(webidl.converters.long(sw, prefix, "Argument 1", longOptions));
+      const height = Math.abs(webidl.converters.long(sh, prefix, "Argument 2", longOptions));
+      if (width === 0 || height === 0) {
+        throw new DOMException(`${prefix}: The source ${width === 0 ? "width" : "height"} is 0.`, "IndexSizeError");
+      }
+      checkBitmapSize(width, height);
+      return new ImageData(width, height);
+    }
+    getImageData(sx, sy, sw, sh) {
+      const prefix = "Failed to execute 'getImageData' on 'CanvasRenderingContext2D'";
+      webidl.requiredArguments(arguments.length, 4, prefix);
+      let x = webidl.converters.long(sx, prefix, "Argument 1", longOptions);
+      let y = webidl.converters.long(sy, prefix, "Argument 2", longOptions);
+      let width = webidl.converters.long(sw, prefix, "Argument 3", longOptions);
+      let height = webidl.converters.long(sh, prefix, "Argument 4", longOptions);
+      if (width === 0 || height === 0) {
+        throw new DOMException(`${prefix}: The source ${width === 0 ? "width" : "height"} is 0.`, "IndexSizeError");
+      }
+      if (width < 0) {
+        x += width;
+        width = -width;
+      }
+      if (height < 0) {
+        y += height;
+        height = -height;
+      }
+      checkBitmapSize(width, height);
+      const image = new ImageData(width, height);
+      const bitmap = this.#ensureBitmap();
+      // Pixels outside the bitmap stay transparent black.
+      const left = Math.max(x, 0);
+      const right = Math.min(x + width, bitmap.width);
+      if (left < right) {
+        const top = Math.max(y, 0);
+        const bottom = Math.min(y + height, bitmap.height);
+        for (let row = top; row < bottom; row++) {
+          const from = (row * bitmap.width + left) * 4;
+          image.data.set(bitmap.rgba.subarray(from, from + (right - left) * 4), ((row - y) * width + (left - x)) * 4);
+        }
+      }
+      return image;
+    }
+    putImageData(imagedata, dx, dy, dirtyX = undefined, dirtyY = undefined, dirtyWidth = undefined, dirtyHeight = undefined) {
+      const prefix = "Failed to execute 'putImageData' on 'CanvasRenderingContext2D'";
+      webidl.requiredArguments(arguments.length, 3, prefix);
+      if (!(imagedata instanceof ImageData)) {
+        throw new TypeError(`${prefix}: Argument 1 is not of type 'ImageData'`);
+      }
+      const destinationX = webidl.converters.long(dx, prefix, "Argument 2", longOptions);
+      const destinationY = webidl.converters.long(dy, prefix, "Argument 3", longOptions);
+      const source = imagedata.data;
+      const sourceWidth = imagedata.width;
+      const sourceHeight = imagedata.height;
+      if (source.byteLength !== sourceWidth * sourceHeight * 4) {
+        throw new DOMException(`${prefix}: The ImageData buffer is detached.`, "InvalidStateError");
+      }
+      let x = 0;
+      let y = 0;
+      let width = sourceWidth;
+      let height = sourceHeight;
+      if (arguments.length > 3) {
+        if (arguments.length < 7) throw new TypeError(`${prefix}: 3 or 7 arguments required`);
+        x = webidl.converters.long(dirtyX, prefix, "Argument 4", longOptions);
+        y = webidl.converters.long(dirtyY, prefix, "Argument 5", longOptions);
+        width = webidl.converters.long(dirtyWidth, prefix, "Argument 6", longOptions);
+        height = webidl.converters.long(dirtyHeight, prefix, "Argument 7", longOptions);
+        // Dirty rectangle normalization (HTML putImageData steps 3-6).
+        if (width < 0) {
+          x += width;
+          width = -width;
+        }
+        if (height < 0) {
+          y += height;
+          height = -height;
+        }
+        if (x < 0) {
+          width += x;
+          x = 0;
+        }
+        if (y < 0) {
+          height += y;
+          y = 0;
+        }
+        width = Math.min(width, sourceWidth - x);
+        height = Math.min(height, sourceHeight - y);
+        if (width <= 0 || height <= 0) return;
+      }
+      const bitmap = this.#ensureBitmap();
+      // Clip the source rectangle to the destination bitmap.
+      const left = Math.max(x, -destinationX);
+      const right = Math.min(x + width, bitmap.width - destinationX);
+      const top = Math.max(y, -destinationY);
+      const bottom = Math.min(y + height, bitmap.height - destinationY);
+      if (left >= right) return;
+      for (let row = top; row < bottom; row++) {
+        const from = (row * sourceWidth + left) * 4;
+        bitmap.rgba.set(source.subarray(from, from + (right - left) * 4), ((row + destinationY) * bitmap.width + left + destinationX) * 4);
+      }
+    }
+  }
+  // HTML "rules for parsing non-negative integers" for the width/height content
+  // attributes, falling back to the default size.
+  function canvasDimension(element, name, fallback) {
+    const match = /^[\t\n\f\r ]*\+?([0-9]+)/.exec(element.getAttribute(name) ?? "");
+    if (match === null) return fallback;
+    const value = Number(match[1]);
+    return value <= 0x7fffffff ? value : fallback;
+  }
   class HTMLCanvasElement extends HTMLElement {
     get width() {
-      return Number(this.getAttribute("width") ?? 300);
+      return canvasDimension(this, "width", 300);
     }
     set width(value) {
       this.setAttribute("width", String(Math.max(0, Math.trunc(Number(value)) || 0)));
+      this.#resetBitmap();
     }
     get height() {
-      return Number(this.getAttribute("height") ?? 150);
+      return canvasDimension(this, "height", 150);
     }
     set height(value) {
       this.setAttribute("height", String(Math.max(0, Math.trunc(Number(value)) || 0)));
+      this.#resetBitmap();
     }
-    // Only "webgpu" is available; WebGL and 2D return null (so libraries such as
-    // PixiJS fall back to WebGPU).
-    getContext(type) {
-      if (String(type) !== "webgpu" || !navigator.gpu) return null;
-      let context = canvasContexts.get(this);
-      if (context === undefined) {
+    // Resizing through the IDL attributes clears a 2D bitmap; a WebGPU context
+    // replaces its texture on the next getCurrentTexture. (Changing the content
+    // attribute with setAttribute does not reset a 2D bitmap in the probe.)
+    #resetBitmap() {
+      const entry = canvasContexts.get(this);
+      if (entry?.mode === "2d") resetBitmap2d(entry.context);
+    }
+    // "2d" (pixel subset above) and "webgpu"; WebGL and bitmaprenderer return
+    // null, so libraries such as PixiJS fall back to WebGPU.
+    getContext(contextId, options = undefined) {
+      const prefix = "Failed to execute 'getContext' on 'HTMLCanvasElement'";
+      webidl.requiredArguments(arguments.length, 1, prefix);
+      const type = webidl.converters.DOMString(contextId, prefix, "Argument 1");
+      const entry = canvasContexts.get(this);
+      if (entry !== undefined) return entry.mode === type ? entry.context : null;
+      let context;
+      if (type === "2d") {
+        context = new CanvasRenderingContext2D(CONTEXT_TOKEN, this);
+      } else if (type === "webgpu" && navigator.gpu) {
         context = new OffscreenGPUCanvasContext(this);
-        canvasContexts.set(this, context);
+      } else {
+        return null;
       }
+      canvasContexts.set(this, { mode: type, context });
       return context;
+    }
+    // Straight RGBA8 copy of a CPU bitmap (2D context, or transparent black when
+    // there is no context), or null for a zero-size canvas.
+    #cpuSnapshot() {
+      const entry = canvasContexts.get(this);
+      if (entry?.mode === "2d") {
+        const bitmap = snapshotBitmap2d(entry.context);
+        if (bitmap.width === 0 || bitmap.height === 0) return null;
+        return { width: bitmap.width, height: bitmap.height, rgba: bitmap.rgba };
+      }
+      const { width, height } = this;
+      if (width === 0 || height === 0) return null;
+      checkBitmapSize(width, height);
+      return { width, height, rgba: new Uint8Array(width * height * 4) };
+    }
+    // PNG only: other types (and quality) fall back to image/png, as the HTML
+    // spec allows. A WebGPU canvas cannot be read synchronously here (deno_webgpu
+    // only maps buffers asynchronously), so toDataURL throws NotSupportedError
+    // for it; toBlob, which PixiJS's extract prefers, reads it back.
+    toDataURL(type = undefined, quality = undefined) {
+      if (canvasContexts.get(this)?.mode === "webgpu") {
+        throw new DOMException("toDataURL on a WebGPU canvas is not supported by the probe; use toBlob", "NotSupportedError");
+      }
+      const snapshot = this.#cpuSnapshot();
+      if (snapshot === null) return "data:,";
+      return pngDataUrl(encodePng(snapshot.width, snapshot.height, snapshot.rgba));
+    }
+    toBlob(callback, type = undefined, quality = undefined) {
+      const prefix = "Failed to execute 'toBlob' on 'HTMLCanvasElement'";
+      webidl.requiredArguments(arguments.length, 1, prefix);
+      if (typeof callback !== "function") {
+        throw new TypeError(`${prefix}: The callback provided as parameter 1 is not a function.`);
+      }
+      // The bitmap is captured now; encoding and the callback happen later.
+      const entry = canvasContexts.get(this);
+      let pixels;
+      try {
+        const readback = entry?.mode === "webgpu" ? startGpuCanvasReadback(entry.context) : null;
+        if (readback !== null) {
+          pixels = readback();
+        } else {
+          const snapshot = this.#cpuSnapshot();
+          pixels = Promise.resolve(snapshot === null ? null : { ...snapshot, rgba: snapshot.rgba.slice() });
+        }
+      } catch (error) {
+        pixels = Promise.reject(error);
+      }
+      pixels
+        .then((snapshot) => {
+          if (snapshot === null) return null;
+          return new Blob([encodePng(snapshot.width, snapshot.height, snapshot.rgba)], { type: "image/png" });
+        })
+        .catch((error) => {
+          // Serialization failure: the callback receives null (HTML toBlob).
+          globalThis.console?.warn?.(`canvas.toBlob failed: ${error?.message ?? error}`);
+          return null;
+        })
+        .then((blob) => setTimeoutUnbound(() => callback(blob), 0));
     }
   }
   // Nominal interface only: the single-document policy creates no nested browsing
@@ -2489,6 +2813,9 @@
     HTMLElement,
     SVGElement,
     HTMLCanvasElement,
+    CanvasRenderingContext2D,
+    ImageData,
+    FileReader,
     HTMLIFrameElement,
     HTMLMediaElement,
     HTMLAudioElement,

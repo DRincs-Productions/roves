@@ -86,7 +86,32 @@ import { Application, Assets, Graphics, Sprite } from "pixi.js";
     const image = await readPixel(device, texture, format, 216, 36);
     const close = (actual, expected) => expected.every((value, index) => Math.abs(actual[index] - value) <= 3);
     const pixels = { red, green, background, image };
-    if (close(red, [255, 0, 0]) && close(green, [0, 255, 0]) && close(background, [0x20, 0x40, 0x60]) && close(image, [255, 0, 0])) {
+
+    // Save-thumbnail path of Pixi'VN canvas.extractImage(): extract.base64 ->
+    // GpuTextureSystem.generateCanvas (a "webgpu" canvas) -> canvas.toBlob
+    // (probe readback + PNG) -> FileReader.readAsDataURL. extract.image() would
+    // additionally need `new Image()` (HTMLImageElement, not in the probe).
+    // The PNG is decoded with createImageBitmap, uploaded to a texture and read.
+    result.step = "extract";
+    const dataUrl = await app.renderer.extract.base64(app.stage);
+    const extracted = { prefix: dataUrl.slice(0, 22), length: dataUrl.length };
+    pixels.extract = extracted;
+    if (!dataUrl.startsWith("data:image/png;base64,")) return finish("failed", pixels);
+    const bitmap = await createImageBitmap(await (await fetch(dataUrl)).blob());
+    extracted.size = [bitmap.width, bitmap.height];
+    const decoded = device.createTexture({
+      size: [bitmap.width, bitmap.height],
+      format: "rgba8unorm",
+      usage: GPUTextureUsage.COPY_DST | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
+    });
+    device.queue.copyExternalImageToTexture({ source: bitmap }, { texture: decoded }, [bitmap.width, bitmap.height]);
+    extracted.red = await readPixel(device, decoded, "rgba8unorm", 64, 64);
+    extracted.green = await readPixel(device, decoded, "rgba8unorm", 192, 192);
+    decoded.destroy();
+    const extractOk = bitmap.width >= 200 && bitmap.height >= 200
+      && close(extracted.red, [255, 0, 0, 255]) && close(extracted.green, [0, 255, 0, 255]);
+
+    if (extractOk && close(red, [255, 0, 0]) && close(green, [0, 255, 0]) && close(background, [0x20, 0x40, 0x60]) && close(image, [255, 0, 0])) {
       finish("passed", pixels);
     } else {
       finish("failed", pixels);

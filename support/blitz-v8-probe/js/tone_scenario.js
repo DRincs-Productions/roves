@@ -194,6 +194,9 @@ function pcm16Wav(samples, sampleRate) {
   await waitFor(() => playerEnded, "the ended event of a buffer source that played to its end");
 
   // A looping source keeps playing past its buffer until stop().
+  // An in-flight render quantum can publish the old native parameter value.
+  // Check the constructor while rendering is suspended, then verify playback.
+  await native.suspend();
   const looping = new AudioBufferSourceNode(native, { buffer: decoded, loop: true, loopStart: 0.001, loopEnd: 0.01, playbackRate: 2 });
   check(looping.loop && looping.loopStart === 0.001 && looping.loopEnd === 0.01, "loop options");
   check(looping.playbackRate.value === 2, `playbackRate ${looping.playbackRate.value}`);
@@ -203,6 +206,8 @@ function pcm16Wav(samples, sampleRate) {
   };
   looping.connect(native.destination);
   looping.start(0, 0.002);
+  await native.resume();
+  await waitFor(() => looping.playbackRate.value === 2, "the looping source playback rate");
   const stopAt = native.currentTime + 0.1;
   looping.stop(stopAt);
   await waitFor(() => loopEnded, "the ended event of a stopped looping source");

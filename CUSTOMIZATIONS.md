@@ -1,3 +1,31 @@
+## 2026-11-11 - Blitz probe: deterministic Tone playback-rate check
+
+The Tone fixture checks buffer source options while the audio context is suspended, then resumes and checks the applied rate during playback. This isolates constructor validation from an in-flight render quantum that can publish the previous native AudioParam value (CI 43079823549).
+
+## 2026-11-11 - Blitz probe: Canvas 2D pixel subset and PNG export for save thumbnails
+
+**Files touched:** `support/blitz-v8-probe/src/{dom.js,main.rs,canvas_test.js}`,
+`support/blitz-v8-probe/js/webgpu_scenario.js`,
+`support/blitz-v8-probe/{README.md,compat/manifest.json}`, `.github/workflows/blitz-probe.yml`,
+`TODO.md`.
+
+The template's save thumbnail (`canvas.extractImage()`) runs, on WebGPU, Pixi
+`extract.base64` → `GpuTextureSystem.generateCanvas` (a `webgpu` canvas) → `canvas.toBlob` →
+`FileReader.readAsDataURL`; `createImageData`/`putImageData` is Pixi's WebGL path (checked on
+the compiled template chunk and the probe bundle). `HTMLCanvasElement` now keeps one context
+mode per canvas, parses `width`/`height` per HTML and clears a 2D bitmap on IDL resize.
+`getContext("2d")` returns a pixel-only `CanvasRenderingContext2D` (`createImageData`,
+`getImageData`, `putImageData` with dirty rectangle) over a straight-alpha RGBA8 bitmap.
+`toDataURL`/`toBlob` encode PNG through `op_blitz_encode_png` (the already-pinned `png` crate,
+size checked against the buffer); `toBlob` on a WebGPU canvas copies the current texture at call
+time and maps it asynchronously (bgra/rgba8, premultiplied alpha undone). Bitmaps are bounded to
+16384 per side and 16 Mi pixels. `ImageData` and `FileReader` come from deno_web 0.291 and are
+globals now. No Deno extension provides Canvas 2D, so the glue is ours; no new dependency.
+Fixture `canvas_test.js` → `canvas_2d_pixels_png_export` (CI gate), PNG decoded again in Rust;
+the opt-in WebGPU fixture also checks `extract.base64` pixels. Not done: drawing/text,
+`toDataURL` on a WebGPU canvas (`NotSupportedError`), `HTMLImageElement` (`extract.image`).
+Internal probe tooling only: no README/wiki change for users.
+
 ## 2026-11-11 - Blitz probe: Settings popup and typed name in the template story run
 
 **Files touched:** `support/blitz-v8-probe/src/{game.rs,window.rs}`,
