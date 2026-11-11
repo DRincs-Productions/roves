@@ -21,6 +21,8 @@ use deno_core::{
 };
 use deno_error::JsErrorBox;
 
+use crate::window;
+
 /// The document URL games see (matches `src/history.js`): the content root, as
 /// the Servo shell boots (`ports/servoshell/protocols/game.rs`), so a client-side
 /// router matches its `/` route. The document itself is still the directory's
@@ -402,8 +404,89 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
   };
   const buttons = () => Array.from(document.body?.querySelectorAll("button, [role=button]") ?? []);
   const label = (element) => norm(element.textContent) || norm(element.getAttribute("aria-label")) || norm(element.getAttribute("title"));
+  // Mounted dialogs (Base UI Dialog/AlertDialog popups carry the role).
+  const dialogElements = () => Array.from(document.body?.querySelectorAll("[role=dialog], [role=alertdialog]") ?? []);
+  const dialogTitle = (element) => {
+    const id = element.getAttribute("aria-labelledby");
+    const title = (id && document.getElementById(id)) || element.querySelector("[data-slot=dialog-title]");
+    return title ? norm(title.textContent) : "";
+  };
+  // Running finite animations in the subtree (an infinite spinner never ends).
+  const running = (element) => {
+    if (typeof element.getAnimations !== "function") return -1;
+    return element.getAnimations({ subtree: true })
+      .filter((animation) => animation.playState === "running" && animation.effect?.getTiming?.().iterations !== Infinity)
+      .length;
+  };
+  const describe = (element) => ({
+    role: attr(element, "role"),
+    title: dialogTitle(element).slice(0, 60),
+    open: element.hasAttribute("data-open"),
+    closed: element.hasAttribute("data-closed"),
+    visible: visible(element),
+    running: running(element),
+    text: norm(element.textContent).slice(0, 120),
+  });
+  const describeFocus = () => {
+    const element = document.activeElement;
+    if (!element) return null;
+    return {
+      tag: element.localName ?? null,
+      role: element.getAttribute?.("role") ?? null,
+      text: norm(element.textContent).slice(0, 40),
+      in_dialog: dialogElements().some((dialog) => dialog === element || dialog.contains(element)),
+    };
+  };
   return {
     snapshot,
+    // The menu's Settings button (exact label).
+    settings() {
+      const button = buttons().find((element) => /^settings$/i.test(label(element)));
+      return button ? (center(button, { label: label(button) }) ?? "null") : "null";
+    },
+    dialogs() {
+      return JSON.stringify(dialogElements().map(describe));
+    },
+    // A mounted dialog (title matching `title`, any when null) that is visible,
+    // marked open and has finished its open animation; "" until there is one.
+    dialogOpen(title) {
+      const dialog = dialogElements().find((element) =>
+        (title === null || title.test(dialogTitle(element))) && visible(element) &&
+        element.hasAttribute("data-open") && !element.hasAttribute("data-closed") && running(element) <= 0);
+      return dialog ? JSON.stringify(describe(dialog)) : "";
+    },
+    focused() {
+      return JSON.stringify(describeFocus());
+    },
+    // The first visible text input inside a mounted dialog: its center, value,
+    // type attribute, focus, and whether the dialog's Confirm button is disabled.
+    dialogInput() {
+      for (const dialog of dialogElements()) {
+        const input = dialog.querySelector("input");
+        if (!input) continue;
+        const confirm = Array.from(dialog.querySelectorAll("button")).find((button) => /^confirm$/i.test(label(button)));
+        return center(input, {
+          value: input.value,
+          type: input.getAttribute("type"),
+          focused: document.activeElement === input,
+          confirm_disabled: confirm ? confirm.hasAttribute("disabled") : null,
+        }) ?? "null";
+      }
+      return "null";
+    },
+    // Non-control text containing `name`: lines equal to it (a speaker label)
+    // and dialogue lines with other text around it.
+    nameLines(name) {
+      const speaker = [];
+      const dialogue = [];
+      if (document.body) {
+        walk(document.body, (text, _, inButton) => {
+          if (inButton || !text.includes(name)) return;
+          (text === name ? speaker : dialogue).push(text.slice(0, 120));
+        }, () => {});
+      }
+      return JSON.stringify({ speaker, dialogue });
+    },
     // The menu's Start button: exact "Start"/"New game" first, then a label containing it.
     start() {
       const all = buttons();
@@ -584,6 +667,11 @@ fn expected_lines() -> Result<Option<[String; 2]>, String> {
 /// `ROVES_PROBE_STORY_EXPECT='["line 1","line 2"]'` the two states must also
 /// contain those known lines. Prints one `game_story` result; any failure is
 /// reported with its reason, never as a pass.
+///
+/// Before Start, `settings_popup` opens and closes the Settings dialog
+/// (`game_settings_popup`); after the two states, `name_input` types a name into
+/// the story's input dialog (`game_name_input`). Each prints its own result and
+/// counts only the script errors captured during its own phase.
 async fn story(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -591,15 +679,51 @@ async fn story(
     dispatcher: &v8::Global<v8::Function>,
     gpu_pacing_stats: &v8::Global<v8::Function>,
 ) {
-    use deno_core::serde_json::{Value, json};
     crate::stage("game_story");
     runtime
         .execute_script("roves-blitz-story-helpers.js", STORY_HELPERS)
         .expect("story helpers should install");
-    let errors_before: u64 = crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
-        .parse()
-        .unwrap_or(0);
+    crate::stage("game_settings_popup");
+    settings_popup(runtime, document, run_animation_frame, dispatcher).await;
+    crate::stage("game_story_dialogues");
+    let progress = two_dialogues(
+        runtime,
+        document,
+        run_animation_frame,
+        dispatcher,
+        gpu_pacing_stats,
+    )
+    .await;
+    crate::stage("game_name_input");
+    name_input(runtime, document, run_animation_frame, dispatcher, progress).await;
+    if let Ok(path) = std::env::var("ROVES_PROBE_STORY_SCREENSHOT") {
+        let pixels = crate::render_rgba(document);
+        crate::write_png(&path, &pixels);
+    }
+}
+
+/// What `name_input` needs from the two-dialogue run: the menu text (dialogue
+/// lines are text not on the menu), the advance method that produced state 2,
+/// and the last settled page text.
+struct StoryProgress {
+    menu: String,
+    method: &'static str,
+    last_state: String,
+}
+
+/// The two-dialogue story run (see `story`); prints `game_story` and returns the
+/// progress only when it passed.
+async fn two_dialogues(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    gpu_pacing_stats: &v8::Global<v8::Function>,
+) -> Option<StoryProgress> {
+    use deno_core::serde_json::{Value, json};
+    let errors_before = error_count(runtime);
     let menu = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+    let mut advance_method: Option<&'static str> = None;
     let mut report = json!({ "menu": excerpt(&menu) });
     let mut steps: Vec<Value> = Vec::new();
     let mut states: Vec<String> = Vec::new();
@@ -679,49 +803,8 @@ async fn story(
                 },
             }
         }
-        for method in ["next_control", "dialogue_click", "enter_key", "space_key"] {
-            crate::resolve_layout(document);
-            let dispatched = match method {
-                "next_control" | "dialogue_click" => {
-                    let helper = if method == "next_control" {
-                        "__rovesStory.next()".to_string()
-                    } else {
-                        format!("__rovesStory.dialogue({})", Value::String(menu.clone()))
-                    };
-                    let found = evaluate_owned(runtime, helper);
-                    match point(&found) {
-                        Some((x, y, element)) => {
-                            crate::click_at(runtime, dispatcher, document, x, y)
-                                .map(|hit| json!({ "element": element, "hit_node": hit.as_u64() }))
-                        },
-                        None => None,
-                    }
-                },
-                _ => {
-                    let key = if method == "enter_key" {
-                        r#"{"key":"Enter","code":"Enter"}"#
-                    } else {
-                        r#"{"key":" ","code":"Space"}"#
-                    };
-                    let target = {
-                        let document = document.borrow();
-                        document.get_focussed_node_id().or_else(|| {
-                            let root = document.root_node().id;
-                            document
-                                .query_selector_all_in(root, "body")
-                                .ok()?
-                                .into_iter()
-                                .next()
-                        })
-                    };
-                    target.map(|target| {
-                        crate::dispatch_trusted(runtime, dispatcher, target, "keydown", key);
-                        crate::dispatch_trusted(runtime, dispatcher, target, "keyup", key);
-                        json!({ "target_node": target.as_u64() })
-                    })
-                },
-            };
-            let Some(dispatched) = dispatched else {
+        for method in ADVANCE_METHODS {
+            let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
                 steps.push(json!({ "action": method, "result": "no target" }));
                 continue;
             };
@@ -747,6 +830,7 @@ async fn story(
                         continue;
                     }
                     steps.push(json!({ "action": method, "input": dispatched, "state": 2, "frames": frames, "dialogue_lines": new_lines.len() }));
+                    advance_method = Some(method);
                     states.push(text);
                     dialogue.push(new_lines);
                     break;
@@ -800,9 +884,6 @@ async fn story(
             .then(|| format!("visible error toast(s) during the story: {error_toasts:?}"))
     });
 
-    let errors_after: u64 = crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
-        .parse()
-        .unwrap_or(0);
     let errors = crate::evaluate_string(
         runtime,
         "JSON.stringify(__rovesGameErrors.slice(-10).map((e) => e.slice(0, 300)))",
@@ -811,13 +892,7 @@ async fn story(
     // fails the run, even with two dialogue states and no toast: a broken
     // listener (e.g. a keyboard guard throwing) can leave the text advancing
     // while game behavior is already wrong (CI 42917654548 passed that way).
-    let new_errors = errors_after.saturating_sub(errors_before);
-    let new_error_messages = evaluate_owned(
-        runtime,
-        format!(
-            "JSON.stringify(__rovesGameErrors.slice({errors_before}).slice(0, 5).map((e) => e.slice(0, 300)))"
-        ),
-    );
+    let (new_errors, new_error_messages) = errors_since(runtime, errors_before);
     let failure = failure.or_else(|| {
         (new_errors > 0).then(|| {
             format!("{new_errors} script error(s) captured during the story: {new_error_messages}")
@@ -854,8 +929,550 @@ async fn story(
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"game_story\",\"status\":\"{status}\",\"detail\":{report}}}"
     );
-    if let Ok(path) = std::env::var("ROVES_PROBE_STORY_SCREENSHOT") {
-        let pixels = crate::render_rgba(document);
-        crate::write_png(&path, &pixels);
+    if failure.is_some() {
+        return None;
     }
+    Some(StoryProgress {
+        menu,
+        method: advance_method?,
+        last_state: states.pop()?,
+    })
+}
+
+/// Advance methods tried, in order, to reach story state 2.
+const ADVANCE_METHODS: [&str; 4] = ["next_control", "dialogue_click", "enter_key", "space_key"];
+
+/// Sends one advance input of `method` (see `ADVANCE_METHODS`); returns what was
+/// dispatched, or `None` when the page has no target for it.
+fn advance(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    dispatcher: &v8::Global<v8::Function>,
+    method: &str,
+    menu: &str,
+) -> Option<deno_core::serde_json::Value> {
+    use deno_core::serde_json::{Value, json};
+    crate::resolve_layout(document);
+    match method {
+        "next_control" | "dialogue_click" => {
+            let helper = if method == "next_control" {
+                "__rovesStory.next()".to_string()
+            } else {
+                format!("__rovesStory.dialogue({})", Value::String(menu.to_owned()))
+            };
+            let found = evaluate_owned(runtime, helper);
+            let (x, y, element) = point(&found)?;
+            crate::click_at(runtime, dispatcher, document, x, y)
+                .map(|hit| json!({ "element": element, "hit_node": hit.as_u64() }))
+        },
+        _ => {
+            let key = if method == "enter_key" {
+                r#"{"key":"Enter","code":"Enter"}"#
+            } else {
+                r#"{"key":" ","code":"Space"}"#
+            };
+            let target = {
+                let document = document.borrow();
+                document.get_focussed_node_id().or_else(|| {
+                    let root = document.root_node().id;
+                    document
+                        .query_selector_all_in(root, "body")
+                        .ok()?
+                        .into_iter()
+                        .next()
+                })
+            }?;
+            crate::dispatch_trusted(runtime, dispatcher, target, "keydown", key);
+            crate::dispatch_trusted(runtime, dispatcher, target, "keyup", key);
+            Some(json!({ "target_node": target.as_u64() }))
+        },
+    }
+}
+
+/// Number of script errors and unhandled rejections captured so far.
+fn error_count(runtime: &mut JsRuntime) -> u64 {
+    crate::evaluate_string(runtime, "String(__rovesGameErrors.length)")
+        .parse()
+        .unwrap_or(0)
+}
+
+/// Errors captured since `before` (see `error_count`): count and a JSON array
+/// of the first five messages.
+fn errors_since(runtime: &mut JsRuntime, before: u64) -> (u64, String) {
+    let count = error_count(runtime).saturating_sub(before);
+    let messages = evaluate_owned(
+        runtime,
+        format!(
+            "JSON.stringify(__rovesGameErrors.slice({before}).slice(0, 5).map((e) => e.slice(0, 300)))"
+        ),
+    );
+    (count, messages)
+}
+
+/// Drives frames (10 per check, at most `max_frames`) until `probe` (a script
+/// returning a string) returns a non-empty value; returns it with the frames
+/// driven, or `None` with the last value on timeout. Toasts are collected at
+/// every check.
+async fn wait_until(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    probe: &str,
+    max_frames: u32,
+    toasts: &mut Vec<deno_core::serde_json::Value>,
+) -> Result<(String, u32), String> {
+    let mut frames = 0;
+    let mut last = String::new();
+    while frames < max_frames {
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        frames += 10;
+        collect_toasts(runtime, toasts);
+        crate::resolve_layout(document);
+        last = evaluate_owned(runtime, probe.to_owned());
+        if !last.is_empty() {
+            return Ok((last, frames));
+        }
+    }
+    Err(last)
+}
+
+/// Upper bound, in frames, for a dialog to mount, finish opening or unmount.
+const DIALOG_FRAMES: u32 = 600;
+
+/// Common tail of the popup/name-input results: toasts (an error toast fails),
+/// new script errors since `errors_before` (any fails); returns the status and
+/// the detail for the caller's result line.
+fn phase_result(
+    runtime: &mut JsRuntime,
+    check: &str,
+    errors_before: u64,
+    failure: Option<String>,
+    mut report: deno_core::serde_json::Value,
+    mut toasts: Vec<deno_core::serde_json::Value>,
+    steps: Vec<deno_core::serde_json::Value>,
+) -> (&'static str, deno_core::serde_json::Value) {
+    use deno_core::serde_json::{Value, json};
+    collect_toasts(runtime, &mut toasts);
+    let error_toasts: Vec<String> = toasts
+        .iter()
+        .filter(|toast| toast["error"] == Value::Bool(true))
+        .filter_map(|toast| toast["text"].as_str().map(str::to_owned))
+        .collect();
+    let (new_errors, new_error_messages) = errors_since(runtime, errors_before);
+    let failure = failure
+        .or_else(|| {
+            (!error_toasts.is_empty())
+                .then(|| format!("visible error toast(s) during {check}: {error_toasts:?}"))
+        })
+        .or_else(|| {
+            (new_errors > 0).then(|| {
+                format!(
+                    "{new_errors} script error(s) captured during {check}: {new_error_messages}"
+                )
+            })
+        });
+    let status = if failure.is_none() {
+        "passed"
+    } else {
+        "failed"
+    };
+    report["reason"] = json!(failure);
+    report["toasts"] = json!(toasts);
+    report["steps"] = json!(steps);
+    report["new_errors"] = json!(new_errors);
+    report["new_error_messages"] =
+        deno_core::serde_json::from_str(&new_error_messages).unwrap_or(Value::Null);
+    (status, report)
+}
+
+/// Settings popup on the start menu: a trusted click on the menu's "Settings"
+/// button must mount the template's Base UI dialog (`role="dialog"`, title
+/// "Settings", `data-open`), and Escape, pressed as a keyboard sends it through
+/// Blitz's `EventDriver` (`window::press_key`) to the focused element, must
+/// close it: the dialog is unmounted (after its exit animation) and the
+/// `settings` search parameter is gone. Prints `game_settings_popup`.
+async fn settings_popup(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+    use keyboard_types::{Key, NamedKey};
+    let errors_before = error_count(runtime);
+    let mut toasts: Vec<Value> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
+    let mut report = json!({});
+    let failure: Option<String> = 'popup: {
+        if let Some(text) = error_boundary(runtime) {
+            break 'popup Some(format!(
+                "error boundary shown before Settings: {:?}",
+                excerpt(&text)
+            ));
+        }
+        crate::resolve_layout(document);
+        let before = crate::evaluate_string(runtime, "__rovesStory.dialogs()");
+        if before != "[]" {
+            break 'popup Some(format!("a dialog is already mounted on the menu: {before}"));
+        }
+        let button = crate::evaluate_string(runtime, "__rovesStory.settings()");
+        let Some((x, y, button)) = point(&button) else {
+            break 'popup Some("no visible Settings button on the menu".into());
+        };
+        let Some(hit) = crate::click_at(runtime, dispatcher, document, x, y) else {
+            break 'popup Some(format!(
+                "hit-test found no node at the Settings button ({x}, {y})"
+            ));
+        };
+        steps.push(
+            json!({ "action": "click_settings", "button": button, "hit_node": hit.as_u64() }),
+        );
+        // Open: the Settings dialog is mounted, visible and marked open, and
+        // its open animation has settled (no running animation in the dialog).
+        let opened = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogOpen(/^settings$/i)",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        let (dialog, frames) = match opened {
+            Ok(found) => found,
+            Err(last) => {
+                let dialogs = crate::evaluate_string(runtime, "__rovesStory.dialogs()");
+                break 'popup Some(format!(
+                    "the Settings dialog did not open within {DIALOG_FRAMES} frames (last: {last:?}, dialogs: {dialogs}, location: {})",
+                    crate::evaluate_string(runtime, "location.href")
+                ));
+            },
+        };
+        let dialog: Value = deno_core::serde_json::from_str(&dialog).unwrap_or(Value::Null);
+        steps.push(json!({ "result": "dialog open", "frames": frames, "dialog": dialog }));
+        report["opened"] = dialog;
+        report["location_open"] = json!(crate::evaluate_string(runtime, "location.href"));
+        if let Some(text) = error_boundary(runtime) {
+            break 'popup Some(format!(
+                "error boundary shown with Settings open: {:?}",
+                excerpt(&text)
+            ));
+        }
+        let focused = crate::evaluate_string(runtime, "__rovesStory.focused()");
+        window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Escape));
+        steps.push(json!({ "action": "escape_key", "focused": deno_core::serde_json::from_str::<Value>(&focused).unwrap_or(Value::Null) }));
+        let closed = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogs() === '[]' && !/[?&]settings=/.test(location.search) ? 'closed' : ''",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        match closed {
+            Ok((_, frames)) => {
+                steps.push(json!({ "result": "dialog unmounted", "frames": frames }));
+            },
+            Err(_) => {
+                let dialogs = crate::evaluate_string(runtime, "__rovesStory.dialogs()");
+                break 'popup Some(format!(
+                    "the Settings dialog was not closed and unmounted within {DIALOG_FRAMES} frames after Escape (dialogs: {dialogs}, location: {})",
+                    crate::evaluate_string(runtime, "location.href")
+                ));
+            },
+        }
+        report["location_closed"] = json!(crate::evaluate_string(runtime, "location.href"));
+        // Let the menu settle again before the story run takes its snapshot.
+        crate::drive_frames(runtime, document, run_animation_frame, 30).await;
+        None
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_settings_popup",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        steps,
+    );
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_settings_popup\",\"status\":\"{status}\",\"detail\":{report}}}"
+    );
+}
+
+/// Unique name typed into the story's input dialog (no letters bound to the
+/// template's single-key hotkeys).
+const TYPED_NAME: &str = "Zorvaq";
+
+/// Name prompt with real typing, after the two-dialogue run: advances (with the
+/// method that produced state 2) until the template's InputRequestDialog shows
+/// its text input (start.label step 5, `requestInput({type:"string"}, "Peter")`),
+/// focuses it with a pointer press through Blitz's `EventDriver` if the dialog
+/// did not focus it, clears the default with End and Backspace, types
+/// `TYPED_NAME` key by key through `window::press_key` (Blitz edits its own
+/// editor; React's onChange sees the `input` events), checks the value and the
+/// enabled Confirm button, presses Enter, waits for the dialog to unmount, then
+/// advances until a dialogue line contains the typed name (step 7,
+/// `...${mc.name}.`). Prints `game_name_input` (`not_run` when the two-dialogue
+/// run did not pass).
+async fn name_input(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    progress: Option<StoryProgress>,
+) {
+    use deno_core::serde_json::{Value, json};
+    use keyboard_types::{Key, NamedKey};
+    let Some(progress) = progress else {
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"game_name_input\",\"status\":\"not_run\",\"reason\":\"the two-dialogue story run did not pass\"}}"
+        );
+        return;
+    };
+    let StoryProgress {
+        menu,
+        method,
+        last_state,
+    } = progress;
+    let errors_before = error_count(runtime);
+    let mut toasts: Vec<Value> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
+    let mut report = json!({ "name": TYPED_NAME, "advance_method": method });
+    let failure: Option<String> = 'name: {
+        // Reach the prompt: at most six advances (state 2 is step 2 of 5).
+        let mut previous = vec![last_state];
+        let mut prompt = None;
+        for _ in 0..6 {
+            crate::resolve_layout(document);
+            let input = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+            if input != "null" {
+                prompt = Some(input);
+                break;
+            }
+            let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+                break 'name Some(format!("no target for the advance method {method}"));
+            };
+            match wait_for_state(
+                runtime,
+                document,
+                run_animation_frame,
+                &previous,
+                &mut toasts,
+            )
+            .await
+            {
+                StoryState::Settled(text, frames) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "frames": frames, "text": excerpt(&text) }));
+                    previous.push(text);
+                },
+                StoryState::Timeout(last) => {
+                    break 'name Some(format!(
+                        "no settled state after {method} within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                        excerpt(&last)
+                    ));
+                },
+                StoryState::ErrorBoundary(text, frames) => {
+                    break 'name Some(format!(
+                        "error boundary shown after {method} ({frames} frames): {:?}",
+                        excerpt(&text)
+                    ));
+                },
+            }
+            // The dialog opens 200 ms after the typewriter ends (debounced).
+            if let Ok((input, frames)) = wait_until(
+                runtime,
+                document,
+                run_animation_frame,
+                "(() => { const input = __rovesStory.dialogInput(); return input === 'null' ? '' : input; })()",
+                60,
+                &mut toasts,
+            )
+            .await
+            {
+                steps.push(json!({ "result": "input dialog shown", "frames": frames }));
+                prompt = Some(input);
+                break;
+            }
+        }
+        if prompt.is_none() {
+            break 'name Some("the name input dialog did not appear within six advances".into());
+        }
+        // Let the open animation settle (same condition as the Settings dialog).
+        let opened = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogOpen(null)",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        let dialog = match opened {
+            Ok((dialog, _)) => dialog,
+            Err(last) => {
+                break 'name Some(format!(
+                    "the input dialog did not finish opening within {DIALOG_FRAMES} frames (last: {last:?})"
+                ));
+            },
+        };
+        report["dialog"] = deno_core::serde_json::from_str(&dialog).unwrap_or(Value::Null);
+        crate::resolve_layout(document);
+        let input = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+        let Some((x, y, input)) = point(&input) else {
+            break 'name Some("the input dialog has no visible text input".into());
+        };
+        report["input_initial"] = input.clone();
+        let mut focus_method = "dialog_initial_focus";
+        if input["focused"] != Value::Bool(true) {
+            focus_method = "pointer_press";
+            if !window::pointer_click(runtime, dispatcher, document, x, y) {
+                break 'name Some(format!("hit-test found no node at the input ({x}, {y})"));
+            }
+            let focused = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+            let focused: Value = deno_core::serde_json::from_str(&focused).unwrap_or(Value::Null);
+            if focused["focused"] != Value::Bool(true) {
+                break 'name Some(format!(
+                    "a pointer press on the input ({x}, {y}) did not focus it (focused: {})",
+                    crate::evaluate_string(runtime, "__rovesStory.focused()")
+                ));
+            }
+        }
+        report["focus_method"] = json!(focus_method);
+        // Clear the default value as a user would: End, then Backspace.
+        let initial_length = input["value"]
+            .as_str()
+            .map_or(0, |value| value.chars().count());
+        window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::End));
+        for _ in 0..initial_length + 2 {
+            window::press_key(
+                runtime,
+                dispatcher,
+                document,
+                Key::Named(NamedKey::Backspace),
+            );
+        }
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        let cleared = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+        let cleared: Value = deno_core::serde_json::from_str(&cleared).unwrap_or(Value::Null);
+        steps.push(json!({ "action": "clear", "keys": format!("End + {} Backspace", initial_length + 2), "input": cleared }));
+        if cleared["value"] != json!("") {
+            break 'name Some(format!(
+                "End/Backspace did not clear the input (value {})",
+                cleared["value"]
+            ));
+        }
+        for character in TYPED_NAME.chars() {
+            window::press_key(
+                runtime,
+                dispatcher,
+                document,
+                Key::Character(character.to_string().into()),
+            );
+        }
+        // React re-renders the controlled input and the Confirm button.
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        let typed = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+        let typed: Value = deno_core::serde_json::from_str(&typed).unwrap_or(Value::Null);
+        steps.push(json!({ "action": "type", "keys": TYPED_NAME, "input": typed }));
+        report["input_typed"] = typed.clone();
+        if typed["value"] != json!(TYPED_NAME) {
+            break 'name Some(format!(
+                "typing {TYPED_NAME:?} left the input value {}",
+                typed["value"]
+            ));
+        }
+        if typed["confirm_disabled"] != Value::Bool(false) {
+            break 'name Some(format!(
+                "the Confirm button is not enabled after typing (confirm_disabled {})",
+                typed["confirm_disabled"]
+            ));
+        }
+        window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Enter));
+        steps.push(json!({ "action": "enter_key" }));
+        let closed = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        match closed {
+            Ok((_, frames)) => {
+                steps.push(json!({ "result": "input dialog unmounted", "frames": frames }))
+            },
+            Err(_) => {
+                break 'name Some(format!(
+                    "Enter did not accept the name: the input dialog is still mounted after {DIALOG_FRAMES} frames (dialogs: {})",
+                    crate::evaluate_string(runtime, "__rovesStory.dialogs()")
+                ));
+            },
+        }
+        // The accepted value is used by the following steps: advance until a
+        // dialogue line (not only the speaker label) contains the name.
+        let needle = Value::String(TYPED_NAME.into());
+        let mut previous = vec![crate::evaluate_string(runtime, "__rovesStory.snapshot()")];
+        for _ in 0..4 {
+            let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+                break 'name Some(format!(
+                    "no target for the advance method {method} after the prompt"
+                ));
+            };
+            match wait_for_state(
+                runtime,
+                document,
+                run_animation_frame,
+                &previous,
+                &mut toasts,
+            )
+            .await
+            {
+                StoryState::Settled(text, frames) => {
+                    let found =
+                        evaluate_owned(runtime, format!("__rovesStory.nameLines({needle})"));
+                    let found: Value =
+                        deno_core::serde_json::from_str(&found).unwrap_or(Value::Null);
+                    steps.push(json!({ "action": method, "input": dispatched, "frames": frames, "text": excerpt(&text), "name_lines": found }));
+                    if found["dialogue"]
+                        .as_array()
+                        .is_some_and(|lines| !lines.is_empty())
+                    {
+                        report["name_in_dialogue"] = found;
+                        break 'name None;
+                    }
+                    previous.push(text);
+                },
+                StoryState::Timeout(last) => {
+                    break 'name Some(format!(
+                        "no settled state after the prompt within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                        excerpt(&last)
+                    ));
+                },
+                StoryState::ErrorBoundary(text, frames) => {
+                    break 'name Some(format!(
+                        "error boundary shown after the prompt ({frames} frames): {:?}",
+                        excerpt(&text)
+                    ));
+                },
+            }
+        }
+        Some(format!(
+            "no dialogue line contained the typed name {TYPED_NAME:?} within four advances after the prompt"
+        ))
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_name_input",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        steps,
+    );
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_name_input\",\"status\":\"{status}\",\"detail\":{report}}}"
+    );
 }

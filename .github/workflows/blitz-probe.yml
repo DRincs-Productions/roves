@@ -268,11 +268,16 @@ jobs:
       # wrong"/"Show Error") fails it at the first check, never as dialogue.
       # continue-on-error: a failure marks this step and is annotated with its
       # reason, but never changes the job result; the smoke step above stays
-      # the gate. Separate storage directory; bounded by timeout 600.
+      # the gate. Separate storage directory; bounded by timeout 900.
+      # The same run first opens Settings on the menu and closes it with Escape
+      # (game_settings_popup), and after the two states types a name into the
+      # story's input dialog (game_name_input); both are annotated separately
+      # as warnings when not passed and do not change this step's result,
+      # which stays the two-dialogue check.
       - name: template story Start and first two dialogue states (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
-        timeout-minutes: 12
+        timeout-minutes: 17
         shell: bash
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
@@ -288,9 +293,19 @@ jobs:
           log="$RUNNER_TEMP/blitz-story.log"
           # Empty greps are results here, not step errors.
           set +e +o pipefail
-          timeout 600 "$exe" --game visual-novel-template/dist --story > "$log" 2>&1
+          timeout 900 "$exe" --game visual-novel-template/dist --story > "$log" 2>&1
           status=$?
-          [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 600 s"
+          [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
+          for check in game_settings_popup game_name_input; do
+            line=$(grep -F "\"check\":\"$check\"" "$log" | head -n 1)
+            if [ -z "$line" ]; then
+              echo "::warning::$check: no result line"
+            elif printf '%s' "$line" | grep -Fq "\"check\":\"$check\",\"status\":\"passed\""; then
+              echo "::notice::$check passed $(printf '%s' "$line" | cut -c1-700)"
+            else
+              echo "::warning::$check not passed $(printf '%s' "$line" | cut -c1-900)"
+            fi
+          done
           story=$(grep -F '"check":"game_story"' "$log" | head -n 1)
           if [ -z "$story" ]; then
             echo "::error::story harness exit=$status: no game_story result (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 'panicked' "$log" | cut -c1-300))"

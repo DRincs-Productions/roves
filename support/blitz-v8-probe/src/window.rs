@@ -33,7 +33,7 @@ use blitz_html::HtmlDocument;
 use blitz_shell::{BlitzApplication, BlitzShellProxy, WindowConfig, create_default_event_loop};
 use blitz_traits::events::{
     BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, KeyState,
-    UiEvent,
+    MouseEventButton, MouseEventButtons, UiEvent,
 };
 use deno_core::{JsRuntime, v8};
 use keyboard_types::{Code, Key, Location, Modifiers};
@@ -144,6 +144,47 @@ pub(crate) fn press_key(
         };
         dispatch_ui_event(runtime, dispatcher, document, event);
     }
+}
+
+/// A primary-button press and release at viewport point (`x`, `y`), as a mouse
+/// sends them, through `dispatch_ui_event`: Blitz hit-tests, runs its pointer
+/// default actions (focus and caret placement in a text input) and produces
+/// the pointer/mouse/click events JS receives. Returns `false`, sending
+/// nothing, when no node is at the point.
+pub(crate) fn pointer_click(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    document: &Rc<RefCell<HtmlDocument>>,
+    x: f32,
+    y: f32,
+) -> bool {
+    let Some(target) = document.borrow().element_from_point(x, y) else {
+        return false;
+    };
+    for pressed in [true, false] {
+        let Some(mut event) = document
+            .borrow()
+            .get_node(target)
+            .map(|node| node.synthetic_click_event_data(Modifiers::empty()))
+        else {
+            return false;
+        };
+        event.coords.page_x = x;
+        event.coords.page_y = y;
+        event.coords.client_x = x;
+        event.coords.client_y = y;
+        event.coords.screen_x = x;
+        event.coords.screen_y = y;
+        event.button = MouseEventButton::Main;
+        event.buttons = MouseEventButtons::from_bits_truncate(u8::from(pressed));
+        let event = if pressed {
+            UiEvent::PointerDown(event)
+        } else {
+            UiEvent::PointerUp(event)
+        };
+        dispatch_ui_event(runtime, dispatcher, document, event);
+    }
+    true
 }
 
 fn json_string(text: &str) -> String {

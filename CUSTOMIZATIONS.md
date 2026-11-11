@@ -1,3 +1,37 @@
+## 2026-11-11 - Blitz probe: Settings popup and typed name in the template story run
+
+**Files touched:** `support/blitz-v8-probe/src/{game.rs,window.rs}`,
+`support/blitz-v8-probe/{README.md,compat/manifest.json}`, `.github/workflows/blitz-probe.yml`,
+`TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+`--game <dist> --story` on the unmodified visual-novel-template now prints two more result
+lines besides `game_story` (whose two-dialogue criteria are unchanged; it is now its own
+function, `two_dialogues`, and the advance input is the shared `advance` helper):
+
+- `game_settings_popup`, before Start: trusted click on the menu's "Settings" button, wait
+  for the Base UI dialog (`role="dialog"`, title "Settings" via `aria-labelledby`/
+  `data-slot=dialog-title`, `data-open`, no running finite animation), Escape through
+  `window::press_key` (the `EventDriver` bridge from the text-entry entry below), then the
+  dialog must be unmounted and the `settings` search parameter gone.
+- `game_name_input`, after state 2: advance with the method that produced state 2 until the
+  InputRequestDialog input appears (start.label step 5), keep the dialog's own focus or focus
+  it with the new `window::pointer_click` (primary press/release through the `EventDriver`, so
+  Blitz's pointer default action focuses the input and places the caret), End + Backspace to
+  clear the "Peter" default, type `Zorvaq` key by key, require the value and an enabled
+  Confirm, Enter, dialog unmounted, then a later dialogue line (not the speaker label) must
+  contain the name. `not_run` if `game_story` failed.
+
+Each phase fails on an error toast or on script errors captured during that phase only.
+No library covers driving a specific game's UI; the code reuses the existing Blitz
+`EventDriver` bridge, hit-test and story helpers. Selectors come from the template sources
+(`components/menus/main-menu.tsx`, `menus/settings/index.tsx`, `ui/dialog.tsx`,
+`modals/input-request-dialogues.tsx`, `content/labels/start.label.ts`,
+`lib/hooks/hotkeys-hooks.ts`); not checked against Chrome in this change. The CI story step
+timeout goes from 600 to 900 s; the new lines are annotated (warning when not passed) and do
+not change the step result. Manifest: evidence `template_settings_popup` for
+`template.popup_dialog`, `template_name_input` for `template.name_input`. Save/load untouched.
+Internal probe tooling only: no README/wiki change for users.
+
 ## 2026-11-11 - Blitz probe: text entry on Blitz's editor, one cancelable input bridge
 
 **Files touched:** `support/blitz-v8-probe/src/{main.rs,window.rs,dom.js,dom_api_test.js}`,
