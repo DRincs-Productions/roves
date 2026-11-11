@@ -2442,7 +2442,7 @@
   // value; a write before that creates it. Limits: no dirty-value flag (Blitz
   // rewrites the editor when the `value` attribute changes, which React keeps equal
   // to the value), no selection API, no `change` event, no valueAsNumber or number
-  // sanitization; other value-mode types (date, range, color, file, ...) refuse
+  // sanitization; range keeps a separate current value, and date/color/file refuse
   // writes because nothing edits them.
   const INPUT_TYPES = new Set([
     "hidden", "text", "search", "tel", "url", "email", "password", "date", "month",
@@ -2466,6 +2466,31 @@
     return stripNewlines(value);
   }
   const normalizeNewlines = (value) => value.replace(/\r\n?/g, "\n");
+  const rangeValues = new WeakMap();
+  function rangeNumber(value, fallback) {
+    if (value === null || !/^-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?$/.test(value)) return fallback;
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+  function rangeValue(input, value) {
+    const min = rangeNumber(input.getAttribute("min"), 0);
+    const max = Math.max(min, rangeNumber(input.getAttribute("max"), 100));
+    let number = Math.max(min, Math.min(max, rangeNumber(value, min / 2 + max / 2)));
+    const stepAttribute = input.getAttribute("step");
+    if (stepAttribute?.toLowerCase() !== "any") {
+      const step = rangeNumber(stepAttribute, 1);
+      const interval = step > 0 ? step : 1;
+      const base = rangeNumber(input.getAttribute("min"), rangeNumber(input.getAttribute("value"), 0));
+      const lowest = Math.ceil((min - base) / interval);
+      const highest = Math.floor((max - base) / interval);
+      if (lowest <= highest) {
+        const rounded = Math.round((number - base) / interval);
+        const snapped = base + Math.max(lowest, Math.min(highest, rounded)) * interval;
+        if (Number.isFinite(snapped)) number = Number(snapped.toPrecision(15));
+      }
+    }
+    return String(number);
+  }
   class HTMLInputElement extends HTMLElement {
     get type() {
       handleOf(this, "type");
@@ -2486,6 +2511,7 @@
         return op_blitz_text_control_value(handle) ?? sanitizeInputValue(type, this.getAttribute("value") ?? "");
       }
       const attribute = this.getAttribute("value");
+      if (type === "range") return rangeValue(this, rangeValues.get(this) ?? attribute);
       return attribute ?? (type === "checkbox" || type === "radio" ? "on" : "");
     }
     set value(value) {
@@ -2494,6 +2520,8 @@
       const type = this.type;
       if (TEXT_EDITOR_TYPES.has(type)) {
         op_blitz_set_text_control_value(handle, sanitizeInputValue(type, value), false);
+      } else if (type === "range") {
+        rangeValues.set(this, rangeValue(this, value));
       } else if (DEFAULT_VALUE_MODE_TYPES.has(type)) {
         this.setAttribute("value", value);
       } else {

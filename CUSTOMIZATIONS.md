@@ -1,3 +1,7 @@
+## 2026-11-11 - Blitz probe: range input value for Settings
+
+Support the current value of range inputs in the DOM bridge. React can initialize the Settings slider, and the range value is normalized against its bounds and step independently of the default value. The forms fixture covers assignment, rounding and clamping. Native slider interaction remains outside this change.
+
 ## 2026-11-11 - Blitz probe: deterministic Tone playback-rate check
 
 The Tone fixture checks buffer source options while the audio context is suspended, then resumes and checks the applied rate during playback. This isolates constructor validation from an in-flight render quantum that can publish the previous native AudioParam value (CI 43079823549).

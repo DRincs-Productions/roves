@@ -27,6 +27,16 @@
   check(typeof descriptor?.get === "function" && typeof descriptor?.set === "function",
     "value accessor on HTMLInputElement.prototype (React's value tracker wraps it)");
 
+  const range = document.createElement("input");
+  range.type = "range";
+  range.setAttribute("max", "10");
+  range.setAttribute("step", "2");
+  range.defaultValue = "4";
+  range.value = "7";
+  check(range.value === "8" && range.defaultValue === "4", "range value snaps independently of defaultValue");
+  range.value = "100";
+  check(range.value === "10", "range value clamps to max");
+
   // Default value and value of a detached input (no Blitz editor until a write).
   const detached = document.createElement("input");
   check(detached.value === "" && detached.defaultValue === "", "empty default value");
