@@ -1333,10 +1333,29 @@ async fn name_input(
             let focused = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
             let focused: Value = deno_core::serde_json::from_str(&focused).unwrap_or(Value::Null);
             if focused["focused"] != Value::Bool(true) {
-                break 'name Some(format!(
-                    "a pointer press on the input ({x}, {y}) did not focus it (focused: {})",
-                    crate::evaluate_string(runtime, "__rovesStory.focused()")
-                ));
+                steps.push(json!({
+                    "action": "pointer_press",
+                    "result": "input not focused",
+                    "focused": crate::evaluate_string(runtime, "__rovesStory.focused()"),
+                }));
+                focus_method = "tab_key";
+                let mut reached_input = false;
+                for _ in 0..16 {
+                    window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Tab));
+                    let focused = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+                    if deno_core::serde_json::from_str::<Value>(&focused)
+                        .is_ok_and(|input| input["focused"] == Value::Bool(true))
+                    {
+                        reached_input = true;
+                        break;
+                    }
+                }
+                if !reached_input {
+                    break 'name Some(format!(
+                        "pointer and Tab did not focus the input (focused: {})",
+                        crate::evaluate_string(runtime, "__rovesStory.focused()")
+                    ));
+                }
             }
         }
         report["focus_method"] = json!(focus_method);
