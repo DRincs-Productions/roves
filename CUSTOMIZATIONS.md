@@ -1,3 +1,37 @@
+## 2026-11-11 - Blitz probe: finished CSS transitions complete instead of canceling
+
+**Files touched:** `support/blitz-v8-probe/vendor/blitz-dom/{src/stylo.rs,src/document.rs,src/lib.rs,ROVES_PATCHES.md}`,
+`patches/blitz-dom-0.3.0-beta.4/0002-record-finished-animations.patch`,
+`support/blitz-v8-probe/src/{main.rs,dom.js}`, `.github/workflows/blitz-probe.yml`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI 43047120469 (`css_get_animations_stylo_state`, as reported in the assignment; the log was
+not readable in this session): in phase 2 the 100 ms transition was `idle`, its `finished`
+rejected with `AbortError`, Base UI's `useAnimationsFinished` waiter ended `settled` instead
+of `finished`, and the finite forwards animation lost its object. Cause for transitions:
+`resolve_stylist` moves an entry `Running -> Finished` and then runs the style traversal of
+the same flush, whose restyle (Stylo's servo `process_animations_for_style`, from memory of
+the Stylo source: "We clear away any finished transitions, but retain animations") removes
+finished transitions from the set. The sweep therefore saw every completed transition simply
+disappear and canceled it. Fix, with no change to Blitz's behavior: vendored patch 0002
+records each entry the state machine finishes, before the traversal (where Servo emits
+`transitionend`), and exposes `BaseDocument::take_finished_animations()`; new op
+`op_blitz_take_finished_animations` returns them with the same identity fields as
+`op_blitz_get_animations` (shared creation-time helpers). `dom.js` drains the record after
+every flush it reads (`getAnimations`) and at the start of every frame sweep, before any
+disappearance counts as a cancel: a matching transition resolves `finished` with itself and
+leaves the live map (`finished`), an animation resolves and keeps its object (Stylo keeps it
+for fill modes). Canceled or removed entries still reject with `AbortError`. Covers blitz-shell's
+own `resolve` in `--window` too. Debug evidence: `dom.js` keeps a 200-entry lifecycle log
+(created with other same-key objects, finished, finished-record matched or not, canceled with
+the native entries of the same key, so a creation-time drift is distinguishable from a
+disappearance). On a failed or throwing `css_animations` phase the probe prints
+`ROVES_PROBE_DEBUG {"check":"css_get_animations_stylo_state","evidence":{log, live, native}}`
+and the workflow re-emits it as a notice. The finite-animation symptom is not explained by
+the transition removal: if it persists, that evidence is the next input. Not compiled or run
+locally (no heavy builds; `node --check`, the Cargo registry and the CI log were not
+permitted in the session).
+
 ## 2026-11-11 - Blitz probe: Element.getAnimations from Stylo's animation state
 
 **Files touched:** `support/blitz-v8-probe/{Cargo.toml,README.md,src/main.rs,src/dom.js,src/animations_test.js}`,

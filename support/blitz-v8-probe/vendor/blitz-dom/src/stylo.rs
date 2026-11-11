@@ -21,6 +21,7 @@ use selectors::{
 use style::CaseSensitivityExt;
 use style::animation::AnimationSetKey;
 use style::animation::AnimationState;
+use style::animation::KeyframesIterationState;
 use style::applicable_declarations::ApplicableDeclarationBlock;
 use style::bloom::each_relevant_element_hash;
 use style::color::AbsoluteColor;
@@ -59,7 +60,42 @@ use style_dom::ElementState;
 
 use style::values::computed::text::TextAlign as StyloTextAlign;
 
+/// Upper bound of `BaseDocument::finished_animations` when the embedder never
+/// takes them (oldest entries are dropped). Roves patch.
+pub(crate) const FINISHED_ANIMATIONS_CAP: usize = 1024;
+
+/// A CSS transition or animation that `resolve_stylist` moved to `Finished`,
+/// captured before the style traversal: Stylo's restyle removes finished
+/// transitions from the set (keeping only animations, for `animation-fill-mode`),
+/// so an embedder reading the set afterwards cannot tell a finished transition
+/// from a canceled one. Values are Stylo's own, in seconds. Roves patch.
+pub struct FinishedAnimation {
+    /// Node of the `AnimationSetKey` (Blitz keys sets by `OpaqueNode(node_id)`).
+    pub node_id: NodeId,
+    pub pseudo_element: Option<PseudoElement>,
+    /// `true` for a transition, `false` for a keyframes animation.
+    pub is_transition: bool,
+    /// Transition property or `animation-name`.
+    pub name: String,
+    /// Transition `start_time` (delay included) or animation `started_at`
+    /// (start of its current iteration).
+    pub start: f64,
+    pub delay: f64,
+    pub duration: f64,
+    /// Completed iterations of an animation (0 for transitions).
+    pub current_iteration: f64,
+    /// Animation time of the flush that finished it.
+    pub finished_at: f64,
+}
+
 impl crate::document::BaseDocument {
+    fn push_finished_animation(&mut self, finished: FinishedAnimation) {
+        if self.finished_animations.len() >= FINISHED_ANIMATIONS_CAP {
+            self.finished_animations.remove(0);
+        }
+        self.finished_animations.push(finished);
+    }
+
     pub fn resolve_stylist(&mut self, now: f64) {
         style::thread_state::enter(ThreadState::LAYOUT);
 
@@ -80,6 +116,7 @@ impl crate::document::BaseDocument {
             .process_style(root, Some(&self.snapshots));
 
         // Mark actively animating nodes as dirty
+        let mut finished = Vec::new();
         let mut sets = self.animations.sets.write();
         for (key, set) in sets.iter_mut() {
             let node_id = NodeId::from_u64(key.node.id() as u64);
@@ -110,6 +147,21 @@ impl crate::document::BaseDocument {
 
                 if animation.state == AnimationState::Running && animation.has_ended(now) {
                     animation.state = AnimationState::Finished;
+                    let current_iteration = match animation.iteration_state {
+                        KeyframesIterationState::Finite(current, _) => current,
+                        KeyframesIterationState::Infinite(current) => current,
+                    };
+                    finished.push(FinishedAnimation {
+                        node_id,
+                        pseudo_element: key.pseudo_element.clone(),
+                        is_transition: false,
+                        name: animation.name.to_string(),
+                        start: animation.started_at,
+                        delay: animation.delay,
+                        duration: animation.duration,
+                        current_iteration,
+                        finished_at: now,
+                    });
                 }
             }
 
@@ -119,10 +171,25 @@ impl crate::document::BaseDocument {
                 }
                 if transition.state == AnimationState::Running && transition.has_ended(now) {
                     transition.state = AnimationState::Finished;
+                    let property = &transition.property_animation;
+                    finished.push(FinishedAnimation {
+                        node_id,
+                        pseudo_element: key.pseudo_element.clone(),
+                        is_transition: true,
+                        name: property.property_id().name().to_string(),
+                        start: transition.start_time,
+                        delay: transition.delay,
+                        duration: property.duration,
+                        current_iteration: 0.0,
+                        finished_at: now,
+                    });
                 }
             }
         }
         drop(sets);
+        for entry in finished {
+            self.push_finished_animation(entry);
+        }
 
         // Build the style context used by the style traversal
         let context = SharedStyleContext {

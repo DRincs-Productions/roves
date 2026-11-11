@@ -9,6 +9,7 @@ use crate::net::{
 use crate::node::{ImageData, NodeFlags, RasterImageData, SpecialElementData, Status, TextBrush};
 use crate::scrolling::ScrollAnimationState;
 use crate::selection::TextSelection;
+use crate::stylo::FinishedAnimation;
 use crate::stylo_device::{DeviceChanges, make_device};
 use crate::stylo_to_cursor_icon::stylo_to_cursor_icon;
 use crate::traversal::TreeTraverser;
@@ -270,6 +271,8 @@ pub struct BaseDocument {
     /// The Stylo engine
     pub(crate) stylist: Stylist,
     pub(crate) animations: DocumentAnimationSet,
+    /// Entries `resolve_stylist` moved to `Finished`, oldest first (Roves patch).
+    pub(crate) finished_animations: Vec<FinishedAnimation>,
     /// Stylo shared lock
     pub(crate) guard: SharedRwLock,
     /// Stylo invalidation map. We insert into this map prior to mutating nodes.
@@ -477,6 +480,7 @@ impl BaseDocument {
             root_node_id: NodeId::default(),
             stylist,
             animations: DocumentAnimationSet::default(),
+            finished_animations: Vec::new(),
             snapshots,
             nodes_to_id,
             viewport,
@@ -2065,6 +2069,15 @@ impl BaseDocument {
     /// tracks them (keys use `OpaqueNode(node_id.as_u64())`). Roves patch.
     pub fn animations(&self) -> &DocumentAnimationSet {
         &self.animations
+    }
+
+    /// Takes the entries that `resolve_stylist` moved to `Finished` since the
+    /// previous call, oldest first. Stylo removes finished transitions from the
+    /// set during the same restyle, so `animations()` never shows them as
+    /// finished. Keeps at most `FINISHED_ANIMATIONS_CAP` (oldest dropped) when
+    /// nobody takes them. Roves patch.
+    pub fn take_finished_animations(&mut self) -> Vec<FinishedAnimation> {
+        std::mem::take(&mut self.finished_animations)
     }
 
     pub fn is_animating(&self) -> bool {

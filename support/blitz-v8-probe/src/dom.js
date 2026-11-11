@@ -34,6 +34,7 @@
     op_blitz_namespace,
     op_blitz_computed_style,
     op_blitz_get_animations,
+    op_blitz_take_finished_animations,
     op_blitz_document_root,
     op_blitz_retain,
     op_blitz_release,
@@ -1669,14 +1670,25 @@
   // kind, node, pseudo-element, name and creation time, kept while the entry
   // exists, so repeated calls return the same object and `finished` promise.
   // runAnimationFrame settles them (updateCssAnimations): `finished` resolves
-  // with the animation when Stylo reports Finished and rejects with an
-  // AbortError (marked handled, as the spec's cancel does) when the entry is
-  // canceled or disappears (class removed, element removed, restart).
+  // with the animation when Stylo's state machine reports Finished, and rejects
+  // with an AbortError (marked handled, as the spec's cancel does) when the
+  // entry is canceled or disappears without finishing (class removed, element
+  // removed, restart). Stylo removes a finished transition from its set in the
+  // same restyle that finishes it, so completion comes from Blitz's record of
+  // finished entries (op_blitz_take_finished_animations, drained before any
+  // disappearance is treated as a cancel), not from the set itself.
   // Instances only: no constructible Animation/KeyframeEffect globals, no
   // play/pause/cancel/reverse/animate, document.getAnimations or timelines.
   const animationInternals = new WeakMap(); // Animation or KeyframeEffect -> state
   const liveAnimations = new Map(); // "kind|node|pseudo|name" -> Animation[]
   let constructingAnimation = false;
+  // Bounded lifecycle log (created / finished / canceled with the native
+  // entries of the same key), read by the embedder only when a check fails.
+  const animationDebugLog = [];
+  function logAnimationEvent(event) {
+    if (animationDebugLog.length >= 200) animationDebugLog.shift();
+    animationDebugLog.push(event);
+  }
   function animationState(object, name) {
     const internal = animationInternals.get(object);
     if (internal === undefined) throw new TypeError(`Illegal invocation: '${name}'`);
@@ -1776,6 +1788,7 @@
       : Math.max(0, now - entry.start);
     if (state === "finished" && internal.finishedState === "pending") {
       internal.finishedState = "resolved";
+      logAnimationEvent({ event: "finished", now, key: animationKey(entry), start: entry.start });
       internal.resolveFinished(internal.animation);
     } else if (state !== "finished" && internal.finishedState === "resolved") {
       resetFinished(internal);
@@ -1819,9 +1832,40 @@
     applyAnimationEntry(internal, entry, now);
     const key = animationKey(entry);
     const list = liveAnimations.get(key);
+    logAnimationEvent({
+      event: "created",
+      now,
+      key,
+      start: entry.start,
+      state: entry.state,
+      // Other live objects of the same key: expected only after a restart.
+      others: (list ?? []).map((other) => animationInternals.get(other).entry.start),
+    });
     if (list === undefined) liveAnimations.set(key, [animation]);
     else list.push(animation);
     return animation;
+  }
+  // Entries Stylo finished since the previous call: settle their live objects.
+  // A finished transition is no longer in Stylo's set (and no longer relevant),
+  // so its object leaves the live map, finished; a finished animation stays in
+  // the set (fill modes), so its object stays live and keeps its identity.
+  function settleFinishedAnimations(now) {
+    const records = JSON.parse(op_blitz_take_finished_animations());
+    for (const record of records) {
+      const key = animationKey(record);
+      const list = liveAnimations.get(key);
+      if (list === undefined) continue; // no object was ever handed out
+      const animation = list.find((candidate) => Math.abs(animationInternals.get(candidate).entry.start - record.start) < 0.001);
+      logAnimationEvent({ event: "finished-record", now, key, start: record.start, finishedAt: record.finished_at, matched: animation !== undefined });
+      if (animation === undefined) continue;
+      const internal = animationInternals.get(animation);
+      applyAnimationEntry(internal, { ...internal.entry, state: "finished" }, now);
+      if (record.kind === "transition") {
+        const remaining = list.filter((candidate) => candidate !== animation);
+        if (remaining.length === 0) liveAnimations.delete(key);
+        else liveAnimations.set(key, remaining);
+      }
+    }
   }
   // "Relevant" animations: current or in effect. A finished entry stays in
   // Stylo while its style holds it, but is relevant only with a forwards fill
@@ -1838,6 +1882,8 @@
   }
   function cssAnimationsFor(handle, subtree) {
     const { now, entries } = animationEntries(handle, subtree);
+    // The flush above may have finished (and Stylo removed) transitions.
+    settleFinishedAnimations(now);
     const claimed = new Set();
     const result = [];
     for (const entry of entries) {
@@ -1850,11 +1896,16 @@
     }
     return result;
   }
-  // Once per frame, after the previous frame's style flush: mirror every live
-  // object's entry, settle `finished`, drop objects whose entry is gone.
+  // Once per frame, after the previous frame's style flush: settle what Stylo
+  // finished, mirror every live object's entry, and cancel objects whose entry
+  // is gone without finishing.
   function updateCssAnimations() {
-    if (liveAnimations.size === 0) return;
+    if (liveAnimations.size === 0) {
+      op_blitz_take_finished_animations(); // nothing to settle: just drain
+      return;
+    }
     const { now, entries } = animationEntries(-1, false);
+    settleFinishedAnimations(now);
     const claimed = new Set();
     for (const entry of entries) {
       const animation = findCssAnimation(entry, claimed);
@@ -1865,7 +1916,18 @@
     for (const [key, list] of liveAnimations) {
       const remaining = list.filter((animation) => {
         if (claimed.has(animation)) return true;
-        cancelCssAnimation(animationInternals.get(animation));
+        const internal = animationInternals.get(animation);
+        logAnimationEvent({
+          event: "canceled",
+          now,
+          key,
+          start: internal.entry.start,
+          lastState: internal.entry.state,
+          // Native entries of the same key: a start mismatch here means the
+          // identity drifted instead of the entry disappearing.
+          native: entries.filter((entry) => animationKey(entry) === key).map((entry) => ({ start: entry.start, state: entry.state, iteration: entry.current_iteration })),
+        });
+        cancelCssAnimation(internal);
         return false;
       });
       if (remaining.length === 0) liveAnimations.delete(key);
@@ -2601,6 +2663,18 @@
       return wrap(handle).dispatchEvent(event);
     },
     runAnimationFrame,
+    // Failure evidence for the getAnimations checks: the lifecycle log, the live
+    // objects and Stylo's current entries (read without flushing or draining).
+    cssAnimationsDebug() {
+      const live = [];
+      for (const [key, list] of liveAnimations) {
+        for (const animation of list) {
+          const internal = animationInternals.get(animation);
+          live.push({ key, start: internal.entry.start, state: internal.entry.state, playState: internal.playState, finished: internal.finishedState });
+        }
+      }
+      return JSON.stringify({ log: animationDebugLog, live, native: JSON.parse(op_blitz_get_animations(-1, false)) });
+    },
     // After the page's scripts: readyState interactive -> DOMContentLoaded ->
     // complete -> load (on the window), as a browser does.
     documentLoaded() {

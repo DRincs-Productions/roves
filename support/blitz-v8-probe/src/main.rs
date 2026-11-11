@@ -13,6 +13,7 @@ use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
 use style::animation::{AnimationState, KeyframesIterationState};
 use style::properties::{PropertyDeclarationId, PropertyId};
+use style::selector_parser::PseudoElement;
 
 mod animation_clock;
 mod audio;
@@ -524,6 +525,73 @@ fn tree_positions(document: &BaseDocument, root: NodeId) -> HashMap<NodeId, (usi
     positions
 }
 
+/// Web Animations start time (creation time, ms) of a transition: Stylo's
+/// `start_time` already includes the delay. The identity key of `dom.js`.
+fn transition_creation_ms(start_time: f64, delay: f64) -> f64 {
+    (start_time - delay) * 1000.0
+}
+
+/// Creation time (ms) of a keyframes animation: `started_at` is the start of the
+/// current iteration (creation + delay, advanced by one duration per iteration),
+/// so the result stays the same for the whole life of the animation.
+fn animation_creation_ms(
+    started_at: f64,
+    current_iteration: f64,
+    duration: f64,
+    delay: f64,
+) -> f64 {
+    (started_at - current_iteration * duration - delay) * 1000.0
+}
+
+/// The page-pseudo name `dom.js` uses, or `None` for pseudo-elements that are
+/// not `Element.getAnimations` targets here.
+fn animation_pseudo_name(pseudo: Option<&PseudoElement>) -> Option<&'static str> {
+    match pseudo {
+        None => Some(""),
+        Some(pseudo) if pseudo.is_before() => Some("::before"),
+        Some(pseudo) if pseudo.is_after() => Some("::after"),
+        Some(_) => None,
+    }
+}
+
+/// Entries Blitz's `resolve_stylist` moved to `Finished` since the previous
+/// call (vendored blitz-dom patch 0002), as JSON `[{kind, node, pseudo, name,
+/// start, finished_at}]` with the same identity fields as
+/// `op_blitz_get_animations`. Stylo drops finished transitions from the set in
+/// that same restyle, so this is the only record that they completed rather than
+/// being canceled. Taking them empties the record (one consumer: `dom.js`).
+#[op2]
+#[string]
+fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
+    let document = probe_document(&state);
+    let finished = document.borrow_mut().take_finished_animations();
+    let entries: Vec<_> = finished
+        .iter()
+        .filter_map(|entry| {
+            let pseudo = animation_pseudo_name(entry.pseudo_element.as_ref())?;
+            let start = if entry.is_transition {
+                transition_creation_ms(entry.start, entry.delay)
+            } else {
+                animation_creation_ms(
+                    entry.start,
+                    entry.current_iteration,
+                    entry.duration,
+                    entry.delay,
+                )
+            };
+            Some(deno_core::serde_json::json!({
+                "kind": if entry.is_transition { "transition" } else { "animation" },
+                "node": to_handle(entry.node_id),
+                "pseudo": pseudo,
+                "name": entry.name,
+                "start": start,
+                "finished_at": entry.finished_at * 1000.0,
+            }))
+        })
+        .collect();
+    deno_core::serde_json::Value::Array(entries).to_string()
+}
+
 /// `Element.getAnimations` (handle >= 0, `subtree` per its options) or, with a
 /// negative handle, every entry of the document for the per-frame settlement
 /// sweep of `dom.js`. Reads Stylo's own `DocumentAnimationSet` (Blitz advances
@@ -561,12 +629,8 @@ fn op_blitz_get_animations(
     for (key, set) in sets.iter() {
         // Blitz keys animations by `OpaqueNode(node_id.as_u64())` (its stylo.rs).
         let node_id = NodeId::from_u64(key.node.id() as u64);
-        let pseudo = match &key.pseudo_element {
-            None => "",
-            Some(pseudo) if pseudo.is_before() => "::before",
-            Some(pseudo) if pseudo.is_after() => "::after",
-            // Other pseudo-elements are not Element.getAnimations targets here.
-            Some(_) => continue,
+        let Some(pseudo) = animation_pseudo_name(key.pseudo_element.as_ref()) else {
+            continue;
         };
         if let Some(target) = target {
             let included = if subtree {
@@ -592,9 +656,7 @@ fn op_blitz_get_animations(
                     "pseudo": pseudo,
                     "name": property.property_id().name().to_string(),
                     "state": animation_state_name(&transition.state),
-                    // Web Animations start time: creation time (Stylo's
-                    // start_time already includes the delay).
-                    "start": (transition.start_time - transition.delay) * 1000.0,
+                    "start": transition_creation_ms(transition.start_time, transition.delay),
                     "delay": css_time_ms(transition.delay),
                     "duration": css_time_ms(property.duration),
                     "iterations": 1.0,
@@ -613,11 +675,12 @@ fn op_blitz_get_animations(
                 KeyframesIterationState::Finite(current, max) => (current, Some(max)),
                 KeyframesIterationState::Infinite(current) => (current, None),
             };
-            // `started_at` is the start of the current iteration (creation +
-            // delay, advanced by one duration per iteration), so the creation
-            // time stays the same for the whole life of the animation.
-            let start =
-                animation.started_at - current_iteration * animation.duration - animation.delay;
+            let start = animation_creation_ms(
+                animation.started_at,
+                current_iteration,
+                animation.duration,
+                animation.delay,
+            );
             entries.push((
                 1,
                 node_id,
@@ -629,7 +692,7 @@ fn op_blitz_get_animations(
                     "pseudo": pseudo,
                     "name": animation.name.to_string(),
                     "state": animation_state_name(&animation.state),
-                    "start": start * 1000.0,
+                    "start": start,
                     "delay": css_time_ms(animation.delay),
                     "duration": css_time_ms(animation.duration),
                     // null = infinite (JSON has no Infinity; dom.js maps it).
@@ -1606,6 +1669,7 @@ deno_core::extension!(
         op_blitz_namespace,
         op_blitz_computed_style,
         op_blitz_get_animations,
+        op_blitz_take_finished_animations,
     ]
 );
 
@@ -1861,6 +1925,17 @@ fn call_hook(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>, args: &[&
         .call(scope, receiver, &args)
         .expect("hook should not throw");
     value.to_rust_string_lossy(scope)
+}
+
+/// Failure evidence of the `css_animations` stage (`dom.js` `cssAnimationsDebug`:
+/// lifecycle log, live objects, Stylo entries), as one stdout line.
+fn print_css_animations_debug(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>) {
+    let evidence = call_hook(runtime, hook, &[]);
+    println!(
+        "ROVES_PROBE_DEBUG {{\"check\":\"css_get_animations_stylo_state\",\"evidence\":{evidence}}}"
+    );
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
 }
 
 /// One embedder tick after a real-time pause, so timers become due between
@@ -2192,6 +2267,7 @@ fn main() {
             shutdown_gpu,
             gpu_pacing_test,
             gpu_pacing_stats,
+            css_animations_debug,
         ) = {
             deno_core::scope!(scope, runtime);
             let hooks = v8::Local::new(scope, hooks);
@@ -2210,6 +2286,7 @@ fn main() {
                 function("shutdownGpu"),
                 function("gpuPacingTest"),
                 function("gpuPacingStats"),
+                function("cssAnimationsDebug"),
             )
         };
         // dom.js set the performance time origin; no layout flush has run yet, so
@@ -2427,12 +2504,21 @@ fn main() {
                 drive_frames(&mut runtime, &document, &run_animation_frame, frames_before)
                     .await;
             }
-            runtime
-                .execute_script(
-                    "roves-blitz-animations-phase.js",
-                    format!("animationsPhase({phase});"),
-                )
-                .expect("getAnimations phase should run");
+            let ran = runtime.execute_script(
+                "roves-blitz-animations-phase.js",
+                format!("animationsPhase({phase});"),
+            );
+            if let Err(error) = ran {
+                print_css_animations_debug(&mut runtime, &css_animations_debug);
+                panic!("getAnimations phase {phase} should run: {error}");
+            }
+        }
+        let passed = evaluate_string(
+            &mut runtime,
+            "String(animationsResult.done === true && animationsResult.failures.length === 0)",
+        );
+        if passed != "true" {
+            print_css_animations_debug(&mut runtime, &css_animations_debug);
         }
         let animation_checks = evaluate_string(
             &mut runtime,

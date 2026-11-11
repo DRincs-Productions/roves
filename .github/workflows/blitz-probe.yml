@@ -105,6 +105,12 @@ jobs:
           grep -Fq '"check":"fetch_resolver_refuses_non_public","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"gpu_frame_pacing_simulated_queue","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"gpu_teardown","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+      # getAnimations failure evidence (lifecycle log, live objects, Stylo
+      # entries) as annotations, readable without the raw log.
+      - name: annotate getAnimations evidence
+        if: failure()
+        shell: bash
+        run: grep -F 'ROVES_PROBE_DEBUG' "$RUNNER_TEMP/blitz-probe.log" | cut -c1-4000 | sed 's/^/::notice::/' || true
       # Smoke run on the real game: visual-novel-template's production build (the
       # game roves-action tests with), unmodified, loaded with --game and the
       # default fetch policy (any safe https origin, no allow-list or extra flag).
