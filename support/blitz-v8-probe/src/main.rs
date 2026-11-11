@@ -631,7 +631,9 @@ fn declared_animation_index(declaration: &str, name: &str) -> Option<usize> {
         .next()?
         .split(", ")
         .map(|listed| listed.trim_matches('"'))
-        .rposition(|listed| listed == name)
+        .enumerate()
+        .filter_map(|(index, listed)| (listed == name).then_some(index))
+        .last()
 }
 
 /// Entries Blitz's `resolve_stylist` moved to `Finished` since the previous
