@@ -290,11 +290,12 @@ jobs:
           echo "::notice::story harness exit=$status $(printf '%s' "$story" | cut -c1-900)"
           printf '%s' "$story" | grep -oE '"states":\[[^]]*\]' | cut -c1-700 | sed 's/^/::notice::story states: /'
           printf '%s' "$story" | grep -oE '"toasts":\[[^]]*\]' | cut -c1-700 | sed 's/^/::notice::story toasts: /'
+          printf '%s' "$story" | grep -oE '"new_error_messages":\[[^]]*\]' | cut -c1-900 | sed 's/^/::notice::story new errors: /'
           printf '%s' "$story" | grep -oE '"pacing":\{[^}]*\}' | cut -c1-500 | sed 's/^/::notice::story pacing: /'
           teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
           echo "::notice::story harness teardown: ${teardown:-NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)}"
           if ! printf '%s' "$story" | grep -Fq '"check":"game_story","status":"passed"'; then
-            echo "::error::story harness failed (two dialogue states without error toasts required): $(printf '%s' "$story" | grep -oE '"reason":"([^"\\]|\\.)*"' | cut -c1-500)"
+            echo "::error::story harness failed (two dialogue states without error toasts or new script errors required):$(printf '%s' "$story" | grep -oE '"reason":"([^"\\]|\\.)*"' | cut -c1-500)"
             exit 1
           fi
           [ "$status" -eq 0 ] || { echo "::error::story states reached, but the probe exited with $status"; exit 1; }

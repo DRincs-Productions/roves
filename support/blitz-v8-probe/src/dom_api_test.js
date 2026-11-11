@@ -327,6 +327,71 @@
   check(mediaIllegal instanceof TypeError, "HTMLVideoElement is not constructible");
   host.innerHTML = "";
 
+  // Form-control brands for keyboard guards (CI 42917654548: the template's
+  // TanStack Hotkeys `ignoreInputs` threw ReferenceError on HTMLInputElement at
+  // every keydown). `isTypingTarget` is the template's guard, de-minified.
+  check(typeof HTMLInputElement === "function" && typeof HTMLTextAreaElement === "function"
+    && typeof HTMLSelectElement === "function" && HTMLInputElement.prototype instanceof HTMLElement
+    && HTMLTextAreaElement.prototype instanceof HTMLElement && HTMLSelectElement.prototype instanceof HTMLElement,
+    "HTMLInputElement / HTMLTextAreaElement / HTMLSelectElement globals");
+  host.innerHTML = '<form><input id="f-text"><input id="f-button" type="BUTTON"><input id="f-bogus" type="bogus">'
+    + '<textarea id="f-area"></textarea><select id="f-select"></select><select id="f-multi" multiple></select>'
+    + '<div id="f-editable" contenteditable=""><span id="f-inner">x</span><p id="f-off" contenteditable="false">y</p></div>'
+    + '<div id="f-plain">z</div></form><svg><input id="f-svg-input"></input></svg>';
+  const byId = (id) => host.querySelector(`#${id}`);
+  const createdInput = document.createElement("INPUT");
+  check(byId("f-text") instanceof HTMLInputElement && createdInput instanceof HTMLInputElement
+    && byId("f-area") instanceof HTMLTextAreaElement && document.createElement("textarea") instanceof HTMLTextAreaElement
+    && byId("f-select") instanceof HTMLSelectElement && document.createElement("select") instanceof HTMLSelectElement,
+    "parsed and created form controls carry their brands");
+  check(!(byId("f-svg-input") instanceof HTMLInputElement) && !(byId("f-plain") instanceof HTMLInputElement)
+    && !(byId("f-area") instanceof HTMLInputElement) && !(byId("f-text") instanceof HTMLTextAreaElement)
+    && !(document.createElementNS(null, "input") instanceof HTMLInputElement),
+    "only HTML-namespace input/textarea/select get the brands");
+  check(byId("f-text").type === "text" && byId("f-button").type === "button" && byId("f-bogus").type === "text"
+    && byId("f-area").type === "textarea" && byId("f-select").type === "select-one"
+    && byId("f-multi").type === "select-multiple", "type reflects the attribute (missing/invalid -> text)");
+  createdInput.type = "Checkbox";
+  check(createdInput.getAttribute("type") === "Checkbox" && createdInput.type === "checkbox",
+    "type setter writes the attribute");
+  check(!("value" in createdInput) && !("selectionStart" in createdInput) && !("value" in byId("f-area")),
+    "no invented editing state on form controls");
+  check(byId("f-editable").isContentEditable && byId("f-inner").isContentEditable && !byId("f-off").isContentEditable
+    && !byId("f-plain").isContentEditable && !byId("f-text").isContentEditable,
+    "isContentEditable follows contenteditable inheritance");
+  byId("f-off").setAttribute("contenteditable", "PLAINTEXT-ONLY");
+  check(byId("f-off").isContentEditable, "contenteditable is ASCII case-insensitive");
+  const isTypingTarget = (element) => {
+    if (!element) return false;
+    if (element instanceof HTMLInputElement) {
+      const type = element.type.toLowerCase();
+      return type !== "button" && type !== "submit" && type !== "reset";
+    }
+    return !!(element instanceof HTMLTextAreaElement || element instanceof HTMLSelectElement
+      || element instanceof HTMLElement && element.isContentEditable);
+  };
+  const guarded = [];
+  const guardListener = (event) => {
+    guarded.push(event.composedPath().some(isTypingTarget) || isTypingTarget(event.target));
+  };
+  document.addEventListener("keydown", guardListener);
+  for (const id of ["f-text", "f-button", "f-area", "f-select", "f-inner", "f-plain"]) {
+    byId(id).dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+  }
+  document.removeEventListener("keydown", guardListener);
+  check(JSON.stringify(guarded) === "[true,false,true,true,true,false]",
+    `template keyboard guard runs without throwing and ignores typing targets (${JSON.stringify(guarded)})`);
+  check([globalThis, document, null].every((target) => isTypingTarget(target) === false),
+    "keyboard guard on window/document/null");
+  let formIllegal = null;
+  try {
+    new HTMLInputElement();
+  } catch (error) {
+    formIllegal = error;
+  }
+  check(formIllegal instanceof TypeError, "HTMLInputElement is not constructible");
+  host.innerHTML = "";
+
   // getElementsByTagName: live HTMLCollection (Motion 12 calls it during init).
   host.innerHTML = '<div id="tags"><p id="p1">a</p><span><p name="second">b</p></span><svg><foreignObject></foreignObject></svg></div>';
   const tags = host.querySelector("#tags");

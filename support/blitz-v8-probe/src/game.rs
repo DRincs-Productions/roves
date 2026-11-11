@@ -577,7 +577,8 @@ fn expected_lines() -> Result<Option<[String; 2]>, String> {
 /// dialogue text that was not on the menu; state 2 must add a dialogue line
 /// absent from state 1 and is reached by the first advance method that works: a
 /// "next" control, a click on the dialogue text, Enter, Space. Toast text never
-/// counts as a state, and any visible error toast fails the run. An
+/// counts as a state; any visible error toast, and any script error or
+/// unhandled rejection captured after the story starts, fails the run. An
 /// error-boundary fallback ("Something went wrong" / "Show Error") fails the
 /// run at the first check that sees it, before Start or while waiting. With
 /// `ROVES_PROBE_STORY_EXPECT='["line 1","line 2"]'` the two states must also
@@ -806,6 +807,22 @@ async fn story(
         runtime,
         "JSON.stringify(__rovesGameErrors.slice(-10).map((e) => e.slice(0, 300)))",
     );
+    // Any script error or unhandled rejection captured after the story started
+    // fails the run, even with two dialogue states and no toast: a broken
+    // listener (e.g. a keyboard guard throwing) can leave the text advancing
+    // while game behavior is already wrong (CI 42917654548 passed that way).
+    let new_errors = errors_after.saturating_sub(errors_before);
+    let new_error_messages = evaluate_owned(
+        runtime,
+        format!(
+            "JSON.stringify(__rovesGameErrors.slice({errors_before}).slice(0, 5).map((e) => e.slice(0, 300)))"
+        ),
+    );
+    let failure = failure.or_else(|| {
+        (new_errors > 0).then(|| {
+            format!("{new_errors} script error(s) captured during the story: {new_error_messages}")
+        })
+    });
     let status = if failure.is_none() {
         "passed"
     } else {
@@ -826,7 +843,9 @@ async fn story(
     );
     report["toasts"] = json!(toasts);
     report["steps"] = json!(steps);
-    report["new_errors"] = json!(errors_after.saturating_sub(errors_before));
+    report["new_errors"] = json!(new_errors);
+    report["new_error_messages"] =
+        deno_core::serde_json::from_str(&new_error_messages).unwrap_or(Value::Null);
     report["recent_errors"] = deno_core::serde_json::from_str(&errors).unwrap_or(Value::Null);
     report["pacing"] =
         deno_core::serde_json::from_str(&crate::call_hook(runtime, gpu_pacing_stats, &[]))

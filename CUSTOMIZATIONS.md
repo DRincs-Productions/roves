@@ -1,3 +1,30 @@
+## 2026-11-11 - Blitz probe: form-control brands for keyboard guards, story fails on new script errors
+
+**Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/dom_api_test.js,src/game.rs}`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI 42917654548 (story, as reported to this session; the run itself could not be re-read here):
+the template reached two distinct dialogue states, but its keyboard guard threw
+`ReferenceError: HTMLInputElement is not defined` and a separate `getAnimations` error was
+captured, while `game_story` still reported `passed`. The guard is TanStack Hotkeys'
+`ignoreInputs` (read in the local template build under `target/visual-novel-template-test`):
+for `activeElement` and every `composedPath()` entry it tests `instanceof HTMLInputElement` +
+`type.toLowerCase()`, `HTMLTextAreaElement`, `HTMLSelectElement` and
+`HTMLElement.isContentEditable`. Reuse: deno_web/deno_webidl have no HTML elements; Blitz's own
+text-input state could not be read in this session (Cargo registry not permitted), so it is not
+wired. `dom.js` now brands HTML-namespace `input`/`textarea`/`select` through the existing
+wrapper-class map (globals, illegal constructors) with only `type` reflected from the Blitz
+node's attributes (input: missing/invalid -> `"text"`, setter writes the attribute;
+`"textarea"`; `"select-one"`/`"select-multiple"`), plus `HTMLElement.isContentEditable` from
+`contenteditable` inheritance (no `designMode`). No `value`/selection/validity state is
+invented in JS. Regression in `dom_api_test.js` runs the template's guard (de-minified) on real
+`keydown` dispatches. `game.rs`: `--story` now fails when any script error or unhandled
+rejection is captured after the story starts (`new_errors` > 0), even with two dialogue states
+and no toast; the first five are reported as `new_error_messages` and annotated by the CI step.
+The `getAnimations` error is left open and is not masked with fake empty animations, so the
+story step is expected to keep failing on it. No new dependency, no new op. Not compiled or run
+locally (no heavy builds; `node`/`rustfmt` and network not permitted in the session).
+
 ## 2026-11-10 - Blitz probe: Node.compareDocumentPosition and Node constants
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/dom_api_test.js}`, `TODO.md`.

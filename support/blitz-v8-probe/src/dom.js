@@ -1649,8 +1649,27 @@
     });
   }
 
-  class HTMLElement extends Element {}
+  class HTMLElement extends Element {
+    // HTML "editing host or editable" from the contenteditable attribute alone:
+    // "" / "true" / "plaintext-only" -> true, "false" -> false, missing or invalid
+    // -> the parent's state (false at a non-HTML parent or the top). The probe has
+    // no designMode, so that branch never applies.
+    get isContentEditable() {
+      handleOf(this, "isContentEditable");
+      for (let element = this; element instanceof HTMLElement; element = element.parentElement) {
+        const value = element.getAttribute("contenteditable");
+        if (value === null) continue;
+        const state = asciiLowercase(value);
+        if (state === "" || state === "true" || state === "plaintext-only") return true;
+        if (state === "false") return false;
+      }
+      return false;
+    }
+  }
   class SVGElement extends Element {}
+  function asciiLowercase(value) {
+    return value.replace(/[A-Z]/g, (letter) => String.fromCharCode(letter.charCodeAt(0) + 32));
+  }
 
   // Offscreen GPUCanvasContext: the "current texture" is a texture of the canvas
   // size that the page renders into. Presenting it inside the Blitz window is a
@@ -1738,7 +1757,47 @@
   }
   class HTMLAudioElement extends HTMLMediaElement {}
   class HTMLVideoElement extends HTMLMediaElement {}
+  // Form-control brands and their `type`, reflected from the attributes the Blitz
+  // node already holds. UI keyboard guards need exactly this (TanStack Hotkeys'
+  // `ignoreInputs`: `instanceof HTMLInputElement` + `type`, `HTMLTextAreaElement`,
+  // `HTMLSelectElement`, `isContentEditable`). No value, selection, validity or
+  // form-owner state is exposed here: the probe does not read Blitz's editing
+  // state yet, and inventing a JS copy of it would diverge from what the user types.
+  const INPUT_TYPES = new Set([
+    "hidden", "text", "search", "tel", "url", "email", "password", "date", "month",
+    "week", "time", "datetime-local", "number", "range", "color", "checkbox", "radio",
+    "file", "submit", "image", "reset", "button",
+  ]);
+  class HTMLInputElement extends HTMLElement {
+    get type() {
+      handleOf(this, "type");
+      const state = asciiLowercase(this.getAttribute("type") ?? "");
+      return INPUT_TYPES.has(state) ? state : "text";
+    }
+    set type(value) {
+      handleOf(this, "type");
+      this.setAttribute(
+        "type",
+        webidl.converters.DOMString(value, "Failed to set the 'type' property on 'HTMLInputElement'", "Value"),
+      );
+    }
+  }
+  class HTMLTextAreaElement extends HTMLElement {
+    get type() {
+      handleOf(this, "type");
+      return "textarea";
+    }
+  }
+  class HTMLSelectElement extends HTMLElement {
+    get type() {
+      handleOf(this, "type");
+      return this.hasAttribute("multiple") ? "select-multiple" : "select-one";
+    }
+  }
   const HTML_ELEMENT_CLASSES = new Map([
+    ["input", HTMLInputElement],
+    ["textarea", HTMLTextAreaElement],
+    ["select", HTMLSelectElement],
     ["canvas", HTMLCanvasElement],
     ["iframe", HTMLIFrameElement],
     ["audio", HTMLAudioElement],
@@ -2005,6 +2064,9 @@
     HTMLMediaElement,
     HTMLAudioElement,
     HTMLVideoElement,
+    HTMLInputElement,
+    HTMLTextAreaElement,
+    HTMLSelectElement,
     NodeList,
     HTMLCollection,
     DOMTokenList,
