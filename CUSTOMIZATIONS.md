@@ -1,3 +1,36 @@
+## 2026-11-11 - Blitz probe: unified machine-readable API compatibility report
+
+**Files touched:** `support/blitz-v8-probe/compat/{manifest.json,report.mjs}` (new),
+`.github/workflows/blitz-probe.yml`, `support/blitz-v8-probe/README.md`, `TODO.md`,
+`docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+First task of the approved compatibility audit. Until now the probe's coverage lived in
+scattered `ROVES_PROBE_RESULT` greps, prose and TODO items. `compat/manifest.json` declares,
+per API (41 entries), the implementation state of the probe source (`present`,
+`present_incomplete` with its gaps, `missing`, `unknown` when engine behaviour such as Blitz's
+`inert` handling or V8 ICU data is unverified), how the visual-novel-template uses it, and
+which result lines evidence it. Stage tests without their own line (`dom_api_test`,
+`guest_dom_test`, `resize_observer`) are evidenced by the fixture summary line printed after
+every stage, plus their `ROVES_PROBE_STAGE` marker. It also lists 12 template paths (boot
+menu, two-dialogue story, Base UI popup, default and typed name input, save slot, load slot,
+auto-exit save, saves shared with production through `roves:`, JSON export/import, visible
+canvas, fullscreen) with the template files they come from, requirements, end-to-end
+evidence, priority and next step; the audit is static, on the template source and its local
+build. `compat/report.mjs` (Node built-ins only, no new dependency) parses the run's logs
+(`blitz-probe.log`, `blitz-game.log`, `blitz-story.log`, `blitz-window.log`,
+`blitz-webgpu-fixture-dx12.log`) and writes `blitz-compat-report.json`: each API is
+`missing`, `failed` (a check ran and did not pass, or the log panicked before it),
+`unavailable` (log absent, check `not_run`/no adapter, or `unknown` implementation),
+`present_incomplete` or `verified`; a path is `missing` while a requirement is missing,
+`unavailable` without an end-to-end harness, else from its own evidence. It adds counts and
+the remaining coverage ordered by priority. New `blitz-probe.yml` step `API compatibility
+report` (both Windows modes, `!cancelled()`, before the upload) adds the JSON to the
+`blitz-probe-<mode>` artifact and annotates a summary. Existing gates are unchanged; the step
+fails only on an invalid manifest (unknown evidence key, or a check id no probe source
+prints); template files cited by the audit but missing from the template's `main` are
+warnings. Not run locally (Node execution was not permitted in the session): CI is the
+check.
+
 ## 2026-11-11 - Blitz probe: completed forwards/both CSS animations stay enumerable
 
 **Files touched:** `support/blitz-v8-probe/vendor/blitz-dom/{src/stylo.rs,src/document.rs,src/lib.rs,ROVES_PATCHES.md}`,

@@ -92,6 +92,26 @@ cargo tree --manifest-path support/blitz-v8-probe/Cargo.toml -i v8
 
 CI entry: `.github/workflows/blitz-probe.yml` (Windows, `cargo check --locked` and run; manually dispatchable).
 
+## API compatibility report
+
+`compat/manifest.json` is the single list of the probe's Web API surface and of the
+visual-novel-template paths audited against it (popup, name input, save/load, ...).
+`compat/report.mjs` (Node built-ins only) combines it with one run's `ROVES_PROBE_RESULT`
+lines into `blitz-compat-report.json`: per API `verified`, `present_incomplete`, `missing`,
+`unavailable` (no evidence this run: log absent, `not_run`, no adapter, or engine behaviour
+not verified) or `failed`; per template path the same, `unavailable` meaning no end-to-end
+harness yet; plus counts and the remaining coverage by priority. CI writes it into the
+`blitz-probe-<mode>` artifact of both modes. Locally, against a downloaded artifact:
+
+```powershell
+node support/blitz-v8-probe/compat/report.mjs --validate --sources support/blitz-v8-probe/src --template <template checkout>
+node support/blitz-v8-probe/compat/report.mjs --logs <artifact dir> --mode normal
+```
+
+When a probe change adds, completes or removes an API, update its manifest entry (and the
+evidence key for a new `ROVES_PROBE_RESULT` check) in the same change; an unknown evidence or
+check id fails the CI step.
+
 ## Next steps
 
 1. Design the wrapper/node lifecycle (GC-aware freeing of Blitz nodes, see above) before adding many more DOM methods; extend the surface only as concrete games need it.

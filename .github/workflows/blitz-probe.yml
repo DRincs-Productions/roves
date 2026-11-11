@@ -384,6 +384,28 @@ jobs:
             Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
             throw "window mode failed with exit code $($process.ExitCode)"
           }
+      # Unified API compatibility report (support/blitz-v8-probe/compat): the
+      # declared implementation state of each API and template path, combined
+      # with this run's ROVES_PROBE_RESULT evidence from every log above, as
+      # verified / present_incomplete / missing / unavailable / failed. It reads
+      # results only and never changes the job result, except that an invalid
+      # manifest (unknown evidence or check id) fails this step. Template files
+      # the audit cites but main no longer has are warnings.
+      - name: API compatibility report
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          template_sha=$(git -C visual-novel-template rev-parse HEAD 2>/dev/null || echo unknown)
+          template_args=()
+          [ -d visual-novel-template/src ] && template_args=(--template visual-novel-template)
+          node support/blitz-v8-probe/compat/report.mjs \
+            --logs "$RUNNER_TEMP" \
+            --out "$RUNNER_TEMP/blitz-compat-report.json" \
+            --mode ${{ matrix.mode }} \
+            --template-sha "$template_sha" \
+            --sources support/blitz-v8-probe/src \
+            "${template_args[@]}" \
+            --github
       - name: upload probe log and offscreen screenshot
         if: always()
         uses: actions/upload-artifact@v4
@@ -402,6 +424,7 @@ jobs:
             ${{ runner.temp }}/blitz-game.png
             ${{ runner.temp }}/blitz-story.log
             ${{ runner.temp }}/blitz-story.png
+            ${{ runner.temp }}/blitz-compat-report.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn
