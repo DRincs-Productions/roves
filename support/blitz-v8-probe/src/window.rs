@@ -138,6 +138,7 @@ pub struct RovesDocument {
     frames: u32,
     last_frame: Option<Instant>,
     ticker_started: bool,
+    timeline_started: bool,
 }
 
 impl RovesDocument {
@@ -155,6 +156,18 @@ impl RovesDocument {
             frames: 0,
             last_frame: None,
             ticker_started: false,
+            timeline_started: false,
+        }
+    }
+
+    /// blitz-shell resolves with its own animation time (seconds since its first
+    /// redraw, a private `Instant`). On the shell's first call into the document,
+    /// restart the page clock so flushes from JS ops use the shell's origin
+    /// instead of the headless one (see `animation_clock`).
+    fn start_shell_timeline(&mut self) {
+        if !self.timeline_started {
+            self.timeline_started = true;
+            crate::animation_clock::page_clock().restart();
         }
     }
 
@@ -209,6 +222,7 @@ impl Document for RovesDocument {
     }
 
     fn inner_mut(&mut self) -> DocGuardMut<'_> {
+        self.start_shell_timeline();
         DocGuardMut::RefCell(RefMut::map(self.document.borrow_mut(), |document| {
             &mut **document
         }))
@@ -226,6 +240,7 @@ impl Document for RovesDocument {
     }
 
     fn poll(&mut self, task_context: Option<Context<'_>>) -> bool {
+        self.start_shell_timeline();
         if !self.ticker_started {
             if let Some(context) = &task_context {
                 // The shell polls when its waker fires; tick it every frame.

@@ -1,3 +1,28 @@
+## 2026-11-11 - Blitz probe: monotonic CSS animation timeline for every layout flush
+
+**Files touched:** `support/blitz-v8-probe/src/{animation_clock.rs,main.rs,window.rs}`, `CUSTOMIZATIONS.md`.
+
+First prerequisite of `Element.getAnimations` (see `TODO.md`): every probe flush passed
+`0.0` as Blitz's animation time (`BaseDocument::resolve`/`resolve_stylist`, forwarded to
+Stylo's `current_time_for_animations`), so CSS animations and transitions could never advance.
+New `animation_clock.rs`: one monotonic clock (seconds, `Instant`, never decreasing) for the
+page document, kept in a thread-local because the probe runs exactly one page document on the
+runtime's thread. `resolve_layout` (headless frames, game mode) and the JS-driven flushes
+(`getComputedStyle`, `getBoundingClientRect`/offset rects, scroll metrics/`scrollTo`,
+ResizeObserver sizes) all read it. Origins are never mixed: headless, the clock is aligned once,
+before the first flush, with the guest's `performance.now()` origin (set by `dom.js`'s
+`setTimeOrigin`), so rAF timestamps and CSS animation times share an origin. In `--window`,
+blitz-shell resolves with its own private timer (seconds since its first redraw), so the clock
+restarts at zero on the shell's first `poll`/`inner_mut` (within one event-loop turn of that
+redraw); animations started headless are not carried into the window (the fixture page has
+none). Regression `css_finite_animation_monotonic_timeline` (fixture mode only): a separate
+document with its own clock, advanced deterministically without sleeps, runs a real 500 ms
+`linear forwards` keyframe animation of `width` through the same `resolve(time)` path and
+asserts start ~0, about 50 px at 250 ms and 100 px held after the end. No animation API, no
+Blitz fork, no new dependency. Whether Blitz 0.3.0-beta.4 restyles animating nodes and settles
+finished animations inside `resolve` is exactly what that check verifies in CI. Not compiled or
+run locally (no heavy builds; Cargo registry sources not readable in the session).
+
 ## 2026-11-11 - Blitz probe: form-control brands for keyboard guards, story fails on new script errors
 
 **Files touched:** `support/blitz-v8-probe/{README.md,src/dom.js,src/dom_api_test.js,src/game.rs}`,

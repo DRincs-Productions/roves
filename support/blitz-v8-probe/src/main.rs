@@ -13,6 +13,7 @@ use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
 use style::properties::{PropertyDeclarationId, PropertyId};
 
+mod animation_clock;
 mod audio;
 mod game;
 mod net_policy;
@@ -435,7 +436,7 @@ fn op_blitz_computed_style(
         return Err(JsErrorBox::type_error("getComputedStyle on a non-element"));
     }
     let node_id = node.id;
-    document.resolve_stylist(0.0);
+    document.resolve_stylist(animation_clock::page_time());
     let node = document.get_node(node_id).unwrap();
     let Some(styles) = node.primary_styles() else {
         return Ok(String::new());
@@ -767,7 +768,7 @@ fn op_blitz_measure(
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
     let node_id = attached_node(&document, handle)?.id;
-    document.resolve(0.0);
+    document.resolve(animation_clock::page_time());
     let rect = if offset {
         document
             .offset_rect(node_id)
@@ -903,7 +904,7 @@ fn op_blitz_scroll_metrics(state: Rc<RefCell<OpState>>, handle: f64) -> Result<u
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
     let node_id = attached_node(&document, handle)?.id;
-    document.resolve(0.0);
+    document.resolve(animation_clock::page_time());
     let Some(scroll) = scroll_box(&document, node_id) else {
         state.borrow_mut().borrow_mut::<ScrollMetrics>().0 = [0.0; 8];
         return Ok(0);
@@ -940,7 +941,7 @@ fn op_blitz_scroll_to(
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
     let node_id = attached_node(&document, handle)?.id;
-    document.resolve(0.0);
+    document.resolve(animation_clock::page_time());
     let Some(scroll) = scroll_box(&document, node_id) else {
         return Ok(());
     };
@@ -981,7 +982,7 @@ fn op_blitz_box_sizes(
     let mut document = document.borrow_mut();
     let node_id = attached_node(&document, handle)?.id;
     if flush {
-        document.resolve(0.0);
+        document.resolve(animation_clock::page_time());
     }
     let layout = *document
         .get_node(node_id)
@@ -1402,7 +1403,64 @@ fn resolve_layout(document: &Rc<RefCell<HtmlDocument>>) {
         1.0,
         ColorScheme::Light,
     ));
-    document.resolve(0.0);
+    document.resolve(animation_clock::page_time());
+}
+
+/// A finite CSS animation must progress with the document timeline: a separate
+/// document with its own clock, advanced deterministically (no sleeps), resolved
+/// through the same Blitz/Stylo `resolve(time)` path the page flushes use.
+/// Returns the layout widths at the start, midway and after the end.
+fn check_css_animation_progression() -> [f32; 3] {
+    const HTML: &str = r#"<!doctype html><html><head><style>
+        @keyframes roves-grow { from { width: 0px } to { width: 100px } }
+        body { margin: 0 }
+        #grow { height: 10px; background: rgb(0, 0, 0);
+                animation: roves-grow 500ms linear 0s 1 normal forwards; }
+        </style></head><body><div id="grow"></div></body></html>"#;
+    let clock = animation_clock::AnimationClock::new();
+    let mut document = HtmlDocument::from_html(HTML, DocumentConfig::default());
+    document.set_viewport(Viewport::new(
+        VIEWPORT.0,
+        VIEWPORT.1,
+        1.0,
+        ColorScheme::Light,
+    ));
+    let node_id = find_element_by_id(&document, "grow").expect("#grow element");
+    let width_at = |document: &mut HtmlDocument, time: f64| {
+        document.resolve(time);
+        document
+            .get_node(node_id)
+            .unwrap()
+            .final_layout()
+            .size
+            .width
+    };
+    let first = clock.now();
+    let start = width_at(&mut document, first);
+    clock.advance(std::time::Duration::from_millis(250));
+    let middle_time = clock.now();
+    assert!(
+        middle_time >= first + 0.25,
+        "the clock must advance monotonically"
+    );
+    let middle = width_at(&mut document, middle_time);
+    clock.advance(std::time::Duration::from_millis(500));
+    let end = width_at(&mut document, clock.now());
+    let widths = [start, middle, end];
+    // Real elapsed time between the reads only adds microseconds of progress.
+    assert!(
+        start <= 5.0,
+        "animation must start at its first keyframe: {widths:?}"
+    );
+    assert!(
+        (35.0..=65.0).contains(&middle),
+        "animation must be about halfway after 250 of 500 ms: {widths:?}"
+    );
+    assert!(
+        (end - 100.0).abs() <= 0.5,
+        "a forwards-filled finished animation must hold its last keyframe: {widths:?}"
+    );
+    widths
 }
 
 /// Hit-tests a point with Blitz's `elementFromPoint` semantics (text and
@@ -1800,6 +1858,11 @@ fn main() {
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"fetch_public_address_policy\",\"status\":\"passed\"}}"
             );
+            stage("css_animation_timeline");
+            let widths = check_css_animation_progression();
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"css_finite_animation_monotonic_timeline\",\"status\":\"passed\",\"widths\":{widths:?}}}"
+            );
         }
         let document = Rc::new(RefCell::new(match &game {
             Some(game) => game.document(),
@@ -1933,6 +1996,11 @@ fn main() {
                 function("gpuPacingStats"),
             )
         };
+        // dom.js set the performance time origin; no layout flush has run yet, so
+        // the page's CSS animation timeline starts from the same origin.
+        let performance_now = evaluate_string(&mut runtime, "String(performance.now())");
+        animation_clock::page_clock()
+            .align_to_js(performance_now.parse().expect("performance.now() is a number"));
 
         if game.is_some() {
             // A real game page instead of the fixture tests.
