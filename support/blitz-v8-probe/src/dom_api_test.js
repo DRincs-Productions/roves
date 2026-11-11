@@ -354,8 +354,9 @@
   createdInput.type = "Checkbox";
   check(createdInput.getAttribute("type") === "Checkbox" && createdInput.type === "checkbox",
     "type setter writes the attribute");
-  check(!("value" in createdInput) && !("selectionStart" in createdInput) && !("value" in byId("f-area")),
-    "no invented editing state on form controls");
+  // `value` reads Blitz's editor (forms_test.js); selection is still not exposed.
+  check("value" in createdInput && "value" in byId("f-area") && !("selectionStart" in createdInput)
+    && !("setSelectionRange" in byId("f-area")), "value without an invented selection state");
   check(byId("f-editable").isContentEditable && byId("f-inner").isContentEditable && !byId("f-off").isContentEditable
     && !byId("f-plain").isContentEditable && !byId("f-text").isContentEditable,
     "isContentEditable follows contenteditable inheritance");

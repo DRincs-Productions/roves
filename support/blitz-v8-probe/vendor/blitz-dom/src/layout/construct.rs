@@ -442,16 +442,23 @@ fn collect_layout_children_with_wrap(
                 .data
                 .downcast_element()
                 .and_then(|el| el.attr(local_name!("type")));
+            // Roves patch: the input's type state per HTML. The `type` attribute is an
+            // ASCII case-insensitive enumerated attribute whose missing and invalid
+            // value default is the Text state (e.g. `type="string"`).
+            let type_state = type_attr
+                .map(str::to_ascii_lowercase)
+                .filter(|value| INPUT_TYPE_KEYWORDS.contains(&value.as_str()));
+            let type_state = type_state.as_deref().unwrap_or("text");
             if tag_name == "textarea" {
                 create_text_editor(doc, container_node_id, true);
                 return;
             } else if matches!(
-                type_attr,
-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
+                type_state,
+                "text" | "password" | "email" | "number" | "search" | "tel" | "url"
             ) {
                 create_text_editor(doc, container_node_id, false);
                 return;
-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
+            } else if matches!(type_state, "checkbox" | "radio") {
                 create_checkbox_input(doc, container_node_id);
                 return;
             }
@@ -851,6 +858,32 @@ fn collect_complex_layout_children(
     // If anonymous block node only contains whitespace then delete it, else push it
     out.maybe_push_anon_block(doc);
 }
+
+/// The keywords of the `input` element's `type` attribute (HTML). Roves patch.
+const INPUT_TYPE_KEYWORDS: [&str; 22] = [
+    "hidden",
+    "text",
+    "search",
+    "tel",
+    "url",
+    "email",
+    "password",
+    "date",
+    "month",
+    "week",
+    "time",
+    "datetime-local",
+    "number",
+    "range",
+    "color",
+    "checkbox",
+    "radio",
+    "file",
+    "submit",
+    "image",
+    "reset",
+    "button",
+];
 
 fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
     let node = &mut doc.nodes[input_element_id];

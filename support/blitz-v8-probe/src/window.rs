@@ -6,13 +6,21 @@
 //!   60 Hz; a ticker thread wakes the shell's poll waker every frame, and the
 //!   shell then resolves style/layout and paints with the Vello CPU renderer
 //!   into the window through softbuffer.
-//! - `handle_ui_event` receives real OS input. Blitz's `EventDriver` does
-//!   hit-testing, hover and focus, and a collecting `EventHandler` forwards the
-//!   resulting DOM events to the trusted JS dispatcher after the driver returns,
-//!   so JS never runs while Blitz holds the document.
+//! - `handle_ui_event` receives real OS input and passes it to
+//!   `dispatch_ui_event`, the input bridge the headless tests use too.
 //!
 //! The window is undecorated at a fixed logical position, so a test harness can
 //! inject a real OS click at known screen coordinates.
+//!
+//! Input bridge: Blitz's `EventDriver` does hit-testing, hover, focus and the
+//! default actions (text editing in its `TextInputData`, Tab focus moves,
+//! checkbox toggles). `JsEventHandler` dispatches each DOM event it produces to
+//! the trusted JS dispatcher synchronously, and a `preventDefault()` in JS
+//! cancels the event in the driver, which then skips its default action (and,
+//! for pointer events, the mouse compatibility events). The driver reaches the
+//! document through `SharedDocument`, whose `RefCell` borrows last only for each
+//! of its own steps, never across the handler: JS (and the DOM ops it calls)
+//! runs while Blitz holds no borrow of the document.
 
 use std::cell::{Ref, RefCell, RefMut};
 use std::rc::Rc;
@@ -24,10 +32,11 @@ use blitz_dom::{DocGuard, DocGuardMut, Document, EventDriver, EventHandler, Node
 use blitz_html::HtmlDocument;
 use blitz_shell::{BlitzApplication, BlitzShellProxy, WindowConfig, create_default_event_loop};
 use blitz_traits::events::{
-    BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, UiEvent,
+    BlitzKeyEvent, BlitzPointerEvent, BlitzPointerId, DomEvent, DomEventData, EventState, KeyState,
+    UiEvent,
 };
 use deno_core::{JsRuntime, v8};
-use keyboard_types::Modifiers;
+use keyboard_types::{Code, Key, Location, Modifiers};
 use winit::dpi::{LogicalPosition, LogicalSize};
 use winit::window::WindowAttributes;
 
@@ -36,25 +45,104 @@ pub const WINDOW_ORIGIN: (f64, f64) = (100.0, 100.0);
 /// Frames after which the window run gives up waiting for real input.
 const TIMEOUT_FRAMES: u32 = 60 * 30;
 
-type Collected = Rc<RefCell<Vec<(NodeId, &'static str, String)>>>;
+/// The probe document as Blitz's `Document`, for the `EventDriver`: each
+/// `inner`/`inner_mut` call borrows the shared `RefCell` only for as long as the
+/// driver holds that guard.
+pub(crate) struct SharedDocument(pub(crate) Rc<RefCell<HtmlDocument>>);
 
-/// Collects the DOM events Blitz's `EventDriver` produces; they are dispatched
-/// to JS once the driver has released the document.
-struct Collector(Collected);
+impl Document for SharedDocument {
+    fn inner(&self) -> DocGuard<'_> {
+        DocGuard::RefCell(Ref::map(self.0.borrow(), |document| &**document))
+    }
 
-impl EventHandler for Collector {
+    fn inner_mut(&mut self) -> DocGuardMut<'_> {
+        DocGuardMut::RefCell(RefMut::map(self.0.borrow_mut(), |document| &mut **document))
+    }
+}
+
+/// Dispatches each DOM event the `EventDriver` produces to JS at once; a
+/// canceled JS event cancels the driver's event (no default action).
+struct JsEventHandler<'a> {
+    runtime: &'a mut JsRuntime,
+    dispatcher: &'a v8::Global<v8::Function>,
+}
+
+impl EventHandler for JsEventHandler<'_> {
     fn handle_event(
         &mut self,
         _chain: &[NodeId],
         event: &mut DomEvent,
         _doc: &mut dyn Document,
-        _event_state: &mut EventState,
+        event_state: &mut EventState,
     ) {
-        if let Some(init) = event_init(&event.data) {
-            self.0
-                .borrow_mut()
-                .push((event.target, event.data.name(), init));
+        let Some(init) = event_init(&event.data) else {
+            return;
+        };
+        let not_canceled = crate::dispatch_trusted(
+            self.runtime,
+            self.dispatcher,
+            event.target,
+            event.data.name(),
+            &init,
+        );
+        if !not_canceled {
+            event_state.prevent_default();
         }
+    }
+}
+
+/// Routes one UI event through Blitz's `EventDriver` with JS listeners (see the
+/// module docs). The window's `handle_ui_event` and the headless tests both use it.
+pub(crate) fn dispatch_ui_event(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    document: &Rc<RefCell<HtmlDocument>>,
+    event: UiEvent,
+) {
+    let mut shared = SharedDocument(document.clone());
+    let mut driver = EventDriver::new(
+        &mut shared,
+        JsEventHandler {
+            runtime,
+            dispatcher,
+        },
+    );
+    driver.handle_ui_event(event);
+}
+
+/// A key press and release as a keyboard would send them (no modifiers), through
+/// `dispatch_ui_event`: keydown/keyup reach JS, and an uncanceled keydown runs
+/// Blitz's default action on the focused element (text editing, Tab).
+pub(crate) fn press_key(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    document: &Rc<RefCell<HtmlDocument>>,
+    key: Key,
+) {
+    for pressed in [true, false] {
+        let event = BlitzKeyEvent {
+            key: key.clone(),
+            code: Code::Unidentified,
+            modifiers: Modifiers::empty(),
+            location: Location::Standard,
+            is_auto_repeating: false,
+            is_composing: false,
+            state: if pressed {
+                KeyState::Pressed
+            } else {
+                KeyState::Released
+            },
+            text: match &key {
+                Key::Character(text) => Some(text.as_str().into()),
+                _ => None,
+            },
+        };
+        let event = if pressed {
+            UiEvent::KeyDown(event)
+        } else {
+            UiEvent::KeyUp(event)
+        };
+        dispatch_ui_event(runtime, dispatcher, document, event);
     }
 }
 
@@ -106,7 +194,9 @@ fn pointer_init(event: &BlitzPointerEvent) -> String {
 }
 
 /// JSON init dictionary for the JS event, or `None` for events the probe does
-/// not forward yet (scroll, wheel, input, IME, touch).
+/// not forward yet (scroll, wheel, IME composition, touch). Blitz's `input`
+/// carries only the new value, which JS reads from the element itself, so the
+/// InputEvent has no `inputType`/`data`; it is not cancelable (as in browsers).
 fn event_init(data: &DomEventData) -> Option<String> {
     use DomEventData::*;
     match data {
@@ -125,6 +215,7 @@ fn event_init(data: &DomEventData) -> Option<String> {
         )),
         Focus(_) | Blur(_) => Some(r#"{"bubbles":false}"#.to_string()),
         FocusIn(_) | FocusOut(_) => Some("{}".to_string()),
+        Input(_) => Some(r#"{"cancelable":false}"#.to_string()),
         _ => None,
     }
 }
@@ -229,14 +320,8 @@ impl Document for RovesDocument {
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
-        let collected: Collected = Rc::new(RefCell::new(Vec::new()));
-        {
-            let mut driver = EventDriver::new(self, Collector(collected.clone()));
-            driver.handle_ui_event(event);
-        }
-        for (target, kind, init) in collected.take() {
-            crate::dispatch_trusted(&mut self.runtime, &self.dispatcher, target, kind, &init);
-        }
+        self.start_shell_timeline();
+        dispatch_ui_event(&mut self.runtime, &self.dispatcher, &self.document, event);
     }
 
     fn poll(&mut self, task_context: Option<Context<'_>>) -> bool {

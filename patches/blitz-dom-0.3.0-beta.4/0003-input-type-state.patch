@@ -1,0 +1,74 @@
+Text editor for every input in the Text state, per HTML's type attribute rules (Roves).
+
+Base: crates.io blitz-dom 0.3.0-beta.4 (DioxusLabs/blitz
+92b11f1bd8ab7975411328b0406a95a09445b4e7, packages/blitz-dom), after 0001 and 0002.
+Applied in support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
+
+The `type` attribute is ASCII case-insensitive and its missing/invalid value default is
+the Text state. Blitz matched the raw attribute against literal keywords, so an
+`<input type="string">` (visual-novel-template's name prompt, Pixi'VN
+`requestInput({ type: "string" })`) or `type="TEXT"` got no text editor and could not
+be typed into.
+
+--- a/src/layout/construct.rs
++++ b/src/layout/construct.rs
+@@ -442,16 +442,23 @@ fn collect_layout_children_with_wrap(
+                 .data
+                 .downcast_element()
+                 .and_then(|el| el.attr(local_name!("type")));
++            // Roves patch: the input's type state per HTML. The `type` attribute is an
++            // ASCII case-insensitive enumerated attribute whose missing and invalid
++            // value default is the Text state (e.g. `type="string"`).
++            let type_state = type_attr
++                .map(str::to_ascii_lowercase)
++                .filter(|value| INPUT_TYPE_KEYWORDS.contains(&value.as_str()));
++            let type_state = type_state.as_deref().unwrap_or("text");
+             if tag_name == "textarea" {
+                 create_text_editor(doc, container_node_id, true);
+                 return;
+             } else if matches!(
+-                type_attr,
+-                None | Some("text" | "password" | "email" | "number" | "search" | "tel" | "url")
++                type_state,
++                "text" | "password" | "email" | "number" | "search" | "tel" | "url"
+             ) {
+                 create_text_editor(doc, container_node_id, false);
+                 return;
+-            } else if matches!(type_attr, Some("checkbox" | "radio")) {
++            } else if matches!(type_state, "checkbox" | "radio") {
+                 create_checkbox_input(doc, container_node_id);
+                 return;
+             }
+@@ -852,6 +859,32 @@ fn collect_complex_layout_children(
+     out.maybe_push_anon_block(doc);
+ }
+
++/// The keywords of the `input` element's `type` attribute (HTML). Roves patch.
++const INPUT_TYPE_KEYWORDS: [&str; 22] = [
++    "hidden",
++    "text",
++    "search",
++    "tel",
++    "url",
++    "email",
++    "password",
++    "date",
++    "month",
++    "week",
++    "time",
++    "datetime-local",
++    "number",
++    "range",
++    "color",
++    "checkbox",
++    "radio",
++    "file",
++    "submit",
++    "image",
++    "reset",
++    "button",
++];
++
+ fn create_text_editor(doc: &mut BaseDocument, input_element_id: NodeId, is_multiline: bool) {
+     let node = &mut doc.nodes[input_element_id];
+     let parley_style = node

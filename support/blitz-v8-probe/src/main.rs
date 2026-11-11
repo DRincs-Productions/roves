@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use blitz_dom::node::{SpecialElementData, TextInputData};
 use blitz_dom::{
     BaseDocument, DocumentConfig, LocalName, Namespace, Node, NodeData, NodeId, Prefix, QualName,
     ns,
@@ -49,6 +50,8 @@ const EVENTS_TEST: &str = include_str!("events_test.js");
 const EVENTS_CHECK: &str = include_str!("events_check.js");
 const WINDOW_TEST: &str = include_str!("window_test.js");
 const SCROLL_TEST: &str = include_str!("scroll_test.js");
+const FORMS_TEST: &str = include_str!("forms_test.js");
+const FORMS_CHECK: &str = include_str!("forms_check.js");
 const ANIMATIONS_TEST: &str = include_str!("animations_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 const GPU_PACING_TEST: &str = include_str!("gpu_pacing_test.js");
@@ -1481,6 +1484,63 @@ fn op_blitz_focus(state: Rc<RefCell<OpState>>, handle: f64) -> Result<bool, JsEr
     Ok(document.set_focus_to(node_id))
 }
 
+/// `value` of a text control: the text of Blitz's own editor (`TextInputData`,
+/// a parley `PlainEditor`) without IME preedit, or `None` while the element has
+/// no editor yet (Blitz creates it at layout; `dom.js` then reads the default
+/// value from the attribute/children). There is no JS copy of the value.
+#[op2]
+#[string]
+fn op_blitz_text_control_value(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+) -> Result<Option<String>, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    Ok(node
+        .element_data()
+        .and_then(|element| element.text_input_data())
+        .map(|input| input.editor.raw_text().to_string()))
+}
+
+/// `value` setter of a text control (`dom.js` decides which elements are text
+/// controls and sanitizes). Writes into Blitz's editor; for an element without
+/// one yet (detached or not laid out, e.g. React sets `value` before inserting
+/// the node) it creates the same `TextInputData` Blitz would, which layout then
+/// keeps and styles. As in HTML, a changed value moves the caret to the end.
+#[op2(fast)]
+fn op_blitz_set_text_control_value(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    #[string] value: &str,
+    multiline: bool,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    {
+        let element = document
+            .get_node_mut(node_id)
+            .and_then(|node| node.element_data_mut())
+            .ok_or_else(|| JsErrorBox::type_error("value on a non-element"))?;
+        if element.text_input_data().is_none() {
+            if !matches!(element.special_data, SpecialElementData::None) {
+                return Err(JsErrorBox::type_error(
+                    "the element holds non-text Blitz form state",
+                ));
+            }
+            element.special_data = SpecialElementData::TextInput(TextInputData::new(multiline));
+        }
+    }
+    document.with_text_input(node_id, |mut driver| {
+        if driver.editor.raw_text() != value {
+            driver.editor.set_text(value);
+            driver.move_to_text_end();
+        }
+    });
+    Ok(())
+}
+
 #[op2(fast)]
 fn op_blitz_blur(state: Rc<RefCell<OpState>>) {
     let document = probe_document(&state);
@@ -1805,6 +1865,8 @@ deno_core::extension!(
         op_blitz_focus,
         op_blitz_blur,
         op_blitz_focused,
+        op_blitz_text_control_value,
+        op_blitz_set_text_control_value,
         op_blitz_insert_before,
         op_blitz_child_count,
         op_blitz_child_at,
@@ -2032,14 +2094,15 @@ async fn drive_frames(
 
 /// Dispatches a trusted UI event of `kind` with a JSON init dictionary to `target`
 /// through the bootstrap's dispatcher (which picks MouseEvent, PointerEvent,
-/// KeyboardEvent or FocusEvent by type).
+/// KeyboardEvent, InputEvent or FocusEvent by type). Returns `dispatchEvent`'s
+/// result: `false` when a listener canceled the event.
 fn dispatch_trusted(
     runtime: &mut JsRuntime,
     dispatcher: &v8::Global<v8::Function>,
     target: NodeId,
     kind: &str,
     init: &str,
-) {
+) -> bool {
     deno_core::scope!(scope, runtime);
     let function = v8::Local::new(scope, dispatcher);
     let receiver = v8::undefined(scope).into();
@@ -2048,7 +2111,8 @@ fn dispatch_trusted(
     let init = v8::String::new(scope, init).unwrap().into();
     function
         .call(scope, receiver, &[node, kind, init])
-        .expect("trusted event dispatch should not throw");
+        .expect("trusted event dispatch should not throw")
+        .is_true()
 }
 
 /// What a window's input layer sends for a primary-button click at viewport
@@ -2077,6 +2141,57 @@ pub(crate) fn click_at(
         dispatch_trusted(runtime, dispatcher, target, kind, init);
     }
     Some(target)
+}
+
+/// Key and IME input for the `forms` stage (see forms_test.js for the expected
+/// results). Everything goes through `window::dispatch_ui_event`, the bridge the
+/// real window uses, to the element focused from JS. Backspace is Windows/Linux
+/// key handling (on macOS Blitz edits through the standard key bindings).
+fn forms_text_entry(
+    runtime: &mut JsRuntime,
+    dispatcher: &v8::Global<v8::Function>,
+    document: &Rc<RefCell<HtmlDocument>>,
+) {
+    use blitz_traits::events::{BlitzImeEvent, UiEvent};
+    use keyboard_types::{Key, NamedKey};
+    let character = |text: &str| Key::Character(text.into());
+    let focus = |runtime: &mut JsRuntime, id: &str| {
+        runtime
+            .execute_script(
+                "roves-blitz-forms-focus.js",
+                format!("formsTest.focus({id:?})"),
+            )
+            .expect("forms test focus should run");
+    };
+    // Controlled name input (value "Pe" set while detached): "x" is canceled at
+    // keydown, "1" is reverted by the controlled-input listener.
+    for key in [
+        character("t"),
+        character("x"),
+        character("e"),
+        character("1"),
+        character("r"),
+        character("r"),
+        Key::Named(NamedKey::Backspace),
+        Key::Named(NamedKey::Enter),
+    ] {
+        window::press_key(runtime, dispatcher, document, key);
+    }
+    // `type="string"`: Text state, edited only with the 0003 Blitz patch.
+    focus(runtime, "form-string");
+    for key in [character("o"), character("k")] {
+        window::press_key(runtime, dispatcher, document, key);
+    }
+    window::dispatch_ui_event(
+        runtime,
+        dispatcher,
+        document,
+        UiEvent::Ime(BlitzImeEvent::Commit(" è".into())),
+    );
+    focus(runtime, "form-area");
+    for key in [character("a"), Key::Named(NamedKey::Enter), character("b")] {
+        window::press_key(runtime, dispatcher, document, key);
+    }
 }
 
 /// Calls a bootstrap hook with string arguments; returns its string result.
@@ -2561,6 +2676,23 @@ fn main() {
             .expect("scroll offsets, dimensions, scrollTo and scrollIntoView checks should pass");
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"scroll_viewport_and_elements\",\"status\":\"passed\"}}"
+        );
+
+        // Text entry: value read/write on Blitz's own editor, then real key and IME
+        // input through the window's input bridge (window::dispatch_ui_event), so
+        // Blitz's default actions edit the text and its `input` events reach JS.
+        stage("forms");
+        runtime
+            .execute_script("roves-blitz-forms-test.js", FORMS_TEST)
+            .expect("text control value checks should pass");
+        // Layout creates (or, for a value set while detached, keeps) the editors.
+        resolve_layout(&document);
+        forms_text_entry(&mut runtime, &dispatcher, &document);
+        runtime
+            .execute_script("roves-blitz-forms-check.js", FORMS_CHECK)
+            .expect("typed text, input events and keydown cancellation should match");
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"forms_text_entry_blitz_editor\",\"status\":\"passed\"}}"
         );
 
         stage("frame_loop");

@@ -51,6 +51,17 @@ behavior is unchanged; this is the point where Servo emits `transitionend`
 (`components/script/animations.rs`, `finish_running_animations`). It covers headless
 flushes and blitz-shell's own `resolve` in `--window` alike.
 
+`0003-input-type-state.patch` (`src/layout/construct.rs`): Blitz created the
+`TextInputData` editor only when an `input`'s raw `type` attribute was missing or one
+of the literal keywords `text`, `password`, `email`, `number`, `search`, `tel`, `url`
+(and the checkbox state only for literal `checkbox`/`radio`). HTML's `type` is ASCII
+case-insensitive and its invalid value default is the Text state, so the
+visual-novel-template's name prompt (`<input type="string">`, from Pixi'VN
+`requestInput({ type: "string" })`) and `type="TEXT"` got no editor and ignored typing.
+The patch maps the attribute to its type state (lowercased keyword, otherwise `text`)
+before the same checks. A fix of a game-blocking library defect, not a behavior change
+for valid lowercase values.
+
 Nothing else differs from the published crate (`ROVES_PATCHES.md` is the only added
 file).
 
@@ -58,6 +69,6 @@ file).
 
 Drop this directory and the `[patch.crates-io]` entry as soon as a maintained blitz-dom
 release exposes the animation set (or an equivalent snapshot) and the entries it
-finishes (or animation events), bumping every blitz crate
-and Stylo together. Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`); an
+finishes (or animation events), and creates the text editor for every input in the
+Text state, bumping every blitz crate and Stylo together. Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`); an
 upstream issue/PR proposing the accessor is still to be opened.

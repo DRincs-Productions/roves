@@ -1,3 +1,50 @@
+## 2026-11-11 - Blitz probe: text entry on Blitz's editor, one cancelable input bridge
+
+**Files touched:** `support/blitz-v8-probe/src/{main.rs,window.rs,dom.js,dom_api_test.js}`,
+`support/blitz-v8-probe/src/{forms_test.js,forms_check.js}` (new),
+`support/blitz-v8-probe/vendor/blitz-dom/{src/layout/construct.rs,ROVES_PATCHES.md}`,
+`patches/blitz-dom-0.3.0-beta.4/0003-input-type-state.patch` (new),
+`support/blitz-v8-probe/{README.md,compat/manifest.json}`, `.github/workflows/blitz-probe.yml`,
+`TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+Prerequisite of the visual-novel-template's typed name (`InputRequestDialog`, a React
+controlled Base UI input). Blitz already owns text editing (`TextInputData` with a parley
+`PlainEditor`, created at layout; `EventDriver` key/IME default actions) and emits `input`
+with the new value, so the probe reuses it and keeps no JS copy of the value:
+`op_blitz_text_control_value` reads `editor.raw_text()`, `op_blitz_set_text_control_value`
+writes through `BaseDocument::with_text_input` (caret to the end on change) and, for an
+element without an editor yet (React sets `value` before inserting the node), creates the
+same `TextInputData`, which layout keeps and styles. `dom.js` adds `value`/`defaultValue` to
+`HTMLInputElement` (Blitz's text editor types with HTML sanitization; attribute reflection for
+the default and default/on modes; `NotSupportedError` on value-mode types nothing edits) and
+`HTMLTextAreaElement`, an `InputEvent` class for trusted `input` events, and `oninput` on
+elements, document and window through deno_web's `defineEventHandler` (React DOM otherwise
+falls back to an old-IE polyfill that calls `attachEvent` when a text input gains focus).
+
+Input bridge: `window::dispatch_ui_event` runs Blitz's `EventDriver` with a `JsEventHandler`
+that dispatches every produced DOM event to JS synchronously; a JS `preventDefault()` cancels
+the event in the driver, which then skips its default action (previously the window collected
+the events and delivered them after the driver, so cancellation was ignored and edits/Tab
+moves happened before JS saw the keydown). The driver reaches the document through
+`SharedDocument`, whose `RefCell` borrows never span the handler. The window's
+`handle_ui_event` and the headless `forms` stage use the same function; `dispatch_trusted`
+now returns `dispatchEvent`'s result.
+
+Blitz patch 0003 (game-blocking defect, authorized fork exception): `construct.rs` created
+the text editor only for literal lowercase `type` keywords, so `<input type="string">` (the
+template's name prompt, from Pixi'VN `requestInput({ type: "string" })`) could not be typed
+into. The type now maps to HTML's type state (ASCII-lowercased keyword, otherwise Text).
+Upstream issue/PR and fork removal are tracked in `TODO.md`.
+
+Regression: fixture stage `forms` (value API on detached controls; a React-style controlled
+input with value tracker and digit rejection inside the `input` listener; keydown
+`preventDefault` canceling an edit; `type="string"`; an IME commit; textarea with Enter);
+required CI check `forms_text_entry_blitz_editor`. The compat manifest moves
+`forms.input_value` to `present_incomplete`. Gaps: selection API, `change`/`beforeinput`/
+composition events, `inputType`/`data`, `valueAsNumber`, dirty-value flag, `submit` events,
+real OS keyboard/IME input in the window. Not built or run locally (no local builds; `node
+--check` and `rustfmt` were denied in the session): CI is the check.
+
 ## 2026-11-11 - Blitz probe: unified machine-readable API compatibility report
 
 **Files touched:** `support/blitz-v8-probe/compat/{manifest.json,report.mjs}` (new),

@@ -98,6 +98,7 @@ jobs:
           grep -Fq '"check":"web_audio_v8_context","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_tone_15_1_22","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"scroll_viewport_and_elements","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
+          grep -Fq '"check":"forms_text_entry_blitz_editor","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"css_finite_animation_monotonic_timeline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"css_get_animations_stylo_state","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"dedicated_worker_pixi_image_bitmap_probe","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"

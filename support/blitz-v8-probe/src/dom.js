@@ -59,6 +59,8 @@
     op_blitz_focus,
     op_blitz_blur,
     op_blitz_focused,
+    op_blitz_text_control_value,
+    op_blitz_set_text_control_value,
     op_blitz_game_read,
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
@@ -741,6 +743,10 @@
   Object.defineProperty(KeyboardEvent.prototype, "getModifierState", { value: getModifierState });
   class FocusEvent extends UIEvent {}
   defineInitGetters(FocusEvent, { relatedTarget: null });
+  // Blitz reports text edits with the new value only, so trusted `input` events
+  // carry no inputType/data (listeners read the element's value).
+  class InputEvent extends UIEvent {}
+  defineInitGetters(InputEvent, { data: null, inputType: "", isComposing: false, dataTransfer: null });
 
   const POINTER_EVENTS = new Set(["pointerdown", "pointerup", "pointermove", "pointerover", "pointerout", "pointerenter", "pointerleave", "pointercancel"]);
   const MOUSE_EVENTS = new Set(["click", "dblclick", "auxclick", "contextmenu", "mousedown", "mouseup", "mousemove", "mouseover", "mouseout", "mouseenter", "mouseleave"]);
@@ -752,6 +758,7 @@
     if (type === "wheel") return WheelEvent;
     if (KEYBOARD_EVENTS.has(type)) return KeyboardEvent;
     if (FOCUS_EVENTS.has(type)) return FocusEvent;
+    if (type === "input" || type === "beforeinput") return InputEvent;
     return Event;
   }
   function fireTrusted(target, type, Class, init) {
@@ -2101,16 +2108,40 @@
   class HTMLAudioElement extends HTMLMediaElement {}
   class HTMLVideoElement extends HTMLMediaElement {}
   // Form-control brands and their `type`, reflected from the attributes the Blitz
-  // node already holds. UI keyboard guards need exactly this (TanStack Hotkeys'
-  // `ignoreInputs`: `instanceof HTMLInputElement` + `type`, `HTMLTextAreaElement`,
-  // `HTMLSelectElement`, `isContentEditable`). No value, selection, validity or
-  // form-owner state is exposed here: the probe does not read Blitz's editing
-  // state yet, and inventing a JS copy of it would diverge from what the user types.
+  // node already holds (UI keyboard guards such as TanStack Hotkeys' `ignoreInputs`
+  // use `instanceof` + `type` and `isContentEditable`).
+  //
+  // Text controls (textarea and the input types Blitz edits) expose `value` from
+  // Blitz's own editor (TextInputData, a parley PlainEditor), which real key/IME
+  // input edits through the EventDriver (window.rs). There is no JS copy of the
+  // value. Until Blitz has created the editor (at layout) the value is the default
+  // value; a write before that creates it. Limits: no dirty-value flag (Blitz
+  // rewrites the editor when the `value` attribute changes, which React keeps equal
+  // to the value), no selection API, no `change` event, no valueAsNumber or number
+  // sanitization; other value-mode types (date, range, color, file, ...) refuse
+  // writes because nothing edits them.
   const INPUT_TYPES = new Set([
     "hidden", "text", "search", "tel", "url", "email", "password", "date", "month",
     "week", "time", "datetime-local", "number", "range", "color", "checkbox", "radio",
     "file", "submit", "image", "reset", "button",
   ]);
+  // Blitz's text editor types (layout/construct.rs).
+  const TEXT_EDITOR_TYPES = new Set(["text", "search", "tel", "url", "email", "password", "number"]);
+  // HTML value modes "default" and "default/on": `value` reflects the attribute.
+  const DEFAULT_VALUE_MODE_TYPES = new Set(["hidden", "submit", "image", "reset", "button", "checkbox", "radio"]);
+  // [LegacyNullToEmptyString] DOMString.
+  function controlValue(value, prefix) {
+    return value === null ? "" : webidl.converters.DOMString(value, prefix, "Value");
+  }
+  const stripNewlines = (value) => value.replace(/[\r\n]/g, "");
+  const ASCII_WHITESPACE = /^[\t\n\f\r ]+|[\t\n\f\r ]+$/g;
+  // HTML value sanitization for the text editor types (number is not sanitized).
+  function sanitizeInputValue(type, value) {
+    if (type === "url" || type === "email") return stripNewlines(value).replace(ASCII_WHITESPACE, "");
+    if (type === "number") return value;
+    return stripNewlines(value);
+  }
+  const normalizeNewlines = (value) => value.replace(/\r\n?/g, "\n");
   class HTMLInputElement extends HTMLElement {
     get type() {
       handleOf(this, "type");
@@ -2124,11 +2155,59 @@
         webidl.converters.DOMString(value, "Failed to set the 'type' property on 'HTMLInputElement'", "Value"),
       );
     }
+    get value() {
+      const handle = handleOf(this, "value");
+      const type = this.type;
+      if (TEXT_EDITOR_TYPES.has(type)) {
+        return op_blitz_text_control_value(handle) ?? sanitizeInputValue(type, this.getAttribute("value") ?? "");
+      }
+      const attribute = this.getAttribute("value");
+      return attribute ?? (type === "checkbox" || type === "radio" ? "on" : "");
+    }
+    set value(value) {
+      const handle = handleOf(this, "value");
+      value = controlValue(value, "Failed to set the 'value' property on 'HTMLInputElement'");
+      const type = this.type;
+      if (TEXT_EDITOR_TYPES.has(type)) {
+        op_blitz_set_text_control_value(handle, sanitizeInputValue(type, value), false);
+      } else if (DEFAULT_VALUE_MODE_TYPES.has(type)) {
+        this.setAttribute("value", value);
+      } else {
+        throw new DOMException(`Setting the value of an input of type '${type}' is not supported`, "NotSupportedError");
+      }
+    }
+    get defaultValue() {
+      handleOf(this, "defaultValue");
+      return this.getAttribute("value") ?? "";
+    }
+    set defaultValue(value) {
+      handleOf(this, "defaultValue");
+      this.setAttribute("value", webidl.converters.DOMString(value, "Failed to set the 'defaultValue' property on 'HTMLInputElement'", "Value"));
+    }
   }
   class HTMLTextAreaElement extends HTMLElement {
     get type() {
       handleOf(this, "type");
       return "textarea";
+    }
+    // The default value is the child text; Blitz does not update an existing
+    // editor when the children change.
+    get value() {
+      const handle = handleOf(this, "value");
+      return op_blitz_text_control_value(handle) ?? normalizeNewlines(this.textContent);
+    }
+    set value(value) {
+      const handle = handleOf(this, "value");
+      value = controlValue(value, "Failed to set the 'value' property on 'HTMLTextAreaElement'");
+      op_blitz_set_text_control_value(handle, normalizeNewlines(value), true);
+    }
+    get defaultValue() {
+      handleOf(this, "defaultValue");
+      return this.textContent;
+    }
+    set defaultValue(value) {
+      handleOf(this, "defaultValue");
+      this.textContent = controlValue(value, "Failed to set the 'defaultValue' property on 'HTMLTextAreaElement'");
     }
   }
   class HTMLSelectElement extends HTMLElement {
@@ -2446,6 +2525,7 @@
     WheelEvent,
     KeyboardEvent,
     FocusEvent,
+    InputEvent,
     MediaQueryList,
     matchMedia,
     Text,
@@ -2498,6 +2578,13 @@
   };
   for (const [name, value] of Object.entries(globals)) {
     Object.defineProperty(globalThis, name, { value, writable: true, configurable: true });
+  }
+  // GlobalEventHandlers `oninput`, from deno_web's event handler helper. React
+  // DOM picks its `input` event path by `'oninput' in document`; without it, it
+  // falls back to an old-IE polyfill that calls `attachEvent` when a text input
+  // gains focus.
+  for (const target of [HTMLElement.prototype, Document.prototype, globalThis]) {
+    defineEventHandler(target, "input");
   }
   Object.defineProperty(globalThis, "document", { value: document, enumerable: true, configurable: true });
   // Minimal navigator: WebGPU plus the fields libraries probe.
