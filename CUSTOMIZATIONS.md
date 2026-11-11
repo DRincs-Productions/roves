@@ -1,3 +1,39 @@
+## 2026-11-11 - Blitz probe: Element.getAnimations from Stylo's animation state
+
+**Files touched:** `support/blitz-v8-probe/{Cargo.toml,README.md,src/main.rs,src/dom.js,src/animations_test.js}`,
+`support/blitz-v8-probe/vendor/blitz-dom/` (crates.io blitz-dom 0.3.0-beta.4 + `ROVES_PATCHES.md`),
+`patches/blitz-dom-0.3.0-beta.4/0001-read-only-animations-accessor.patch`,
+`.github/workflows/blitz-probe.yml`, `TODO.md`, `docs/handoff/2026-11-07-blitz-v8-claude-handoff.md`.
+
+CI 43027572412 (story): the last template error was `e.getAnimations is not a function`,
+thrown by Base UI 1.9.0 `ScrollAreaViewport` from a `setTimeout(0)` on every scroll-area mount;
+Base UI's `useAnimationsFinished` (popup/dialog/menu open and close) switches on as soon as the
+method exists and waits on `finished`. Reuse: Blitz 0.3.0-beta.4 already runs Stylo's state
+machine inside `resolve_stylist` (Pending -> Running -> Finished, canceled entries cleared, sets
+of removed nodes emptied), on the monotonic page clock of the previous entry, but keeps
+`BaseDocument.animations` `pub(crate)` (also on upstream `main`). Under the authorized
+library-fix exception, the pristine crates.io package (vcs `92b11f1bd8a`, original licenses) is
+vendored in the probe and patched through `[patch.crates-io]` with one read-only accessor
+`BaseDocument::animations()`; the vendored crate is excluded from the probe workspace. Record
+and removal criteria in `vendor/blitz-dom/ROVES_PATCHES.md`. New `op_blitz_get_animations`
+(flushes styles for a target, reads the set under Stylo's read lock, matches Blitz's
+`OpaqueNode(node_id.as_u64())` keys against the element or its subtree, composite/tree order,
+seconds -> milliseconds with CSS times rounded to the microsecond because Stylo stores them as
+f32). `dom.js`: `Element.getAnimations` returning `CSSAnimation`/`CSSTransition` +
+`KeyframeEffect` instances (no globals), one object per Stylo entry identified by kind, node,
+pseudo-element, name and creation time (`started_at` minus completed iterations and delay, so it
+is stable across iterations), and a per-frame sweep before the rAF callbacks that settles
+`finished` (resolve on Finished, handled `AbortError` when the entry is canceled or gone). No
+JS timing, no fake empty results, no template change, no new dependency. Regression
+`animations_test.js` (stage `css_animations`, required CI check
+`css_get_animations_stylo_state`; the earlier `css_finite_animation_monotonic_timeline` check
+is now required too). Stylo fields used (`Animation::{name, started_at, duration, delay,
+fill_mode, direction, iteration_state, state}`, `Transition::{start_time, delay, state,
+property_animation.duration/property_id()}`) follow the Stylo 0.22 excerpts provided and the
+Stylo 0.20 consumer in `components/script/animations.rs`; `PseudoElement::is_before/is_after`
+and `Debug` of the fill/direction keyword enums were not read from source. Not compiled or run
+locally (no heavy builds; `node --check` and the Cargo registry not permitted in the session).
+
 ## 2026-11-11 - Blitz probe: monotonic CSS animation timeline for every layout flush
 
 **Files touched:** `support/blitz-v8-probe/src/{animation_clock.rs,main.rs,window.rs}`, `CUSTOMIZATIONS.md`.

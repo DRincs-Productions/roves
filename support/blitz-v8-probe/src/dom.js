@@ -33,6 +33,7 @@
     op_blitz_set_style_property,
     op_blitz_namespace,
     op_blitz_computed_style,
+    op_blitz_get_animations,
     op_blitz_document_root,
     op_blitz_retain,
     op_blitz_release,
@@ -1035,6 +1036,17 @@
       }
       if (root !== null) scrollIntoBox(this, root, true, block, inline);
     }
+    // Web Animations: this element's (or, with `subtree`, its subtree's) CSS
+    // animations and transitions from Stylo (see cssAnimationsFor).
+    getAnimations(options = undefined) {
+      const handle = handleOf(this, "getAnimations");
+      if (options !== undefined && options !== null && typeof options !== "object" && typeof options !== "function") {
+        throw new TypeError(
+          "Failed to execute 'getAnimations' on 'Element': The provided value is not of type 'GetAnimationsOptions'.",
+        );
+      }
+      return cssAnimationsFor(handle, Boolean(options?.subtree));
+    }
     focus() {
       if (!this.isConnected || !isFocusable(this)) return;
       const previous = focusedElement();
@@ -1649,6 +1661,218 @@
     });
   }
 
+  // CSS animations and transitions as Web Animations objects (CSSAnimation /
+  // CSSTransition with a KeyframeEffect), mirroring Stylo's own state through
+  // op_blitz_get_animations. Blitz runs the state machine inside its style
+  // flush (Pending -> Running -> Finished, canceled entries dropped); nothing
+  // is parsed, interpolated or timed in JS. One object per Stylo entry, keyed by
+  // kind, node, pseudo-element, name and creation time, kept while the entry
+  // exists, so repeated calls return the same object and `finished` promise.
+  // runAnimationFrame settles them (updateCssAnimations): `finished` resolves
+  // with the animation when Stylo reports Finished and rejects with an
+  // AbortError (marked handled, as the spec's cancel does) when the entry is
+  // canceled or disappears (class removed, element removed, restart).
+  // Instances only: no constructible Animation/KeyframeEffect globals, no
+  // play/pause/cancel/reverse/animate, document.getAnimations or timelines.
+  const animationInternals = new WeakMap(); // Animation or KeyframeEffect -> state
+  const liveAnimations = new Map(); // "kind|node|pseudo|name" -> Animation[]
+  let constructingAnimation = false;
+  function animationState(object, name) {
+    const internal = animationInternals.get(object);
+    if (internal === undefined) throw new TypeError(`Illegal invocation: '${name}'`);
+    return internal;
+  }
+  class AnimationEffect {
+    constructor() {
+      if (!constructingAnimation) throw new TypeError("Illegal constructor");
+    }
+    // EffectTiming in milliseconds. CSS cannot set endDelay/iterationStart;
+    // the transition easing is private in Stylo, so `easing` is not reported.
+    getTiming() {
+      const { entry } = animationState(this, "getTiming");
+      return {
+        delay: entry.delay,
+        endDelay: 0,
+        fill: entry.fill,
+        iterationStart: 0,
+        iterations: entry.iterations ?? Infinity,
+        duration: entry.duration,
+        direction: entry.direction,
+      };
+    }
+  }
+  class KeyframeEffect extends AnimationEffect {
+    get target() {
+      return animationState(this, "target").target;
+    }
+    get pseudoElement() {
+      return animationState(this, "pseudoElement").entry.pseudo || null;
+    }
+  }
+  class Animation extends EventTarget {
+    constructor() {
+      if (!constructingAnimation) throw new TypeError("Illegal constructor");
+      super();
+    }
+    get id() {
+      animationState(this, "id");
+      return "";
+    }
+    get effect() {
+      return animationState(this, "effect").effect;
+    }
+    get playState() {
+      return animationState(this, "playState").playState;
+    }
+    get pending() {
+      return animationState(this, "pending").pending;
+    }
+    get finished() {
+      return animationState(this, "finished").finished;
+    }
+    get startTime() {
+      return animationState(this, "startTime").startTime;
+    }
+    get currentTime() {
+      return animationState(this, "currentTime").currentTime;
+    }
+  }
+  class CSSAnimation extends Animation {
+    get animationName() {
+      return animationState(this, "animationName").entry.name;
+    }
+  }
+  class CSSTransition extends Animation {
+    get transitionProperty() {
+      return animationState(this, "transitionProperty").entry.name;
+    }
+  }
+  function animationKey(entry) {
+    return `${entry.kind}|${entry.node}|${entry.pseudo}|${entry.name}`;
+  }
+  function resetFinished(internal) {
+    internal.finishedState = "pending";
+    internal.finished = new Promise((resolve, reject) => {
+      internal.resolveFinished = resolve;
+      internal.rejectFinished = reject;
+    });
+    // Cancellation rejections are handled by definition (Web Animations).
+    internal.finished.catch(() => {});
+  }
+  // Mirrors one native entry. Stylo's Pending covers the start delay, so
+  // `pending` stays true until the entry runs (a browser clears it one frame
+  // after creation); startTime is null while pending or paused.
+  function applyAnimationEntry(internal, entry, now) {
+    internal.entry = entry;
+    const state = entry.state;
+    internal.pending = state === "pending";
+    internal.playState = state === "finished" ? "finished" : state === "paused" ? "paused" : "running";
+    internal.startTime = state === "pending" || state === "paused" ? null : entry.start;
+    const iterations = entry.iterations ?? Infinity;
+    internal.currentTime = state === "finished"
+      ? Math.max(0, entry.delay + entry.duration * iterations)
+      : state === "paused"
+      ? entry.delay + (entry.current_iteration + (entry.progress ?? 0)) * entry.duration
+      : Math.max(0, now - entry.start);
+    if (state === "finished" && internal.finishedState === "pending") {
+      internal.finishedState = "resolved";
+      internal.resolveFinished(internal.animation);
+    } else if (state !== "finished" && internal.finishedState === "resolved") {
+      resetFinished(internal);
+    }
+  }
+  function cancelCssAnimation(internal) {
+    if (internal.finishedState === "pending") {
+      internal.finishedState = "rejected";
+      internal.rejectFinished(new DOMException("The animation was canceled.", "AbortError"));
+    }
+    // As after cancel(): idle with a new, unsettled finished promise.
+    if (internal.playState !== "idle") resetFinished(internal);
+    internal.playState = "idle";
+    internal.pending = false;
+    internal.startTime = null;
+    internal.currentTime = null;
+  }
+  // The live object of a native entry, if any: same creation time, or a paused
+  // one (Stylo moves the start when a paused animation resumes).
+  function findCssAnimation(entry, claimed) {
+    const list = liveAnimations.get(animationKey(entry));
+    if (list === undefined) return undefined;
+    const unclaimed = list.filter((animation) => !claimed.has(animation));
+    return unclaimed.find((animation) => Math.abs(animationInternals.get(animation).entry.start - entry.start) < 0.001)
+      ?? unclaimed.find((animation) => animationInternals.get(animation).entry.state === "paused");
+  }
+  function createCssAnimation(entry, now) {
+    let animation;
+    let effect;
+    constructingAnimation = true;
+    try {
+      animation = entry.kind === "transition" ? new CSSTransition() : new CSSAnimation();
+      effect = new KeyframeEffect();
+    } finally {
+      constructingAnimation = false;
+    }
+    const internal = { animation, effect, target: wrap(entry.node), entry, playState: "running" };
+    animationInternals.set(animation, internal);
+    animationInternals.set(effect, internal);
+    resetFinished(internal);
+    applyAnimationEntry(internal, entry, now);
+    const key = animationKey(entry);
+    const list = liveAnimations.get(key);
+    if (list === undefined) liveAnimations.set(key, [animation]);
+    else list.push(animation);
+    return animation;
+  }
+  // "Relevant" animations: current or in effect. A finished entry stays in
+  // Stylo while its style holds it, but is relevant only with a forwards fill
+  // (transitions fill backwards, so finished ones are never returned).
+  function isRelevantAnimation(entry) {
+    if (entry.state === "finished") return entry.fill === "forwards" || entry.fill === "both";
+    return true;
+  }
+  // Native entries; a Canceled one (Blitz normally drops them inside the same
+  // flush) counts as gone, so its object is canceled.
+  function animationEntries(handle, subtree) {
+    const snapshot = JSON.parse(op_blitz_get_animations(handle, subtree));
+    return { now: snapshot.now, entries: snapshot.entries.filter((entry) => entry.state !== "canceled") };
+  }
+  function cssAnimationsFor(handle, subtree) {
+    const { now, entries } = animationEntries(handle, subtree);
+    const claimed = new Set();
+    const result = [];
+    for (const entry of entries) {
+      let animation = findCssAnimation(entry, claimed);
+      if (animation !== undefined) applyAnimationEntry(animationInternals.get(animation), entry, now);
+      else if (isRelevantAnimation(entry)) animation = createCssAnimation(entry, now);
+      else continue;
+      claimed.add(animation);
+      if (isRelevantAnimation(entry)) result.push(animation);
+    }
+    return result;
+  }
+  // Once per frame, after the previous frame's style flush: mirror every live
+  // object's entry, settle `finished`, drop objects whose entry is gone.
+  function updateCssAnimations() {
+    if (liveAnimations.size === 0) return;
+    const { now, entries } = animationEntries(-1, false);
+    const claimed = new Set();
+    for (const entry of entries) {
+      const animation = findCssAnimation(entry, claimed);
+      if (animation === undefined) continue;
+      claimed.add(animation);
+      applyAnimationEntry(animationInternals.get(animation), entry, now);
+    }
+    for (const [key, list] of liveAnimations) {
+      const remaining = list.filter((animation) => {
+        if (claimed.has(animation)) return true;
+        cancelCssAnimation(animationInternals.get(animation));
+        return false;
+      });
+      if (remaining.length === 0) liveAnimations.delete(key);
+      else liveAnimations.set(key, remaining);
+    }
+  }
+
   class HTMLElement extends Element {
     // HTML "editing host or editable" from the contenteditable attribute alone:
     // "" / "true" / "plaintext-only" -> true, "false" -> false, missing or invalid
@@ -2006,6 +2230,13 @@
   function runAnimationFrame() {
     gpuPacingTick();
     webAudio.dispatchPendingEvents();
+    // "Update animations" precedes the rAF callbacks; the state is the previous
+    // frame's style flush (headless loop and window shell both resolve after this).
+    try {
+      updateCssAnimations();
+    } catch (error) {
+      reportException(error);
+    }
     if (gpuPacingAllowsFrame()) {
       gpuPacing.frames++;
       const timestamp = performance.now();

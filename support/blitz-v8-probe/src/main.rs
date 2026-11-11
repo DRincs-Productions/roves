@@ -11,6 +11,7 @@ use blitz_html::HtmlDocument;
 use blitz_traits::shell::{ColorScheme, Viewport};
 use deno_core::{JsRuntime, OpState, RuntimeOptions, op2, v8};
 use deno_error::JsErrorBox;
+use style::animation::{AnimationState, KeyframesIterationState};
 use style::properties::{PropertyDeclarationId, PropertyId};
 
 mod animation_clock;
@@ -47,6 +48,7 @@ const EVENTS_TEST: &str = include_str!("events_test.js");
 const EVENTS_CHECK: &str = include_str!("events_check.js");
 const WINDOW_TEST: &str = include_str!("window_test.js");
 const SCROLL_TEST: &str = include_str!("scroll_test.js");
+const ANIMATIONS_TEST: &str = include_str!("animations_test.js");
 const GC_CHECK: &str = include_str!("gc_check.js");
 const GPU_PACING_TEST: &str = include_str!("gpu_pacing_test.js");
 /// Built by `npm run build` in `js/` (Motion 12.38.0 bundled with esbuild).
@@ -452,6 +454,219 @@ fn op_blitz_computed_style(
         },
     };
     Ok(styles.computed_value_to_string(declaration))
+}
+
+/// Stylo animation state as the `playState`-related name `dom.js` maps.
+fn animation_state_name(state: &AnimationState) -> &'static str {
+    match state {
+        AnimationState::Pending => "pending",
+        AnimationState::Running => "running",
+        AnimationState::Paused(_) => "paused",
+        AnimationState::Finished => "finished",
+        AnimationState::Canceled => "canceled",
+    }
+}
+
+/// CSS keyword of a Stylo keyword enum from its `Debug` name
+/// (`AlternateReverse` -> `alternate-reverse`).
+fn css_keyword(value: impl std::fmt::Debug) -> String {
+    let mut keyword = String::new();
+    for (index, character) in format!("{value:?}").chars().enumerate() {
+        if character.is_ascii_uppercase() {
+            if index > 0 {
+                keyword.push('-');
+            }
+            keyword.push(character.to_ascii_lowercase());
+        } else {
+            keyword.push(character);
+        }
+    }
+    keyword
+}
+
+/// Milliseconds of a CSS `<time>` (Stylo keeps them as f32 seconds, so 150ms is
+/// 0.15000000596 s), rounded to the microsecond: `getTiming()` reports 150.
+fn css_time_ms(seconds: f64) -> f64 {
+    (seconds * 1_000_000.0).round() / 1000.0
+}
+
+/// Whether `node_id` is `ancestor` or one of its DOM descendants.
+fn is_inclusive_descendant(document: &BaseDocument, node_id: NodeId, ancestor: NodeId) -> bool {
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        if id == ancestor {
+            return true;
+        }
+        current = document.get_node(id).and_then(|node| node.parent);
+    }
+    false
+}
+
+/// Tree-order positions inside `root`'s subtree: an element and its `::before`
+/// at entry, its `::after` after its descendants (one shared counter).
+fn tree_positions(document: &BaseDocument, root: NodeId) -> HashMap<NodeId, (usize, usize)> {
+    let mut positions = HashMap::new();
+    let mut counter = 0;
+    // (node, children visited) pairs: entry, then exit after the children.
+    let mut stack = vec![(root, false)];
+    while let Some((id, exiting)) = stack.pop() {
+        counter += 1;
+        if exiting {
+            positions.entry(id).or_insert((0, 0)).1 = counter;
+            continue;
+        }
+        positions.insert(id, (counter, 0));
+        stack.push((id, true));
+        if let Some(node) = document.get_node(id) {
+            stack.extend(node.children.iter().rev().map(|child| (*child, false)));
+        }
+    }
+    positions
+}
+
+/// `Element.getAnimations` (handle >= 0, `subtree` per its options) or, with a
+/// negative handle, every entry of the document for the per-frame settlement
+/// sweep of `dom.js`. Reads Stylo's own `DocumentAnimationSet` (Blitz advances
+/// Pending -> Running -> Finished and drops canceled entries inside
+/// `resolve_stylist`); nothing is computed here beyond unit conversion
+/// (seconds -> milliseconds). With a target, pending style changes are flushed
+/// first, as Web Animations requires. Returns JSON `{now, entries}` in composite
+/// order for a target: transitions before animations, each in tree order
+/// (element, `::before`, descendants, `::after`), then Stylo's list order.
+#[op2]
+#[string]
+fn op_blitz_get_animations(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    subtree: bool,
+) -> Result<String, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let target = if handle >= 0.0 {
+        let node = attached_node(&document, handle)?;
+        if node.element_data().is_none() {
+            return Err(JsErrorBox::type_error("getAnimations on a non-element"));
+        }
+        let node_id = node.id;
+        document.resolve_stylist(animation_clock::page_time());
+        Some(node_id)
+    } else {
+        None
+    };
+    let now = animation_clock::page_time();
+    let document: &BaseDocument = &document;
+    let sets = document.animations().sets.read();
+    // (kind rank, tree position, list index, entry)
+    let mut entries = Vec::new();
+    for (key, set) in sets.iter() {
+        // Blitz keys animations by `OpaqueNode(node_id.as_u64())` (its stylo.rs).
+        let node_id = NodeId::from_u64(key.node.id() as u64);
+        let pseudo = match &key.pseudo_element {
+            None => "",
+            Some(pseudo) if pseudo.is_before() => "::before",
+            Some(pseudo) if pseudo.is_after() => "::after",
+            // Other pseudo-elements are not Element.getAnimations targets here.
+            Some(_) => continue,
+        };
+        if let Some(target) = target {
+            let included = if subtree {
+                is_inclusive_descendant(document, node_id, target)
+            } else {
+                node_id == target && pseudo.is_empty()
+            };
+            if !included {
+                continue;
+            }
+        }
+        let node = to_handle(node_id);
+        for (index, transition) in set.transitions.iter().enumerate() {
+            let property = &transition.property_animation;
+            entries.push((
+                0,
+                node_id,
+                pseudo,
+                index,
+                deno_core::serde_json::json!({
+                    "kind": "transition",
+                    "node": node,
+                    "pseudo": pseudo,
+                    "name": property.property_id().name().to_string(),
+                    "state": animation_state_name(&transition.state),
+                    // Web Animations start time: creation time (Stylo's
+                    // start_time already includes the delay).
+                    "start": (transition.start_time - transition.delay) * 1000.0,
+                    "delay": css_time_ms(transition.delay),
+                    "duration": css_time_ms(property.duration),
+                    "iterations": 1.0,
+                    "current_iteration": 0.0,
+                    "progress": match transition.state {
+                        AnimationState::Paused(progress) => Some(progress),
+                        _ => None,
+                    },
+                    "fill": "backwards",
+                    "direction": "normal",
+                }),
+            ));
+        }
+        for (index, animation) in set.animations.iter().enumerate() {
+            let (current_iteration, iterations) = match animation.iteration_state {
+                KeyframesIterationState::Finite(current, max) => (current, Some(max)),
+                KeyframesIterationState::Infinite(current) => (current, None),
+            };
+            // `started_at` is the start of the current iteration (creation +
+            // delay, advanced by one duration per iteration), so the creation
+            // time stays the same for the whole life of the animation.
+            let start =
+                animation.started_at - current_iteration * animation.duration - animation.delay;
+            entries.push((
+                1,
+                node_id,
+                pseudo,
+                index,
+                deno_core::serde_json::json!({
+                    "kind": "animation",
+                    "node": node,
+                    "pseudo": pseudo,
+                    "name": animation.name.to_string(),
+                    "state": animation_state_name(&animation.state),
+                    "start": start * 1000.0,
+                    "delay": css_time_ms(animation.delay),
+                    "duration": css_time_ms(animation.duration),
+                    // null = infinite (JSON has no Infinity; dom.js maps it).
+                    "iterations": iterations,
+                    "current_iteration": current_iteration,
+                    "progress": match animation.state {
+                        AnimationState::Paused(progress) => Some(progress),
+                        _ => None,
+                    },
+                    "fill": css_keyword(&animation.fill_mode),
+                    "direction": css_keyword(&animation.direction),
+                }),
+            ));
+        }
+    }
+    drop(sets);
+    if let Some(target) = target.filter(|_| subtree && !entries.is_empty()) {
+        let positions = tree_positions(document, target);
+        let position = |node_id: NodeId, pseudo: &str| {
+            let (entry, exit) = positions
+                .get(&node_id)
+                .copied()
+                .unwrap_or((usize::MAX, usize::MAX));
+            match pseudo {
+                "::after" => (exit, 0),
+                "::before" => (entry, 1),
+                _ => (entry, 0),
+            }
+        };
+        entries.sort_by_key(|(kind, node_id, pseudo, index, _)| {
+            (*kind, position(*node_id, *pseudo), *index)
+        });
+    } else {
+        entries.sort_by_key(|(kind, _, _, index, _)| (*kind, *index));
+    }
+    let entries: Vec<_> = entries.into_iter().map(|(.., entry)| entry).collect();
+    Ok(deno_core::serde_json::json!({ "now": now * 1000.0, "entries": entries }).to_string())
 }
 
 /// Inline style write (`element.style.x = v`); an empty value removes the
@@ -1390,6 +1605,7 @@ deno_core::extension!(
         op_blitz_set_style_property,
         op_blitz_namespace,
         op_blitz_computed_style,
+        op_blitz_get_animations,
     ]
 );
 
@@ -2198,6 +2414,34 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"dedicated_worker_pixi_image_bitmap_probe\",\"status\":\"passed\",\"checks\":{worker_checks}}}"
+        );
+
+        // Element.getAnimations on Stylo's animation state: each phase checks the
+        // frames driven before it (real 60 Hz pacing on the page timeline).
+        stage("css_animations");
+        runtime
+            .execute_script("roves-blitz-animations-test.js", ANIMATIONS_TEST)
+            .expect("getAnimations test setup should run");
+        for (phase, frames_before) in [(1, 0), (2, 22), (3, 4), (4, 4)] {
+            if frames_before > 0 {
+                drive_frames(&mut runtime, &document, &run_animation_frame, frames_before)
+                    .await;
+            }
+            runtime
+                .execute_script(
+                    "roves-blitz-animations-phase.js",
+                    format!("animationsPhase({phase});"),
+                )
+                .expect("getAnimations phase should run");
+        }
+        let animation_checks = evaluate_string(
+            &mut runtime,
+            "if (!animationsResult.done) throw new Error('getAnimations tests did not finish at phase ' + animationsResult.phase); \
+             if (animationsResult.failures.length > 0) throw new Error('getAnimations: ' + animationsResult.failures.join(' | ')); \
+             String(animationsResult.checks)",
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"css_get_animations_stylo_state\",\"status\":\"passed\",\"checks\":{animation_checks}}}"
         );
 
         // ResizeObserver: observations are processed by runAnimationFrame after

@@ -1,0 +1,19 @@
+Read-only accessor for the document's CSS animation set (Roves).
+
+Base: crates.io blitz-dom 0.3.0-beta.4 (DioxusLabs/blitz
+92b11f1bd8ab7975411328b0406a95a09445b4e7, packages/blitz-dom). Applied in
+support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
+
+--- a/src/document.rs
++++ b/src/document.rs
+@@ -2061,4 +2061,10 @@
+             .and_then(|el| el.sub_doc_data_mut())
+     }
+
++    /// Read-only view of the document's CSS animations and transitions, as Stylo
++    /// tracks them (keys use `OpaqueNode(node_id.as_u64())`). Roves patch.
++    pub fn animations(&self) -> &DocumentAnimationSet {
++        &self.animations
++    }
++
+     pub fn is_animating(&self) -> bool {

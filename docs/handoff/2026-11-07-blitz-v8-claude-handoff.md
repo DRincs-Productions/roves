@@ -315,3 +315,5 @@ CI 43021790869 (as reported in the assignment; not re-read: `gh` and network wer
 - the exact CI error text
 
 These must be read, or pasted into the next assignment, before implementation. Next: decide between upgrade and pinned accessor on the real sources, then implement steps 1–3 as one complete change.
+
+**Outcome (11 November, implementation):** the monotonic clock landed first (CI widths `[0,51,100]`). The vendored crates.io source (pristine, vcs `92b11f1bd8a`) shows that Blitz's `resolve_stylist` already advances Stylo's state machine and clears canceled entries, so prerequisite 2 needs no embedder code. The set stays private upstream too, so the probe uses a path patch, not a git fork: `support/blitz-v8-probe/vendor/blitz-dom` (one read-only accessor, `[patch.crates-io]`, record in its `ROVES_PATCHES.md` and `patches/blitz-dom-0.3.0-beta.4/`). `op_blitz_get_animations`, `dom.js` and `animations_test.js` implement the surface above, with no globals and composite order (all transitions before all animations). Pending: lock, CI, story report, upstream issue/PR and fork removal (`TODO.md`).

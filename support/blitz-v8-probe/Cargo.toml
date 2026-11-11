@@ -6,6 +6,8 @@ publish = false
 license = "MPL-2.0"
 
 [workspace]
+# The patched upstream crate stays outside the workspace (no fmt/clippy of vendored code).
+exclude = ["vendor/blitz-dom"]
 
 [dependencies]
 deno_core = "=0.413.0"
@@ -56,3 +58,9 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 content-security-policy = "=0.8.1"
 # Start with offline rendering; the probe does not require an audio device in CI.
 web-audio-api = { version = "=1.7.0", default-features = false }
+
+# Temporary: crates.io blitz-dom 0.3.0-beta.4 plus one read-only accessor
+# (`BaseDocument::animations`) for Element.getAnimations. Provenance, patch and
+# removal criteria: vendor/blitz-dom/ROVES_PATCHES.md and patches/blitz-dom-0.3.0-beta.4/.
+[patch.crates-io]
+blitz-dom = { path = "vendor/blitz-dom" }
