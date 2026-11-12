@@ -1,3 +1,7 @@
+## 2026-11-12 - Blitz probe: tabIndex reflection for dialog focus
+
+`src/dom.js` reflects the HTML `tabindex` attribute on `HTMLElement` and uses Deno's Web IDL converter for writes. Base UI reads this property to find tabbable controls in dialogs. Blitz still manages native focus. The DOM fixture checks defaults, explicit values and invalid attributes.
+
 ## 2026-11-12 - Blitz probe: detached images for Pixi save thumbnails
 
 `support/blitz-v8-probe/src/dom.js` adds `Image()` and `HTMLImageElement` with reflected source and dimensions, asynchronous decoding and load/error events for explicit JS requests. The bridge reuses the existing fetch policy and Deno image decoder, then releases the decoded bitmap. Blitz still renders attribute-only images. The Canvas PNG fixture exercises the detached thumbnail, source replacement and decode failure. Image layout, automatic DOM image events and the template save round trip still need coverage.

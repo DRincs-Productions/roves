@@ -274,6 +274,15 @@
     }
     return element;
   };
+  const tabButton = document.createElement("button");
+  check(tabButton.tabIndex === 0 && document.createElement("input").tabIndex === 0 &&
+    document.createElement("div").tabIndex === -1, "tabIndex defaults for form controls and plain elements");
+  tabButton.tabIndex = -1;
+  check(tabButton.getAttribute("tabindex") === "-1" && tabButton.tabIndex === -1, "tabIndex setter reflects the attribute");
+  tabButton.setAttribute("tabindex", " +3suffix");
+  check(tabButton.tabIndex === 3, "tabIndex parses the leading integer");
+  tabButton.setAttribute("tabindex", "2147483648");
+  check(tabButton.tabIndex === 0, "out-of-range tabindex uses the element default");
   check(document.activeElement === body && activeDeep() === body, "activeElement deep: body when nothing is focused");
   plain.focus();
   check(document.activeElement === plain && activeDeep() === plain, "activeElement deep: focused non-iframe element");

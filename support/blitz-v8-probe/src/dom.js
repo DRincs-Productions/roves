@@ -2007,7 +2007,26 @@
     }
   }
 
+  const DEFAULT_TAB_INDEX_TAGS = new Set(["a", "area", "frame", "iframe", "object", ...FORM_CONTROLS]);
   class HTMLElement extends Element {
+    get tabIndex() {
+      const attribute = this.getAttribute("tabindex");
+      const integer = attribute?.match(/^[\t\n\f\r ]*[+-]?[0-9]+/);
+      if (integer) {
+        const value = Number(integer[0]);
+        if (value >= -2147483648 && value <= 2147483647) return value;
+      }
+      const name = this.localName;
+      if (DEFAULT_TAB_INDEX_TAGS.has(name)) return 0;
+      const parent = this.parentElement;
+      if (name === "summary" && parent?.localName === "details" &&
+          Array.from(parent.children).find((child) => child.localName === "summary") === this) return 0;
+      return -1;
+    }
+    set tabIndex(value) {
+      const index = webidl.converters.long(value, "Failed to set the 'tabIndex' property on 'HTMLElement'", "Value");
+      this.setAttribute("tabindex", index);
+    }
     // HTML "editing host or editable" from the contenteditable attribute alone:
     // "" / "true" / "plaintext-only" -> true, "false" -> false, missing or invalid
     // -> the parent's state (false at a non-HTML parent or the top). The probe has
