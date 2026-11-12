@@ -326,6 +326,42 @@ jobs:
             exit 1
           fi
           [ "$status" -eq 0 ] || { echo "::error::story states reached, but the probe exited with $status"; exit 1; }
+      - name: template Continue after restart (diagnostic)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 5
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-story-storage
+        run: |
+          set +e +o pipefail
+          log="$RUNNER_TEMP/blitz-story.log"
+          if ! grep -Fq '"check":"game_quick_save","status":"passed"' "$log"; then
+            echo 'ROVES_PROBE_RESULT {"check":"game_restore_save","status":"not_run","detail":{"reason":"quick save did not pass"}}' >> "$log"
+            exit 0
+          fi
+          ROVES_PROBE_RESTORE_LINE=$(node -e '
+            const line = require("fs").readFileSync(process.argv[1], "utf8").split(/\r?\n/)
+              .find(line => line.startsWith("ROVES_PROBE_RESULT {\"check\":\"game_story\","));
+            const expected = line && JSON.parse(line.slice("ROVES_PROBE_RESULT ".length)).detail.dialogue[1]?.[0];
+            if (!expected) process.exit(1);
+            process.stdout.write(expected);
+          ' "$log") || exit 1
+          export ROVES_PROBE_RESTORE_LINE
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          restore_log="$RUNNER_TEMP/blitz-story-restore.log"
+          timeout 240 "$exe" --game visual-novel-template/dist --story-restore > "$restore_log" 2>&1
+          status=$?
+          result=$(grep -m 1 -F '"check":"game_restore_save"' "$restore_log")
+          if [ "$status" -ne 0 ]; then
+            result="ROVES_PROBE_RESULT {\"check\":\"game_restore_save\",\"status\":\"failed\",\"detail\":{\"exit\":$status}}"
+          elif [ -z "$result" ]; then
+            result='ROVES_PROBE_RESULT {"check":"game_restore_save","status":"failed","detail":{"reason":"no result from restore process"}}'
+          fi
+          printf '%s\n' "$result" >> "$log"
+          echo "::notice::restore exit=$status $(printf '%s' "$result" | cut -c1-900)"
+          [ "$status" -eq 0 ] && printf '%s' "$result" | grep -Fq '"status":"passed"'
       # Raw step logs need admin auth; annotations are public. Re-emit the tail of the
       # probe log so a crash (e.g. exit 139) can be diagnosed without a token.
       - name: annotate probe log tail on failure
@@ -442,6 +478,7 @@ jobs:
             ${{ runner.temp }}/blitz-webgpu-fixture-*.log
             ${{ runner.temp }}/blitz-game.png
             ${{ runner.temp }}/blitz-story.log
+            ${{ runner.temp }}/blitz-story-restore.log
             ${{ runner.temp }}/blitz-story.png
             ${{ runner.temp }}/blitz-compat-report.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe

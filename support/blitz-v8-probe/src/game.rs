@@ -333,6 +333,8 @@ addEventListener("unhandledrejection", (event) => {
             gpu_pacing_stats,
         )
         .await;
+    } else if std::env::args().any(|arg| arg == "--story-restore") {
+        restore_story(runtime, document, run_animation_frame, dispatcher).await;
     }
 }
 
@@ -343,7 +345,7 @@ const STORY_STATE_FRAMES: u32 = 1800;
 const STORY_STABLE_CHECKS: u32 = 3;
 
 /// Page-side helpers of the `--story` harness, evaluated in the page's global.
-/// They only read the DOM (text, button labels, rects); input goes through the
+/// They inspect the DOM, events and save records. Input goes through the
 /// embedder's hit-test and trusted-event bridge. Toasts/alerts (role alert,
 /// aria-live assertive, sonner/notistack/MUI/"toast"/"snackbar" classes) are
 /// kept out of the page text: accumulating notifications must never count as
@@ -444,6 +446,14 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       const button = buttons().find((element) => /^settings$/i.test(label(element)));
       return button ? (center(button, { label: label(button) }) ?? "null") : "null";
     },
+    continueButton() {
+      const button = buttons().find((element) => /^continue$/i.test(label(element)) &&
+        !element.hasAttribute("disabled") && element.getAttribute("aria-disabled") !== "true");
+      return button ? center(button, {}) ?? "" : "";
+    },
+    restoredLine(expected) {
+      return dialogueLines([]).find((line) => line.includes(expected)) ?? "";
+    },
     dialogs() {
       return JSON.stringify(dialogElements().map(describe));
     },
@@ -480,7 +490,6 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       if (this.quickSaveReading) return "";
       this.quickSaveReading = true;
       const open = indexedDB.open("game_db");
-      open.onupgradeneeded = () => open.transaction.abort();
       open.onerror = () => {
         this.quickSaveReading = false;
         this.quickSaveResult = JSON.stringify({ error: open.error?.name ?? "database open failed" });
@@ -493,16 +502,21 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
           this.quickSaveResult = JSON.stringify({ error: "save store missing" });
           return;
         }
-        const read = db.transaction("saves", "readonly").objectStore("saves").getAll();
+        const read = db.transaction("saves", "readonly").objectStore("saves").openCursor();
         read.onerror = () => {
           db.close();
           this.quickSaveReading = false;
           this.quickSaveResult = JSON.stringify({ error: read.error?.name ?? "save read failed" });
         };
         read.onsuccess = () => {
+          const cursor = read.result;
+          const save = cursor?.value;
+          if (cursor && !(save.id >= -7 && save.id <= -2 && Number(new Date(save.date)) >= since)) {
+            cursor.continue();
+            return;
+          }
           db.close();
           this.quickSaveReading = false;
-          const save = read.result.find((row) => row.id >= -7 && row.id <= -2 && Number(new Date(row.date)) >= since);
           if (save) this.quickSaveResult = JSON.stringify({
             id: save.id,
             has_state: !!save.saveData && typeof save.saveData === "object",
@@ -1100,6 +1114,75 @@ async fn wait_until(
 
 /// Upper bound, in frames, for a dialog to mount, finish opening or unmount.
 const DIALOG_FRAMES: u32 = 600;
+
+/// Continue after launching a fresh process with the story run's storage.
+async fn restore_story(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+    crate::stage("game_restore_save");
+    runtime
+        .execute_script("roves-blitz-story-helpers.js", STORY_HELPERS)
+        .expect("story helpers should install");
+    let errors_before = error_count(runtime);
+    let mut toasts = Vec::new();
+    let mut report = json!({});
+    let failure = 'restore: {
+        let Ok(expected) = std::env::var("ROVES_PROBE_RESTORE_LINE") else {
+            break 'restore Some("missing ROVES_PROBE_RESTORE_LINE".into());
+        };
+        if expected.trim().is_empty() {
+            break 'restore Some("the expected restored dialogue line is empty".into());
+        }
+        let button = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.continueButton()",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        let Some((x, y, _)) = button.ok().and_then(|(button, _)| point(&button)) else {
+            break 'restore Some("the main menu did not enable Continue".into());
+        };
+        if crate::click_at(runtime, dispatcher, document, x, y).is_none() {
+            break 'restore Some("the Continue button had no hit target".into());
+        }
+        let probe = format!("__rovesStory.restoredLine({})", Value::String(expected));
+        match wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            &probe,
+            STORY_STATE_FRAMES,
+            &mut toasts,
+        )
+        .await
+        {
+            Ok((line, frames)) => {
+                report = json!({ "dialogue": excerpt(&line), "frames": frames });
+                None
+            },
+            Err(_) => Some("Continue did not restore the saved dialogue".into()),
+        }
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_restore_save",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        Vec::new(),
+    );
+    println!(
+        r#"ROVES_PROBE_RESULT {{"check":"game_restore_save","status":"{status}","detail":{report}}}"#
+    );
+}
 
 /// Exercise the template's F5 quick save and inspect only its committed row.
 /// A fresh timestamp prevents stale slots from satisfying a local replay.
