@@ -114,8 +114,8 @@ export function sourceCheckIds(dir) {
   for (const name of readdirSync(dir)) {
     if (!/\.(rs|js)$/.test(name)) continue;
     const text = readFileSync(join(dir, name), "utf8");
-    for (const match of text.matchAll(/\\"check\\":\\"([a-z0-9_]+)\\"|check: "([a-z0-9_]+)"/g)) {
-      ids.add(match[1] ?? match[2]);
+    for (const match of text.matchAll(/\\"check\\":\\"([a-z0-9_]+)\\"|"check":"([a-z0-9_]+)"|check: "([a-z0-9_]+)"/g)) {
+      ids.add(match[1] ?? match[2] ?? match[3]);
     }
   }
   return ids;

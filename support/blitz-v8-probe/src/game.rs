@@ -1631,10 +1631,7 @@ async fn name_input(
                     "Enter left the dialog open with no enabled Confirm button".into(),
                 );
             };
-            let hit = evaluate_owned(
-                runtime,
-                format!("document.elementFromPoint({x}, {y})?.localName ?? ''"),
-            );
+            let hit = crate::hit_target(document, x, y).map(|node| node.as_u64());
             let sent = window::pointer_click(runtime, dispatcher, document, x, y);
             report["confirm_pointer"] = json!({ "sent": sent, "hit": hit });
             if !sent {
