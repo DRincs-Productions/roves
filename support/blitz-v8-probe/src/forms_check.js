@@ -14,6 +14,7 @@
   check(name.value === "Peter" && formsTest.state() === "Peter" && tracker.getValue() === "Peter",
     `typed name ${json(name.value)}, state ${json(formsTest.state())}`);
   check(name.getAttribute("value") === "Pe", "typing does not write the value attribute");
+  check(name.selectionStart === 5 && name.selectionEnd === 5, "native typing updates the DOM caret");
   check(json(log.keydown) === json([
     "t:Pe:true", "x:Pet:true", "e:Pet:true", "1:Pete:true", "r:Pete:true", "r:Peter:true",
     "Backspace:Peterr:true", "Enter:Peter:true",

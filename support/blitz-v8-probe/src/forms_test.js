@@ -27,6 +27,24 @@
   check(typeof descriptor?.get === "function" && typeof descriptor?.set === "function",
     "value accessor on HTMLInputElement.prototype (React's value tracker wraps it)");
 
+  const selection = document.createElement("input");
+  selection.defaultValue = "A😀B";
+  selection.setSelectionRange(1, 3, "backward");
+  check(selection.value === "A😀B" && selection.selectionStart === 1 && selection.selectionEnd === 3 &&
+    selection.selectionDirection === "backward", "detached selection reads UTF-16 offsets from the editor");
+  selection.selectionStart = 4;
+  check(selection.selectionStart === 4 && selection.selectionEnd === 4, "moving selection start past end collapses the range");
+  selection.setSelectionRange(9, 1);
+  check(selection.selectionStart === 1 && selection.selectionEnd === 1, "end before start collapses at the end");
+  const noSelection = document.createElement("input");
+  noSelection.type = "number";
+  check(noSelection.selectionStart === null && errorName(() => noSelection.setSelectionRange(0, 1)) === "InvalidStateError",
+    "number inputs do not expose a text selection");
+  const selectionArea = document.createElement("textarea");
+  selectionArea.value = "a\nb";
+  selectionArea.setSelectionRange(1, 99);
+  check(selectionArea.selectionStart === 1 && selectionArea.selectionEnd === 3, "textarea selection clamps to its live text");
+
   const range = document.createElement("input");
   range.type = "range";
   range.setAttribute("max", "10");

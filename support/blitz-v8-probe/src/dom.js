@@ -60,7 +60,9 @@
     op_blitz_blur,
     op_blitz_focused,
     op_blitz_text_control_value,
+    op_blitz_text_control_selection,
     op_blitz_set_text_control_value,
+    op_blitz_set_text_control_selection,
     op_blitz_game_read,
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
@@ -2580,6 +2582,61 @@
       handleOf(this, "defaultValue");
       this.textContent = controlValue(value, "Failed to set the 'defaultValue' property on 'HTMLTextAreaElement'");
     }
+  }
+  const SELECTION_INPUT_TYPES = new Set(["text", "search", "url", "tel", "password"]);
+  const SELECTION_DIRECTIONS = ["none", "forward", "backward"];
+  function supportsTextSelection(element) {
+    if (element instanceof HTMLTextAreaElement) return true;
+    if (!(element instanceof HTMLInputElement)) throw new TypeError("Illegal invocation");
+    return SELECTION_INPUT_TYPES.has(element.type);
+  }
+  function textSelection(element, component) {
+    if (!supportsTextSelection(element)) return null;
+    const value = op_blitz_text_control_selection(handleOf(element, "selection"), component);
+    return component === 2 ? SELECTION_DIRECTIONS[value] : value;
+  }
+  function selectionIndex(value) {
+    return webidl.converters["unsigned long"](value, "Failed to set text selection", "Offset");
+  }
+  function setTextSelection(element, start, end, direction) {
+    if (!supportsTextSelection(element)) {
+      throw new DOMException("This input type does not support selection", "InvalidStateError");
+    }
+    const multiline = element instanceof HTMLTextAreaElement;
+    const value = multiline ? normalizeNewlines(element.defaultValue) :
+      sanitizeInputValue(element.type, element.defaultValue);
+    const backwards = webidl.converters.DOMString(direction ?? "none", "Failed to set text selection", "Direction") === "backward";
+    op_blitz_set_text_control_selection(handleOf(element, "selection"), start, end, backwards, multiline, value);
+  }
+  const textSelectionProperties = {
+    selectionStart: {
+      configurable: true, enumerable: true,
+      get() { return textSelection(this, 0); },
+      set(value) {
+        const start = selectionIndex(value);
+        setTextSelection(this, start, Math.max(start, this.selectionEnd), this.selectionDirection);
+      },
+    },
+    selectionEnd: {
+      configurable: true, enumerable: true,
+      get() { return textSelection(this, 1); },
+      set(value) { setTextSelection(this, this.selectionStart, selectionIndex(value), this.selectionDirection); },
+    },
+    selectionDirection: {
+      configurable: true, enumerable: true,
+      get() { return textSelection(this, 2); },
+      set(value) { setTextSelection(this, this.selectionStart, this.selectionEnd, value); },
+    },
+    setSelectionRange: {
+      configurable: true, enumerable: true, writable: true,
+      value(start, end, direction) {
+        if (arguments.length < 2) throw new TypeError("setSelectionRange requires start and end");
+        setTextSelection(this, selectionIndex(start), selectionIndex(end), direction);
+      },
+    },
+  };
+  for (const prototype of [HTMLInputElement.prototype, HTMLTextAreaElement.prototype]) {
+    Object.defineProperties(prototype, textSelectionProperties);
   }
   class HTMLSelectElement extends HTMLElement {
     get type() {

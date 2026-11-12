@@ -1,3 +1,7 @@
+## 2026-11-12 - Blitz probe: text-control selection for React keyboard events
+
+`src/dom.js` and `src/main.rs` expose selection endpoints and range writes on supported text inputs and textareas using the existing Blitz/Parley editor. The bridge converts between DOM UTF-16 offsets and Parley's UTF-8 byte indices. React can read the selection during keydown dispatch in the name dialog. The forms fixture covers native caret movement, detached ranges, non-BMP text and unsupported input types.
+
 ## 2026-11-12 - Blitz probe: transformed dialog bounds
 
 `support/blitz-v8-probe/src/main.rs` applies Blitz's cached 2D transforms to the layout rectangles returned to `getBoundingClientRect()`. The bridge composes the existing Kurbo matrices, including ancestor transforms, and leaves offset metrics in layout coordinates. The DOM fixture reproduces a button inside a translated dialog.

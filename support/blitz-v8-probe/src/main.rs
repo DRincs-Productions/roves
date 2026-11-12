@@ -1547,6 +1547,103 @@ fn op_blitz_text_control_value(
         .map(|input| input.editor.raw_text().to_string()))
 }
 
+/// Selection endpoints in DOM UTF-16 code units, read from the live editor.
+#[op2(fast)]
+fn op_blitz_text_control_selection(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    component: u32,
+) -> Result<u32, JsErrorBox> {
+    let document = probe_document(&state);
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    let Some(input) = node
+        .element_data()
+        .and_then(|element| element.text_input_data())
+    else {
+        return Ok(0);
+    };
+    let selection = input.editor.raw_selection();
+    let anchor = selection.anchor().index();
+    let focus = selection.focus().index();
+    let byte = match component {
+        0 => anchor.min(focus),
+        1 => anchor.max(focus),
+        _ => {
+            return Ok(if anchor > focus {
+                2
+            } else {
+                u32::from(anchor != focus)
+            });
+        },
+    };
+    let text = input.editor.raw_text();
+    Ok(text.get(..byte).unwrap_or(text).encode_utf16().count() as u32)
+}
+
+fn selection_byte_offset(text: &str, utf16_offset: u32) -> usize {
+    let mut units = 0;
+    for (byte, character) in text.char_indices() {
+        units += character.len_utf16() as u32;
+        if units > utf16_offset {
+            return byte;
+        }
+    }
+    text.len()
+}
+
+fn ensure_text_input(
+    document: &mut BaseDocument,
+    node_id: NodeId,
+    multiline: bool,
+) -> Result<bool, JsErrorBox> {
+    let element = document
+        .get_node_mut(node_id)
+        .and_then(|node| node.element_data_mut())
+        .ok_or_else(|| JsErrorBox::type_error("value on a non-element"))?;
+    if element.text_input_data().is_some() {
+        return Ok(false);
+    }
+    if !matches!(element.special_data, SpecialElementData::None) {
+        return Err(JsErrorBox::type_error(
+            "the element holds non-text Blitz form state",
+        ));
+    }
+    element.special_data = SpecialElementData::TextInput(TextInputData::new(multiline));
+    Ok(true)
+}
+
+#[op2(fast)]
+fn op_blitz_set_text_control_selection(
+    state: Rc<RefCell<OpState>>,
+    handle: f64,
+    start: u32,
+    end: u32,
+    backwards: bool,
+    multiline: bool,
+    #[string] default_value: &str,
+) -> Result<(), JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let node_id = attached_node(&document, handle)?.id;
+    let created = ensure_text_input(&mut document, node_id, multiline)?;
+    document.with_text_input(node_id, |mut driver| {
+        if created {
+            driver.editor.set_text(default_value);
+        }
+        let text = driver.editor.raw_text();
+        let start = selection_byte_offset(text, start.min(end));
+        let end = selection_byte_offset(text, end);
+        let (anchor, focus) = if backwards {
+            (end, start)
+        } else {
+            (start, end)
+        };
+        driver.select_byte_range(anchor, focus);
+    });
+    Ok(())
+}
+
 /// `value` setter of a text control (`dom.js` decides which elements are text
 /// controls and sanitizes). Writes into Blitz's editor; for an element without
 /// one yet (detached or not laid out, e.g. React sets `value` before inserting
@@ -1562,20 +1659,7 @@ fn op_blitz_set_text_control_value(
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
     let node_id = attached_node(&document, handle)?.id;
-    {
-        let element = document
-            .get_node_mut(node_id)
-            .and_then(|node| node.element_data_mut())
-            .ok_or_else(|| JsErrorBox::type_error("value on a non-element"))?;
-        if element.text_input_data().is_none() {
-            if !matches!(element.special_data, SpecialElementData::None) {
-                return Err(JsErrorBox::type_error(
-                    "the element holds non-text Blitz form state",
-                ));
-            }
-            element.special_data = SpecialElementData::TextInput(TextInputData::new(multiline));
-        }
-    }
+    ensure_text_input(&mut document, node_id, multiline)?;
     document.with_text_input(node_id, |mut driver| {
         if driver.editor.raw_text() != value {
             driver.editor.set_text(value);
@@ -1957,7 +2041,9 @@ deno_core::extension!(
         op_blitz_blur,
         op_blitz_focused,
         op_blitz_text_control_value,
+        op_blitz_text_control_selection,
         op_blitz_set_text_control_value,
+        op_blitz_set_text_control_selection,
         op_blitz_insert_before,
         op_blitz_child_count,
         op_blitz_child_at,
