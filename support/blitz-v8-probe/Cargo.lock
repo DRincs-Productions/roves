@@ -4522,6 +4522,7 @@ dependencies = [
  "blitz-shell",
  "blitz-traits",
  "content-security-policy",
+ "data-url",
  "deno_core",
  "deno_error",
  "deno_fetch",

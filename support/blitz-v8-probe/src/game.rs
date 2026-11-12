@@ -91,20 +91,89 @@ impl GameContent {
 }
 
 /// Serves Blitz's resource requests (stylesheets, fonts, images) from the game
-/// directory. Missing files are reported and left unanswered.
+/// directory, plus inline `data:` URLs (e.g. a save thumbnail's
+/// `data:image/png;base64,...`) decoded with the `data-url` crate. Nothing else
+/// is fetched: other schemes, hosts, missing files and malformed `data:` URLs
+/// are reported and left unanswered.
 struct GameNetProvider(Arc<GameContent>);
+
+impl GameNetProvider {
+    fn resource(&self, url: &blitz_traits::net::Url) -> Option<Vec<u8>> {
+        if url.scheme() == "data" {
+            let data = data_url::DataUrl::process(url.as_str()).ok()?;
+            return data.decode_to_vec().ok().map(|(bytes, _fragment)| bytes);
+        }
+        let path = self.0.path_for(url.scheme(), url.host_str(), url.path())?;
+        std::fs::read(path).ok()
+    }
+}
 
 impl NetProvider for GameNetProvider {
     fn fetch(&self, _doc_id: usize, request: Request, handler: Box<dyn NetHandler>) {
         let url = request.url;
-        let file = self
-            .0
-            .path_for(url.scheme(), url.host_str(), url.path())
-            .map(std::fs::read);
-        match file {
-            Some(Ok(bytes)) => handler.bytes(url.to_string(), Bytes::from(bytes)),
-            _ => eprintln!("ROVES_PROBE_GAME_MISSING_RESOURCE {url}"),
+        match self.resource(&url) {
+            Some(bytes) => handler.bytes(url.to_string(), Bytes::from(bytes)),
+            None => {
+                // A data: URL can be megabytes long; keep the log line short.
+                let shown: String = url.as_str().chars().take(120).collect();
+                eprintln!("ROVES_PROBE_GAME_MISSING_RESOURCE {shown}");
+            },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Mutex;
+
+    use super::*;
+
+    /// Records what the provider hands to Blitz's resource handler.
+    struct Capture(Arc<Mutex<Option<(String, Vec<u8>)>>>);
+
+    impl NetHandler for Capture {
+        fn bytes(self: Box<Self>, resolved_url: String, bytes: Bytes) {
+            *self.0.lock().unwrap() = Some((resolved_url, bytes.to_vec()));
+        }
+    }
+
+    fn fetch(provider: &GameNetProvider, url: &str) -> Option<(String, Vec<u8>)> {
+        let seen = Arc::new(Mutex::new(None));
+        let url = blitz_traits::net::Url::parse(url).unwrap();
+        provider.fetch(0, Request::get(url), Box::new(Capture(seen.clone())));
+        seen.lock().unwrap().take()
+    }
+
+    fn provider(root: &std::path::Path) -> GameNetProvider {
+        GameNetProvider(Arc::new(GameContent {
+            root: root.to_path_buf(),
+        }))
+    }
+
+    // Regression (artifact 43288469871, template bb9ea779): a save thumbnail is
+    // an inline PNG and was reported as ROVES_PROBE_GAME_MISSING_RESOURCE.
+    #[test]
+    fn inline_png_reaches_the_resource_handler() {
+        // 8-byte PNG signature, base64.
+        let url = "data:image/png;base64,iVBORw0KGgo=";
+        let (resolved, bytes) = fetch(&provider(&std::env::temp_dir()), url).expect("served");
+        assert_eq!(resolved, url);
+        assert_eq!(bytes, b"\x89PNG\r\n\x1a\n");
+    }
+
+    #[test]
+    fn game_files_are_served_and_other_origins_are_not() {
+        let root = std::env::temp_dir().join(format!("roves-net-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("style.css"), "a{}").unwrap();
+        let provider = provider(&root);
+        let served = fetch(&provider, "game://content/style.css");
+        let other_host = fetch(&provider, "game://other/style.css");
+        let remote = fetch(&provider, "https://example.com/style.css");
+        let bad_data = fetch(&provider, "data:image/png;base64,!!!");
+        std::fs::remove_dir_all(&root).ok();
+        assert_eq!(served.map(|(_, bytes)| bytes), Some(b"a{}".to_vec()));
+        assert!(other_host.is_none() && remote.is_none() && bad_data.is_none());
     }
 }
 

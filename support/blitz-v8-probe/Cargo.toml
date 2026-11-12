@@ -25,6 +25,9 @@ blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
 # Already in the Blitz graph. Compose Blitz's cached CSS transform matrices.
 kurbo = "=0.13.1"
 png = "=0.18.1"
+# Already locked through deno_fetch: decodes data: URLs (save thumbnails) in the
+# game NetProvider.
+data-url = "=0.3.1"
 # Same Stylo as blitz-dom 0.3.0-beta.4 (already in the graph): PropertyId for getComputedStyle.
 style = { package = "stylo", version = "=0.22.0", default-features = false }
 # Same versions as blitz-shell/blitz-traits 0.3.0-beta.4 (already in the graph): window
