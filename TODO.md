@@ -87,6 +87,8 @@ Questa voce pianifica l'integrazione opzionale; non introduce SDK o funzionalit�
 
 ## Migrazione autorizzata Servo → Blitz con Deno/V8
 
+- [ ] Ricontrollare se una release di Blitz applica le trasformazioni CSS in `get_client_bounding_rect` e rimuovere l'adattamento Roves quando la fixture passa con l'API nativa. La riproduzione del 12 novembre misura il pulsante a (480, 190) anziché (380, 140) nel dialogo traslato. Il plugin GitHub ha restituito 403 alla creazione dell'issue upstream. [Discussione correlata sulle coordinate degli eventi](https://github.com/DioxusLabs/blitz/issues/663).
+
 L'utente ha autorizzato il 6 novembre 2026 la migrazione del motore browser verso Blitz,
 mantenendo Deno + V8 come runtime JS prioritario. Piano operativo e stato della probe:
 [handoff Blitz/V8](./docs/handoff/2026-11-06-blitz-v8-migration.md). Servo resta il fallback

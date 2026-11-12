@@ -22,6 +22,8 @@ deno_web = "=0.291.0"
 deno_webidl = "=0.260.0"
 anyrender = "=0.14.0"
 blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
+# Already in the Blitz graph. Compose Blitz's cached CSS transform matrices.
+kurbo = "=0.13.1"
 png = "=0.18.1"
 # Same Stylo as blitz-dom 0.3.0-beta.4 (already in the graph): PropertyId for getComputedStyle.
 style = { package = "stylo", version = "=0.22.0", default-features = false }

@@ -1,3 +1,7 @@
+## 2026-11-12 - Blitz probe: transformed dialog bounds
+
+`support/blitz-v8-probe/src/main.rs` applies Blitz's cached 2D transforms to the layout rectangles returned to `getBoundingClientRect()`. The bridge composes the existing Kurbo matrices, including ancestor transforms, and leaves offset metrics in layout coordinates. The DOM fixture reproduces a button inside a translated dialog.
+
 ## 2026-11-12 - Blitz probe: tabIndex reflection for dialog focus
 
 `src/dom.js` reflects the HTML `tabindex` attribute on `HTMLElement` and uses Deno's Web IDL converter for writes. Base UI reads this property to find tabbable controls in dialogs. Blitz still manages native focus. The DOM fixture checks defaults, explicit values and invalid attributes.

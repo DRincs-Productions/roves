@@ -283,6 +283,20 @@
   check(tabButton.tabIndex === 3, "tabIndex parses the leading integer");
   tabButton.setAttribute("tabindex", "2147483648");
   check(tabButton.tabIndex === 0, "out-of-range tabindex uses the element default");
+  const transformedPanel = document.createElement("div");
+  transformedPanel.setAttribute("style",
+    "position: fixed; left: 250px; top: 150px; width: 200px; height: 100px; transform: translate(-50%, -50%)");
+  const transformedButton = document.createElement("button");
+  transformedButton.setAttribute("style",
+    "position: absolute; left: 160px; top: 10px; width: 30px; height: 20px; box-sizing: border-box; transform: translate(5px, 7px)");
+  transformedPanel.appendChild(transformedButton);
+  body.appendChild(transformedPanel);
+  const transformedRect = transformedButton.getBoundingClientRect();
+  check(Math.abs(transformedRect.x - 315) < 1 && Math.abs(transformedRect.y - 117) < 1 &&
+    Math.abs(transformedRect.width - 30) < 1 && Math.abs(transformedRect.height - 20) < 1,
+    `client rect applies own and ancestor transforms: ${JSON.stringify(transformedRect)}`);
+  check(transformedButton.offsetLeft === 160 && transformedButton.offsetTop === 10, "offset geometry stays in layout coordinates");
+  transformedPanel.remove();
   check(document.activeElement === body && activeDeep() === body, "activeElement deep: body when nothing is focused");
   plain.focus();
   check(document.activeElement === plain && activeDeep() === plain, "activeElement deep: focused non-iframe element");

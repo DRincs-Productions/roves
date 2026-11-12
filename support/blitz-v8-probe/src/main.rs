@@ -1257,15 +1257,52 @@ fn client_rect(document: &mut BaseDocument, node_id: NodeId) -> Option<[f64; 4]>
         offset.x = Default::default();
         offset.y = Default::default();
     }
-    let rect = document
-        .get_client_bounding_rect(node_id)
-        .map(|rect| [rect.x, rect.y, rect.width, rect.height]);
+    let rect = transformed_client_rect(document, node_id);
     document.set_viewport_scroll(viewport);
     if let (Some(own), Some(node)) = (own, document.get_node_mut(node_id)) {
         *node.scroll_offset_mut() = own;
     }
     let (scroll_x, scroll_y) = (viewport.x as f64, viewport.y as f64);
     rect.map(|[x, y, width, height]| [x - scroll_x, y - scroll_y, width, height])
+}
+
+/// Apply the same cached 2D matrices as Blitz's paint and hit testing. Its
+/// CSSOM rectangle API currently returns the untransformed layout fragments.
+fn transformed_client_rect(document: &BaseDocument, node_id: NodeId) -> Option<[f64; 4]> {
+    use kurbo::{Affine, Rect};
+
+    let scale = document.viewport().scale_f64();
+    let mut transform = Affine::IDENTITY;
+    let mut current = Some(node_id);
+    while let Some(id) = current {
+        let node = document.get_node(id)?;
+        if let Some(matrix) = node.transform().as_deref() {
+            let origin = document.get_client_bounding_rect(id)?;
+            let scroll = node.scroll_offset();
+            let anchor = Affine::translate((origin.x + scroll.x, origin.y + scroll.y));
+            let css_matrix = Affine::scale(1.0 / scale) * *matrix * Affine::scale(scale);
+            transform = anchor * css_matrix * anchor.inverse() * transform;
+        }
+        current = node.containing_block().or(node.parent);
+    }
+
+    if transform == Affine::IDENTITY {
+        let rect = document.get_client_bounding_rect(node_id)?;
+        return Some([rect.x, rect.y, rect.width, rect.height]);
+    }
+    let rect = document
+        .node_client_rects(node_id)
+        .into_iter()
+        .map(|rect| {
+            transform.transform_rect_bbox(Rect::new(
+                rect.x,
+                rect.y,
+                rect.x + rect.width,
+                rect.y + rect.height,
+            ))
+        })
+        .reduce(|bounds, fragment| bounds.union(fragment))?;
+    Some([rect.x0, rect.y0, rect.width(), rect.height()])
 }
 
 /// Viewport size in CSS pixels.

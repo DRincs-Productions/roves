@@ -4536,6 +4536,7 @@ dependencies = [
  "http",
  "hyper-util",
  "keyboard-types",
+ "kurbo",
  "png 0.18.1",
  "stylo",
  "sys_traits",
