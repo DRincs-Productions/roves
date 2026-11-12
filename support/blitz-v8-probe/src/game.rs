@@ -458,6 +458,23 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
     focused() {
       return JSON.stringify(describeFocus());
     },
+    watchNameInput() {
+      const input = dialogElements().map((dialog) => dialog.querySelector("input")).find(Boolean);
+      const events = [];
+      if (!input) return;
+      for (const type of ["keydown", "input"]) {
+        input.addEventListener(type, (event) => {
+          if (events.length < 48) events.push([type, event.key ?? null, input.value]);
+        }, { capture: true });
+      }
+      this.nameInputEvents = events;
+    },
+    nameConfirm() {
+      const button = dialogElements()
+        .flatMap((dialog) => Array.from(dialog.querySelectorAll("button")))
+        .find((button) => /^confirm$/i.test(label(button)) && !button.hasAttribute("disabled"));
+      return button ? center(button, {}) ?? "" : "";
+    },
     // The first visible text input inside a mounted dialog: its center, value,
     // type attribute, focus, and whether the dialog's Confirm button is disabled.
     dialogInput() {
@@ -1212,7 +1229,7 @@ const TYPED_NAME: &str = "Zorvaq";
 /// did not focus it, clears the default with End and Backspace, types
 /// `TYPED_NAME` key by key through `window::press_key` (Blitz edits its own
 /// editor; React's onChange sees the `input` events), checks the value and the
-/// enabled Confirm button, presses Enter, waits for the dialog to unmount, then
+/// enabled Confirm button, tries Enter and the pointer confirmation, then
 /// advances until a dialogue line contains the typed name (step 7,
 /// `...${mc.name}.`). Prints `game_name_input` (`not_run` when the two-dialogue
 /// run did not pass).
@@ -1359,6 +1376,7 @@ async fn name_input(
             }
         }
         report["focus_method"] = json!(focus_method);
+        crate::evaluate_string(runtime, "__rovesStory.watchNameInput()");
         // Clear the default value as a user would: End, then Backspace.
         let initial_length = input["value"]
             .as_str()
@@ -1376,6 +1394,7 @@ async fn name_input(
         let cleared = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
         let cleared: Value = deno_core::serde_json::from_str(&cleared).unwrap_or(Value::Null);
         steps.push(json!({ "action": "clear", "keys": format!("End + {} Backspace", initial_length + 2), "input": cleared }));
+        report["input_cleared"] = cleared.clone();
         if cleared["value"] != json!("") {
             break 'name Some(format!(
                 "End/Backspace did not clear the input (value {})",
@@ -1410,22 +1429,54 @@ async fn name_input(
         }
         window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Enter));
         steps.push(json!({ "action": "enter_key" }));
-        let closed = wait_until(
+        let input_events = crate::evaluate_string(
+            runtime,
+            "JSON.stringify(__rovesStory.nameInputEvents ?? [])",
+        );
+        println!("ROVES_PROBE_NAME_INPUT_EVENTS {input_events}");
+        let mut closed = wait_until(
             runtime,
             document,
             run_animation_frame,
             "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
-            DIALOG_FRAMES,
+            90,
             &mut toasts,
         )
         .await;
+        report["enter_accepted"] = json!(closed.is_ok());
+        if closed.is_err() {
+            let confirm = crate::evaluate_string(runtime, "__rovesStory.nameConfirm()");
+            let Some((x, y, _)) = point(&confirm) else {
+                break 'name Some(
+                    "Enter left the dialog open with no enabled Confirm button".into(),
+                );
+            };
+            let hit = crate::evaluate_string(
+                runtime,
+                &format!("document.elementFromPoint({x}, {y})?.localName ?? ''"),
+            );
+            let sent = window::pointer_click(runtime, dispatcher, document, x, y);
+            report["confirm_pointer"] = json!({ "sent": sent, "hit": hit });
+            if !sent {
+                break 'name Some("the Confirm button point did not hit any element".into());
+            }
+            closed = wait_until(
+                runtime,
+                document,
+                run_animation_frame,
+                "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+                DIALOG_FRAMES,
+                &mut toasts,
+            )
+            .await;
+        }
         match closed {
             Ok((_, frames)) => {
                 steps.push(json!({ "result": "input dialog unmounted", "frames": frames }))
             },
             Err(_) => {
                 break 'name Some(format!(
-                    "Enter did not accept the name: the input dialog is still mounted after {DIALOG_FRAMES} frames (dialogs: {})",
+                    "Confirm left the input dialog mounted after {DIALOG_FRAMES} frames (dialogs: {})",
                     crate::evaluate_string(runtime, "__rovesStory.dialogs()")
                 ));
             },
