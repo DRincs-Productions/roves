@@ -3166,8 +3166,10 @@ fn main() {
                 .execute_script("roves-blitz-webgpu-scenario.js", scenario)
                 .expect("WebGPU scenario should load");
             let mut status = String::from("running");
-            for _ in 0..600 {
-                drive_frames(&mut runtime, &document, &run_animation_frame, 1).await;
+            // A single-frame call starts at frame zero and does not wait.
+            // Batch the frames so Pixi's Image load/error tasks can run.
+            for _ in 0..60 {
+                drive_frames(&mut runtime, &document, &run_animation_frame, 10).await;
                 status = evaluate_string(&mut runtime, "webgpuResult.status");
                 if status != "running" {
                     break;

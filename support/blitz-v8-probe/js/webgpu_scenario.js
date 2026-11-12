@@ -87,10 +87,8 @@ import { Application, Assets, Graphics, Sprite } from "pixi.js";
     const close = (actual, expected) => expected.every((value, index) => Math.abs(actual[index] - value) <= 3);
     const pixels = { red, green, background, image };
 
-    // Save-thumbnail path of Pixi'VN canvas.extractImage(): extract.base64 ->
-    // GpuTextureSystem.generateCanvas (a "webgpu" canvas) -> canvas.toBlob
-    // (probe readback + PNG) -> FileReader.readAsDataURL. extract.image() would
-    // additionally need `new Image()` (HTMLImageElement, not in the probe).
+    // Save-thumbnail path: extract.base64 -> a WebGPU canvas -> toBlob
+    // (probe readback + PNG) -> FileReader.readAsDataURL.
     // The PNG is decoded with createImageBitmap, uploaded to a texture and read.
     result.step = "extract";
     const dataUrl = await app.renderer.extract.base64(app.stage);
