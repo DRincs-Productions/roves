@@ -2568,6 +2568,100 @@
       return this.hasAttribute("multiple") ? "select-multiple" : "select-one";
     }
   }
+  // Explicit JS loads use the same origin checks and decoding as fetch and
+  // createImageBitmap. Attribute-only images stay on Blitz's rendering path
+  // until JS explicitly requests a decode.
+  const imageRequests = new WeakMap();
+  function requestImage(element) {
+    const src = element.src;
+    const previous = imageRequests.get(element);
+    if (previous?.src === src) return previous;
+    previous?.abort.abort();
+    const request = { src, abort: new AbortController(), done: !src, width: 0, height: 0 };
+    imageRequests.set(element, request);
+    request.ready = src ? loadImage(element, request) : Promise.resolve(false);
+    return request;
+  }
+  async function loadImage(element, request) {
+    const { signal } = request.abort;
+    try {
+      const response = await fetchApi.fetch(request.src, { signal });
+      if (!response.ok) throw new Error("Image request failed");
+      const blob = await response.blob();
+      if (signal.aborted) return false;
+      const bitmap = await imageApi.createImageBitmap(blob);
+      request.width = bitmap.width;
+      request.height = bitmap.height;
+      bitmap.close();
+    } catch {
+      // Failed or unsupported images keep zero intrinsic dimensions.
+    }
+    if (signal.aborted) return false;
+    request.done = true;
+    const loaded = request.width > 0 && request.height > 0;
+    setTimeoutUnbound(() => {
+      if (!signal.aborted) fireTrusted(element, loaded ? "load" : "error", Event, {});
+    }, 0);
+    return loaded;
+  }
+  class HTMLImageElement extends HTMLElement {
+    get src() {
+      const attribute = this.getAttribute("src");
+      if (!attribute) return attribute ?? "";
+      try {
+        return new URL(attribute, historyApi.location.href).href;
+      } catch {
+        return attribute;
+      }
+    }
+    set src(value) {
+      super.setAttribute("src", value);
+      requestImage(this);
+    }
+    setAttribute(name, value) {
+      name = String(name);
+      super.setAttribute(name, value);
+      if (asciiLowercase(name) === "src" && imageRequests.has(this)) requestImage(this);
+    }
+    removeAttribute(name) {
+      name = String(name);
+      super.removeAttribute(name);
+      if (asciiLowercase(name) === "src" && imageRequests.has(this)) requestImage(this);
+    }
+    get currentSrc() { return imageRequests.get(this)?.src ?? ""; }
+    get complete() { return imageRequests.get(this)?.done ?? !this.src; }
+    get naturalWidth() { return imageRequests.get(this)?.width ?? 0; }
+    get naturalHeight() { return imageRequests.get(this)?.height ?? 0; }
+    get width() { return this.#dimension("width", this.naturalWidth); }
+    set width(value) { this.#setDimension("width", value); }
+    get height() { return this.#dimension("height", this.naturalHeight); }
+    set height(value) { this.#setDimension("height", value); }
+    #dimension(name, fallback) {
+      const value = this.getAttribute(name);
+      return value !== null && /^\d+$/.test(value) ? Number(value) : fallback;
+    }
+    #setDimension(name, value) {
+      this.setAttribute(name, Number(value) >>> 0);
+    }
+    async decode() {
+      const request = requestImage(this);
+      if (!await request.ready || request.abort.signal.aborted) {
+        throw new DOMException("The image could not be decoded", "EncodingError");
+      }
+    }
+  }
+  function Image(width, height) {
+    if (!new.target) throw new TypeError("Image requires 'new'");
+    const element = document.createElement("img");
+    if (width !== undefined) element.width = width;
+    if (height !== undefined) element.height = height;
+    requestImage(element);
+    return element;
+  }
+  Image.prototype = HTMLImageElement.prototype;
+  defineEventHandler(HTMLImageElement.prototype, "load");
+  defineEventHandler(HTMLImageElement.prototype, "error");
+
   const HTML_ELEMENT_CLASSES = new Map([
     ["input", HTMLInputElement],
     ["textarea", HTMLTextAreaElement],
@@ -2576,6 +2670,7 @@
     ["iframe", HTMLIFrameElement],
     ["audio", HTMLAudioElement],
     ["video", HTMLVideoElement],
+    ["img", HTMLImageElement],
   ]);
   class Text extends Node {}
   class Comment extends Node {}
@@ -2849,6 +2944,8 @@
     HTMLAudioElement,
     HTMLVideoElement,
     HTMLInputElement,
+    HTMLImageElement,
+    Image,
     HTMLTextAreaElement,
     HTMLSelectElement,
     NodeList,

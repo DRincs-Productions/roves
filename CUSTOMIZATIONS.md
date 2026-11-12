@@ -1,3 +1,7 @@
+## 2026-11-12 - Blitz probe: detached images for Pixi save thumbnails
+
+`support/blitz-v8-probe/src/dom.js` adds `Image()` and `HTMLImageElement` with reflected source and dimensions, asynchronous decoding and load/error events for explicit JS requests. The bridge reuses the existing fetch policy and Deno image decoder, then releases the decoded bitmap. Blitz still renders attribute-only images. The Canvas PNG fixture exercises the detached thumbnail, source replacement and decode failure. Image layout, automatic DOM image events and the template save round trip still need coverage.
+
 ## 2026-11-11 - Blitz probe: range input value for Settings
 
 Support the current value of range inputs in the DOM bridge. React can initialize the Settings slider, and the range value is normalized against its bounds and step independently of the default value. The forms fixture covers assignment, rounding and clamping. Native slider interaction remains outside this change.

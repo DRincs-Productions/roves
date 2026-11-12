@@ -141,6 +141,35 @@
     expect(bitmap.width === 3 && bitmap.height === 2, `deno_image decodes the toBlob PNG as ${bitmap.width}x${bitmap.height}`);
     expect((await toBlob(empty)) === null, "zero-size toBlob calls back with null");
     expect(errorName(() => canvas.toBlob()) === "TypeError" && errorName(() => canvas.toBlob(1)) === "TypeError", "toBlob requires a callback");
+    result.step = "thumbnail_image";
+    const thumbnail = new Image(6, 4);
+    expect(thumbnail instanceof HTMLImageElement && thumbnail instanceof Image &&
+      document.createElement("img") instanceof HTMLImageElement, "Image and img share the HTMLImageElement prototype");
+    expect(thumbnail.complete && thumbnail.src === "" && thumbnail.naturalWidth === 0, "empty image state");
+    const loaded = new Promise((resolve) => {
+      thumbnail.onload = resolve;
+    });
+    thumbnail.src = blobUrl;
+    expect(!thumbnail.complete && thumbnail.src === blobUrl, "detached thumbnail retains its data URL immediately");
+    await thumbnail.decode();
+    expect((await loaded).isTrusted && thumbnail.complete && thumbnail.currentSrc === blobUrl,
+      "load fires after the request completes");
+    expect(thumbnail.naturalWidth === 3 && thumbnail.naturalHeight === 2 && thumbnail.width === 6 && thumbnail.height === 4,
+      "decoded size is independent of the constructor dimensions");
+    thumbnail.setAttribute("src", "data:image/png,invalid");
+    const rejected = thumbnail.decode().then(() => null, (error) => error.name);
+    thumbnail.src = blobUrl;
+    await thumbnail.decode();
+    expect(await rejected === "EncodingError" && thumbnail.naturalWidth === 3, "source replacement rejects stale decode");
+    const failed = new Promise((resolve) => {
+      thumbnail.onerror = resolve;
+    });
+    thumbnail.src = "data:image/png,invalid";
+    expect(await thumbnail.decode().then(() => null, (error) => error.name) === "EncodingError" &&
+      (await failed).isTrusted && thumbnail.complete && thumbnail.naturalWidth === 0,
+      "broken images emit error and reject decode");
+    thumbnail.removeAttribute("src");
+    expect(thumbnail.complete && thumbnail.src === "" && thumbnail.currentSrc === "", "removing src resets the request");
     result.step = "finished";
   })()
     .catch((error) => result.failures.push(`${result.step}: ${error?.stack ?? error}`))
