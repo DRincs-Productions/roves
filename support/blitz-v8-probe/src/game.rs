@@ -475,6 +475,43 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
         .find((button) => /^confirm$/i.test(label(button)) && !button.hasAttribute("disabled"));
       return button ? center(button, {}) ?? "" : "";
     },
+    quickSaveEvidence(since) {
+      if (this.quickSaveResult) return this.quickSaveResult;
+      if (this.quickSaveReading) return "";
+      this.quickSaveReading = true;
+      const open = indexedDB.open("game_db");
+      open.onupgradeneeded = () => open.transaction.abort();
+      open.onerror = () => {
+        this.quickSaveReading = false;
+        this.quickSaveResult = JSON.stringify({ error: open.error?.name ?? "database open failed" });
+      };
+      open.onsuccess = () => {
+        const db = open.result;
+        if (!db.objectStoreNames.contains("saves")) {
+          db.close();
+          this.quickSaveReading = false;
+          this.quickSaveResult = JSON.stringify({ error: "save store missing" });
+          return;
+        }
+        const read = db.transaction("saves", "readonly").objectStore("saves").getAll();
+        read.onerror = () => {
+          db.close();
+          this.quickSaveReading = false;
+          this.quickSaveResult = JSON.stringify({ error: read.error?.name ?? "save read failed" });
+        };
+        read.onsuccess = () => {
+          db.close();
+          this.quickSaveReading = false;
+          const save = read.result.find((row) => row.id >= -7 && row.id <= -2 && Number(new Date(row.date)) >= since);
+          if (save) this.quickSaveResult = JSON.stringify({
+            id: save.id,
+            has_state: !!save.saveData && typeof save.saveData === "object",
+            thumbnail_png: typeof save.image === "string" && save.image.startsWith("data:image/png;base64,"),
+          });
+        };
+      };
+      return "";
+    },
     // The first visible text input inside a mounted dialog: its center, value,
     // type attribute, focus, and whether the dialog's Confirm button is disabled.
     dialogInput() {
@@ -711,6 +748,14 @@ async fn story(
         gpu_pacing_stats,
     )
     .await;
+    if progress.is_some() {
+        crate::stage("game_quick_save");
+        quick_save(runtime, document, run_animation_frame, dispatcher).await;
+    } else {
+        println!(
+            r#"ROVES_PROBE_RESULT {{"check":"game_quick_save","status":"not_run","detail":{{"reason":"story setup failed"}}}}"#
+        );
+    }
     crate::stage("game_name_input");
     name_input(runtime, document, run_animation_frame, dispatcher, progress).await;
     if let Ok(path) = std::env::var("ROVES_PROBE_STORY_SCREENSHOT") {
@@ -1055,6 +1100,58 @@ async fn wait_until(
 
 /// Upper bound, in frames, for a dialog to mount, finish opening or unmount.
 const DIALOG_FRAMES: u32 = 600;
+
+/// Exercise the template's F5 quick save and inspect only its committed row.
+/// A fresh timestamp prevents stale slots from satisfying a local replay.
+async fn quick_save(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+    use keyboard_types::{Key, NamedKey};
+
+    let errors_before = error_count(runtime);
+    let since = crate::evaluate_string(runtime, "String(Date.now())");
+    window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::F5));
+    let mut toasts = Vec::new();
+    let mut report = json!({});
+    let probe = format!("__rovesStory.quickSaveEvidence({since})");
+    let failure = match wait_until(
+        runtime,
+        document,
+        run_animation_frame,
+        &probe,
+        DIALOG_FRAMES,
+        &mut toasts,
+    )
+    .await
+    {
+        Ok((evidence, frames)) => {
+            let evidence: Value = deno_core::serde_json::from_str(&evidence).unwrap_or(Value::Null);
+            let valid = evidence["has_state"] == Value::Bool(true)
+                && evidence["thumbnail_png"] == Value::Bool(true);
+            report = json!({ "evidence": evidence, "frames": frames });
+            (!valid).then(|| {
+                "the quick-save row did not contain a game state and a PNG thumbnail".into()
+            })
+        },
+        Err(_) => Some("F5 did not produce a fresh IndexedDB quick-save slot".into()),
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_quick_save",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        Vec::new(),
+    );
+    println!(
+        r#"ROVES_PROBE_RESULT {{"check":"game_quick_save","status":"{status}","detail":{report}}}"#
+    );
+}
 
 /// Common tail of the popup/name-input results: toasts (an error toast fails),
 /// new script errors since `errors_before` (any fails); returns the status and
@@ -1451,9 +1548,9 @@ async fn name_input(
                     "Enter left the dialog open with no enabled Confirm button".into(),
                 );
             };
-            let hit = crate::evaluate_string(
+            let hit = evaluate_owned(
                 runtime,
-                &format!("document.elementFromPoint({x}, {y})?.localName ?? ''"),
+                format!("document.elementFromPoint({x}, {y})?.localName ?? ''"),
             );
             let sent = window::pointer_click(runtime, dispatcher, document, x, y);
             report["confirm_pointer"] = json!({ "sent": sent, "hit": hit });

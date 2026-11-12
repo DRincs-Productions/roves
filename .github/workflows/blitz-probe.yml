@@ -299,7 +299,7 @@ jobs:
           [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
           name_input_events=$(grep -m 1 '^ROVES_PROBE_NAME_INPUT_EVENTS ' "$log")
           [ -n "$name_input_events" ] && echo "::notice::$name_input_events"
-          for check in game_settings_popup game_name_input; do
+          for check in game_settings_popup game_name_input game_quick_save; do
             line=$(grep -F "\"check\":\"$check\"" "$log" | head -n 1)
             if [ -z "$line" ]; then
               echo "::warning::$check: no result line"
