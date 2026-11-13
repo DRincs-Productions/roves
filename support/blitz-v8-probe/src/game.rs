@@ -1908,8 +1908,11 @@ async fn name_input(
                         // label is in the settled narration: that click would
                         // legitimately advance the still-running dialogue.
                         let name = Value::String(TYPED_NAME.into());
+                        // `wait_until` treats any non-empty evaluation string as ready;
+                        // stringify the predicate as an empty/non-empty sentinel because
+                        // the literal result "false" would also satisfy that contract.
                         let settled_named_line = format!(
-                            "JSON.parse(__rovesStory.narration({})).some((line) => line !== {} && line.includes({}))",
+                            "JSON.parse(__rovesStory.narration({})).some((line) => line !== {} && line.includes({})) ? 'committed' : ''",
                             Value::String(menu.clone()),
                             name,
                             name,
