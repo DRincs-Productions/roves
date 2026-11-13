@@ -359,11 +359,13 @@ impl RovesDocument {
         let passed =
             stats.frames > 0 && stats.errors == 0 && (!needs_canvas || stats.canvas_layers > 0);
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_presentation\",\"status\":\"{}\",\"requires_canvas\":{needs_canvas},\"frames\":{},\"canvas_layers\":{},\"raster_segments\":{},\"upload_bytes\":{},\"max_layers\":{},\"skipped_frames\":{},\"errors\":{},\"readback\":false}}",
+            "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_presentation\",\"status\":\"{}\",\"requires_canvas\":{needs_canvas},\"frames\":{},\"canvas_layers\":{},\"raster_segments\":{},\"raster_uploads\":{},\"raster_cache_hits\":{},\"upload_bytes\":{},\"max_layers\":{},\"skipped_frames\":{},\"errors\":{},\"readback\":false}}",
             if passed { "passed" } else { "failed" },
             stats.frames,
             stats.canvas_layers,
             stats.raster_segments,
+            stats.raster_uploads,
+            stats.raster_cache_hits,
             stats.upload_bytes,
             stats.max_layers,
             stats.skipped_frames,

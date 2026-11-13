@@ -27,8 +27,9 @@
 //! Limits (documented in the README): the canvas quad ignores clip layers
 //! (overflow, clip-path, border radius) but honours the 2D transform and the
 //! product of open group opacities; a group with opacity or a blend mode that
-//! spans a canvas is applied separately to each side of the cut; every raster
-//! segment is a full-viewport upload each frame (no damage tracking); the
+//! spans a canvas is applied separately to each side of the cut; a raster
+//! segment is either reused unchanged (`RasterCache`) or re-rasterized and
+//! uploaded as a full viewport (no damage tracking inside a segment); the
 //! canvas must use a non-sRGB 8-bit format (`bgra8unorm`/`rgba8unorm`).
 
 use std::borrow::Cow;
@@ -37,6 +38,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use anyrender::filters::FilterEffect;
 use anyrender::recording::{FillCommand, RenderCommand};
 use anyrender::{
     ImageRenderer, Paint, PaintScene, RenderContext, ResourceId, Scene, WindowHandle,
@@ -571,7 +573,12 @@ struct GpuLayer {
 pub struct PresentStats {
     pub frames: u64,
     pub canvas_layers: u64,
+    /// Raster segments composed (uploaded or reused).
     pub raster_segments: u64,
+    /// Raster segments rasterized by Vello CPU and uploaded.
+    pub raster_uploads: u64,
+    /// Raster segments reused from the previous upload (`RasterCache`).
+    pub raster_cache_hits: u64,
     pub upload_bytes: u64,
     pub max_layers: usize,
     pub skipped_frames: u64,
@@ -583,6 +590,77 @@ struct RasterTexture {
     view: TextureViewId,
 }
 
+/// Whether two equal (`PartialEq`) segments are guaranteed to rasterize to the
+/// same pixels, so a texture uploaded for one can be reused for the other.
+///
+/// Audit of the pinned anyrender 0.14 / peniko 0.6 / Vello CPU 0.18 stack:
+/// each segment is rasterized alone into a cleared buffer of the viewport
+/// size, so its pixels depend only on its commands, the scene tolerance and
+/// that size (the Vello CPU image cache only memoizes conversions). Shapes,
+/// transforms, strokes, colors and gradients are plain values. Images and
+/// fonts compare by `Blob` id, which comes from a global monotonic counter;
+/// the bytes behind a `Blob` are shared read-only (`Arc<dyn AsRef<[u8]>>`,
+/// Blitz builds them from `Arc<Vec<u8>>` or static data), so an equal id means
+/// equal bytes, and width/height/format/alpha type are compared too. A NaN
+/// value makes equality fail, which only costs an upload. Excluded, because
+/// they reference mutable or external state that equality does not capture:
+/// `Paint::Resource` (an embedder resource id; Vello CPU paints it transparent
+/// today, but its content is not part of the command), `Paint::Custom`
+/// (compared by pointer) and filters with an external image
+/// (`FilterEffect::Image`, an id into embedder state).
+fn reusable(scene: &Scene) -> bool {
+    let stable_paint = |paint: &Paint| !matches!(paint, Paint::Resource(_) | Paint::Custom(_));
+    scene.commands.iter().all(|command| match command {
+        RenderCommand::PushLayer(layer) => [&layer.filter, &layer.backdrop_filter]
+            .into_iter()
+            .flatten()
+            .flat_map(|filter| filter.nodes())
+            .all(|node| !matches!(node.effect, FilterEffect::Image(_))),
+        RenderCommand::Fill(fill) => stable_paint(&fill.brush),
+        RenderCommand::Stroke(stroke) => stable_paint(&stroke.brush),
+        RenderCommand::GlyphRun(run) => stable_paint(&run.brush),
+        RenderCommand::PushClipLayer(_) | RenderCommand::PopLayer | RenderCommand::BoxShadow(_) => {
+            true
+        },
+    })
+}
+
+/// The scene last uploaded, without error, into each raster texture (by
+/// segment index), so an equal segment in the same position reuses it.
+/// Cleared on resize (textures recreated) and whenever a frame is discarded;
+/// an entry is dropped before each upload and stored again only if the
+/// upload reported no error.
+#[derive(Default)]
+struct RasterCache {
+    contents: Vec<Option<Scene>>,
+}
+
+impl RasterCache {
+    fn is_current(&self, index: usize, scene: &Scene) -> bool {
+        reusable(scene) && self.contents.get(index).and_then(Option::as_ref) == Some(scene)
+    }
+
+    /// Forgets the content of texture `index` (an upload into it begins).
+    fn invalidate(&mut self, index: usize) {
+        if let Some(content) = self.contents.get_mut(index) {
+            *content = None;
+        }
+    }
+
+    /// Records the scene just uploaded into texture `index` without error
+    /// (kept only if reusable).
+    fn store(&mut self, index: usize, scene: Scene) {
+        if self.contents.len() <= index {
+            self.contents.resize_with(index + 1, || None);
+        }
+        self.contents[index] = reusable(&scene).then_some(scene);
+    }
+
+    fn clear(&mut self) {
+        self.contents.clear();
+    }
+}
+
 pub struct GpuCompositor {
     device: PresentDevice,
     pipeline: RenderPipelineId,
@@ -590,6 +668,7 @@ pub struct GpuCompositor {
     sampler: SamplerId,
     uniforms: Vec<BufferId>,
     rasters: Vec<RasterTexture>,
+    raster_cache: RasterCache,
     raster_size: (u32, u32),
     vello: VelloCpuImageRenderer,
     pixels: Vec<u8>,
@@ -743,6 +822,7 @@ impl GpuCompositor {
             sampler,
             uniforms: Vec::new(),
             rasters: Vec::new(),
+            raster_cache: RasterCache::default(),
             raster_size: (0, 0),
             vello: VelloCpuImageRenderer::new(1, 1),
             pixels: Vec::new(),
@@ -756,6 +836,7 @@ impl GpuCompositor {
     }
 
     fn release_rasters(&mut self) {
+        self.raster_cache.clear();
         let global = &self.device.instance;
         for raster in self.rasters.drain(..) {
             global.texture_view_drop(raster.view);
@@ -826,7 +907,8 @@ impl GpuCompositor {
         self.uniforms[index]
     }
 
-    /// Rasterizes one segment with Vello CPU and uploads it (CPU to GPU only).
+    /// Rasterizes one segment with Vello CPU and uploads it (CPU to GPU only),
+    /// unless texture `index` already holds an equal reusable segment.
     fn upload_segment(
         &mut self,
         index: usize,
@@ -834,7 +916,17 @@ impl GpuCompositor {
         width: u32,
         height: u32,
     ) -> TextureViewId {
+        let errors_before = self.stats.errors;
+        // Recreates the textures (and clears the cache) on resize.
         let view = self.raster(index, width, height);
+        self.frame.raster_segments += 1;
+        if self.raster_cache.is_current(index, &scene) {
+            self.frame.raster_cache_hits += 1;
+            return view;
+        }
+        self.raster_cache.invalidate(index);
+        // Kept only for comparison with the next frame's segment.
+        let cached = reusable(&scene).then(|| scene.clone());
         self.pixels.clear();
         self.pixels.resize(width as usize * height as usize * 4, 0);
         let pixels = &mut self.pixels;
@@ -864,8 +956,15 @@ impl GpuCompositor {
             },
         );
         report(&mut self.stats, "segment upload", error.err());
+        // A failed texture creation or write leaves unknown contents: the
+        // entry stays invalid and the next frame uploads again.
+        if let Some(cached) = cached
+            && self.stats.errors == errors_before
+        {
+            self.raster_cache.store(index, cached);
+        }
         self.frame.upload_bytes += self.pixels.len() as u64;
-        self.frame.raster_segments += 1;
+        self.frame.raster_uploads += 1;
         view
     }
 
@@ -1063,12 +1162,17 @@ impl GpuCompositor {
         self.stats.frames += 1;
         self.stats.canvas_layers += frame.canvas_layers;
         self.stats.raster_segments += frame.raster_segments;
+        self.stats.raster_uploads += frame.raster_uploads;
+        self.stats.raster_cache_hits += frame.raster_cache_hits;
         self.stats.upload_bytes += frame.upload_bytes;
         self.stats.max_layers = self.stats.max_layers.max(frame.max_layers);
     }
 
     /// The frame was not presented (or had an error): count it as skipped.
+    /// Its uploads may not have reached the textures (e.g. a failed submit),
+    /// so no segment is reused from it.
     fn discard_frame(&mut self) {
+        self.raster_cache.clear();
         self.frame = PresentStats::default();
         self.stats.skipped_frames += 1;
     }
@@ -1368,6 +1472,135 @@ mod tests {
         let presentation = presentation.borrow();
         assert!(!presentation.is_canvas(resource));
         assert!(presentation.widgets.is_empty());
+    }
+
+    fn raster_scenes(segments: Vec<Segment>) -> Vec<Scene> {
+        segments
+            .into_iter()
+            .filter_map(|segment| match segment {
+                Segment::Raster(scene) => Some(scene),
+                Segment::Canvas(_) => None,
+            })
+            .collect()
+    }
+
+    /// Paints a Blitz document with text, an image-free overlay and a canvas
+    /// placeholder, split like the window renderer does.
+    fn painted_rasters(document: &mut blitz_html::HtmlDocument, canvas: ResourceId) -> Vec<Scene> {
+        let mut scene = Scene::new();
+        blitz_paint::paint_scene(&mut scene, document, 1.0, 240, 120, 0, 0);
+        raster_scenes(split_scene(scene, |id| id == canvas))
+    }
+
+    #[test]
+    fn unchanged_blitz_segments_are_reused_and_changes_upload_again() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut document = blitz_html::HtmlDocument::from_html(
+            r#"<!doctype html><html><head><style>
+            body { margin: 0 } canvas { width: 120px; height: 60px }
+            #over { position: absolute; left: 0; top: 0; color: rgb(255, 0, 0) }
+            </style></head><body><p>Before</p><canvas id="c"></canvas>
+            <div id="over">Over the canvas</div></body></html>"#,
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.set_viewport(Viewport::new(240, 120, 1.0, ColorScheme::Light));
+        let node = crate::find_element_by_id(&document, "c").expect("canvas");
+        let presentation: SharedPresentation = Rc::default();
+        let canvas = attach_canvas_widget(&presentation, &mut document, node);
+        document.resolve(0.0);
+
+        let first = painted_rasters(&mut document, canvas);
+        assert_eq!(first.len(), 2, "raster/canvas/raster expected");
+        assert!(
+            first.iter().all(|scene| scene
+                .commands
+                .iter()
+                .any(|command| matches!(command, RenderCommand::GlyphRun(_)))),
+            "both segments should contain text (font Blob identity)"
+        );
+        let mut cache = RasterCache::default();
+        for (index, scene) in first.iter().enumerate() {
+            assert!(!cache.is_current(index, scene));
+            cache.store(index, scene.clone());
+        }
+        // A second paint of the unchanged document reuses both segments.
+        let second = painted_rasters(&mut document, canvas);
+        assert!(
+            second
+                .iter()
+                .enumerate()
+                .all(|(index, scene)| cache.is_current(index, scene))
+        );
+        // Segment order matters: the first segment is not the second texture.
+        assert!(!cache.is_current(1, &second[0]));
+        // A changed command uploads only that segment.
+        let mut changed = second[1].clone();
+        let RenderCommand::GlyphRun(run) = changed
+            .commands
+            .iter_mut()
+            .find(|command| matches!(command, RenderCommand::GlyphRun(_)))
+            .expect("overlay text")
+        else {
+            unreachable!()
+        };
+        run.brush = Paint::Solid(peniko::Color::BLACK);
+        assert!(cache.is_current(0, &second[0]));
+        assert!(!cache.is_current(1, &changed));
+        // A failed upload invalidates its entry; resize clears everything.
+        cache.invalidate(0);
+        assert!(!cache.is_current(0, &second[0]));
+        cache.clear();
+        assert!(!cache.is_current(1, &second[1]));
+    }
+
+    #[test]
+    fn segments_with_external_or_mutable_paint_are_never_reused() {
+        let rect = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let mut resource = Scene::new();
+        resource.fill(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            Paint::Resource(ImageBrush {
+                image: ResourceId::new(),
+                sampler: ImageSampler::default(),
+            })
+            .as_ref(),
+            None,
+            &rect,
+        );
+        let mut external = Scene::new();
+        external.push_layer(
+            peniko::Fill::NonZero,
+            peniko::Mix::Normal,
+            1.0,
+            Affine::IDENTITY,
+            &rect,
+            Some(Arc::new(anyrender::Filter::single(FilterEffect::Image(
+                anyrender::filters::ExternalImageSource {
+                    image_id: 1,
+                    transform: None,
+                },
+            )))),
+            None,
+        );
+        external.pop_layer();
+        let mut nan = Scene::new();
+        nan.fill(
+            peniko::Fill::NonZero,
+            Affine::translate((f64::NAN, 0.0)),
+            peniko::Color::WHITE,
+            None,
+            &rect,
+        );
+        let mut cache = RasterCache::default();
+        for scene in [resource, external] {
+            assert!(!reusable(&scene));
+            cache.store(0, scene.clone());
+            assert!(!cache.is_current(0, &scene));
+        }
+        // NaN never compares equal: always uploaded, never a false hit.
+        cache.store(0, nan.clone());
+        assert!(!cache.is_current(0, &nan));
     }
 
     #[test]
