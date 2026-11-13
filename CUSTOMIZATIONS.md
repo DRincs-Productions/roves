@@ -20470,3 +20470,10 @@ is committed to the page's narration before running the HUD Save/Load click test
 the test to see the name in a live typewriter DOM node while narration still contained only the
 speaker; its next pointer event could then advance the dialogue. This stabilizes the test at the
 actual story state without changing game/runtime input behavior.
+
+### Blitz media compatibility probe — 2026-11-13
+
+- Extended the deterministic media matrix with MP3, Ogg Vorbis, WebM Opus, and M4A/AAC fixtures shared byte-for-byte with Chrome DevTools. The probe now records compressed Web Audio decode results, non-silent samples, and HTML audio metadata capability where implemented.
+- Current evidence: Roves decodes MP3, Vorbis, and AAC through the existing Web Audio decoder but rejects Opus; Chrome decodes all four. The HTML media playback API is not implemented in the Blitz bridge.
+- The existing `servo-media` GStreamer player is the reusable backend candidate. Servo's `HTMLMediaElement` itself is coupled to Servo DOM and task machinery, so Blitz should reuse the player API and implement only its own DOM/event bridge. Feed it data approved by `deno_fetch`; do not bypass origin/CSP policy.
+- Updated `TODO.md`, `docs/ROVES_PERFORMANCE.md`, probe README, and compatibility manifest with evidence and follow-up. No dependency added.
