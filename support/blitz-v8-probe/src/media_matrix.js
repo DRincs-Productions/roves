@@ -13,8 +13,8 @@
 //   - createImageBitmap(Blob): decoded/rejected and dimensions;
 //   - animated GIF: pixel change of the <img> over time, only where a 2D canvas
 //     can draw the element (otherwise reported "untested", never "static");
-//   - Web Audio: decodeAudioData of a PCM WAV, decoded samples compared with
-//     the source; an invalid buffer must be rejected;
+//   - Web Audio: decodeAudioData of PCM WAV and compressed MP3, Vorbis, Opus
+//     and AAC fixtures; decoded samples are checked for non-silence;
 //   - <audio>/<video>: element brand, play/pause/load presence, `src` support,
 //     canPlayType answers and, only where `src` exists, the WAV's
 //     loadedmetadata/error outcome. Nothing is ever played (play() is not
@@ -26,7 +26,8 @@
 // `report.baselineFailures` lists violations of the shared Chrome contract:
 // raster fixtures through <img>/createImageBitmap, SVG through <img> (Chrome
 // rejects SVG Blob in createImageBitmap), invalid image rejection and WAV
-// decoded to the source samples. Other gaps are reported, not asserted.
+// decoded to the source samples. MP3, Vorbis and AAC decode are also required;
+// codec gaps such as Symphonia's current missing Opus decoder are reported.
 (() => {
   "use strict";
   const state = { done: false, report: null, error: null };
@@ -187,6 +188,15 @@
       ascii("data"), le32(data.length), data,
     ]);
   }
+
+  // Short authored audio vectors generated from a 440 Hz sine wave with ffmpeg
+  // 8.0.1. They exercise compressed containers with the existing Symphonia decoder.
+  const COMPRESSED_AUDIO_FIXTURES = [
+    { id: "mp3_mpeg_1", mime: "audio/mpeg", bytes: fromBase64("//sUxAAABAwVTTTAgDiVhmjDNiAAAABZsAABuI5/YkAgAIBwmPh4eHngAAAIHZh7/+AZ/+HiEIMreEqTK4dRcyKXAUy6Qku+Alf2vP9z+eFAfAQa4VO5URHvrVVjAUEg//sUxAKDxEwdJh3QACCXA6LBv+RNECZhAD5kJaZ+rgBpmSxjKIAQDaE8wKAcwAAFEmQmMCZlYsacWnVvRhEAa2aQ8ImGEsAO5gVYAQfQgIYEDYJYMoB+SqpkC6wbW0AA//sUxAOABQwfVbWBgDCRiKhDNnAAAO/D8cZQIFAibT4uwZYM93NI1EZ/MH3xOD4PghD8HDnDAscG2xT7T/+RUaB0tiP+txp97P/Dwwa2JZMgq+TBzh8E/lD4DkxBTUUz//sUxAKDwAABpBwAACAAADSAAAAELjEwMKqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"), baseline: true },
+    { id: "ogg_vorbis", mime: "audio/ogg", bytes: fromBase64("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Y5l93VlmX3eO4Rg6v/Djqaqvm64rDKcsC7/t68az+76yjK7r+6osC78q28Kx677z/L6wLKPs+sJqy8Kw2rYx3L5uLL9wHMtr68ox675RtnV8X3gKw/N0dV15Zl3H9nV040c4fsoAAIABBwCAABPKQKEhKwKAOAEAjySJomRZoihZliiKpui6omi6rqRppqlpnmlammeapmmqsimarixpmmlanmaamqeZpmiarmuapqyKpinLpmrKsmmasuy6sm27rmzbomnKsmmasmyapiy7sqvbruzquqRZpql5nmlqnmeapmrKsmmarqt5nmp6nmiqniiqqmqqqq2qqixbnmeamuippieKqmqqpq2aqirLpqrasmmqtmyqqm27quz6sm3rummqsm2qpi2bqmrbruzqsizbui9pmmlqnmeamueZpmmasmyaqitbnqeaniiqquaJpmqqqiybpqrKlueZqieKquqJnmuaqirLpmraqmmatmyqqi2bpirLrm37vuvKsm6qqmybqmrrpmrKsmzLvu/Kqu6KpinLpqrasmmqsi3bsu/Lsqz7omnKsmmqsm2qqi7Lsm0bs2z7umiasm2qpi2bqirbsi37uizbuu/Krm+rqqzrsi37uu76rnDrujC8smz7qqz6uivbum/rMtv2fUTTlGVTNW3bVFVZdmXZ9mXb9n3RNG1bVVVbNk3VtmVZ9n1Ztm1hNE3ZNlVV1k3VtG1Zlm1htmXhdmXZt2Vb9nXXlXVf133j12Xd5rqy7cuyrfuqq/q27vvCcOuu8AoAABhwAAAIMKEMFBqyEgCIAgAAjGGMMQiNUs45B6FRyjnnIGTOQQghlcw5CCGUkjkHoZSUMucglJJSCKGUlFoLIZSUUmsFAAAUOAAABNigKbE4QKEhKwGAVAAAg+NYlueZomrasmNJnieKqqmqtu1IlueJommqqm1bnieKpqmqruvrmueJommqquvqumiapqmqruu6ui6aoqmqquu6sq6bpqqqriu7suzrpqqqquvKriz7wqq6rivLsm3rwrCqruvKsmzbtm/cuq7rvu/7wpGt67ou/MIxDEcBAOAJDgBABTasjnBSNBZYaMhKACADAIAwBiGDEEIGIYSQUkohpZQSAAAw4AAAEGBCGSg0ZCUAEAMAABABIYMQQgghhBBCCCGEEEIIIYQQQuecc84555xzzgkA2I9wAJB6MDExhYWGrAQAUgEAAGOUUoox5yBEjDnGGHQSSooYc44xB6WkVDkHIYRUWsutcg5CCCm1VFvmnJTWYow5xsw5KSnFVnPOoZTUYqy55po7Ka3VmmvNuZbWas0151xzLq3FmmvONefccsw155xzzjnGnHPOOeeccwEAOA0OAKAHNqyOcFI0FlhoyEoAIBUAgEBGKcaccw46hBRjzjkHIYRIIcaccw5CCBVjzjkHHYQQKsYccw5CCCFkzjkHIYQQQsicgw46CCGE0EEHIYQQQiilcxBCCCGEEkoIIYQQQgghhA5CCCGEEEIIIYQQQgihlBJCCCGEUEIoJRQAAFjgAAAQYMPqCCdFY4GFhqwEAIAAACCHJaiUM2GQY9BjQ5By1EyDEFNOdKaYk9pMxRRkDkQnnUSGWlC2l8wCAAAgCAAIMAEEBggKvhACYgwAQBAiM0RCYRUsMCiDBod5APAAESERACQmKNIuLqDLABd0cdeBEIIQhCAWB1BAAg5OuOGJNzzhBifoFJU6CAAAAAAAAwB4AAA4KICIiOYqLC4wMjQ2ODo8AgAAAABABQA+AACODyAiorkKiwuMDI0Njg6PAAAAAAAAAAAAICAgAAAAAAAQAAAAICBPZ2dTAARgCQAAAAAAAGgde/ECAAAAksb8vQQdNyqFdOf7b8/6rxKY5JAWW2wvvhgfjY9Go9FoNBqNBgAaOd4OXgXw59ldb/imipriGQBgjAEAAAAAAAAAgBXcFwF5vvOMEQAAiMc/+bPm+JaLEwG7vn463jg+MlcBqN97wIF3QqgpnhQAAFAAAAAAAJgZwIlBW8B+XhIAD6AAQCwAfsi9DNzp79z9/oVnWNQUr9yAhykbrCRhFQr2w/RTW9iPfe72CL99e/dUdVM4y5uu2qkz5WLsbuVuLSkeu6jdrbyWKcVjFyt3a6/FKRdjdyt3a0nx2MXK3cprmXIxtlt51pLSu6jdLa9lYo/tas+SGGfXdgtTqdkHexWm0gA4gw9MAEg0AA=="), baseline: true },
+    { id: "webm_opus", mime: "audio/webm", bytes: fromBase64("GkXfo59ChoEBQveBAULygQRC84EIQoKEd2VibUKHgQRChYECGFOAZwEAAAAAAALmEU2bdLpNu4tTq4QVSalmU6yBoU27i1OrhBZUrmtTrIHWTbuMU6uEElTDZ1OsggFATbuMU6uEHFO7a1OsggLQ7AEAAAAAAABZAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAVSalmsCrXsYMPQkBNgIxMYXZmNjIuMy4xMDBXQYxMYXZmNjIuMy4xMDBEiYhATQAAAAAAABZUrmvlrgEAAAAAAABc14EBc8WImgNZmqNdNlKcgQAitZyDdW5kiIEAhoZBX09QVVNWqoNjLqBWu4QExLQAg4EC4ZGfgQG1iEDncAAAAAAAYmSBEGOik09wdXNIZWFkAQE4AYC7AAAAAAASVMNn/HNzn2PAgGfImUWjh0VOQ09ERVJEh4xMYXZmNjIuMy4xMDBzc9djwItjxYiaA1mao102UmfIokWjh0VOQ09ERVJEh5VMYXZjNjIuMTEuMTAwIGxpYm9wdXNnyKFFo4hEVVJBVElPTkSHkzAwOjAwOjAwLjA1ODAwMDAwMAAfQ7Z1QQnngQCj44EAAIB4gaddbJ6ZrAAACArgWtURnEQxFQV7PeZ+HLj5DVlZXyHQujqljnU4PBoYH7n68WrZ9dVwkU8LOBr+mEOwtUOq8Flr4vQ1Dg0AZcQNEuHhcmxBjTKROLLISJSA5aXqBKPGgQAVgHifZwHn/JVNTqoYpxnf5VxZ3/tuoTNl9ailSQ3kV3eHjwpC0JJGkf0f1DtwP/fVl6g4VoJSJXALupY8HA9PQfeJvaDXoc+BACkAeJtDUAd1Cx/1noG4UIEU5WOLiDsaovcyttZUtcepd2uvD7oi3IWtFtHWFWNbtaERdOY4nPZKMCe8gqVPx5StZDL8w4f8AplFlC4cdaKDNWfgHFO7a5G7j7OBALeK94EB8YIBwfCBAw==") },
+    { id: "m4a_aac", mime: "audio/mp4", bytes: fromBase64("AAAAHGZ0eXBNNEEgAAACAE00QSBpc29taXNvMgAAAwptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAMgABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACNXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAAMgAAAAAAAAAAAAAAAQEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAADIAAAQAAAEAAAAAAa1tZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAALuAAAANYFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAAFYbWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAEcc3RibAAAAGpzdHNkAAAAAAAAAAEAAABabXA0YQAAAAAAAAABAAAAAAAAAAAAAQAQAAAAALuAAAAAAAA2ZXNkcwAAAAADgICAJQABAASAgIAXQBUAAAAAAL1AAAC9QAWAgIAFEYhW5QAGgICAAQIAAAAgc3R0cwAAAAAAAAACAAAAAwAABAAAAAABAAABYAAAABxzdHNjAAAAAAAAAAEAAAABAAAABAAAAAEAAAAkc3RzegAAAAAAAAAAAAAABAAAAI4AAACfAAAAfgAAAAUAAAAUc3RjbwAAAAAAAAABAAADNgAAABpzZ3BkAQAAAHJvbGwAAAACAAAAAf//AAAAHHNiZ3AAAAAAcm9sbAAAAAEAAAAEAAAAAQAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjIuMy4xMDAAAAAIZnJlZQAAAbhtZGF03gIATGF2YzYyLjExLjEwMAACaKNZoSiNNYdKmV9vinEeaXuSJDwiSf/+rkgTdMNzYrT1s210i6u4O2aO/De4sFbKmtMlIlXNtRnMtEpEpEiZKRKBgYGRAwMbNmwYGRIkRs2bNokSKWWWzcASouI3BEqpyNZNjXCM9tFXSM5dBWyM05KqHAaZKcmia5KWrgE0lNrJXZZLqyXUFOm/386ttauf9vH7+da41ev/4vX7+da41ev/7F/jzrWtasbU7NuueeYNZbLPcKL3+ygYN0D6UK+lA+n01mA+n0+lAH0+n01gfT6fTXQYAfT6fTWZsAa560WLVJ/Nt0iEMTPlEz5RM+XyiJg+Xy4xMHy+XEmD5fL5RREAPl8vlxiiAFlz1nAkJCQkJCQkJCQkJCQk5wE4lbLJXZRLnTZLqyXOlz+vXGnDq9f+k/Xri+Nar/6evbrV8avXj/X461etXsMfuXv6ao3lAwIyuJlfKhXyoE4+XyE1HTGU2XkDEzWTNZPfQgwfRsBg+n0AeZ9PoAOdg+n0+kgfHEYuojaY9Md0d0d0f6rh8Sn2n1PqfU+p/gEYgbRw"), baseline: true },
+  ];
 
   // ---- image fixtures ---------------------------------------------------------
   const PNG_PIXELS = Uint8Array.of(
@@ -361,6 +371,37 @@
       } catch (error) {
         result.wav = { outcome: "rejected", error: errorText(error) };
       }
+      result.compressed = [];
+      for (const fixture of COMPRESSED_AUDIO_FIXTURES) {
+        try {
+          const buffer = await timeout(context.decodeAudioData(fixture.bytes.slice().buffer), TIMEOUT_MS, null);
+          if (!buffer) {
+            result.compressed.push({ id: fixture.id, mime: fixture.mime, bytes: fixture.bytes.length, fnv1a: fnv1a(fixture.bytes), outcome: "timeout" });
+            continue;
+          }
+          const channel = buffer.getChannelData(0);
+          let nonzero = 0;
+          let peak = 0;
+          for (const sample of channel) {
+            if (sample !== 0) nonzero++;
+            peak = Math.max(peak, Math.abs(sample));
+          }
+          result.compressed.push({
+            id: fixture.id,
+            mime: fixture.mime,
+            bytes: fixture.bytes.length,
+            fnv1a: fnv1a(fixture.bytes),
+            outcome: "decoded",
+            frames: buffer.length,
+            sampleRate: buffer.sampleRate,
+            channels: buffer.numberOfChannels,
+            nonzeroSamples: nonzero,
+            peak: Number(peak.toFixed(6)),
+          });
+        } catch (error) {
+          result.compressed.push({ id: fixture.id, mime: fixture.mime, bytes: fixture.bytes.length, fnv1a: fnv1a(fixture.bytes), outcome: "rejected", error: errorText(error) });
+        }
+      }
       try {
         await timeout(context.decodeAudioData(ascii("not audio").buffer), TIMEOUT_MS, null);
         result.invalid = { outcome: "decoded_unexpectedly" };
@@ -413,6 +454,28 @@
         };
         element.removeAttribute("src");
         element.load();
+        result.compressedMetadata = [];
+        for (const fixture of COMPRESSED_AUDIO_FIXTURES) {
+          const metadata = new Promise((resolve) => {
+            element.addEventListener("loadedmetadata", () => resolve("loadedmetadata"), { once: true });
+            element.addEventListener("error", () => resolve("error"), { once: true });
+          });
+          element.preload = "metadata";
+          element.src = dataUrl(fixture);
+          const codecOutcome = await timeout(metadata, TIMEOUT_MS, "timeout");
+          result.compressedMetadata.push({
+            id: fixture.id,
+            mime: fixture.mime,
+            bytes: fixture.bytes.length,
+            fnv1a: fnv1a(fixture.bytes),
+            outcome: codecOutcome,
+            duration: Number.isFinite(element.duration) ? Number(element.duration.toFixed(4)) : String(element.duration),
+            readyState: element.readyState,
+            errorCode: element.error?.code ?? null,
+          });
+          element.removeAttribute("src");
+          element.load();
+        }
       }
     } else {
       result.fixture = "none";
@@ -487,7 +550,18 @@
     if (audio.wav?.outcome !== "decoded" || !audio.wav.matchesSource || !(audio.wav.nonzeroSamples > 0)) {
       baselineFailures.push(`wav decode: ${JSON.stringify(audio.wav)}`);
     }
+    for (const fixture of COMPRESSED_AUDIO_FIXTURES.filter((entry) => entry.baseline)) {
+      const decoded = audio.compressed?.find((entry) => entry.id === fixture.id);
+      if (decoded?.outcome !== "decoded" || !(decoded.nonzeroSamples > 0)) {
+        baselineFailures.push(`${fixture.id} decode: ${JSON.stringify(decoded)}`);
+      }
+    }
     if (audio.invalid?.outcome !== "rejected") baselineFailures.push(`invalid audio: ${JSON.stringify(audio.invalid)}`);
+    for (const decoded of audio.compressed ?? []) {
+      if (decoded.outcome !== "decoded" || !(decoded.nonzeroSamples > 0)) {
+        gaps.push(`Web Audio ${decoded.id}: ${decoded.outcome}${decoded.error ? ` (${decoded.error})` : ""}`);
+      }
+    }
 
     return {
       schema: 1,
