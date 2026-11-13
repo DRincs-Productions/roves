@@ -288,14 +288,53 @@ fn not_a_source() -> JsErrorBox {
 
 // ---- AudioContext ---------------------------------------------------------
 
-/// Headless context: the "none" sink renders in real time without a device
-/// (the crate's cpal backend is not enabled). `sample_rate` 0 keeps the default.
+/// Where AudioContexts render: the system default device (the crate's `cpal`
+/// backend, empty sink id) or the device-free "none" sink used by CI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AudioOutput {
+    Device,
+    None,
+}
+
+impl AudioOutput {
+    /// `ROVES_PROBE_AUDIO_OUTPUT=1` opts into the default device for local
+    /// window tests; anything else keeps the device-free sink.
+    pub fn from_env_value(value: Option<&str>) -> Self {
+        if value == Some("1") {
+            Self::Device
+        } else {
+            Self::None
+        }
+    }
+
+    pub fn configured() -> Self {
+        Self::from_env_value(std::env::var("ROVES_PROBE_AUDIO_OUTPUT").ok().as_deref())
+    }
+
+    /// Bounded label for probe results; never a device name.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Device => "device",
+            Self::None => "none",
+        }
+    }
+
+    fn sink_id(self) -> &'static str {
+        match self {
+            Self::Device => "",
+            Self::None => "none",
+        }
+    }
+}
+
+/// Real-time context on the configured output (see [`AudioOutput`]); the
+/// "none" sink renders without a device. `sample_rate` 0 keeps the default.
 #[op2]
 #[cppgc]
 fn op_audio_context_create(sample_rate: f64) -> Result<NativeAudioContext, JsErrorBox> {
     let options = AudioContextOptions {
         sample_rate: (sample_rate > 0.0).then_some(sample_rate as f32),
-        sink_id: "none".into(),
+        sink_id: AudioOutput::configured().sink_id().into(),
         ..Default::default()
     };
     let context = guarded(|| AudioContext::try_new(options))?
@@ -1175,4 +1214,21 @@ fn check_offline_stereo_panner() {
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"web_audio_stereo_panner_offline\",\"status\":\"passed\",\"frames\":{FRAMES}}}"
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::AudioOutput;
+
+    #[test]
+    fn output_is_device_only_when_explicitly_enabled() {
+        assert_eq!(AudioOutput::from_env_value(Some("1")), AudioOutput::Device);
+        for value in [None, Some(""), Some("0"), Some("true"), Some(" 1")] {
+            assert_eq!(AudioOutput::from_env_value(value), AudioOutput::None);
+        }
+        assert_eq!(AudioOutput::Device.sink_id(), "");
+        assert_eq!(AudioOutput::None.sink_id(), "none");
+        assert_eq!(AudioOutput::Device.label(), "device");
+        assert_eq!(AudioOutput::None.label(), "none");
+    }
 }

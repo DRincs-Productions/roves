@@ -68,8 +68,9 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 # The CSP implementation Roves' production engine uses (root Cargo.lock 0.8.1):
 # document connect-src for remote fetch.
 content-security-policy = "=0.8.1"
-# Start with offline rendering; the probe does not require an audio device in CI.
-web-audio-api = { version = "=1.7.0", default-features = false }
+# The crate's own `cpal` backend is compiled in, but contexts use the device-free
+# "none" sink unless ROVES_PROBE_AUDIO_OUTPUT=1 (src/audio.rs), so CI needs no device.
+web-audio-api = { version = "=1.7.0", default-features = false, features = ["cpal"] }
 
 # Temporary: crates.io blitz-dom/blitz-paint 0.3.0-beta.4 with minimal Roves fixes
 # (animation accessors, input type state, tree-order paint and hit testing of

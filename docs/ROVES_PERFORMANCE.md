@@ -395,6 +395,24 @@ invariati. Test: `raster_cache_reuses_only_bit_identical_nan_fill_paths`.
 Audio nel run prima della correzione: 19 decode riusciti, 0 errori, 3 `source_start`; non
 udibile, perché il sink è `none`. Il dato conferma il percorso decode/start, non l'uscita audio.
 
+**Uscita audio opt-in della probe (13 novembre).** La probe compila la feature `cpal` già
+inclusa in `web-audio-api 1.7.0`; con `ROVES_PROBE_AUDIO_OUTPUT=1` (solo il valore `1`) gli
+`AudioContext` usano il dispositivo di uscita predefinito del sistema, altrimenti restano sul
+sink `none` senza dispositivo (default invariato in CI). Il risultato `game_audio` riporta
+`"output":"device"|"none"`, mai il nome del dispositivo. È solo un'opzione per i test locali
+in finestra; in CI l'uscita resta `none`.
+
+Verifica (13 novembre, Codex, un solo run esplorativo locale su Windows, build debug, JITless,
+finestra nativa visibile): `main` originale del template 8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9
+con `ROVES_PROBE_AUDIO_OUTPUT=1` e `--story --window --window-frames 300`. Esito
+`output=device`, 19 decode richiesti/19 decodificati, 0 errori, 3 `source_start`;
+storia/dialogo, Save/Load, presentazione GPU e teardown riusciti, Roves terminato. In
+contemporanea, una cattura DirectShow di 90 s da `Missaggio stereo (Realtek High Definition
+Audio)` ha prodotto un WAV di 16,48 MiB; ffmpeg `volumedetect`: media −33,1 dB, picco −1,6 dB
+su 8.638.848 campioni. Baseline di 5 s senza Roves sullo stesso loopback: media −87,3 dB,
+picco −72,2 dB. È evidenza di segnale nel mix di sistema durante il run di Roves, non di un
+ascolto fisico dagli altoparlanti; nessuna misura di latenza o CPU audio è stata raccolta.
+
 **A/B esplorativo della correzione (13 novembre, Codex, locale).** Non è una baseline di
 release: probe Roves in build debug, JITless, GTX 1050/Vulkan, `main` originale del template
 `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, 640x360, stesso scenario con finestra di 300 frame;

@@ -408,9 +408,11 @@ addEventListener("unhandledrejection", (event) => {
     }
     // Sound files over the whole run (page and story): decode requests, buffers
     // ready or decode errors, and starts of sources playing a decoded buffer, in
-    // order. Informational, printed once.
+    // order. Informational, printed once. `output` is the configured sink path
+    // (device/none), never a device name.
     println!(
-        "ROVES_PROBE_RESULT {{\"check\":\"game_audio\",\"status\":\"ran\",\"audio\":{}}}",
+        "ROVES_PROBE_RESULT {{\"check\":\"game_audio\",\"status\":\"ran\",\"output\":\"{}\",\"audio\":{}}}",
+        crate::audio::AudioOutput::configured().label(),
         crate::call_hook(runtime, web_audio_trace, &[])
     );
 }
