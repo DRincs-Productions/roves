@@ -621,17 +621,33 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       }
       return "null";
     },
-    // Non-control text containing `name`: lines equal to it (a speaker label)
-    // and dialogue lines with other text around it.
+    // Non-control text containing `name`: speaker labels and dialogue blocks.
+    // Markdown/typewriter renderers may split one visible line into multiple
+    // text nodes, so inspect each text node's ancestors and use their combined
+    // textContent instead of requiring the name to occur in one node.
     nameLines(name) {
       const speaker = [];
       const dialogue = [];
+      const seenSpeaker = new Set();
+      const seenDialogue = new Set();
       if (document.body) {
-        walk(document.body, (text, _, inButton) => {
-          if (inButton || !text.includes(name)) return;
-          (text === name ? speaker : dialogue).push(text.slice(0, 120));
+        walk(document.body, (text, element, inButton) => {
+          if (inButton || !element) return;
+          if (text === name) seenSpeaker.add(text);
+          for (let block = element; block && block !== document.body; block = block.parentElement) {
+            const combined = norm(block.textContent);
+            if (!combined.includes(name)) continue;
+            if (combined === name) {
+              seenSpeaker.add(combined);
+            } else {
+              seenDialogue.add(combined.slice(0, 120));
+            }
+            break;
+          }
         }, () => {});
       }
+      speaker.push(...seenSpeaker);
+      dialogue.push(...seenDialogue);
       return JSON.stringify({ speaker, dialogue });
     },
     // The HUD's "Save/Load" button (outside dialogs), marked with

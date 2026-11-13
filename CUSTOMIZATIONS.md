@@ -20448,3 +20448,8 @@ real blitz-shell window, where CI screenshots the screen and injects a real OS c
 on the way: attribute names must have no namespace, Blitz reports document/html/body as focused
 before any focus, and deno_web's `dispatchEvent` skips ancestors when the target has no listener
 (DOM nodes now call deno_web's `dispatch` directly; upstream issue still to open).
+
+Tenth 2026-11-13 follow-up: the template story probe now verifies custom-name dialogue using
+the enclosing DOM block's combined `textContent`, because Markdown/typewriter output may split
+one visible line across several text nodes. This corrects a false negative without changing
+template or runtime behavior and adds no dependencies.
