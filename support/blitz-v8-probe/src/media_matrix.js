@@ -107,7 +107,6 @@
       pngChunk("IEND", new Uint8Array(0)),
     ]);
   }
-
   // ---- GIF89a: 4-colour palette; LZW emits a clear code before every pixel so
   // the code size stays 3 bits and no dictionary entry is ever used ------------
   function gifLzw(indices) {
@@ -249,6 +248,11 @@
     {
       id: "gif_animated_2x2", mime: "image/gif", width: 2, height: 2, animated: true, baseline: true,
       bytes: gif(2, 2, PALETTE, [{ indices: [0, 0, 0, 0], delay: 10 }, { indices: [1, 1, 1, 1], delay: 10 }], { loop: true }),
+    },
+    {
+      id: "apng_animated_2x2", mime: "image/png", width: 2, height: 2, animated: true, baseline: true,
+      bytes: fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAACXBIWXMAAAABAAAAAQBPJcTWAAAACGFjVEwAAAACAAAAAPONk3AAAAAaZmNUTAAAAAAAAAACAAAAAgAAAAAAAAAAAAEACgAA6FTcAAAAABVJREFUeJxj/MvA8J+BgYGBBUSAMAAfBwICi13EvwAAABpmY1RMAAAAAQAAAAIAAAACAAAAAAAAAAAAAQAKAABzJzbUAAAAGWZkQVQAAAACeJxjZGD495+BgYGBBUSAMAAdHAIDHR9TuQAAAABJRU5ErkJggg=="),
+      note: "two-frame APNG red/blue authored with ffmpeg 8.0.1; animation pixel check is inconclusive in Chrome and unavailable in Roves",
     },
     { id: "webp_lossy_1x1", mime: "image/webp", bytes: fromBase64("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"), width: 1, height: 1, baseline: true },
     { id: "webp_lossless_1x1", mime: "image/webp", bytes: fromBase64("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=="), width: 1, height: 1, baseline: true },
