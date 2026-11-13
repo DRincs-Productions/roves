@@ -18,6 +18,7 @@ use style::selector_parser::PseudoElement;
 
 mod animation_clock;
 mod audio;
+mod frame_timings;
 mod game;
 mod net_policy;
 mod presentation;
@@ -3478,8 +3479,17 @@ impl WindowLaunch {
             shutdown_gpu,
             teardown,
         } = self;
+        // ROVES_PROBE_FRAME_TIMINGS=1 only; `None` measures nothing.
+        let timings = frame_timings::FrameTimings::from_env();
+        let document = document.with_timings(timings.clone());
         let runtime = match renderer {
-            Some(renderer) => {
+            Some(mut renderer) => {
+                if let Some(timings) = &timings {
+                    let mut timings = timings.borrow_mut();
+                    timings.renderer = "gpu";
+                    timings.raster_cache_disabled = Some(renderer.raster_cache_disabled());
+                }
+                renderer.timings = timings;
                 window::run(document.with_stats(renderer.stats.clone()), renderer, tokio)
             },
             None => window::run(

@@ -22,3 +22,21 @@ Sulla GTX 1050 DX12, il riuso raster ha ridotto gli upload nei primi 120 frame d
 La fase `game_hud_save_load` è stata aggiunta a `--story` dopo l'accettazione del nome, per riprodurre il punto in cui il clic manuale a (386, 313) aveva fatto avanzare due volte la narrazione. Trova il pulsante visibile, misura il centro con `getBoundingClientRect()`, invia il clic con il `EventDriver`/hit test di Blitz e registra la catena del nodo colpito. Verifica l'apertura del pannello Save/Load e l'assenza di avanzamento del dialogo anche dopo Escape. Il bridge non è stato modificato; il test usa librerie già presenti e non aggiunge dipendenze.
 
 `cargo fmt --check` è passato; `cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml` è passato (8 test, compilando il probe aggiornato). La run 79 sul commit `01d8d940466` non include ancora questa modifica; il test template sarà eseguito nella prossima CI dopo il push autorizzato. Il controllo è diagnostico e il suo esito sarà riportato come warning, senza alterare il gate principale a due dialoghi. Dopo la CI, ripetere il clic fisico in finestra sul template per distinguere un problema di coordinate DPI o composizione da quello riprodotto nel percorso headless.
+
+## Diagnostica opt-in dei tempi di frame
+
+Per il punto 4 il probe ha una diagnostica attiva solo con `ROVES_PROBE_FRAME_TIMINGS=1` (`src/frame_timings.rs`). Durante `--window` campiona l'intervallo tra frame step JS/deno_core (`frame_step_interval`), la durata CPU del frame step (`cpu_frame_step`) e, con il renderer GPU, la durata CPU di `GpuWindowRenderer::render` (`cpu_render_present`). Conserva al massimo 3.600 campioni per serie (circa 60 s) e alla chiusura stampa un solo record `ROVES_PROBE_FRAME_TIMINGS` con count, P50/P95/P99/max, campioni oltre 16,67 ms, impostazione della cache raster e contatori di upload, hit e byte. `ROVES_PROBE_DISABLE_RASTER_CACHE=1` disattiva la cache per il confronto A/B; il default resta invariato. Scheduling e rendering non cambiano.
+
+Comandi PowerShell sulla GTX 1050 (scena statica e template, stessa durata):
+
+```powershell
+$env:ROVES_PROBE_WINDOW_GPU = '1'
+$env:ROVES_PROBE_FRAME_TIMINGS = '1'
+Remove-Item Env:ROVES_PROBE_DISABLE_RASTER_CACHE -ErrorAction SilentlyContinue
+cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml -- --game <dist> --window --window-frames 3600
+
+$env:ROVES_PROBE_DISABLE_RASTER_CACHE = '1'
+cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml -- --game <dist> --window --window-frames 3600
+```
+
+Limiti: sono tempi wall-clock del thread della shell. `cpu_render_present` non è tempo GPU e non prova che il frame sia diventato visibile; con `Fifo` la chiamata di present può attendere la swapchain. Le chiamate a `render` prima della configurazione della superficie non sono campionate. Verifica locale: `cargo fmt --check --manifest-path support/blitz-v8-probe/Cargo.toml` e `cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml` passati, 12/12. Nessuna misura reale A/B con GPU è ancora stata raccolta.

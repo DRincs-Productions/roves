@@ -630,14 +630,32 @@ fn reusable(scene: &Scene) -> bool {
 /// Cleared on resize (textures recreated) and whenever a frame is discarded;
 /// an entry is dropped before each upload and stored again only if the
 /// upload reported no error.
+/// With `disabled` (`ROVES_PROBE_DISABLE_RASTER_CACHE=1`, an A/B diagnostic)
+/// nothing is stored and every segment is rasterized and uploaded again.
 #[derive(Default)]
 struct RasterCache {
     contents: Vec<Option<Scene>>,
+    disabled: bool,
+}
+
+/// `ROVES_PROBE_DISABLE_RASTER_CACHE=1`: the GPU compositor re-rasterizes and
+/// uploads every segment each frame (cache A/B comparison; default enabled).
+pub fn raster_cache_disabled_by_env() -> bool {
+    std::env::var("ROVES_PROBE_DISABLE_RASTER_CACHE").is_ok_and(|value| value == "1")
 }
 
 impl RasterCache {
+    fn new(disabled: bool) -> Self {
+        Self {
+            contents: Vec::new(),
+            disabled,
+        }
+    }
+
     fn is_current(&self, index: usize, scene: &Scene) -> bool {
-        reusable(scene) && self.contents.get(index).and_then(Option::as_ref) == Some(scene)
+        !self.disabled
+            && reusable(scene)
+            && self.contents.get(index).and_then(Option::as_ref) == Some(scene)
     }
 
     /// Forgets the content of texture `index` (an upload into it begins).
@@ -650,6 +668,9 @@ impl RasterCache {
     /// Records the scene just uploaded into texture `index` without error
     /// (kept only if reusable).
     fn store(&mut self, index: usize, scene: Scene) {
+        if self.disabled {
+            return;
+        }
         if self.contents.len() <= index {
             self.contents.resize_with(index + 1, || None);
         }
@@ -822,7 +843,7 @@ impl GpuCompositor {
             sampler,
             uniforms: Vec::new(),
             rasters: Vec::new(),
-            raster_cache: RasterCache::default(),
+            raster_cache: RasterCache::new(raster_cache_disabled_by_env()),
             raster_size: (0, 0),
             vello: VelloCpuImageRenderer::new(1, 1),
             pixels: Vec::new(),
@@ -926,7 +947,7 @@ impl GpuCompositor {
         }
         self.raster_cache.invalidate(index);
         // Kept only for comparison with the next frame's segment.
-        let cached = reusable(&scene).then(|| scene.clone());
+        let cached = (!self.raster_cache.disabled && reusable(&scene)).then(|| scene.clone());
         self.pixels.clear();
         self.pixels.resize(width as usize * height as usize * 4, 0);
         let pixels = &mut self.pixels;
@@ -1222,6 +1243,8 @@ pub struct GpuWindowRenderer {
     configured: bool,
     /// Shared with the document so it can print the result line.
     pub stats: Rc<RefCell<PresentStats>>,
+    /// `ROVES_PROBE_FRAME_TIMINGS=1` only: samples `cpu_render_present`.
+    pub timings: Option<crate::frame_timings::SharedFrameTimings>,
 }
 
 impl GpuWindowRenderer {
@@ -1236,7 +1259,12 @@ impl GpuWindowRenderer {
             height: 0,
             configured: false,
             stats: Rc::default(),
+            timings: None,
         })
+    }
+
+    pub fn raster_cache_disabled(&self) -> bool {
+        self.compositor.raster_cache.disabled
     }
 
     fn configure(&mut self) {
@@ -1263,6 +1291,21 @@ impl GpuWindowRenderer {
             panic!("window surface configuration failed: {error}");
         }
         self.configured = true;
+    }
+}
+
+/// Samples `cpu_render_present` when dropped (every return path of `render`).
+struct RenderTimer {
+    timings: crate::frame_timings::SharedFrameTimings,
+    start: std::time::Instant,
+}
+
+impl Drop for RenderTimer {
+    fn drop(&mut self) {
+        self.timings
+            .borrow_mut()
+            .cpu_render_present
+            .push(self.start.elapsed());
     }
 }
 
@@ -1330,6 +1373,12 @@ impl WindowRenderer for GpuWindowRenderer {
         if !self.configured {
             return;
         }
+        // Opt-in (ROVES_PROBE_FRAME_TIMINGS=1): CPU wall-clock time of this
+        // call until it returns; not GPU time, not proof of a visible frame.
+        let _timer = self.timings.clone().map(|timings| RenderTimer {
+            timings,
+            start: std::time::Instant::now(),
+        });
         let surface = active.surface;
         let mut scene = Scene::new();
         draw_fn(&mut scene);
@@ -1601,6 +1650,33 @@ mod tests {
         // NaN never compares equal: always uploaded, never a false hit.
         cache.store(0, nan.clone());
         assert!(!cache.is_current(0, &nan));
+    }
+
+    #[test]
+    fn a_disabled_raster_cache_never_reports_a_hit() {
+        let mut solid = Scene::new();
+        solid.fill(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            peniko::Color::WHITE,
+            None,
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+        );
+        assert!(reusable(&solid));
+        // Control: the default cache reuses the same reusable segment.
+        let mut enabled = RasterCache::new(false);
+        enabled.store(0, solid.clone());
+        assert!(enabled.is_current(0, &solid));
+        // Disabled (ROVES_PROBE_DISABLE_RASTER_CACHE=1): nothing is stored and
+        // `upload_segment` always takes the upload path.
+        let mut disabled = RasterCache::new(true);
+        for _ in 0..3 {
+            assert!(!disabled.is_current(0, &solid));
+            disabled.store(0, solid.clone());
+            assert!(disabled.contents.is_empty());
+        }
+        // The default (and `Default`) stays enabled.
+        assert!(!RasterCache::default().disabled);
     }
 
     #[test]

@@ -304,6 +304,8 @@ pub struct RovesDocument {
     /// GPU presentation counters, when the GPU window renderer is used.
     stats: Option<Rc<RefCell<crate::presentation::PresentStats>>>,
     stats_printed: bool,
+    /// `ROVES_PROBE_FRAME_TIMINGS=1` only (see `frame_timings`).
+    timings: Option<crate::frame_timings::SharedFrameTimings>,
 }
 
 impl RovesDocument {
@@ -328,6 +330,23 @@ impl RovesDocument {
             mode: WindowMode::FixtureTest,
             stats: None,
             stats_printed: false,
+            timings: None,
+        }
+    }
+
+    pub fn with_timings(
+        mut self,
+        timings: Option<crate::frame_timings::SharedFrameTimings>,
+    ) -> Self {
+        self.timings = timings;
+        self
+    }
+
+    /// The single `ROVES_PROBE_FRAME_TIMINGS` record, at close (opt-in).
+    fn print_timings(&self) {
+        if let Some(timings) = &self.timings {
+            let stats = self.stats.as_ref().map(|stats| *stats.borrow());
+            timings.borrow_mut().print_once(stats.as_ref());
         }
     }
 
@@ -437,6 +456,7 @@ impl RovesDocument {
             );
             flush();
             self.print_presentation(true);
+            self.print_timings();
             std::process::exit(if passed { 0 } else { 1 });
         }
     }
@@ -466,6 +486,7 @@ impl Drop for RovesDocument {
             );
             self.print_presentation(true);
         }
+        self.print_timings();
         if let (Some(parked), Some(runtime)) = (&self.parked, self.runtime.take()) {
             *parked.borrow_mut() = Some(runtime);
         }
@@ -514,7 +535,14 @@ impl Document for RovesDocument {
         if !due {
             return false;
         }
-        self.last_frame = Some(Instant::now());
+        let start = Instant::now();
+        if let (Some(timings), Some(last)) = (&self.timings, self.last_frame) {
+            timings
+                .borrow_mut()
+                .frame_step_interval
+                .push(start.duration_since(last));
+        }
+        self.last_frame = Some(start);
         let runtime = self
             .runtime
             .as_mut()
@@ -528,6 +556,9 @@ impl Document for RovesDocument {
                 crate::frame_step(runtime, run_animation_frame);
             }),
             None => crate::frame_step(runtime, run_animation_frame),
+        }
+        if let Some(timings) = &self.timings {
+            timings.borrow_mut().cpu_frame_step.push(start.elapsed());
         }
         self.after_frame();
         true
