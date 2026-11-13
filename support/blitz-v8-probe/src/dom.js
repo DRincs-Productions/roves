@@ -70,6 +70,10 @@
     op_blitz_gpu_wait_idle,
     op_blitz_gpu_poll,
     op_blitz_gpu_adapter_info,
+    op_blitz_present_device,
+    op_blitz_present_canvas,
+    op_blitz_present_canvas_clear,
+    op_blitz_present_canvas_forget,
     op_blitz_matches,
     op_blitz_create_comment,
     op_blitz_clone_node,
@@ -2080,15 +2084,72 @@
   const CONTEXT_TOKEN = Symbol("canvas context");
 
   // Offscreen GPUCanvasContext: the "current texture" is a texture of the canvas
-  // size that the page renders into. Presenting it inside the Blitz window is a
-  // later step (deno_webgpu uses wgpu 29, Blitz's GPU painter wgpu 30).
+  // size that the page renders into. In the `--window` GPU presentation
+  // (src/presentation.rs) the embedder composes that same texture, on the same
+  // deno_webgpu device, into the window at the canvas's place in paint order:
+  // after preparePresentation, every texture change is registered with
+  // op_blitz_present_canvas (clear when unconfigured). Rust holds its own view
+  // of the registered texture, so the texture stays valid for the compositor's
+  // draws whatever happens to the GPUTexture object. Contexts are tracked only
+  // weakly (gpuCanvasContexts holds WeakRefs, used by preparePresentation): a
+  // collected context is unregistered natively by gpuCanvasFinalizer
+  // (op_blitz_present_canvas_forget drops the view, the map entries and the
+  // placeholder widget), so a detached canvas is not kept alive.
   let startGpuCanvasReadback;
+  let presentGpuCanvas;
+  let presentationEnabled = false;
+  let presentationWarned = false;
+  const gpuCanvasContexts = new Set();
+  // Held value: { ref, resource } (never the context itself).
+  const gpuCanvasFinalizer = new FinalizationRegistry((entry) => {
+    gpuCanvasContexts.delete(entry.ref);
+    if (entry.resource === null) return;
+    try {
+      op_blitz_present_canvas_forget(entry.resource);
+    } catch {
+      // The document is already gone: nothing left to unregister.
+    }
+  });
   class OffscreenGPUCanvasContext {
     #canvas;
     #configuration = null;
     #texture = null;
+    #presentEntry;
     constructor(canvas) {
       this.#canvas = canvas;
+      const ref = new WeakRef(this);
+      this.#presentEntry = { ref, resource: null };
+      gpuCanvasContexts.add(ref);
+      gpuCanvasFinalizer.register(this, this.#presentEntry);
+    }
+    static {
+      presentGpuCanvas = (context) => {
+        if (!presentationEnabled) return;
+        const entry = context.#presentEntry;
+        let handle;
+        try {
+          handle = handleOf(context.#canvas, "present");
+        } catch {
+          return;
+        }
+        try {
+          if (context.#texture === null) {
+            if (entry.resource !== null) op_blitz_present_canvas_clear(entry.resource);
+          } else {
+            entry.resource = op_blitz_present_canvas(
+              handle,
+              context.#texture,
+              context.#configuration?.alphaMode === "opaque",
+            );
+          }
+        } catch (error) {
+          // Never break the page's frame: report once, the canvas stays unpresented.
+          if (!presentationWarned) {
+            presentationWarned = true;
+            core.print(`ROVES_PROBE_PRESENT_WARNING ${String(error)}\n`, true);
+          }
+        }
+      };
     }
     // Snapshot for toBlob: the current texture is copied into a buffer at call
     // time (so later frames do not change the result) and mapped asynchronously.
@@ -2153,10 +2214,12 @@
     configure(configuration) {
       this.#configuration = { alphaMode: "opaque", ...configuration };
       this.#texture = null;
+      presentGpuCanvas(this);
     }
     unconfigure() {
       this.#configuration = null;
       this.#texture = null;
+      presentGpuCanvas(this);
     }
     getConfiguration() {
       return this.#configuration;
@@ -2173,6 +2236,7 @@
           format,
           usage: usage | GPUTextureUsage.COPY_SRC | GPUTextureUsage.TEXTURE_BINDING,
         });
+        presentGpuCanvas(this);
       }
       return this.#texture;
     }
@@ -3408,6 +3472,33 @@
     // timeout); the shared device is destroyed only after it succeeds. Async only
     // to settle a still-pending requestDevice. Resolves to a JSON diagnostic; a
     // failure rejects and fails the run.
+    // `--window` GPU presentation: makes sure the shared device exists (the one
+    // the page already has, or the one it will get from requestDevice), hands
+    // it to the embedder's compositor and registers the WebGPU canvases that
+    // already have a texture. Resolves to JSON with `status` "ready" or
+    // "no_adapter"/"error" (the embedder then keeps the CPU window).
+    async preparePresentation() {
+      try {
+        const adapter = await navigator.gpu.requestAdapter();
+        if (adapter === null) return JSON.stringify({ status: "no_adapter" });
+        const device = await adapter.requestDevice();
+        op_blitz_present_device(device);
+        presentationEnabled = true;
+        let canvases = 0;
+        for (const ref of gpuCanvasContexts) {
+          const context = ref.deref();
+          if (context === undefined) {
+            gpuCanvasContexts.delete(ref);
+            continue;
+          }
+          canvases += 1;
+          presentGpuCanvas(context);
+        }
+        return JSON.stringify({ status: "ready", canvases, adapter: sharedAdapterInfo });
+      } catch (error) {
+        return JSON.stringify({ status: "error", error: String(error) });
+      }
+    },
     async shutdownGpu() {
       if (sharedDevice === null) {
         return JSON.stringify({ device: false, submits: gpuSubmits });

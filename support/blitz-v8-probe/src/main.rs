@@ -20,6 +20,7 @@ mod animation_clock;
 mod audio;
 mod game;
 mod net_policy;
+mod presentation;
 mod window;
 
 use net_policy::op_blitz_fetch_check;
@@ -148,6 +149,20 @@ fn to_handle(id: NodeId) -> f64 {
 
 fn from_handle(handle: f64) -> NodeId {
     NodeId::from_u64(handle as u64)
+}
+
+/// The `<canvas>` element behind a node handle (window presentation ops).
+fn canvas_node(document: &Rc<RefCell<HtmlDocument>>, handle: f64) -> Result<NodeId, JsErrorBox> {
+    let document = document.borrow();
+    let node = attached_node(&document, handle)?;
+    if node
+        .element_data()
+        .is_some_and(|element| &*element.name.local == "canvas")
+    {
+        Ok(node.id)
+    } else {
+        Err(JsErrorBox::type_error("not a canvas element"))
+    }
 }
 
 fn attached_node(document: &BaseDocument, handle: f64) -> Result<&Node, JsErrorBox> {
@@ -2579,6 +2594,57 @@ async fn shutdown_gpu_before_drop(
     );
 }
 
+/// Awaits the bootstrap's `preparePresentation` (shared WebGPU device handed to
+/// the compositor, existing canvases registered) and builds the GPU window
+/// renderer. Prints `gpu_window_prepare`; `None` (CPU window) when no adapter
+/// or device is available.
+async fn prepare_gpu_window(
+    runtime: &mut JsRuntime,
+    prepare_presentation: &v8::Global<v8::Function>,
+    shared_presentation: &presentation::SharedPresentation,
+) -> Option<presentation::GpuWindowRenderer> {
+    let value = tokio::time::timeout(
+        GPU_SHUTDOWN_TIMEOUT,
+        runtime.call_and_await(prepare_presentation),
+    )
+    .await
+    .expect("preparePresentation did not settle")
+    .expect("preparePresentation should not reject");
+    let detail = {
+        deno_core::scope!(scope, runtime);
+        let value = v8::Local::new(scope, value);
+        value.to_rust_string_lossy(scope)
+    };
+    let renderer = presentation::GpuWindowRenderer::new(shared_presentation.clone());
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_prepare\",\"status\":\"{}\",\"detail\":{detail}}}",
+        if renderer.is_some() {
+            "ready"
+        } else {
+            "cpu_fallback"
+        }
+    );
+    flush_stdout();
+    renderer
+}
+
+fn flush_stdout() {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+}
+
+/// `--window-frames N`: the game window exits after N frames (default: runs
+/// until the window is closed).
+fn exit_after_frames() -> Option<u32> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        if arg == "--window-frames" {
+            return args.next().and_then(|value| value.parse().ok());
+        }
+    }
+    None
+}
+
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
 fn frame_count() -> u32 {
     let mut args = std::env::args().skip(1);
@@ -2624,7 +2690,7 @@ fn main() {
         .map(std::path::PathBuf::from)
         .unwrap_or_else(|| std::env::temp_dir().join("roves-blitz-probe-storage"));
     std::fs::create_dir_all(&storage_dir).expect("storage directory");
-    tokio.block_on(async {
+    let launch = tokio.block_on(async {
         stage("parse_html");
         let game = game::GameContent::from_args();
         // Fixture mode only: the loopback server for the remote fetch tests, the one
@@ -2693,6 +2759,8 @@ fn main() {
                 audio::roves_blitz_audio::init(),
                 // Dedicated workers: one isolate and thread each (src/worker.rs).
                 worker::roves_blitz_worker::init(),
+                // --window GPU presentation ops (captured by dom.js).
+                presentation::roves_blitz_presentation::init(),
                 roves_blitz_v8_probe::init(),
             ],
             module_loader: game.as_ref().map(|game| game.module_loader()),
@@ -2706,6 +2774,11 @@ fn main() {
         runtime.op_state().borrow_mut().put(QueryResults::default());
         runtime.op_state().borrow_mut().put(LastRect::default());
         runtime.op_state().borrow_mut().put(ScrollMetrics::default());
+        let shared_presentation = presentation::SharedPresentation::default();
+        runtime
+            .op_state()
+            .borrow_mut()
+            .put(shared_presentation.clone());
         runtime
             .op_state()
             .borrow_mut()
@@ -2751,6 +2824,7 @@ fn main() {
             blocked_navigations,
             document_loaded,
             shutdown_gpu,
+            prepare_presentation,
             gpu_pacing_test,
             gpu_pacing_stats,
             css_animations_debug,
@@ -2770,6 +2844,7 @@ fn main() {
                 function("blockedNavigations"),
                 function("documentLoaded"),
                 function("shutdownGpu"),
+                function("preparePresentation"),
                 function("gpuPacingTest"),
                 function("gpuPacingStats"),
                 function("cssAnimationsDebug"),
@@ -2795,8 +2870,31 @@ fn main() {
                 frame_count().max(120),
             )
             .await;
+            if std::env::args().any(|arg| arg == "--window") {
+                // The loaded game in a native window, composed on the page's
+                // WebGPU device (src/presentation.rs) until the window closes
+                // or after --window-frames window frames; then the shell drops
+                // the window and renderer, and the runtime it hands back gets
+                // the same WebGPU teardown as the headless run.
+                stage("game_window");
+                let renderer =
+                    prepare_gpu_window(&mut runtime, &prepare_presentation, &shared_presentation)
+                        .await;
+                let mode = window::WindowMode::Game {
+                    exit_after: exit_after_frames(),
+                };
+                let document =
+                    window::RovesDocument::new(document, runtime, dispatcher, run_animation_frame)
+                        .with_mode(mode);
+                return Some(WindowLaunch {
+                    document,
+                    renderer,
+                    shutdown_gpu,
+                    teardown: Teardown::Required,
+                });
+            }
             shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu).await;
-            return;
+            return None;
         }
 
         stage("guest_dom_test");
@@ -3274,6 +3372,8 @@ fn main() {
             "ROVES_PROBE_RESULT {{\"check\":\"storage_history_single_document\",\"status\":\"passed\",\"local_storage_runs\":{storage_runs},\"blocked_navigations\":{}}}",
             evaluate_hook(&mut runtime, &blocked_navigations)
         );
+        stage("presentation_scene_split");
+        presentation::self_check();
         // WebGPU + PixiJS: opt-in (ROVES_PROBE_WEBGPU=1) because it needs a GPU;
         // the CI runners have none, so this runs from the CI-built artifact on a
         // machine with a GPU.
@@ -3313,7 +3413,7 @@ fn main() {
                 "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_run\",\"reason\":\"pass --window\"}}"
             );
             shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu).await;
-            return;
+            return None;
         }
         // Real window: blitz-shell presents the same document and runtime and
         // routes OS input; the process exits once the window test settles.
@@ -3321,11 +3421,84 @@ fn main() {
         runtime
             .execute_script("roves-blitz-window-test.js", WINDOW_TEST)
             .expect("window test setup should run");
-        window::run(window::RovesDocument::new(
+        // ROVES_PROBE_WINDOW_GPU=1: compose on the WebGPU device instead of the
+        // softbuffer CPU window (falls back to it when no adapter is available).
+        let window_gpu = std::env::var("ROVES_PROBE_WINDOW_GPU").is_ok_and(|value| value == "1");
+        let renderer = if window_gpu {
+            prepare_gpu_window(&mut runtime, &prepare_presentation, &shared_presentation).await
+        } else {
+            None
+        };
+        let document =
+            window::RovesDocument::new(document, runtime, dispatcher, run_animation_frame);
+        // The window test normally exits the process itself (unchanged); only a
+        // window closed before it settles returns. The CPU window drops the
+        // runtime as before; the GPU window drains the shared queue first.
+        Some(WindowLaunch {
             document,
-            runtime,
-            dispatcher,
-            run_animation_frame,
-        ));
+            renderer,
+            shutdown_gpu,
+            teardown: if window_gpu {
+                Teardown::IfReturned
+            } else {
+                Teardown::None
+            },
+        })
     });
+    if let Some(launch) = launch {
+        launch.run(&Rc::new(tokio));
+    }
+}
+
+/// What the window run does with the runtime the closed window hands back.
+enum Teardown {
+    /// Drop it (CPU fixture window).
+    None,
+    /// WebGPU teardown when the window hands it back (GPU fixture window).
+    IfReturned,
+    /// The window must hand it back; WebGPU teardown (game window).
+    Required,
+}
+
+/// A window prepared inside `tokio.block_on` and run after it returns: winit's
+/// event loop blocks, so inside `block_on` it would starve the current-thread
+/// runtime's timer/IO drivers (`window::run` drives them once per frame).
+struct WindowLaunch {
+    document: window::RovesDocument,
+    renderer: Option<presentation::GpuWindowRenderer>,
+    shutdown_gpu: v8::Global<v8::Function>,
+    teardown: Teardown,
+}
+
+impl WindowLaunch {
+    fn run(self, tokio: &Rc<tokio::runtime::Runtime>) {
+        let Self {
+            document,
+            renderer,
+            shutdown_gpu,
+            teardown,
+        } = self;
+        let runtime = match renderer {
+            Some(renderer) => {
+                window::run(document.with_stats(renderer.stats.clone()), renderer, tokio)
+            },
+            None => window::run(
+                document,
+                anyrender_vello_cpu::VelloCpuWindowRenderer::new(),
+                tokio,
+            ),
+        };
+        let runtime = match teardown {
+            Teardown::None => None,
+            Teardown::IfReturned => runtime,
+            Teardown::Required => {
+                Some(runtime.expect("the closed game window should hand back its runtime"))
+            },
+        };
+        if let Some(mut runtime) = runtime {
+            tokio.block_on(shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu));
+            // The function handle goes before its isolate.
+            drop(shutdown_gpu);
+        }
+    }
 }

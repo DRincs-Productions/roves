@@ -4,8 +4,17 @@
 //! `blitz-shell` offers embedders (the same one Dioxus Native uses):
 //! - `poll` runs the JS frame step (rAF, microtasks, deno_core event loop) at
 //!   60 Hz; a ticker thread wakes the shell's poll waker every frame, and the
-//!   shell then resolves style/layout and paints with the Vello CPU renderer
-//!   into the window through softbuffer.
+//!   shell then resolves style/layout and paints with the window renderer:
+//!   Vello CPU through softbuffer by default, or `presentation::GpuWindowRenderer`
+//!   (page raster plus WebGPU canvases composed on deno_webgpu's device).
+//! - Tokio: winit's event loop blocks the main thread, so it runs outside any
+//!   `block_on`, with the probe's current-thread runtime only entered (timers
+//!   and tasks created by JS register with it). Each frame step runs inside a
+//!   short `Runtime::block_on` that yields once: that turns the timer/IO
+//!   drivers (due `setTimeout`/`setInterval` sleeps fire, sockets progress)
+//!   and runs spawned local tasks before the deno_core event loop is polled.
+//!   V8, deno_core and winit stay on the main thread; no worker thread is
+//!   needed (deno_unsync's spawned futures are not `Send`).
 //! - `handle_ui_event` receives real OS input and passes it to
 //!   `dispatch_ui_event`, the input bridge the headless tests use too.
 //!
@@ -27,7 +36,7 @@ use std::rc::Rc;
 use std::task::Context;
 use std::time::{Duration, Instant};
 
-use anyrender_vello_cpu::VelloCpuWindowRenderer;
+use anyrender::WindowRenderer;
 use blitz_dom::{DocGuard, DocGuardMut, Document, EventDriver, EventHandler, NodeId};
 use blitz_html::HtmlDocument;
 use blitz_shell::{BlitzApplication, BlitzShellProxy, WindowConfig, create_default_event_loop};
@@ -261,16 +270,40 @@ fn event_init(data: &DomEventData) -> Option<String> {
     }
 }
 
+/// What the window run waits for.
+pub enum WindowMode {
+    /// The fixture's `window_test.js`: exit once it passes, fails or times out.
+    FixtureTest,
+    /// A loaded game: run until closed, or exit after `exit_after` frames.
+    Game { exit_after: Option<u32> },
+}
+
+/// Where `RovesDocument::drop` parks its `JsRuntime` (see `run`).
+type ParkedRuntime = Rc<RefCell<Option<JsRuntime>>>;
+
 /// The probe document plus the JS runtime that owns its scripts.
 pub struct RovesDocument {
     pub document: Rc<RefCell<HtmlDocument>>,
-    pub runtime: JsRuntime,
+    /// Always `Some` until `Drop` moves it into `parked`.
+    runtime: Option<JsRuntime>,
+    /// Set by `run`: receives the runtime when blitz-shell drops the window
+    /// (close request or `request_window_close`), so it outlives the window
+    /// renderer and the caller can run the WebGPU teardown before dropping it.
+    parked: Option<ParkedRuntime>,
+    /// Set by `run`: the current-thread runtime whose drivers each frame turns.
+    tokio: Option<Rc<tokio::runtime::Runtime>>,
+    /// The game window asked the shell to close (frame limit reached).
+    close_requested: bool,
     pub dispatcher: v8::Global<v8::Function>,
     pub run_animation_frame: v8::Global<v8::Function>,
     frames: u32,
     last_frame: Option<Instant>,
     ticker_started: bool,
     timeline_started: bool,
+    mode: WindowMode,
+    /// GPU presentation counters, when the GPU window renderer is used.
+    stats: Option<Rc<RefCell<crate::presentation::PresentStats>>>,
+    stats_printed: bool,
 }
 
 impl RovesDocument {
@@ -282,14 +315,61 @@ impl RovesDocument {
     ) -> Self {
         Self {
             document,
-            runtime,
+            runtime: Some(runtime),
+            parked: None,
+            tokio: None,
+            close_requested: false,
             dispatcher,
             run_animation_frame,
             frames: 0,
             last_frame: None,
             ticker_started: false,
             timeline_started: false,
+            mode: WindowMode::FixtureTest,
+            stats: None,
+            stats_printed: false,
         }
+    }
+
+    pub fn with_mode(mut self, mode: WindowMode) -> Self {
+        self.mode = mode;
+        self
+    }
+
+    pub fn with_stats(mut self, stats: Rc<RefCell<crate::presentation::PresentStats>>) -> Self {
+        self.stats = Some(stats);
+        self
+    }
+
+    /// `gpu_window_presentation`: printed once after `PRESENT_REPORT_FRAMES`
+    /// presented frames, and again at exit. `passed` needs frames presented
+    /// without error (failed frames count as skipped) and no wgpu error; the
+    /// game window also needs at least one presented WebGPU canvas layer (a
+    /// game whose canvas never reached the compositor does not pass). The
+    /// fixture window test only reports canvas layers (its page has none).
+    fn print_presentation(&mut self, at_exit: bool) {
+        const PRESENT_REPORT_FRAMES: u64 = 120;
+        let Some(stats) = &self.stats else { return };
+        let stats = *stats.borrow();
+        if !at_exit && (self.stats_printed || stats.frames < PRESENT_REPORT_FRAMES) {
+            return;
+        }
+        self.stats_printed = true;
+        let needs_canvas = matches!(self.mode, WindowMode::Game { .. });
+        let passed =
+            stats.frames > 0 && stats.errors == 0 && (!needs_canvas || stats.canvas_layers > 0);
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_presentation\",\"status\":\"{}\",\"requires_canvas\":{needs_canvas},\"frames\":{},\"canvas_layers\":{},\"raster_segments\":{},\"upload_bytes\":{},\"max_layers\":{},\"skipped_frames\":{},\"errors\":{},\"readback\":false}}",
+            if passed { "passed" } else { "failed" },
+            stats.frames,
+            stats.canvas_layers,
+            stats.raster_segments,
+            stats.upload_bytes,
+            stats.max_layers,
+            stats.skipped_frames,
+            stats.errors,
+        );
+        flush();
     }
 
     /// blitz-shell resolves with its own animation time (seconds since its first
@@ -303,13 +383,18 @@ impl RovesDocument {
         }
     }
 
+    fn runtime(&mut self) -> &mut JsRuntime {
+        self.runtime
+            .as_mut()
+            .expect("the runtime is only taken when the document drops")
+    }
+
     /// Evaluates a script returning a string (the window test's status).
     fn evaluate(&mut self, source: &'static str) -> String {
-        let value = self
-            .runtime
+        let runtime = self.runtime();
+        let value = runtime
             .execute_script("roves-blitz-window-status.js", source)
             .expect("window status script should run");
-        let runtime = &mut self.runtime;
         deno_core::scope!(scope, runtime);
         let value = v8::Local::new(scope, value);
         value.to_rust_string_lossy(scope)
@@ -317,6 +402,17 @@ impl RovesDocument {
 
     fn after_frame(&mut self) {
         self.frames += 1;
+        self.print_presentation(false);
+        if let WindowMode::Game { exit_after } = self.mode {
+            if !self.close_requested && exit_after.is_some_and(|limit| self.frames >= limit) {
+                // Same path as a user close (blitz-shell's `CloseWindow`, handled
+                // like `CloseRequested`): the shell drops the window, `Drop`
+                // parks the runtime and `run` returns it for the GPU teardown.
+                self.close_requested = true;
+                self.document.borrow().shell_provider.request_window_close();
+            }
+            return;
+        }
         if self.frames == 2 {
             // Layout has run at least once (the shell resolves before painting).
             let status = self.evaluate("JSON.stringify(windowTarget())");
@@ -328,7 +424,7 @@ impl RovesDocument {
             flush();
         }
         let status = self.evaluate("windowStatus()");
-        let finished = status != "waiting";
+        let finished = !status.starts_with("waiting");
         if finished || self.frames >= TIMEOUT_FRAMES {
             let passed = status == "passed";
             println!(
@@ -338,6 +434,7 @@ impl RovesDocument {
                 json_string(&status),
             );
             flush();
+            self.print_presentation(true);
             std::process::exit(if passed { 0 } else { 1 });
         }
     }
@@ -346,6 +443,31 @@ impl RovesDocument {
 fn flush() {
     use std::io::Write;
     let _ = std::io::stdout().flush();
+}
+
+/// blitz-shell drops the window's `View` on a close request (user or
+/// `request_window_close`), document first and renderer second. The runtime
+/// is parked instead of dropped: the GPU renderer then releases its surface and
+/// compositor resources with the shared device still alive, and the caller
+/// drains the queue (`shutdownGpu`) before dropping deno_webgpu's device.
+impl Drop for RovesDocument {
+    fn drop(&mut self) {
+        if let WindowMode::Game { .. } = self.mode {
+            println!(
+                "ROVES_PROBE_RESULT {{\"check\":\"game_window_closed\",\"status\":\"ran\",\"reason\":\"{}\",\"frames\":{}}}",
+                if self.close_requested {
+                    "frame_limit"
+                } else {
+                    "close_request"
+                },
+                self.frames,
+            );
+            self.print_presentation(true);
+        }
+        if let (Some(parked), Some(runtime)) = (&self.parked, self.runtime.take()) {
+            *parked.borrow_mut() = Some(runtime);
+        }
+    }
 }
 
 impl Document for RovesDocument {
@@ -362,7 +484,11 @@ impl Document for RovesDocument {
 
     fn handle_ui_event(&mut self, event: UiEvent) {
         self.start_shell_timeline();
-        dispatch_ui_event(&mut self.runtime, &self.dispatcher, &self.document, event);
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("the runtime is only taken when the document drops");
+        dispatch_ui_event(runtime, &self.dispatcher, &self.document, event);
     }
 
     fn poll(&mut self, task_context: Option<Context<'_>>) -> bool {
@@ -387,15 +513,45 @@ impl Document for RovesDocument {
             return false;
         }
         self.last_frame = Some(Instant::now());
-        crate::frame_step(&mut self.runtime, &self.run_animation_frame);
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("the runtime is only taken when the document drops");
+        let run_animation_frame = &self.run_animation_frame;
+        match &self.tokio {
+            // Yield once so the scheduler runs spawned tasks and turns the
+            // timer/IO drivers (`park_yield`, zero timeout) before the poll.
+            Some(tokio) => tokio.block_on(async {
+                tokio::task::yield_now().await;
+                crate::frame_step(runtime, run_animation_frame);
+            }),
+            None => crate::frame_step(runtime, run_animation_frame),
+        }
         self.after_frame();
         true
     }
 }
 
-/// Runs the window until the window test passes, fails or times out (the
-/// process exits from `RovesDocument::after_frame`).
-pub fn run(document: RovesDocument) {
+/// Runs the window with `renderer`. The fixture window test exits the process
+/// from `RovesDocument::after_frame` once it settles. The game window runs
+/// until it is closed or reaches its frame limit; the shell then drops the
+/// window (renderer included) and this returns the document's `JsRuntime`,
+/// still alive, for the caller's WebGPU teardown (`None` only if the event
+/// loop returned without dropping the window).
+///
+/// Must be called outside `tokio.block_on` (it blocks in winit's event loop and
+/// drives `tokio` itself once per frame, see the module docs).
+pub fn run<R: WindowRenderer + 'static>(
+    mut document: RovesDocument,
+    renderer: R,
+    tokio: &Rc<tokio::runtime::Runtime>,
+) -> Option<JsRuntime> {
+    let parked = ParkedRuntime::default();
+    document.parked = Some(parked.clone());
+    document.tokio = Some(tokio.clone());
+    // Input handlers run JS outside the per-frame block_on: timers and spawned
+    // tasks they create register with this runtime's context.
+    let _context = tokio.enter();
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
     let mut application = BlitzApplication::new(proxy, receiver);
@@ -408,10 +564,11 @@ pub fn run(document: RovesDocument) {
         .with_resizable(false);
     application.add_window(WindowConfig::with_attributes(
         Box::new(document),
-        VelloCpuWindowRenderer::new(),
+        renderer,
         attributes,
     ));
     event_loop
         .run_app(application)
         .expect("window event loop should run");
+    parked.borrow_mut().take()
 }

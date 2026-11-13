@@ -12,7 +12,8 @@ exclude = ["vendor/blitz-dom"]
 [dependencies]
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"
-blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts"] }
+# custom-widget: canvas elements paint as an in-order placeholder (src/presentation.rs).
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts", "custom-widget"] }
 blitz-html = { version = "=0.3.0-beta.4", default-features = false }
 blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
 anyrender_vello_cpu = { version = "=0.18.0", features = ["softbuffer_window_renderer"] }
@@ -21,9 +22,12 @@ tokio = { version = "1.47.1", default-features = false, features = ["rt", "net"]
 deno_web = "=0.291.0"
 deno_webidl = "=0.260.0"
 anyrender = "=0.14.0"
-blitz-paint = { version = "=0.3.0-beta.4", default-features = false }
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["custom-widget"] }
 # Already in the Blitz graph. Compose Blitz's cached CSS transform matrices.
 kurbo = "=0.13.1"
+# Already in the Blitz graph (anyrender's brush types): the canvas placeholder
+# `ImageBrush<ResourceId>` of the --window GPU presentation.
+peniko = "=0.6.1"
 png = "=0.18.1"
 # Already locked through deno_fetch: decodes data: URLs (save thumbnails) in the
 # game NetProvider.
@@ -34,6 +38,9 @@ style = { package = "stylo", version = "=0.22.0", default-features = false }
 # attributes and modifier flags for the --window mode.
 winit = "=0.31.0-beta.3"
 keyboard-types = { version = "=0.8.3", default-features = false }
+# Same version as winit/wgpu-core 29 (already in the graph): the window handles
+# deno_webgpu's wgpu-core Instance needs for the --window GPU surface.
+raw-window-handle = "=0.6.2"
 # deno_core 0.413-paired release: localStorage (SQLite) and sessionStorage.
 deno_webstorage = "=0.255.0"
 # deno_core 0.413-paired release: WebGPU (navigator.gpu) on wgpu 29.
