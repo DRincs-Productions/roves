@@ -1,6 +1,14 @@
 # Roves — fluidità di gioco con V8 e deno_core
 
-> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 6 novembre 2026.
+> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 13 novembre 2026.
+
+## Verifica media Blitz/V8 — 13 novembre 2026
+
+La matrice deterministica `support/blitz-v8-probe/src/media_matrix.js` genera in locale gli stessi byte per Chrome DevTools e la probe Roves; lunghezza e hash FNV-1a vengono inclusi nel report. Il template usato da Roves è `visual-novel-template` SHA `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, build `dist`, Windows x64, V8 normal e JITless, GPU Vulkan NVIDIA GeForce GTX 1050 (driver 581.63). Chrome DevTools MCP ha riportato Chrome 157 su Windows. La prova è headless nella probe (non rappresenta playback in finestra).
+
+Esito: PNG, JPEG, GIF statico e WebP caricano come `<img>` e decodificano via `createImageBitmap`; SVG carica come `<img>` tramite `resvg` dopo il fetch autorizzato, mentre `createImageBitmap(Blob SVG)` viene rifiutato come in Chrome. L'immagine corrotta genera errore/rifiuto. Web Audio decodifica il WAV generato a 256 campioni non nulli, confrontati con la sorgente; un WAV invalido è rifiutato. I controlli normali e JITless passano, così come il teardown GPU. Il test unitario Rust verifica dimensioni/pixel SVG e il limite massimo.
+
+Limiti espliciti: Chrome ha fornito capability e `loadedmetadata` per il WAV `<audio>`, ma non è stata avviata riproduzione; Roves non implementa `src`/`play`/`pause`/`load` per `<audio>` o `<video>` e `canPlayType()` è vuoto. Nessun video o AVIF fixture è stato eseguito. L'avanzamento dei pixel GIF animati è inconclusivo in Chrome e non testabile in Roves perché manca `CanvasRenderingContext2D.drawImage`. Pertanto questa prova non certifica compatibilità generale dei media né audio udibile, video o animazioni raster; individua concretamente le lacune da implementare.
 
 ## Obiettivo di prodotto
 

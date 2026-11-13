@@ -47,6 +47,9 @@ deno_webstorage = "=0.255.0"
 deno_webgpu = "=0.227.0"
 # deno_core 0.413-paired release: createImageBitmap/ImageBitmap (PNG/JPEG decoding).
 deno_image = "=0.36.0"
+# Already used by Roves' production image cache; rasterizes SVG after the
+# existing fetch/CSP policy has supplied bytes (never performs network fetches).
+resvg = "=0.48.1"
 # deno_core 0.413-paired release: Headers/Request/Response/FormData and fetch for
 # data:, blob: and safe https origins (src/fetch.js adds game://, CORS, redirects;
 # src/net_policy.rs the public-address resolver, request hook and CSP).

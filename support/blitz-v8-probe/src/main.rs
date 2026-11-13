@@ -1708,6 +1708,80 @@ fn op_blitz_image_bitmap_rgba(#[cppgc] bitmap: &deno_image::bitmap::ImageBitmap)
     bitmap.data.borrow().to_rgba8().into_raw()
 }
 
+/// Rasterizes a fetched SVG through Roves' existing resvg stack, then hands the
+/// PNG to deno_image for standard ImageBitmap decoding. SVG references are
+/// limited to embedded data URLs; no request bypasses deno_fetch policy.
+fn rasterize_svg(bytes: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+    const MAX_SIDE: u32 = 5_000;
+    const MAX_PIXELS: u64 = 16_777_216;
+
+    let resolve_string = Box::new(|_: &str, _: &resvg::usvg::Options| None);
+    let options = resvg::usvg::Options {
+        image_href_resolver: resvg::usvg::ImageHrefResolver {
+            resolve_data: resvg::usvg::ImageHrefResolver::default_data_resolver(),
+            resolve_string,
+        },
+        ..resvg::usvg::Options::default()
+    };
+    let tree = resvg::usvg::Tree::from_data(bytes, &options)
+        .map_err(|error| JsErrorBox::type_error(format!("Invalid SVG: {error}")))?;
+    let size = tree.size();
+    let width = size.width().ceil() as u32;
+    let height = size.height().ceil() as u32;
+    if width == 0
+        || height == 0
+        || width > MAX_SIDE
+        || height > MAX_SIDE
+        || u64::from(width) * u64::from(height) > MAX_PIXELS
+    {
+        return Err(JsErrorBox::range_error(format!(
+            "SVG dimensions {width}x{height} exceed the rasterization limit"
+        )));
+    }
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(width, height)
+        .ok_or_else(|| JsErrorBox::range_error("SVG raster allocation failed"))?;
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        resvg::render(
+            &tree,
+            resvg::tiny_skia::Transform::identity(),
+            &mut pixmap.as_mut(),
+        );
+    }))
+    .map_err(|_| JsErrorBox::generic("SVG rasterizer failed"))?;
+    pixmap
+        .encode_png()
+        .map_err(|error| JsErrorBox::generic(format!("SVG PNG encoding failed: {error}")))
+}
+
+#[op2]
+#[buffer]
+fn op_blitz_rasterize_svg(#[buffer] bytes: &[u8]) -> Result<Vec<u8>, JsErrorBox> {
+    rasterize_svg(bytes)
+}
+
+#[cfg(test)]
+mod svg_rasterization_tests {
+    use super::rasterize_svg;
+
+    #[test]
+    fn rasterizes_embedded_svg_and_rejects_oversized_dimensions() {
+        let svg = br##"<svg xmlns="http://www.w3.org/2000/svg" width="5" height="3"><rect width="5" height="3" fill="#00aa00"/></svg>"##;
+        let png = rasterize_svg(svg).expect("valid fixture SVG should rasterize");
+        let decoder = png::Decoder::new(std::io::Cursor::new(png));
+        let mut reader = decoder.read_info().expect("resvg output should be a PNG");
+        assert_eq!((reader.info().width, reader.info().height), (5, 3));
+        let mut pixels = vec![0; reader.output_buffer_size().expect("bounded fixture size")];
+        let frame = reader
+            .next_frame(&mut pixels)
+            .expect("PNG frame should decode");
+        assert_eq!(frame.color_type, png::ColorType::Rgba);
+        assert_eq!(&pixels[..4], &[0, 170, 0, 255]);
+
+        let oversized = br#"<svg xmlns="http://www.w3.org/2000/svg" width="5001" height="1"/>"#;
+        assert!(rasterize_svg(oversized).is_err());
+    }
+}
+
 /// Canvas bitmap bounds, the same as `CANVAS_MAX_SIDE`/`CANVAS_MAX_AREA` in dom.js.
 const CANVAS_MAX_SIDE: u32 = 16_384;
 const CANVAS_MAX_AREA: u64 = 16_777_216;
@@ -2044,6 +2118,7 @@ deno_core::extension!(
         op_blitz_create_comment,
         op_blitz_clone_node,
         op_blitz_image_bitmap_rgba,
+        op_blitz_rasterize_svg,
         op_blitz_encode_png,
         op_blitz_gpu_wait_idle,
         op_blitz_gpu_poll,

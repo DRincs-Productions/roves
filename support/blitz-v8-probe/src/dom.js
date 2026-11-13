@@ -2712,6 +2712,16 @@
   // createImageBitmap. Attribute-only images stay on Blitz's rendering path
   // until JS explicitly requests a decode.
   const imageRequests = new WeakMap();
+  async function decodeImageBlob(blob) {
+    try {
+      return await imageApi.createImageBitmap(blob);
+    } catch (error) {
+      if (blob.type.toLowerCase().split(";")[0].trim() !== "image/svg+xml") throw error;
+      const svg = new Uint8Array(await blob.arrayBuffer());
+      const png = core.ops.op_blitz_rasterize_svg(svg);
+      return await imageApi.createImageBitmap(new Blob([png], { type: "image/png" }));
+    }
+  }
   function requestImage(element) {
     const src = element.src;
     const previous = imageRequests.get(element);
@@ -2729,7 +2739,7 @@
       if (!response.ok) throw new Error("Image request failed");
       const blob = await response.blob();
       if (signal.aborted) return false;
-      const bitmap = await imageApi.createImageBitmap(blob);
+      const bitmap = await decodeImageBlob(blob);
       request.width = bitmap.width;
       request.height = bitmap.height;
       bitmap.close();

@@ -23,6 +23,8 @@ use deno_error::JsErrorBox;
 
 use crate::window;
 
+const MEDIA_MATRIX: &str = include_str!("media_matrix.js");
+
 /// The document URL games see (matches `src/history.js`): the content root, as
 /// the Servo shell boots (`ports/servoshell/protocols/game.rs`), so a client-side
 /// router matches its `/` route. The document itself is still the directory's
@@ -394,6 +396,10 @@ addEventListener("unhandledrejection", (event) => {
         crate::call_hook(runtime, gpu_pacing_stats, &[])
     );
 
+    if std::env::args().any(|arg| arg == "--media-matrix") {
+        media_matrix(runtime, document, run_animation_frame).await;
+    }
+
     if std::env::args().any(|arg| arg == "--story") {
         story(
             runtime,
@@ -414,6 +420,53 @@ addEventListener("unhandledrejection", (event) => {
         "ROVES_PROBE_RESULT {{\"check\":\"game_audio\",\"status\":\"ran\",\"output\":\"{}\",\"audio\":{}}}",
         crate::audio::AudioOutput::configured().label(),
         crate::call_hook(runtime, web_audio_trace, &[])
+    );
+}
+
+/// Run the deterministic media fixture set in the same game document/runtime
+/// used by Chrome's DevTools comparison. Non-baseline format gaps are reported
+/// but do not fail this harness; image decoding/error behaviour, SVG image
+/// loading, and decoded WAV sample equality are the deterministic baseline.
+async fn media_matrix(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+
+    crate::stage("media_matrix");
+    runtime
+        .execute_script("roves-blitz-media-matrix.js", MEDIA_MATRIX)
+        .expect("media matrix should start");
+
+    let mut completed = false;
+    for _ in 0..3600 {
+        crate::drive_frames(runtime, document, run_animation_frame, 1).await;
+        if crate::evaluate_string(runtime, "String(__rovesMediaMatrix?.done === true)") == "true" {
+            completed = true;
+            break;
+        }
+    }
+    let report_text = crate::evaluate_string(
+        runtime,
+        "JSON.stringify(__rovesMediaMatrix?.report ?? null)",
+    );
+    let report: Value = deno_core::serde_json::from_str(&report_text).unwrap_or(Value::Null);
+    let error = crate::evaluate_string(runtime, "String(__rovesMediaMatrix?.error ?? '')");
+    let baseline_failures = report
+        .get("baselineFailures")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let status = if completed && error.is_empty() && baseline_failures.is_empty() {
+        "passed"
+    } else {
+        "failed"
+    };
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"media_matrix_baseline\",\"status\":\"{status}\",\"completed\":{completed},\"error\":{},\"baseline_failures\":{},\"report\":{report}}}",
+        json!(error),
+        json!(baseline_failures),
     );
 }
 
@@ -1849,6 +1902,40 @@ async fn name_input(
                         .as_array()
                         .is_some_and(|lines| !lines.is_empty())
                     {
+                        // The name can appear in a live typewriter text node
+                        // before Pixi'VN commits that line to narration. Do not
+                        // hand off to the HUD click test while only the speaker
+                        // label is in the settled narration: that click would
+                        // legitimately advance the still-running dialogue.
+                        let name = Value::String(TYPED_NAME.into());
+                        let settled_named_line = format!(
+                            "JSON.parse(__rovesStory.narration({})).some((line) => line !== {} && line.includes({}))",
+                            Value::String(menu.clone()),
+                            name,
+                            name,
+                        );
+                        if wait_until(
+                            runtime,
+                            document,
+                            run_animation_frame,
+                            &settled_named_line,
+                            STORY_STATE_FRAMES,
+                            &mut toasts,
+                        )
+                        .await
+                        .is_err()
+                        {
+                            break 'name Some(format!(
+                                "the typewriter exposed {TYPED_NAME:?} in the DOM but never committed a named dialogue line to narration (current: {})",
+                                evaluate_owned(
+                                    runtime,
+                                    format!(
+                                        "__rovesStory.narration({})",
+                                        Value::String(menu.clone())
+                                    )
+                                )
+                            ));
+                        }
                         report["name_in_dialogue"] = found;
                         break 'name None;
                     }

@@ -138,7 +138,7 @@ jobs:
           ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-game-storage
           ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-game.png
         run: |
-          "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" --game visual-novel-template/dist > "$RUNNER_TEMP/blitz-game.log" 2>&1 || echo "probe exited with $?"
+          "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" --game visual-novel-template/dist --media-matrix > "$RUNNER_TEMP/blitz-game.log" 2>&1 || echo "probe exited with $?"
           grep -E 'ROVES_PROBE_RESULT|ROVES_PROBE_GAME_MISSING_RESOURCE|ROVES_PROBE_FETCH_BLOCKED|panicked' "$RUNNER_TEMP/blitz-game.log" | cut -c1-3000 || true
           # Mount report (fresh storage directory) and fetches the policy refused as
           # public annotations.
@@ -165,6 +165,10 @@ jobs:
           fi
           grep -Fq '"check":"game_page","status":"ran"' "$RUNNER_TEMP/blitz-game.log" || {
             echo "::error::the probe produced no game_page report for visual-novel-template"
+            exit 1
+          }
+          grep -Fq '"check":"media_matrix_baseline","status":"passed"' "$RUNNER_TEMP/blitz-game.log" || {
+            echo "::error::the deterministic media matrix baseline failed on visual-novel-template"
             exit 1
           }
           # Orderly WebGPU teardown (queue idle + device destroyed) before the

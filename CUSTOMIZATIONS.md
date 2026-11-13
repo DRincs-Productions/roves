@@ -20453,3 +20453,17 @@ Tenth 2026-11-13 follow-up: the template story probe now verifies custom-name di
 the enclosing DOM block's combined `textContent`, because Markdown/typewriter output may split
 one visible line across several text nodes. This corrects a false negative without changing
 template or runtime behavior and adds no dependencies.
+
+Eleventh 2026-11-13 follow-up: the Blitz probe adds an opt-in deterministic media fixture matrix
+using `deno_image` and Web Audio. It reuses Roves' existing `resvg` dependency to load fetched SVG
+images while refusing external SVG references and bounding raster dimensions. The same PNG, JPEG,
+GIF, WebP, SVG and WAV bytes are exercised by Chrome DevTools and Roves; CI gates image decoding,
+SVG `<img>` loading, malformed image rejection and non-silent WAV samples in normal and JITless V8.
+Animated GIF pixel progression remains unverified because the probe lacks canvas `drawImage`; HTML
+audio/video playback, AVIF and video fixtures remain gaps. No new codec library was introduced.
+
+Twelfth 2026-11-13 follow-up: the template story gate now waits until the typed-name dialogue
+is committed to the page's narration before running the HUD Save/Load click test. A race allowed
+the test to see the name in a live typewriter DOM node while narration still contained only the
+speaker; its next pointer event could then advance the dialogue. This stabilizes the test at the
+actual story state without changing game/runtime input behavior.
