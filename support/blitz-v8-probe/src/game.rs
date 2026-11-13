@@ -2032,7 +2032,9 @@ const HUD_ADVANCE_FRAMES: u32 = 120;
 /// window's input layer does). Records the hit-test path and whether it lies in
 /// the button, then requires the save/load page of the Settings dialog to open
 /// and no new narration line to appear, both while the panel is open and after
-/// Escape closes it. Prints `game_hud_save_load` (`not_run` without an accepted
+/// Escape closes it. A framework may retain a closed dialog node during its
+/// exit lifecycle, so closure is defined by no open dialog and a cleared route
+/// parameter, not by DOM unmount. Prints `game_hud_save_load` (`not_run` without an accepted
 /// name).
 async fn hud_save_load(
     runtime: &mut JsRuntime,
@@ -2163,22 +2165,24 @@ async fn hud_save_load(
             runtime,
             document,
             run_animation_frame,
-            "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+            "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) && !/[?&]settings=/.test(location.search) ? 'closed' : ''",
             DIALOG_FRAMES,
             &mut toasts,
         )
         .await;
         report["closed"] = json!(closed.is_ok());
+        report["location_closed"] = json!(crate::evaluate_string(runtime, "location.href"));
         crate::drive_frames(runtime, document, run_animation_frame, HUD_ADVANCE_FRAMES).await;
         let advanced_closed = new_lines(runtime, &before);
         report["new_lines_closed"] = json!(advanced_closed);
         if closed.is_err() {
             break 'hud Some(format!(
-                "Escape left the save/load panel mounted after {DIALOG_FRAMES} frames (dialogs: {})",
-                crate::evaluate_string(runtime, "__rovesStory.dialogs()")
+                "Escape did not close the save/load panel and clear its route after {DIALOG_FRAMES} frames (dialogs: {}, location: {})",
+                crate::evaluate_string(runtime, "__rovesStory.dialogs()"),
+                crate::evaluate_string(runtime, "location.href")
             ));
         }
-        steps.push(json!({ "action": "escape_key", "result": "dialog unmounted" }));
+        steps.push(json!({ "action": "escape_key", "result": "dialog closed and route cleared" }));
         if advanced_closed.is_empty() {
             None
         } else {
