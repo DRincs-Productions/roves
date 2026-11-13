@@ -273,8 +273,10 @@ jobs:
       # the gate. Separate storage directory; bounded by timeout 900.
       # The same run first opens Settings on the menu and closes it with Escape
       # (game_settings_popup), and after the two states types a name into the
-      # story's input dialog (game_name_input); both are annotated separately
-      # as warnings when not passed and do not change this step's result,
+      # story's input dialog (game_name_input), then clicks the HUD Save/Load
+      # button at its center (game_hud_save_load: the save/load panel must open
+      # and the dialogue must not advance); each is annotated separately
+      # as a warning when not passed and does not change this step's result,
       # which stays the two-dialogue check.
       - name: template story Start and first two dialogue states (diagnostic)
         if: ${{ !cancelled() }}
@@ -300,7 +302,7 @@ jobs:
           [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
           name_input_events=$(grep -m 1 '^ROVES_PROBE_NAME_INPUT_EVENTS ' "$log")
           [ -n "$name_input_events" ] && echo "::notice::$name_input_events"
-          for check in game_settings_popup game_name_input game_quick_save; do
+          for check in game_settings_popup game_name_input game_hud_save_load game_quick_save; do
             line=$(grep -F "\"check\":\"$check\"" "$log" | head -n 1)
             if [ -z "$line" ]; then
               echo "::warning::$check: no result line"

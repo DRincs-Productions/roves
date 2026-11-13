@@ -624,6 +624,51 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       }
       return JSON.stringify({ speaker, dialogue });
     },
+    // The HUD's "Save/Load" button (outside dialogs), marked with
+    // data-roves-probe-target so the embedder can tell whether its hit test
+    // at the button's center resolves inside it.
+    hudSaveLoad() {
+      const dialogs = dialogElements();
+      const button = buttons().find((element) => /^save\s*\/\s*load$/i.test(label(element)) &&
+        !dialogs.some((dialog) => dialog.contains(element)));
+      if (!button) return "null";
+      const rect = button.getBoundingClientRect();
+      const found = center(button, {
+        label: label(button),
+        rect: { left: rect.left, top: rect.top, width: rect.width, height: rect.height },
+        disabled: button.hasAttribute("disabled"),
+      });
+      if (found) button.setAttribute("data-roves-probe-target", "");
+      return found ?? "null";
+    },
+    clearProbeTarget() {
+      for (const element of Array.from(document.querySelectorAll("[data-roves-probe-target]"))) {
+        element.removeAttribute("data-roves-probe-target");
+      }
+      return "";
+    },
+    // Dialogue lines (see dialogueLines) outside mounted dialogs.
+    narration(menu) {
+      const dialogs = dialogElements();
+      const lines = [];
+      if (document.body) {
+        walk(document.body, (text, element, inButton) => {
+          if (!inButton && text.length >= 8 && text.split(" ").length >= 2 && !menu.includes(text) && !lines.includes(text) &&
+            !(element && dialogs.some((dialog) => dialog.contains(element)))) lines.push(text);
+        }, () => {});
+      }
+      return JSON.stringify(lines);
+    },
+    // An open, settled dialog showing the save/load page (its Quick Saves /
+    // Save to File / Load from File controls); "" until there is one.
+    saveLoadPanel() {
+      const dialog = dialogElements().find((element) => visible(element) &&
+        element.hasAttribute("data-open") && !element.hasAttribute("data-closed") && running(element) <= 0 &&
+        Array.from(element.querySelectorAll("[aria-label]")).some((control) =>
+          /^(quick saves|save to file|load from file)$/i.test(norm(control.getAttribute("aria-label")))));
+      if (!dialog) return "";
+      return JSON.stringify({ ...describe(dialog), settings_tab_save_load: /save-load/.test(decodeURIComponent(location.search)) });
+    },
     // The menu's Start button: exact "Start"/"New game" first, then a label containing it.
     start() {
       const all = buttons();
@@ -807,8 +852,10 @@ fn expected_lines() -> Result<Option<[String; 2]>, String> {
 ///
 /// Before Start, `settings_popup` opens and closes the Settings dialog
 /// (`game_settings_popup`); after the two states, `name_input` types a name into
-/// the story's input dialog (`game_name_input`). Each prints its own result and
-/// counts only the script errors captured during its own phase.
+/// the story's input dialog (`game_name_input`); after an accepted name,
+/// `hud_save_load` clicks the HUD's Save/Load button (`game_hud_save_load`).
+/// Each prints its own result and counts only the script errors captured during
+/// its own phase.
 async fn story(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -839,8 +886,18 @@ async fn story(
             r#"ROVES_PROBE_RESULT {{"check":"game_quick_save","status":"not_run","detail":{{"reason":"story setup failed"}}}}"#
         );
     }
+    let menu = progress.as_ref().map(|progress| progress.menu.clone());
     crate::stage("game_name_input");
-    name_input(runtime, document, run_animation_frame, dispatcher, progress).await;
+    let named = name_input(runtime, document, run_animation_frame, dispatcher, progress).await;
+    crate::stage("game_hud_save_load");
+    hud_save_load(
+        runtime,
+        document,
+        run_animation_frame,
+        dispatcher,
+        menu.filter(|_| named),
+    )
+    .await;
     if let Ok(path) = std::env::var("ROVES_PROBE_STORY_SCREENSHOT") {
         let pixels = crate::render_rgba(document);
         crate::write_png(&path, &pixels);
@@ -1481,21 +1538,21 @@ const TYPED_NAME: &str = "Zorvaq";
 /// enabled Confirm button, tries Enter and the pointer confirmation, then
 /// advances until a dialogue line contains the typed name (step 7,
 /// `...${mc.name}.`). Prints `game_name_input` (`not_run` when the two-dialogue
-/// run did not pass).
+/// run did not pass) and returns whether it passed.
 async fn name_input(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
     dispatcher: &v8::Global<v8::Function>,
     progress: Option<StoryProgress>,
-) {
+) -> bool {
     use deno_core::serde_json::{Value, json};
     use keyboard_types::{Key, NamedKey};
     let Some(progress) = progress else {
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"game_name_input\",\"status\":\"not_run\",\"reason\":\"the two-dialogue story run did not pass\"}}"
         );
-        return;
+        return false;
     };
     let StoryProgress {
         menu,
@@ -1790,5 +1847,230 @@ async fn name_input(
     );
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"game_name_input\",\"status\":\"{status}\",\"detail\":{report}}}"
+    );
+    status == "passed"
+}
+
+/// Elements from `hit` up to the root (at most `HIT_PATH_DEPTH` described):
+/// tag, class excerpt and the `data-roves-probe-target` marker; returns whether
+/// any of them carries the marker, and the description.
+fn hit_path(
+    document: &Rc<RefCell<HtmlDocument>>,
+    hit: blitz_dom::NodeId,
+) -> (bool, Vec<deno_core::serde_json::Value>) {
+    use deno_core::serde_json::json;
+    const HIT_PATH_DEPTH: usize = 6;
+    let document = document.borrow();
+    let mut on_target = false;
+    let mut path = Vec::new();
+    let mut current = Some(hit);
+    while let Some(id) = current {
+        let Some(node) = document.get_node(id) else {
+            break;
+        };
+        if let Some(element) = node.element_data() {
+            let attr = |name: &str| {
+                node.attrs().and_then(|attrs| {
+                    attrs
+                        .iter()
+                        .find(|attr| &*attr.name.local == name)
+                        .map(|attr| attr.value.clone())
+                })
+            };
+            let marked = attr("data-roves-probe-target").is_some();
+            on_target |= marked;
+            if path.len() < HIT_PATH_DEPTH {
+                path.push(json!({
+                    "node": id.as_u64(),
+                    "tag": &*element.name.local,
+                    "class": attr("class").map(|class| class.chars().take(80).collect::<String>()),
+                    "marked": marked,
+                }));
+            }
+        }
+        current = node.parent;
+    }
+    (on_target, path)
+}
+
+/// Frames driven after the Save/Load panel opens before the narration is
+/// compared again, so a click-through advance has time to render.
+const HUD_ADVANCE_FRAMES: u32 = 120;
+
+/// HUD Save/Load (Windows GTX 1050 window test, 2026-11-13: after the name and
+/// Confirm, an OS click on Save/Load advanced the dialogue twice instead of
+/// opening the panel). After an accepted name, waits until the narration
+/// outside dialogs is settled, finds the HUD's "Save/Load" button by label,
+/// reads its `getBoundingClientRect` and sends a pointer press and release at
+/// its center through Blitz's `EventDriver` (`window::pointer_click`, as the
+/// window's input layer does). Records the hit-test path and whether it lies in
+/// the button, then requires the save/load page of the Settings dialog to open
+/// and no new narration line to appear, both while the panel is open and after
+/// Escape closes it. Prints `game_hud_save_load` (`not_run` without an accepted
+/// name).
+async fn hud_save_load(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    menu: Option<String>,
+) {
+    use deno_core::serde_json::{Value, json};
+    use keyboard_types::{Key, NamedKey};
+    let Some(menu) = menu else {
+        println!(
+            r#"ROVES_PROBE_RESULT {{"check":"game_hud_save_load","status":"not_run","detail":{{"reason":"the name input run did not pass"}}}}"#
+        );
+        return;
+    };
+    let errors_before = error_count(runtime);
+    let mut toasts: Vec<Value> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
+    let mut report = json!({});
+    let narration_probe = format!("__rovesStory.narration({})", Value::String(menu));
+    let new_lines = |runtime: &mut JsRuntime, before: &[String]| -> Vec<String> {
+        let now = evaluate_owned(runtime, narration_probe.clone());
+        let mut now: Vec<String> = deno_core::serde_json::from_str(&now).unwrap_or_default();
+        now.retain(|line| !before.contains(line));
+        now.iter().map(|line| excerpt(line)).collect()
+    };
+    let failure: Option<String> = 'hud: {
+        if wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogs() === '[]' ? 'none' : ''",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await
+        .is_err()
+        {
+            break 'hud Some(format!(
+                "a dialog is still mounted before the HUD click: {}",
+                crate::evaluate_string(runtime, "__rovesStory.dialogs()")
+            ));
+        }
+        // Settled narration: the same non-empty lines for STORY_STABLE_CHECKS checks.
+        let mut before = String::new();
+        let mut stable = 0;
+        let mut frames = 0;
+        while stable < STORY_STABLE_CHECKS {
+            if frames >= STORY_STATE_FRAMES {
+                break 'hud Some(format!(
+                    "the narration did not settle within {STORY_STATE_FRAMES} frames (last: {:?})",
+                    excerpt(&before)
+                ));
+            }
+            crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+            frames += 10;
+            collect_toasts(runtime, &mut toasts);
+            let lines = evaluate_owned(runtime, narration_probe.clone());
+            if lines != "[]" && lines == before {
+                stable += 1;
+            } else {
+                before = lines;
+                stable = 0;
+            }
+        }
+        let before: Vec<String> = deno_core::serde_json::from_str(&before).unwrap_or_default();
+        let excerpts: Vec<String> = before.iter().map(|line| excerpt(line)).collect();
+        report["narration_before"] = json!(excerpts);
+        steps.push(json!({ "result": "narration settled", "frames": frames }));
+        crate::resolve_layout(document);
+        let button = crate::evaluate_string(runtime, "__rovesStory.hudSaveLoad()");
+        let Some((x, y, button)) = point(&button) else {
+            break 'hud Some("no visible HUD Save/Load button outside dialogs".into());
+        };
+        report["button"] = button;
+        let hit = crate::hit_target(document, x, y);
+        let (on_target, path) = hit.map(|hit| hit_path(document, hit)).unwrap_or_default();
+        report["hit"] = json!({ "x": x, "y": y, "node": hit.map(|hit| hit.as_u64()), "on_target": on_target, "path": path });
+        let sent = window::pointer_click(runtime, dispatcher, document, x, y);
+        crate::evaluate_string(runtime, "__rovesStory.clearProbeTarget()");
+        steps.push(json!({ "action": "pointer_click", "sent": sent }));
+        if !sent {
+            break 'hud Some(format!(
+                "hit-test found no node at the Save/Load button center ({x}, {y})"
+            ));
+        }
+        let opened = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.saveLoadPanel()",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        crate::drive_frames(runtime, document, run_animation_frame, HUD_ADVANCE_FRAMES).await;
+        let advanced_open = new_lines(runtime, &before);
+        report["new_lines_open"] = json!(advanced_open);
+        report["location_open"] = json!(crate::evaluate_string(runtime, "location.href"));
+        let panel = match opened {
+            Ok((panel, frames)) => {
+                steps.push(json!({ "result": "save/load panel open", "frames": frames }));
+                panel
+            },
+            Err(_) => {
+                break 'hud Some(format!(
+                    "the Save/Load click did not open the save/load panel within {DIALOG_FRAMES} frames (hit on button: {on_target}, new narration lines: {advanced_open:?}, dialogs: {}, location: {})",
+                    crate::evaluate_string(runtime, "__rovesStory.dialogs()"),
+                    crate::evaluate_string(runtime, "location.href")
+                ));
+            },
+        };
+        let panel: Value = deno_core::serde_json::from_str(&panel).unwrap_or(Value::Null);
+        report["panel"] = panel;
+        if !advanced_open.is_empty() {
+            break 'hud Some(format!(
+                "the Save/Load click advanced the dialogue (hit on button: {on_target}, new lines: {advanced_open:?})"
+            ));
+        }
+        if !on_target {
+            break 'hud Some(format!(
+                "the panel opened, but the hit test at the button center ({x}, {y}) resolved outside the Save/Load button"
+            ));
+        }
+        window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Escape));
+        let closed = wait_until(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+            DIALOG_FRAMES,
+            &mut toasts,
+        )
+        .await;
+        report["closed"] = json!(closed.is_ok());
+        crate::drive_frames(runtime, document, run_animation_frame, HUD_ADVANCE_FRAMES).await;
+        let advanced_closed = new_lines(runtime, &before);
+        report["new_lines_closed"] = json!(advanced_closed);
+        if closed.is_err() {
+            break 'hud Some(format!(
+                "Escape left the save/load panel mounted after {DIALOG_FRAMES} frames (dialogs: {})",
+                crate::evaluate_string(runtime, "__rovesStory.dialogs()")
+            ));
+        }
+        steps.push(json!({ "action": "escape_key", "result": "dialog unmounted" }));
+        if advanced_closed.is_empty() {
+            None
+        } else {
+            Some(format!(
+                "the dialogue advanced after closing the save/load panel: {advanced_closed:?}"
+            ))
+        }
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_hud_save_load",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        steps,
+    );
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_hud_save_load\",\"status\":\"{status}\",\"detail\":{report}}}"
     );
 }
