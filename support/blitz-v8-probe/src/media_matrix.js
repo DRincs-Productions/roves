@@ -226,6 +226,11 @@
     { id: "webp_lossy_1x1", mime: "image/webp", bytes: fromBase64("UklGRiIAAABXRUJQVlA4IBYAAAAwAQCdASoBAAEADsD+JaQAA3AAAAAA"), width: 1, height: 1, baseline: true },
     { id: "webp_lossless_1x1", mime: "image/webp", bytes: fromBase64("UklGRhoAAABXRUJQVlA4TA0AAAAvAAAAEAcQERGIiP4HAA=="), width: 1, height: 1, baseline: true },
     {
+      id: "avif_av1_8x8", mime: "image/avif", width: 8, height: 8, baseline: false,
+      bytes: fromBase64("AAAAIGZ0eXBhdmlmAAAAAGF2aWZtaWYxbWlhZk1BMUIAAAD5bWV0YQAAAAAAAAAvaGRscgAAAAAAAAAAcGljdAAAAAAAAAAAAAAAAFBpY3R1cmVIYW5kbGVyAAAAAA5waXRtAAAAAAABAAAAHmlsb2MAAAAARAAAAQABAAAAAQAAASEAAAAbAAAAKGlpbmYAAAAAAAEAAAAaaW5mZQIAAAAAAQAAYXYwMUNvbG9yAAAAAGppcHJwAAAAS2lwY28AAAAUaXNwZQAAAAAAAAAIAAAACAAAABBwaXhpAAAAAAMICAgAAAAMYXYxQ4EADAAAAAATY29scm5jbHgAAgACAAIAAAAAF2lwbWEAAAAAAAAAAQABBAECgwQAAAAjbWRhdAoFGAi/bAIyEheAAABIAAAADAZut5NU8oRv4A=="),
+      note: "8x8 AV1 still image encoded with ffmpeg 8.0.1; diagnostic until Roves parity is known",
+    },
+    {
       id: "webp_animated_container_1x1", mime: "image/webp", width: 1, height: 1,
       bytes: fromBase64("UklGRlIAAABXRUJQVlA4WAoAAAASAAAAAAAAAAAAQU5JTQYAAAD/////AABBTk1GJgAAAAAAAAAAAAAAAAAAAGQAAABWUDhMDQAAAC8AAAAQBxAREYiI/gcA"), baseline: true,
       note: "single frame: decode only, no animation check",
@@ -233,9 +238,7 @@
     { id: "svg_5x3", mime: "image/svg+xml", bytes: ascii(SVG), width: 5, height: 3, baseline: true, bitmapExpected: "rejected" },
     { id: "invalid_png_bytes", mime: "image/png", bytes: ascii("not an image"), width: 0, height: 0, invalid: true, baseline: true, bitmapExpected: "rejected" },
   ];
-  const OMITTED = [
-    { format: "image/avif", reason: "no small AVIF fixture could be authored and verified without an external encoder; not tested" },
-  ];
+  const OMITTED = [];
   const CAN_PLAY_TYPES = {
     audio: [
       "audio/wav", 'audio/wav; codecs="1"', "audio/mpeg", 'audio/ogg; codecs="vorbis"', 'audio/ogg; codecs="opus"',
