@@ -18,7 +18,7 @@
 //   - <audio>/<video>: element brand, play/pause/load presence, `src` support,
 //     canPlayType answers and, only where `src` exists, the WAV's
 //     metadata outcome plus muted compressed-audio play/pause/resume/end events;
-//     video playback remains untested without an authored video fixture. Web
+//     the authored VP8/WebM fixture checks metadata, frame, pause, seek and end. Web
 //     Audio decode support is never reported as HTML media playback.
 //
 // Output: `globalThis.__rovesMediaMatrix = { done, report, error }` and the
@@ -211,11 +211,38 @@
     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
     255, 255, 255, 255, 10, 20, 30, 128, 0, 0, 0, 0,
   );
+  function bmp24(width, height, rgba) {
+    const rowBytes = Math.ceil((width * 3) / 4) * 4;
+    const pixels = new Uint8Array(rowBytes * height);
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const src = (y * width + x) * 4;
+        const dst = (height - 1 - y) * rowBytes + x * 3;
+        pixels[dst] = rgba[src + 2];
+        pixels[dst + 1] = rgba[src + 1];
+        pixels[dst + 2] = rgba[src];
+      }
+    }
+    return concat([
+      ascii("BM"), le32(54 + pixels.length), le32(0), le32(54),
+      le32(40), le32(width), le32(height), le16(1), le16(24), le32(0),
+      le32(pixels.length), le32(2835), le32(2835), le32(0), le32(0), pixels,
+    ]);
+  }
+  function icoPng(pngBytes, width, height) {
+    return concat([
+      le16(0), le16(1), le16(1),
+      Uint8Array.of(width === 256 ? 0 : width, height === 256 ? 0 : height, 0, 0),
+      le16(1), le16(32), le32(pngBytes.length), le32(22), pngBytes,
+    ]);
+  }
   const PALETTE = [[255, 0, 0], [0, 0, 255], [0, 255, 0], [255, 255, 255]];
   const SVG = '<svg xmlns="http://www.w3.org/2000/svg" width="5" height="3"><rect width="5" height="3" fill="#00aa00"/></svg>';
   // 1x1 WebP detection vectors from Google's "WebP FAQ" (lossy VP8, lossless
   // VP8L, and a one-frame animated container); not media content.
   const IMAGE_FIXTURES = [
+    { id: "bmp_rgb24_2x2", mime: "image/bmp", bytes: bmp24(2, 2, PNG_PIXELS), width: 2, height: 2, baseline: true },
+    { id: "ico_png_3x2", mime: "image/x-icon", bytes: icoPng(png(3, 2, PNG_PIXELS), 3, 2), width: 3, height: 2, baseline: true },
     { id: "png_rgba_3x2", mime: "image/png", bytes: png(3, 2, PNG_PIXELS), width: 3, height: 2, baseline: true },
     { id: "jpeg_gray_16x8", mime: "image/jpeg", bytes: jpeg(), width: 16, height: 8, baseline: true },
     { id: "gif_static_3x2", mime: "image/gif", bytes: gif(3, 2, PALETTE, [{ indices: [0, 1, 2, 3, 2, 1] }]), width: 3, height: 2, baseline: true },
