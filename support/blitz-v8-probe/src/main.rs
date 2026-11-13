@@ -21,6 +21,8 @@ mod audio;
 mod frame_timings;
 mod game;
 mod net_policy;
+#[cfg(test)]
+mod paint_order;
 mod presentation;
 mod window;
 

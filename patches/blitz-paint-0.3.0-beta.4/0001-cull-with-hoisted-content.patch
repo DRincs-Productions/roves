@@ -1,0 +1,42 @@
+Cull a stacking-context root with the boxes hoisted to it (Roves; Blitz #1493).
+
+Base: crates.io blitz-paint 0.3.0-beta.4 (DioxusLabs/blitz
+92b11f1bd8ab7975411328b0406a95a09445b4e7, packages/blitz-paint).
+Applied in support/blitz-v8-probe/vendor/blitz-paint; see ROVES_PATCHES.md there.
+Paired with patches/blitz-dom-0.3.0-beta.4/0004-positioned-paint-layer-tree-order.patch.
+
+render_element culled a node when its own overflow and border box missed the clip
+rectangle, but a stacking-context root also paints the boxes hoisted to it, which its
+overflow need not contain; Node::hit_inner already tests them inside
+StackingContext::hoisted_content_bbox. The cull extent now includes that box, so paint
+and hit testing agree on which hoisted boxes exist.
+
+diff --git a/src/render.rs b/src/render.rs
+index 407fd1a..5478501 100644
+--- a/src/render.rs
++++ b/src/render.rs
+@@ -388,7 +388,23 @@ impl<'dom, 'a> BlitzDomPainter<'dom, 'a> {
+             x: -self.initial_x,
+             y: -self.initial_y,
+         }) * transform;
+-        let screen_bbox = screen_transform.transform_rect_bbox(overflow.union(border_box));
++        // Roves patch (Blitz #1493): a stacking-context root also paints the
++        // boxes hoisted to it, which its own overflow need not contain. Hit
++        // testing descends into them within `hoisted_content_bbox` (CSS px from
++        // the border box, like `overflow` in device px), so culling uses it too.
++        let mut paint_extent = overflow.union(border_box);
++        if let Some(sc) = node.stacking_context.as_deref()
++            && !sc.children.is_empty()
++        {
++            let hoisted = sc.hoisted_content_bbox(node.tree(), node.id, self.scale);
++            paint_extent = paint_extent.union(Rect::new(
++                hoisted.left as f64 * self.scale,
++                hoisted.top as f64 * self.scale,
++                hoisted.right as f64 * self.scale,
++                hoisted.bottom as f64 * self.scale,
++            ));
++        }
++        let screen_bbox = screen_transform.transform_rect_bbox(paint_extent);
+ 
+         // Cull elements that fall entirely outside the current clip rectangle. In addition to
+         // the viewport, `clip_rect` is narrowed by any ancestor scrollport (see below), so this

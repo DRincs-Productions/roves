@@ -1,0 +1,307 @@
+Paint and hit-test positioned z-index auto/0 boxes in tree order at their stacking
+context's step-8 layer (Roves; Blitz #1493).
+
+Base: crates.io blitz-dom 0.3.0-beta.4 (DioxusLabs/blitz
+92b11f1bd8ab7975411328b0406a95a09445b4e7, packages/blitz-dom), after 0001-0003.
+Applied in support/blitz-v8-probe/vendor/blitz-dom; see ROVES_PATCHES.md there.
+Paired with patches/blitz-paint-0.3.0-beta.4/0001-cull-with-hoisted-content.patch.
+
+Blitz painted a positioned z-index:auto box together with its whole subtree, so a
+later positioned box nested in it (or in a static box) stayed below an earlier
+`position: fixed; z-index: 0|auto` sibling hoisted to the root (CSS 2.1 Appendix E,
+step 8 paints all of them in tree order). Positioned boxes are now lifted to the
+enclosing stacking context's z-sorted list with z-index 0 and the list is sorted by
+(z-index, tree order); paint (blitz-paint draw_children) and hit testing
+(Node::hit_inner) already walk that list in matching opposite orders. Lifting stops at
+boxes that clip (overflow, contain: paint, CSS clip, replaced/text inputs), at inline
+roots, at sticky boxes and at relatively positioned flex/grid items.
+
+diff --git a/src/layout/paint_tree.rs b/src/layout/paint_tree.rs
+index 99875eae851..680fc8d45f8 100644
+--- a/src/layout/paint_tree.rs
++++ b/src/layout/paint_tree.rs
+@@ -116,13 +116,13 @@ pub struct StackingContext {
+ 
+ impl StackingContext {
+     /// Build a sorted stacking context from the hoisted entries collected for it.
+-    fn from_children(children: ThinVec<HoistedPaintChild>) -> Self {
++    fn from_children(children: ThinVec<HoistedPaintChild>, tree: &NodeTree) -> Self {
+         let mut sc = Self {
+             children,
+             negative_z_count: 0,
+             hoisted_content_bbox: Cell::new((0, Rect::ZERO)),
+         };
+-        sc.sort();
++        sc.sort(tree);
+         sc
+     }
+ 
+@@ -176,8 +176,16 @@ impl StackingContext {
+         area
+     }
+ 
+-    pub fn sort(&mut self) {
+-        self.children.sort_by_key(|c| c.z_index);
++    /// Sort by z-index, then tree order (CSS 2.1 Appendix E). Entries are
++    /// collected per subtree and per containing block, so collection order is
++    /// not tree order: a box hoisted to its containing block is attached after
++    /// the whole subtree of the layout child it descends from (Roves patch for
++    /// Blitz #1493).
++    pub fn sort(&mut self, tree: &NodeTree) {
++        if self.children.len() > 1 {
++            self.children
++                .sort_by_cached_key(|c| (c.z_index, tree_order_path(tree, c.node_id)));
++        }
+         self.negative_z_count = self.children.iter().take_while(|c| c.z_index < 0).count() as u32;
+     }
+ 
+@@ -214,16 +222,24 @@ impl BaseDocument {
+     /// own lists are still valid and the entries they contributed to the
+     /// enclosing stacking context are replayed from `Node::sc_contribution_cache`.
+     pub(crate) fn build_paint_tree(&mut self, root_id: NodeId) {
+-        self.build_paint_tree_impl(root_id, None);
++        self.build_paint_tree_impl(root_id, None, true);
+     }
+ 
+     /// `stacking_context` is the entry list of the nearest ancestor stacking
+     /// context, or `None` when `node_id` is itself a stacking-context root.
++    ///
++    /// `lift` (ignored for a stacking-context root) tells whether positioned
++    /// boxes of this subtree may join that stacking context's step-8 layer,
++    /// i.e. no box in between clips them (Roves patch for Blitz #1493, see
++    /// [`Self::lifts_into_positioned_layer`]).
+     fn build_paint_tree_impl(
+         &mut self,
+         node_id: NodeId,
+         stacking_context: Option<&mut ThinVec<HoistedPaintChild>>,
++        lift: bool,
+     ) {
++        let lift_children =
++            (stacking_context.is_none() || lift) && !self.blocks_positioned_lift(node_id);
+         {
+             let node = &self.nodes[node_id];
+             // `propagate_damage_flags` stores the union of a node's own and
+@@ -239,6 +255,7 @@ impl BaseDocument {
+             // this node was last built with.
+             let role_unchanged = node.stacking_context.is_some() == stacking_context.is_none();
+             let clean = role_unchanged
++                && node.paint_lifts_positioned.get() == lift_children
+                 && !node
+                     .damage()
+                     .unwrap_or(ALL_DAMAGE)
+@@ -326,20 +343,30 @@ impl BaseDocument {
+ 
+             for (index, &child_id) in children.iter().enumerate() {
+                 if owned_here(self, child_id) {
+-                    let is_sc_root = self.nodes[child_id].is_stacking_context_root(is_flex_or_grid);
++                    let child = &self.nodes[child_id];
++                    let is_sc_root = child.is_stacking_context_root(is_flex_or_grid);
++                    let z_index = child.z_index();
++                    // Positioned `z-index: auto`/`0` boxes join the enclosing
++                    // stacking context's step-8 layer, interleaved in tree
++                    // order with those of other subtrees (Blitz #1493).
++                    let lifted = lift_children
++                        && z_index == 0
++                        && Self::lifts_into_positioned_layer(child, is_flex_or_grid);
++                    let child_lift = lift_children && (lifted || !is_positioned(child));
+                     self.build_paint_tree_impl(
+                         child_id,
+                         match is_sc_root {
+                             true => None,
+                             false => Some(&mut entries),
+                         },
++                        child_lift,
+                     );
+ 
+-                    // Only stacking contexts with a non-zero z-index are lifted
+-                    // out of tree order into the enclosing stacking context's
+-                    // z-sorted list (CSS 2.1 Appendix E).
+-                    let z_index = self.nodes[child_id].z_index();
+-                    if is_sc_root && z_index != 0 {
++                    // Stacking contexts with a non-zero z-index are lifted out
++                    // of tree order into the enclosing stacking context's
++                    // z-sorted list (CSS 2.1 Appendix E), and so are lifted
++                    // positioned boxes (z-index 0, step 8).
++                    if (is_sc_root && z_index != 0) || lifted {
+                         entries.push(HoistedPaintChild::new(child_id, z_index))
+                     } else {
+                         paint_children.push(child_id);
+@@ -349,12 +376,22 @@ impl BaseDocument {
+                 while let Some(&(anchor, hoisted_id)) = hoisted_past_parent.get(next_hoisted)
+                     && anchor == index
+                 {
+-                    self.attach_hoisted_past_parent(hoisted_id, &mut paint_children, &mut entries);
++                    self.attach_hoisted_past_parent(
++                        hoisted_id,
++                        &mut paint_children,
++                        &mut entries,
++                        lift_children,
++                    );
+                     next_hoisted += 1;
+                 }
+             }
+             for &(_, hoisted_id) in &hoisted_past_parent[next_hoisted..] {
+-                self.attach_hoisted_past_parent(hoisted_id, &mut paint_children, &mut entries);
++                self.attach_hoisted_past_parent(
++                    hoisted_id,
++                    &mut paint_children,
++                    &mut entries,
++                    lift_children,
++                );
+             }
+ 
+             paint_children
+@@ -365,15 +402,67 @@ impl BaseDocument {
+             *node.layout_children.borrow_mut() = Some(children);
+         }
+ 
+-        let node = &mut self.nodes[node_id];
+         if let Some(stacking_context) = stacking_context {
++            let node = &mut self.nodes[node_id];
+             node.stacking_context = None;
+             stacking_context.extend(entries.iter().cloned());
+             *node.sc_contribution_cache.borrow_mut() = entries;
+         } else {
++            let sc = StackingContext::from_children(entries, &self.nodes);
++            let node = &mut self.nodes[node_id];
+             node.sc_contribution_cache.borrow_mut().clear();
+-            node.stacking_context = Some(Box::new(StackingContext::from_children(entries)));
++            node.stacking_context = Some(Box::new(sc));
++        }
++        self.nodes[node_id].paint_lifts_positioned.set(lift_children);
++    }
++
++    /// Whether `node` leaves its parent's paint list for the enclosing
++    /// stacking context's step-8 layer (positioned descendants with z-index
++    /// auto or 0, painted in tree order; CSS 2.1 Appendix E) when nothing in
++    /// between clips it. Roves patch for Blitz #1493.
++    ///
++    /// Sticky boxes and relatively positioned flex/grid items keep their
++    /// previous placement in the parent's list (sticky offsets, `order`), and
++    /// so do their subtrees.
++    fn lifts_into_positioned_layer(node: &Node, parent_is_flex_or_grid: bool) -> bool {
++        match node.primary_styles().map(|style| style.clone_position()) {
++            Some(Position::Absolute | Position::Fixed) => true,
++            Some(Position::Relative) => !parent_is_flex_or_grid,
++            _ => false,
++        }
++    }
++
++    /// Whether lifting positioned descendants of `node_id` past it would
++    /// change what clips them or how they are offset: it clips its overflow
++    /// (as `blitz-paint` decides), has `contain: paint` or a CSS `clip`, or
++    /// lays its children out inline.
++    fn blocks_positioned_lift(&self, node_id: NodeId) -> bool {
++        use style::values::computed::{Contain, Overflow};
++        use style::values::generics::ClipRectOrAuto;
++
++        let node = &self.nodes[node_id];
++        if node.flags.is_inline_root() {
++            return true;
++        }
++        if node.element_data().is_some_and(|element| {
++            element.raster_image_data().is_some()
++                || element.sub_doc_data().is_some()
++                || element.text_input_data().is_some()
++        }) {
++            return true;
+         }
++        let Some(style) = node.primary_styles() else {
++            return false;
++        };
++        let box_style = style.get_box();
++        let clips_overflow = !matches!(box_style.overflow_x, Overflow::Visible)
++            || !matches!(box_style.overflow_y, Overflow::Visible);
++        let is_root_element = self.try_root_element().map(|root| root.id) == Some(node_id);
++        let css_clip = matches!(box_style.position, Position::Absolute | Position::Fixed)
++            && matches!(style.get_effects().clip, ClipRectOrAuto::Rect(_));
++        (clips_overflow && !is_root_element)
++            || box_style.clone_contain().contains(Contain::PAINT)
++            || css_clip
+     }
+ 
+     /// The layout child of `node_id` whose subtree contains `id`, following
+@@ -399,17 +488,22 @@ impl BaseDocument {
+         child_id: NodeId,
+         paint_children: &mut ThinVec<NodeId>,
+         entries: &mut ThinVec<HoistedPaintChild>,
++        lift_children: bool,
+     ) {
++        let child = &self.nodes[child_id];
++        let z_index = child.z_index();
++        let lifted =
++            lift_children && z_index == 0 && Self::lifts_into_positioned_layer(child, false);
+         self.build_paint_tree_impl(
+             child_id,
+-            match self.nodes[child_id].is_stacking_context_root(false) {
++            match child.is_stacking_context_root(false) {
+                 true => None,
+                 false => Some(entries),
+             },
++            lifted,
+         );
+ 
+-        let z_index = self.nodes[child_id].z_index();
+-        if z_index != 0 {
++        if z_index != 0 || lifted {
+             entries.push(HoistedPaintChild::new(child_id, z_index));
+         } else {
+             paint_children.push(child_id);
+@@ -417,6 +511,33 @@ impl BaseDocument {
+     }
+ }
+ 
++/// Whether `node` is positioned (`position` other than `static`).
++fn is_positioned(node: &Node) -> bool {
++    node.primary_styles()
++        .is_some_and(|style| style.clone_position() != Position::Static)
++}
++
++/// Tree-order sort key of `id`: its index path from the root through DOM
++/// parents (`::before` first and `::after` last among an element's children).
++fn tree_order_path(tree: &NodeTree, id: NodeId) -> Vec<usize> {
++    let mut path = Vec::new();
++    let mut current = id;
++    while let Some(parent_id) = tree.get(current).and_then(|node| node.parent) {
++        let Some(parent) = tree.get(parent_id) else {
++            break;
++        };
++        let index = match parent.children.iter().position(|&child| child == current) {
++            Some(index) => index + 1,
++            None if parent.before() == Some(current) => 0,
++            None => usize::MAX,
++        };
++        path.push(index);
++        current = parent_id;
++    }
++    path.reverse();
++    path
++}
++
+ #[inline(always)]
+ fn position_to_order(pos: Position) -> i32 {
+     match pos {
+diff --git a/src/node/node.rs b/src/node/node.rs
+index 66190f49fa2..37561c5c683 100644
+--- a/src/node/node.rs
++++ b/src/node/node.rs
+@@ -119,6 +119,11 @@ pub struct Node {
+     /// stacking context on its last (non-skipped) paint-tree build. Replayed
+     /// when the subtree is skipped as clean. Empty for stacking-context roots.
+     pub sc_contribution_cache: RefCell<ThinVec<HoistedPaintChild>>,
++    /// Whether this node's lists were last built with its positioned
++    /// (`z-index: auto`/`0`) children lifted to the enclosing stacking
++    /// context's step-8 layer (Roves patch for Blitz #1493). A clean subtree is
++    /// only replayed when the value its ancestors now resolve is the same.
++    pub paint_lifts_positioned: Cell<bool>,
+ 
+     // Flags
+     pub flags: NodeFlags,
+@@ -416,6 +421,7 @@ impl Node {
+             paint_children: RefCell::new(None),
+             stacking_context: None,
+             sc_contribution_cache: RefCell::new(ThinVec::new()),
++            paint_lifts_positioned: Cell::new(false),
+ 
+             flags: NodeFlags::empty(),
+             data,

@@ -119,6 +119,11 @@ pub struct Node {
     /// stacking context on its last (non-skipped) paint-tree build. Replayed
     /// when the subtree is skipped as clean. Empty for stacking-context roots.
     pub sc_contribution_cache: RefCell<ThinVec<HoistedPaintChild>>,
+    /// Whether this node's lists were last built with its positioned
+    /// (`z-index: auto`/`0`) children lifted to the enclosing stacking
+    /// context's step-8 layer (Roves patch for Blitz #1493). A clean subtree is
+    /// only replayed when the value its ancestors now resolve is the same.
+    pub paint_lifts_positioned: Cell<bool>,
 
     // Flags
     pub flags: NodeFlags,
@@ -416,6 +421,7 @@ impl Node {
             paint_children: RefCell::new(None),
             stacking_context: None,
             sc_contribution_cache: RefCell::new(ThinVec::new()),
+            paint_lifts_positioned: Cell::new(false),
 
             flags: NodeFlags::empty(),
             data,

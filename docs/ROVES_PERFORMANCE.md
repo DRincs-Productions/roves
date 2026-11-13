@@ -207,6 +207,29 @@ Intervento pianificato. Presentare nella stessa finestra la texture di Pixi e la
 
 Provare il template originale con sfondo Pixi animato e UI ferma, poi con testo a comparsa e transizioni Motion. Misurare P95/P99 dei tempi dei frame, frame mancati e byte caricati per frame. Verificare che la presentazione non richieda readback del canvas Pixi. Il beneficio sulla fluidità resta da misurare.
 
+### Diagnostica misurata della finestra Blitz, 13 novembre 2026
+
+Sul template aggiornato `DRincs-Productions/visual-novel-template` main
+(`8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`), Windows con GTX 1050/Vulkan, viewport e
+frame raster 640×360, ho confrontato 1.800 frame con la stessa build locale, cache raster
+attiva e disattivata. Il probe misura l'intervallo tra frame, il lavoro CPU di `frame_step`
+e il tempo wall-clock CPU di `GpuWindowRenderer::render` (incluso eventuale blocco di present);
+non misura il completamento GPU o la visualizzazione del frame.
+
+| Modalità | Intervallo frame P50 / P95 / P99 | `cpu_frame_step` P50 / P95 / P99 | `cpu_render_present` P50 / P95 / P99 | Upload raster |
+| --- | ---: | ---: | ---: | ---: |
+| Cache attiva | 125,660 / 127,980 / 132,408 ms | 1,446 / 3,578 / 4,829 ms | 123,922 / 126,132 / 129,819 ms | 1.511 upload, 2.103 hit, 1.393 GB |
+| Cache disattivata | 182,020 / 187,624 / 195,374 ms | 1,392 / 1,992 / 4,616 ms | 180,290 / 185,585 / 193,053 ms | 3.592 upload, 0 hit, 3.310 GB |
+
+La cache riduce P95 di `cpu_render_present` di circa il 32% e i byte caricati di circa il
+58%, senza frame saltati nei due campioni. L'intervallo resta però attorno a 126 ms con
+cache, circa 8 frame/s: resta molto oltre il budget di 16,67 ms per 60 Hz.
+Il costo osservato è nel percorso di paint/raster/present, non nel frame step JS/V8; il dato
+`cpu_render_present` include la chiamata di present e non separa raster CPU, GPU e attesa VSync.
+Prove e log: `%TEMP%\roves-window-template-cache-on.log` e
+`%TEMP%\roves-window-template-cache-off.log`. Questa misura è utile per l'A/B locale, non
+è ancora un confronto Chrome o una misura del frame visibile.
+
 Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{headed_window,event_loop,gui,performance}.rs` e `components/roves-js/src/deno_impl.rs`. **Non sono miglioramenti già dimostrati.** Implementare una modifica alla volta, misurare contro Chrome e confrontare il bundle prima/dopo sulla stessa macchina. Non cambiare la pipeline di produzione sulla sola base di benchmark sintetici.
 
 ### P0 — Frame pacing, redraw e sincronizzazione con il display

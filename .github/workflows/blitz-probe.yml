@@ -275,9 +275,12 @@ jobs:
       # (game_settings_popup), and after the two states types a name into the
       # story's input dialog (game_name_input), then clicks the HUD Save/Load
       # button at its center (game_hud_save_load: the save/load panel must open
-      # and the dialogue must not advance); each is annotated separately
-      # as a warning when not passed and does not change this step's result,
-      # which stays the two-dialogue check.
+      # and the dialogue must not advance). game_settings_popup, game_name_input
+      # and game_quick_save are annotated as warnings when not passed and do not
+      # change this step's result. The step stays diagnostic: continue-on-error
+      # masks its failure, so the job result does not block on it. The
+      # game_hud_save_load result it logs is enforced by the separate required
+      # regression gate step right after it, which fails the job.
       - name: template story Start and first two dialogue states (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -302,7 +305,7 @@ jobs:
           [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
           name_input_events=$(grep -m 1 '^ROVES_PROBE_NAME_INPUT_EVENTS ' "$log")
           [ -n "$name_input_events" ] && echo "::notice::$name_input_events"
-          for check in game_settings_popup game_name_input game_hud_save_load game_quick_save; do
+          for check in game_settings_popup game_name_input game_quick_save; do
             line=$(grep -F "\"check\":\"$check\"" "$log" | head -n 1)
             if [ -z "$line" ]; then
               echo "::warning::$check: no result line"
@@ -329,6 +332,32 @@ jobs:
             exit 1
           fi
           [ "$status" -eq 0 ] || { echo "::error::story states reached, but the probe exited with $status"; exit 1; }
+      # Required regression gate (Blitz paint-order fix: a positioned HUD button
+      # must not be hit-tested under later siblings). It only reads the log the
+      # diagnostic story step above wrote; it never reruns the game. No
+      # continue-on-error: a missing log, a missing result line, more than one
+      # result line or a non-passed status fails the job. !cancelled(): it runs
+      # even when earlier steps failed, but not after workflow cancellation.
+      - name: required regression gate - game_hud_save_load passed
+        if: ${{ !cancelled() }}
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/blitz-story.log"
+          if [ ! -f "$log" ]; then
+            echo "::error::game_hud_save_load gate: story log $log is absent"
+            exit 1
+          fi
+          lines=$(grep -F 'ROVES_PROBE_RESULT {"check":"game_hud_save_load",' "$log" || true)
+          count=$(printf '%s' "$lines" | grep -c . || true)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::game_hud_save_load gate: expected exactly one result line, found $count"
+            exit 1
+          fi
+          if ! printf '%s' "$lines" | grep -Fq 'ROVES_PROBE_RESULT {"check":"game_hud_save_load","status":"passed"'; then
+            echo "::error::game_hud_save_load gate: not passed $(printf '%s' "$lines" | cut -c1-900)"
+            exit 1
+          fi
+          echo "::notice::game_hud_save_load passed $(printf '%s' "$lines" | cut -c1-700)"
       - name: template Continue after restart (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true

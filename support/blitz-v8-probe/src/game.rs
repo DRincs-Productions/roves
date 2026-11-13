@@ -647,14 +647,21 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       }
       return "";
     },
-    // Dialogue lines (see dialogueLines) outside mounted dialogs.
+    // Non-control text outside mounted dialogs and tooltips. Unlike
+    // dialogueLines it keeps short single-word lines (the PixiVN template's
+    // "...Zorvaq." after the name input, plus its speaker label), requiring
+    // only two letters so one-letter typewriter fragments are skipped; text
+    // equal to a button label (a hover tooltip) is ignored too.
     narration(menu) {
       const dialogs = dialogElements();
+      const labels = buttons().map(label);
       const lines = [];
       if (document.body) {
         walk(document.body, (text, element, inButton) => {
-          if (!inButton && text.length >= 8 && text.split(" ").length >= 2 && !menu.includes(text) && !lines.includes(text) &&
-            !(element && dialogs.some((dialog) => dialog.contains(element)))) lines.push(text);
+          if (inButton || (text.match(/\p{L}/gu) ?? []).length < 2 || menu.includes(text) || lines.includes(text) ||
+            labels.includes(text)) return;
+          if (element && (element.closest("[role=tooltip]") || dialogs.some((dialog) => dialog.contains(element)))) return;
+          lines.push(text);
         }, () => {});
       }
       return JSON.stringify(lines);
