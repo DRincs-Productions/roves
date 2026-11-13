@@ -2973,6 +2973,7 @@
     setIsTrusted,
     setTimeout: timers.setTimeout,
     reportException,
+    now: () => performance.now(),
   });
   // IndexedDB subset (src/indexeddb.js) persisted through deno_webstorage's
   // localStorage; V8 structured serialization stores the values.
@@ -3428,6 +3429,11 @@
     // Frame-pacing statistics (game reports).
     gpuPacingStats() {
       return JSON.stringify(gpuPacingReport());
+    },
+    // Sound-file diagnostics (decode requests, buffers ready, decode errors,
+    // decoded-buffer source starts) for the game reports.
+    webAudioTrace() {
+      return webAudio.audioTraceReport();
     },
     // Fixture-only regression of the pacing logic, driven tick by tick from
     // Rust (src/main.rs, stage gpu_frame_pacing). No GPU is involved or

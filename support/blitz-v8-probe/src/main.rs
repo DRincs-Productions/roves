@@ -2830,6 +2830,7 @@ fn main() {
             prepare_presentation,
             gpu_pacing_test,
             gpu_pacing_stats,
+            web_audio_trace,
             css_animations_debug,
         ) = {
             deno_core::scope!(scope, runtime);
@@ -2850,6 +2851,7 @@ fn main() {
                 function("preparePresentation"),
                 function("gpuPacingTest"),
                 function("gpuPacingStats"),
+                function("webAudioTrace"),
                 function("cssAnimationsDebug"),
             )
         };
@@ -2870,6 +2872,7 @@ fn main() {
                 &document_loaded,
                 &dispatcher,
                 &gpu_pacing_stats,
+                &web_audio_trace,
                 frame_count().max(120),
             )
             .await;
@@ -3235,6 +3238,43 @@ fn main() {
         );
         println!(
             "ROVES_PROBE_RESULT {{\"check\":\"web_audio_tone_15_1_22\",\"status\":\"passed\",\"frames\":{tone_frames}}}"
+        );
+        // The template's sound-file path (PixiJS parser choice, Tone load,
+        // delayed decode, start order, invalid bytes) checked by the scenario,
+        // and the bridge's own trace: every source playing a decoded buffer
+        // started after that buffer was ready.
+        let audio_trace = call_hook(&mut runtime, &web_audio_trace, &[]);
+        let trace: deno_core::serde_json::Value =
+            deno_core::serde_json::from_str(&audio_trace).expect("web audio trace is JSON");
+        let events = trace["events"].as_array().expect("trace events");
+        let ready_at = |decode: &deno_core::serde_json::Value| {
+            events.iter().position(|event| {
+                event["event"] == "buffer_ready" && &event["decode"] == decode
+            })
+        };
+        let mut starts = 0;
+        for (index, event) in events.iter().enumerate() {
+            if event["event"] == "source_start" {
+                starts += 1;
+                assert!(
+                    ready_at(&event["decode"]).is_some_and(|ready| ready < index),
+                    "a decoded-buffer source started before its buffer was ready: {audio_trace}"
+                );
+            }
+        }
+        assert!(
+            starts >= 3
+                && trace["decode_errors"].as_u64() >= Some(2)
+                && trace["dropped_events"] == 0,
+            "unexpected web audio trace: {audio_trace}"
+        );
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"web_audio_template_sound_files\",\"status\":\"passed\",\"scenario\":{},\"bridge\":{{\"decode_requests\":{},\"decoded\":{},\"decode_errors\":{},\"decoded_source_starts\":{}}}}}",
+            evaluate_string(&mut runtime, "JSON.stringify(globalThis.__rovesToneScenario.audio)"),
+            trace["decode_requests"],
+            trace["decoded"],
+            trace["decode_errors"],
+            trace["decoded_source_starts"],
         );
 
         resolve_layout(&document);

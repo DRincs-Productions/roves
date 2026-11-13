@@ -2,6 +2,9 @@
 // visual-novel-template) on the probe's Web Audio: src/web_audio.js over
 // web-audio-api 1.7.0. The frame loop drives it; src/main.rs reads the result.
 import * as Tone from "tone";
+// PixiJS 8.19.0, as in visual-novel-template: only its Assets loader is used,
+// to check the parser it selects for the template's `.wav` assets.
+import { Assets } from "pixi.js";
 
 const result = { status: "running" };
 globalThis.__rovesToneScenario = result;
@@ -54,6 +57,134 @@ function pcm16Wav(samples, sampleRate) {
   view.setUint32(40, samples.length * 2, true);
   samples.forEach((sample, index) => view.setInt16(44 + index * 2, sample, true));
   return bytes;
+}
+// A 440 Hz tone at half scale, like the template's 16-bit mono 44.1 kHz files.
+function toneWav(frames, sampleRate) {
+  const samples = Array.from({ length: frames }, (_, index) => Math.round(16384 * Math.sin((2 * Math.PI * 440 * index) / sampleRate)));
+  return pcm16Wav(samples, sampleRate);
+}
+const blobUrl = (bytes) => URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+function peak(buffer) {
+  let max = 0;
+  for (let channel = 0; channel < buffer.numberOfChannels; channel++) {
+    for (const sample of buffer.getChannelData(channel)) max = Math.max(max, Math.abs(sample));
+  }
+  return max;
+}
+
+// The template's sound files (visual-novel-template on Pixi'VN 1.9.8). Pixi'VN's
+// sound.backgroundLoadBundle first hands the bundle to PixiJS Assets, which has
+// no audio load parser (PixiJS 8.19 ships none and neither Pixi'VN nor the
+// template registers one): the `.wav` entries resolve to null with the "don't
+// know how to parse it" warning, in any browser and whatever canPlayType
+// answers. Pixi'VN then loads each alias itself with Tone's
+// ToneAudioBuffer.load (fetch + decodeAudioData), which never consults
+// canPlayType, and sound.play awaits that load before Tone.Player.start.
+// `order` records the steps; src/main.rs also checks the bridge's own trace.
+async function templateSoundFiles(context, result) {
+  const order = [];
+  result.audio = { order };
+
+  // 1. PixiJS parser choice, with the probe's canPlayType ("" for every type,
+  // since no media element can play) and with one claiming "probably".
+  const media = HTMLMediaElement.prototype;
+  const canPlayType = media.canPlayType;
+  const realWarn = console.warn;
+  const warnings = [];
+  const parsers = {};
+  try {
+    console.warn = (...args) => warnings.push(args.join(" "));
+    for (const answer of ["", "probably"]) {
+      media.canPlayType = function () {
+        return answer;
+      };
+      const url = `https://roves.invalid/audio/canplay-${answer || "empty"}.wav`;
+      const parser = Assets.loader.parsers.find((candidate) => candidate.load && candidate.test?.(url, { src: url }, Assets.loader));
+      const loaded = await Assets.loader.load(url);
+      check(loaded === null, `Pixi loaded ${url} as ${loaded}`);
+      check(warnings.some((warning) => warning.includes(url) && warning.includes("don't know how to parse it")), `no Pixi warning for ${url}`);
+      parsers[answer || "empty"] = parser?.name ?? null;
+      order.push(`pixi_parser:${answer || "empty"}:${parser?.name ?? "none"}`);
+    }
+  } finally {
+    media.canPlayType = canPlayType;
+    console.warn = realWarn;
+  }
+  check(parsers.empty === null && parsers.probably === null, `Pixi chose an audio parser: ${JSON.stringify(parsers)}`);
+  // Tone's own capability check reports the truth (no playable media element);
+  // the load path below does not depend on it.
+  check(Tone.ToneAudioBuffer.supportsType("wav") === false, "ToneAudioBuffer.supportsType must reflect canPlayType");
+
+  // 2. Decoding completes later, from the frame loop, never synchronously or
+  // within the same microtask checkpoint.
+  const native = new AudioContext();
+  let settled = false;
+  const delayed = native.decodeAudioData(toneWav(441, 44100)).finally(() => {
+    settled = true;
+  });
+  for (let turn = 0; turn < 8; turn++) await Promise.resolve();
+  check(!settled, "decodeAudioData settled before a frame dispatched the decoder result");
+  order.push("delayed_decode:pending");
+  check(peak(await delayed) > 0.4, "the delayed decode returned silence");
+  order.push("delayed_decode:ready");
+  await native.close();
+
+  // 3. Pixi'VN's path for the two template files: both loads start (the
+  // background bundle load), then sound.play waits for its buffer and starts.
+  const sfxUrl = blobUrl(toneWav(4410, 44100));
+  const bgmUrl = blobUrl(toneWav(44100, 44100));
+  const load = (name, url) => {
+    order.push(`request:${name}`);
+    return Tone.ToneAudioBuffer.load(url).then((buffer) => {
+      order.push(`buffer_ready:${name}`);
+      return buffer;
+    });
+  };
+  // Before its buffer is ready a Player cannot start: this is the Tone error
+  // Pixi'VN surfaces when a load failed and left an empty buffer.
+  const early = new Tone.Player(new Tone.ToneAudioBuffer()).toDestination();
+  let earlyError = null;
+  try {
+    early.start();
+  } catch (error) {
+    earlyError = error;
+  }
+  check(String(earlyError?.message).includes("buffer is either not set or not loaded"), `an unloaded Player started: ${earlyError}`);
+  // Not disposed: Tone recorded the failed start in its state timeline, and
+  // dispose() would stop a source that never existed. It holds no buffer.
+  early.disconnect();
+  const [sfx, bgm] = await Promise.all([load("sfx", sfxUrl), load("bgm", bgmUrl)]);
+  URL.revokeObjectURL(sfxUrl);
+  URL.revokeObjectURL(bgmUrl);
+  for (const [name, buffer, seconds] of [["sfx", sfx, 0.1], ["bgm", bgm, 1]]) {
+    check(buffer instanceof AudioBuffer && buffer.sampleRate === context.sampleRate, `${name} decoded at ${buffer?.sampleRate} Hz`);
+    check(Math.abs(buffer.duration - seconds) < 0.002, `${name} duration ${buffer.duration} s, expected ${seconds}`);
+    const level = peak(buffer);
+    check(level > 0.4 && level < 0.6, `${name} peak ${level}, expected about 0.5`);
+    result.audio[name] = { channels: buffer.numberOfChannels, frames: buffer.length, rate: buffer.sampleRate, peak: Math.round(level * 1000) / 1000 };
+  }
+  const player = new Tone.Player(new Tone.ToneAudioBuffer(sfx)).toDestination();
+  check(player.loaded, "a Player on a decoded buffer must be loaded");
+  const stopped = new Promise((resolve) => {
+    player.onstop = resolve;
+  });
+  player.start();
+  order.push("start:sfx");
+  await stopped;
+  order.push("stop:sfx");
+  player.dispose();
+
+  // 4. Bytes that are not audio: the load rejects (Pixi'VN then warns and keeps
+  // an empty buffer); nothing is decoded to silence.
+  const badUrl = blobUrl(new Uint8Array(64).fill(7));
+  await rejection(Tone.ToneAudioBuffer.load(badUrl), "EncodingError", "loading bytes that are not audio");
+  URL.revokeObjectURL(badUrl);
+  order.push("invalid:rejected");
+
+  const index = (step) => order.indexOf(step);
+  for (const name of ["sfx", "bgm"]) check(index(`request:${name}`) < index(`buffer_ready:${name}`), `${name} ready before its request`);
+  check(index("request:bgm") < index("buffer_ready:sfx"), "both loads must be requested before either completes");
+  check(index("buffer_ready:sfx") < index("start:sfx") && index("start:sfx") < index("stop:sfx"), `start order ${order}`);
 }
 
 (async () => {
@@ -247,6 +378,8 @@ function pcm16Wav(samples, sampleRate) {
   tonePlayer.start();
   await waitFor(() => toneStopped, "Tone.Player to stop at the end of its buffer");
   tonePlayer.dispose();
+
+  await templateSoundFiles(context, result);
 
   result.status = "passed";
 })().catch((error) => {

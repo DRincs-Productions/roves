@@ -18,7 +18,7 @@
 // and AudioWorklet (see TODO.md); those globals are absent rather than faked.
 globalThis.__rovesCreateWebAudio = (dependencies) => {
   "use strict";
-  const { ops, webidl, EventTarget, Event, DOMException, setIsTrusted, setTimeout, reportException } = dependencies;
+  const { ops, webidl, EventTarget, Event, DOMException, setIsTrusted, setTimeout, reportException, now } = dependencies;
 
   const INTERNAL = Symbol("internal");
   const NODE_GAIN = 0;
@@ -35,6 +35,21 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
   const LISTENER_PARAMS = ["positionX", "positionY", "positionZ", "forwardX", "forwardY", "forwardZ", "upX", "upY", "upZ"];
   const DOM_ERRORS = ["IndexSizeError", "InvalidStateError", "InvalidAccessError", "NotSupportedError"];
   let nextId = 1;
+
+  // Compact sound-file diagnostics for the probe reports (read by the embedder
+  // through the bootstrap hooks, never exposed to games): counters plus the
+  // first TRACE_LIMIT events of decodeAudioData requests, their settlement
+  // (buffer ready or error) and buffer-source starts, in the order they
+  // happened. Nothing is recorded per frame.
+  const TRACE_LIMIT = 48;
+  const audioTrace = { decode_requests: 0, decoded: 0, decode_errors: 0, decoded_source_starts: 0, dropped_events: 0, events: [] };
+  function trace(event) {
+    if (audioTrace.events.length >= TRACE_LIMIT) {
+      audioTrace.dropped_events++;
+      return;
+    }
+    audioTrace.events.push({ ...event, ms: Math.round(now() * 10) / 10 });
+  }
 
   const illegalConstructor = () => {
     throw new TypeError("Illegal constructor");
@@ -538,10 +553,11 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     record.channels.forEach((channel, index) => backend(() => ops.op_audio_buffer_copy_to(handle, index, 0, bytesOf(channel))));
     return handle;
   }
-  function wrapDecodedBuffer(handle) {
+  function wrapDecodedBuffer(handle, decodeId) {
     const buffer = Object.create(AudioBuffer.prototype);
     buffers.set(buffer, {
       handle,
+      decodeId,
       channels: null,
       numberOfChannels: ops.op_audio_buffer_channels(handle),
       length: ops.op_audio_buffer_length(handle),
@@ -700,6 +716,13 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
         acquireBuffer(this, state);
         ops.op_audio_buffer_source_start(record.handle, time, from, length);
       });
+      // Only sources playing a decoded file are traced (Tone also starts
+      // buffer sources on JS-built buffers internally).
+      const decodeId = state.buffer === null ? undefined : buffers.get(state.buffer).decodeId;
+      if (decodeId !== undefined) {
+        audioTrace.decoded_source_starts++;
+        trace({ event: "source_start", decode: decodeId, when: time });
+      }
     }
   }
 
@@ -831,6 +854,8 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
         const bytes = new Uint8Array(arrayBufferTransfer.call(audioData));
         backend(() => ops.op_audio_context_decode(handle, bytes, id));
         pendingDecodes.set(id, { resolve, reject, onSuccess, onError });
+        audioTrace.decode_requests++;
+        trace({ event: "decode_request", decode: id, bytes: bytes.byteLength });
       });
     }
   }
@@ -850,14 +875,19 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
     pendingDecodes.delete(id);
     let buffer;
     try {
-      buffer = wrapDecodedBuffer(ops.op_audio_take_decoded());
+      buffer = wrapDecodedBuffer(ops.op_audio_take_decoded(), id);
     } catch (cause) {
+      const message = String(cause?.message ?? cause);
+      audioTrace.decode_errors++;
+      trace({ event: "decode_error", decode: id, message: message.slice(0, 120) });
       if (pending === undefined) return;
-      const error = domError("EncodingError", `Unable to decode audio data: ${String(cause?.message ?? cause)}`);
+      const error = domError("EncodingError", `Unable to decode audio data: ${message}`);
       pending.reject(error);
       if (pending.onError !== null) invokeCallback(pending.onError, error);
       return;
     }
+    audioTrace.decoded++;
+    trace({ event: "buffer_ready", decode: id, channels: buffer.numberOfChannels, frames: buffer.length, rate: buffer.sampleRate });
     if (pending === undefined) return;
     pending.resolve(buffer);
     if (pending.onSuccess !== null) invokeCallback(pending.onSuccess, buffer);
@@ -945,5 +975,9 @@ globalThis.__rovesCreateWebAudio = (dependencies) => {
       AudioBufferSourceNode,
     },
     dispatchPendingEvents,
+    // Snapshot of the sound-file diagnostics above, as JSON.
+    audioTraceReport() {
+      return JSON.stringify(audioTrace);
+    },
   };
 };

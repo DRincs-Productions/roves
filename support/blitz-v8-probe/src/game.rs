@@ -268,6 +268,7 @@ pub async fn run(
     document_loaded: &v8::Global<v8::Function>,
     dispatcher: &v8::Global<v8::Function>,
     gpu_pacing_stats: &v8::Global<v8::Function>,
+    web_audio_trace: &v8::Global<v8::Function>,
     frames: u32,
 ) {
     runtime
@@ -405,6 +406,13 @@ addEventListener("unhandledrejection", (event) => {
     } else if std::env::args().any(|arg| arg == "--story-restore") {
         restore_story(runtime, document, run_animation_frame, dispatcher).await;
     }
+    // Sound files over the whole run (page and story): decode requests, buffers
+    // ready or decode errors, and starts of sources playing a decoded buffer, in
+    // order. Informational, printed once.
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_audio\",\"status\":\"ran\",\"audio\":{}}}",
+        crate::call_hook(runtime, web_audio_trace, &[])
+    );
 }
 
 /// Upper bound, in frames, for each story state to appear and settle.
@@ -1747,11 +1755,14 @@ async fn name_input(
             "JSON.stringify(__rovesStory.nameInputEvents ?? [])",
         );
         println!("ROVES_PROBE_NAME_INPUT_EVENTS {input_events}");
+        // Accepted once no dialog is still marked open: the template may keep
+        // the closed dialog mounted (`data-closed`), so unmounting is not required.
+        const NAME_DIALOG_CLOSED: &str = "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) ? 'closed' : ''";
         let mut closed = wait_until(
             runtime,
             document,
             run_animation_frame,
-            "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+            NAME_DIALOG_CLOSED,
             90,
             &mut toasts,
         )
@@ -1774,7 +1785,7 @@ async fn name_input(
                 runtime,
                 document,
                 run_animation_frame,
-                "__rovesStory.dialogs() === '[]' ? 'closed' : ''",
+                NAME_DIALOG_CLOSED,
                 DIALOG_FRAMES,
                 &mut toasts,
             )
@@ -1782,11 +1793,11 @@ async fn name_input(
         }
         match closed {
             Ok((_, frames)) => {
-                steps.push(json!({ "result": "input dialog unmounted", "frames": frames }))
+                steps.push(json!({ "result": "input dialog closed", "frames": frames }))
             },
             Err(_) => {
                 break 'name Some(format!(
-                    "Confirm left the input dialog mounted after {DIALOG_FRAMES} frames (dialogs: {})",
+                    "Confirm left the input dialog open after {DIALOG_FRAMES} frames (dialogs: {})",
                     crate::evaluate_string(runtime, "__rovesStory.dialogs()")
                 ));
             },

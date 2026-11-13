@@ -230,6 +230,192 @@ Prove e log: `%TEMP%\roves-window-template-cache-on.log` e
 `%TEMP%\roves-window-template-cache-off.log`. Questa misura è utile per l'A/B locale, non
 è ancora un confronto Chrome o una misura del frame visibile.
 
+#### Follow-up sul template originale e casi minimi, 13 novembre 2026
+
+Ripetizione su Windows con il binario normale dell'artifact CI associato a Roves
+`83c7f227219`, il template `main` `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, GTX 1050
+(driver 581.63), Vulkan e viewport 640×360. Le finestre `--window` si sono chiuse tramite
+`--window-frames`; non ho registrato né verificato in modo indipendente il focus/occlusione
+della finestra. Queste sono misure diagnostiche della chiamata di render, non certificano
+la fluidità percepita né il frame effettivamente mostrato.
+
+| Caso Roves | Frame presentati | `cpu_render_present` P50 / P95 / P99 | Cache raster | CPU processo / picco RAM |
+| --- | ---: | ---: | --- | ---: |
+| Menu template, cache attiva, run lungo | 937 | 124,274 / 127,753 / 133,103 ms | 611 upload, 1.263 hit, 563 MB | 98,59 s CPU in 92,5 s; 283 MB |
+| Menu template, cache disattivata | 298 | 181,349 / 186,180 / 190,709 ms | 596 upload, 0 hit, 549 MB | 62,69 s CPU in 58,5 s; 279 MB |
+| DOM sintetico statico, un segmento | 300 | 1,015 / 1,577 / 1,802 ms | 1 upload, 299 hit | 1,78 s CPU in ~9,7 s; 175 MB |
+| DOM sintetico con piccolo `transform` CSS continuo | 306 | 32,255 / 36,730 / 42,686 ms | 196 upload, 110 hit, 181 MB | 8,14 s CPU in ~12,8 s; 177 MB |
+
+Nel run lungo del template `cpu_frame_step` ha P50/P95/P99 1,565/7,771/11,854 ms,
+mentre `frame_step_interval` ha 126,426/130,106/139,574 ms: la maggior parte del tempo è
+nel render/present, non nel tick JS/V8. Il run del menu senza cache conferma che la cache
+aiuta ma non basta. Il caso statico è vicino a 60 Hz; una trasformazione CSS che cambia la
+scena scende a circa 30 Hz. Questo rende plausibile che le invalidazioni dei segmenti
+costringano Vello CPU a rasterizzare l'intera superficie 640×360 e poi caricare i pixel,
+ma `cpu_render_present` include anche composizione e `surface_present`: servono tempi per
+fase prima di attribuire tutta la pausa al raster.
+
+Strumentazione aggiunta (non ancora misurata): con `ROVES_PROBE_FRAME_TIMINGS=1` e renderer
+GPU il record JSON finale contiene anche `render_phases`, serie bounded per frame di
+`cpu_scene_paint`, `cpu_split`, `cpu_surface_acquire`, `cpu_cache_check`, `cpu_raster`,
+`cpu_texture_upload`, `cpu_compose_segments`, `cpu_encode_submit` e `cpu_present`, e
+`raster_cache_misses`, conteggi
+per motivo (`cache_disabled`, `not_reusable`, `first_use`, `content_changed`,
+`after_upload_error`, `previous_not_cached`, `after_resize`, `after_discard`) che sui frame
+presentati sommano a `raster_uploads`. Sono tempi wall-clock CPU: una fase compare solo nei
+frame che la raggiungono, `cpu_surface_acquire` e `cpu_present` possono includere attese
+VSync/swapchain, `cpu_texture_upload` è solo la copia lato CPU, `cpu_split` copre solo
+pruning e `split_scene` prima dell'acquisizione della surface, mentre `cpu_compose_segments`
+misura il ciclo di `GpuCompositor::compose` che trasforma i segmenti in layer e recupera le
+canvas texture (inclusa la creazione delle texture raster al resize), al netto di
+`cpu_cache_check`/`cpu_raster`/`cpu_texture_upload` annidati, che restano nelle proprie
+serie. Il resto di `cpu_render_present` (operazioni fuori dalle fasi, contabilità) non è
+attribuito. Senza la
+variabile non vengono presi timestamp né allocati campioni.
+
+I run non sono però ancora stabili: una ripetizione breve successiva sul menu, 150 frame,
+ha dato P50/P95/P99 di `cpu_render_present` pari a 11,015/11,774/14,523 ms, con 324 hit su
+326 segmenti e solo 2 upload. La differenza rispetto al run lungo indica che stato/tempo
+della scena o condizioni di finestra cambiano il costo; non va scelta la misura veloce o
+quella lenta come unica baseline. Ripetere a freddo e a caldo, con finestra foreground,
+stesso storage, input registrato e log per frame dei segmenti modificati.
+
+Riferimento in Chrome 157 sul bundle del template: campione rAF di 15 secondi sul menu
+60,1 FPS (P50/P95/P99 16,7/16,9/17,1 ms) e sul primo dialogo 59,2 FPS (18,0/18,2 ms; un
+intervallo oltre 33,3 ms; nessun long task nel campione). È un confronto indicativo, non
+perfettamente appaiato: il canvas Pixi in Chrome aveva bitmap 1920×1080 anche dopo aver
+impostato il viewport CSS a 640×360/DPR 1. Non è ancora stato misurato il percorso di più
+dialoghi in una finestra Roves.
+
+Log Roves in `target/`: `perf-menu-window-20261113-1723.stdout.log`,
+`perf-menu-no-cache-20261113-1730.stdout.log`, `perf-static-dom-20261113-1740.stdout.log`,
+`perf-css-animation-20261113-1742.stdout.log` e
+`perf-template-gpu-process-20261113-1745.stdout.log`. Il campione GPU per processo è durato
+solo cinque letture e non è conclusivo; le medie globali di `nvidia-smi` non isolano Roves.
+Prossimo passo: la telemetria per fase (scena, split, acquisizione surface, controllo cache e
+miss per motivo, raster, upload texture, composizione, encode/submit, present) è ora aggiunta;
+eseguire tre misure alternate in finestra reale (template fermo, dialoghi/testo in movimento,
+casi semplici) e attribuire il collo di bottiglia dai nuovi campi. Misure non ancora eseguite.
+
+#### Run esplorativo per fase, storia JITless, 13 novembre 2026
+
+Run **esplorativo**, distinto dalle tre misure release alternate richieste sopra, che restano
+da eseguire. Un solo campione locale con build **debug** del probe e `ROVES_PROBE_JITLESS=1`:
+non è una misura di prestazioni release né una baseline. Roves `83c7f227219` con modifiche
+locali non committate, template `dist` da `visual-novel-template` main
+`8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9` (non modificato), Windows GTX 1050/Vulkan,
+viewport 640×360, `ROVES_PROBE_FRAME_TIMINGS=1`, `--story --window --window-frames 300`.
+Il test storia/prompt/Save-Load è passato; durante la finestra di 300 frame non è stato
+inviato input.
+
+| Serie (300 frame presentati) | P50 / P95 / P99 |
+| --- | ---: |
+| `cpu_render_present` | 190,815 / 194,183 / 203,386 ms |
+| `cpu_raster` | 188,211 / 191,641 / 200,683 ms |
+| `cpu_surface_acquire` (P50) | 0,067 ms |
+| `cpu_present` (P50) | 0,057 ms |
+| `cpu_texture_upload` (P50) | 0,54 ms |
+
+In tutti i 300 frame un segmento è stato rasterizzato: 299 miss `content_changed` e 2
+`first_use`. Nel campione quasi tutto `cpu_render_present` è raster Vello CPU; acquisizione
+surface, present e copia upload lato CPU sono trascurabili, quindi l'attesa VSync non spiega la
+pausa in questo run. Il risultato debug/JITless non va confrontato direttamente con i run
+release precedenti. Il motivo `content_changed` non diceva cosa cambia nel segmento UI: per
+questo il record ora contiene `raster_cache_content_diff` (tipo del primo comando divergente
+fra segmento in cache e corrente, `length_only`, `no_command_diff`, flag `length_changed`/
+`kind_changed`, solo contatori aggregati dei frame presentati) e la serie separata
+`cpu_cache_diff`; i risultati misurati sono riportati sotto.
+
+Per capire perché il primo comando divergente risulta sempre `Fill` e se copre un'area ampia,
+`raster_cache_content_diff.fill` aggiunge contatori a dimensione fissa, solo per i miss
+`content_changed` dei frame presentati il cui primo comando divergente è un `Fill`: `area`
+raggruppa l'area del bounding box trasformato del fill corrente in unità di scena al quadrato
+(`lt_1k` < 32×32, `lt_16k` < 128×128, `lt_256k` < 512×512, `lt_1m` < 1024×1024, `ge_1m`,
+`non_finite`); `compared` conta i casi in cui anche il comando in cache è un fill, gli unici
+con i flag sovrapposti `transform_changed`, `brush_changed`, `shape_changed`, `bounds_changed`
+e `other_changed` (transform, brush e path uguali: cambia la regola di riempimento o la
+trasformazione del brush); `brush_only` conta i fill in cui cambia solo il brush. La somma di
+`area` è uguale a `first_command.fill`. Nessuna geometria, colore, stringa, URL, indice o ID di
+nodo viene registrato e il confronto resta nella serie `cpu_cache_diff`.
+
+**Risultato misurato (rerun storia JITless, stesso scenario a 300 frame).** Tutti i 299 miss
+`content_changed` hanno un `Fill` come primo comando divergente e tutti cadono nel bucket
+`area.non_finite`: l'area del bounding box trasformato del fill corrente non è finita. In tutti
+il comando in cache è anch'esso un fill; transform e brush risultano uguali, path (`shape`) e
+bounds diversi. `cpu_raster` P50 191,399 ms; la scansione diagnostica `cpu_cache_diff` P50
+0,013 ms, quindi il confronto non incide sulla misura. Attenzione: il confronto usa
+l'uguaglianza `PartialEq` dei `f64`, per cui un valore NaN non è mai uguale a sé stesso. Se il
+path contiene NaN, `shape_changed` e `bounds_changed` risultano veri anche per un path identico
+e il segmento non può mai essere riusato dalla cache; è un'ipotesi coerente con i dati, non
+ancora dimostrata.
+
+Per verificarla, `fill.current_path` (ogni fill primo divergente) e `fill.cached_path` (solo i
+fill confrontati, somma uguale a `compared`) aggiungono due blocchi a dimensione fissa, calcolati
+con le sole API pubbliche Kurbo (`BezPath::elements`, `Point::is_finite`, `Affine::is_finite`,
+`Shape::bounding_box`, `Affine::transform_rect_bbox`, `Rect::is_finite`, `Rect::area`):
+`elements` raggruppa il numero di elementi del path (`empty`, `le_4`, `le_16`, `le_64`,
+`le_256`, `gt_256`); `bounds` indica il primo stadio non finito nell'ordine punti del path
+(`path_non_finite`), transform (`transform_non_finite`), bounding box non trasformato
+(`local_box_non_finite`), bounding box trasformato (`transformed_box_non_finite`), area
+(`area_non_finite`, overflow di un box finito), altrimenti `finite`. Restano solo contatori:
+nessuna coordinata, elemento o stringa di path, colore, URL, indice, ID di nodo o record per
+frame. Questi blocchi sono stati misurati nei rerun sotto (stadio `path_non_finite`, path
+identici bit per bit). Resta ignoto quale elemento Blitz/CSS emetta quel fill con NaN.
+
+**Risultato misurato (rerun successivo).** 299/299 path corrente e in cache dei fill primi
+divergenti sono `path_non_finite`, entrambi nel bucket `le_16`; transform e brush invariati;
+`cpu_raster` P50 ~189,3 ms. Il valore non finito sta quindi già nei punti del path, prima di
+transform e bounding box. Resta da stabilire se i due path siano identici bit per bit.
+
+Per questo `fill.path_bits` (solo fill confrontati, somma uguale a `compared`) confronta in
+memoria numero di elementi, tipo di `PathEl` e `f64::to_bits` di ogni coordinata, in quest'ordine:
+`same_bitwise_path`, `count_mismatch`, `verb_mismatch`, `point_bits_differ` (rileva anche
+`-0,0`/`0,0` e payload NaN diversi); `shape_changed_same_bits` conta i fill con
+`shape_changed` pur essendo identici bit per bit (sottoinsieme di `same_bitwise_path`, possibile
+solo con NaN). Ogni blocco `current_path`/`cached_path` aggiunge `non_finite`: numero di path con
+almeno una coordinata non finita per slot `PathEl` (`move_to`, `line_to`, `quad_to_ctrl`,
+`quad_to_end`, `curve_to_ctrl1`, `curve_to_ctrl2`, `curve_to_end`), classe di valore (`nan`,
+`pos_inf`, `neg_inf`) e asse (`x`, `y`). Solo flag di presenza e contatori fissi: nessuna
+coordinata, contenuto, hash, stringa, ID, indice o record per frame. Misurati nel run
+successivo: tutti i fill confrontati sono `same_bitwise_path` (vedi sotto).
+
+**Causa confermata e prima correzione della cache (13 novembre).** Sul `main` originale del
+template (`8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`), GTX 1050/Vulkan, JITless, 300 frame: 299
+miss `content_changed` sono `Fill`; ogni path corrente/in cache ha 5..16 elementi, NaN nelle x/y
+di `MoveTo` e `LineTo` ed è identico bit per bit, ma il `PartialEq` derivato rende `NaN != NaN`.
+`cpu_raster` P50 ~189 ms; upload/acquire/present ~0,5/0,07/0,06 ms. Correzione circoscritta in
+`presentation.rs` (`raster_cache_equal`, usata solo da `RasterCache::is_current`): resta il
+`PartialEq` come percorso rapido; solo se due `Fill` sono uguali in tutti gli altri campi e
+differiscono per un path con stessi elementi, verbi e `to_bits` di ogni coordinata vengono
+considerati uguali; tolleranza della scena e numero di comandi devono coincidere. Nessun
+rilassamento per altri comandi o campi (transform, brush, regola, brush transform), per NaN
+fuori dal path o per payload NaN diversi; input del renderer, output raster e regole `reusable`
+invariati. Test: `raster_cache_reuses_only_bit_identical_nan_fill_paths`.
+
+Audio nel run prima della correzione: 19 decode riusciti, 0 errori, 3 `source_start`; non
+udibile, perché il sink è `none`. Il dato conferma il percorso decode/start, non l'uscita audio.
+
+**A/B esplorativo della correzione (13 novembre, Codex, locale).** Non è una baseline di
+release: probe Roves in build debug, JITless, GTX 1050/Vulkan, `main` originale del template
+`8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, 640x360, stesso scenario con finestra di 300 frame;
+una sola corsa per lato, non tre corse alternate.
+
+| Caso | Cache raster | `cpu_raster` P50 | `cpu_render_present` P50 / P95 / P99 | `frame_step_interval` P50 / P95 / P99 |
+|---|---|---|---|---|
+| Prima della correzione | 299 miss `content_changed` (fill NaN identici bit per bit) | 188,984 ms | 191,634 ms (P50) | 194,344 ms (P50) |
+| Dopo la correzione | 606 hit, 2 upload al primo uso, 0 miss `content_changed` | 280,806 ms (un solo campione: raster a freddo) | 14,106 / 14,362 / 14,575 ms | 16,665 / 16,959 / 17,695 ms |
+
+Dopo la correzione le chiamate di presentazione sono 304 (finestra di 300 frame più 4 chiamate
+extra del renderer). Storia/dialogo, Save/Load, `game_audio` (20/20 decode, 0 errori di decode,
+3 `source_start`), presentazione GPU e teardown sono passati; il sink è `none`, quindi nessuna
+affermazione sull'uscita udibile. Il miglioramento è **misurato solo in questo caso
+debug/JITless** ed è incoraggiante ma esplorativo: servono build release e corse alternate
+ripetute prima di trattarlo come risultato. Resta un hitch dal raster a freddo (unico campione
+~281 ms) e un piccolo scarto di frame pacing (intervallo P99 17,695 ms contro il budget di
+16,67 ms a 60 Hz). Verifiche locali di Codex: `cargo fmt --manifest-path
+support/blitz-v8-probe/Cargo.toml --check`, `cargo test --locked --manifest-path
+support/blitz-v8-probe/Cargo.toml` (35/35) e `git diff --check`, tutte passate.
+
 Queste proposte derivano dalla lettura dei percorsi `ports/servoshell/desktop/{headed_window,event_loop,gui,performance}.rs` e `components/roves-js/src/deno_impl.rs`. **Non sono miglioramenti già dimostrati.** Implementare una modifica alla volta, misurare contro Chrome e confrontare il bundle prima/dopo sulla stessa macchina. Non cambiare la pipeline di produzione sulla sola base di benchmark sintetici.
 
 ### P0 — Frame pacing, redraw e sincronizzazione con il display
