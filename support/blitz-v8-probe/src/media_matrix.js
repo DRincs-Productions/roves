@@ -17,9 +17,9 @@
 //     and AAC fixtures; decoded samples are checked for non-silence;
 //   - <audio>/<video>: element brand, play/pause/load presence, `src` support,
 //     canPlayType answers and, only where `src` exists, the WAV's
-//     loadedmetadata/error outcome. Nothing is ever played (play() is not
-//     called: autoplay policy makes it non-deterministic), and Web Audio decode
-//     support is never reported as HTML media playback.
+//     metadata outcome plus muted compressed-audio play/pause/resume/end events;
+//     video playback remains untested without an authored video fixture. Web
+//     Audio decode support is never reported as HTML media playback.
 //
 // Output: `globalThis.__rovesMediaMatrix = { done, report, error }` and the
 // promise `globalThis.__rovesMediaMatrixRun` resolving to the report object.
@@ -285,6 +285,56 @@
     }
   }
 
+  async function exerciseAudioPlayback(element) {
+    if (typeof element.play !== "function" || typeof element.pause !== "function") {
+      return { outcome: "untested", reason: "no HTMLMediaElement play/pause API" };
+    }
+    element.muted = true;
+    const events = [];
+    const loggers = [];
+    for (const type of ["play", "playing", "pause", "seeked", "ended", "error"]) {
+      const logger = () => events.push(type);
+      loggers.push([type, logger]);
+      element.addEventListener(type, logger);
+    }
+    const event = (type) => new Promise((resolve) => {
+      element.addEventListener(type, () => resolve(type), { once: true });
+      element.addEventListener("error", () => resolve("error"), { once: true });
+    });
+    try {
+      const started = event("playing");
+      await element.play();
+      const firstPlaying = await timeout(started, TIMEOUT_MS, "timeout");
+      if (firstPlaying !== "playing") return { outcome: firstPlaying, events };
+
+      element.pause();
+      const pausedAfterPause = element.paused;
+      let seekOutcome = "unsupported";
+      if (Number.isFinite(element.duration) && element.duration > 0) {
+        const seeked = event("seeked");
+        try {
+          element.currentTime = element.duration / 2;
+          seekOutcome = await timeout(seeked, TIMEOUT_MS, "timeout");
+        } catch (error) {
+          seekOutcome = `rejected: ${errorText(error)}`;
+        }
+      }
+      const ended = event("ended");
+      const resumed = event("playing");
+      await element.play();
+      const secondPlaying = await timeout(resumed, TIMEOUT_MS, "timeout");
+      if (secondPlaying !== "playing") return { outcome: secondPlaying, pausedAfterPause, seekOutcome, events };
+      const endOutcome = await timeout(ended, TIMEOUT_MS, "timeout");
+      return { outcome: endOutcome === "ended" ? "played_to_end" : endOutcome, pausedAfterPause, seekOutcome, events };
+    } catch (error) {
+      return { outcome: "rejected", error: errorText(error), pausedAfterPause: element.paused, events };
+    } finally {
+      for (const [type, logger] of loggers) element.removeEventListener(type, logger);
+      element.pause();
+      element.muted = false;
+    }
+  }
+
   // Draws the <img> into a 2D canvas over ~1 s and records the distinct colours
   // of pixel (0,0). Needs drawImage(HTMLImageElement); otherwise "untested".
   async function animation(fixture) {
@@ -473,6 +523,9 @@
             readyState: element.readyState,
             errorCode: element.error?.code ?? null,
           });
+          result.compressedMetadata.at(-1).playback = codecOutcome === "loadedmetadata"
+            ? await exerciseAudioPlayback(element)
+            : { outcome: "skipped", reason: `metadata ${codecOutcome}` };
           element.removeAttribute("src");
           element.load();
         }
