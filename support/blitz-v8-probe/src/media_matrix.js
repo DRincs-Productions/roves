@@ -198,6 +198,14 @@
     { id: "m4a_aac", mime: "audio/mp4", bytes: fromBase64("AAAAHGZ0eXBNNEEgAAACAE00QSBpc29taXNvMgAAAwptb292AAAAbG12aGQAAAAAAAAAAAAAAAAAAAPoAAAAMgABAAABAAAAAAAAAAAAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAACAAACNXRyYWsAAABcdGtoZAAAAAMAAAAAAAAAAAAAAAEAAAAAAAAAMgAAAAAAAAAAAAAAAQEAAAAAAQAAAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAEAAAAAAAAAAAAAAAAAAACRlZHRzAAAAHGVsc3QAAAAAAAAAAQAAADIAAAQAAAEAAAAAAa1tZGlhAAAAIG1kaGQAAAAAAAAAAAAAAAAAALuAAAANYFXEAAAAAAAtaGRscgAAAAAAAAAAc291bgAAAAAAAAAAAAAAAFNvdW5kSGFuZGxlcgAAAAFYbWluZgAAABBzbWhkAAAAAAAAAAAAAAAkZGluZgAAABxkcmVmAAAAAAAAAAEAAAAMdXJsIAAAAAEAAAEcc3RibAAAAGpzdHNkAAAAAAAAAAEAAABabXA0YQAAAAAAAAABAAAAAAAAAAAAAQAQAAAAALuAAAAAAAA2ZXNkcwAAAAADgICAJQABAASAgIAXQBUAAAAAAL1AAAC9QAWAgIAFEYhW5QAGgICAAQIAAAAgc3R0cwAAAAAAAAACAAAAAwAABAAAAAABAAABYAAAABxzdHNjAAAAAAAAAAEAAAABAAAABAAAAAEAAAAkc3RzegAAAAAAAAAAAAAABAAAAI4AAACfAAAAfgAAAAUAAAAUc3RjbwAAAAAAAAABAAADNgAAABpzZ3BkAQAAAHJvbGwAAAACAAAAAf//AAAAHHNiZ3AAAAAAcm9sbAAAAAEAAAAEAAAAAQAAAGF1ZHRhAAAAWW1ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAG1kaXJhcHBsAAAAAAAAAAAAAAAALGlsc3QAAAAkqXRvbwAAABxkYXRhAAAAAQAAAABMYXZmNjIuMy4xMDAAAAAIZnJlZQAAAbhtZGF03gIATGF2YzYyLjExLjEwMAACaKNZoSiNNYdKmV9vinEeaXuSJDwiSf/+rkgTdMNzYrT1s210i6u4O2aO/De4sFbKmtMlIlXNtRnMtEpEpEiZKRKBgYGRAwMbNmwYGRIkRs2bNokSKWWWzcASouI3BEqpyNZNjXCM9tFXSM5dBWyM05KqHAaZKcmia5KWrgE0lNrJXZZLqyXUFOm/386ttauf9vH7+da41ev/4vX7+da41ev/7F/jzrWtasbU7NuueeYNZbLPcKL3+ygYN0D6UK+lA+n01mA+n0+lAH0+n01gfT6fTXQYAfT6fTWZsAa560WLVJ/Nt0iEMTPlEz5RM+XyiJg+Xy4xMHy+XEmD5fL5RREAPl8vlxiiAFlz1nAkJCQkJCQkJCQkJCQk5wE4lbLJXZRLnTZLqyXOlz+vXGnDq9f+k/Xri+Nar/6evbrV8avXj/X461etXsMfuXv6ao3lAwIyuJlfKhXyoE4+XyE1HTGU2XkDEzWTNZPfQgwfRsBg+n0AeZ9PoAOdg+n0+kgfHEYuojaY9Md0d0d0f6rh8Sn2n1PqfU+p/gEYgbRw"), baseline: true },
   ];
 
+  // Authored 32x24, five-frame VP8/WebM clip from ffmpeg 8.0.1's testsrc2.
+  const VIDEO_FIXTURES = [
+    {
+      id: "webm_vp8_32x24", mime: "video/webm", width: 32, height: 24,
+      bytes: fromBase64("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"),
+    },
+  ];
+
   // ---- image fixtures ---------------------------------------------------------
   const PNG_PIXELS = Uint8Array.of(
     255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255,
@@ -227,7 +235,6 @@
   ];
   const OMITTED = [
     { format: "image/avif", reason: "no small AVIF fixture could be authored and verified without an external encoder; not tested" },
-    { format: "video/*", reason: "no small authored video fixture; <video> reports capabilities only" },
   ];
   const CAN_PLAY_TYPES = {
     audio: [
@@ -331,6 +338,80 @@
     } finally {
       for (const [type, logger] of loggers) element.removeEventListener(type, logger);
       element.pause();
+      element.muted = false;
+    }
+  }
+
+  async function exerciseVideoPlayback(element, fixture) {
+    const available = ["src", "load", "play", "pause"].every((name) =>
+      name === "src" ? "src" in element : typeof element[name] === "function"
+    );
+    const report = {
+      id: fixture.id,
+      mime: fixture.mime,
+      bytes: fixture.bytes.length,
+      fnv1a: fnv1a(fixture.bytes),
+    };
+    if (!available) return { ...report, outcome: "untested", reason: "no HTMLMediaElement src/load/play/pause API" };
+
+    element.muted = true;
+    element.preload = "auto";
+    const events = [];
+    const loggers = [];
+    for (const type of ["loadedmetadata", "loadeddata", "canplay", "play", "playing", "pause", "seeked", "ended", "error"]) {
+      const logger = () => events.push(type);
+      loggers.push([type, logger]);
+      element.addEventListener(type, logger);
+    }
+    const event = (type) => new Promise((resolve) => {
+      element.addEventListener(type, () => resolve(type), { once: true });
+      element.addEventListener("error", () => resolve("error"), { once: true });
+    });
+    try {
+      element.src = dataUrl(fixture);
+      const metadata = await timeout(event("loadedmetadata"), TIMEOUT_MS, "timeout");
+      if (metadata !== "loadedmetadata") return { ...report, outcome: metadata, events };
+
+      const frame = typeof element.requestVideoFrameCallback === "function"
+        ? new Promise((resolve) => element.requestVideoFrameCallback((_now, metadata) => resolve({
+          presentedFrames: metadata.presentedFrames,
+          mediaTime: Number(metadata.mediaTime.toFixed(4)),
+        })))
+        : Promise.resolve("unavailable");
+      const firstPlaying = event("playing");
+      await element.play();
+      const firstPlayingOutcome = await timeout(firstPlaying, TIMEOUT_MS, "timeout");
+      if (firstPlayingOutcome !== "playing") return { ...report, outcome: firstPlayingOutcome, events };
+      const firstFrame = await timeout(frame, TIMEOUT_MS, "timeout");
+
+      element.pause();
+      const pausedAfterPause = element.paused;
+      const seeked = event("seeked");
+      element.currentTime = Math.min(element.duration / 2, 0.2);
+      const seekOutcome = await timeout(seeked, TIMEOUT_MS, "timeout");
+      const ended = event("ended");
+      const resumed = event("playing");
+      await element.play();
+      const resumeOutcome = await timeout(resumed, TIMEOUT_MS, "timeout");
+      const endOutcome = resumeOutcome === "playing" ? await timeout(ended, TIMEOUT_MS, "timeout") : resumeOutcome;
+      return {
+        ...report,
+        outcome: endOutcome === "ended" ? "played_to_end" : endOutcome,
+        metadata,
+        dimensions: [element.videoWidth, element.videoHeight],
+        duration: Number.isFinite(element.duration) ? Number(element.duration.toFixed(4)) : String(element.duration),
+        firstFrame,
+        pausedAfterPause,
+        seekOutcome,
+        events,
+      };
+    } catch (error) {
+      return { ...report, outcome: "rejected", error: errorText(error), events };
+    } finally {
+      for (const [type, logger] of loggers) element.removeEventListener(type, logger);
+      element.pause();
+      element.removeAttribute("src");
+      element.load();
       element.muted = false;
     }
   }
@@ -531,7 +612,7 @@
         }
       }
     } else {
-      result.fixture = "none";
+      result.videoFixture = await exerciseVideoPlayback(element, VIDEO_FIXTURES[0]);
     }
     return result;
   }
