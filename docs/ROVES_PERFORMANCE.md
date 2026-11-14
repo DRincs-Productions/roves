@@ -4,6 +4,24 @@
 
 ## Verifica media Blitz/V8 — 13 novembre 2026
 
+### Diagnosi regressione gate JITless, CI #43528050925 — 14 novembre 2026
+
+Il job Windows normale è verde; JITless è rosso. La causa diretta del gate `game_hud_save_load`
+è a monte: `game_settings_popup` aspettava `dialogs() === []` e dopo 600 frame trovava invece
+un dialogo chiuso ma ancora montato (`open=false`, `closed=true`, URL già tornato a
+`game://content/`). Il timeout contaminava la stessa esecuzione `--story`: Start non arrivava
+al primo stato narrativo entro 1800 frame. Il log ridotto riportava 89 frame, 2651 tick
+differiti e nessun nuovo errore JS. Perciò `game_name_input` non veniva eseguito e il gate
+Save/Load falliva come conseguenza, non per un difetto del suo click o del salvataggio.
+
+La condizione del test Settings ora, come per il gate Save/Load, considera chiuso ogni dialogo
+con `closed=true` o `open=false`, richiedendo anche la rimozione del parametro `settings` dalla
+route. Il run completo locale JITless con il template `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`
+passa Settings, i primi due dialoghi, input nome (`Zorvaq`) e Save/Load. Questo conferma il
+fix del predicato e suggerisce che il timeout Settings causava il successivo blocco nello
+stesso processo; il nuovo CI normal/JITless deve confermarlo sul runner. Log locale:
+`C:\roves-media-probe\ci86-jitless-verify-20261114.log`.
+
 La matrice deterministica `support/blitz-v8-probe/src/media_matrix.js` genera in locale gli stessi byte per Chrome DevTools e la probe Roves; lunghezza e hash FNV-1a vengono inclusi nel report. Il template usato da Roves è `visual-novel-template` SHA `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, build `dist`, Windows x64, V8 normal e JITless, GPU Vulkan NVIDIA GeForce GTX 1050 (driver 581.63). Chrome DevTools MCP ha riportato Chrome 157 su Windows. La prova è headless nella probe (non rappresenta playback in finestra).
 
 Esito: BMP (70 byte, hash `8c21db99`) e ICO con payload PNG (116 byte, hash `418cd183`) caricano come `<img>` e decodificano via `createImageBitmap` in Chrome 157 e Roves, con dimensioni attese (2x2 e 3x2). Anche PNG, JPEG, GIF statico, WebP e APNG caricano e decodificano in entrambi i motori; il fixture APNG a due frame (`9d96cd46`, 232 byte) passa dimensioni e decode, ma il test pixel è inconclusivo in Chrome e non eseguibile in Roves senza `CanvasRenderingContext2D.drawImage`. SVG carica come `<img>` tramite `resvg` dopo il fetch autorizzato, mentre `createImageBitmap(Blob SVG)` viene rifiutato come in Chrome. L'immagine corrotta genera errore/rifiuto. Web Audio decodifica il WAV generato a 256 campioni non nulli, confrontati con la sorgente; un WAV invalido è rifiutato. I controlli normali e JITless passano, così come il teardown GPU. Il test unitario Rust verifica dimensioni/pixel SVG e il limite massimo.

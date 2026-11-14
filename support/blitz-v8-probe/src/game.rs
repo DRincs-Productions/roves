@@ -1574,7 +1574,7 @@ async fn settings_popup(
             runtime,
             document,
             run_animation_frame,
-            "__rovesStory.dialogs() === '[]' && !/[?&]settings=/.test(location.search) ? 'closed' : ''",
+            "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) && !/[?&]settings=/.test(location.search) ? 'closed' : ''",
             DIALOG_FRAMES,
             &mut toasts,
         )
@@ -1586,7 +1586,7 @@ async fn settings_popup(
             Err(_) => {
                 let dialogs = crate::evaluate_string(runtime, "__rovesStory.dialogs()");
                 break 'popup Some(format!(
-                    "the Settings dialog was not closed and unmounted within {DIALOG_FRAMES} frames after Escape (dialogs: {dialogs}, location: {})",
+                    "the Settings dialog remained open or its route stayed active within {DIALOG_FRAMES} frames after Escape (dialogs: {dialogs}, location: {})",
                     crate::evaluate_string(runtime, "location.href")
                 ));
             },
