@@ -317,6 +317,31 @@ miss per motivo, raster, upload texture, composizione, encode/submit, present) �
 eseguire tre misure alternate in finestra reale (template fermo, dialoghi/testo in movimento,
 casi semplici) e attribuire il collo di bottiglia dai nuovi campi. Misure non ancora eseguite.
 
+#### Finestra storia e audio, 14 novembre 2026
+
+Smoke automatico Windows del template `main` `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`,
+GTX 1050/Vulkan, viewport 640×360, `--story --window --window-frames 180`, storage isolato
+`C:\roves-media-probe\story-window-audio-20261114`, binario locale debug con diagnostica
+frame e uscita CPAL richiesta. La finestra si è chiusa automaticamente; la prova CUA del
+run precedente era bloccata da `PickerHost`, quindi non considero questa esecuzione una
+verifica di focus o di ascolto umano.
+
+Il flusso automatico ha superato menu, Start, due stati di dialogo, quick-save e Save/Load;
+la presentazione ha riportato 191 frame, 191 layer canvas, 2 upload e 380 cache hit, nessun
+frame saltato, nessun errore e nessun readback. In 179 intervalli misurati, il frame-step
+P50/P95/P99 è 16,686/19,434/32,624 ms (94 oltre 16,67 ms). `cpu_render_present` è
+13,922/14,852/19,211 ms; un raster freddo ha raggiunto 283,22 ms. `cpu_surface_acquire`
+P50 è 11,649 ms, mentre `cpu_present` P50 è 0,056 ms: questo breve campione indica attesa
+prima del submit/acquisizione come costo ricorrente e un hitch raster iniziale separato.
+Non è una misura release né una prova di tre run alternate; stato del focus/foreground non
+verificato, perciò non confrontarla direttamente con Chrome.
+
+Con CPAL selezionato: 19 richieste Web Audio, 19 decode riusciti, zero errori e 3 avvii di
+sorgente. Non c'è loopback/cattura acustica, dunque non certifica suono udibile. Rimangono
+due warning Pixi per i WAV remoti (`sfx_whoosh.wav`, `bgm_cheerful.wav`): il parser per
+asset WAV non viene selezionato nel loader Pixi, distinto dal decoder Web Audio. Questo
+test non prova `<audio>`/`<video>` né risolve i gap della matrice media.
+
 #### Run esplorativo per fase, storia JITless, 13 novembre 2026
 
 Run **esplorativo**, distinto dalle tre misure release alternate richieste sopra, che restano
