@@ -22,6 +22,16 @@ fix del predicato e suggerisce che il timeout Settings causava il successivo blo
 stesso processo; il nuovo CI normal/JITless deve confermarlo sul runner. Log locale:
 `C:\roves-media-probe\ci86-jitless-verify-20261114.log`.
 
+**Esito CI #43587268503:** il predicato chiuso passa, ma i job normal e JITless non arrivano
+alla prima battuta dopo Start (85–89 frame effettivi; circa 2.000 tick differiti; nessun
+errore JS). `game_name_input` e `game_hud_save_load` risultano `not_run`; il gate è rosso per
+questa mancata progressione. L'ipotesi più probabile è che la pagina della prova Settings,
+ancora nello stesso runtime e con il dialogo chiuso montato, interferisca con il click Start.
+Ho modificato il probe per eseguire `--settings-popup` in un processo autonomo e far partire
+`--story` da una nuova istanza del gioco; la CI usa storage e log separati per il popup.
+Verifica locale JITless dei due processi: Settings passed; storia con due dialoghi, nome e
+Save/Load passed. Il CI successivo deve confermare il comportamento sul runner software.
+
 La matrice deterministica `support/blitz-v8-probe/src/media_matrix.js` genera in locale gli stessi byte per Chrome DevTools e la probe Roves; lunghezza e hash FNV-1a vengono inclusi nel report. Il template usato da Roves è `visual-novel-template` SHA `8a8d59bbeac53264d4f8cdb20bbd50deb34d60b9`, build `dist`, Windows x64, V8 normal e JITless, GPU Vulkan NVIDIA GeForce GTX 1050 (driver 581.63). Chrome DevTools MCP ha riportato Chrome 157 su Windows. La prova è headless nella probe (non rappresenta playback in finestra).
 
 Esito: BMP (70 byte, hash `8c21db99`) e ICO con payload PNG (116 byte, hash `418cd183`) caricano come `<img>` e decodificano via `createImageBitmap` in Chrome 157 e Roves, con dimensioni attese (2x2 e 3x2). Anche PNG, JPEG, GIF statico, WebP e APNG caricano e decodificano in entrambi i motori; il fixture APNG a due frame (`9d96cd46`, 232 byte) passa dimensioni e decode, ma il test pixel è inconclusivo in Chrome e non eseguibile in Roves senza `CanvasRenderingContext2D.drawImage`. SVG carica come `<img>` tramite `resvg` dopo il fetch autorizzato, mentre `createImageBitmap(Blob SVG)` viene rifiutato come in Chrome. L'immagine corrotta genera errore/rifiuto. Web Audio decodifica il WAV generato a 256 campioni non nulli, confrontati con la sorgente; un WAV invalido è rifiutato. I controlli normali e JITless passano, così come il teardown GPU. Il test unitario Rust verifica dimensioni/pixel SVG e il limite massimo.

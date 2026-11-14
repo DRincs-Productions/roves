@@ -275,8 +275,9 @@ jobs:
       # continue-on-error: a failure marks this step and is annotated with its
       # reason, but never changes the job result; the smoke step above stays
       # the gate. Separate storage directory; bounded by timeout 900.
-      # The same run first opens Settings on the menu and closes it with Escape
-      # (game_settings_popup), and after the two states types a name into the
+      # A separate fresh game process opens Settings on the menu and closes it
+      # with Escape (game_settings_popup), so its retained closed dialog cannot
+      # affect the story run. After the two states, story types a name into the
       # story's input dialog (game_name_input), then clicks the HUD Save/Load
       # button at its center (game_hud_save_load: the save/load panel must open
       # and the dialogue must not advance). game_settings_popup, game_name_input
@@ -301,6 +302,18 @@ jobs:
             echo "::error::story harness NOT RUN: probe executable or game build missing"
             exit 1
           fi
+          settings_log="$RUNNER_TEMP/blitz-settings.log"
+          set +e +o pipefail
+          ROVES_PROBE_STORAGE_DIR="$RUNNER_TEMP/blitz-settings-storage" timeout 240 \
+            "$exe" --game visual-novel-template/dist --settings-popup > "$settings_log" 2>&1
+          settings_status=$?
+          settings=$(grep -F '"check":"game_settings_popup"' "$settings_log" | head -n 1)
+          if [ "$settings_status" -ne 0 ] || [ -z "$settings" ] \
+              || ! printf '%s' "$settings" | grep -Fq '"status":"passed"'; then
+            echo "::warning::isolated Settings popup failed (exit=$settings_status): $(printf '%s' "$settings" | cut -c1-900)"
+          else
+            echo "::notice::isolated Settings popup passed $(printf '%s' "$settings" | cut -c1-700)"
+          fi
           log="$RUNNER_TEMP/blitz-story.log"
           # Empty greps are results here, not step errors.
           set +e +o pipefail
@@ -309,7 +322,7 @@ jobs:
           [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
           name_input_events=$(grep -m 1 '^ROVES_PROBE_NAME_INPUT_EVENTS ' "$log")
           [ -n "$name_input_events" ] && echo "::notice::$name_input_events"
-          for check in game_settings_popup game_name_input game_quick_save; do
+          for check in game_name_input game_quick_save; do
             line=$(grep -F "\"check\":\"$check\"" "$log" | head -n 1)
             if [ -z "$line" ]; then
               echo "::warning::$check: no result line"
@@ -513,6 +526,7 @@ jobs:
             ${{ runner.temp }}/blitz-game-*.log
             ${{ runner.temp }}/blitz-webgpu-fixture-*.log
             ${{ runner.temp }}/blitz-game.png
+            ${{ runner.temp }}/blitz-settings.log
             ${{ runner.temp }}/blitz-story.log
             ${{ runner.temp }}/blitz-story-restore.log
             ${{ runner.temp }}/blitz-story.png

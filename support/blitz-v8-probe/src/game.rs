@@ -400,7 +400,9 @@ addEventListener("unhandledrejection", (event) => {
         media_matrix(runtime, document, run_animation_frame).await;
     }
 
-    if std::env::args().any(|arg| arg == "--story") {
+    if std::env::args().any(|arg| arg == "--story")
+        || std::env::args().any(|arg| arg == "--settings-popup")
+    {
         story(
             runtime,
             document,
@@ -936,8 +938,8 @@ fn expected_lines() -> Result<Option<[String; 2]>, String> {
 /// contain those known lines. Prints one `game_story` result; any failure is
 /// reported with its reason, never as a pass.
 ///
-/// Before Start, `settings_popup` opens and closes the Settings dialog
-/// (`game_settings_popup`); after the two states, `name_input` types a name into
+/// In a separate `--settings-popup` run, `settings_popup` opens and closes the
+/// Settings dialog (`game_settings_popup`); after the two states, `name_input` types a name into
 /// the story's input dialog (`game_name_input`); after an accepted name,
 /// `hud_save_load` clicks the HUD's Save/Load button (`game_hud_save_load`).
 /// Each prints its own result and counts only the script errors captured during
@@ -949,12 +951,15 @@ async fn story(
     dispatcher: &v8::Global<v8::Function>,
     gpu_pacing_stats: &v8::Global<v8::Function>,
 ) {
-    crate::stage("game_story");
     runtime
         .execute_script("roves-blitz-story-helpers.js", STORY_HELPERS)
         .expect("story helpers should install");
-    crate::stage("game_settings_popup");
-    settings_popup(runtime, document, run_animation_frame, dispatcher).await;
+    if std::env::args().any(|arg| arg == "--settings-popup") {
+        crate::stage("game_settings_popup");
+        settings_popup(runtime, document, run_animation_frame, dispatcher).await;
+        return;
+    }
+    crate::stage("game_story");
     crate::stage("game_story_dialogues");
     let progress = two_dialogues(
         runtime,
