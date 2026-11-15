@@ -443,8 +443,11 @@ Procedura di cattura (Windows, da verificare sulla prima finestra reale):
    Registrare quante swapchain (`SWAP_CHAIN_ADDRESS`) compaiono: la cattura parziale del
    menu ne aveva una sola e 291 presentazioni su 920.
 3. Allineamento: PresentMon fa iniziare il tempo CPU di un frame quando la chiamata Present
-   precedente è tornata (nel CSV esistente `CPU_START_QPC[n+1] - CPU_START_QPC[n]` è uguale a
-   `CPU_FRAME_TIME[n]` convertito con 10 MHz). Quindi `present_end_qpc` del record Roves `k`
+   precedente è tornata. Verifica quantitativa sul CSV parziale esistente: 291 righe valide,
+   tutte monotone; in 290 intervalli consecutivi `CPU_START_QPC[n+1] - CPU_START_QPC[n]`
+   coincide con `CPU_FRAME_TIME[n]·10.000` tick (QPC 10 MHz, `CPU_FRAME_TIME` in ms), con
+   scarto massimo inferiore a `3·10⁻¹¹` tick dovuto alla rappresentazione floating point.
+   Quindi `present_end_qpc` del record Roves `k`
    va abbinato a `CPU_START_QPC` della presentazione PresentMon **successiva**, ovvero a
    `CPU_START_QPC + CPU_FRAME_TIME·qpc_frequency/1000` della stessa. Abbinare per vicinanza
    (atteso: Roves leggermente dopo, per il wrapper wgpu attorno al Present del backend) e
