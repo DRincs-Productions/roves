@@ -465,8 +465,42 @@ Verifiche locali: `cargo fmt --check`; `cargo test --locked` della probe (48/48,
 `frame_trace::`: modalità disattivata, ring limitato e ordinato, `null` per fasi/contatori
 mancanti, unità tick/ns, errori QPC e clock non disponibile, file non scrivibile e scrittura
 unica, timebase reale). La CI normal/JITless (runner Windows) esegue `frame_trace::` senza
-PresentMon. Non verificati: finestra reale, file prodotto da una run vera, abbinamento con
-PresentMon.
+PresentMon. Al commit della strumentazione la cattura in finestra e la correlazione restavano
+da fare; l'esito della prova successiva è registrato nella sezione seguente.
+
+#### Prima cattura della traccia in finestra (15 novembre 2026)
+
+Artifact Windows normale della CI #90, commit `e329c0f92c8b7087d418af6ddca949a8a853597f`
+(build **debug**), template `visual-novel-template` `main` SHA
+`5e4f651d6be06730da21a3c6bc1d31b1d2e3477e`, GTX 1050 / Vulkan / driver 581.63. La build locale
+pulita del template è riuscita; le prove Roves hanno usato directory di storage isolate e
+hanno chiuso la finestra automaticamente. Il gioco è rimasto al menu: non sono una misura della
+storia animata né un confronto Chrome/Roves.
+
+- `--window-frames 1800`: trace NDJSON parsato correttamente, 1.815 record/frame, tutti con
+  `present_result=good`; sequenze render e QPC monotone, QPC 10 MHz. Il primo client SDK era
+  partito prima che la finestra GPU fosse pronta: il CSV ha soltanto l'intestazione, quindi non
+  è utilizzabile per correlare frame.
+- Cattura successiva, avviata dopo `gpu_window_prepare=ready`, `--window-frames 3600`: il
+  riepilogo ha 3.649 frame presentati; il ring conserva gli ultimi 3.600 e dichiara 49
+  sovrascritti. `cpu_render_present` P50/P95/P99 14,976/15,329/16,070 ms; la fase
+  `cpu_surface_acquire` 13,375/13,686/13,793 ms. `cpu_scene_paint` P50 0,703 ms,
+  `cpu_encode_submit` 0,727 ms e `cpu_present` 0,052 ms. Sei raster freddi: P50 130,475 ms,
+  massimo 142,362 ms. Il raster è costoso quando viene invocato, ma è raro in questo menu;
+  sulla maggior parte dei frame misurati domina l'acquisizione della superficie. Può includere
+  attesa FIFO/VSync: senza `DISPLAYED_TIME` abbinato non si conclude che causi ogni scatto.
+- Il client SDK avviato dopo la finestra pronta ha prodotto zero frame per Roves; una prova
+  indipendente con Chrome (PID browser e GPU process) ha prodotto anch'essa zero righe. PresentMon
+  CLI non elevato ha rifiutato la sessione ETW (`access denied`). Il successivo avvio elevato è
+  stato annullato dalla finestra UAC. Il servizio PresentMon è in esecuzione, ma la cattura
+  resta **non verificata**: nessuna corrispondenza QPC o frame mostrato è stata calcolata.
+  Non ritentare l'avvio elevato senza una nuova accettazione esplicita dell'utente.
+
+Conclusione limitata: la trace del renderer funziona nella finestra reale e indica due piste da
+separare, acquisizione quasi a ogni frame e raster molto costoso sui pochi cache miss. Prossimo
+passo dopo aver sbloccato la cattura ETW: foreground e privilegi corretti, PresentMon e Roves
+contemporanei, quindi una scena di menu e una sequenza di dialogo/Skip; allineare prima i frame
+mostrati, poi attribuire gli hitch.
 
 #### Run esplorativo per fase, storia JITless, 13 novembre 2026
 
