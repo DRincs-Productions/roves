@@ -148,6 +148,27 @@ autonomamente un'issue nel repository upstream, senza chiedere conferma. Se esis
 gia un'issue per lo stesso bug, usa quella. Aggiungi il link in `TODO.md` e indica
 che va ricontrollato se e in quale versione il bug viene risolto.
 
+### Confronto obbligatorio con Chromium
+
+Prima di ogni implementazione importante o intervento sulle prestazioni, consultare il
+codice e la documentazione pertinenti di Chromium nel sottomodulo `support/chromium-reference`.
+Identificare come Chromium risolve lo stesso problema e annotare revisione, file consultati,
+scelte rilevanti e compromessi nel piano o nel documento performance prima di scrivere codice.
+Tradurre le idee nel contesto Rust di Roves, valutando prima le API e le librerie mantenute
+di Deno/V8, Blitz e del renderer. Motivare le differenze quando il modello di Chromium non
+si adatta a Roves. Per gli interventi di fluidità, confrontare build release di Roves e Chrome
+sullo stesso hardware, con la stessa scena, risoluzione e frequenza di aggiornamento. Usare
+gli intervalli tra frame mostrati (P95/P99), la latenza dell'input e il costo CPU/GPU per
+verificare il progresso verso prestazioni paragonabili.
+
+Il sottomodulo è un riferimento alla revisione fissata. Inizializzarlo solo quando serve.
+Per evitare un checkout completo, clonare l'URL di `.gitmodules` con `--filter=blob:none
+--no-checkout` nel percorso del sottomodulo, scegliere le directory pertinenti con
+`git sparse-checkout set` e fare checkout detached della revisione indicata da
+`git ls-tree HEAD support/chromium-reference`. Poi eseguire `git submodule init --
+support/chromium-reference` e `git submodule absorbgitdirs support/chromium-reference`.
+La CI ordinaria e i pacchetti di Roves non devono scaricarlo o compilarlo.
+
 ### Diagnosi del browser con Chrome DevTools (MCP)
 
 Usa Chrome DevTools (MCP), quando disponibile, per ispezionare pagine, console, rete e

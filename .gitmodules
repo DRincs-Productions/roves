@@ -13,3 +13,7 @@
 [submodule "roves-packmaster"]
 	path = roves-packmaster
 	url = https://github.com/DRincs-Productions/roves-packmaster
+[submodule "support/chromium-reference"]
+	path = support/chromium-reference
+	url = https://github.com/chromium/chromium.git
+	update = none
