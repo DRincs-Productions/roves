@@ -1,0 +1,183 @@
+name: Netrender shared-device proof
+
+# Isolated, informational feasibility check of support/netrender-shared-device-proof
+# (see its README). It builds only that standalone crate, with the proposed wgpu
+# interop patch confined to the fixture's ignored patched/ directory; it does not
+# build, gate or change the engine, the Blitz probe or any release.
+#
+# On the runner's WARP adapter ("Microsoft Basic Render Driver", DX12):
+#  - negative: Netrender d2f13ca5 as published must fail ONLY the two known
+#    ordering pixels (exit 1), after the bridge, hub, GC and teardown checks held;
+#  - positive: the same revision plus upstream/netrender-d2f13ca5-external-texture-order.patch
+#    must pass 6/6 with the same checks.
+# Both producers run: the raw wgpu-core one and the real deno_core/deno_webgpu one
+# (unprivileged JS draws the canvas).
+'on':
+  push:
+    paths:
+      - 'support/netrender-shared-device-proof/**'
+      - '.github/workflows/netrender-proof.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: netrender-proof-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows-warp:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    env:
+      # Same neutral CARGO_HOME as the Blitz probe: deno_core 0.413 without a
+      # startup snapshot reads extension JS from the crate paths at run time, so
+      # the uploaded deno_js.exe runs elsewhere only with C:/roves-cargo/registry/src
+      # mirrored.
+      CARGO_HOME: C:/roves-cargo
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../netrender-proof-target
+      DENO_WEBGPU_BACKEND: dx12
+      RUST_BACKTRACE: '1'
+    defaults:
+      run:
+        shell: bash
+        working-directory: support/netrender-shared-device-proof
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: restore Cargo and build cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            C:/roves-cargo/registry/index
+            C:/roves-cargo/registry/cache
+            C:/roves-cargo/git/db
+            ${{ github.workspace }}/../netrender-proof-target
+            ${{ github.workspace }}/../netrender-proof-pristine-target
+          key: netrender-proof-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/netrender-shared-device-proof/Cargo.lock', 'support/netrender-shared-device-proof/prepare-patched.sh', 'support/netrender-shared-device-proof/upstream/*.patch') }}
+      - name: exact pins and crates.io provenance
+        run: |
+          mkdir -p "$RUNNER_TEMP/netrender-proof/logs"
+          python -I ci/verify.py pins
+          python -I ci/verify.py crates-io
+          sha256sum upstream/*.patch | tee "$RUNNER_TEMP/netrender-proof/logs/patch-sha256.txt"
+      # Compile repro of blocker 1: the crates.io wgpu/wgpu-core have no interop
+      # API, so the fixture must fail with E0599 on exactly the proposed symbols.
+      - name: pristine wgpu compile repro (expected E0599)
+        env:
+          CARGO_TARGET_DIR: ${{ github.workspace }}/../netrender-proof-pristine-target
+        run: |
+          log="$RUNNER_TEMP/netrender-proof/logs/pristine-check.log"
+          PRISTINE=1 sh ./prepare-patched.sh
+          set +e
+          cargo check --locked --bin roves-netrender-shared-device-proof > "$log" 2>&1
+          status=$?
+          set -e
+          grep -E '^error(\[|:)' "$log" || true
+          [ "$status" -ne 0 ] || { echo "::error::the pristine wgpu build succeeded: the interop patch is no longer needed"; exit 1; }
+          if grep -E '^error\[' "$log" | grep -v '^error\[E0599\]' | grep -q .; then
+            echo "::error::pristine build failed with errors other than E0599"; exit 1
+          fi
+          for symbol in adapter_clone_id device_clone_id queue_clone_id texture_clone_id from_core_global; do
+            grep -q "$symbol" "$log" || { echo "::error::pristine build did not report $symbol"; exit 1; }
+          done
+          echo "::notice::pristine wgpu/wgpu-core: $(grep -c '^error\[E0599\]' "$log") x E0599 on the interop symbols, as expected"
+          rm -rf "$RUNNER_TEMP/pristine" && mv patched "$RUNNER_TEMP/pristine"
+      - name: prepare patched wgpu and check its provenance
+        run: |
+          sh ./prepare-patched.sh
+          python -I ci/verify.py patched-diff "$RUNNER_TEMP/pristine" patched
+      - name: build (published Netrender d2f13ca5)
+        run: |
+          bash ci/cargo-retry.sh "$RUNNER_TEMP/netrender-proof/logs/build-negative.log" \
+            build --locked --features deno --bins
+          mkdir -p "$RUNNER_TEMP/netrender-proof/negative"
+          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof.exe" "$CARGO_TARGET_DIR/debug/deno_js.exe" \
+            "$RUNNER_TEMP/netrender-proof/negative/"
+      - name: negative run (expected to fail only the two ordering pixels)
+        run: |
+          dir="$RUNNER_TEMP/netrender-proof"
+          ok=0
+          for run in raw:roves-netrender-shared-device-proof deno:deno_js; do
+            producer=${run%%:*}; exe="$dir/negative/${run#*:}.exe"; log="$dir/logs/negative-$producer.log"
+            set +e
+            timeout 600 "$exe" > "$log" 2>&1
+            status=$?
+            set -e
+            echo "::group::negative $producer (exit $status)"; cat "$log"; echo "::endgroup::"
+            python -I ci/verify.py log negative "$producer" "$log" "$status" || ok=1
+          done
+          exit $ok
+      - name: Netrender d2f13ca5 with the proposed order fix
+        if: ${{ !cancelled() }}
+        run: |
+          rev=d2f13ca5ecd20df89d148a7cebef28c0962b90ca
+          src="$RUNNER_TEMP/netrender"
+          rm -rf "$src" && git init -q "$src"
+          git -C "$src" fetch -q --depth 1 https://github.com/merely-made/netrender "$rev"
+          git -C "$src" checkout -q FETCH_HEAD
+          [ "$(git -C "$src" rev-parse HEAD)" = "$rev" ] || { echo "::error::Netrender checkout is not $rev"; exit 1; }
+          patch="$PWD/upstream/netrender-d2f13ca5-external-texture-order.patch"
+          stat=$(git -C "$src" apply --numstat "$patch" | awk '{a+=$1; d+=$2} END {print "+" a "/-" d}')
+          [ "$stat" = "+41/-5" ] || { echo "::error::order patch is $stat, expected +41/-5"; exit 1; }
+          git -C "$src" apply --check "$patch"
+          git -C "$src" apply "$patch"
+          git -C "$src" diff --stat
+      - name: build (Netrender with the order fix, local path override)
+        if: ${{ !cancelled() }}
+        run: |
+          cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.orig"
+          netrender=$(cygpath -m "$RUNNER_TEMP/netrender/netrender")
+          # Not --locked: the override rewrites the netrender entries of Cargo.lock.
+          bash ci/cargo-retry.sh "$RUNNER_TEMP/netrender-proof/logs/build-positive.log" \
+            build --features deno --bins \
+            --config "patch.\"https://github.com/merely-made/netrender\".netrender.path=\"$netrender\""
+          python -I ci/verify.py lock-diff "$RUNNER_TEMP/Cargo.lock.orig" Cargo.lock
+          cp "$RUNNER_TEMP/Cargo.lock.orig" Cargo.lock
+          git diff --exit-code -- Cargo.lock
+          mkdir -p "$RUNNER_TEMP/netrender-proof/positive"
+          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof.exe" "$CARGO_TARGET_DIR/debug/deno_js.exe" \
+            "$RUNNER_TEMP/netrender-proof/positive/"
+      - name: positive run (expected 6/6)
+        if: ${{ !cancelled() }}
+        run: |
+          dir="$RUNNER_TEMP/netrender-proof"
+          [ -d "$dir/positive" ] || { echo "::error::positive executables missing"; exit 1; }
+          ok=0
+          for run in raw:roves-netrender-shared-device-proof deno:deno_js; do
+            producer=${run%%:*}; exe="$dir/positive/${run#*:}.exe"; log="$dir/logs/positive-$producer.log"
+            set +e
+            timeout 600 "$exe" > "$log" 2>&1
+            status=$?
+            set -e
+            echo "::group::positive $producer (exit $status)"; cat "$log"; echo "::endgroup::"
+            python -I ci/verify.py log positive "$producer" "$log" "$status" || ok=1
+          done
+          exit $ok
+      - name: artifact notes
+        if: ${{ always() }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/netrender-proof"
+          cat > "$RUNNER_TEMP/netrender-proof/NOTES.txt" <<EOF
+          Commit: $GITHUB_SHA
+          negative/: fixture with Netrender d2f13ca5 as published (Cargo.lock).
+          positive/: same revision + upstream/netrender-d2f13ca5-external-texture-order.patch.
+          Both use wgpu 29.0.4 / wgpu-core 29.0.1 + upstream/wgpu-29-core-interop.patch.
+          Debug builds. Run with DENO_WEBGPU_BACKEND=dx12 (or vulkan).
+          roves-netrender-shared-device-proof.exe needs only a DX12/Vulkan driver.
+          deno_js.exe reads deno_webidl/deno_web/deno_webgpu extension JS at run time
+          from C:/roves-cargo/registry/src (no startup snapshot): mirror that path
+          (e.g. a junction) on the machine that runs it.
+          EOF
+      - name: upload logs and executables
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: netrender-shared-device-proof-windows-warp
+          path: ${{ runner.temp }}/netrender-proof
+          if-no-files-found: warn
+          retention-days: 14

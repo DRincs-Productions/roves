@@ -1,0 +1,48 @@
+[package]
+name = "roves-netrender-shared-device-proof"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "MPL-2.0"
+description = "Opt-in proof: Netrender composites a WebGPU texture created on deno_webgpu's own wgpu-core device"
+
+# Standalone: not part of the Roves workspace nor of the Blitz probe graph.
+[workspace]
+
+[dependencies]
+# Same wgpu-core as deno_webgpu 0.227.0 (`=29.0.1`, deno_core 0.413 pairing);
+# the "Deno side" of the fixture repeats deno_webgpu's own calls on it.
+wgpu-core = { version = "=29.0.1", features = ["wgsl", "dx12", "vulkan", "metal"] }
+wgpu-types = "=29.0.1"
+# The wgpu 29 release Netrender d2f13ca5 resolves (requires wgpu-core ^29.0.1,
+# so it unifies with deno_webgpu's exact pin).
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "dx12", "vulkan", "metal"] }
+# Last Netrender on wgpu 29 / Vello 0.9 (2026-08-13). Later revisions moved to wgpu 30,
+# which cannot share objects with deno_webgpu's wgpu-core 29.
+netrender = { git = "https://github.com/merely-made/netrender", rev = "d2f13ca5ecd20df89d148a7cebef28c0962b90ca" }
+# V8 path (`--features deno --bin deno_js`): the same releases as the Blitz probe
+# (support/blitz-v8-probe/Cargo.toml). deno_webgpu's own wgpu-core `=29.0.1`
+# resolves to the patched crate below, so the guest's device is the one wgpu adopts.
+deno_core = { version = "=0.413.0", optional = true }
+deno_error = { version = "=0.7.1", optional = true }
+deno_web = { version = "=0.291.0", optional = true }
+deno_webidl = { version = "=0.260.0", optional = true }
+deno_webgpu = { version = "=0.227.0", optional = true }
+tokio = { version = "1.47.1", default-features = false, features = ["rt"], optional = true }
+
+[features]
+deno = ["dep:deno_core", "dep:deno_error", "dep:deno_web", "dep:deno_webidl", "dep:deno_webgpu", "dep:tokio"]
+
+[[bin]]
+name = "deno_js"
+path = "src/bin/deno_js.rs"
+required-features = ["deno"]
+
+# wgpu 29 has no public way to adopt an existing wgpu-core Global/device/texture
+# (the compile repro is in README.md). `prepare-patched.sh` downloads the exact
+# crates.io releases above and applies upstream/wgpu-29-core-interop.patch, the
+# smallest change that makes the bridge possible. Not a Roves fork: nothing in the
+# shipped graph uses it.
+[patch.crates-io]
+wgpu = { path = "patched/wgpu" }
+wgpu-core = { path = "patched/wgpu-core" }

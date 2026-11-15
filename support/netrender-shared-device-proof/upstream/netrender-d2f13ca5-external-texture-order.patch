@@ -1,0 +1,89 @@
+diff --git a/netrender/src/renderer/filters.rs b/netrender/src/renderer/filters.rs
+index 21ec8eb..b0f7ec3 100644
+--- a/netrender/src/renderer/filters.rs
++++ b/netrender/src/renderer/filters.rs
+@@ -15,6 +15,23 @@ pub(super) fn scene_tail_fragment(scene: &Scene, scene_op_boundary: usize) -> Sc
+     fragment
+ }
+ 
++/// `scene` restricted to `ops[start..end]`; compositor surfaces are kept only
++/// for the master's own head segment.
++pub(super) fn scene_segment_fragment(
++    scene: &Scene,
++    start: usize,
++    end: usize,
++    keep_surfaces: bool,
++) -> Scene {
++    let end = end.min(scene.ops.len());
++    let mut fragment = scene.clone();
++    fragment.ops = scene.ops[start.min(end)..end].to_vec();
++    if !keep_surfaces {
++        fragment.compositor_surfaces.clear();
++    }
++    fragment
++}
++
+ pub(super) fn make_external_tail_target(
+     device: &wgpu::Device,
+     viewport_width: u32,
+diff --git a/netrender/src/renderer/mod.rs b/netrender/src/renderer/mod.rs
+index 2519d82..fb1b3ca 100644
+--- a/netrender/src/renderer/mod.rs
++++ b/netrender/src/renderer/mod.rs
+@@ -53,7 +53,7 @@ mod filter_chain;
+ mod filter_passes;
+ mod filters;
+ 
+-use filters::{make_external_tail_target, scene_tail_fragment};
++use filters::{make_external_tail_target, scene_segment_fragment, scene_tail_fragment};
+ 
+ pub struct Renderer {
+     pub wgpu_device: WgpuDevice,
+@@ -576,8 +576,19 @@ impl Renderer {
+         let processed = self.preprocess_filters(scene, &mut rast, &mut tc);
+         let render_scene = processed.as_ref().unwrap_or(scene);
+ 
+-        // 1. Render the scene into the rasterizer's pool-allocated master.
+-        rast.render_to_internal_master(render_scene, &mut tc, master_format, base_color)
++        // 1. Render the scene into the rasterizer's pool-allocated master:
++        // only the ops below the first external texture when one interleaves,
++        // so ops above it are painted once, above it (translucent sources
++        // must not show scene content that belongs on top of them).
++        let head;
++        let master_scene = match external_textures.first() {
++            Some(first) if processed.is_none() && first.scene_op_boundary < scene.ops.len() => {
++                head = scene_segment_fragment(scene, 0, first.scene_op_boundary, true);
++                &head
++            }
++            _ => render_scene,
++        };
++        rast.render_to_internal_master(master_scene, &mut tc, master_format, base_color)
+             .unwrap_or_else(|e| panic!("vello render_to_texture failed: {:?}", e));
+ 
+         if !external_textures.is_empty() {
+@@ -587,7 +598,7 @@ impl Renderer {
+             let master_view = master_texture.create_view(&wgpu::TextureViewDescriptor::default());
+             let mut tail_target: Option<(wgpu::Texture, wgpu::TextureView)> = None;
+             let mut previous_boundary = 0usize;
+-            for external in external_textures {
++            for (index, external) in external_textures.iter().enumerate() {
+                 let boundary = external.scene_op_boundary.min(scene.ops.len());
+                 debug_assert!(
+                     boundary >= previous_boundary,
+@@ -608,7 +619,15 @@ impl Renderer {
+                     continue;
+                 }
+ 
+-                let tail_scene = scene_tail_fragment(scene, boundary);
++                // Ops between this texture and the next one (or the end).
++                let tail_scene = if processed.is_none() {
++                    let end = external_textures
++                        .get(index + 1)
++                        .map_or(scene.ops.len(), |next| next.scene_op_boundary.min(scene.ops.len()));
++                    scene_segment_fragment(scene, boundary, end, false)
++                } else {
++                    scene_tail_fragment(scene, boundary)
++                };
+                 if tail_scene.ops.is_empty() {
+                     continue;
+                 }

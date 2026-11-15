@@ -1,0 +1,183 @@
+diff --git a/wgpu-core/src/device/global.rs b/wgpu-core/src/device/global.rs
+index 4c76fa6..e6222ae 100644
+--- a/wgpu-core/src/device/global.rs
++++ b/wgpu-core/src/device/global.rs
+@@ -2123,3 +2123,38 @@ impl Global {
+         buffer.unmap()
+     }
+ }
++
++/// Interop between two wrappers of the same [`Global`] (for example a WebGPU
++/// binding and the `wgpu` crate used by an embedder's renderer).
++///
++/// Each method registers a *new* id for the resource behind `id`. Both ids
++/// share the same `Arc`, so the resource lives until every id is dropped and
++/// either owner may drop its id independently, in any order. The new id has
++/// no trace record of its own: with the `trace` feature a replay sees only
++/// the original creation.
++impl Global {
++    /// Registers another id for the adapter behind `id`.
++    pub fn adapter_clone_id(&self, id: AdapterId) -> AdapterId {
++        let adapter = self.hub.adapters.get(id);
++        self.hub.adapters.prepare(None).assign(adapter)
++    }
++
++    /// Registers another id for the device behind `id`.
++    pub fn device_clone_id(&self, id: DeviceId) -> DeviceId {
++        let device = self.hub.devices.get(id);
++        self.hub.devices.prepare(None).assign(device)
++    }
++
++    /// Registers another id for the queue behind `id`.
++    pub fn queue_clone_id(&self, id: QueueId) -> QueueId {
++        let queue = self.hub.queues.get(id);
++        self.hub.queues.prepare(None).assign(queue)
++    }
++
++    /// Registers another id for the texture behind `id` (also an invalid
++    /// one, which stays invalid).
++    pub fn texture_clone_id(&self, id: id::TextureId) -> id::TextureId {
++        let texture = self.hub.textures.get(id);
++        self.hub.textures.prepare(None).assign(texture)
++    }
++}
+diff --git a/wgpu/src/api/instance.rs b/wgpu/src/api/instance.rs
+index 673f017..626d370 100644
+--- a/wgpu/src/api/instance.rs
++++ b/wgpu/src/api/instance.rs
+@@ -421,6 +421,83 @@ impl Instance {
+             },
+         }
+     }
++
++    /// Wraps a wgpu-core `Global` that another owner (for example a WebGPU
++    /// binding) keeps using, so both sides create resources in one registry
++    /// and submit on the same devices and queues.
++    ///
++    /// # Safety
++    ///
++    /// `global` must have been created by the same wgpu-core version with the
++    /// backends this build of wgpu enables.
++    pub unsafe fn from_core_global(global: alloc::sync::Arc<wgc::global::Global>) -> Self {
++        Self {
++            inner: unsafe { crate::backend::ContextWgpuCore::from_core_global(global).into() },
++        }
++    }
++
++    /// Adopts an adapter id of this instance's `Global`. The returned
++    /// [`Adapter`] drops the id: pass an id the caller owns exclusively (for
++    /// example one from `Global::adapter_clone_id`).
++    ///
++    /// # Safety
++    ///
++    /// `adapter` must be a live id of this instance's `Global`, owned by the caller.
++    pub unsafe fn adapter_from_core(&self, adapter: wgc::id::AdapterId) -> Adapter {
++        let core = crate::backend::wgpu_core::CoreAdapter {
++            context: self.inner.as_core().clone(),
++            id: adapter,
++        };
++        Adapter { inner: core.into() }
++    }
++
++    /// Adopts a device id and its queue id of this instance's `Global`. The
++    /// returned objects drop the ids; errors they report go to their own
++    /// error sink, not to the other owner's. Do not replace the device-lost
++    /// callback the other owner installed.
++    ///
++    /// # Safety
++    ///
++    /// `device` and `queue` must be live ids of this instance's `Global`, the
++    /// queue must belong to the device, and both must be owned by the caller
++    /// (for example from `Global::device_clone_id` / `queue_clone_id`).
++    pub unsafe fn device_from_core(
++        &self,
++        device: wgc::id::DeviceId,
++        queue: wgc::id::QueueId,
++    ) -> (Device, Queue) {
++        let (device, queue) = unsafe { self.inner.as_core().device_from_core(device, queue) };
++        (Device { inner: device.into() }, Queue { inner: queue.into() })
++    }
++
++    /// Adopts a texture id created on `device`. `desc` must describe the
++    /// texture as it was created; [`Texture`]'s accessors report it.
++    ///
++    /// # Safety
++    ///
++    /// `texture` must be a live id of this instance's `Global`, created on
++    /// `device` with `desc`, and owned by the caller (for example from
++    /// `Global::texture_clone_id`).
++    pub unsafe fn texture_from_core(
++        &self,
++        device: &Device,
++        texture: wgc::id::TextureId,
++        desc: &TextureDescriptor<'_>,
++    ) -> Texture {
++        let core = unsafe {
++            self.inner
++                .as_core()
++                .texture_from_core(device.inner.as_core(), texture)
++        };
++        Texture {
++            inner: core.into(),
++            descriptor: TextureDescriptor {
++                label: None,
++                view_formats: &[],
++                ..desc.clone()
++            },
++        }
++    }
+ }
+ 
+ /// Interop with custom backends.
+diff --git a/wgpu/src/backend/wgpu_core.rs b/wgpu/src/backend/wgpu_core.rs
+index 612a226..3e2303c 100644
+--- a/wgpu/src/backend/wgpu_core.rs
++++ b/wgpu/src/backend/wgpu_core.rs
+@@ -78,6 +78,47 @@ impl ContextWgpuCore {
+         Self(unsafe { Arc::new(wgc::global::Global::from_instance(core_instance)) })
+     }
+ 
++    /// Wraps a `Global` shared with another owner (see `Instance::from_core_global`).
++    pub unsafe fn from_core_global(global: Arc<wgc::global::Global>) -> Self {
++        Self(global)
++    }
++
++    /// Adopts already-owned device and queue ids of this `Global`.
++    pub unsafe fn device_from_core(
++        &self,
++        device: wgc::id::DeviceId,
++        queue: wgc::id::QueueId,
++    ) -> (CoreDevice, CoreQueue) {
++        let error_sink = Arc::new(Mutex::new(ErrorSinkRaw::new()));
++        let features = self.0.device_features(device);
++        (
++            CoreDevice {
++                context: self.clone(),
++                id: device,
++                error_sink: error_sink.clone(),
++                features,
++            },
++            CoreQueue {
++                context: self.clone(),
++                id: queue,
++                error_sink,
++            },
++        )
++    }
++
++    /// Adopts an already-owned texture id of `device`'s `Global`.
++    pub unsafe fn texture_from_core(
++        &self,
++        device: &CoreDevice,
++        texture: wgc::id::TextureId,
++    ) -> CoreTexture {
++        CoreTexture {
++            context: self.clone(),
++            id: texture,
++            error_sink: Arc::clone(&device.error_sink),
++        }
++    }
++
+     #[cfg(wgpu_core)]
+     pub fn enumerate_adapters(&self, backends: wgt::Backends) -> Vec<wgc::id::AdapterId> {
+         self.0.enumerate_adapters(backends)
