@@ -25,10 +25,10 @@ jobs:
     # Production must use a startup snapshot instead (see TODO.md).
     env:
       CARGO_HOME: C:/roves-cargo
-    # 65: room for the normal-mode WebGPU fixture (200 s), backend comparison
-    # (up to 3 x 200 s) and story harness (600 s) after the primary smoke run,
-    # so a hang there cannot cancel the job and hide results.
-    timeout-minutes: 65
+    # 77: room for the normal-mode WebGPU fixture (200 s), backend comparison
+    # (up to 3 x 200 s), story harness (600 s) and Skip gate (600 s) after the
+    # primary smoke run, so a hang there cannot cancel the job and hide results.
+    timeout-minutes: 77
     strategy:
       fail-fast: false
       matrix:
@@ -90,6 +90,9 @@ jobs:
         run: |
           set -o pipefail
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml game::tests
+          # Blitz box-tree lifetime regression (vendor/blitz-dom 0005): hide /
+          # free / reinsert must not leave freed nodes in a layout child list.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml box_tree::
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
@@ -375,6 +378,58 @@ jobs:
             exit 1
           fi
           echo "::notice::game_hud_save_load passed $(printf '%s' "$lines" | cut -c1-700)"
+      # Required regression gate (Blitz box-tree fix, vendor/blitz-dom 0005): on
+      # the unmodified template, Start, two dialogue states, a trusted click on
+      # Skip, the name prompt Skip stops at, its prefilled name accepted
+      # unchanged, then Skip resuming until a narration line contains the name
+      # and 300 more frames. Before the fix the probe aborted there ("layout
+      # child ... is not in the slab"). Separate process and storage; no
+      # continue-on-error: a panic, a missing or non-passed game_story_skip
+      # line, or a non-zero exit fails the job in both modes. The probe waits
+      # (bounded) for a visible Start button on a settled menu before clicking,
+      # and the result's top-level "jitless" field (read from V8) must match
+      # the matrix mode.
+      - name: required regression gate - template Skip through name confirmation
+        if: ${{ !cancelled() }}
+        timeout-minutes: 12
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-skip-storage
+          RUST_BACKTRACE: '1'
+        run: |
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          if [ ! -x "$exe" ] || [ ! -d visual-novel-template/dist ]; then
+            echo "::error::game_story_skip gate NOT RUN: probe executable or game build missing"
+            exit 1
+          fi
+          log="$RUNNER_TEMP/blitz-story-skip.log"
+          set +e +o pipefail
+          timeout 600 "$exe" --game visual-novel-template/dist --story-skip > "$log" 2>&1
+          status=$?
+          lines=$(grep -F 'ROVES_PROBE_RESULT {"check":"game_story_skip",' "$log")
+          count=$(printf '%s' "$lines" | grep -c .)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::game_story_skip gate: exit=$status, expected exactly one result line, found $count (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400))"
+            exit 1
+          fi
+          if ! printf '%s' "$lines" | grep -Fq 'ROVES_PROBE_RESULT {"check":"game_story_skip","status":"passed"'; then
+            echo "::error::game_story_skip gate: not passed $(printf '%s' "$lines" | cut -c1-900)"
+            exit 1
+          fi
+          # The result's jitless field is read from V8 itself (WebAssembly
+          # global absent on a fresh context), not echoed from the env.
+          expected=false
+          if [ "$ROVES_PROBE_JITLESS" = 1 ]; then expected=true; fi
+          if ! printf '%s' "$lines" | grep -Fq "ROVES_PROBE_RESULT {\"check\":\"game_story_skip\",\"status\":\"passed\",\"jitless\":$expected,"; then
+            echo "::error::game_story_skip gate: expected jitless=$expected for mode ${{ matrix.mode }} $(printf '%s' "$lines" | cut -c1-300)"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::game_story_skip passed, but the probe exited with $status $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400)"
+            exit 1
+          fi
+          echo "::notice::game_story_skip passed $(printf '%s' "$lines" | cut -c1-900)"
       - name: template Continue after restart (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -529,6 +584,7 @@ jobs:
             ${{ runner.temp }}/blitz-settings.log
             ${{ runner.temp }}/blitz-story.log
             ${{ runner.temp }}/blitz-story-restore.log
+            ${{ runner.temp }}/blitz-story-skip.log
             ${{ runner.temp }}/blitz-story.png
             ${{ runner.temp }}/blitz-compat-report.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe

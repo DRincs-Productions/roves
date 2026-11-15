@@ -88,6 +88,31 @@ explicit z-index stacking only. Regression: `support/blitz-v8-probe/src/paint_or
 unpatched crates and pass with this patch plus blitz-paint 0001; an overflow clip
 check passes in both).
 
+`0005-detach-boxes-leaving-the-box-tree.patch` (`src/resolve.rs`): a game-blocking
+defect of the published crate. `resolve_layout_children` only visits boxes reachable
+from the root's `layout_children`. When a container's reconstruction dropped a child
+box that still existed (a `display: none` ancestor, a node detached from the DOM, a box
+that became inline content), that child kept its own `layout_children` and nobody
+visited it again. Freeing one of its children (the probe frees unreferenced detached
+nodes at once, `drop_if_unreferenced`) left a freed slab key in that list, so the
+crate's own debug assertion `assert_layout_parents_consistent` (unchanged) aborted the
+next `resolve` with "layout child NodeId(..) of NodeId(..) is not in the slab". In the
+visual-novel-template this happened after Skip and the accepted name prompt
+(`0xc0000409`, 14 November 2026). Before rebuilding a container, the patch records the
+boxes it laid out, directly or through the anonymous blocks it frees, with their
+`layout_parent` cleared; after the new children are collected and visited, a previous
+box that no container adopted (or that became the inline content of an inline root)
+has left the box tree and its box subtree is detached: child lists taken, links cleared
+and its anonymous blocks freed. A box without `layout_children` (never built or
+detached) is rebuilt in full when a container collects it again: `ALL_DAMAGE`, layout
+cache invalidated and the damaged-descendant flags marked, because its own damage may
+have been cleared while it was outside the box tree. No list is filtered: the
+assertion and the existing resolver paths are unchanged, and only entries of a list
+being discarded are allowed to be gone already. Regressions:
+`support/blitz-v8-probe/src/box_tree.rs` (hide/free/show and same-frame variants abort
+with the unpatched crate; the detached/reinsert control passes in both) and the
+`--story-skip` template gate.
+
 Nothing else differs from the published crate (`ROVES_PATCHES.md` is the only added
 file).
 
@@ -96,7 +121,8 @@ file).
 Drop this directory and the `[patch.crates-io]` entry as soon as a maintained blitz-dom
 release exposes the animation set (or an equivalent snapshot) and the entries it
 finishes (or animation events), creates the text editor for every input in the
-Text state, and passes `src/paint_order.rs` without patch 0004 (drop
-`vendor/blitz-paint` at the same time), bumping every blitz crate and Stylo together.
+Text state, passes `src/paint_order.rs` without patch 0004 (drop
+`vendor/blitz-paint` at the same time) and `src/box_tree.rs` without patch 0005,
+bumping every blitz crate and Stylo together.
 Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`, Blitz #1493); an
 upstream issue/PR proposing the accessor is still to be opened.

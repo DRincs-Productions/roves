@@ -260,6 +260,16 @@ impl BaseDocument {
             let mut damage = doc.nodes[node_id].damage().unwrap_or(ALL_DAMAGE);
             let _flags = doc.nodes[node_id].flags;
 
+            // Roves patch: a box without `layout_children` was never built or was
+            // detached from the box tree (see `detach_box_subtree`). Its own
+            // damage may have been cleared while it was outside the box tree, so
+            // rebuild it fully: box, layout cache and paint lists.
+            if doc.nodes[node_id].layout_children.get_mut().is_none() {
+                damage |= ALL_DAMAGE;
+                doc.nodes[node_id].invalidate_layout_cache();
+                doc.nodes[node_id].mark_damaged();
+            }
+
             if damage.intersects(CONSTRUCT_FC | CONSTRUCT_BOX) {
                 //} || flags.contains(NodeFlags::IS_INLINE_ROOT) {
 
@@ -268,6 +278,12 @@ impl BaseDocument {
                 // reconstructing without freeing them would leak a slab entry per
                 // anonymous block per reconstruction.
                 let old_anonymous_blocks = std::mem::take(&mut doc.nodes[node_id].anonymous_blocks);
+                // Roves patch: remember the boxes this node (directly or through
+                // the anonymous blocks freed below) laid out until now, with
+                // their `layout_parent` cleared; reconstruction sets it again on
+                // every box that stays in the box tree.
+                let mut previous_boxes = Vec::new();
+                take_previous_boxes(doc, node_id, &old_anonymous_blocks, &mut previous_boxes);
                 for anon_id in old_anonymous_blocks {
                     doc.deallocate_anonymous_block(anon_id);
                 }
@@ -287,6 +303,38 @@ impl BaseDocument {
                     {
                         data.damage
                             .remove(CONSTRUCT_DESCENDENT | CONSTRUCT_FC | CONSTRUCT_BOX);
+                    }
+                }
+
+                // Roves patch: a previous box that no container adopted (it is
+                // hidden by a `display: none` ancestor, detached from the DOM,
+                // no longer generates a box...) has left the box tree, which
+                // Blitz never revisits. Detach its box subtree now, so no node
+                // keeps a child list whose entries can be freed later. A box
+                // adopted later in this pass is rebuilt there (no
+                // `layout_children`). Pseudo-elements freed by this
+                // reconstruction are gone from the slab and need nothing. An
+                // inline root also points the inline content it lays out itself
+                // at itself (that link stays), while its list holds only the
+                // embedded boxes: a previous box that became such content left
+                // the box tree too.
+                let is_inline_root = doc.nodes[node_id]
+                    .flags
+                    .contains(crate::node::NodeFlags::IS_INLINE_ROOT);
+                for previous_box in previous_boxes {
+                    let Some(previous) = doc.nodes.get(previous_box) else {
+                        continue;
+                    };
+                    let left_box_tree = match previous.layout_parent.get() {
+                        None => true,
+                        Some(parent) => {
+                            is_inline_root
+                                && parent == node_id
+                                && !layout_children.contains(&previous_box)
+                        }
+                    };
+                    if left_box_tree {
+                        detach_box_subtree(doc, previous_box);
                     }
                 }
 
@@ -317,6 +365,65 @@ impl BaseDocument {
             }
 
             doc.nodes[node_id].set_damage(damage);
+        }
+
+        /// Roves patch: takes `owner`'s layout children into `out`, clearing their
+        /// `layout_parent`. The children of anonymous blocks in `owned` (about to
+        /// be freed with their owner's reconstruction) are taken instead of the
+        /// blocks themselves.
+        fn take_previous_boxes(
+            doc: &mut BaseDocument,
+            owner: NodeId,
+            owned: &[NodeId],
+            out: &mut Vec<NodeId>,
+        ) {
+            let Some(children) = doc.nodes[owner].layout_children.get_mut().take() else {
+                return;
+            };
+            for child_id in children {
+                // A freed entry (e.g. a pseudo-element dropped since) has no
+                // boxes to track.
+                let Some(child) = doc.nodes.get(child_id) else {
+                    continue;
+                };
+                if child.layout_parent.get() != Some(owner) {
+                    continue;
+                }
+                child.layout_parent.set(None);
+                if owned.contains(&child_id) {
+                    let nested = child.anonymous_blocks.clone();
+                    take_previous_boxes(doc, child_id, &nested, out);
+                } else {
+                    out.push(child_id);
+                }
+            }
+        }
+
+        /// Roves patch: `node_id` has left the box tree. Drop the box subtree it
+        /// heads (child lists, `layout_parent` links and its anonymous blocks):
+        /// Blitz does not revisit boxes outside the box tree, so a kept list
+        /// could later name freed nodes. A detached box is rebuilt in full when
+        /// a container collects it again (see `resolve_layout_children_recursive`).
+        fn detach_box_subtree(doc: &mut BaseDocument, node_id: NodeId) {
+            let Some(children) = doc.nodes[node_id].layout_children.get_mut().take() else {
+                return;
+            };
+            for child_id in children {
+                // The list is discarded: an entry freed in the same frame (e.g. a
+                // child removed while an ancestor became `display: none`) has
+                // nothing left to detach.
+                let Some(child) = doc.nodes.get(child_id) else {
+                    continue;
+                };
+                if child.layout_parent.get() == Some(node_id) {
+                    child.layout_parent.set(None);
+                    detach_box_subtree(doc, child_id);
+                }
+            }
+            let anonymous_blocks = std::mem::take(&mut doc.nodes[node_id].anonymous_blocks);
+            for anon_id in anonymous_blocks {
+                doc.deallocate_anonymous_block(anon_id);
+            }
         }
     }
 

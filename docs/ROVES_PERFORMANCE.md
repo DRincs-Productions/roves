@@ -1,6 +1,24 @@
 # Roves — fluidità di gioco con V8 e deno_core
 
-> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 14 novembre 2026.
+> **Stato: piano di validazione, non certificazione.** Fonte di verità per obiettivi e metodo; i risultati precedenti sono conservati in appendice come evidenze storiche, non come target correnti. Ultima revisione: 15 novembre 2026.
+
+## Crash Skip della probe Blitz — 15 novembre 2026
+
+Non è una misura di fluidità: il run di temporizzazione del 14 novembre su Skip si interrompeva
+per un abort (`0xc0000409`, `layout child ... is not in the slab`). Causa confermata in
+blitz-dom 0.3.0-beta.4 ([Blitz #1577](https://github.com/DioxusLabs/blitz/issues/1577)): un box
+escluso dalla ricostruzione del contenitore conservava una lista di figli che poteva contenere
+nodi poi liberati. Corretto localmente con la patch `vendor/blitz-dom` 0005, senza toccare
+scheduling dei frame, cache raster o codice di prestazioni. Gate `--story-skip` obbligatorio in
+CI normale/JITless (forza un GC V8 completo ogni 10 frame per rendere deterministica la
+liberazione dei nodi: le sue durate non sono confrontabili con le misure di fluidità). La
+patch enumera i figli di layout precedenti quando un contenitore viene ricostruito e raccoglie
+i box che potrebbero dover essere staccati; stacca ricorsivamente solo quelli non riadottati e
+ricostruisce per intero un box quando rientra nell'albero. Questo overhead CPU non è misurato,
+quindi va incluso nel confronto di fluidità prima di considerare la correzione conclusa. La
+cattura Skip del flusso fluidità resta da rifare con la patch; CI e replay nella finestra reale
+sono pendenti.
+Dettagli: `docs/handoff/2026-11-14-blitz-skip-fluidita.md`.
 
 ## Verifica media Blitz/V8 — 13 novembre 2026
 

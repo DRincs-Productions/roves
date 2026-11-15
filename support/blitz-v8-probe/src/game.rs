@@ -400,8 +400,8 @@ addEventListener("unhandledrejection", (event) => {
         media_matrix(runtime, document, run_animation_frame).await;
     }
 
-    if std::env::args().any(|arg| arg == "--story")
-        || std::env::args().any(|arg| arg == "--settings-popup")
+    if std::env::args()
+        .any(|arg| arg == "--story" || arg == "--settings-popup" || arg == "--story-skip")
     {
         story(
             runtime,
@@ -765,6 +765,13 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       const button = exact ?? loose;
       return button ? (center(button, { label: label(button) }) ?? "null") : "null";
     },
+    // The HUD's Skip toggle (exact label, outside dialogs).
+    skip() {
+      const dialogs = dialogElements();
+      const button = buttons().find((element) => /^skip$/i.test(label(element)) &&
+        !dialogs.some((dialog) => dialog.contains(element)));
+      return button ? (center(button, { label: label(button), pressed: attr(button, "aria-pressed") }) ?? "null") : "null";
+    },
     // A "next" control of the dialogue UI, by label/aria-label/title.
     next() {
       const button = buttons().find((element) => /^(next|›|»|>|→)$/i.test(label(element)) || /\bnext\b/i.test(norm(element.getAttribute("aria-label"))));
@@ -959,6 +966,18 @@ async fn story(
         settings_popup(runtime, document, run_animation_frame, dispatcher).await;
         return;
     }
+    if std::env::args().any(|arg| arg == "--story-skip") {
+        crate::stage("game_story");
+        story_skip(
+            runtime,
+            document,
+            run_animation_frame,
+            dispatcher,
+            gpu_pacing_stats,
+        )
+        .await;
+        return;
+    }
     crate::stage("game_story");
     crate::stage("game_story_dialogues");
     let progress = two_dialogues(
@@ -1014,33 +1033,32 @@ async fn two_dialogues(
     gpu_pacing_stats: &v8::Global<v8::Function>,
 ) -> Option<StoryProgress> {
     use deno_core::serde_json::{Value, json};
-    let errors_before = error_count(runtime);
-    let menu = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+    let mut menu = String::new();
     let mut advance_method: Option<&'static str> = None;
-    let mut report = json!({ "menu": excerpt(&menu) });
+    let mut report = json!({});
     let mut steps: Vec<Value> = Vec::new();
     let mut states: Vec<String> = Vec::new();
     // New dialogue lines of state 1 and state 2 (state 2: lines not in state 1).
     let mut dialogue: Vec<Vec<String>> = Vec::new();
     let mut toasts: Vec<Value> = Vec::new();
     collect_toasts(runtime, &mut toasts);
+    // Reassigned once the menu is ready: errors while the game mounts its UI are
+    // reported in `recent_errors`, only those after that point fail the story.
+    let mut errors_before = error_count(runtime);
 
     let failure: Option<String> = 'story: {
         let expected = match expected_lines() {
             Ok(expected) => expected,
             Err(error) => break 'story Some(error),
         };
-        if let Some(text) = error_boundary(runtime) {
-            break 'story Some(format!(
-                "error boundary shown before Start: {:?}",
-                excerpt(&text)
-            ));
-        }
-        crate::resolve_layout(document);
-        let start = crate::evaluate_string(runtime, "__rovesStory.start()");
-        let Some((x, y, start)) = point(&start) else {
-            break 'story Some("no visible Start/New game button on the page".into());
+        let start = match menu_ready(runtime, document, run_animation_frame, &mut toasts).await {
+            Ok(ready) => ready,
+            Err(reason) => break 'story Some(reason),
         };
+        steps.push(json!({ "result": "menu ready", "frames": start.frames }));
+        menu = start.menu;
+        errors_before = error_count(runtime);
+        let (x, y, start) = (start.x, start.y, start.button);
         let Some(hit) = crate::click_at(runtime, dispatcher, document, x, y) else {
             break 'story Some(format!(
                 "hit-test found no node at the Start button ({x}, {y})"
@@ -1196,6 +1214,7 @@ async fn two_dialogues(
     } else {
         "failed"
     };
+    report["menu"] = json!(excerpt(&menu));
     report["reason"] = json!(failure);
     report["states"] = json!(
         states
@@ -1230,6 +1249,89 @@ async fn two_dialogues(
         method: advance_method?,
         last_state: states.pop()?,
     })
+}
+
+/// Upper bound, in frames, for the game to mount its start menu after
+/// `game_page`: the 120 page frames do not guarantee it (a local `--story-skip`
+/// run still had an empty page there, with a 1.6 s tick gap while loading).
+const MENU_READY_FRAMES: u32 = 1800;
+
+/// The start menu once ready: its visible Start/New game button and settled text.
+struct MenuReady {
+    x: f32,
+    y: f32,
+    button: deno_core::serde_json::Value,
+    menu: String,
+    frames: u32,
+}
+
+/// Drives frames (10 per check, at most `MENU_READY_FRAMES`) until the page
+/// shows a visible Start/New game button and its text is unchanged for
+/// `STORY_STABLE_CHECKS` checks, so the menu snapshot that separates dialogue
+/// from menu text is complete. An error-boundary fallback fails at once; a
+/// timeout reports the last page text, the page's buttons and location.
+async fn menu_ready(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    toasts: &mut Vec<deno_core::serde_json::Value>,
+) -> Result<MenuReady, String> {
+    let mut frames = 0;
+    let mut last = String::new();
+    let mut stable = 0;
+    loop {
+        if let Some(text) = error_boundary(runtime) {
+            return Err(format!(
+                "error boundary shown before Start ({frames} frames): {:?}",
+                excerpt(&text)
+            ));
+        }
+        crate::resolve_layout(document);
+        let text = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+        let start = crate::evaluate_string(runtime, "__rovesStory.start()");
+        match point(&start) {
+            Some((x, y, button)) if text == last => {
+                stable += 1;
+                if stable >= STORY_STABLE_CHECKS {
+                    return Ok(MenuReady {
+                        x,
+                        y,
+                        button,
+                        menu: text,
+                        frames,
+                    });
+                }
+            },
+            _ => stable = 0,
+        }
+        last = text;
+        if frames >= MENU_READY_FRAMES {
+            return Err(format!(
+                "no visible Start/New game button with a settled menu within {MENU_READY_FRAMES} frames (start: {start}, last text: {:?}, location: {})",
+                excerpt(&last),
+                crate::evaluate_string(runtime, "location.href")
+            ));
+        }
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        frames += 10;
+        collect_toasts(runtime, toasts);
+    }
+}
+
+/// Whether V8 actually runs JITless, read from V8 rather than from the
+/// requested mode: with `--jitless` (and no DrumBrake Wasm interpreter, as in
+/// rusty_v8 builds) V8 does not install the `WebAssembly` global on new
+/// contexts (`src/wasm/wasm-js.cc`, `expose_wasm`). A fresh context is checked,
+/// so a global the game defined or deleted cannot change the answer.
+fn v8_jitless(runtime: &mut JsRuntime) -> bool {
+    deno_core::scope!(scope, runtime);
+    let context = v8::Context::new(scope, Default::default());
+    let scope = &v8::ContextScope::new(scope, context);
+    let global = context.global(scope);
+    let key = v8::String::new(scope, "WebAssembly").expect("V8 string");
+    !global
+        .has_own_property(scope, key.into())
+        .expect("has_own_property on a fresh global")
 }
 
 /// Advance methods tried, in order, to reach story state 2.
@@ -1314,9 +1416,37 @@ async fn wait_until(
     max_frames: u32,
     toasts: &mut Vec<deno_core::serde_json::Value>,
 ) -> Result<(String, u32), String> {
+    wait_until_collecting(
+        runtime,
+        document,
+        run_animation_frame,
+        probe,
+        max_frames,
+        toasts,
+        false,
+    )
+    .await
+}
+
+/// `wait_until`; with `collect`, a full V8 collection runs before every 10
+/// frames, so wrappers of removed nodes are finalized and the probe frees those
+/// detached nodes as an interactive run eventually does (the embedder API only:
+/// no `gc` global reaches the game).
+async fn wait_until_collecting(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    probe: &str,
+    max_frames: u32,
+    toasts: &mut Vec<deno_core::serde_json::Value>,
+    collect: bool,
+) -> Result<(String, u32), String> {
     let mut frames = 0;
     let mut last = String::new();
     while frames < max_frames {
+        if collect {
+            runtime.v8_isolate().low_memory_notification();
+        }
         crate::drive_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
@@ -1619,6 +1749,221 @@ async fn settings_popup(
 /// template's single-key hotkeys).
 const TYPED_NAME: &str = "Zorvaq";
 
+/// The name dialog is accepted once no dialog is still marked open: the
+/// template may keep the closed dialog mounted (`data-closed`), so unmounting
+/// is not required.
+const NAME_DIALOG_CLOSED: &str = "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) ? 'closed' : ''";
+
+/// Frames driven after the first committed narration line with the accepted
+/// name, while Skip keeps advancing the story (the 14 November 2026 crash
+/// aborted right after the name was accepted).
+const SKIP_AFTER_NAME_FRAMES: u32 = 300;
+
+/// `--story-skip` (separate process): regression for the Blitz box-tree crash
+/// ("layout child ... is not in the slab", fixed in `vendor/blitz-dom`
+/// `src/resolve.rs`). On the unmodified template: Start and the first two
+/// dialogue states (`two_dialogues`), a trusted click on the HUD's Skip toggle,
+/// Skip advancing on its own until the name prompt opens, the prefilled default
+/// name accepted unchanged (Enter in the focused input, the Confirm button by
+/// pointer otherwise), then Skip resuming until a committed narration line
+/// contains that name, and `SKIP_AFTER_NAME_FRAMES` more frames. From the Skip
+/// click on, a full V8 collection runs before every 10 frames
+/// (`wait_until_collecting`): the crash needs removed React nodes to be freed,
+/// which happens only once their wrappers are finalized, as GC eventually does
+/// in an interactive run. A panic aborts the process, so a missing result line
+/// is a failure too. Prints `game_story_skip` with a top-level `jitless` field
+/// read from V8 (`v8_jitless`); it fails when that differs from the mode
+/// `ROVES_PROBE_JITLESS` requested.
+async fn story_skip(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    dispatcher: &v8::Global<v8::Function>,
+    gpu_pacing_stats: &v8::Global<v8::Function>,
+) {
+    use deno_core::serde_json::{Value, json};
+    use keyboard_types::{Key, NamedKey};
+    let progress = two_dialogues(
+        runtime,
+        document,
+        run_animation_frame,
+        dispatcher,
+        gpu_pacing_stats,
+    )
+    .await;
+    crate::stage("game_story_skip");
+    let errors_before = error_count(runtime);
+    let mut toasts: Vec<Value> = Vec::new();
+    let mut steps: Vec<Value> = Vec::new();
+    // Mode as V8 reports it, next to the mode the run asked for: a mismatch
+    // fails, so a result line can never claim a mode V8 did not run in.
+    let jitless = v8_jitless(runtime);
+    let requested = std::env::var("ROVES_PROBE_JITLESS").is_ok_and(|value| value == "1");
+    let mut report = json!({ "jitless_requested": requested });
+    let failure: Option<String> = 'skip: {
+        if jitless != requested {
+            break 'skip Some(format!(
+                "V8 runs with jitless={jitless}, but ROVES_PROBE_JITLESS requested jitless={requested}"
+            ));
+        }
+        let Some(progress) = progress else {
+            break 'skip Some("the two-dialogue story run did not pass".into());
+        };
+        crate::resolve_layout(document);
+        let skip = crate::evaluate_string(runtime, "__rovesStory.skip()");
+        let Some((x, y, skip)) = point(&skip) else {
+            break 'skip Some("no visible Skip control".into());
+        };
+        let Some(hit) = crate::click_at(runtime, dispatcher, document, x, y) else {
+            break 'skip Some(format!(
+                "hit-test found no node at the Skip control ({x}, {y})"
+            ));
+        };
+        steps.push(json!({ "action": "click_skip", "control": skip, "hit_node": hit.as_u64() }));
+        // Skip stops at the name prompt (an open dialog); wait for it to settle.
+        let dialog = match wait_until_collecting(
+            runtime,
+            document,
+            run_animation_frame,
+            "__rovesStory.dialogOpen(null)",
+            STORY_STATE_FRAMES,
+            &mut toasts,
+            true,
+        )
+        .await
+        {
+            Ok((dialog, frames)) => {
+                steps.push(json!({ "result": "input dialog open", "frames": frames }));
+                dialog
+            },
+            Err(last) => {
+                break 'skip Some(format!(
+                    "Skip did not reach an open dialog within {STORY_STATE_FRAMES} frames (last: {last:?}, page: {:?})",
+                    excerpt(&crate::evaluate_string(runtime, "__rovesStory.snapshot()"))
+                ));
+            },
+        };
+        report["dialog"] = deno_core::serde_json::from_str(&dialog).unwrap_or(Value::Null);
+        crate::resolve_layout(document);
+        let input = crate::evaluate_string(runtime, "__rovesStory.dialogInput()");
+        let Some((_, _, input)) = point(&input) else {
+            break 'skip Some("the open dialog has no visible text input".into());
+        };
+        report["input"] = input.clone();
+        let Some(name) = input["value"]
+            .as_str()
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned)
+        else {
+            break 'skip Some(format!(
+                "the name input has no prefilled value ({})",
+                input["value"]
+            ));
+        };
+        let mut closed = Err(String::new());
+        if input["focused"] == Value::Bool(true) {
+            window::press_key(runtime, dispatcher, document, Key::Named(NamedKey::Enter));
+            steps.push(json!({ "action": "enter_key" }));
+            closed = wait_until_collecting(
+                runtime,
+                document,
+                run_animation_frame,
+                NAME_DIALOG_CLOSED,
+                90,
+                &mut toasts,
+                true,
+            )
+            .await;
+        }
+        if closed.is_err() {
+            let confirm = crate::evaluate_string(runtime, "__rovesStory.nameConfirm()");
+            let Some((x, y, _)) = point(&confirm) else {
+                break 'skip Some("no enabled Confirm button for the prefilled name".into());
+            };
+            if !window::pointer_click(runtime, dispatcher, document, x, y) {
+                break 'skip Some("the Confirm button point did not hit any element".into());
+            }
+            steps.push(json!({ "action": "confirm_pointer" }));
+            closed = wait_until_collecting(
+                runtime,
+                document,
+                run_animation_frame,
+                NAME_DIALOG_CLOSED,
+                DIALOG_FRAMES,
+                &mut toasts,
+                true,
+            )
+            .await;
+        }
+        match closed {
+            Ok((_, frames)) => steps
+                .push(json!({ "result": "input dialog closed", "name": name, "frames": frames })),
+            Err(_) => {
+                break 'skip Some(format!(
+                    "the input dialog stayed open after accepting {name:?} (dialogs: {})",
+                    crate::evaluate_string(runtime, "__rovesStory.dialogs()")
+                ));
+            },
+        }
+        // Skip resumes: a later narration line (not the speaker label alone)
+        // must contain the accepted name.
+        let quoted = Value::String(name.clone());
+        let menu = Value::String(progress.menu.clone());
+        let named_line = format!(
+            "(() => {{ const line = JSON.parse(__rovesStory.narration({menu})).find((line) => line !== {quoted} && line.includes({quoted})); return line ?? ''; }})()"
+        );
+        match wait_until_collecting(
+            runtime,
+            document,
+            run_animation_frame,
+            &named_line,
+            STORY_STATE_FRAMES,
+            &mut toasts,
+            true,
+        )
+        .await
+        {
+            Ok((line, frames)) => {
+                steps.push(json!({ "result": "named narration line", "line": excerpt(&line), "frames": frames }));
+                report["named_line"] = json!(excerpt(&line));
+            },
+            Err(_) => {
+                break 'skip Some(format!(
+                    "no narration line contained {name:?} within {STORY_STATE_FRAMES} frames after the prompt (narration: {})",
+                    evaluate_owned(runtime, format!("__rovesStory.narration({menu})"))
+                ));
+            },
+        }
+        for _ in 0..SKIP_AFTER_NAME_FRAMES / 10 {
+            runtime.v8_isolate().low_memory_notification();
+            crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+            crate::resolve_layout(document);
+        }
+        if let Some(text) = error_boundary(runtime) {
+            break 'skip Some(format!(
+                "error boundary shown while skipping after the prompt: {:?}",
+                excerpt(&text)
+            ));
+        }
+        let last = evaluate_owned(runtime, format!("__rovesStory.narration({menu})"));
+        steps.push(json!({ "result": "kept skipping", "frames": SKIP_AFTER_NAME_FRAMES }));
+        report["final_narration"] = deno_core::serde_json::from_str(&last).unwrap_or(Value::Null);
+        None
+    };
+    let (status, report) = phase_result(
+        runtime,
+        "game_story_skip",
+        errors_before,
+        failure,
+        report,
+        toasts,
+        steps,
+    );
+    println!(
+        "ROVES_PROBE_RESULT {{\"check\":\"game_story_skip\",\"status\":\"{status}\",\"jitless\":{jitless},\"detail\":{report}}}"
+    );
+}
+
 /// Name prompt with real typing, after the two-dialogue run: advances (with the
 /// method that produced state 2) until the template's InputRequestDialog shows
 /// its text input (start.label step 5, `requestInput({type:"string"}, "Peter")`),
@@ -1831,9 +2176,6 @@ async fn name_input(
             "JSON.stringify(__rovesStory.nameInputEvents ?? [])",
         );
         println!("ROVES_PROBE_NAME_INPUT_EVENTS {input_events}");
-        // Accepted once no dialog is still marked open: the template may keep
-        // the closed dialog mounted (`data-closed`), so unmounting is not required.
-        const NAME_DIALOG_CLOSED: &str = "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) ? 'closed' : ''";
         let mut closed = wait_until(
             runtime,
             document,

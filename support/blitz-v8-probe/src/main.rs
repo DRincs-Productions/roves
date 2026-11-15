@@ -18,6 +18,8 @@ use style::selector_parser::PseudoElement;
 
 mod animation_clock;
 mod audio;
+#[cfg(test)]
+mod box_tree;
 mod frame_timings;
 mod game;
 mod net_policy;
