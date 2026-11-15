@@ -5,13 +5,17 @@ name: Netrender shared-device proof
 # interop patch confined to the fixture's ignored patched/ directory; it does not
 # build, gate or change the engine, the Blitz probe or any release.
 #
-# On the runner's WARP adapter ("Microsoft Basic Render Driver", DX12):
+# linux-lavapipe runs both producers (the raw wgpu-core one and the real
+# deno_core/deno_webgpu one, where unprivileged JS draws the canvas) on Mesa's
+# lavapipe (llvmpipe, Vulkan):
 #  - negative: Netrender d2f13ca5 as published must fail ONLY the two known
 #    ordering pixels (exit 1), after the bridge, hub, GC and teardown checks held;
 #  - positive: the same revision plus upstream/netrender-d2f13ca5-external-texture-order.patch
 #    must pass 6/6 with the same checks.
-# Both producers run: the raw wgpu-core one and the real deno_core/deno_webgpu one
-# (unprivileged JS draws the canvas).
+# windows-compile builds the same executables (static CRT link of deno_js) but
+# does not run them: the runner's only adapter, WARP, crashes with an access
+# violation inside d3d10warp.dll while executing Vello's compute frame, also
+# with a plain wgpu device and no bridge (README "WARP").
 'on':
   push:
     paths:
@@ -27,32 +31,63 @@ permissions:
   contents: read
 
 jobs:
-  windows-warp:
-    runs-on: windows-latest
+  proof:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-lavapipe
+            os: ubuntu-24.04
+            run: true
+            exe: ''
+            # Same layout as the Windows path; deno_core 0.413 without a
+            # startup snapshot reads extension JS from the crate paths at run time.
+            cargo_home: /home/runner/roves-cargo
+            rustflags: ''
+          - name: windows-compile
+            os: windows-latest
+            run: false
+            exe: .exe
+            cargo_home: C:/roves-cargo
+            # One CRT for the whole link, as Deno itself builds on Windows: the
+            # prebuilt rusty_v8.lib is /MT (/DEFAULTLIB:libcmt.lib) and v8 150.4.0's
+            # build.rs links libcpmt with crt-static (msvcprt otherwise); cc 1.11
+            # compiles lcms2-sys (deno_webgpu -> deno_image) with -MT when
+            # crt-static is set. Without it the /MD lcms2 objects need ucrt.lib, and
+            # adding it next to libcmt's libucrt.lib duplicates
+            # _invalid_parameter_noinfo/_wctype. Job-scoped: no repository flag.
+            rustflags: -C target-feature=+crt-static
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
-      # Same neutral CARGO_HOME as the Blitz probe: deno_core 0.413 without a
-      # startup snapshot reads extension JS from the crate paths at run time, so
-      # the uploaded deno_js.exe runs elsewhere only with C:/roves-cargo/registry/src
-      # mirrored.
-      CARGO_HOME: C:/roves-cargo
+      CARGO_HOME: ${{ matrix.cargo_home }}
       CARGO_TARGET_DIR: ${{ github.workspace }}/../netrender-proof-target
-      DENO_WEBGPU_BACKEND: dx12
+      DENO_WEBGPU_BACKEND: vulkan
       RUST_BACKTRACE: '1'
-      # One CRT for the whole link, as Deno itself builds on Windows: the prebuilt
-      # rusty_v8.lib is /MT (/DEFAULTLIB:libcmt.lib) and v8 150.4.0's build.rs links
-      # libcpmt with crt-static (msvcprt otherwise); cc 1.11 compiles lcms2-sys
-      # (deno_webgpu -> deno_image) with -MT when crt-static is set. Without it the
-      # /MD lcms2 objects need ucrt.lib, and adding it next to libcmt's libucrt.lib
-      # duplicates _invalid_parameter_noinfo/_wctype. Job-scoped: applies to every
-      # build here (raw and deno_js); no repository or engine flag changes.
-      RUSTFLAGS: -C target-feature=+crt-static
+      RUSTFLAGS: ${{ matrix.rustflags }}
+      EXE: ${{ matrix.exe }}
     defaults:
       run:
         shell: bash
         working-directory: support/netrender-shared-device-proof
     steps:
       - uses: actions/checkout@v4
+      # Mesa's lavapipe (llvmpipe Vulkan ICD) from the Ubuntu archive, and only
+      # that ICD: the runner has no GPU, and VK_DRIVER_FILES pins the loader to
+      # lavapipe so the adapter check in ci/verify.py is not satisfied by chance.
+      - name: install lavapipe (Mesa Vulkan software driver)
+        if: ${{ runner.os == 'Linux' }}
+        working-directory: .
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
+          icd=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
+          [ -f "$icd" ] || { echo "::error::lavapipe ICD $icd not installed"; ls /usr/share/vulkan/icd.d || true; exit 1; }
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          echo "::notice::mesa-vulkan-drivers $(dpkg-query -W -f='${Version}' mesa-vulkan-drivers)"
+          VK_DRIVER_FILES=$icd vulkaninfo --summary 2>&1 | grep -E 'deviceName|deviceType|driverInfo|apiVersion' | sed 's/^/::notice::lavapipe: /' || true
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: actions/setup-python@v5
         with:
@@ -61,12 +96,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: |
-            C:/roves-cargo/registry/index
-            C:/roves-cargo/registry/cache
-            C:/roves-cargo/git/db
+            ${{ matrix.cargo_home }}/registry/index
+            ${{ matrix.cargo_home }}/registry/cache
+            ${{ matrix.cargo_home }}/git/db
             ${{ github.workspace }}/../netrender-proof-target
             ${{ github.workspace }}/../netrender-proof-pristine-target
-          key: netrender-proof-${{ runner.os }}-rust-1.95.0-crt-static-${{ hashFiles('support/netrender-shared-device-proof/Cargo.lock', 'support/netrender-shared-device-proof/prepare-patched.sh', 'support/netrender-shared-device-proof/upstream/*.patch') }}
+          key: netrender-proof-${{ matrix.name }}-rust-1.95.0-${{ matrix.rustflags != '' && 'crt-static' || 'default-crt' }}-${{ hashFiles('support/netrender-shared-device-proof/Cargo.lock', 'support/netrender-shared-device-proof/prepare-patched.sh', 'support/netrender-shared-device-proof/upstream/*.patch') }}
       - name: exact pins and crates.io provenance
         run: |
           mkdir -p "$RUNNER_TEMP/netrender-proof/logs"
@@ -85,15 +120,21 @@ jobs:
           cargo check --locked --bin roves-netrender-shared-device-proof > "$log" 2>&1
           status=$?
           set -e
-          grep -E '^error(\[|:)' "$log" || true
+          # Annotations, not only the step log: raw logs need repository admin rights.
+          tr -d '\r' < "$log" | grep -E '^error(\[|:)' | head -20 | sed 's/^/::notice::pristine: /' || true
           [ "$status" -ne 0 ] || { echo "::error::the pristine wgpu build succeeded: the interop patch is no longer needed"; exit 1; }
-          if grep -E '^error\[' "$log" | grep -v '^error\[E0599\]' | grep -q .; then
+          errors=$(tr -d '\r' < "$log" | grep -E '^error\[' || true)
+          if printf '%s\n' "$errors" | grep -v '^error\[E0599\]' | grep -q .; then
             echo "::error::pristine build failed with errors other than E0599"; exit 1
           fi
+          # Each interop symbol must be named by an E0599 diagnostic itself, not
+          # merely appear somewhere in the log (run of job 132956577307 reported
+          # "0 x E0599" and still passed the former substring check).
           for symbol in adapter_clone_id device_clone_id queue_clone_id texture_clone_id from_core_global; do
-            grep -q "$symbol" "$log" || { echo "::error::pristine build did not report $symbol"; exit 1; }
+            printf '%s\n' "$errors" | grep '^error\[E0599\]' | grep -qF "\`$symbol\`" \
+              || { echo "::error::no E0599 diagnostic names $symbol"; exit 1; }
           done
-          echo "::notice::pristine wgpu/wgpu-core: $(grep -c '^error\[E0599\]' "$log") x E0599 on the interop symbols, as expected"
+          echo "::notice::pristine wgpu/wgpu-core: $(printf '%s\n' "$errors" | grep -c '^error\[E0599\]') x E0599 on the interop symbols, as expected"
           rm -rf "$RUNNER_TEMP/pristine" && mv patched "$RUNNER_TEMP/pristine"
       - name: prepare patched wgpu and check its provenance
         run: |
@@ -104,20 +145,21 @@ jobs:
           bash ci/cargo-retry.sh "$RUNNER_TEMP/netrender-proof/logs/build-negative.log" \
             build --locked --features deno --bins
           mkdir -p "$RUNNER_TEMP/netrender-proof/negative"
-          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof.exe" "$CARGO_TARGET_DIR/debug/deno_js.exe" \
+          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof$EXE" "$CARGO_TARGET_DIR/debug/deno_js$EXE" \
             "$RUNNER_TEMP/netrender-proof/negative/"
       - name: negative run (expected to fail only the two ordering pixels)
+        if: ${{ matrix.run }}
         run: |
           dir="$RUNNER_TEMP/netrender-proof"
           ok=0
           for run in raw:roves-netrender-shared-device-proof deno:deno_js; do
-            producer=${run%%:*}; exe="$dir/negative/${run#*:}.exe"; log="$dir/logs/negative-$producer.log"
+            producer=${run%%:*}; exe="$dir/negative/${run#*:}$EXE"; log="$dir/logs/negative-$producer.log"
             set +e
             timeout 600 "$exe" > "$log" 2>&1
             status=$?
             set -e
             echo "::group::negative $producer (exit $status)"; cat "$log"; echo "::endgroup::"
-            python -I ci/verify.py log negative "$producer" "$log" "$status" || ok=1
+            python -I ci/verify.py log negative "$producer" lavapipe "$log" "$status" || ok=1
           done
           exit $ok
       - name: Netrender d2f13ca5 with the proposed order fix
@@ -139,7 +181,8 @@ jobs:
         if: ${{ !cancelled() }}
         run: |
           cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.orig"
-          netrender=$(cygpath -m "$RUNNER_TEMP/netrender/netrender")
+          netrender="$RUNNER_TEMP/netrender/netrender"
+          if command -v cygpath >/dev/null; then netrender=$(cygpath -m "$netrender"); fi
           # Not --locked: the override rewrites the netrender entries of Cargo.lock.
           bash ci/cargo-retry.sh "$RUNNER_TEMP/netrender-proof/logs/build-positive.log" \
             build --features deno --bins \
@@ -148,22 +191,22 @@ jobs:
           cp "$RUNNER_TEMP/Cargo.lock.orig" Cargo.lock
           git diff --exit-code -- Cargo.lock
           mkdir -p "$RUNNER_TEMP/netrender-proof/positive"
-          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof.exe" "$CARGO_TARGET_DIR/debug/deno_js.exe" \
+          cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof$EXE" "$CARGO_TARGET_DIR/debug/deno_js$EXE" \
             "$RUNNER_TEMP/netrender-proof/positive/"
       - name: positive run (expected 6/6)
-        if: ${{ !cancelled() }}
+        if: ${{ !cancelled() && matrix.run }}
         run: |
           dir="$RUNNER_TEMP/netrender-proof"
           [ -d "$dir/positive" ] || { echo "::error::positive executables missing"; exit 1; }
           ok=0
           for run in raw:roves-netrender-shared-device-proof deno:deno_js; do
-            producer=${run%%:*}; exe="$dir/positive/${run#*:}.exe"; log="$dir/logs/positive-$producer.log"
+            producer=${run%%:*}; exe="$dir/positive/${run#*:}$EXE"; log="$dir/logs/positive-$producer.log"
             set +e
             timeout 600 "$exe" > "$log" 2>&1
             status=$?
             set -e
             echo "::group::positive $producer (exit $status)"; cat "$log"; echo "::endgroup::"
-            python -I ci/verify.py log positive "$producer" "$log" "$status" || ok=1
+            python -I ci/verify.py log positive "$producer" lavapipe "$log" "$status" || ok=1
           done
           exit $ok
       - name: artifact notes
@@ -172,20 +215,22 @@ jobs:
           mkdir -p "$RUNNER_TEMP/netrender-proof"
           cat > "$RUNNER_TEMP/netrender-proof/NOTES.txt" <<EOF
           Commit: $GITHUB_SHA
+          Job: ${{ matrix.name }} (executables run in CI: ${{ matrix.run }})
           negative/: fixture with Netrender d2f13ca5 as published (Cargo.lock).
           positive/: same revision + upstream/netrender-d2f13ca5-external-texture-order.patch.
           Both use wgpu 29.0.4 / wgpu-core 29.0.1 + upstream/wgpu-29-core-interop.patch.
-          Debug builds. Run with DENO_WEBGPU_BACKEND=dx12 (or vulkan).
-          roves-netrender-shared-device-proof.exe needs only a DX12/Vulkan driver.
-          deno_js.exe reads deno_webidl/deno_web/deno_webgpu extension JS at run time
-          from C:/roves-cargo/registry/src (no startup snapshot): mirror that path
-          (e.g. a junction) on the machine that runs it.
+          Debug builds. Run with DENO_WEBGPU_BACKEND=vulkan (or dx12 on Windows;
+          not on WARP, which crashes in Vello's compute frame, see README).
+          roves-netrender-shared-device-proof needs only a Vulkan/DX12 driver.
+          deno_js reads deno_webidl/deno_web/deno_webgpu extension JS at run time
+          from ${{ matrix.cargo_home }}/registry/src (no startup snapshot): mirror
+          that path (symlink/junction) on the machine that runs it.
           EOF
       - name: upload logs and executables
         if: ${{ always() }}
         uses: actions/upload-artifact@v4
         with:
-          name: netrender-shared-device-proof-windows-warp
+          name: netrender-shared-device-proof-${{ matrix.name }}
           path: ${{ runner.temp }}/netrender-proof
           if-no-files-found: warn
           retention-days: 14

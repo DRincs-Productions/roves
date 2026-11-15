@@ -70,6 +70,19 @@ repro: `support/netrender-shared-device-proof/README.md`.
 - Next: read the first run (GC pass count, adapter line, the two negative pixels on WARP)
   and record it in the fixture README and `TODO.md`.
 
+### Fourth assignment: CI Netrender #4 fixes (2026-11-15, uncommitted, not pushed)
+
+- Job 132956577307: static link OK. `deno_js` panicked on the template-literal guard (the
+  WGSL comments contain backticks): the shader is now a JSON string literal
+  (`deno_core::serde_json`). Raw runs exited 139 on WARP after the adapter line.
+- Local lldb diagnosis: access violation (write) in a `d3d10warp.dll` worker while Vello's
+  compute frame runs; reproduced with a plain wgpu device and no bridge, so WARP cannot
+  run Netrender/Vello. Details in the fixture README ("WARP").
+- Workflow is now a matrix: `linux-lavapipe` runs negative and positive for both
+  producers with unchanged gates; `windows-compile` only builds (static-CRT link).
+  The pristine E0599 gate was tightened (job 132956577307 passed it with 0 x E0599).
+- Next: read the first lavapipe run and record it.
+
 ## Follow-up assignments after the proof
 
 1. Translate Blitz paint commands directly where practical, reusing Netrender's

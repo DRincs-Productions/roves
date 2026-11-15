@@ -99,7 +99,9 @@ unchanged, and no fork is published.
    as a Rust `v8::Global`.
 2. `src/guest.js` (unprivileged, the "game") fails if any `Deno`/`__bootstrap`/`op_*`
    global is visible, then calls `requestAdapter()`, `requestDevice()`, `createTexture()`
-   without `COPY_SRC`, compiles the shared WGSL (prepended as `CANVAS_WGSL`), records one
+   without `COPY_SRC`, compiles the shared WGSL (prepended as `const CANVAS_WGSL = <JSON
+   string>`, encoded with deno_core's re-exported `serde_json`: the shader's comments
+   contain backticks, so a template literal is not safe), records one
    render pass, submits without awaiting and checks validation/OOM error scopes. It
    resolves to `{ adapter, device, texture }` and keeps no other reference.
 3. The embedder calls the hook with that frame. The op takes `#[cppgc] &GPUAdapter`,
@@ -188,20 +190,58 @@ never keep a lock that points at a local path.
 | patched wgpu + Netrender order fix | Vulkan | 6/6 pass, exit 0 |
 | patched wgpu + Netrender order fix | DX12 (`DENO_WEBGPU_BACKEND=dx12`) | 6/6 pass, exit 0 |
 | raw producer after the `src/lib.rs` refactor + order fix | Vulkan | 6/6 pass, exit 0; hub 1/1/1/1 ids before Netrender, no new device or queue during its frame |
-| V8 producer (`--features deno`) | - | `cargo check --features deno --bins`: 0 errors, 0 warnings (also after the adapter fix). **Not run yet**: the V8 build, link and run are in the CI job below |
+| V8 producer (`--features deno`) | - | `cargo check --features deno --bins`: 0 errors, 0 warnings (also after the adapter fix and the WGSL encoding fix). **Not run yet**: the V8 build, link and run are in the CI job below |
+| raw producer, WARP forced locally (temporary `force_fallback_adapter`, reverted) | DX12 WARP 10.0.26100.9818 | **exit 139**, see WARP below |
+| pristine wgpu compile repro (2026-11-15, after the CI gate fix) | - | 5 lines `error[E0599]`, one per interop symbol, each naming it in backticks |
 
 The `deno` feature only adds 208 locked packages; no previously locked version changed
 (v8 150.4.0 and deno_core 0.413.0 as in the probe). The `PRISTINE=1` compile repro was not
 re-run after the refactor (the same calls moved unchanged into `src/lib.rs`).
 
+## WARP: Vello's compute frame crashes the driver
+
+CI Netrender #4 (job 132956577307) linked both executables for the first time. Both raw
+runs exited 139 right after the `device ids` and `adapter:` lines (WARP,
+"Microsoft Basic Render Driver", `Dx12`, `Cpu`), before any pixel line. Reproduced
+locally on WARP 10.0.26100.9818 (raw producer with `force_fallback_adapter` forced by a
+temporary edit, reverted) and isolated with `lldb`:
+
+- The canvas pass is not the cause: a `device_poll(wait_indefinitely)` right after its
+  submission completes (temporary edit, reverted), then the run still dies at the same point.
+- The faulting thread is a WARP worker: `0xC0000005`, access violation **writing**, in
+  `d3d10warp.dll` (`orl %eax,(%rdx,%r8,4)`, an OR into a buffer, as in an emulated UAV
+  atomic). At that moment the main thread is already inside
+  `render_with_compositor_and_external_textures` → `compose_external_texture` → FXC
+  compiling the external-texture pipeline, i.e. after `render_to_internal_master` submitted
+  Vello's compute frame. The renderer itself was created (Vello pipelines compiled).
+- Bridge excluded: a throwaway example (deleted) with a plain `wgpu::Instance` (DX12, FXC
+  and the default compiler), `force_fallback_adapter`, a fresh device and
+  `create_netrender_instance` + `render_vello` of one opaque rect also exits 139 at the
+  first `device.poll`. So Netrender d2f13ca5 / Vello 0.9 compute on WARP crashes with no
+  shared device, no deno_webgpu and no external texture involved.
+
+Raw step logs need repository admin rights; the run's annotations do not. The V8
+producer's panic was the template-literal guard (`src/bin/deno_js.rs`), fixed above; it
+never reached the GPU. Upstream report: not filed yet (it is a WARP/Vello interaction,
+the right tracker is not established; no web access in this session).
+
 ## Isolated CI (`.github/workflows/netrender-proof.yml`)
 
-Job `windows-warp`, separate from the engine workflows and the Blitz probe workflow
+One matrix job `proof`, separate from the engine workflows and the Blitz probe workflow
 (neither changed), so nothing else builds the patched wgpu. Triggers: a push touching
 `support/netrender-shared-device-proof/**` or the workflow file (any branch), or
-`workflow_dispatch`. Informational: it never gates releases. Rust 1.95.0,
-`CARGO_HOME=C:/roves-cargo` as in the probe, `DENO_WEBGPU_BACKEND=dx12`, debug builds;
-the checks live in `ci/verify.py` (run it locally with `python -I ci/verify.py ...`).
+`workflow_dispatch`. Informational: it never gates releases. Rust 1.95.0, debug builds,
+`CARGO_HOME` = `<runner>/roves-cargo`; the checks live in `ci/verify.py` (run it locally with
+`python -I ci/verify.py ...`).
+
+- **`linux-lavapipe`** (`ubuntu-24.04`): installs `mesa-vulkan-drivers` (lavapipe,
+  llvmpipe Vulkan ICD), pins the loader to it with `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`,
+  annotates the Mesa version and `vulkaninfo --summary`, runs with
+  `DENO_WEBGPU_BACKEND=vulkan`. Runs every step below, both producers, negative and positive.
+- **`windows-compile`** (`windows-latest`, `RUSTFLAGS=-C target-feature=+crt-static`, see
+  Windows link): the same pins, repro, patched-tree, negative and positive builds (so the
+  static-CRT `deno_js` link stays covered) and artifacts, but **no runs**: WARP, the
+  runner's only adapter, crashes as described above.
 
 1. **Pins and provenance.** `verify.py pins`: exact `Cargo.toml` pins, `[patch.crates-io]`
    limited to `patched/wgpu{,-core}`, exactly one locked version of wgpu 29.0.4,
@@ -210,27 +250,35 @@ the checks live in `ci/verify.py` (run it locally with `python -I ci/verify.py .
    other path package. `verify.py crates-io`: the sha256 values in `prepare-patched.sh`
    equal the crates.io index `cksum`. Patch sha256 values are logged.
 2. **Compile repro.** `PRISTINE=1 ./prepare-patched.sh` + `cargo check --locked` must fail
-   only with `E0599` naming the five interop symbols.
+   only with `E0599`, and each of the five interop symbols must be named (in backticks) by
+   an `error[E0599]` line. The error lines are re-emitted as annotations. Job 132956577307
+   annotated "0 x E0599" yet passed, because the former check only searched the symbols
+   anywhere in the log; the gate is now stricter, not looser.
 3. **Patched tree.** `verify.py patched-diff`: the patched sources differ from the
    pristine crates.io ones exactly in the three files the interop patch names.
-4. **Negative** (Netrender as published, `--locked`): both executables must exit 1 with no
-   panic, the WARP adapter line ("Microsoft Basic Render Driver", `Dx12`), the
+4. **Negative** (Netrender as published, `--locked`; Linux): both executables must exit 1
+   with no panic, the lavapipe adapter line (`llvmpipe`, `Vulkan`, `device_type: Cpu`), the
    shared-device hub line, the producer's lifetime lines (raw: 2 -> 1 device ids; V8:
    guest privilege check, hub ids, GC pass count) and exactly the two ordering pixels
-   failing. Any other failure (build, device init, panic, other pixels) fails the job.
+   failing. Any other failure (build, device init, panic, crash or timeout exit, other
+   pixels) fails the job; `verify.py log` then annotates the last 8 log lines.
 5. **Positive**: Netrender fetched at the exact SHA, `git apply` of the order patch
    (numstat must be +41/-5), both executables built with the `--config` path override.
    `verify.py lock-diff` accepts only the Netrender git packages moving to the local path;
-   the original `Cargo.lock` is then restored and `git diff --exit-code` checks it. Both
-   must exit 0 with 6/6 and the same lifetime lines. The teardown assertions (hub empty,
-   last `Arc<Global>`) run before the exit code, so exit 0/1 without a panic proves them.
-6. Artifact `netrender-shared-device-proof-windows-warp`: every log, `negative/` and
-   `positive/` executables and `NOTES.txt`. The raw producer runs on any DX12/Vulkan
-   machine; `deno_js.exe` reads extension JS from `C:/roves-cargo/registry/src` at run
-   time (no startup snapshot), so mirror that path to run it elsewhere.
+   the original `Cargo.lock` is then restored and `git diff --exit-code` checks it. On
+   Linux both must exit 0 with 6/6 and the same lifetime lines. The teardown assertions
+   (hub empty, last `Arc<Global>`) run before the exit code, so exit 0/1 without a panic
+   proves them.
+6. Artifacts `netrender-shared-device-proof-<job>`: every log, `negative/` and `positive/`
+   executables and `NOTES.txt`. `deno_js` reads extension JS from
+   `<CARGO_HOME>/registry/src` at run time (no startup snapshot), so mirror that path to
+   run it elsewhere.
 
-Software rasterizers may round differently: the tolerance stays 2/255 and failures are
-reported, not tuned. A Linux lavapipe (Vulkan) variant is not wired.
+`verify.py log KIND PRODUCER ADAPTER LOG STATUS` takes `lavapipe` or `warp` (the latter
+for local runs once WARP works). Software rasterizers may round differently: the
+tolerance stays 2/255 and failures are reported, not tuned. Not yet known: whether Vello
+0.9's compute frame runs correctly on the runner's lavapipe; the first Linux run decides,
+and a lavapipe failure is reported as such, never relaxed.
 
 Windows link (static CRT): run 43744319003 failed to link both `deno_js` builds under the
 repository's `lld-link` with `undefined symbol: __declspec(dllimport) remove`, `_wassert`
@@ -247,6 +295,10 @@ no `/FORCE:MULTIPLE`, no global linker or repository flag. A local Windows build
 `deno_js` needs the same variable (PowerShell: `$env:RUSTFLAGS='-C target-feature=+crt-static'`).
 
 ## Upstream reports
+
+- Vello/Netrender compute on WARP (access violation in `d3d10warp.dll`, see WARP): not
+  filed; first find the right tracker (linebender/vello vs. Microsoft WARP) and search
+  existing reports, with a minimal plain-wgpu reproduction.
 
 - wgpu interop API: not opened yet (search existing gfx-rs/wgpu issues first).
 - Netrender blocker 2: the GitHub integration's create-issue call for

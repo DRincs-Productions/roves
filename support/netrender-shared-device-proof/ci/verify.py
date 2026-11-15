@@ -11,8 +11,9 @@ Commands:
   lock-diff ORIGINAL NEW     the positive run's lock (Netrender path override)
                              changes only the source of the Netrender git
                              packages; every other package is identical.
-  log negative|positive raw|deno LOG STATUS
-                             the run failed/passed for the expected reason.
+  log negative|positive raw|deno lavapipe|warp LOG STATUS
+                             the run failed/passed for the expected reason
+                             on the expected software adapter.
 """
 
 import json
@@ -42,6 +43,13 @@ LOCKED = {
 }
 # The two crates replaced by `[patch.crates-io]` path entries (patched/).
 PATCHED_CRATES = {"wgpu": "29.0.4", "wgpu-core": "29.0.1"}
+# Software adapters the `log` command accepts: kind -> (AdapterInfo name
+# substring, AdapterInfo backend). CI runs on lavapipe (Mesa llvmpipe, Vulkan);
+# WARP is kept for local runs (Vello's compute frame crashes it, see README).
+ADAPTERS = {
+    "lavapipe": ("llvmpipe", "Vulkan"),
+    "warp": ("Microsoft Basic Render Driver", "Dx12"),
+}
 EXPECTED_FAILS = [
     "after layer over before layer (50,10)",
     "after layer over 50% canvas over before layer (40,40)",
@@ -174,28 +182,41 @@ def cmd_lock_diff(original, new):
     print(f"positive lock: only {sorted(moved)} moved from git to the patched checkout")
 
 
-def cmd_log(kind, producer, log, status):
+def cmd_log(kind, producer, adapter_kind, log, status):
     with open(log, encoding="utf-8", errors="replace") as f:
         text = f.read()
     status = int(status)
+    if adapter_kind not in ADAPTERS:
+        fail(f"unknown adapter kind {adapter_kind}, expected one of {sorted(ADAPTERS)}")
+
+    def fail_with_tail(message):
+        # Raw job logs need repository admin rights; annotations do not.
+        for line in text.splitlines()[-8:]:
+            print(f"::notice::{kind} {producer} log tail: {line[:300]}")
+        fail(message)
+
     if "panicked" in text:
-        fail(f"{kind} {producer}: panic (not a pixel failure): see log")
+        fail_with_tail(f"{kind} {producer}: panic (not a pixel failure): see log")
+    if status not in (0, 1):
+        fail_with_tail(f"{kind} {producer}: exit {status} (crash or timeout, not a pixel result)")
     adapter = re.search(r"^adapter: .*$", text, re.M)
     if not adapter:
-        fail(f"{kind} {producer}: no adapter line, the run did not reach Netrender")
+        fail_with_tail(f"{kind} {producer}: no adapter line, the run did not reach Netrender")
     print(f"::notice::{kind} {producer}: {adapter.group(0)[:300]}")
-    if "Microsoft Basic Render Driver" not in adapter.group(0) or "Dx12" not in adapter.group(0):
-        fail(f"{kind} {producer}: not the WARP DX12 adapter")
+    name, backend = ADAPTERS[adapter_kind]
+    if name not in adapter.group(0) or f"backend: {backend}" not in adapter.group(0) \
+            or "device_type: Cpu" not in adapter.group(0):
+        fail_with_tail(f"{kind} {producer}: not the {adapter_kind} adapter ({name}, {backend}, Cpu)")
     shared = re.search(r"^hub ids before Netrender .*$", text, re.M)
     if not shared:
-        fail(f"{kind} {producer}: no shared-device hub line")
+        fail_with_tail(f"{kind} {producer}: no shared-device hub line")
     print(f"::notice::{kind} {producer}: {shared.group(0)[:300]}")
     if producer == "raw" and "device ids: 2 with the clones, 1 after Deno dropped its own" not in text:
-        fail("raw: Deno-side id release not reported")
+        fail_with_tail("raw: Deno-side id release not reported")
     if producer == "deno":
         for needle in ("guest: no privileged global visible", "hub ids: guest only", "hub ids after "):
             if needle not in text:
-                fail(f"deno: missing '{needle}'")
+                fail_with_tail(f"deno: missing '{needle}'")
         gc = re.search(r"^hub ids after (\d+) GC pass\(es\).*$", text, re.M)
         print(f"::notice::{kind} deno: {gc.group(0)[:300]}")
     results = dict(
@@ -205,14 +226,14 @@ def cmd_log(kind, producer, log, status):
     for m in re.finditer(r"^(FAIL .*)$", text, re.M):
         print(f"::notice::{kind} {producer}: {m.group(1)[:300]}")
     if sorted(results) != sorted(ALL_CHECKS):
-        fail(f"{kind} {producer}: pixel checks {sorted(results)}")
+        fail_with_tail(f"{kind} {producer}: pixel checks {sorted(results)}")
     failed = sorted(name for name, r in results.items() if r == "FAIL")
     if kind == "negative":
         if status != 1 or failed != sorted(EXPECTED_FAILS) or "2 pixel assertion(s) failed" not in text:
-            fail(f"{kind} {producer}: exit {status}, failed {failed}; expected exit 1 with exactly {EXPECTED_FAILS}")
+            fail_with_tail(f"{kind} {producer}: exit {status}, failed {failed}; expected exit 1 with exactly {EXPECTED_FAILS}")
     else:
         if status != 0 or failed or "all assertions passed" not in text:
-            fail(f"{kind} {producer}: exit {status}, failed {failed}; expected exit 0 and 6/6")
+            fail_with_tail(f"{kind} {producer}: exit {status}, failed {failed}; expected exit 0 and 6/6")
     print(f"{kind} {producer}: exit {status}, {6 - len(failed)}/6 pixels pass as expected")
 
 
@@ -222,7 +243,7 @@ def main(argv):
         "crates-io": (cmd_crates_io, 0),
         "patched-diff": (cmd_patched_diff, 2),
         "lock-diff": (cmd_lock_diff, 2),
-        "log": (cmd_log, 4),
+        "log": (cmd_log, 5),
     }
     if not argv or argv[0] not in commands or len(argv) - 1 != commands[argv[0]][1]:
         print(__doc__)

@@ -147,12 +147,11 @@ async fn run() -> usize {
         .expect("bootstrap");
     let hook = function(&mut runtime, hook);
 
-    assert!(
-        !CANVAS_SHADER.contains('`') && !CANVAS_SHADER.contains("${"),
-        "the shader is embedded in a template literal"
-    );
+    // canvas.wgsl's comments contain backticks: embed it as a JSON string
+    // literal (valid JavaScript), never by splicing it into a template literal.
+    let wgsl = deno_core::serde_json::to_string(CANVAS_SHADER).expect("WGSL as a JSON string");
     let guest = format!(
-        "const CANVAS_WGSL = `{CANVAS_SHADER}`;\n{}",
+        "const CANVAS_WGSL = {wgsl};\n{}",
         include_str!("../guest.js")
     );
     let promise = runtime

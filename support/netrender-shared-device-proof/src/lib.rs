@@ -175,6 +175,9 @@ pub fn render_and_check(global: &Global, handles: WgpuHandles, canvas: wgpu::Tex
         },
     )
     .expect("create_netrender_instance on the game device");
+    // Phase marker for CI logs: Vello's compute pipelines exist; the next
+    // phase submits Vello's compute frame and composites the canvas.
+    println!("netrender: renderer created on the game device");
 
     let mut scene = Scene::new(DIM, DIM);
     scene.push_rect(0.0, 0.0, DIM as f32, DIM as f32, [1.0, 0.0, 0.0, 1.0]);
