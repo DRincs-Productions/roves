@@ -231,6 +231,17 @@ the checks live in `ci/verify.py` (run it locally with `python -I ci/verify.py .
 Software rasterizers may round differently: the tolerance stays 2/255 and failures are
 reported, not tuned. A Linux lavapipe (Vulkan) variant is not wired.
 
+Windows link (`build.rs`): run 43744319003 failed to link both `deno_js` builds under the
+repository's `lld-link` with `undefined symbol: __declspec(dllimport) remove`, `_wassert`
+and `_time64`, referenced by lcms2-sys 4.0.7 (deno_webgpu -> deno_image -> lcms2). The
+prebuilt `rusty_v8.lib` uses the static CRT (`/DEFAULTLIB:libcmt.lib`), so the CRT startup
+and its `libucrt.lib` came from libcmt and `ucrt.lib` (named by `msvcrt.lib` only from
+`initializers.obj`) never joined the link; the `/MD` lcms2 objects resolved other
+imports against `libucrt.lib` (LNK4217 warnings) and these three stayed undefined. For
+`deno_js` only, with feature `deno` on MSVC without `+crt-static`, `build.rs` passes
+`/DEFAULTLIB:ucrt.lib`, the same gating style as `ports/servoshell/build.rs`. The raw
+producer, the global linker and the Blitz probe are unchanged.
+
 ## Upstream reports
 
 - wgpu interop API: not opened yet (search existing gfx-rs/wgpu issues first).
