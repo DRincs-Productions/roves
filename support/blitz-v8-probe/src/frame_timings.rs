@@ -211,7 +211,7 @@ impl Phase {
         Phase::TextureUpload,
     ];
 
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             Phase::ScenePaint => "cpu_scene_paint",
             Phase::Split => "cpu_split",
@@ -228,7 +228,7 @@ impl Phase {
 }
 
 /// Phase durations of one `render` call; `None` for phases not reached.
-#[derive(Default, Debug, PartialEq)]
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
 pub struct FramePhases([Option<Duration>; Phase::ALL.len()]);
 
 impl FramePhases {
@@ -281,7 +281,7 @@ impl MissReason {
         MissReason::AfterDiscard,
     ];
 
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             MissReason::CacheDisabled => "cache_disabled",
             MissReason::NotReusable => "not_reusable",
@@ -1056,6 +1056,9 @@ pub struct FrameTimings {
     /// The GPU compositor's raster cache was disabled
     /// (`ROVES_PROBE_DISABLE_RASTER_CACHE=1`); `None` for the CPU renderer.
     pub raster_cache_disabled: Option<bool>,
+    /// `ROVES_PROBE_FRAME_TRACE=<path>` (see `frame_trace`), only with
+    /// frame timings enabled; `None` takes no QPC timestamp.
+    pub trace: Option<Box<crate::frame_trace::FrameTrace>>,
     printed: bool,
 }
 
@@ -1072,15 +1075,31 @@ impl FrameTimings {
             raster_cache_content_diff: None,
             renderer: "cpu",
             raster_cache_disabled: None,
+            trace: None,
             printed: false,
         }
     }
 
-    /// `Some` only with `ROVES_PROBE_FRAME_TIMINGS=1`.
+    /// `Some` only with `ROVES_PROBE_FRAME_TIMINGS=1`; the per-frame trace
+    /// additionally needs `ROVES_PROBE_FRAME_TRACE=<path>`.
     pub fn from_env() -> Option<SharedFrameTimings> {
-        std::env::var("ROVES_PROBE_FRAME_TIMINGS")
-            .is_ok_and(|value| value == "1")
-            .then(|| Rc::new(RefCell::new(Self::new())))
+        let enabled = std::env::var("ROVES_PROBE_FRAME_TIMINGS").is_ok_and(|value| value == "1");
+        let trace_path = std::env::var("ROVES_PROBE_FRAME_TRACE").ok();
+        let trace = crate::frame_trace::FrameTrace::from_values(enabled, trace_path.as_deref());
+        enabled.then(|| {
+            Rc::new(RefCell::new(Self {
+                trace,
+                ..Self::new()
+            }))
+        })
+    }
+
+    /// Writes the `ROVES_PROBE_FRAME_TRACE` file once, if enabled.
+    pub fn write_trace_once(&mut self) {
+        let (renderer, raster_cache_disabled) = (self.renderer, self.raster_cache_disabled);
+        if let Some(trace) = &mut self.trace {
+            trace.write_once(renderer, raster_cache_disabled);
+        }
     }
 
     /// Samples the phases of one GPU `render` call.

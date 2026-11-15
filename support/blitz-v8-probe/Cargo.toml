@@ -75,6 +75,12 @@ content-security-policy = "=0.8.1"
 # "none" sink unless ROVES_PROBE_AUDIO_OUTPUT=1 (src/audio.rs), so CI needs no device.
 web-audio-api = { version = "=1.7.0", default-features = false, features = ["cpal"] }
 
+# Already locked (winit/wgpu/tokio graph, MIT OR Apache-2.0, MSRV 1.71): only the
+# QueryPerformanceCounter/QueryPerformanceFrequency bindings of the opt-in
+# ROVES_PROBE_FRAME_TRACE (src/frame_trace.rs); std's Instant hides its QPC value.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_Performance"] }
+
 # Temporary: crates.io blitz-dom/blitz-paint 0.3.0-beta.4 with minimal Roves fixes
 # (animation accessors, input type state, tree-order paint and hit testing of
 # positioned z-index auto/0 boxes, Blitz #1493). Provenance, patches and removal

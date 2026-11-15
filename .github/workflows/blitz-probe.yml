@@ -93,6 +93,9 @@ jobs:
           # Blitz box-tree lifetime regression (vendor/blitz-dom 0005): hide /
           # free / reinsert must not leave freed nodes in a layout child list.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml box_tree::
+          # Opt-in per-frame trace (ROVES_PROBE_FRAME_TRACE): bounded ring,
+          # null-not-zero serialization, QPC units/errors. No PresentMon needed.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"

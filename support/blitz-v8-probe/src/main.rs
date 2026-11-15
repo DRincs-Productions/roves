@@ -21,6 +21,7 @@ mod audio;
 #[cfg(test)]
 mod box_tree;
 mod frame_timings;
+mod frame_trace;
 mod game;
 mod net_policy;
 #[cfg(test)]

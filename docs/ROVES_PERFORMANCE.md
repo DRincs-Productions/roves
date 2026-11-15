@@ -388,6 +388,83 @@ due warning Pixi per i WAV remoti (`sfx_whoosh.wav`, `bgm_cheerful.wav`): il par
 asset WAV non viene selezionato nel loader Pixi, distinto dal decoder Web Audio. Questo
 test non prova `<audio>`/`<video>` né risolve i gap della matrice media.
 
+#### Traccia per frame correlabile con PresentMon (15 novembre 2026, strumentazione)
+
+Strumentazione solo probe, **non ancora eseguita su una finestra reale né confrontata con una
+cattura PresentMon**: nessun collo di bottiglia è stato scelto da questi dati. Il riepilogo
+`ROVES_PROBE_FRAME_TIMINGS` resta invariato; i campioni sopra (menu ~124 ms per frame in
+debug JITless, acquisizione P50 11,6 ms nella storia, raster freddo 283 ms, run caldi ~11 ms)
+sono in condizioni debug/foreground diverse e non confrontabili tra loro.
+
+Attivazione: `ROVES_PROBE_FRAME_TIMINGS=1` **e** `ROVES_PROBE_FRAME_TRACE=<file.ndjson>` con
+`--window` e renderer GPU (`--game … --window` o `ROVES_PROBE_WINDOW_GPU=1`). Senza entrambe
+le variabili non si alloca nulla e non si legge QPC (la sola `FRAME_TRACE` stampa un avviso e
+viene ignorata). Con esse un unico ring di **3600 record** (tentativi di render e marker di
+input insieme, ~60 s a 60 Hz) è allocato una volta; nessun I/O per frame. Alla chiusura il file
+viene scritto una volta in NDJSON e il log riporta `ROVES_PROBE_FRAME_TRACE
+{"check":"frame_trace","status":"written"|"failed",…}` (senza percorso).
+
+Valutazione librerie: `std::time::Instant` usa QPC su Windows ma non espone il valore grezzo;
+nessuna estensione Deno/V8 possiede il QPC del display né sostituisce i tempi per fase del
+renderer. Unica aggiunta: `windows-sys 0.61.2` diretta solo `cfg(windows)`, già bloccata nel
+grafo (winit/wgpu/tokio), feature `Win32_System_Performance`, MIT OR Apache-2.0, MSRV 1.71,
+per `QueryPerformanceCounter`/`QueryPerformanceFrequency`. Il SDK/servizio PresentMon resta
+esterno (client `C:/roves-media-probe/sdk-smoke/sample.py`), non è nei bundle e non serve in CI.
+
+Formato (`schema` `roves-frame-trace`, `version` 1). Header: `clock` (`qpc` o
+`unavailable` su altre piattaforme/frequenza illeggibile), `qpc_frequency` (tick/s),
+`qpc_unit` `ticks`, `duration_unit` `ns`, `max_records`, `records_total/kept/overwritten`,
+`render_attempts`, `present_calls`, `presented`, `frame_steps`, `input_markers`,
+`qpc_errors`, `renderer`, `raster_cache`, `note`. Record `frame` (uno per chiamata
+`GpuWindowRenderer::render`, anche scartata): `render_seq` (1…, ogni tentativo),
+`present_seq` (solo tentativi che chiamano `surface_present`), `step_seq`/`step_start_qpc`/
+`cpu_frame_step_ns` dell'ultimo frame step JS iniziato prima, `steps_since_previous_render`,
+`render_start_qpc`, `present_start_qpc` e `present_end_qpc` (immediatamente prima/dopo
+`surface_present`), `render_end_qpc`, `present_result` (`good`, `suboptimal`, `timeout`,
+`occluded`, `outdated`, `lost`, `other_status`, `error`), `outcome` (`presented`,
+`acquire_error`, `acquire_status`, `present_failed`, `frame_error`), `cpu_render_present_ns`,
+`phases_ns` (le stesse 10 fasi del riepilogo) e `counters` del solo tentativo (`canvas_layers`,
+`raster_segments`, `raster_uploads`, `raster_cache_hits`, `upload_bytes`, `misses` per motivo).
+Record `marker`: `marker_seq`, `kind` (`pointer_down`, `pointer_up`, `key_down`, `key_up`,
+`wheel`; niente pointer move), `qpc` all'inizio del dispatch e `cpu_dispatch_ns`. Valori
+mancanti (fase non raggiunta, present non chiamato, lettura QPC fallita) sono `null`, mai 0.
+Solo numeri: nessun URL, testo, ID di nodo, asset, codice tasto o posizione. Marker semantici
+pagina/menu/dialogo/nome/Skip non sono stati aggiunti: richiederebbero di riconoscere il
+contenuto del gioco; il clic su Skip compare come `pointer_down`/`pointer_up` sulla stessa
+linea temporale. `presented` significa che `surface_present` ha restituito good/suboptimal
+senza errori wgpu: non prova che il frame sia stato mostrato.
+
+Procedura di cattura (Windows, da verificare sulla prima finestra reale):
+
+1. Avviare il probe in foreground con le due variabili (es. `--game <dist> --window
+   --window-frames 1800`) e annotare il PID.
+2. Avviare subito il client esterno: `python C:/roves-media-probe/sdk-smoke/sample.py <PID>
+   frames.csv` (17 s; `CPU_START_QPC`, `DISPLAYED_TIME`, `CPU_FRAME_TIME`, `GPU_BUSY`).
+   Registrare quante swapchain (`SWAP_CHAIN_ADDRESS`) compaiono: la cattura parziale del
+   menu ne aveva una sola e 291 presentazioni su 920.
+3. Allineamento: PresentMon fa iniziare il tempo CPU di un frame quando la chiamata Present
+   precedente è tornata (nel CSV esistente `CPU_START_QPC[n+1] - CPU_START_QPC[n]` è uguale a
+   `CPU_FRAME_TIME[n]` convertito con 10 MHz). Quindi `present_end_qpc` del record Roves `k`
+   va abbinato a `CPU_START_QPC` della presentazione PresentMon **successiva**, ovvero a
+   `CPU_START_QPC + CPU_FRAME_TIME·qpc_frequency/1000` della stessa. Abbinare per vicinanza
+   (atteso: Roves leggermente dopo, per il wrapper wgpu attorno al Present del backend) e
+   controllare che `present_seq` e l'ordine PresentMon crescano insieme; scartare chi non ha
+   corrispondenza invece di forzarla. `present_start_qpc` è l'inizio della chiamata.
+4. Calcoli separati: intervalli di display = differenze di `DISPLAYED_TIME` fra presentazioni
+   effettivamente mostrate (hitch: intervallo > 1,5× il periodo di refresh); cadenza CPU =
+   differenze di `step_start_qpc` e `cpu_frame_step_ns`; costo render = `cpu_render_present_ns`
+   e `phases_ns` dello stesso record; attese swapchain = `cpu_surface_acquire`/`cpu_present`.
+   Un hitch di display si attribuisce a una fase solo se il record abbinato la mostra.
+   Tentativi `render_attempts - presented` non arrivano mai al display; presentazioni senza
+   `DISPLAYED_TIME` sono state scartate/sostituite dal compositore.
+
+Verifiche locali: `cargo fmt --check`; `cargo test --locked` della probe (48/48, di cui 8
+`frame_trace::`: modalità disattivata, ring limitato e ordinato, `null` per fasi/contatori
+mancanti, unità tick/ns, errori QPC e clock non disponibile, file non scrivibile e scrittura
+unica, timebase reale). La CI normal/JITless (runner Windows) esegue `frame_trace::` senza
+PresentMon. Non verificati: finestra reale, file prodotto da una run vera, abbinamento con
+PresentMon.
+
 #### Run esplorativo per fase, storia JITless, 13 novembre 2026
 
 Run **esplorativo**, distinto dalle tre misure release alternate richieste sopra, che restano

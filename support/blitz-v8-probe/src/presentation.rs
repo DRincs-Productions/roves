@@ -56,6 +56,7 @@ use deno_webgpu::wgpu_core::id::{
 use deno_webgpu::{wgpu_core, wgpu_types};
 
 use crate::frame_timings::Phase;
+use crate::frame_trace::Outcome;
 use kurbo::{Affine, Point, Rect, Shape};
 use peniko::{ImageBrush, ImageSampler};
 use raw_window_handle::{HasDisplayHandle, HasWindowHandle};
@@ -1017,6 +1018,10 @@ impl MissTracker {
 struct Diagnostics {
     phases: crate::frame_timings::FramePhases,
     misses: MissTracker,
+    /// `ROVES_PROBE_FRAME_TRACE` only: the QPC clock and what the current
+    /// render attempt measured. `None` reads no clock.
+    trace_clock: Option<crate::frame_trace::Clock>,
+    attempt: crate::frame_trace::AttemptTrace,
 }
 
 pub struct GpuCompositor {
@@ -1574,7 +1579,40 @@ impl GpuCompositor {
 
     /// Adds the counters of the frame just composed to `stats`: called only
     /// once the frame was presented without any error.
+    /// `ROVES_PROBE_FRAME_TRACE` only: keeps the counters of the attempt
+    /// being committed or discarded.
+    fn trace_counters(&mut self) {
+        if let Some(diagnostics) = &mut self.diagnostics
+            && diagnostics.trace_clock.is_some()
+        {
+            diagnostics.attempt.counters = Some(crate::frame_trace::AttemptCounters {
+                canvas_layers: self.frame.canvas_layers,
+                raster_segments: self.frame.raster_segments,
+                raster_uploads: self.frame.raster_uploads,
+                raster_cache_hits: self.frame.raster_cache_hits,
+                upload_bytes: self.frame.upload_bytes,
+                misses: diagnostics.misses.frame,
+            });
+        }
+    }
+
+    /// `ROVES_PROBE_FRAME_TRACE` only: QPC now (no read otherwise).
+    fn trace_stamp(&self) -> Option<i64> {
+        crate::frame_trace::stamp(
+            self.diagnostics
+                .as_ref()
+                .and_then(|diagnostics| diagnostics.trace_clock),
+        )
+    }
+
+    fn set_outcome(&mut self, outcome: Outcome) {
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.attempt.outcome = outcome;
+        }
+    }
+
     fn commit_frame(&mut self) {
+        self.trace_counters();
         let frame = std::mem::take(&mut self.frame);
         self.stats.frames += 1;
         self.stats.canvas_layers += frame.canvas_layers;
@@ -1592,6 +1630,7 @@ impl GpuCompositor {
     /// Its uploads may not have reached the textures (e.g. a failed submit),
     /// so no segment is reused from it.
     fn discard_frame(&mut self) {
+        self.trace_counters();
         self.raster_cache.clear();
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.misses.discard_frame();
@@ -1629,6 +1668,24 @@ struct ActiveSurface {
 impl Drop for ActiveSurface {
     fn drop(&mut self) {
         self.instance.surface_drop(self.surface);
+    }
+}
+
+/// `ROVES_PROBE_FRAME_TRACE`: the return value of `surface_present`.
+fn present_result<E>(
+    result: &Result<wgpu_types::SurfaceStatus, E>,
+) -> crate::frame_trace::PresentResult {
+    use crate::frame_trace::PresentResult;
+    use wgpu_types::SurfaceStatus;
+    match result {
+        Ok(SurfaceStatus::Good) => PresentResult::Good,
+        Ok(SurfaceStatus::Suboptimal) => PresentResult::Suboptimal,
+        Ok(SurfaceStatus::Timeout) => PresentResult::Timeout,
+        Ok(SurfaceStatus::Occluded) => PresentResult::Occluded,
+        Ok(SurfaceStatus::Outdated) => PresentResult::Outdated,
+        Ok(SurfaceStatus::Lost) => PresentResult::Lost,
+        Ok(_) => PresentResult::OtherStatus,
+        Err(_) => PresentResult::Error,
     }
 }
 
@@ -1719,6 +1776,7 @@ impl GpuWindowRenderer {
             Ok(output) => output,
             Err(error) => {
                 eprintln!("ROVES_PROBE_PRESENT_ERROR surface texture: {error}");
+                self.compositor.set_outcome(Outcome::AcquireError);
                 self.compositor.discard_frame();
                 *self.stats.borrow_mut() = self.compositor.stats;
                 return;
@@ -1733,6 +1791,7 @@ impl GpuWindowRenderer {
                 if let Some(texture) = texture {
                     global.texture_drop(texture);
                 }
+                self.compositor.set_outcome(Outcome::AcquireStatus);
                 self.compositor.discard_frame();
                 *self.stats.borrow_mut() = self.compositor.stats;
                 if matches!(
@@ -1761,8 +1820,15 @@ impl GpuWindowRenderer {
         );
         global.texture_view_drop(target);
         let present = self.compositor.phase_start();
+        let present_start_qpc = self.compositor.trace_stamp();
         let result = global.surface_present(surface);
+        let present_end_qpc = self.compositor.trace_stamp();
         self.compositor.phase_end(present, Phase::Present);
+        if let Some(diagnostics) = &mut self.compositor.diagnostics {
+            diagnostics.attempt.present_start_qpc = present_start_qpc;
+            diagnostics.attempt.present_end_qpc = present_end_qpc;
+            diagnostics.attempt.present_result = Some(present_result(&result));
+        }
         let presented = match result {
             Ok(wgpu_types::SurfaceStatus::Good | wgpu_types::SurfaceStatus::Suboptimal) => true,
             Ok(status) => {
@@ -1778,8 +1844,14 @@ impl GpuWindowRenderer {
         // Only frames presented without any error count (frames, layers,
         // segments, uploads); the others are skipped.
         if presented && self.compositor.stats.errors == errors_before {
+            self.compositor.set_outcome(Outcome::Presented);
             self.compositor.commit_frame();
         } else {
+            self.compositor.set_outcome(if presented {
+                Outcome::FrameError
+            } else {
+                Outcome::PresentFailed
+            });
             self.compositor.discard_frame();
         }
         *self.stats.borrow_mut() = self.compositor.stats;
@@ -1853,20 +1925,34 @@ impl WindowRenderer for GpuWindowRenderer {
         // call until it returns, plus its phases; not GPU time, not proof of
         // a visible frame. Without the variable no timestamp is taken.
         let start = self.timings.as_ref().map(|_| std::time::Instant::now());
-        if start.is_some() {
-            self.compositor
+        if let (Some(timings), Some(_)) = (&self.timings, start) {
+            // ROVES_PROBE_FRAME_TRACE only: QPC stamps of this attempt.
+            let clock = timings.borrow().trace.as_ref().map(|trace| trace.clock());
+            let diagnostics = self
+                .compositor
                 .diagnostics
-                .get_or_insert_with(Diagnostics::default)
-                .phases = Default::default();
+                .get_or_insert_with(Diagnostics::default);
+            diagnostics.phases = Default::default();
+            diagnostics.trace_clock = clock;
+            diagnostics.attempt = crate::frame_trace::AttemptTrace {
+                render_start_qpc: crate::frame_trace::stamp(clock),
+                ..Default::default()
+            };
         }
         self.render_frame(draw_fn);
         if let (Some(timings), Some(start)) = (&self.timings, start) {
+            let elapsed = start.elapsed();
             let mut timings = timings.borrow_mut();
-            timings.cpu_render_present.push(start.elapsed());
-            if let Some(diagnostics) = &self.compositor.diagnostics {
+            timings.cpu_render_present.push(elapsed);
+            if let Some(diagnostics) = &mut self.compositor.diagnostics {
                 timings.record_render_phases(&diagnostics.phases);
                 timings.raster_cache_misses = Some(diagnostics.misses.committed);
                 timings.raster_cache_content_diff = Some(diagnostics.misses.committed_diff);
+                if let Some(trace) = &mut timings.trace {
+                    diagnostics.attempt.render_end_qpc =
+                        crate::frame_trace::stamp(diagnostics.trace_clock);
+                    trace.record_frame(diagnostics.attempt, elapsed, &diagnostics.phases);
+                }
             }
         }
     }

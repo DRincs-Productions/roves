@@ -346,8 +346,35 @@ impl RovesDocument {
     fn print_timings(&self) {
         if let Some(timings) = &self.timings {
             let stats = self.stats.as_ref().map(|stats| *stats.borrow());
-            timings.borrow_mut().print_once(stats.as_ref());
+            let mut timings = timings.borrow_mut();
+            timings.print_once(stats.as_ref());
+            timings.write_trace_once();
         }
+    }
+
+    /// QPC now, only with `ROVES_PROBE_FRAME_TRACE` (otherwise no read).
+    fn trace_now(&self) -> Option<i64> {
+        let timings = self.timings.as_ref()?;
+        timings.borrow_mut().trace.as_mut()?.now()
+    }
+
+    fn trace_marker_start(
+        &self,
+        event: &UiEvent,
+    ) -> Option<(crate::frame_trace::MarkerKind, Option<i64>, Instant)> {
+        use crate::frame_trace::MarkerKind;
+        let timings = self.timings.as_ref()?;
+        let mut timings = timings.borrow_mut();
+        let trace = timings.trace.as_mut()?;
+        let kind = match event {
+            UiEvent::PointerDown(_) => MarkerKind::PointerDown,
+            UiEvent::PointerUp(_) => MarkerKind::PointerUp,
+            UiEvent::KeyDown(_) => MarkerKind::KeyDown,
+            UiEvent::KeyUp(_) => MarkerKind::KeyUp,
+            UiEvent::Wheel(_) => MarkerKind::Wheel,
+            _ => return None,
+        };
+        Some((kind, trace.now(), Instant::now()))
     }
 
     pub fn with_mode(mut self, mode: WindowMode) -> Self {
@@ -507,11 +534,19 @@ impl Document for RovesDocument {
 
     fn handle_ui_event(&mut self, event: UiEvent) {
         self.start_shell_timeline();
+        // ROVES_PROBE_FRAME_TRACE only: a content-free marker (kind, QPC,
+        // dispatch time) for discrete input; pointer moves are not traced.
+        let marker = self.trace_marker_start(&event);
         let runtime = self
             .runtime
             .as_mut()
             .expect("the runtime is only taken when the document drops");
         dispatch_ui_event(runtime, &self.dispatcher, &self.document, event);
+        if let (Some((kind, qpc, start)), Some(timings)) = (marker, &self.timings)
+            && let Some(trace) = &mut timings.borrow_mut().trace
+        {
+            trace.record_marker(kind, qpc, start.elapsed());
+        }
     }
 
     fn poll(&mut self, task_context: Option<Context<'_>>) -> bool {
@@ -536,6 +571,7 @@ impl Document for RovesDocument {
             return false;
         }
         let start = Instant::now();
+        let step_qpc = self.trace_now();
         if let (Some(timings), Some(last)) = (&self.timings, self.last_frame) {
             timings
                 .borrow_mut()
@@ -558,7 +594,12 @@ impl Document for RovesDocument {
             None => crate::frame_step(runtime, run_animation_frame),
         }
         if let Some(timings) = &self.timings {
-            timings.borrow_mut().cpu_frame_step.push(start.elapsed());
+            let elapsed = start.elapsed();
+            let mut timings = timings.borrow_mut();
+            timings.cpu_frame_step.push(elapsed);
+            if let Some(trace) = &mut timings.trace {
+                trace.record_step(step_qpc, elapsed);
+            }
         }
         self.after_frame();
         true
