@@ -172,6 +172,7 @@ unchanged, and no fork is published.
 cargo run --bin roves-netrender-shared-device-proof   # Netrender d2f13ca5 as published: exit 1 (blocker 2)
 cargo run --bin roves-netrender-shared-device-proof --config 'patch."https://github.com/merely-made/netrender".netrender.path="<netrender checkout with upstream/netrender-d2f13ca5-external-texture-order.patch>/netrender"'
 cargo run --features deno --bin deno_js   # V8 + deno_webgpu producer; same --config override for 6/6
+                                          # Windows: with RUSTFLAGS='-C target-feature=+crt-static' (see Windows link)
 ```
 
 The `--config` path override rewrites the `netrender` entries of `Cargo.lock`. Restore
@@ -231,16 +232,19 @@ the checks live in `ci/verify.py` (run it locally with `python -I ci/verify.py .
 Software rasterizers may round differently: the tolerance stays 2/255 and failures are
 reported, not tuned. A Linux lavapipe (Vulkan) variant is not wired.
 
-Windows link (`build.rs`): run 43744319003 failed to link both `deno_js` builds under the
+Windows link (static CRT): run 43744319003 failed to link both `deno_js` builds under the
 repository's `lld-link` with `undefined symbol: __declspec(dllimport) remove`, `_wassert`
 and `_time64`, referenced by lcms2-sys 4.0.7 (deno_webgpu -> deno_image -> lcms2). The
 prebuilt `rusty_v8.lib` uses the static CRT (`/DEFAULTLIB:libcmt.lib`), so the CRT startup
-and its `libucrt.lib` came from libcmt and `ucrt.lib` (named by `msvcrt.lib` only from
-`initializers.obj`) never joined the link; the `/MD` lcms2 objects resolved other
-imports against `libucrt.lib` (LNK4217 warnings) and these three stayed undefined. For
-`deno_js` only, with feature `deno` on MSVC without `+crt-static`, `build.rs` passes
-`/DEFAULTLIB:ucrt.lib`, the same gating style as `ports/servoshell/build.rs`. The raw
-producer, the global linker and the Blitz probe are unchanged.
+and its static `libucrt.lib` came from libcmt, while `cc` had compiled lcms2 with `/MD`
+(imports from `ucrt.lib`). Naming `ucrt.lib` as well (a `build.rs` tried in the next run)
+only moved the failure: both UCRT flavours then define `_invalid_parameter_noinfo` and
+`_wctype` (duplicate symbols). Mixing the two CRTs is the defect, so the CI job now sets
+`RUSTFLAGS=-C target-feature=+crt-static` for every build, as Deno builds on Windows:
+`cc` 1.11 then compiles lcms2 with `-MT` and v8 150.4.0's `build.rs` links `libcpmt`
+instead of `msvcprt`, matching the `/MT` V8 library. The `build.rs` workaround was removed;
+no `/FORCE:MULTIPLE`, no global linker or repository flag. A local Windows build of
+`deno_js` needs the same variable (PowerShell: `$env:RUSTFLAGS='-C target-feature=+crt-static'`).
 
 ## Upstream reports
 

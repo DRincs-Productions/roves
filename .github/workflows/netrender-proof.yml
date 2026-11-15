@@ -39,6 +39,14 @@ jobs:
       CARGO_TARGET_DIR: ${{ github.workspace }}/../netrender-proof-target
       DENO_WEBGPU_BACKEND: dx12
       RUST_BACKTRACE: '1'
+      # One CRT for the whole link, as Deno itself builds on Windows: the prebuilt
+      # rusty_v8.lib is /MT (/DEFAULTLIB:libcmt.lib) and v8 150.4.0's build.rs links
+      # libcpmt with crt-static (msvcprt otherwise); cc 1.11 compiles lcms2-sys
+      # (deno_webgpu -> deno_image) with -MT when crt-static is set. Without it the
+      # /MD lcms2 objects need ucrt.lib, and adding it next to libcmt's libucrt.lib
+      # duplicates _invalid_parameter_noinfo/_wctype. Job-scoped: applies to every
+      # build here (raw and deno_js); no repository or engine flag changes.
+      RUSTFLAGS: -C target-feature=+crt-static
     defaults:
       run:
         shell: bash
@@ -58,7 +66,7 @@ jobs:
             C:/roves-cargo/git/db
             ${{ github.workspace }}/../netrender-proof-target
             ${{ github.workspace }}/../netrender-proof-pristine-target
-          key: netrender-proof-${{ runner.os }}-rust-1.95.0-${{ hashFiles('support/netrender-shared-device-proof/Cargo.lock', 'support/netrender-shared-device-proof/prepare-patched.sh', 'support/netrender-shared-device-proof/upstream/*.patch') }}
+          key: netrender-proof-${{ runner.os }}-rust-1.95.0-crt-static-${{ hashFiles('support/netrender-shared-device-proof/Cargo.lock', 'support/netrender-shared-device-proof/prepare-patched.sh', 'support/netrender-shared-device-proof/upstream/*.patch') }}
       - name: exact pins and crates.io provenance
         run: |
           mkdir -p "$RUNNER_TEMP/netrender-proof/logs"
