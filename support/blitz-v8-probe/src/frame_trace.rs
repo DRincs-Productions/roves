@@ -11,7 +11,10 @@
 //!
 //! Timestamps are raw Windows `QueryPerformanceCounter` ticks (the timebase
 //! PresentMon's `CPU_START_QPC` uses), with `qpc_frequency` ticks per second
-//! in the header. Durations are integer nanoseconds from `std::time::Instant`
+//! in the header. The shared timebase allows per-scene windows, not per-frame
+//! pairing: on the 15 November Vulkan captures at most 3 of 3,590 present
+//! QPCs per run fell within 100 us of a PresentMon `CPU_START_QPC` (see
+//! `docs/ROVES_PERFORMANCE.md`). Durations are integer nanoseconds from `std::time::Instant`
 //! (the same measurements as the `ROVES_PROBE_FRAME_TIMINGS` summary). On
 //! other platforms, or if `QueryPerformanceFrequency` fails, the clock is
 //! `unavailable` and every QPC field is `null`; durations are still recorded.
@@ -397,7 +400,7 @@ impl FrameTrace {
         };
         writeln!(
             out,
-            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); present_end_qpc of a presentation should be matched to PresentMon CPU_START_QPC of the NEXT presentation (PresentMon starts a frame's CPU time when the previous Present call returned), or equivalently to CPU_START_QPC + CPU_FRAME_TIME of the same presentation; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included\"}}",
+            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included\"}}",
             if self.frequency.is_some() {
                 "qpc"
             } else {
@@ -414,6 +417,7 @@ impl FrameTrace {
             self.step_seq,
             self.marker_seq,
             self.qpc_errors,
+            crate::presentation::RASTER_THREADING,
         )?;
         for record in self.ordered() {
             match record {
@@ -696,6 +700,15 @@ mod tests {
         assert!(second.contains("\"content_changed\":1,"));
         assert!(lines[0].contains("\"render_attempts\":2,\"present_calls\":1,\"presented\":0"));
         assert!(lines[0].starts_with("{\"schema\":\"roves-frame-trace\",\"version\":1,"));
+        // The A/B variant is declared by the build (opt-in `vello-mt` feature).
+        let threading = if cfg!(feature = "vello-mt") {
+            "multi"
+        } else {
+            "single"
+        };
+        assert!(lines[0].contains(&format!(
+            "\"renderer\":\"gpu\",\"raster_threading\":\"{threading}\","
+        )));
     }
 
     #[test]

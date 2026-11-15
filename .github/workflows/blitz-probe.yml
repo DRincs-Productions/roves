@@ -6,7 +6,12 @@ name: Blitz + Deno/V8 probe
     paths:
       - 'support/blitz-v8-probe/**'
       - '.github/workflows/blitz-probe.yml'
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      vello_ab:
+        description: 'Also build the release Vello CPU single/multi-thread A/B executables'
+        type: boolean
+        default: false
 
 concurrency:
   group: blitz-probe-${{ github.ref }}
@@ -591,6 +596,93 @@ jobs:
             ${{ runner.temp }}/blitz-story.png
             ${{ runner.temp }}/blitz-compat-report.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Opt-in performance experiment only (docs/ROVES_PERFORMANCE.md, "A/B Vello
+  # CPU multithreading"): release executables of the single-thread reference
+  # (default features) and of the `vello-mt` variant, for the local Skip /
+  # PresentMon A/B. Runs only on a manual dispatch with vello_ab or on a push
+  # whose head commit message contains [vello-ab]; it is not a gate and leaves
+  # the normal/JITless matrix above unchanged.
+  windows-release-vello-ab:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.vello_ab) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[vello-ab]')) }}
+    runs-on: windows-latest
+    # Same neutral CARGO_HOME as the matrix job, so the executables also run on
+    # a developer machine that mirrors C:/roves-cargo/registry/src.
+    env:
+      CARGO_HOME: C:/roves-cargo
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../vello-ab-target
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: support/blitz-v8-probe/js/package-lock.json
+      - name: bundle the Motion scenario (include_str! input)
+        working-directory: support/blitz-v8-probe/js
+        run: |
+          npm ci
+          npm run build
+      - name: build release single-thread reference and vello-mt variant
+        shell: bash
+        run: |
+          set -o pipefail
+          mkdir -p "$RUNNER_TEMP/vello-ab/single" "$RUNNER_TEMP/vello-ab/multi"
+          exe="$CARGO_TARGET_DIR/release/roves-blitz-v8-probe.exe"
+          cargo build --release --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/vello-ab/build-single.log"
+          cp "$exe" "$RUNNER_TEMP/vello-ab/single/"
+          # Only anyrender_vello_cpu/vello_cpu and the probe rebuild here.
+          cargo build --release --locked --features vello-mt --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/vello-ab/build-multi.log"
+          cp "$exe" "$RUNNER_TEMP/vello-ab/multi/"
+      # Smoke only: each executable runs the default probe and saves its
+      # offscreen screenshot. The pixel comparison is informational (the
+      # fixture is not a blur/clip acceptance scene and may animate); visual
+      # acceptance on the game is the documented manual A/B.
+      - name: smoke both variants and compare offscreen pixels (informational)
+        shell: pwsh
+        env:
+          ROVES_PROBE_JITLESS: '0'
+          RUST_BACKTRACE: '1'
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'vello-ab'
+          foreach ($variant in 'single', 'multi') {
+            $dir = Join-Path $root $variant
+            $env:ROVES_PROBE_SCREENSHOT = Join-Path $dir 'offscreen.png'
+            $env:ROVES_PROBE_STORAGE_DIR = Join-Path $dir 'storage'
+            $log = Join-Path $dir 'probe.log'
+            & (Join-Path $dir 'roves-blitz-v8-probe.exe') *> $log
+            if ($LASTEXITCODE -ne 0) { Get-Content $log -Tail 40; throw "$variant probe exited with $LASTEXITCODE" }
+            if (-not (Select-String -Path $log -SimpleMatch '"check":"canvas_2d_pixels_png_export","status":"passed"' -Quiet)) { throw "$variant probe smoke failed" }
+          }
+          Add-Type -AssemblyName System.Drawing
+          function Read-Pixels($path) {
+            $bitmap = [System.Drawing.Bitmap]::FromFile($path)
+            $rect = New-Object System.Drawing.Rectangle 0, 0, $bitmap.Width, $bitmap.Height
+            $data = $bitmap.LockBits($rect, 'ReadOnly', [System.Drawing.Imaging.PixelFormat]::Format32bppArgb)
+            $bytes = New-Object byte[] ($data.Stride * $bitmap.Height)
+            [System.Runtime.InteropServices.Marshal]::Copy($data.Scan0, $bytes, 0, $bytes.Length)
+            $bitmap.UnlockBits($data); $size = "$($bitmap.Width)x$($bitmap.Height)"; $bitmap.Dispose()
+            return @{ bytes = $bytes; size = $size }
+          }
+          $a = Read-Pixels (Join-Path $root 'single/offscreen.png')
+          $b = Read-Pixels (Join-Path $root 'multi/offscreen.png')
+          if ($a.size -ne $b.size) { echo "::notice::vello A/B offscreen size differs: $($a.size) vs $($b.size)"; exit 0 }
+          $diff = 0; $max = 0
+          for ($i = 0; $i -lt $a.bytes.Length; $i++) {
+            $d = [Math]::Abs([int]$a.bytes[$i] - [int]$b.bytes[$i])
+            if ($d -ne 0) { $diff++; if ($d -gt $max) { $max = $d } }
+          }
+          echo "::notice::vello A/B offscreen $($a.size): $diff differing channel bytes, max delta $max (single vs multi, informational)"
+      - name: upload release A/B executables
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blitz-probe-vello-ab-release
+          path: ${{ runner.temp }}/vello-ab
           retention-days: 7
           if-no-files-found: warn
 

@@ -68,6 +68,16 @@ const SURFACE_FORMAT: wgpu_types::TextureFormat = wgpu_types::TextureFormat::Bgr
 const RASTER_FORMAT: wgpu_types::TextureFormat = wgpu_types::TextureFormat::Rgba8Unorm;
 /// Size of one layer's uniform block (`Layer` in `SHADER`).
 const LAYER_UNIFORM_SIZE: u64 = 48;
+/// Vello CPU raster threading of this build, reported in the frame timings
+/// summary and trace header so A/B logs identify their variant: `"multi"` with
+/// the opt-in `vello-mt` feature (anyrender_vello_cpu `multithreading`),
+/// otherwise the `"single"` reference. Both variants rasterize no filters (see
+/// the feature comment in Cargo.toml).
+pub const RASTER_THREADING: &str = if cfg!(feature = "vello-mt") {
+    "multi"
+} else {
+    "single"
+};
 
 /// The device deno_webgpu created for the page (the probe's single shared
 /// device), registered by dom.js through `op_blitz_present_device`.

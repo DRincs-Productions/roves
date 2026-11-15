@@ -9,6 +9,18 @@ license = "MPL-2.0"
 # The patched upstream crate stays outside the workspace (no fmt/clippy of vendored code).
 exclude = ["vendor/blitz-dom", "vendor/blitz-paint"]
 
+[features]
+# Opt-in A/B experiment, off by default (the default build is the single-thread
+# reference): forwards to anyrender_vello_cpu 0.18's own `multithreading`
+# feature (vello_cpu 0.3 MultiThreadedDispatcher, rayon pool of
+# min(available_parallelism - 1, 8) workers). Same renderer code either way.
+# vello_cpu's MT dispatcher has no filter support and anyrender_vello_cpu drops
+# every filter when both `filters` and `multithreading` are on; this graph does
+# not enable `filters`, so CSS filter/backdrop-filter (blur included) are not
+# rasterized in EITHER build today. Do not enable this by default without the
+# A/B in docs/ROVES_PERFORMANCE.md, and not together with a future `filters`.
+vello-mt = ["anyrender_vello_cpu/multithreading"]
+
 [dependencies]
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"

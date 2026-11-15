@@ -20,6 +20,75 @@ cattura Skip del flusso fluidità resta da rifare con la patch; CI e replay nell
 sono pendenti.
 Dettagli: `docs/handoff/2026-11-14-blitz-skip-fluidita.md`.
 
+## A/B Vello CPU multithreading della probe Blitz — 15 novembre 2026 (esperimento, non misurato)
+
+**Stato: preparato, nessuna misura.** Nessun guadagno è dichiarato finché l'A/B release sotto non è
+eseguito. La build predefinita resta il riferimento single-thread; la variante è opt-in.
+
+**Libreria riusata, nessun renderer nuovo.** `anyrender_vello_cpu 0.18.0` (già nel grafo) ha la
+feature `multithreading` che inoltra a `vello_cpu 0.3.0/multithreading`: `RenderContext::new` usa
+allora `MultiThreadedDispatcher` con un pool rayon di `min(available_parallelism - 1, 8)` worker
+(`RenderSettings::default`). La probe la espone come feature Cargo `vello-mt`; lo stesso codice
+(`upload_segment` → `VelloCpuImageRenderer::render`) serve entrambe le varianti. Unico pacchetto
+nuovo nel lock: `ordered-channel 1.2.0` (MIT OR Apache-2.0, MSRV 1.65); `rayon`,
+`crossbeam-channel`, `thread_local` erano già bloccati. Il riepilogo `ROVES_PROBE_FRAME_TIMINGS`
+e l'header della trace dichiarano `raster_threading` (`single`/`multi`). Ogni resize ricrea il
+`RenderContext` e quindi il pool (comportamento della libreria, raro in finestra fissa).
+
+**Filtri: verifica sul sorgente pinnato.**
+
+- `vello_cpu 0.3.0`: `MultiThreadedDispatcher::push_layer` non supporta filtri
+  (`src/dispatch/multi_threaded.rs`, TODO upstream; `RenderContext::push_layer` documenta il
+  panic con filtro in MT).
+- `anyrender_vello_cpu 0.18.0` (`src/scene.rs`): con `filters` attiva, `push_layer` scarta ogni
+  filtro se è attiva anche `multithreading`; senza `filters` il filtro è sempre `None`. Il
+  `backdrop_filter` è ignorato in ogni configurazione.
+- Il grafo della probe **non** attiva `filters` (`cargo tree -e features -i anyrender_vello_cpu`:
+  solo `default` e `softbuffer_window_renderer`). Oggi quindi `filter: blur(...)` e
+  `backdrop-filter` non sono rasterizzati né in single né in multi: la parità A/B dei filtri è
+  preservata perché entrambe le varianti li omettono, non perché siano supportati.
+- Blur sopra canvas: il template usa `backdrop-filter: blur(8px)` nel backdrop dei dialoghi e
+  `filter: blur(var(--tw-enter-blur/exit-blur))` nelle animazioni. Oltre al punto sopra, il
+  canvas Pixi è un quad GPU separato da `split_scene`: anche con filtri attivi Vello CPU non vede i
+  pixel del canvas, quindi un blur sopra canvas non è ottenibile in questa architettura. Il gap
+  verso Chrome è identico nelle due varianti.
+- Conseguenza: `vello-mt` è incompatibile con un futuro supporto filtri via
+  `anyrender_vello_cpu/filters` (verrebbero scartati). Non abilitarla per default né insieme a
+  `filters`; se il blur diventa un requisito, la scelta va rifatta (renderer GPU o filtri ST).
+
+**Glue rimovibile.** Nessuna: `split_scene`, `RasterCache` e l'upload restano necessari in
+entrambe le varianti; il threading è interno alla libreria e non sostituisce codice Roves.
+
+**CI.** Job `windows-release-vello-ab` di `blitz-probe.yml`, solo su `workflow_dispatch` con
+`vello_ab` o su push con `[vello-ab]` nel messaggio del commit di testa; non è un gate e la matrice
+normal/JITless non cambia. Compila in release le due varianti, esegue la probe predefinita su
+entrambe (smoke `canvas_2d_pixels_png_export`) e annota quanti byte dello screenshot offscreen
+differiscono (solo informativo: la fixture non contiene blur/clip). Artifact
+`blitz-probe-vello-ab-release` (`single/` e `multi/`).
+
+**Accettazione visiva (prima di qualsiasi misura).** Stesso template, viewport 640×360, storage
+isolato, driver `perf-scripts/drive.py` con `story2.json`. Per entrambe le varianti confrontare
+pixel per pixel gli screenshot `menu_ready`, `d1`–`d4`, `skip_end` e almeno uno a dialogo/popup
+aperto (backdrop con blur sopra il canvas Pixi, clip con bordi arrotondati/overflow). Atteso:
+identici o differenze limitate all'antialiasing, con conteggio pixel diversi e delta massimo
+registrati; nelle zone con blur entrambe le varianti devono mostrare lo stesso contenuto non
+sfocato. Una differenza in clip/layer o testo invalida l'A/B.
+
+**Tempi (protocollo).** Tre ripetizioni per variante, ordine alternato (S, M, S, M, S, M), build
+release dell'artifact, foreground, stesso PresentMon (`pm_segments.py`) e stessa trace
+(`analyze.py`):
+
+- Skip: `raster_ms_on_miss` (n, P50/P95/max) e numero di miss per motivo dal segmento `skip`;
+  `cpu_render_present` e gap > 33,4 ms.
+- PresentMon per scena (`menu_idle`, `dialogue1`–`4`, `skip`): presentazioni, mostrate, non
+  mostrate, display/s, P50/P95/P99/max di `DISPLAYED_TIME` e somma > 33,4 ms.
+- CPU di processo/RAM per scena se disponibili (il pool aggiunge thread e può aumentare la CPU
+  totale anche quando il raster sul thread della shell scende).
+
+Riferimento disponibile solo **debug** (CI #90, run B/C/D, non confrontabile con release): Skip 8
+miss `content_changed` per run, `raster_ms_on_miss` P50 185,0–186,1 ms e massimo 381,9–382,9 ms;
+PresentMon Skip 374–377 presentazioni tutte mostrate, P99 183,5–200,0 ms, 7–8 intervalli > 33 ms.
+
 ## Verifica media Blitz/V8 — 13 novembre 2026
 
 ### Diagnosi regressione gate JITless, CI #43528050925 — 14 novembre 2026
@@ -447,17 +516,26 @@ Procedura di cattura (Windows, da verificare sulla prima finestra reale):
    tutte monotone; in 290 intervalli consecutivi `CPU_START_QPC[n+1] - CPU_START_QPC[n]`
    coincide con `CPU_FRAME_TIME[n]·10.000` tick (QPC 10 MHz, `CPU_FRAME_TIME` in ms), con
    scarto massimo inferiore a `3·10⁻¹¹` tick dovuto alla rappresentazione floating point.
-   Quindi `present_end_qpc` del record Roves `k`
-   va abbinato a `CPU_START_QPC` della presentazione PresentMon **successiva**, ovvero a
-   `CPU_START_QPC + CPU_FRAME_TIME·qpc_frequency/1000` della stessa. Abbinare per vicinanza
-   (atteso: Roves leggermente dopo, per il wrapper wgpu attorno al Present del backend) e
-   controllare che `present_seq` e l'ordine PresentMon crescano insieme; scartare chi non ha
-   corrispondenza invece di forzarla. `present_start_qpc` è l'inizio della chiamata.
+   **Correzione (run B/C/D del 15 novembre, debug CI #90, GTX 1050/Vulkan, menu → 4 dialoghi →
+   Skip):** l'ipotesi che `present_end_qpc` del record Roves coincida con `CPU_START_QPC` della
+   presentazione successiva **non regge**. Su 3.590 record per run, zero cadono entro 2 µs
+   (`analyze.py`, `trace_frames_matched` 0) e zero (B, D) o 3 (C) entro 100 µs dal
+   `CPU_START_QPC` più vicino; entro 1 ms solo 180–447. Per scena lo scarto Roves − PresentMon
+   più vicino è P5/P50/P95 0,8–2,4/2,5–3,1/3,5–3,6 ms nel menu e −0,4–−0,3/1,6–2,2/3,2–3,8 ms in Skip
+   (`perf-scripts/pairing.py`): positivo ma variabile e, in Skip, a volte negativo; l'indice
+   PresentMon più vicino si ripete 189–329 volte. Probabilmente PresentMon registra il Present
+   del livello DXGI/kernel usato dal driver Vulkan, non la chiamata wgpu: non è stato verificato.
+   Il conteggio per scena invece concorda (menu 488/488, 486/485, 488/488; Skip 378/377,
+   376/374, 377/375 record Roves/presentazioni PresentMon). Quindi: **nessun abbinamento per
+   frame**; usare la timebase QPC comune solo per delimitare le scene con i marker del driver e
+   confrontare PresentMon per scena (`pm_segments.py`) con la trace per scena (`analyze.py`).
+   `present_start_qpc` è l'inizio della chiamata.
 4. Calcoli separati: intervalli di display = differenze di `DISPLAYED_TIME` fra presentazioni
    effettivamente mostrate (hitch: intervallo > 1,5× il periodo di refresh); cadenza CPU =
    differenze di `step_start_qpc` e `cpu_frame_step_ns`; costo render = `cpu_render_present_ns`
    e `phases_ns` dello stesso record; attese swapchain = `cpu_surface_acquire`/`cpu_present`.
-   Un hitch di display si attribuisce a una fase solo se il record abbinato la mostra.
+   Un hitch di display si attribuisce a una fase solo a livello di scena (vedi correzione al
+   punto 3), non a un singolo record.
    Tentativi `render_attempts - presented` non arrivano mai al display; presentazioni senza
    `DISPLAYED_TIME` sono state scartate/sostituite dal compositore.
 
@@ -500,7 +578,8 @@ Conclusione limitata: la trace del renderer funziona nella finestra reale e indi
 separare, acquisizione quasi a ogni frame e raster molto costoso sui pochi cache miss. Prossimo
 passo dopo aver sbloccato la cattura ETW: foreground e privilegi corretti, PresentMon e Roves
 contemporanei, quindi una scena di menu e una sequenza di dialogo/Skip; allineare prima i frame
-mostrati, poi attribuire gli hitch.
+mostrati, poi attribuire gli hitch. (Aggiornamento: le catture B/C/D hanno escluso l'abbinamento
+per frame; vedi la correzione al punto 3 della procedura sopra.)
 
 #### Run esplorativo per fase, storia JITless, 13 novembre 2026
 
