@@ -37,6 +37,21 @@ scripts, UI elements or APIs. The bridge uses private process pipes and the
 embedded Deno inspector, without opening an HTTP or WebSocket listener.
 Treat calls as trusted development commands since they can change game state.
 
+## Attach to an open probe window
+
+Start the feature-enabled probe with `--game <dist> --window`. Set
+`ROVES_PROBE_DEV_MCP_ATTACH_PORT` to a free port and
+`ROVES_PROBE_DEV_MCP_TOKEN` to a fresh secret of 32 hexadecimal characters
+before launch. Use a distinct port and token for each instance. Set
+`ROVES_PROBE_FRAME_TIMINGS=1` to enable performance sampling. The endpoint
+listens on IPv4 loopback once the game window starts polling.
+
+Configure the MCP client to run `node server.mjs --attach <port>` with the
+matching token in the server environment. Closing the client leaves the
+game running. To keep saves separate, set `ROVES_PROBE_STORAGE_DIR` to a
+dedicated directory when launching the game. This attach mode uses the
+storage configured by the game launcher.
+
 Run `node smoke.mjs --list-only` after `npm ci` to check MCP tool discovery.
 Run `node smoke.mjs <probe executable>` to check evaluation, error handling, and
 shutdown against the included HTML fixture in a real window.

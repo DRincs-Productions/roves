@@ -6,12 +6,38 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
+import { createConnection } from "node:net";
 import { z } from "zod";
 import { pixiStatus } from "./pixi.mjs";
 
 const [probe, game] = process.argv.slice(2);
+const attach = probe === "--attach";
 if (!probe || !game || process.argv.length !== 4) {
-  throw new Error("Usage: node server.mjs <dev-mcp probe executable> <game dist>");
+  throw new Error("Usage: node server.mjs <dev-mcp probe executable> <game dist> | --attach <port>");
+}
+const attachToken = process.env.ROVES_PROBE_DEV_MCP_TOKEN;
+const attachPort = Number(game);
+if (attach && (!Number.isInteger(attachPort) || attachPort < 1 || attachPort > 65535 ||
+    !/^[0-9a-fA-F]{32}$/.test(attachToken ?? ""))) {
+  throw new Error("Set a valid local attach port and ROVES_PROBE_DEV_MCP_TOKEN");
+}
+
+async function requestAttached(payload) {
+  const socket = createConnection({ host: "127.0.0.1", port: attachPort });
+  socket.setTimeout(5_000, () => socket.destroy(new Error("Roves attach timed out")));
+  const lines = createInterface({ input: socket });
+  try {
+    socket.write(attachToken + "\n" + JSON.stringify(payload) + "\n");
+    for await (const line of lines) {
+      const result = JSON.parse(line);
+      if ("error" in result) throw new Error(result.error);
+      return result.value;
+    }
+    throw new Error("Roves closed the connection before replying");
+  } finally {
+    lines.close();
+    socket.destroy();
+  }
 }
 
 class Probe {
@@ -26,7 +52,7 @@ class Probe {
     const prefix = "ROVES_DEV_MCP_" + token + " ";
     const storage = mkdtempSync(join(tmpdir(), "roves-dev-mcp-"));
     this.#child = spawn(resolve(probe), ["--game", resolve(game), "--window"], {
-      env: { ...process.env, ROVES_PROBE_DEV_MCP_TOKEN: token, ROVES_PROBE_STORAGE_DIR: storage, ROVES_PROBE_FRAME_TIMINGS: "1" },
+      env: { ...process.env, ROVES_PROBE_DEV_MCP_TOKEN: token, ROVES_PROBE_DEV_MCP_ATTACH_PORT: undefined, ROVES_PROBE_STORAGE_DIR: storage, ROVES_PROBE_FRAME_TIMINGS: "1" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -119,8 +145,11 @@ await serveStdio(() => {
   const server = new McpServer({ name: "roves-dev", version: "0.0.0" });
   async function run(payload) {
     try {
-      child ??= new Probe();
-      const value = await child.request(payload);
+      if (typeof payload === "string" && Buffer.byteLength(payload) > 16 * 1024) {
+        throw new Error("Source exceeds 16 KiB");
+      }
+      if (!attach) child ??= new Probe();
+      const value = attach ? await requestAttached(payload) : await child.request(payload);
       return { content: [{ type: "text", text: JSON.stringify(value) }] };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: error.message }] };
