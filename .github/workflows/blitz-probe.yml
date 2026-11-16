@@ -614,6 +614,7 @@ jobs:
           cd support/blitz-v8-probe/dev-mcp
           npm ci
           node smoke.mjs "$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe.exe"
+          node smoke.mjs "$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe.exe" --discover
 
   # Opt-in performance experiment only (docs/ROVES_PERFORMANCE.md, "A/B Vello
   # CPU multithreading"): release executables of the single-thread reference

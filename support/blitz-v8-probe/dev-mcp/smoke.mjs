@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -8,11 +11,22 @@ import { fileURLToPath } from "node:url";
 const probe = process.argv[2];
 assert.ok(probe, "Usage: node smoke.mjs <dev-mcp probe executable | --list-only>");
 const listOnly = probe === "--list-only";
+const discovery = process.argv[3] === "--discover";
+const fixture = fileURLToPath(new URL("./fixture", import.meta.url));
+const profile = discovery ? mkdtempSync(join(tmpdir(), "roves-mcp-discovery-")) : null;
+const env = profile
+  ? { ...process.env, LOCALAPPDATA: profile, ROVES_PROBE_STORAGE_DIR: join(profile, "saves") }
+  : process.env;
+const game = discovery
+  ? spawn(resolve(probe), ["--game", fixture, "--window", "--mcp-discover"], {
+      stdio: ["ignore", "ignore", "inherit"], env, windowsHide: true,
+    })
+  : null;
+const gameClosed = game ? once(game, "close") : null;
 const child = spawn(process.execPath, [
   fileURLToPath(new URL("./server.mjs", import.meta.url)),
-  listOnly ? "unused-probe" : probe,
-  fileURLToPath(new URL("./fixture", import.meta.url)),
-], { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
+  ...(discovery ? ["--discover"] : [listOnly ? "unused-probe" : probe, fixture]),
+], { stdio: ["pipe", "pipe", "inherit"], env, windowsHide: true });
 const closed = once(child, "close");
 const lines = createInterface({ input: child.stdout })[Symbol.asyncIterator]();
 let nextId = 0;
@@ -49,6 +63,14 @@ try {
   const { tools } = await call("tools/list", {});
   assert.deepEqual(tools.map(({ name }) => name).sort(), ["evaluate_script", "performance_sample", "pixi_status"]);
   if (!listOnly) {
+    if (game) {
+      const record = join(profile, "Roves", "mcp", game.pid + ".json");
+      const readyBy = Date.now() + 60_000;
+      while (!existsSync(record) && game.exitCode === null && Date.now() < readyBy) {
+        await delay(100);
+      }
+      assert.ok(existsSync(record), "The open game should publish its MCP connection record");
+    }
     const result = await evaluate(`({
       text: document.getElementById("fixture").textContent,
       privileged: typeof globalThis.Deno,
@@ -103,8 +125,20 @@ try {
   }
   child.stdin.end();
   assert.deepEqual(await closed, [0, null]);
+  if (game) {
+    assert.equal(game.exitCode, null, "Disconnecting MCP should leave the game running");
+    process.kill(game.pid, 0);
+  }
   console.log(listOnly ? "MCP tool discovery passed" : "Roves MCP window smoke passed");
 } finally {
   clearTimeout(deadline);
   child.stdin.end();
+  if (game) {
+    game.kill();
+    try {
+      await gameClosed;
+    } finally {
+      rmSync(profile, { recursive: true, force: true });
+    }
+  }
 }
