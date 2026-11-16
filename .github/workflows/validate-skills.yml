@@ -1,0 +1,40 @@
+name: Validate Agent Skills
+
+on:
+  push:
+    paths: ["skills/**", ".github/workflows/validate-skills.yml"]
+  pull_request:
+    paths: ["skills/**", ".github/workflows/validate-skills.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        agent: [codex, claude-code]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+      - name: Discover and install the checked-out Roves skill
+        working-directory: ${{ runner.temp }}
+        env:
+          SKILL_AGENT: ${{ matrix.agent }}
+        run: |
+          set -euo pipefail
+          temp_profile="$(mktemp -d)"
+          trap 'rm -rf "$temp_profile"' EXIT
+          mkdir -p "$temp_profile/project"
+          cd "$temp_profile/project"
+          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill roves --agent "$SKILL_AGENT" --list -y
+          npx --yes skills@1.9.0 add "$GITHUB_WORKSPACE" --skill roves --agent "$SKILL_AGENT" --copy -y
+          installed="$(find . -type f -path '*/roves/SKILL.md' -print -quit)"
+          test -n "$installed"
+          cmp "$installed" "$GITHUB_WORKSPACE/skills/roves/SKILL.md"
+          test -f "$(dirname "$installed")/references/mcp.md"
+          test -f "$(dirname "$installed")/references/performance.md"
