@@ -2558,5 +2558,20 @@ successivo, la prova usa il completamento del batch già inviato con
 qui si riusa la callback wgpu sottostante. Il nuovo watchdog segnala quante
 animazioni sono state consegnate e quanti tick sono stati rinviati dopo 45 s
 senza completare un gruppo. La prova sintetica riprende anche quando
-`Poll` indica ancora lavoro in coda. Restano da misurare il progresso del
-template su WARP e l'effetto sulla fluidità in una finestra reale.
+`Poll` indica ancora lavoro in coda.
+
+Nella [run 43912469118](https://github.com/DRincs-Productions/roves/actions/runs/43912469118),
+il job JITless su Microsoft Basic Render Driver (DX12) è entrato nel watchdog
+prima di Start. Ha consegnato 8 dei 10 frame richiesti in 45 s con 2.693 tick
+rinviati. Lo smoke iniziale ha registrato 232 submit e la coda ha richiesto
+15,33 s per svuotarsi al teardown. Skip ha rinviato il 98,2% dei tick. La
+fence ha mantenuto non bloccante il poll ma il carico GPU software rimane.
+
+Al controllo del 16 novembre, il template `main` era
+`1ac2c1cce04443e15c4482484864e87556709964`. Il suo `src/main.tsx` imposta
+un canvas Pixi di 1920 × 1080. Prima di cambiare il pacing, campionare le
+dimensioni e il sample count delle texture effettive, i submit per rAF e
+la durata delle fence prima di Start. Confrontare il template originale
+su WARP e Mesa lavapipe (già usato dal workflow Netrender). Verificare
+se clip, texture intermedie o un rendering invariato spiegano il carico.
+Misurare separatamente la fluidità in finestra sulla GTX 1050.
