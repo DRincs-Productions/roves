@@ -81,7 +81,15 @@ repro: `support/netrender-shared-device-proof/README.md`.
 - Workflow is now a matrix: `linux-lavapipe` runs negative and positive for both
   producers with unchanged gates; `windows-compile` only builds (static-CRT link).
   The pristine E0599 gate was tightened (job 132956577307 passed it with 0 x E0599).
-- Next: read the first lavapipe run and record it.
+- CI #6 (`43821714446`, `d85be3fb68f`) passed on both jobs. Linux lavapipe
+  ran both the raw and real Deno JavaScript producers: the negative runs failed
+  only the two expected ordering pixels and the patched runs passed all six
+  pixel checks and the shared device and lifetime checks. Windows compiled both
+  variants. The companion Servo run `43821714304` also passed.
+- Netrender upstream branch `BlackRam-oss:codex/fix-external-texture-order`
+  is published at `5a73b3c2`; GitHub returned 403 for the upstream issue and PR.
+  The wgpu upstream proposal is in progress in the separate `wgpu-reference`
+  checkout. The proof patches are still isolated from the Blitz renderer.
 
 ## Follow-up assignments after the proof
 
