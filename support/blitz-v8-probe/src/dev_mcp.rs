@@ -91,7 +91,7 @@ fn evaluate(runtime: &mut JsRuntime, source: &str) -> Result<Value, String> {
     let mut session = JsRuntimeInspector::create_local_session(
         runtime.inspector(),
         Box::new(move |message| {
-            if matches!(message.kind, InspectorMsgKind::Message(1)) {
+            if matches!(message.kind, InspectorMsgKind::Message(_)) {
                 let _ = send.send(message.content);
             }
         }),
@@ -99,19 +99,51 @@ fn evaluate(runtime: &mut JsRuntime, source: &str) -> Result<Value, String> {
             wait_for_disconnect: false,
         },
     );
-    session.post_message(
-        1,
+    let mut next_id = 0;
+    let mut request = |method, params| {
+        next_id += 1;
+        session.post_message(next_id, method, Some(params));
+        inspector_result(
+            receive
+                .try_recv()
+                .map_err(|_| "Inspector did not respond")?,
+        )
+    };
+    let result = request(
         "Runtime.evaluate",
-        Some(json!({
+        json!({
             "expression": source,
-            "returnByValue": true,
             "awaitPromise": false,
+            "allowUnsafeEvalBlockedByCSP": false,
             "timeout": 1000,
-        })),
-    );
-    let message = receive
-        .try_recv()
-        .map_err(|_| "Inspector did not respond")?;
+        }),
+    )?;
+    if let Some(value) = result.get("value") {
+        return Ok(value.clone());
+    }
+    // Returning by value directly would turn a Promise into an empty object
+    // and discard its subtype. Inspect the remote object first.
+    if result["type"] == "object"
+        && result["subtype"] != "promise"
+        && let Some(object_id) = result["objectId"].as_str()
+    {
+        let value = request(
+            "Runtime.callFunctionOn",
+            json!({
+                "objectId": object_id,
+                "functionDeclaration": "function () { return this; }",
+                "returnByValue": true,
+                "awaitPromise": false,
+            }),
+        )?;
+        if let Some(value) = value.get("value") {
+            return Ok(value.clone());
+        }
+    }
+    Err("script must return a JSON value synchronously".into())
+}
+
+fn inspector_result(message: String) -> Result<Value, String> {
     if message.len() > MAX_RESPONSE {
         return Err("Inspector result exceeded 16 KiB".into());
     }
@@ -119,13 +151,6 @@ fn evaluate(runtime: &mut JsRuntime, source: &str) -> Result<Value, String> {
         deno_core::serde_json::from_str(&message).map_err(|_| "invalid Inspector result")?;
     if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
         return Err(error.into());
-    }
-    if message
-        .pointer("/result/result/subtype")
-        .and_then(Value::as_str)
-        == Some("promise")
-    {
-        return Err("script must return a JSON value synchronously".into());
     }
     if let Some(exception) = message.pointer("/result/exceptionDetails") {
         return Err(exception
@@ -136,7 +161,7 @@ fn evaluate(runtime: &mut JsRuntime, source: &str) -> Result<Value, String> {
             .into());
     }
     message
-        .pointer("/result/result/value")
+        .pointer("/result/result")
         .cloned()
-        .ok_or_else(|| "script must return a JSON value synchronously".into())
+        .ok_or_else(|| "invalid Inspector result".into())
 }
