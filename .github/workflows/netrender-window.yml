@@ -18,12 +18,16 @@ name: Netrender window renderer (opt-in probe build)
 #   (support/netrender-shared-device-proof/README.md, "WARP").
 # linux-lavapipe-window: first Linux build of the probe; runs the window
 #   fixture (fixtures/netrender-window) under Xvfb on Mesa lavapipe, negative
-#   and positive, gated by netrender-window/check_log.py.
+#   and positive, gated by netrender-window/check_log.py; then two lifecycle
+#   scenarios on the positive executable (ROVES_PROBE_NETRENDER_SCENARIO):
+#   a native resize and the page's own GPUDevice.destroy(), each started
+#   after the verified first frame.
 'on':
   push:
     paths:
       - 'support/blitz-v8-probe/netrender-window/**'
       - 'support/blitz-v8-probe/src/netrender_window.rs'
+      - 'support/blitz-v8-probe/src/window.rs'
       - 'support/blitz-v8-probe/fixtures/netrender-window/**'
       - 'support/netrender-shared-device-proof/src/lib.rs'
       - 'support/netrender-shared-device-proof/prepare-patched.sh'
@@ -202,6 +206,37 @@ jobs:
           set -e
           echo "::group::positive (exit $status)"; cat "$log"; echo "::endgroup::"
           python3 -I netrender-window/check_log.py positive "$log" "$status"
+      # Lifecycle scenarios: separate runs of the same positive executable and
+      # fixture. Each first passes the unchanged positive gates (the six pixels
+      # are read back before the scenario starts), then the scenario's own.
+      - name: resize scenario (native resize after the verified frame)
+        if: ${{ !cancelled() && steps.build_positive.outcome == 'success' }}
+        working-directory: support/blitz-v8-probe
+        run: |
+          log="$RUNNER_TEMP/netrender-window/logs/resize.log"
+          set +e
+          ROVES_PROBE_WINDOW_RENDERER=netrender ROVES_PROBE_NETRENDER_FIXTURE=1 ROVES_PROBE_NETRENDER_SCENARIO=resize timeout 900 \
+            xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            "$RUNNER_TEMP/netrender-window/positive/roves-blitz-v8-probe-netrender" \
+            --game fixtures/netrender-window --window --window-frames 180 > "$log" 2>&1
+          status=$?
+          set -e
+          echo "::group::resize (exit $status)"; cat "$log"; echo "::endgroup::"
+          python3 -I netrender-window/check_log.py resize "$log" "$status"
+      - name: device-destroy scenario (page GPUDevice.destroy after the verified frame)
+        if: ${{ !cancelled() && steps.build_positive.outcome == 'success' }}
+        working-directory: support/blitz-v8-probe
+        run: |
+          log="$RUNNER_TEMP/netrender-window/logs/device-destroy.log"
+          set +e
+          ROVES_PROBE_WINDOW_RENDERER=netrender ROVES_PROBE_NETRENDER_FIXTURE=1 ROVES_PROBE_NETRENDER_SCENARIO=device-destroy timeout 900 \
+            xvfb-run -a --server-args="-screen 0 1280x720x24" \
+            "$RUNNER_TEMP/netrender-window/positive/roves-blitz-v8-probe-netrender" \
+            --game fixtures/netrender-window --window --window-frames 180 > "$log" 2>&1
+          status=$?
+          set -e
+          echo "::group::device-destroy (exit $status)"; cat "$log"; echo "::endgroup::"
+          python3 -I netrender-window/check_log.py device-destroy "$log" "$status"
       - name: upload logs and executables
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

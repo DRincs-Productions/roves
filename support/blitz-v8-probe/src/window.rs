@@ -31,7 +31,7 @@
 //! of its own steps, never across the handler: JS (and the DOM ops it calls)
 //! runs while Blitz holds no borrow of the document.
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
 use std::task::Context;
 use std::time::{Duration, Instant};
@@ -46,8 +46,11 @@ use blitz_traits::events::{
 };
 use deno_core::{JsRuntime, v8};
 use keyboard_types::{Code, Key, Location, Modifiers};
+use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalPosition, LogicalSize};
-use winit::window::WindowAttributes;
+use winit::event::{DeviceEvent, DeviceId, StartCause, WindowEvent};
+use winit::event_loop::ActiveEventLoop;
+use winit::window::{WindowAttributes, WindowId};
 
 /// Logical screen position of the undecorated window's top-left corner.
 pub const WINDOW_ORIGIN: (f64, f64) = (100.0, 100.0);
@@ -281,6 +284,119 @@ pub enum WindowMode {
 /// Where `RovesDocument::drop` parks its `JsRuntime` (see `run`).
 type ParkedRuntime = Rc<RefCell<Option<JsRuntime>>>;
 
+/// Probe-only lifecycle scenario requests (the opt-in Netrender window
+/// fixture, `ROVES_PROBE_NETRENDER_SCENARIO`): the renderer sets one at a
+/// deterministic point (after its first verified frame) and the window run
+/// carries it out once, through the shell's own facilities.
+#[derive(Default)]
+pub struct WindowScenario {
+    /// A native resize to this logical size, requested once through winit's
+    /// `Window::request_surface_size`. The OS then sends `SurfaceResized`,
+    /// which blitz-shell handles exactly as a user resize (viewport, renderer
+    /// `set_size`, redraw).
+    pub resize_to: Cell<Option<(f64, f64)>>,
+    /// A page script evaluated once at the start of the next frame step (the
+    /// fixture page's own `GPUDevice.destroy()` call).
+    pub page_call: Cell<Option<&'static str>>,
+}
+
+pub type SharedWindowScenario = Rc<WindowScenario>;
+
+/// blitz-shell's `BlitzApplication`, unchanged, plus the scenario requests:
+/// every handler forwards to the shell, then a pending resize is requested
+/// on the shell's window.
+struct ScenarioApplication<R: WindowRenderer> {
+    shell: BlitzApplication<R>,
+    scenario: Option<SharedWindowScenario>,
+}
+
+impl<R: WindowRenderer> ScenarioApplication<R> {
+    fn apply(&self) {
+        let Some(scenario) = &self.scenario else {
+            return;
+        };
+        if let Some((width, height)) = scenario.resize_to.take() {
+            for view in self.shell.windows.values() {
+                // X11 (Xvfb, no window manager) applies it at once with
+                // `XConfigureWindow`, also for a non-resizable window (winit
+                // moves its min/max hints first); the result arrives as a
+                // normal `SurfaceResized` event.
+                let immediate = view
+                    .window
+                    .request_surface_size(LogicalSize::new(width, height).into());
+                println!(
+                    "ROVES_PROBE_RESULT {{\"check\":\"window_scenario_resize\",\"status\":\"requested\",\"logical\":[{width},{height}],\"immediate\":{}}}",
+                    immediate.map_or_else(
+                        || "null".to_string(),
+                        |size| format!("[{},{}]", size.width, size.height)
+                    )
+                );
+                flush();
+            }
+        }
+    }
+}
+
+impl<R: WindowRenderer> ApplicationHandler for ScenarioApplication<R> {
+    fn new_events(&mut self, event_loop: &dyn ActiveEventLoop, cause: StartCause) {
+        self.shell.new_events(event_loop, cause);
+    }
+
+    fn resumed(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.resumed(event_loop);
+    }
+
+    fn can_create_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.can_create_surfaces(event_loop);
+    }
+
+    fn proxy_wake_up(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.proxy_wake_up(event_loop);
+        self.apply();
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        window_id: WindowId,
+        event: WindowEvent,
+    ) {
+        self.shell.window_event(event_loop, window_id, event);
+        self.apply();
+    }
+
+    fn device_event(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        device_id: Option<DeviceId>,
+        event: DeviceEvent,
+    ) {
+        self.shell.device_event(event_loop, device_id, event);
+    }
+
+    fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.about_to_wait(event_loop);
+    }
+
+    fn suspended(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.suspended(event_loop);
+    }
+
+    fn destroy_surfaces(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.destroy_surfaces(event_loop);
+    }
+
+    fn memory_warning(&mut self, event_loop: &dyn ActiveEventLoop) {
+        self.shell.memory_warning(event_loop);
+    }
+
+    fn macos_handler(
+        &mut self,
+    ) -> Option<&mut dyn winit::application::macos::ApplicationHandlerExtMacOS> {
+        self.shell.macos_handler()
+    }
+}
+
 /// The probe document plus the JS runtime that owns its scripts.
 pub struct RovesDocument {
     pub document: Rc<RefCell<HtmlDocument>>,
@@ -306,6 +422,8 @@ pub struct RovesDocument {
     stats_printed: bool,
     /// `ROVES_PROBE_FRAME_TIMINGS=1` only (see `frame_timings`).
     timings: Option<crate::frame_timings::SharedFrameTimings>,
+    /// Opt-in Netrender fixture scenario only (see `WindowScenario`).
+    scenario: Option<SharedWindowScenario>,
 }
 
 impl RovesDocument {
@@ -331,7 +449,41 @@ impl RovesDocument {
             stats: None,
             stats_printed: false,
             timings: None,
+            scenario: None,
         }
+    }
+
+    /// Opt-in Netrender build only (`main.rs`).
+    #[cfg_attr(not(feature = "netrender"), allow(dead_code))]
+    pub fn with_scenario(mut self, scenario: Option<SharedWindowScenario>) -> Self {
+        self.scenario = scenario;
+        self
+    }
+
+    /// Runs the scenario's pending page call, once (see `WindowScenario`).
+    fn run_scenario_page_call(&mut self) {
+        let Some(source) = self
+            .scenario
+            .as_ref()
+            .and_then(|scenario| scenario.page_call.take())
+        else {
+            return;
+        };
+        let result = self
+            .runtime()
+            .execute_script("roves-window-scenario.js", source)
+            .map(|_| ());
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"window_scenario_page_call\",\"status\":\"{}\",\"frame\":{},\"source\":{},\"error\":{}}}",
+            if result.is_ok() { "ran" } else { "failed" },
+            self.frames,
+            json_string(source),
+            result.err().map_or_else(
+                || "null".to_string(),
+                |error| json_string(&error.to_string())
+            )
+        );
+        flush();
     }
 
     pub fn with_timings(
@@ -579,6 +731,7 @@ impl Document for RovesDocument {
                 .push(start.duration_since(last));
         }
         self.last_frame = Some(start);
+        self.run_scenario_page_call();
         let runtime = self
             .runtime
             .as_mut()
@@ -628,6 +781,7 @@ pub fn run<R: WindowRenderer + 'static>(
     let _context = tokio.enter();
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
+    let scenario = document.scenario.clone();
     let mut application = BlitzApplication::new(proxy, receiver);
     let (width, height) = crate::VIEWPORT;
     let attributes = WindowAttributes::default()
@@ -642,7 +796,10 @@ pub fn run<R: WindowRenderer + 'static>(
         attributes,
     ));
     event_loop
-        .run_app(application)
+        .run_app(ScenarioApplication {
+            shell: application,
+            scenario,
+        })
         .expect("window event loop should run");
     parked.borrow_mut().take()
 }

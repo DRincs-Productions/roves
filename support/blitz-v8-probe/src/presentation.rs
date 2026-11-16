@@ -289,6 +289,7 @@ pub fn op_blitz_present_device(
             adapter.id,
             device.id,
             device.queue,
+            device.error_handler.clone(),
         ));
     }
     Ok(())

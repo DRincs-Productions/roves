@@ -36,9 +36,30 @@
 //!
 //! Device loss and errors: the adopted device has its own error sink (interop
 //! patch), so `on_uncaptured_error` here never replaces the page's
-//! `onuncapturederror`; no device-lost callback is installed (single slot,
-//! the page's). Any wgpu error reported to this sink, a lost/invalid surface or
-//! a panic inside Netrender switches the window to the fallback renderer.
+//! `onuncapturederror`; no device-lost callback is installed (wgpu-core has a
+//! single slot, and deno_webgpu resolves the page's `GPUDevice.lost` itself).
+//! Any wgpu error reported to this sink, a lost/invalid surface or a panic
+//! inside Netrender switches the window to the fallback renderer once.
+//!
+//! Page device lost (e.g. the page's own `GPUDevice.destroy()`): read from
+//! deno_webgpu's public `DeviceErrorHandler::is_lost` of the page's device
+//! before each frame (set synchronously by `destroy()`, on this thread), never
+//! inferred from errors (wgpu drops `DeviceLost` errors by design). Both
+//! renderers present on that same device, so the fallback cannot help: the
+//! window stops presenting once (`netrender_window_device_lost`), releases the
+//! Netrender objects and surface (or the fallback's surface), reports itself
+//! inactive so the shell stops requesting redraws, and leaves the page, its
+//! `lost` handlers and the JS loop running; close and teardown stay the
+//! normal ones. Chromium (f2700724) keeps compositing instead: Viz's GPU
+//! context is separate from the page's WebGPU device, while Roves shares it.
+//!
+//! Resize: `set_size` reconfigures the surface at once and frames are skipped
+//! until the configured size matches the shell's; each Netrender frame is a
+//! full redraw at the new size. Chromium's `DirectRenderer::DrawFrame`
+//! reshapes lazily, only when it is about to draw, then forces a full redraw,
+//! and `Display::DrawAndSwap` skips frames whose root pass size does not match
+//! `current_surface_size_`. Same outcome: no stretched or partially sized
+//! frame is presented.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -71,6 +92,9 @@ pub struct OwnedDeviceIds {
     adapter: AdapterId,
     device: DeviceId,
     queue: QueueId,
+    /// The page `GPUDevice`'s deno_webgpu error handler (shared `Rc`): its
+    /// public `is_lost` is set once the device is lost or destroyed.
+    page_errors: deno_webgpu::error::ErrorHandler,
     adopted: bool,
 }
 
@@ -80,12 +104,14 @@ impl OwnedDeviceIds {
         adapter: AdapterId,
         device: DeviceId,
         queue: QueueId,
+        page_errors: deno_webgpu::error::ErrorHandler,
     ) -> Self {
         Self {
             global: global.clone(),
             adapter: global.adapter_clone_id(adapter),
             device: global.device_clone_id(device),
             queue: global.queue_clone_id(queue),
+            page_errors,
             adopted: false,
         }
     }
@@ -446,6 +472,88 @@ const FIXTURE_CHECKS: [(&str, f64, f64, [u8; 4]); 6] = [
     ),
 ];
 
+/// `ROVES_PROBE_NETRENDER_SCENARIO` (with `ROVES_PROBE_NETRENDER_FIXTURE=1`):
+/// a lifecycle step started once, right after the fixture's first verified
+/// frame (`FIXTURE_CHECKS` read back), on a separate run of the fixture.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Scenario {
+    /// A native window resize to `RESIZE_LOGICAL` (winit, see
+    /// `window::WindowScenario`), then `RESIZE_CHECKS` at the new size.
+    Resize,
+    /// The page's own `GPUDevice.destroy()` (its `netrenderFixtureDestroyDevice`).
+    DeviceDestroy,
+}
+
+impl Scenario {
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "resize" => Some(Self::Resize),
+            "device-destroy" => Some(Self::DeviceDestroy),
+            _ => None,
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            Self::Resize => "resize",
+            Self::DeviceDestroy => "device-destroy",
+        }
+    }
+}
+
+/// Logical size requested by the resize scenario: larger than the 640x360
+/// viewport in both directions, so the added area is checked too.
+const RESIZE_LOGICAL: (f64, f64) = (800.0, 450.0);
+/// Frames presented at the new size before the read back: the page has seen
+/// the new `innerWidth` and drawn its canvas in the new color by then.
+const RESIZE_SETTLE_FRAMES: u64 = 10;
+
+/// After the resize (CSS px, expected sRGB-encoded RGBA). The page clears its
+/// canvas to 50% premultiplied green once `innerWidth` changed, so a stale
+/// canvas texture (blue) fails both canvas pixels; the added area must show
+/// the page background (Netrender clears to white), and a pixel near the
+/// right edge of `#before` fails if the old frame were stretched.
+const RESIZE_CHECKS: [(&str, f64, f64, [u8; 4]); 8] = [
+    ("page background only", 600.0, 320.0, [0, 0, 0, 255]),
+    ("before layer only", 60.0, 60.0, [255, 0, 0, 255]),
+    (
+        "after layer over before layer",
+        350.0,
+        100.0,
+        [255, 128, 128, 255],
+    ),
+    (
+        "latest 50% green canvas over before layer",
+        150.0,
+        180.0,
+        [128, 128, 0, 255],
+    ),
+    (
+        "after layer over latest 50% green canvas over before layer",
+        240.0,
+        120.0,
+        [192, 192, 128, 255],
+    ),
+    (
+        "after layer over page background",
+        380.0,
+        300.0,
+        [128, 128, 128, 255],
+    ),
+    (
+        "page background in the area added by the resize",
+        760.0,
+        420.0,
+        [0, 0, 0, 255],
+    ),
+    (
+        "before layer near its right edge (frame not stretched)",
+        430.0,
+        230.0,
+        [255, 0, 0, 255],
+    ),
+];
+
 pub struct NetrenderWindowRenderer {
     gpu: Option<Gpu>,
     presentation: SharedPresentation,
@@ -461,6 +569,19 @@ pub struct NetrenderWindowRenderer {
     pub stats: Rc<RefCell<PresentStats>>,
     fixture: bool,
     fixture_reported: bool,
+    /// Device pixels per CSS px, from the first `resume` (the window opens at
+    /// `crate::VIEWPORT` CSS px); fixed for the run, also after a resize.
+    scale: Option<f64>,
+    /// Lost state of the page's device (see the module docs).
+    page_errors: deno_webgpu::error::ErrorHandler,
+    /// The page's device was lost: nothing is presented any more.
+    device_lost: bool,
+    /// `render` calls after `device_lost` (no GPU work, no retry).
+    calls_after_device_lost: u64,
+    scenario: Option<(Scenario, crate::window::SharedWindowScenario)>,
+    resize_requested: bool,
+    frames_at_resize_target: u64,
+    resize_reported: bool,
 }
 
 impl NetrenderWindowRenderer {
@@ -473,6 +594,7 @@ impl NetrenderWindowRenderer {
         let Some(ids) = presentation.borrow_mut().core_ids.take() else {
             return Err((fallback, "no page device registered".into()));
         };
+        let page_errors = ids.page_errors.clone();
         let (handles, _global) = ids.adopt();
         let errors: Arc<Mutex<Vec<String>>> = Arc::default();
         let sink = errors.clone();
@@ -503,6 +625,13 @@ impl NetrenderWindowRenderer {
                 return Err((fallback, format!("create_netrender_instance: {error:?}")));
             },
         };
+        let fixture =
+            std::env::var("ROVES_PROBE_NETRENDER_FIXTURE").is_ok_and(|value| value == "1");
+        let scenario = std::env::var("ROVES_PROBE_NETRENDER_SCENARIO")
+            .ok()
+            .filter(|_| fixture)
+            .and_then(|value| Scenario::parse(&value))
+            .map(|scenario| (scenario, crate::window::SharedWindowScenario::default()));
         Ok(Self {
             gpu: Some(Gpu {
                 surface: None,
@@ -521,9 +650,81 @@ impl NetrenderWindowRenderer {
             errors,
             own: PresentStats::default(),
             stats: Rc::default(),
-            fixture: std::env::var("ROVES_PROBE_NETRENDER_FIXTURE").is_ok_and(|value| value == "1"),
+            fixture,
             fixture_reported: false,
+            scale: None,
+            page_errors,
+            device_lost: false,
+            calls_after_device_lost: 0,
+            scenario,
+            resize_requested: false,
+            frames_at_resize_target: 0,
+            resize_reported: false,
         })
+    }
+
+    /// The scenario requests the window run carries out (fixture only).
+    pub fn scenario(&self) -> Option<crate::window::SharedWindowScenario> {
+        self.scenario.as_ref().map(|(_, shared)| shared.clone())
+    }
+
+    fn page_device_lost(&self) -> bool {
+        self.page_errors.is_lost.get().is_some()
+    }
+
+    /// One controlled stop when the page's device is lost (module docs).
+    fn stop_on_device_lost(&mut self) {
+        if self.device_lost {
+            return;
+        }
+        self.device_lost = true;
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_device_lost\",\"status\":\"stopped\",\"renderer\":\"{}\",\"netrender_frames\":{},\"fixture_verified\":{},\"scenario\":{}}}",
+            if self.fallback_reason.is_some() {
+                "fallback"
+            } else {
+                "netrender"
+            },
+            self.own.frames,
+            self.fixture_reported,
+            self.scenario.as_ref().map_or_else(
+                || "null".to_string(),
+                |(scenario, _)| crate::window::json_string(scenario.name())
+            )
+        );
+        // Netrender's objects, its surface and the adopted ids (field order),
+        // or the fallback's surface: nothing presents on the lost device.
+        self.gpu = None;
+        if self.fallback_reason.is_some() {
+            self.fallback.suspend();
+        }
+    }
+
+    /// Starts the scenario right after the first verified fixture frame.
+    fn start_scenario(&mut self) {
+        let Some((scenario, shared)) = &self.scenario else {
+            return;
+        };
+        match scenario {
+            Scenario::Resize => {
+                self.resize_requested = true;
+                shared.resize_to.set(Some(RESIZE_LOGICAL));
+            },
+            Scenario::DeviceDestroy => {
+                shared
+                    .page_call
+                    .set(Some("globalThis.netrenderFixtureDestroyDevice()"));
+            },
+        }
+    }
+
+    /// Device size of the resize target at the run's scale.
+    fn resize_target(&self) -> (u32, u32) {
+        let scale = self.scale.unwrap_or(1.0);
+        (
+            (RESIZE_LOGICAL.0 * scale).round() as u32,
+            (RESIZE_LOGICAL.1 * scale).round() as u32,
+        )
     }
 
     pub fn set_timings(&mut self, timings: Option<crate::frame_timings::SharedFrameTimings>) {
@@ -761,7 +962,11 @@ impl NetrenderWindowRenderer {
         self.own.frames += 1;
         self.own.canvas_layers += canvases.len() as u64;
         self.own.max_layers = self.own.max_layers.max(canvases.len() + 1);
-        if self.fixture && !self.fixture_reported && self.own.frames >= FIXTURE_FRAME {
+        if !self.fixture {
+            return Ok(());
+        }
+        let scale = self.scale.unwrap_or(1.0);
+        if !self.fixture_reported && self.own.frames >= FIXTURE_FRAME {
             self.fixture_reported = true;
             let Some(gpu) = &self.gpu else { return Ok(()) };
             // Fixture-only readback of the final output; never of a canvas.
@@ -769,17 +974,56 @@ impl NetrenderWindowRenderer {
                 .renderer
                 .wgpu_device
                 .read_rgba8_texture(&master, width, height);
-            report_fixture(&bytes, width, height);
+            report_pixels(
+                "netrender_window_fixture",
+                &FIXTURE_CHECKS,
+                &bytes,
+                (width, height),
+                scale,
+                "",
+            );
+            self.start_scenario();
+        } else if self.resize_requested && !self.resize_reported {
+            if (width, height) == self.resize_target() {
+                self.frames_at_resize_target += 1;
+            }
+            if self.frames_at_resize_target >= RESIZE_SETTLE_FRAMES {
+                self.resize_reported = true;
+                let Some(gpu) = &self.gpu else { return Ok(()) };
+                let bytes = gpu
+                    .renderer
+                    .wgpu_device
+                    .read_rgba8_texture(&master, width, height);
+                report_pixels(
+                    "netrender_window_resize",
+                    &RESIZE_CHECKS,
+                    &bytes,
+                    (width, height),
+                    scale,
+                    &format!(
+                        ",\"requested_logical\":[{},{}],\"frames_at_size\":{}",
+                        RESIZE_LOGICAL.0, RESIZE_LOGICAL.1, self.frames_at_resize_target
+                    ),
+                );
+            }
         }
         Ok(())
     }
 }
 
-fn report_fixture(bytes: &[u8], width: u32, height: u32) {
-    let scale = f64::from(width) / f64::from(crate::VIEWPORT.0);
+/// One fixture record: `checks` (CSS px at `scale`) against the final output
+/// read back at `size`; `extra` is appended to the record (JSON members).
+fn report_pixels(
+    check: &str,
+    checks: &[(&str, f64, f64, [u8; 4])],
+    bytes: &[u8],
+    (width, height): (u32, u32),
+    scale: f64,
+    extra: &str,
+) {
     let mut failed = 0;
     let mut pixels = Vec::new();
-    for (name, x, y, expected) in FIXTURE_CHECKS {
+    for &(name, x, y, expected) in checks {
         let (px, py) = ((x * scale) as u32, (y * scale) as u32);
         let index = ((py.min(height - 1) * width + px.min(width - 1)) * 4) as usize;
         let actual = [
@@ -800,7 +1044,7 @@ fn report_fixture(bytes: &[u8], width: u32, height: u32) {
         ));
     }
     println!(
-        "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_fixture\",\"status\":\"{}\",\"failed\":{failed},\"readback\":\"final_output_only\",\"width\":{width},\"height\":{height},\"pixels\":[{}]}}",
+        "ROVES_PROBE_RESULT {{\"check\":\"{check}\",\"status\":\"{}\",\"failed\":{failed},\"readback\":\"final_output_only\",\"width\":{width},\"height\":{height}{extra},\"pixels\":[{}]}}",
         if failed == 0 { "passed" } else { "failed" },
         pixels.join(",")
     );
@@ -809,8 +1053,10 @@ fn report_fixture(bytes: &[u8], width: u32, height: u32) {
 impl Drop for NetrenderWindowRenderer {
     fn drop(&mut self) {
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"skipped_frames\":{},\"errors\":{},\"fallback_reason\":{}}}",
-            if self.fallback_reason.is_none() && self.own.frames > 0 {
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"skipped_frames\":{},\"errors\":{},\"size\":[{},{}],\"calls_after_device_lost\":{},\"fallback_reason\":{}}}",
+            if self.device_lost {
+                "device_lost"
+            } else if self.fallback_reason.is_none() && self.own.frames > 0 {
                 "netrender"
             } else {
                 "fallback"
@@ -819,6 +1065,9 @@ impl Drop for NetrenderWindowRenderer {
             self.own.canvas_layers,
             self.own.skipped_frames,
             self.own.errors,
+            self.width,
+            self.height,
+            self.calls_after_device_lost,
             self.fallback_reason
                 .as_deref()
                 .map_or_else(|| "null".to_string(), crate::window::json_string)
@@ -842,6 +1091,15 @@ impl WindowRenderer for NetrenderWindowRenderer {
         on_ready: F,
     ) {
         self.window = Some(window.clone());
+        if self.scale.is_none() && width > 0 {
+            self.scale = Some(f64::from(width) / f64::from(crate::VIEWPORT.0));
+        }
+        if self.device_lost {
+            self.width = width;
+            self.height = height;
+            on_ready();
+            return;
+        }
         if self.fallback_reason.is_some() {
             self.fallback.resume(window, width, height, on_ready);
             return;
@@ -867,6 +1125,11 @@ impl WindowRenderer for NetrenderWindowRenderer {
     }
 
     fn complete_resume(&mut self) -> bool {
+        // blitz-shell asserts that a resume it started completes; after a
+        // device loss `render` does nothing.
+        if self.device_lost {
+            return true;
+        }
         if self.fallback_reason.is_some() {
             return self.fallback.complete_resume();
         }
@@ -884,6 +1147,10 @@ impl WindowRenderer for NetrenderWindowRenderer {
     }
 
     fn is_active(&self) -> bool {
+        // Inactive after a device loss: the shell stops requesting redraws.
+        if self.device_lost {
+            return false;
+        }
         if self.fallback_reason.is_some() {
             return self.fallback.is_active();
         }
@@ -892,8 +1159,15 @@ impl WindowRenderer for NetrenderWindowRenderer {
 
     fn set_size(&mut self, width: u32, height: u32) {
         let changed = (width, height) != (self.width, self.height);
+        if self.scale.is_none() && width > 0 {
+            // First non-zero size (normally already set by `resume`).
+            self.scale = Some(f64::from(width) / f64::from(crate::VIEWPORT.0));
+        }
         self.width = width;
         self.height = height;
+        if self.device_lost {
+            return;
+        }
         if self.fallback_reason.is_some() {
             self.fallback.set_size(width, height);
         } else if changed {
@@ -902,6 +1176,16 @@ impl WindowRenderer for NetrenderWindowRenderer {
     }
 
     fn render<F: FnOnce(&mut Scene)>(&mut self, draw_fn: F) {
+        if self.device_lost {
+            self.calls_after_device_lost += 1;
+            return;
+        }
+        // Checked before any GPU work, by either renderer (module docs).
+        if self.page_device_lost() {
+            self.stop_on_device_lost();
+            self.publish_stats();
+            return;
+        }
         if self.fallback_reason.is_some() {
             self.fallback.render(draw_fn);
             self.publish_stats();
@@ -910,9 +1194,14 @@ impl WindowRenderer for NetrenderWindowRenderer {
         let mut scene = Scene::new();
         draw_fn(&mut scene);
         if let Err(reason) = self.render_netrender(&scene) {
-            self.use_fallback(reason);
-            // This frame is drawn by the fallback from the same recording.
-            self.fallback.render(move |target| *target = scene);
+            if self.page_device_lost() {
+                // Not a Netrender failure: the fallback shares the device.
+                self.stop_on_device_lost();
+            } else {
+                self.use_fallback(reason);
+                // This frame is drawn by the fallback from the same recording.
+                self.fallback.render(move |target| *target = scene);
+            }
         }
         self.publish_stats();
     }
@@ -1119,6 +1408,65 @@ mod tests {
             ],
         };
         assert_eq!(translate(&scene, (64, 64), |_| false), Ok(vec![]));
+    }
+
+    #[test]
+    fn scenarios_parse_only_known_names() {
+        assert_eq!(Scenario::parse("resize"), Some(Scenario::Resize));
+        assert_eq!(
+            Scenario::parse("device-destroy"),
+            Some(Scenario::DeviceDestroy)
+        );
+        for other in ["", "Resize", "destroy", "device_destroy"] {
+            assert_eq!(Scenario::parse(other), None, "{other}");
+        }
+    }
+
+    /// The resize checks discriminate what they claim: every pixel lies in the
+    /// resized viewport, the "added area" pixel lies outside the original one,
+    /// and the "not stretched" pixel would sample `#after` (not `#before`
+    /// alone) if the 640x360 frame were stretched to the new size.
+    #[test]
+    fn resize_checks_are_discriminating() {
+        let (old_w, old_h) = (f64::from(crate::VIEWPORT.0), f64::from(crate::VIEWPORT.1));
+        let (new_w, new_h) = RESIZE_LOGICAL;
+        assert!(new_w > old_w && new_h > old_h);
+        for (name, x, y, _) in RESIZE_CHECKS {
+            assert!(x < new_w && y < new_h, "{name}");
+        }
+        let added = RESIZE_CHECKS
+            .iter()
+            .find(|check| check.0.contains("area added"))
+            .expect("added-area check");
+        assert!(added.1 >= old_w || added.2 >= old_h);
+        let edge = RESIZE_CHECKS
+            .iter()
+            .find(|check| check.0.contains("not stretched"))
+            .expect("stretch check");
+        // `#after` covers x 200..400, y 60..320; `#before` x 40..440, y 40..240.
+        let inside_after =
+            |x: f64, y: f64| (200.0..400.0).contains(&x) && (60.0..320.0).contains(&y);
+        let inside_before =
+            |x: f64, y: f64| (40.0..440.0).contains(&x) && (40.0..240.0).contains(&y);
+        assert!(inside_before(edge.1, edge.2) && !inside_after(edge.1, edge.2));
+        let (sx, sy) = (edge.1 * old_w / new_w, edge.2 * old_h / new_h);
+        assert!(
+            inside_after(sx, sy),
+            "a stretched frame samples #after there"
+        );
+        // The canvas pixels differ from the pre-resize (blue) expectation.
+        for (name, x, y, expected) in RESIZE_CHECKS {
+            if let Some(original) = FIXTURE_CHECKS
+                .iter()
+                .find(|check| check.1 == x && check.2 == y)
+            {
+                if name.contains("canvas") {
+                    assert_ne!(original.3, expected, "{name}");
+                } else {
+                    assert_eq!(original.3, expected, "{name}");
+                }
+            }
+        }
     }
 
     #[test]

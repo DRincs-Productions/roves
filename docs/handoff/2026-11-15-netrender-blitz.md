@@ -184,6 +184,79 @@ Scope: minimal fixture and feature wiring only; no template run, no wiki, no com
   (`GPUDevice.destroy()` mid-run must produce one fallback and no panic), translation of text,
   paths and images, and the unmodified template.
 
+### Sixth assignment: surface lifecycle of the opt-in renderer (2026-11-16, uncommitted, not pushed)
+
+Input: CI 43865296074 (`05459415ddb`) passed after the empty CSS box fix; standard Blitz CI
+43865296192 was still running. Scope: opt-in Netrender only; no new dependency; the default probe
+renderer, original pixel oracles and negative/positive gates are unchanged.
+
+- **Scenarios.** `ROVES_PROBE_NETRENDER_SCENARIO=resize|device-destroy` (only with
+  `ROVES_PROBE_NETRENDER_FIXTURE=1`) starts once, right after the six `FIXTURE_CHECKS` pixels are
+  read back (first verified frame), on separate runs of the positive executable. The renderer sets
+  a request in `window::WindowScenario` (shared `Rc`), and the window run carries it out.
+- **Native resize through existing facilities.** `window::ScenarioApplication` wraps blitz-shell's
+  unchanged `BlitzApplication`: every winit `ApplicationHandler` method is forwarded, then a pending
+  resize calls `Window::request_surface_size(LogicalSize 800x450)` on the shell's window (`View.window`
+  is public). X11 without a window manager (Xvfb) applies it with `XConfigureWindow`, also for a
+  non-resizable window (winit moves the min/max hints first). The resulting `SurfaceResized` goes
+  through blitz-shell exactly as a user resize: viewport, `set_size`, redraw. The renderer
+  reconfigures at once and skips frames until the configured size matches. After ten frames at
+  the new size, `netrender_window_resize` reads back eight pixels. The page clears its canvas to
+  50% green once `innerWidth` changes, so a stale blue texture fails both canvas pixels. One pixel
+  checks the added area (black page, Netrender clears to white). One near `#before`'s right edge
+  would sample `#after` if the 640x360 frame were stretched. The CSS-to-device scale is now fixed
+  at the first resume (the same value as before for the original read back).
+- **Guest `GPUDevice.destroy()`.** The page defines `netrenderFixtureDestroyDevice()` (destroys its
+  own device and stops drawing) and its own `device.lost` handler. `RovesDocument` invokes the
+  function once at the next frame step. `op_blitz_present_device` also clones the page device's
+  deno_webgpu `ErrorHandler` (`Rc`, public), and the renderer reads its public `is_lost` before
+  each frame. `destroy()` sets it synchronously on this thread, so there is no race with
+  rendering. Errors are not used to detect the loss, because wgpu 29 drops `DeviceLost` errors
+  (`handle_error_inner`). No device-lost callback is installed: wgpu-core's slot is unused,
+  deno_webgpu resolves `lost` from its own handler, and promise reactions are additive, so the
+  page's handler is preserved.
+- **Semantics on a lost device.** `GpuWindowRenderer` presents on the same device, so falling back
+  to it cannot work. Its `configure` would hit `panic!("window surface configuration failed")`, or
+  every frame would hit an acquire error; this was read in code, not run. Instead the window stops
+  once (`netrender_window_device_lost`) and drops the `Gpu` (surface, Netrender, adopted ids), or
+  suspends the fallback's surface if already in fallback. `is_active()` is then false, so
+  blitz-shell stops requesting redraws. `render`, `set_size` and `resume` do no GPU work, and
+  `complete_resume` returns `true` because blitz-shell `debug_assert`s it. JS keeps running. Close
+  (frame limit or user) and the WebGPU teardown are unchanged: `device_poll` has no validity
+  check, and the second `destroy()` is a no-op.
+- **Chromium f2700724.** Read in `components/viz/service/display/`: `display_resource_provider.h`,
+  `direct_renderer.cc` and `display.cc`. In `display_resource_provider.h`,
+  `ScopedReadLockSharedImage` keeps a child resource alive for one draw.
+  `DeclareUsedResourcesFromChild` returns the resources that are no longer used to the child.
+  Roves adapts this as an adopted texture id per frame, dropped after submission; `Presentation`
+  keeps the page's ids until the canvas is replaced, forgotten or torn down. The return path has
+  no interprocess token: one device, one queue. In `direct_renderer.cc`, `DrawFrame` reshapes the
+  output surface lazily, only when about to draw ("otherwise the reshape can leave the window at
+  the wrong size"), then forces a full redraw. In `display.cc`, `Resize` only records
+  `current_surface_size_`, and `DrawAndSwap` skips frames whose root pass size does not match.
+  Roves reconfigures eagerly in `set_size`; frames are skipped until the configured size matches,
+  and Netrender always redraws the full frame. The outcome is the same: no stretched or partially
+  sized frame. `Display::OnContextLost` lets the client recreate the output surface on a new
+  context. A page's WebGPU `destroy()` does not reach Viz, whose context is separate, so Chrome
+  keeps compositing the page. Roves shares the page device with the compositor and the page owns
+  it, so it cannot recreate one: the controlled stop is the adaptation, and recovery is a TODO.
+- **Gates.** `check_log.py resize|device-destroy`. Both first pass every positive gate (six pixels,
+  `gpu_window_presentation`, `gpu_teardown`, exit 0). `resize` also requires one resize request,
+  one page `resized` event, one passed `netrender_window_resize` larger in both directions, and no
+  fallback. `device-destroy` also requires one page call, exactly one stop on Netrender after the
+  verified frame, the page's own `lost` handler with `destroyed`, no `panicked at` and a
+  frame-limit close. Plain negative/positive runs must not contain scenario records. Twenty
+  synthetic logs were accepted/rejected as intended. New headless unit tests:
+  `scenarios_parse_only_known_names`, `resize_checks_are_discriminating`. Workflow: two steps after
+  the positive run, with `--window-frames 180`; `src/window.rs` was added to the trigger paths.
+- **Evidence (local, light).** `cargo fmt --check` (probe) passed. `cargo check --locked --bins
+  --tests` is clean for the default probe and for the isolated manifest (shared target dir, only
+  pre-existing warnings; the one new dead-code warning in the default build is silenced by
+  `cfg_attr`). The synthetic gates passed. **Not run:** the opt-in unit tests, any window or
+  pixel, and both scenarios (CI).
+- **Next:** push with the next allowed batch and read `linux-lavapipe-window` (the resize timing,
+  the drop on a destroyed device, the teardown on it); then translation of text, paths and images.
+
 ## Follow-up assignments after the proof
 
 1. Translate Blitz paint commands directly where practical, reusing Netrender's

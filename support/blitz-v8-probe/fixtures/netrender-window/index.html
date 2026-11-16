@@ -6,6 +6,16 @@
   Paint order: black page, opaque red #before, a WebGPU canvas cleared to 50%
   premultiplied blue, then 50% white #after over the canvas, #before and the page.
   Expected pixels: FIXTURE_CHECKS in src/netrender_window.rs.
+
+  Lifecycle scenarios (ROVES_PROBE_NETRENDER_SCENARIO, separate runs; started by
+  the renderer right after the FIXTURE_CHECKS read back):
+    resize          a native window resize; once innerWidth changed the canvas
+                    is cleared to 50% premultiplied green instead (RESIZE_CHECKS),
+                    so a stale canvas texture is detected.
+    device-destroy  the renderer calls netrenderFixtureDestroyDevice(): the page
+                    itself calls device.destroy() and stops drawing; its own
+                    device.lost handler reports the reason.
+  Page events are printed as "NETRENDER_FIXTURE_PAGE <json>" lines.
 -->
 <html>
 <head>
@@ -24,18 +34,37 @@
 <div id="after"></div>
 <script>
 (async () => {
+  const report = (event) => console.log("NETRENDER_FIXTURE_PAGE " + JSON.stringify(event));
   const adapter = await navigator.gpu.requestAdapter();
   if (adapter === null) throw new Error("netrender fixture: no WebGPU adapter");
   const device = await adapter.requestDevice();
+  let destroyed = false;
+  // The page's own handler: it must still run when the window renderer
+  // observes the loss.
+  device.lost.then((info) => {
+    report({ event: "lost", reason: info.reason, destroyed_by_page: destroyed });
+  });
+  globalThis.netrenderFixtureDestroyDevice = () => {
+    destroyed = true;
+    report({ event: "destroy" });
+    device.destroy();
+  };
   const context = document.getElementById("canvas").getContext("webgpu");
   context.configure({ device, format: "rgba8unorm", alphaMode: "premultiplied" });
+  const initialWidth = innerWidth;
+  let resized = false;
   const draw = () => {
+    if (destroyed) return;
+    if (!resized && innerWidth !== initialWidth) {
+      resized = true;
+      report({ event: "resized", width: innerWidth, height: innerHeight });
+    }
     const encoder = device.createCommandEncoder();
     const pass = encoder.beginRenderPass({
       colorAttachments: [{
         view: context.getCurrentTexture().createView(),
-        // 50% blue, premultiplied.
-        clearValue: { r: 0, g: 0, b: 0.5, a: 0.5 },
+        // 50% blue (50% green after a resize), premultiplied.
+        clearValue: resized ? { r: 0, g: 0.5, b: 0, a: 0.5 } : { r: 0, g: 0, b: 0.5, a: 0.5 },
         loadOp: "clear",
         storeOp: "store",
       }],

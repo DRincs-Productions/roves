@@ -3663,7 +3663,10 @@ impl WindowLaunch {
                     timings.borrow_mut().renderer = "netrender";
                 }
                 renderer.set_timings(timings);
-                window::run(document.with_stats(renderer.stats.clone()), renderer, tokio)
+                let document = document
+                    .with_stats(renderer.stats.clone())
+                    .with_scenario(renderer.scenario());
+                window::run(document, renderer, tokio)
             },
             Some(SelectedRenderer::Gpu(mut renderer)) => {
                 if let Some(timings) = &timings {
