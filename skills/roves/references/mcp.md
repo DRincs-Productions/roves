@@ -8,6 +8,15 @@ stdio server with command `node` and three absolute arguments in order:
 directory. The first tool call starts a native window and creates isolated
 storage.
 
+On Windows, to inspect a probe window that is already open, start it with
+`--game <dist> --window --mcp-discover`. Configure the client to run
+`node <absolute path to server.mjs> --discover`. The probe publishes its
+connection when the window starts polling. The client looks it up each
+time it calls a tool. When several windows are open, append the selected
+PID after `--discover`. This session uses the game's configured storage.
+Set `ROVES_PROBE_STORAGE_DIR` at game launch to use separate saves.
+Closing the client leaves an attached game open.
+
 Call `evaluate_script` with
 `{"source":"({url: location.href, text: document.body.textContent.trim().slice(0, 300)})"}`.
 Return a synchronous JSON value. For asynchronous work, schedule the work

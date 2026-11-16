@@ -17,4 +17,5 @@ input, reproduce it using the native window and record that distinction.
 
 For stutter, compare menu idle, the same dialogue, and Skip using the
 [performance guide](references/performance.md). Close the MCP session when
-finished so the diagnostic game and its temporary saves can be cleaned up.
+finished. A game started by MCP closes with the session and its temporary
+saves are cleaned up. A game you attached to stays open.
