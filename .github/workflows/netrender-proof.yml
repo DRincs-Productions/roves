@@ -76,17 +76,28 @@ jobs:
       # Mesa's lavapipe (llvmpipe Vulkan ICD) from the Ubuntu archive, and only
       # that ICD: the runner has no GPU, and VK_DRIVER_FILES pins the loader to
       # lavapipe so the adapter check in ci/verify.py is not satisfied by chance.
+      # The ICD file name is taken from the package's own file list instead of
+      # being hard-coded: job 132973982729 (ubuntu-24.04) installed the package
+      # but had no lvp_icd.x86_64.json, so the manifest name differs on the current
+      # image (Mesa can install it without the architecture suffix). Exactly one
+      # lavapipe manifest must exist; the listing is annotated, not only logged.
       - name: install lavapipe (Mesa Vulkan software driver)
         if: ${{ runner.os == 'Linux' }}
         working-directory: .
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools
-          icd=/usr/share/vulkan/icd.d/lvp_icd.x86_64.json
-          [ -f "$icd" ] || { echo "::error::lavapipe ICD $icd not installed"; ls /usr/share/vulkan/icd.d || true; exit 1; }
+          echo "::notice::mesa-vulkan-drivers $(dpkg-query -W -f='${Version}' mesa-vulkan-drivers)"
+          mapfile -t icds < <(dpkg-query -L mesa-vulkan-drivers | grep -E '/vulkan/icd\.d/lvp_icd(\.x86_64)?\.json$' || true)
+          if [ "${#icds[@]}" -ne 1 ] || [ ! -f "${icds[0]}" ]; then
+            echo "::error::expected exactly one lavapipe ICD manifest from mesa-vulkan-drivers, found ${#icds[@]}: ${icds[*]:-none}"
+            { dpkg-query -L mesa-vulkan-drivers | grep -F '/vulkan/'; ls -l /usr/share/vulkan/icd.d /etc/vulkan/icd.d; } 2>&1 | sed 's/^/::notice::vulkan files: /' || true
+            exit 1
+          fi
+          icd=${icds[0]}
+          echo "::notice::lavapipe ICD $icd"
           echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
           echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
-          echo "::notice::mesa-vulkan-drivers $(dpkg-query -W -f='${Version}' mesa-vulkan-drivers)"
           VK_DRIVER_FILES=$icd vulkaninfo --summary 2>&1 | grep -E 'deviceName|deviceType|driverInfo|apiVersion' | sed 's/^/::notice::lavapipe: /' || true
       - uses: dtolnay/rust-toolchain@1.95.0
       - uses: actions/setup-python@v5
@@ -110,33 +121,75 @@ jobs:
           sha256sum upstream/*.patch | tee "$RUNNER_TEMP/netrender-proof/logs/patch-sha256.txt"
       # Compile repro of blocker 1: the crates.io wgpu/wgpu-core have no interop
       # API, so the fixture must fail with E0599 on exactly the proposed symbols.
+      #
+      # The gate reads rustc's JSON diagnostics (code + plain message), not the
+      # human output: dtolnay/rust-toolchain exports CARGO_TERM_COLOR=always, so
+      # in job 132973982981 every human line began with an ANSI escape, '^error\['
+      # matched nothing and the gate reported "no E0599 diagnostic names
+      # adapter_clone_id" although the log showed all five E0599 errors.
+      # --color never also keeps the stderr log readable.
       - name: pristine wgpu compile repro (expected E0599)
+        id: pristine
         env:
           CARGO_TARGET_DIR: ${{ github.workspace }}/../netrender-proof-pristine-target
+          CARGO_TERM_COLOR: never
         run: |
-          log="$RUNNER_TEMP/netrender-proof/logs/pristine-check.log"
+          logs="$RUNNER_TEMP/netrender-proof/logs"
           PRISTINE=1 sh ./prepare-patched.sh
           set +e
-          cargo check --locked --bin roves-netrender-shared-device-proof > "$log" 2>&1
+          cargo check --locked --color never --message-format json --bin roves-netrender-shared-device-proof \
+            > "$logs/pristine-check.json" 2> "$logs/pristine-check.log"
           status=$?
           set -e
-          # Annotations, not only the step log: raw logs need repository admin rights.
-          tr -d '\r' < "$log" | grep -E '^error(\[|:)' | head -20 | sed 's/^/::notice::pristine: /' || true
           [ "$status" -ne 0 ] || { echo "::error::the pristine wgpu build succeeded: the interop patch is no longer needed"; exit 1; }
-          errors=$(tr -d '\r' < "$log" | grep -E '^error\[' || true)
-          if printf '%s\n' "$errors" | grep -v '^error\[E0599\]' | grep -q .; then
-            echo "::error::pristine build failed with errors other than E0599"; exit 1
-          fi
-          # Each interop symbol must be named by an E0599 diagnostic itself, not
-          # merely appear somewhere in the log (run of job 132956577307 reported
-          # "0 x E0599" and still passed the former substring check).
-          for symbol in adapter_clone_id device_clone_id queue_clone_id texture_clone_id from_core_global; do
-            printf '%s\n' "$errors" | grep '^error\[E0599\]' | grep -qF "\`$symbol\`" \
-              || { echo "::error::no E0599 diagnostic names $symbol"; exit 1; }
-          done
-          echo "::notice::pristine wgpu/wgpu-core: $(printf '%s\n' "$errors" | grep -c '^error\[E0599\]') x E0599 on the interop symbols, as expected"
+          # Annotations, not only the step log: raw logs need repository admin rights.
+          python -I - "$logs/pristine-check.json" "$logs/pristine-check.log" <<'PY'
+          import json, sys
+          symbols = ["adapter_clone_id", "device_clone_id", "queue_clone_id", "texture_clone_id", "from_core_global"]
+          errors = []
+          with open(sys.argv[1], encoding="utf-8", errors="replace") as f:
+              for line in f:
+                  if not line.startswith("{"):
+                      continue
+                  msg = json.loads(line)
+                  if msg.get("reason") != "compiler-message" or msg["message"]["level"] != "error":
+                      continue
+                  m = msg["message"]
+                  code = (m.get("code") or {}).get("code")
+                  if code is None and m["message"].startswith("aborting due to"):
+                      continue
+                  errors.append((code, m["message"]))
+          for code, text in errors[:20]:
+              print(f"::notice::pristine: error[{code}]: {text}")
+          ok = True
+          if not errors:
+              print("::error::pristine build failed without rustc errors (cargo failure, see stderr below)")
+              with open(sys.argv[2], encoding="utf-8", errors="replace") as f:
+                  for line in f.read().splitlines()[-8:]:
+                      print(f"::notice::pristine stderr: {line}")
+              sys.exit(1)
+          other = [e for e in errors if e[0] != "E0599"]
+          if other:
+              print(f"::error::pristine build failed with {len(other)} errors other than E0599")
+              ok = False
+          # Each interop symbol must be named (in backticks) by an E0599
+          # diagnostic itself (job 132956577307 reported "0 x E0599" and still
+          # passed the former substring check).
+          for symbol in symbols:
+              if not any(code == "E0599" and f"`{symbol}`" in text for code, text in errors):
+                  print(f"::error::no E0599 diagnostic names {symbol}")
+                  ok = False
+          if not ok:
+              sys.exit(1)
+          print(f"::notice::pristine wgpu/wgpu-core: {len(errors)} x E0599 on the interop symbols, as expected")
+          PY
           rm -rf "$RUNNER_TEMP/pristine" && mv patched "$RUNNER_TEMP/pristine"
+      # Runs only after every earlier step succeeded (default success()): after
+      # a failed pristine gate, patched/ still holds the pristine sources, and
+      # the order-fix steps below must not build against them (job 132973982981
+      # did, and failed with E0599 instead of skipping).
       - name: prepare patched wgpu and check its provenance
+        id: patched
         run: |
           sh ./prepare-patched.sh
           python -I ci/verify.py patched-diff "$RUNNER_TEMP/pristine" patched
@@ -162,8 +215,12 @@ jobs:
             python -I ci/verify.py log negative "$producer" lavapipe "$log" "$status" || ok=1
           done
           exit $ok
+      # The positive half needs only the patched wgpu tree, so it still runs
+      # after a failed negative build or negative assertion, but is skipped
+      # cleanly when the setup it depends on failed or was skipped.
       - name: Netrender d2f13ca5 with the proposed order fix
-        if: ${{ !cancelled() }}
+        id: order_fix
+        if: ${{ !cancelled() && steps.patched.outcome == 'success' }}
         run: |
           rev=d2f13ca5ecd20df89d148a7cebef28c0962b90ca
           src="$RUNNER_TEMP/netrender"
@@ -178,7 +235,8 @@ jobs:
           git -C "$src" apply "$patch"
           git -C "$src" diff --stat
       - name: build (Netrender with the order fix, local path override)
-        if: ${{ !cancelled() }}
+        id: build_positive
+        if: ${{ !cancelled() && steps.order_fix.outcome == 'success' }}
         run: |
           cp Cargo.lock "$RUNNER_TEMP/Cargo.lock.orig"
           netrender="$RUNNER_TEMP/netrender/netrender"
@@ -194,7 +252,7 @@ jobs:
           cp "$CARGO_TARGET_DIR/debug/roves-netrender-shared-device-proof$EXE" "$CARGO_TARGET_DIR/debug/deno_js$EXE" \
             "$RUNNER_TEMP/netrender-proof/positive/"
       - name: positive run (expected 6/6)
-        if: ${{ !cancelled() && matrix.run }}
+        if: ${{ !cancelled() && matrix.run && steps.build_positive.outcome == 'success' }}
         run: |
           dir="$RUNNER_TEMP/netrender-proof"
           [ -d "$dir/positive" ] || { echo "::error::positive executables missing"; exit 1; }

@@ -235,8 +235,10 @@ One matrix job `proof`, separate from the engine workflows and the Blitz probe w
 `python -I ci/verify.py ...`).
 
 - **`linux-lavapipe`** (`ubuntu-24.04`): installs `mesa-vulkan-drivers` (lavapipe,
-  llvmpipe Vulkan ICD), pins the loader to it with `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`,
-  annotates the Mesa version and `vulkaninfo --summary`, runs with
+  llvmpipe Vulkan ICD), takes the single `lvp_icd[.x86_64].json` manifest from the
+  package's own file list (job 132973982729 had no `lvp_icd.x86_64.json`, so the name is not
+  hard-coded; zero or several matches fail with the Vulkan file listing annotated), pins
+  the loader to it with `VK_DRIVER_FILES`/`VK_ICD_FILENAMES`, annotates the Mesa version and `vulkaninfo --summary`, runs with
   `DENO_WEBGPU_BACKEND=vulkan`. Runs every step below, both producers, negative and positive.
 - **`windows-compile`** (`windows-latest`, `RUSTFLAGS=-C target-feature=+crt-static`, see
   Windows link): the same pins, repro, patched-tree, negative and positive builds (so the
@@ -251,9 +253,16 @@ One matrix job `proof`, separate from the engine workflows and the Blitz probe w
    equal the crates.io index `cksum`. Patch sha256 values are logged.
 2. **Compile repro.** `PRISTINE=1 ./prepare-patched.sh` + `cargo check --locked` must fail
    only with `E0599`, and each of the five interop symbols must be named (in backticks) by
-   an `error[E0599]` line. The error lines are re-emitted as annotations. Job 132956577307
-   annotated "0 x E0599" yet passed, because the former check only searched the symbols
-   anywhere in the log; the gate is now stricter, not looser.
+   an `E0599` diagnostic. The gate reads rustc's JSON diagnostics (`--message-format json
+   --color never`: error code and plain message), not the human output, and re-emits the
+   errors as annotations. Job 132956577307 annotated "0 x E0599" yet passed, because the
+   former check only searched the symbols anywhere in the log; job 132973982981 then failed
+   the stricter human-output gate although all five errors were present, because
+   `dtolnay/rust-toolchain` exports `CARGO_TERM_COLOR=always` and every line began with an
+   ANSI escape, so `^error\[` matched nothing. The gate is as strict as before.
+   Step dependencies: a failed gate skips the patched tree and everything built on it (the
+   tree would still be pristine); a failed negative build or negative run does not stop the
+   positive steps, which require only the patched tree.
 3. **Patched tree.** `verify.py patched-diff`: the patched sources differ from the
    pristine crates.io ones exactly in the three files the interop patch names.
 4. **Negative** (Netrender as published, `--locked`; Linux): both executables must exit 1
