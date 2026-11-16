@@ -15,6 +15,12 @@
     device-destroy  the renderer calls netrenderFixtureDestroyDevice(): the page
                     itself calls device.destroy() and stops drawing; its own
                     device.lost handler reports the reason.
+    text            the renderer calls netrenderFixtureShowText(): #text (two
+                    opaque yellow U+2588 FULL BLOCK glyphs, hidden until then
+                    so the original six pixels never see it) appears over the
+                    canvas and #before, left of #after. TEXT checks in
+                    src/netrender_window.rs derive their pixels from the
+                    translated glyph run itself (origins, advance, size).
   Page events are printed as "NETRENDER_FIXTURE_PAGE <json>" lines.
 -->
 <html>
@@ -26,12 +32,16 @@
   #canvas { position: absolute; left: 120px; top: 80px; width: 160px; height: 120px; }
   #after { position: absolute; left: 200px; top: 60px; width: 200px; height: 260px;
            background: rgba(255, 255, 255, 0.5); }
+  #text { position: absolute; left: 130px; top: 96px; margin: 0; white-space: pre;
+          font: 48px/48px "DejaVu Sans Mono", monospace; color: rgb(255, 255, 0); }
+  .hidden { display: none; }
 </style>
 </head>
 <body>
 <div id="before"></div>
 <canvas id="canvas" width="160" height="120"></canvas>
 <div id="after"></div>
+<div id="text" class="hidden">&#x2588;&#x2588;</div>
 <script>
 (async () => {
   const report = (event) => console.log("NETRENDER_FIXTURE_PAGE " + JSON.stringify(event));
@@ -48,6 +58,10 @@
     destroyed = true;
     report({ event: "destroy" });
     device.destroy();
+  };
+  globalThis.netrenderFixtureShowText = () => {
+    document.getElementById("text").setAttribute("class", "");
+    report({ event: "text" });
   };
   const context = document.getElementById("canvas").getContext("webgpu");
   context.configure({ device, format: "rgba8unorm", alphaMode: "premultiplied" });

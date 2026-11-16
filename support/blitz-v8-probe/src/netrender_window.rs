@@ -9,12 +9,31 @@
 //!   device and queue: no second device, no copy of any canvas texture.
 //! - The recorded Blitz scene is translated into a Netrender `Scene`
 //!   (`translate`): solid axis-aligned rectangles, rectangular clips, group
-//!   opacity over a single draw, and each WebGPU canvas placeholder as an
-//!   external texture at its scene-op boundary, so content painted after the
-//!   canvas stays above it. Anything else (text, paths, images, gradients,
-//!   strokes, shadows, filters, blend modes, transformed canvases) is not
-//!   translated yet: the window switches once to the existing
+//!   opacity over a single draw, solid-color glyph runs (`translate_glyph_run`),
+//!   and each WebGPU canvas placeholder as an external texture at its scene-op
+//!   boundary, so content painted after the canvas stays above it. Anything
+//!   else (paths, images, gradients, strokes, shadows, filters, blend modes,
+//!   transformed canvases, and text that is stroked, gradient-filled,
+//!   synthetic bold/oblique, a variable-font instance or under group opacity)
+//!   is not translated yet: the window switches once to the existing
 //!   `GpuWindowRenderer` (`src/presentation.rs`), which stays the fallback.
+//!
+//! Text (Chromium f2700724, `cc/paint/paint_op.h` `DrawTextBlobOp`,
+//! `paint_op.cc` `RasterWithFlags`, `paint_op_buffer_serializer.cc`): Chromium
+//! records already-shaped text as a ref-counted `SkTextBlob` (glyph ids,
+//! positions, `SkFont` with a ref-counted `SkTypeface`) plus `PaintFlags`, and
+//! draws it under the canvas's current matrix and clip; out-of-process raster
+//! turns it into slugs and ships glyph data once per typeface through the
+//! `SkStrikeServer`/client caches. Here Blitz (parley) has shaped the run and
+//! AnyRender recorded it as `GlyphRunCommand`; the translation hands the same
+//! glyph ids/positions, the run transform and the clip stack's device rect to
+//! Netrender's public `Scene::push_glyph_run_full`. The typeface identity is
+//! the recorded `peniko::FontData` itself: its `Blob` (an `Arc` with a stable
+//! `Blob::id()`) is cloned, never re-read, interned per frame with Netrender's
+//! `FontRegistry` and keyed by Vello's glyph cache across frames, so no strike
+//! transfer, serialization or byte copy is needed (one process, one device).
+//! The font bytes live as long as any recording or Netrender scene holds the
+//! `Blob`; parley's font collection keeps them alive between frames.
 //! - The final output (Netrender's master) is drawn onto the window surface
 //!   with wgpu's maintained `util::TextureBlitter` (format conversion to the
 //!   surface format), submitted on the same queue after Netrender's work.
@@ -205,6 +224,93 @@ pub enum PlanOp {
         rect: [f32; 4],
         opacity: f32,
     },
+    /// A solid-color glyph run, already shaped by Blitz (parley): glyph ids and
+    /// positions in the run's space, mapped to device space by `transform`.
+    /// `font` is the recorded `peniko::FontData` itself (same `Blob`, so the
+    /// same `Blob::id()` every frame), never a copy of its bytes.
+    Glyphs {
+        font: peniko::FontData,
+        /// Pixels per em in the run's space (blitz-paint: device px).
+        size: f32,
+        transform: Affine,
+        glyphs: Vec<anyrender::Glyph>,
+        /// Straight-alpha sRGB-encoded color, brush alpha folded in.
+        color: [f32; 4],
+        /// Device-space clip of the enclosing layers (`None`: the viewport).
+        clip: Option<[f32; 4]>,
+    },
+}
+
+/// Netrender's `SceneRect`/`SceneGlyphRun` colors are premultiplied (its Vello
+/// emitter unpremultiplies them); the plan keeps Blitz's straight alpha.
+fn premultiplied([r, g, b, a]: [f32; 4]) -> [f32; 4] {
+    [r * a, g * a, b * a, a]
+}
+
+/// Netrender's 4x4 column-major transform of a 2D affine (`m[col * 4 + row]`):
+/// the inverse of its emitter's `transform_to_affine`.
+fn netrender_transform(affine: Affine) -> netrender::Transform {
+    let [a, b, c, d, e, f] = affine.as_coeffs().map(|value| value as f32);
+    netrender::Transform {
+        m: [
+            a, b, 0.0, 0.0, c, d, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, e, f, 0.0, 1.0,
+        ],
+    }
+}
+
+/// Translates one recorded glyph run, or names what Netrender's public glyph
+/// API (`Scene::push_glyph_run_full`: font, size, glyphs, premultiplied solid
+/// color, transform, device clip) cannot express exactly. `hint` is dropped:
+/// Netrender has no hinting field, Vello's hinting is vertical only, so the
+/// outlines differ from the fallback's at most by a sub-pixel vertical snap of
+/// antialiased edges (documented in the handoff; not a fallback reason).
+fn translate_glyph_run(
+    run: &anyrender::recording::GlyphRunCommand,
+    clip: Rect,
+    viewport: Rect,
+    group_alpha: f32,
+) -> Result<Option<PlanOp>, String> {
+    let peniko::Style::Fill(peniko::Fill::NonZero) = run.style else {
+        return Err("stroked or even-odd text".into());
+    };
+    let Paint::Solid(color) = &run.brush else {
+        return Err("gradient, image or custom text brush".into());
+    };
+    if run
+        .glyph_transform
+        .is_some_and(|glyph| glyph != Affine::IDENTITY)
+    {
+        // Per-glyph transform (blitz-paint: synthetic oblique skew).
+        return Err("synthetic oblique text (glyph transform)".into());
+    }
+    if run.embolden != kurbo::Vec2::ZERO {
+        return Err("synthetic bold text (embolden)".into());
+    }
+    if run.normalized_coords.iter().any(|coord| *coord != 0) {
+        // Netrender takes user-space axis values and normalizes them itself;
+        // normalized coordinates cannot be mapped back exactly (avar).
+        return Err("variable font instance (normalized coordinates)".into());
+    }
+    if group_alpha < 1.0 {
+        // Vello fills each glyph separately: folding a group opacity into the
+        // color would double-blend overlapping glyphs.
+        return Err("text under group opacity".into());
+    }
+    if !run.transform.is_finite() || !run.font_size.is_finite() || run.font_size <= 0.0 {
+        return Err("non-finite text transform or size".into());
+    }
+    if clip.width() <= 0.0 || clip.height() <= 0.0 || run.glyphs.is_empty() {
+        return Ok(None);
+    }
+    let [r, g, b, a] = color.components;
+    Ok(Some(PlanOp::Glyphs {
+        font: run.font_data.clone(),
+        size: run.font_size,
+        transform: run.transform,
+        glyphs: run.glyphs.clone(),
+        color: [r, g, b, a * run.brush_alpha],
+        clip: (clip != viewport).then(|| rect_array(clip)),
+    }))
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -393,7 +499,16 @@ pub fn translate(
                 });
             },
             RenderCommand::Stroke(_) => return Err("stroke".into()),
-            RenderCommand::GlyphRun(_) => return Err("text".into()),
+            RenderCommand::GlyphRun(run) => {
+                let clip = clip_of(&layers, viewport);
+                let alpha: f32 = layers.iter().map(|layer| layer.alpha).product();
+                for layer in &mut layers {
+                    layer.draws += 1;
+                }
+                if let Some(op) = translate_glyph_run(run, clip, viewport, alpha)? {
+                    ops.push(op);
+                }
+            },
             RenderCommand::BoxShadow(_) => return Err("box shadow".into()),
         }
     }
@@ -482,6 +597,9 @@ pub enum Scenario {
     Resize,
     /// The page's own `GPUDevice.destroy()` (its `netrenderFixtureDestroyDevice`).
     DeviceDestroy,
+    /// The page shows `#text` over the canvas (`netrenderFixtureShowText`),
+    /// then `text_checks` at the glyph run's own geometry.
+    Text,
 }
 
 impl Scenario {
@@ -489,6 +607,7 @@ impl Scenario {
         match value {
             "resize" => Some(Self::Resize),
             "device-destroy" => Some(Self::DeviceDestroy),
+            "text" => Some(Self::Text),
             _ => None,
         }
     }
@@ -497,6 +616,7 @@ impl Scenario {
         match self {
             Self::Resize => "resize",
             Self::DeviceDestroy => "device-destroy",
+            Self::Text => "text",
         }
     }
 }
@@ -582,6 +702,11 @@ pub struct NetrenderWindowRenderer {
     resize_requested: bool,
     frames_at_resize_target: u64,
     resize_reported: bool,
+    /// Glyph runs drawn by Netrender (all frames).
+    glyph_runs: u64,
+    text_requested: bool,
+    frames_with_text: u64,
+    text_reported: bool,
 }
 
 impl NetrenderWindowRenderer {
@@ -660,6 +785,10 @@ impl NetrenderWindowRenderer {
             resize_requested: false,
             frames_at_resize_target: 0,
             resize_reported: false,
+            glyph_runs: 0,
+            text_requested: false,
+            frames_with_text: 0,
+            text_reported: false,
         })
     }
 
@@ -714,6 +843,12 @@ impl NetrenderWindowRenderer {
                 shared
                     .page_call
                     .set(Some("globalThis.netrenderFixtureDestroyDevice()"));
+            },
+            Scenario::Text => {
+                self.text_requested = true;
+                shared
+                    .page_call
+                    .set(Some("globalThis.netrenderFixtureShowText()"));
             },
         }
     }
@@ -846,13 +981,62 @@ impl NetrenderWindowRenderer {
         // Scoped reads of the canvases drawn this frame.
         let mut nr_scene = netrender::Scene::new(width, height);
         let mut canvases: Vec<(wgpu::TextureView, ExternalTexturePlacement, usize)> = Vec::new();
+        let mut glyph_runs = 0u64;
         {
             let presentation = self.presentation.borrow();
             let mut textures: HashMap<u64, wgpu::Texture> = HashMap::new();
+            // One `FontId` per (`Blob::id()`, index) in this frame's scene; the
+            // blob is the recorded one, so Vello's glyph cache keys on the same
+            // id across frames (no byte copy, no re-upload).
+            let mut fonts = netrender::FontRegistry::new();
             for op in &plan {
                 match op {
                     PlanOp::Rect { rect, color } => {
-                        nr_scene.push_rect(rect[0], rect[1], rect[2], rect[3], *color);
+                        nr_scene.push_rect(
+                            rect[0],
+                            rect[1],
+                            rect[2],
+                            rect[3],
+                            premultiplied(*color),
+                        );
+                    },
+                    PlanOp::Glyphs {
+                        font,
+                        size,
+                        transform,
+                        glyphs,
+                        color,
+                        clip,
+                    } => {
+                        let font_id = fonts.intern(
+                            &mut nr_scene,
+                            netrender::FontBlob {
+                                data: font.data.clone(),
+                                index: font.index,
+                            },
+                        );
+                        let transform_id = if *transform == Affine::IDENTITY {
+                            0
+                        } else {
+                            nr_scene.push_transform(netrender_transform(*transform))
+                        };
+                        nr_scene.push_glyph_run_full(
+                            font_id,
+                            *size,
+                            glyphs
+                                .iter()
+                                .map(|glyph| netrender::Glyph {
+                                    id: glyph.id,
+                                    x: glyph.x,
+                                    y: glyph.y,
+                                })
+                                .collect(),
+                            premultiplied(*color),
+                            transform_id,
+                            clip.unwrap_or(netrender::NO_CLIP),
+                            netrender::SHARP_CLIP,
+                        );
+                        glyph_runs += 1;
                     },
                     PlanOp::Canvas {
                         resource,
@@ -960,6 +1144,7 @@ impl NetrenderWindowRenderer {
             return Err(format!("wgpu error: {}", errors.join("; ")));
         }
         self.own.frames += 1;
+        self.glyph_runs += glyph_runs;
         self.own.canvas_layers += canvases.len() as u64;
         self.own.max_layers = self.own.max_layers.max(canvases.len() + 1);
         if !self.fixture {
@@ -1006,8 +1191,140 @@ impl NetrenderWindowRenderer {
                     ),
                 );
             }
+        } else if self.text_requested && !self.text_reported {
+            if glyph_runs > 0 {
+                self.frames_with_text += 1;
+            }
+            if self.frames_with_text >= TEXT_SETTLE_FRAMES {
+                self.text_reported = true;
+                let Some(gpu) = &self.gpu else { return Ok(()) };
+                let bytes = gpu
+                    .renderer
+                    .wgpu_device
+                    .read_rgba8_texture(&master, width, height);
+                report_text(&plan, &bytes, (width, height), scale, self.frames_with_text);
+            }
         }
         Ok(())
+    }
+}
+
+/// Frames presented with a glyph run before the text read back.
+const TEXT_SETTLE_FRAMES: u64 = 10;
+/// `#text`'s color (opaque yellow) and the canvas over `#before` around it.
+const TEXT_COLOR: [u8; 4] = [255, 255, 0, 255];
+const CANVAS_OVER_BEFORE: [u8; 4] = [128, 0, 128, 255];
+/// `#after`'s left edge (CSS px): every text pixel must stay left of it.
+const AFTER_LEFT_CSS: f64 = 200.0;
+
+/// Device-space pixels of the text check, derived from the first translated
+/// glyph run (at least two glyphs) instead of hard-coded font metrics: the
+/// cell centers of the two U+2588 FULL BLOCK glyphs at 0.3 em above the
+/// baseline (inside the block for any font: it spans descender to ascender),
+/// and two canvas-only controls, 0.15 em left of the first cell and 0.5 em
+/// below the baseline (outside the block, which ends at the descender). The
+/// advance is the distance between the two origins. Every pixel must lie
+/// inside the canvas box and left of `#after`, or the check names why not.
+fn text_checks(
+    plan: &[PlanOp],
+    scale: f64,
+) -> Result<(Vec<(&'static str, f64, f64, [u8; 4])>, String), String> {
+    let (glyphs, size, transform, clip) = plan
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Glyphs {
+                glyphs,
+                size,
+                transform,
+                clip,
+                ..
+            } if glyphs.len() >= 2 => Some((glyphs, *size, *transform, *clip)),
+            _ => None,
+        })
+        .ok_or("no translated glyph run with two glyphs")?;
+    let canvas = plan
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Canvas { rect, .. } => Some(Rect::new(
+                f64::from(rect[0]),
+                f64::from(rect[1]),
+                f64::from(rect[2]),
+                f64::from(rect[3]),
+            )),
+            _ => None,
+        })
+        .ok_or("no canvas in the plan")?;
+    let (g0, g1) = (glyphs[0], glyphs[1]);
+    let (em, advance) = (f64::from(size), f64::from(g1.x - g0.x));
+    if advance <= 0.0 {
+        return Err(format!("non-positive advance {advance}"));
+    }
+    let at = |x: f32, dx: f64, y: f32, dy: f64| {
+        transform * Point::new(f64::from(x) + dx, f64::from(y) + dy)
+    };
+    let points = [
+        (
+            "first text glyph over canvas over before layer",
+            at(g0.x, advance / 2.0, g0.y, -0.3 * em),
+            TEXT_COLOR,
+        ),
+        (
+            "second text glyph over canvas over before layer",
+            at(g1.x, advance / 2.0, g1.y, -0.3 * em),
+            TEXT_COLOR,
+        ),
+        (
+            "canvas left of the text (no text box painted)",
+            at(g0.x, -0.15 * em, g0.y, -0.3 * em),
+            CANVAS_OVER_BEFORE,
+        ),
+        (
+            "canvas below the text (no text box painted)",
+            at(g0.x, advance / 2.0, g0.y, 0.5 * em),
+            CANVAS_OVER_BEFORE,
+        ),
+    ];
+    let inner = canvas.inset(-1.0);
+    for (name, point, _) in &points {
+        if !inner.contains(*point) || point.x >= AFTER_LEFT_CSS * scale - 1.0 {
+            return Err(format!(
+                "{name}: derived pixel ({:.1}, {:.1}) outside the canvas {canvas:?} or not left of #after",
+                point.x, point.y
+            ));
+        }
+    }
+    let ids: Vec<String> = glyphs.iter().map(|glyph| glyph.id.to_string()).collect();
+    let extra = format!(
+        ",\"font_size\":{size},\"advance\":{advance},\"glyph_ids\":[{}],\"notdef_glyphs\":{},\"clip\":{},\"transform\":{:?}",
+        ids.join(","),
+        glyphs.iter().filter(|glyph| glyph.id == 0).count(),
+        clip.map_or_else(|| "null".to_string(), |clip| format!("{clip:?}")),
+        transform.as_coeffs()
+    );
+    Ok((
+        points
+            .into_iter()
+            .map(|(name, point, expected)| (name, point.x, point.y, expected))
+            .collect(),
+        extra,
+    ))
+}
+
+/// The `netrender_window_text` record (device px, final output only).
+fn report_text(plan: &[PlanOp], bytes: &[u8], size: (u32, u32), scale: f64, frames: u64) {
+    match text_checks(plan, scale) {
+        Ok((checks, extra)) => report_pixels(
+            "netrender_window_text",
+            &checks,
+            bytes,
+            size,
+            1.0,
+            &format!(",\"frames_with_text\":{frames}{extra}"),
+        ),
+        Err(reason) => println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_text\",\"status\":\"failed\",\"readback\":\"final_output_only\",\"frames_with_text\":{frames},\"reason\":{},\"pixels\":[]}}",
+            crate::window::json_string(&reason)
+        ),
     }
 }
 
@@ -1053,7 +1370,7 @@ fn report_pixels(
 impl Drop for NetrenderWindowRenderer {
     fn drop(&mut self) {
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"skipped_frames\":{},\"errors\":{},\"size\":[{},{}],\"calls_after_device_lost\":{},\"fallback_reason\":{}}}",
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"glyph_runs\":{},\"skipped_frames\":{},\"errors\":{},\"size\":[{},{}],\"calls_after_device_lost\":{},\"fallback_reason\":{}}}",
             if self.device_lost {
                 "device_lost"
             } else if self.fallback_reason.is_none() && self.own.frames > 0 {
@@ -1063,6 +1380,7 @@ impl Drop for NetrenderWindowRenderer {
             },
             self.own.frames,
             self.own.canvas_layers,
+            self.glyph_runs,
             self.own.skipped_frames,
             self.own.errors,
             self.width,
@@ -1250,7 +1568,7 @@ mod tests {
             .iter()
             .filter_map(|op| match op {
                 PlanOp::Rect { rect, color } => Some((*rect, *color)),
-                PlanOp::Canvas { .. } => None,
+                PlanOp::Canvas { .. } | PlanOp::Glyphs { .. } => None,
             })
             .collect();
         assert!(rects.contains(&([40.0, 40.0, 440.0, 240.0], [1.0, 0.0, 0.0, 1.0])));
@@ -1268,6 +1586,272 @@ mod tests {
             )
             .expect("#before");
         assert!(before < canvas_index, "#before paints below the canvas");
+        assert!(
+            !plan.iter().any(|op| matches!(op, PlanOp::Glyphs { .. })),
+            "#text stays hidden until the text scenario"
+        );
+    }
+
+    /// The text scenario's page state (`#text` shown): one glyph run, painted
+    /// after the canvas, in `#text`'s color with no clip, and the pixels of
+    /// `text_checks` derived from it lie over the canvas, left of `#after`.
+    #[test]
+    fn text_fixture_translates_over_the_canvas() {
+        use blitz_dom::DocumentConfig;
+        use blitz_html::HtmlDocument;
+        use blitz_traits::shell::{ColorScheme, Viewport};
+
+        let shown = FIXTURE.replace("<div id=\"text\" class=\"hidden\">", "<div id=\"text\">");
+        assert_ne!(shown, FIXTURE, "fixture markup changed");
+        let mut document = HtmlDocument::from_html(&shown, DocumentConfig::default());
+        document.set_viewport(Viewport::new(640, 360, 1.0, ColorScheme::Light));
+        let canvas = crate::find_element_by_id(&document, "canvas").expect("fixture canvas");
+        let presentation: SharedPresentation = Rc::default();
+        crate::presentation::attach_canvas_widget(&presentation, &mut document, canvas);
+        document.resolve(0.0);
+        let mut scene = Scene::new();
+        blitz_paint::paint_scene(&mut scene, &mut document, 1.0, 640, 360, 0, 0);
+        let presentation = presentation.borrow();
+        let plan =
+            translate(&scene, (640, 360), |id| presentation.is_canvas(id)).expect("translated");
+        let canvas_index = plan
+            .iter()
+            .position(|op| matches!(op, PlanOp::Canvas { .. }))
+            .expect("canvas op");
+        let text: Vec<_> = plan
+            .iter()
+            .enumerate()
+            .filter_map(|(index, op)| match op {
+                PlanOp::Glyphs {
+                    size,
+                    glyphs,
+                    color,
+                    clip,
+                    ..
+                } => Some((index, *size, glyphs.len(), *color, *clip)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text.len(), 1, "{text:?}");
+        let (index, size, glyphs, color, clip) = text[0];
+        assert!(index > canvas_index, "text paints above the canvas");
+        assert_eq!(
+            (size, glyphs, color, clip),
+            (48.0, 2, [1.0, 1.0, 0.0, 1.0], None)
+        );
+        let (checks, _) = text_checks(&plan, 1.0).expect("text pixels over the canvas");
+        assert_eq!(checks.len(), 4);
+    }
+
+    fn test_font() -> peniko::FontData {
+        peniko::FontData::new(peniko::Blob::from(vec![0u8; 4]), 0)
+    }
+
+    fn glyph_run(font: &peniko::FontData) -> anyrender::recording::GlyphRunCommand {
+        anyrender::recording::GlyphRunCommand {
+            font_data: font.clone(),
+            font_size: 48.0,
+            hint: true,
+            normalized_coords: Vec::new(),
+            embolden: kurbo::Vec2::ZERO,
+            style: peniko::Style::Fill(peniko::Fill::NonZero),
+            brush: Paint::Solid(peniko::Color::new([1.0, 1.0, 0.0, 1.0])),
+            brush_alpha: 0.5,
+            transform: Affine::translate((130.0, 0.0)),
+            glyph_transform: None,
+            glyphs: vec![
+                anyrender::Glyph {
+                    id: 7,
+                    x: 0.0,
+                    y: 137.0,
+                },
+                anyrender::Glyph {
+                    id: 7,
+                    x: 29.0,
+                    y: 137.0,
+                },
+            ],
+        }
+    }
+
+    /// Font identity, glyphs, transform, brush alpha and the clip stack's
+    /// device rect pass through unchanged; the font blob is the recorded one.
+    #[test]
+    fn glyph_runs_keep_font_identity_transform_and_clip() {
+        let font = test_font();
+        let run = glyph_run(&font);
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::GlyphRun(run.clone()),
+                RenderCommand::PushClipLayer(anyrender::recording::ClipCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    clip: Rect::new(0.0, 0.0, 150.0, 100.0).to_path(0.1),
+                }),
+                RenderCommand::GlyphRun(run.clone()),
+                RenderCommand::PopLayer,
+            ],
+        };
+        let plan = translate(&scene, (640, 360), |_| false).expect("translated");
+        assert_eq!(plan.len(), 2);
+        for (op, expected_clip) in plan.iter().zip([None, Some([0.0, 0.0, 150.0, 100.0])]) {
+            let PlanOp::Glyphs {
+                font: translated,
+                size,
+                transform,
+                glyphs,
+                color,
+                clip,
+            } = op
+            else {
+                panic!("{op:?}");
+            };
+            assert_eq!(translated.data.id(), font.data.id(), "same Blob, no copy");
+            assert_eq!(translated.index, font.index);
+            assert_eq!(*size, 48.0);
+            assert_eq!(*transform, run.transform);
+            assert_eq!(glyphs, &run.glyphs);
+            assert_eq!(*color, [1.0, 1.0, 0.0, 0.5], "brush alpha folded");
+            assert_eq!(*clip, expected_clip);
+        }
+        // A run clipped away entirely paints nothing.
+        let hidden = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushClipLayer(anyrender::recording::ClipCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    clip: Rect::new(0.0, 0.0, 150.0, 0.0).to_path(0.1),
+                }),
+                RenderCommand::GlyphRun(run),
+                RenderCommand::PopLayer,
+            ],
+        };
+        assert_eq!(translate(&hidden, (640, 360), |_| false), Ok(vec![]));
+    }
+
+    #[test]
+    fn unsupported_glyph_runs_are_named() {
+        let font = test_font();
+        let base = glyph_run(&font);
+        let mut cases: Vec<(anyrender::recording::GlyphRunCommand, &str)> = Vec::new();
+        let mut run = base.clone();
+        run.style = peniko::Style::Stroke(kurbo::Stroke::new(1.0));
+        cases.push((run, "stroked or even-odd text"));
+        let mut run = base.clone();
+        run.style = peniko::Style::Fill(peniko::Fill::EvenOdd);
+        cases.push((run, "stroked or even-odd text"));
+        let mut run = base.clone();
+        run.glyph_transform = Some(Affine::skew(0.2, 0.0));
+        cases.push((run, "synthetic oblique text (glyph transform)"));
+        let mut run = base.clone();
+        run.embolden = kurbo::Vec2::new(0.3, 0.3);
+        cases.push((run, "synthetic bold text (embolden)"));
+        let mut run = base.clone();
+        run.normalized_coords = vec![0, 4096];
+        cases.push((run, "variable font instance (normalized coordinates)"));
+        let mut run = base.clone();
+        run.font_size = f32::NAN;
+        cases.push((run, "non-finite text transform or size"));
+        for (run, reason) in cases {
+            let scene = Scene {
+                tolerance: 0.1,
+                commands: vec![RenderCommand::GlyphRun(run)],
+            };
+            assert_eq!(translate(&scene, (64, 64), |_| false), Err(reason.into()));
+        }
+        // Identity glyph transform and default variation coordinates are the
+        // run without them.
+        let mut run = base.clone();
+        run.glyph_transform = Some(Affine::IDENTITY);
+        run.normalized_coords = vec![0, 0];
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![RenderCommand::GlyphRun(run)],
+        };
+        assert!(translate(&scene, (64, 64), |_| false).is_ok());
+        // Group opacity over text.
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushLayer(anyrender::recording::LayerCommand {
+                    fill: peniko::Fill::NonZero,
+                    blend: peniko::BlendMode::default(),
+                    alpha: 0.5,
+                    transform: Affine::IDENTITY,
+                    clip: Rect::new(0.0, 0.0, 64.0, 64.0).to_path(0.1),
+                    filter: None,
+                    backdrop_filter: None,
+                }),
+                RenderCommand::GlyphRun(base),
+                RenderCommand::PopLayer,
+            ],
+        };
+        assert_eq!(
+            translate(&scene, (64, 64), |_| false),
+            Err("text under group opacity".into())
+        );
+    }
+
+    /// The transform is the inverse of Netrender's own `transform_to_affine`
+    /// (`m[0], m[1], m[4], m[5], m[12], m[13]`), and colors become
+    /// premultiplied as `SceneRect`/`SceneGlyphRun` expect.
+    #[test]
+    fn netrender_transform_and_color_encoding() {
+        let affine = Affine::new([2.0, 0.5, -0.25, 3.0, 130.0, 40.0]);
+        let m = netrender_transform(affine).m;
+        assert_eq!(
+            [m[0], m[1], m[4], m[5], m[12], m[13]],
+            [2.0, 0.5, -0.25, 3.0, 130.0, 40.0]
+        );
+        assert_eq!([m[10], m[15]], [1.0, 1.0]);
+        assert_eq!(premultiplied([1.0, 0.5, 0.0, 0.5]), [0.5, 0.25, 0.0, 0.5]);
+        assert_eq!(premultiplied([0.2, 0.4, 0.6, 1.0]), [0.2, 0.4, 0.6, 1.0]);
+    }
+
+    #[test]
+    fn text_checks_reject_pixels_outside_the_canvas() {
+        let font = test_font();
+        let glyphs = |x0: f32| {
+            vec![
+                anyrender::Glyph {
+                    id: 7,
+                    x: x0,
+                    y: 137.0,
+                },
+                anyrender::Glyph {
+                    id: 7,
+                    x: x0 + 29.0,
+                    y: 137.0,
+                },
+            ]
+        };
+        let plan = |x0: f32| {
+            vec![
+                PlanOp::Canvas {
+                    resource: ResourceId::new(),
+                    rect: [120.0, 80.0, 280.0, 200.0],
+                    opacity: 1.0,
+                },
+                PlanOp::Glyphs {
+                    font: font.clone(),
+                    size: 48.0,
+                    transform: Affine::IDENTITY,
+                    glyphs: glyphs(x0),
+                    color: [1.0, 1.0, 0.0, 1.0],
+                    clip: None,
+                },
+            ]
+        };
+        let (checks, extra) = text_checks(&plan(130.0), 1.0).expect("inside");
+        assert_eq!(checks[0].1, 130.0 + 14.5);
+        assert!((checks[0].2 - (137.0 - 14.4)).abs() < 1e-9);
+        assert!(extra.contains("\"notdef_glyphs\":0"), "{extra}");
+        // Second glyph over #after (x >= 200).
+        assert!(text_checks(&plan(160.0), 1.0).is_err());
+        // Left control outside the canvas.
+        assert!(text_checks(&plan(122.0), 1.0).is_err());
     }
 
     fn fill(shape: kurbo::BezPath, brush: Paint) -> RenderCommand {

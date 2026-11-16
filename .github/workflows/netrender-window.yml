@@ -18,10 +18,11 @@ name: Netrender window renderer (opt-in probe build)
 #   (support/netrender-shared-device-proof/README.md, "WARP").
 # linux-lavapipe-window: first Linux build of the probe; runs the window
 #   fixture (fixtures/netrender-window) under Xvfb on Mesa lavapipe, negative
-#   and positive, gated by netrender-window/check_log.py; then two lifecycle
+#   and positive, gated by netrender-window/check_log.py; then three
 #   scenarios on the positive executable (ROVES_PROBE_NETRENDER_SCENARIO):
-#   a native resize and the page's own GPUDevice.destroy(), each started
-#   after the verified first frame.
+#   a native resize, the page's own GPUDevice.destroy() and text shown over
+#   the WebGPU canvas (glyph runs drawn by Netrender), each started after the
+#   verified first frame. fonts-dejavu-core gives the text a fixed font.
 'on':
   push:
     paths:
@@ -112,7 +113,7 @@ jobs:
           sudo apt-get update -q
           sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools \
             xvfb libasound2-dev libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-0 libx11-xcb1 \
-            libxcursor1 libxi6 libxrandr2 libwayland-dev pkg-config
+            libxcursor1 libxi6 libxrandr2 libwayland-dev pkg-config fonts-dejavu-core
           mapfile -t icds < <(dpkg-query -L mesa-vulkan-drivers | grep -E '/vulkan/icd\.d/lvp_icd(\.x86_64)?\.json$' || true)
           if [ "${#icds[@]}" -ne 1 ] || [ ! -f "${icds[0]}" ]; then
             echo "::error::expected exactly one lavapipe ICD manifest, found ${#icds[@]}: ${icds[*]:-none}"
@@ -237,6 +238,18 @@ jobs:
           set -e
           echo "::group::device-destroy (exit $status)"; cat "$log"; echo "::endgroup::"
           python3 -I netrender-window/check_log.py device-destroy "$log" "$status"
+      - name: text scenario (glyph runs over the WebGPU canvas after the verified frame)
+        if: ${{ !cancelled() && steps.build_positive.outcome == 'success' }}
+        working-directory: support/blitz-v8-probe
+        run: |
+          log="$RUNNER_TEMP/netrender-window/logs/text.log"
+          fc-match "DejaVu Sans Mono" || true
+          set +e
+          ROVES_PROBE_WINDOW_RENDERER=netrender ROVES_PROBE_NETRENDER_FIXTURE=1 ROVES_PROBE_NETRENDER_SCENARIO=text timeout 900             xvfb-run -a --server-args="-screen 0 1280x720x24"             "$RUNNER_TEMP/netrender-window/positive/roves-blitz-v8-probe-netrender"             --game fixtures/netrender-window --window --window-frames 180 > "$log" 2>&1
+          status=$?
+          set -e
+          echo "::group::text (exit $status)"; cat "$log"; echo "::endgroup::"
+          python3 -I netrender-window/check_log.py text "$log" "$status"
       - name: upload logs and executables
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

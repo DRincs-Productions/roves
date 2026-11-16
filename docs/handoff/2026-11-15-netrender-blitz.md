@@ -257,6 +257,83 @@ renderer, original pixel oracles and negative/positive gates are unchanged.
 - **Next:** push with the next allowed batch and read `linux-lavapipe-window` (the resize timing,
   the drop on a destroyed device, the teardown on it); then translation of text, paths and images.
 
+### Seventh assignment: solid-color glyph runs (2026-11-16, uncommitted, not pushed)
+
+Scope: opt-in Netrender only, while standard Blitz CI was running; no new dependency, no
+template edit, the default probe renderer and the six-pixel, resize and device-loss gates
+unchanged.
+
+- **AnyRender semantics (read in anyrender 0.14.0, vello 0.9.0, anyrender_vello_cpu 0.18.0,
+  vendored blitz-paint `src/text.rs`).** `GlyphRunCommand` = `font_data` (`peniko::FontData`:
+  `Blob<u8>` + collection index), `font_size` (px per em in run space), `hint`,
+  `normalized_coords` (i16 F2Dot14), `embolden`, `style`, `brush`, `brush_alpha`, `transform`
+  (run space -> device), `glyph_transform` (per-glyph, before positioning) and positioned glyphs.
+  blitz-paint sends `Fill::NonZero`, a solid brush, `brush_alpha` 1, a skew `glyph_transform` only
+  for synthetic oblique, `embolden` only with the `font-embolden` features, and `hint = true`
+  otherwise. The fallback (vello_cpu) honors `hint`, but not `brush_alpha`. Vello GPU hints only
+  vertically, and only under uniform scale plus translation.
+- **Netrender d2f13ca5 API.** `Scene::push_glyph_run_full(font_id, size, glyphs, color, transform_id,
+  clip_rect, clip_corner_radii)`, `push_font`/`FontRegistry::intern` (key `(Blob::id(), index)`),
+  `push_transform`. The emitter calls `vscene.draw_glyphs(font).font_size().transform().brush()`
+  and adds `normalized_coords` only from user-space axis values. Colors of `SceneRect` and
+  `SceneGlyphRun` are **premultiplied** (`unpremultiply_color`). There is no field for hint,
+  glyph transform, embolden, style, or normalized coordinates.
+- **Translation (`translate_glyph_run`).** Accepted: `Fill::NonZero`, a solid brush (brush alpha
+  folded), identity or absent `glyph_transform`, zero `embolden`, all-zero or empty coordinates,
+  a finite transform and size, group alpha 1. The clip stack's device rect is `clip_rect`
+  (`NO_CLIP` when it is the viewport). A fully clipped or empty run paints nothing. The transform
+  is the inverse of Netrender's `transform_to_affine`. `hint` is dropped, so only AA edges can
+  differ from the fallback. Each other field returns a named reason, which triggers the existing
+  single switch to `GpuWindowRenderer`. Text under group opacity falls back because Vello fills
+  glyphs separately, so a folded alpha would double-blend overlaps. Rect colors are now
+  premultiplied too: the six pixels were right only because unpremultiply clamped (#after `[1,1,1,0.5]` -> `[2,2,2]`).
+- **Font identity and lifetimes.** The plan keeps the recorded `FontData`; the scene gets
+  `FontBlob { data: blob.clone(), index }` (an `Arc` bump, same `Blob::id()`), interned per frame
+  with `FontRegistry`, so Vello's glyph cache keys on the same id across frames. No bytes are read,
+  copied or re-uploaded by Roves. The bytes live while parley's collection, a recording or a
+  Netrender scene holds the `Blob`.
+- **Chromium f2700724** (`cc/paint/paint_op.h` `DrawTextBlobOp`, `paint_op.cc`
+  `DrawTextBlobOp::RasterWithFlags`, `paint_op_buffer_serializer.cc`, `paint_op_writer.cc`):
+  shaped text is a ref-counted `SkTextBlob` (glyphs, positions, `SkFont` with a ref-counted
+  `SkTypeface`) plus `PaintFlags`, drawn under the canvas's current matrix and clip. For OOP
+  raster, `DrawTextBlobOp::Serialize` is `NOTREACHED`: text goes through slugs (`DrawTextSlugsOp`),
+  and glyph data goes once per typeface through `SkStrikeServer` (text ops are skipped without
+  it). Roves translates the same way, as shaped run plus paint plus matrix plus clip. It needs no
+  strike transfer: one process and one device, and the `Blob` id plays the role of the typeface
+  unique id for the glyph cache. Difference: Skia's `SkFont` carries hinting and subpixel flags;
+  Netrender drops hinting (above).
+- **Text check (scenario `text`).** The fixture page has a hidden `#text` (`class="hidden"`, two
+  U+2588 FULL BLOCK glyphs, opaque yellow, 48px `"DejaVu Sans Mono", monospace`, at 130,96, over
+  the canvas and `#before`, left of `#after`). It cannot change the six original pixels: the unit
+  test asserts no glyph run while hidden. After the verified frame the renderer calls
+  `netrenderFixtureShowText()`. Once 10 presented frames contained a glyph run,
+  `netrender_window_text` reads back the final output. It checks four pixels derived from the
+  translated run itself, not from font metrics. Two are cell centers (origin + advance/2) at
+  0.3 em above the baseline, where FULL BLOCK spans descender to ascender: yellow. Two controls,
+  0.15 em left of the cell and 0.5 em below the baseline, show the canvas over `#before`
+  (`[128,0,128]`), so no text box was painted. Each point must lie inside the canvas box and left
+  of `#after`, otherwise the record fails with the reason; glyph ids are reported and `.notdef` is
+  rejected. `check_log.py text`: positive gates, one page call, one page `text` event, a passed
+  record with 4 pixels, `glyph_runs > 0`, no fallback, no panic. Every kind now rejects other
+  scenarios' records. Workflow: `fonts-dejavu-core` added to the apt list, `fc-match` logged, and
+  a new step after `device-destroy`.
+- **Evidence (local, light).** `cargo fmt --check` (probe). `cargo check --locked --bins --tests`
+  is clean for the default probe and the isolated manifest (pre-existing warnings only).
+  `check_log.py` passed 17 synthetic logs, each accepted or rejected as intended. A temporary
+  example on the default probe's cache, deleted afterwards, painted the fixture with blitz-paint.
+  Hidden: 4 commands, no glyph run. Shown: one run, with font blob 340712 bytes (Windows monospace
+  fallback), glyph id 2527 twice, `hint` true, no coordinates, zero embolden, `Fill(NonZero)`,
+  solid `[1,1,0,1]`, brush alpha 1, transform `translate(130,96)`, glyphs at x 0 and 28.9, y 41.
+  Derived pixels: (144.4,122.6), (173.3,122.6), (122.8,122.6) and (144.4,161.0), all inside the
+  canvas and left of 200. **Not run:** the opt-in unit tests (new: `text_fixture_translates_over_the_canvas`,
+  `glyph_runs_keep_font_identity_transform_and_clip`, `unsupported_glyph_runs_are_named`,
+  `netrender_transform_and_color_encoding`, `text_checks_reject_pixels_outside_the_canvas`), any
+  window or pixel.
+- **Next:** with the next allowed push, read the `text` step (`fc-match`, glyph ids, the four
+  pixels) and the Windows unit tests (monospace fallback). Then text under group opacity through
+  Netrender layers, paths and images. Propose upstream the missing glyph fields (hint,
+  glyph transform/embolden, normalized coordinates).
+
 ## Follow-up assignments after the proof
 
 1. Translate Blitz paint commands directly where practical, reusing Netrender's

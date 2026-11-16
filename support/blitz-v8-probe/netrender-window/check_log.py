@@ -1,6 +1,6 @@
 """Gates for the Netrender window fixture log (CI and local runs).
 
-    python -I check_log.py negative|positive|resize|device-destroy LOG STATUS
+    python -I check_log.py negative|positive|resize|device-destroy|text LOG STATUS
 
 negative: Netrender d2f13ca5 as published. The renderer must be ready, never
 fall back, and the fixture must fail exactly the three pixels covered by the
@@ -22,6 +22,11 @@ back, the renderer stopped exactly once (netrender_window_device_lost, no
 fallback renderer on the lost device), the page's own device.lost handler ran
 with reason "destroyed", nothing panicked, and the normal close and WebGPU
 teardown passed.
+text: the page showed #text (two opaque yellow U+2588 glyphs) over the canvas
+once after that read back, Netrender drew the glyph runs itself (no fallback),
+and netrender_window_text passed: the two glyph cells are text-colored, the
+canvas left of and below them is unchanged (no text box), every pixel derived
+from the translated run lies over the canvas, and no glyph is .notdef.
 """
 
 import json
@@ -32,7 +37,15 @@ SCENARIO_CHECKS = (
     "window_scenario_page_call",
     "netrender_window_resize",
     "netrender_window_device_lost",
+    "netrender_window_text",
 )
+
+# Scenario records each kind may contain (all others must be absent).
+ALLOWED_SCENARIO_CHECKS = {
+    "resize": {"window_scenario_resize", "netrender_window_resize"},
+    "device-destroy": {"window_scenario_page_call", "netrender_window_device_lost"},
+    "text": {"window_scenario_page_call", "netrender_window_text"},
+}
 
 AFTER_LAYER_PIXELS = {
     "after layer over before layer",
@@ -110,12 +123,20 @@ def main(kind, log, status):
         errors += resize_errors(found, page_events(log))
     elif kind == "device-destroy":
         errors += device_destroy_errors(found, page_events(log), panics(log))
-    elif any(check in found for check in SCENARIO_CHECKS):
-        errors.append("a lifecycle scenario ran in a plain fixture run")
+    elif kind == "text":
+        errors += text_errors(found, page_events(log), panics(log))
+    unexpected = sorted(
+        check for check in SCENARIO_CHECKS
+        if check in found and check not in ALLOWED_SCENARIO_CHECKS.get(kind, set())
+    )
+    if unexpected:
+        errors.append(f"unexpected scenario records for {kind}: {unexpected}")
     for pixel in fixture.get("pixels", []):
         print(f"::notice::{kind} {pixel['name']}: {pixel['actual']} expected {pixel['expected']}")
     for pixel in (found.get("netrender_window_resize") or [{}])[-1].get("pixels", []):
         print(f"::notice::{kind} after resize {pixel['name']}: {pixel['actual']} expected {pixel['expected']}")
+    for pixel in (found.get("netrender_window_text") or [{}])[-1].get("pixels", []):
+        print(f"::notice::{kind} text {pixel['name']} at ({pixel['x']}, {pixel['y']}): {pixel['actual']} expected {pixel['expected']}")
     if errors:
         for error in errors:
             print(f"::error::{kind}: {error}"[:900])
@@ -176,6 +197,34 @@ def device_destroy_errors(found, events, panic_lines):
     closed = (found.get("game_window_closed") or [{}])[-1]
     if closed.get("reason") != "frame_limit":
         errors.append(f"device-destroy: window close {closed}, expected the normal frame-limit close")
+    return errors
+
+
+def text_errors(found, events, panic_lines):
+    errors = []
+    calls = found.get("window_scenario_page_call", [])
+    if len(calls) != 1 or calls[0].get("status") != "ran":
+        errors.append(f"text: expected one page call that ran, got {calls}")
+    shown = [e for e in events if e.get("event") == "text"]
+    if len(shown) != 1:
+        errors.append(f"text: the page must show #text once, got {shown}")
+    records = found.get("netrender_window_text", [])
+    if len(records) != 1:
+        errors.append(f"text: expected one netrender_window_text record, got {records}")
+        return errors
+    record = records[0]
+    failing = sorted(p["name"] for p in record.get("pixels", []) if not p.get("pass"))
+    if record.get("status") != "passed" or failing or len(record.get("pixels", [])) != 4:
+        errors.append(f"text: {record.get('reason') or 'failing pixels'} {failing}")
+    if record.get("readback") != "final_output_only":
+        errors.append("text: the read back must be of the final output only")
+    if record.get("notdef_glyphs") != 0 or len(record.get("glyph_ids", [])) < 2:
+        errors.append(f"text: glyphs {record.get('glyph_ids')} (no .notdef, at least two expected)")
+    window = (found.get("netrender_window") or [{}])[-1]
+    if not window.get("glyph_runs"):
+        errors.append(f"text: Netrender drew no glyph run: {window}")
+    if panic_lines:
+        errors.append(f"text: panic in the log: {panic_lines[:3]}")
     return errors
 
 
