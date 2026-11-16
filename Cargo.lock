@@ -7932,17 +7932,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "servo-capi"
-version = "0.5.0"
-dependencies = [
- "dpi",
- "libc",
- "log",
- "servo",
- "url",
-]
-
-[[package]]
 name = "servo-config"
 version = "0.5.0"
 dependencies = [
