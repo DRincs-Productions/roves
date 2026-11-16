@@ -24,6 +24,10 @@ mod frame_timings;
 mod frame_trace;
 mod game;
 mod net_policy;
+// Opt-in Netrender window renderer: only the isolated manifest
+// netrender-window/Cargo.toml enables this feature (patched wgpu graph).
+#[cfg(feature = "netrender")]
+mod netrender_window;
 #[cfg(test)]
 mod paint_order;
 mod presentation;
@@ -2972,7 +2976,7 @@ fn main() {
                         .with_mode(mode);
                 return Some(WindowLaunch {
                     document,
-                    renderer,
+                    renderer: select_renderer(renderer, &shared_presentation),
                     shutdown_gpu,
                     teardown: Teardown::Required,
                 });
@@ -3557,7 +3561,7 @@ fn main() {
         // runtime as before; the GPU window drains the shared queue first.
         Some(WindowLaunch {
             document,
-            renderer,
+            renderer: select_renderer(renderer, &shared_presentation),
             shutdown_gpu,
             teardown: if window_gpu {
                 Teardown::IfReturned
@@ -3586,9 +3590,59 @@ enum Teardown {
 /// runtime's timer/IO drivers (`window::run` drives them once per frame).
 struct WindowLaunch {
     document: window::RovesDocument,
-    renderer: Option<presentation::GpuWindowRenderer>,
+    renderer: Option<SelectedRenderer>,
     shutdown_gpu: v8::Global<v8::Function>,
     teardown: Teardown,
+}
+
+/// The GPU window renderer: the existing compositor, or (opt-in build and
+/// `ROVES_PROBE_WINDOW_RENDERER=netrender`) Netrender with the existing
+/// compositor as its fallback.
+enum SelectedRenderer {
+    Gpu(presentation::GpuWindowRenderer),
+    #[cfg(feature = "netrender")]
+    Netrender(netrender_window::NetrenderWindowRenderer),
+}
+
+/// Applies `ROVES_PROBE_WINDOW_RENDERER` to the prepared GPU renderer. Without
+/// the opt-in build the existing renderer is kept and the request reported.
+fn select_renderer(
+    renderer: Option<presentation::GpuWindowRenderer>,
+    shared_presentation: &presentation::SharedPresentation,
+) -> Option<SelectedRenderer> {
+    let renderer = renderer?;
+    let requested =
+        std::env::var("ROVES_PROBE_WINDOW_RENDERER").is_ok_and(|value| value == "netrender");
+    if !requested {
+        return Some(SelectedRenderer::Gpu(renderer));
+    }
+    #[cfg(feature = "netrender")]
+    {
+        match netrender_window::NetrenderWindowRenderer::new(shared_presentation.clone(), renderer)
+        {
+            Ok(renderer) => {
+                println!(
+                    "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_prepare\",\"status\":\"ready\"}}"
+                );
+                Some(SelectedRenderer::Netrender(renderer))
+            },
+            Err((renderer, reason)) => {
+                println!(
+                    "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_prepare\",\"status\":\"fallback\",\"reason\":{}}}",
+                    window::json_string(&reason)
+                );
+                Some(SelectedRenderer::Gpu(renderer))
+            },
+        }
+    }
+    #[cfg(not(feature = "netrender"))]
+    {
+        let _ = shared_presentation;
+        println!(
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window_prepare\",\"status\":\"not_built\",\"reason\":\"build netrender-window/Cargo.toml\"}}"
+        );
+        Some(SelectedRenderer::Gpu(renderer))
+    }
 }
 
 impl WindowLaunch {
@@ -3603,7 +3657,15 @@ impl WindowLaunch {
         let timings = frame_timings::FrameTimings::from_env();
         let document = document.with_timings(timings.clone());
         let runtime = match renderer {
-            Some(mut renderer) => {
+            #[cfg(feature = "netrender")]
+            Some(SelectedRenderer::Netrender(mut renderer)) => {
+                if let Some(timings) = &timings {
+                    timings.borrow_mut().renderer = "netrender";
+                }
+                renderer.set_timings(timings);
+                window::run(document.with_stats(renderer.stats.clone()), renderer, tokio)
+            },
+            Some(SelectedRenderer::Gpu(mut renderer)) => {
                 if let Some(timings) = &timings {
                     let mut timings = timings.borrow_mut();
                     timings.renderer = "gpu";

@@ -1,0 +1,51 @@
+<!doctype html>
+<!--
+  Netrender window fixture (opt-in, netrender-window/Cargo.toml):
+    ROVES_PROBE_WINDOW_RENDERER=netrender ROVES_PROBE_NETRENDER_FIXTURE=1 \
+      roves-blitz-v8-probe-netrender --game fixtures/netrender-window --window --window-frames 90
+  Paint order: black page, opaque red #before, a WebGPU canvas cleared to 50%
+  premultiplied blue, then 50% white #after over the canvas, #before and the page.
+  Expected pixels: FIXTURE_CHECKS in src/netrender_window.rs.
+-->
+<html>
+<head>
+<style>
+  html, body { margin: 0; background: rgb(0, 0, 0); overflow: hidden; }
+  #before { position: absolute; left: 40px; top: 40px; width: 400px; height: 200px;
+            background: rgb(255, 0, 0); }
+  #canvas { position: absolute; left: 120px; top: 80px; width: 160px; height: 120px; }
+  #after { position: absolute; left: 200px; top: 60px; width: 200px; height: 260px;
+           background: rgba(255, 255, 255, 0.5); }
+</style>
+</head>
+<body>
+<div id="before"></div>
+<canvas id="canvas" width="160" height="120"></canvas>
+<div id="after"></div>
+<script>
+(async () => {
+  const adapter = await navigator.gpu.requestAdapter();
+  if (adapter === null) throw new Error("netrender fixture: no WebGPU adapter");
+  const device = await adapter.requestDevice();
+  const context = document.getElementById("canvas").getContext("webgpu");
+  context.configure({ device, format: "rgba8unorm", alphaMode: "premultiplied" });
+  const draw = () => {
+    const encoder = device.createCommandEncoder();
+    const pass = encoder.beginRenderPass({
+      colorAttachments: [{
+        view: context.getCurrentTexture().createView(),
+        // 50% blue, premultiplied.
+        clearValue: { r: 0, g: 0, b: 0.5, a: 0.5 },
+        loadOp: "clear",
+        storeOp: "store",
+      }],
+    });
+    pass.end();
+    device.queue.submit([encoder.finish()]);
+    requestAnimationFrame(draw);
+  };
+  requestAnimationFrame(draw);
+})();
+</script>
+</body>
+</html>

@@ -196,7 +196,7 @@ pub(crate) fn pointer_click(
     true
 }
 
-fn json_string(text: &str) -> String {
+pub(crate) fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for character in text.chars() {
         match character {

@@ -77,29 +77,9 @@ impl EmbedderIds {
         // to `global` and is owned exclusively by the wgpu object adopting it
         // (`clone_from_game`); the texture was created on `device` with `desc`.
         let (handles, canvas) = unsafe {
-            let instance = wgpu::Instance::from_core_global(self.global.clone());
-            let adapter = instance.adapter_from_core(self.adapter);
-            let (device, queue) = instance.device_from_core(self.device, self.queue);
-            let desc = wgpu::TextureDescriptor {
-                label: None,
-                size: self.desc.size,
-                mip_level_count: self.desc.mip_level_count,
-                sample_count: self.desc.sample_count,
-                dimension: self.desc.dimension,
-                format: self.desc.format,
-                usage: self.desc.usage,
-                view_formats: &[],
-            };
-            let canvas = instance.texture_from_core(&device, self.texture, &desc);
-            (
-                WgpuHandles {
-                    instance,
-                    adapter,
-                    device,
-                    queue,
-                },
-                canvas,
-            )
+            let handles = adopt_device(&self.global, self.adapter, self.device, self.queue);
+            let canvas = adopt_texture(&handles, self.texture, &self.desc);
+            (handles, canvas)
         };
         assert_eq!(
             handles.device.features(),
@@ -112,6 +92,64 @@ impl EmbedderIds {
             "same limits as the game device"
         );
         (handles, canvas)
+    }
+}
+
+/// Wraps the game's `Global` and adopts embedder-owned adapter, device and
+/// queue ids (from `Global::*_clone_id`) as wgpu objects. Shared by both
+/// producers of this proof and by the Blitz probe's opt-in Netrender window
+/// renderer (`support/blitz-v8-probe/netrender-window`). The adopted device
+/// gets its own error sink: handlers installed on it never replace the game's.
+///
+/// # Safety
+///
+/// Same wgpu-core build and backends as `global`; every id is live, belongs to
+/// `global`, the queue belongs to the device and each id is owned exclusively
+/// by the caller (the returned objects drop them).
+pub unsafe fn adopt_device(
+    global: &Arc<Global>,
+    adapter: AdapterId,
+    device: DeviceId,
+    queue: QueueId,
+) -> WgpuHandles {
+    unsafe {
+        let instance = wgpu::Instance::from_core_global(global.clone());
+        let adapter = instance.adapter_from_core(adapter);
+        let (device, queue) = instance.device_from_core(device, queue);
+        WgpuHandles {
+            instance,
+            adapter,
+            device,
+            queue,
+        }
+    }
+}
+
+/// Adopts an embedder-owned texture id created on `handles.device` with `desc`.
+///
+/// # Safety
+///
+/// `texture` is a live id of the adopted device's `Global`, created on that
+/// device as `desc` describes and owned exclusively by the caller.
+pub unsafe fn adopt_texture(
+    handles: &WgpuHandles,
+    texture: TextureId,
+    desc: &CanvasDesc,
+) -> wgpu::Texture {
+    let desc = wgpu::TextureDescriptor {
+        label: None,
+        size: desc.size,
+        mip_level_count: desc.mip_level_count,
+        sample_count: desc.sample_count,
+        dimension: desc.dimension,
+        format: desc.format,
+        usage: desc.usage,
+        view_formats: &[],
+    };
+    unsafe {
+        handles
+            .instance
+            .texture_from_core(&handles.device, texture, &desc)
     }
 }
 

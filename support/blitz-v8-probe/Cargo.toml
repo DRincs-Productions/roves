@@ -21,6 +21,11 @@ exclude = ["vendor/blitz-dom", "vendor/blitz-paint"]
 # A/B in docs/ROVES_PERFORMANCE.md, and not together with a future `filters`.
 vello-mt = ["anyrender_vello_cpu/multithreading"]
 
+# `netrender` exists only in the isolated manifest netrender-window/Cargo.toml
+# (patched wgpu graph); declared here so the shared sources' cfg is checked.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("netrender"))'] }
+
 [dependencies]
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"

@@ -67,6 +67,11 @@ interleaved externals as a follow-up).
 
 ## Fixture
 
+`src/lib.rs` also exports the bridge itself, `adopt_device` (wrap the shared `Global`, adopt
+embedder-owned adapter/device/queue ids) and `adopt_texture`, so the Blitz probe's opt-in
+Netrender window renderer (`support/blitz-v8-probe/netrender-window`) reuses it instead of a
+copy; its CI also reuses `prepare-patched.sh`, `ci/cargo-retry.sh` and `ci/verify.py lock-diff`.
+
 Shared part in `src/lib.rs` (adoption, scene, pixel assertions, hub id counts); the WGSL
 canvas shader is `src/canvas.wgsl`. Two producers feed it.
 

@@ -111,6 +111,10 @@ pub struct CanvasSource {
     pub width: u32,
     pub height: u32,
     pub opaque: bool,
+    /// Opt-in Netrender window renderer only: an embedder-owned id of the same
+    /// texture, adopted in wgpu at each frame (`src/netrender_window.rs`).
+    #[cfg(feature = "netrender")]
+    pub texture: crate::netrender_window::OwnedTexture,
 }
 
 /// Shared between the presentation ops (JS side) and the window renderer.
@@ -125,18 +129,23 @@ pub struct Presentation {
     /// a separate cell because widgets drop inside document mutations that
     /// may run while `Presentation` is borrowed.
     retired: Rc<RefCell<Vec<ResourceId>>>,
+    /// Opt-in Netrender window renderer only: embedder-owned adapter, device
+    /// and queue ids cloned while the page's objects were borrowed, taken by
+    /// `NetrenderWindowRenderer::new`.
+    #[cfg(feature = "netrender")]
+    pub core_ids: Option<crate::netrender_window::OwnedDeviceIds>,
 }
 
 pub type SharedPresentation = Rc<RefCell<Presentation>>;
 
 impl Presentation {
-    fn is_canvas(&self, resource: ResourceId) -> bool {
+    pub(crate) fn is_canvas(&self, resource: ResourceId) -> bool {
         self.canvases.contains_key(&resource.into_ffi())
     }
 
     /// Drops the entries (and owned views) of widgets Blitz has dropped, so a
     /// reused `NodeId` never maps to a stale resource.
-    fn prune(&mut self) {
+    pub(crate) fn prune(&mut self) {
         let retired = std::mem::take(&mut *self.retired.borrow_mut());
         for resource in retired {
             self.unregister(resource);
@@ -250,17 +259,39 @@ fn shared(state: &Rc<RefCell<OpState>>) -> SharedPresentation {
 }
 
 /// Registers the page's shared WebGPU device for window presentation
-/// (captured by dom.js, never exposed to the guest).
+/// (captured by dom.js, never exposed to the guest). `adapter` is the
+/// `GPUAdapter` that created the device (dom.js `sharedAdapter`): `GPUDevice`
+/// keeps only the adapter id, which the adapter's finalizer drops, so the
+/// borrowed object is what keeps that id live while it is checked (and, for
+/// the opt-in Netrender renderer, cloned).
 #[op2(fast)]
 pub fn op_blitz_present_device(
     state: Rc<RefCell<OpState>>,
     #[cppgc] device: &deno_webgpu::device::GPUDevice,
-) {
-    shared(&state).borrow_mut().device = Some(PresentDevice {
+    #[cppgc] adapter: &deno_webgpu::adapter::GPUAdapter,
+) -> Result<(), JsErrorBox> {
+    if !Arc::ptr_eq(&adapter.instance, &device.instance) || adapter.id != device.adapter {
+        return Err(JsErrorBox::type_error(
+            "the presented device was not requested from this adapter",
+        ));
+    }
+    let presentation = shared(&state);
+    let mut presentation = presentation.borrow_mut();
+    presentation.device = Some(PresentDevice {
         instance: device.instance.clone(),
         device: device.id,
         queue: device.queue,
     });
+    #[cfg(feature = "netrender")]
+    {
+        presentation.core_ids = Some(crate::netrender_window::OwnedDeviceIds::clone_from_page(
+            &device.instance,
+            adapter.id,
+            device.id,
+            device.queue,
+        ));
+    }
+    Ok(())
 }
 
 /// Presents `texture` as the content of the canvas node `handle` (attaching
@@ -299,6 +330,8 @@ pub fn op_blitz_present_canvas(
             "canvas texture view for presentation failed: {error}"
         )));
     }
+    #[cfg(feature = "netrender")]
+    let core_texture = crate::netrender_window::OwnedTexture::clone_from_page(texture)?;
     let resource = attach_canvas_widget(&presentation, &mut document.borrow_mut(), node);
     // Replaces (and drops the view of) the previous texture.
     presentation.borrow_mut().canvases.insert(
@@ -308,6 +341,8 @@ pub fn op_blitz_present_canvas(
             width: texture.size.width,
             height: texture.size.height,
             opaque,
+            #[cfg(feature = "netrender")]
+            texture: core_texture,
         }),
     );
     Ok(resource.into_ffi() as f64)

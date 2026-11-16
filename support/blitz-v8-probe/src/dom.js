@@ -3200,6 +3200,10 @@
   // wgpu-core info of the adapter that created sharedDevice, queried while that
   // GPUAdapter was alive (see op_blitz_gpu_adapter_info) and read at teardown.
   let sharedAdapterInfo = null;
+  // The GPUAdapter that created sharedDevice. GPUDevice keeps only its adapter
+  // *id* and the GPUAdapter's finalizer drops that id, so presentation borrows
+  // this object (op_blitz_present_device) instead of trusting device.adapter.
+  let sharedAdapter = null;
   let patchedGpu = null;
   // Teardown diagnostics: queue submissions made by the page (see shutdownGpu).
   let gpuSubmits = 0;
@@ -3336,6 +3340,7 @@
       adapter.requestDevice = () => {
         if (sharedDevice === null) {
           sharedAdapterInfo = adapterInfo;
+          sharedAdapter = adapter;
           const requiredFeatures = ["texture-compression-bc", "texture-compression-astc", "texture-compression-etc2"]
             .filter((feature) => adapter.features.has(feature));
           sharedDevice = requestDevice({ requiredFeatures });
@@ -3498,7 +3503,7 @@
         const adapter = await navigator.gpu.requestAdapter();
         if (adapter === null) return JSON.stringify({ status: "no_adapter" });
         const device = await adapter.requestDevice();
-        op_blitz_present_device(device);
+        op_blitz_present_device(device, sharedAdapter);
         presentationEnabled = true;
         let canvases = 0;
         for (const ref of gpuCanvasContexts) {

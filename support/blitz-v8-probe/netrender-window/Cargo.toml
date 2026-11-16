@@ -1,0 +1,90 @@
+# Opt-in, experimental: the Blitz/V8 probe (same sources, ../src/main.rs) built
+# with the Netrender window renderer (feature `netrender`, src/netrender_window.rs).
+#
+# Why a separate manifest: the renderer needs the wgpu 29 core-interop patch on
+# deno_webgpu's own wgpu-core, and Cargo cannot scope `[patch.crates-io]` to a
+# feature. Patching ../Cargo.toml would change the default probe graph, so the
+# patched graph lives here with its own Cargo.lock. Nothing ships from it and
+# the default probe (../Cargo.toml) and its renderer are unchanged.
+#
+# Dependency source (reused from the proof, not a fork): run
+# ../../netrender-shared-device-proof/prepare-patched.sh first; it downloads the
+# exact crates.io wgpu 29.0.4 / wgpu-core 29.0.1 (sha256-checked) and applies
+# upstream/wgpu-29-core-interop.patch. The Netrender ordering fix is applied in
+# CI by a `--config` path override exactly as in netrender-proof.yml.
+# Unpinning: see TODO.md, "Netrender per la composizione Blitz".
+
+[package]
+name = "roves-blitz-v8-probe-netrender"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[[bin]]
+name = "roves-blitz-v8-probe-netrender"
+path = "../src/main.rs"
+
+[features]
+default = ["netrender"]
+netrender = ["dep:netrender", "dep:wgpu", "dep:roves-netrender-shared-device-proof"]
+# Same meaning as in ../Cargo.toml.
+vello-mt = ["anyrender_vello_cpu/multithreading"]
+
+[dependencies]
+# Opt-in Netrender path. Exact pins of the shared-device proof
+# (support/netrender-shared-device-proof/Cargo.toml): Netrender d2f13ca5 is the last
+# revision on wgpu 29 / Vello 0.9; wgpu 29.0.4 resolves wgpu-core to deno_webgpu's
+# `=29.0.1`, so one wgpu-core serves the page and the renderer.
+netrender = { git = "https://github.com/merely-made/netrender", rev = "d2f13ca5ecd20df89d148a7cebef28c0962b90ca", optional = true }
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "wgsl", "dx12", "vulkan", "metal"], optional = true }
+# The proof's bridge (adopt_device/adopt_texture), reused rather than duplicated.
+roves-netrender-shared-device-proof = { path = "../../netrender-shared-device-proof", optional = true }
+
+# Everything below mirrors ../Cargo.toml exactly (keep in sync).
+deno_core = "=0.413.0"
+deno_error = "=0.7.1"
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false, features = ["system-fonts", "custom-widget"] }
+blitz-html = { version = "=0.3.0-beta.4", default-features = false }
+blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
+anyrender_vello_cpu = { version = "=0.18.0", features = ["softbuffer_window_renderer"] }
+blitz-traits = "=0.3.0-beta.4"
+tokio = { version = "1.47.1", default-features = false, features = ["rt", "net"] }
+deno_web = "=0.291.0"
+deno_webidl = "=0.260.0"
+anyrender = "=0.14.0"
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["custom-widget"] }
+kurbo = "=0.13.1"
+peniko = "=0.6.1"
+png = "=0.18.1"
+data-url = "=0.3.1"
+style = { package = "stylo", version = "=0.22.0", default-features = false }
+winit = "=0.31.0-beta.3"
+keyboard-types = { version = "=0.8.3", default-features = false }
+raw-window-handle = "=0.6.2"
+deno_webstorage = "=0.255.0"
+deno_webgpu = "=0.227.0"
+deno_image = "=0.36.0"
+resvg = "=0.48.1"
+deno_fetch = "=0.284.0"
+deno_permissions = "=0.119.0"
+deno_tls = "=0.247.0"
+deno_net = "=0.252.0"
+sys_traits = { version = "0.1", features = ["real", "libc", "winapi"] }
+http = "1"
+hyper-util = { version = "0.1", features = ["client-legacy"] }
+content-security-policy = "=0.8.1"
+web-audio-api = { version = "=1.7.0", default-features = false, features = ["cpal"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "=0.61.2", features = ["Win32_System_Performance"] }
+
+[patch.crates-io]
+# Probe's vendored Blitz fixes (../vendor/*/ROVES_PATCHES.md).
+blitz-dom = { path = "../vendor/blitz-dom" }
+blitz-paint = { path = "../vendor/blitz-paint" }
+# The proof's patched tree (crates.io + upstream/wgpu-29-core-interop.patch).
+wgpu = { path = "../../netrender-shared-device-proof/patched/wgpu" }
+wgpu-core = { path = "../../netrender-shared-device-proof/patched/wgpu-core" }

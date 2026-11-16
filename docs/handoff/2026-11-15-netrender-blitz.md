@@ -91,6 +91,76 @@ repro: `support/netrender-shared-device-proof/README.md`.
   The wgpu upstream proposal is in progress in the separate `wgpu-reference`
   checkout. The proof patches are still isolated from the Blitz renderer.
 
+### Fifth assignment: opt-in Netrender window renderer (2026-11-16, uncommitted, not pushed)
+
+Scope: minimal fixture and feature wiring only; no template run, no wiki, no commit/push/dispatch.
+
+- **Isolated graph.** Cargo cannot scope `[patch.crates-io]` per feature, so
+  `support/blitz-v8-probe/netrender-window/Cargo.toml` compiles the same probe sources
+  (`[[bin]] path = "../src/main.rs"`) with feature `netrender` and its own `Cargo.lock`. Its
+  patches: the probe's vendored Blitz and the proof's `patched/wgpu{,-core}`
+  (`prepare-patched.sh`: crates.io + interop patch). Lock seeded from the probe's: 16 packages
+  added, no version changed, one wgpu-core 29.0.1 / wgpu-hal 29.0.4 / wgpu-types 29.0.1,
+  Netrender `d2f13ca5`, Vello 0.9.0, one peniko 0.6.1. The default probe manifest only gained
+  a `check-cfg` lint for `feature = "netrender"`.
+- **Published-branch blockers (exact).** wgpu: no 29.x branch or release has a core interop API;
+  the upstream seam (#10211, `from_core`/`as_core` on plain `Arc`s) is only on `trunk` and
+  `firefox-161`, unreleased (expected wgpu 31, and deno_webgpu 0.227 pins wgpu-core `=29.0.1`).
+  `BlackRam-oss/wgpu codex/core-interop-seam` is a local trunk-based test branch and is not used.
+  Netrender: the fix branch `codex/fix-external-texture-order` (`5a73b3c2`) descends from
+  `main` on wgpu 30, so it cannot share deno_webgpu's wgpu-core; `d2f13ca5` plus the proof's
+  order patch (CI `--config` path override) is used instead.
+- **Bridge reuse.** The proof's `src/lib.rs` now exports `adopt_device`/`adopt_texture`
+  (behaviour unchanged for its producers); the probe depends on it by path. Ids:
+  `op_blitz_present_device` clones adapter/device/queue ids while the page's `GPUDevice` and
+  the `GPUAdapter` that created it (dom.js `sharedAdapter`, kept alive with the device) are
+  borrowed; `op_blitz_present_canvas` clones a texture id next to the existing owned view.
+- **Renderer** (`src/netrender_window.rs`, `NetrenderWindowRenderer`): translates the recorded
+  Blitz scene (solid axis-aligned rects, rectangular clips, group opacity over one draw,
+  canvases as `ExternalTextureComposite` at their scene-op boundary; `alphaMode: "opaque"`
+  canvases get a black underlay, equal to forcing alpha 1); renders with
+  `render_with_compositor_and_external_textures` (master `Rgba8Unorm`, storage-capable without
+  device features), blits the master to the surface (`Bgra8Unorm` or `Rgba8Unorm`, non-sRGB)
+  with `wgpu::util::TextureBlitter`, presents. Anything else, an error on the embedder's
+  error sink, a lost/validation surface or a Netrender panic (`catch_unwind`) switches once to
+  the existing `GpuWindowRenderer`, which re-renders that frame from the same recording.
+  Resize reconfigures the surface (frames are skipped until the configured size matches);
+  `Outdated` reconfigures; `Timeout`/`Occluded` skip. Resource drop: canvases are read from
+  `Presentation` each frame (pruned first), the adopted texture lives one frame, dropping a
+  `CanvasSource` drops only the embedder's id. Device loss: adopted device has its own error
+  sink (patch), no device-lost callback is installed, the page's handlers are untouched.
+- **Chromium comparison** (f2700724, `components/viz/service/display/display_resource_provider.h`):
+  Viz reads child resources only inside `ScopedReadLockSharedImage`, which keeps the shared
+  image alive for the draw and carries `gpu::SyncToken`s ordering the display compositor after
+  the producer. Roves keeps the scoped-read idea (a texture id cloned and adopted for one frame)
+  but needs no interprocess or cross-context token: producer and consumer are one process,
+  one wgpu-core device and one queue, the page's submissions precede the compositor's on that
+  queue, and wgpu-core's trackers insert the barriers. The page keeps device ownership.
+- **Fixture** `support/blitz-v8-probe/fixtures/netrender-window/index.html` (a minimal
+  `--game` page): black page, opaque red `#before`, a 160x120 WebGPU canvas cleared to 50%
+  premultiplied blue, 50% white `#after` over canvas, `#before` and page. Six pixels
+  (`FIXTURE_CHECKS`); readback of the final output only, after 30 Netrender frames. Expected
+  negative (published Netrender): exactly the three `#after` pixels fail (double blending).
+- **Evidence (local, light).** `cargo fmt --check` (probe, proof); `cargo check --locked
+  --bins --tests` clean for the default probe, the isolated manifest (shared target dir, only
+  pre-existing warnings) and `cargo check --locked --features deno --bins` for the proof;
+  `check_log.py` accepts/rejects synthetic negative/positive logs as intended; workflow YAML
+  parses. **Not run:** unit tests (`netrender_window::` translation of the real fixture page
+  painted by blitz-paint, untranslated constructs), any window, any pixel.
+- **CI-ready plan** `.github/workflows/netrender-window.yml` (isolated, informational; paths:
+  the manifest dir, `src/netrender_window.rs`, the fixture, the proof's lib/script/patches,
+  the workflow): `windows-test` builds the opt-in executable and runs
+  `cargo test -- netrender_window:: presentation::` (no window: WARP crashes Vello);
+  `linux-lavapipe-window` (first Linux build of the probe: Mesa lavapipe pinned via
+  `VK_DRIVER_FILES`, Xvfb, ALSA/fontconfig/xkbcommon/wayland dev packages) runs the fixture
+  negative (`--locked`) and positive (order fix by path override, lock diff checked and
+  restored) with `check_log.py`. Shared-source changes (`main.rs`, `presentation.rs`,
+  `dom.js`) are covered by `blitz-probe.yml` for the default build.
+- **Next:** push with the next allowed batch and read both jobs (expect Linux system-package
+  iterations); then resize in a resizable window, an injected device loss
+  (`GPUDevice.destroy()` mid-run must produce one fallback and no panic), translation of text,
+  paths and images, and the unmodified template.
+
 ## Follow-up assignments after the proof
 
 1. Translate Blitz paint commands directly where practical, reusing Netrender's
