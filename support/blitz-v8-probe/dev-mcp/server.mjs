@@ -25,7 +25,7 @@ class Probe {
     const prefix = "ROVES_DEV_MCP_" + token + " ";
     const storage = mkdtempSync(join(tmpdir(), "roves-dev-mcp-"));
     this.#child = spawn(resolve(probe), ["--game", resolve(game), "--window"], {
-      env: { ...process.env, ROVES_PROBE_DEV_MCP_TOKEN: token, ROVES_PROBE_STORAGE_DIR: storage },
+      env: { ...process.env, ROVES_PROBE_DEV_MCP_TOKEN: token, ROVES_PROBE_STORAGE_DIR: storage, ROVES_PROBE_FRAME_TIMINGS: "1" },
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
     });
@@ -80,13 +80,13 @@ class Probe {
     });
   }
 
-  async evaluate(source) {
+  async request(payload) {
     const ready = await this.#ready;
     if (!ready.ready || this.#closed) throw new Error("Roves is not ready");
-    if (this.#pending) throw new Error("Another evaluation is in progress");
-    if (Buffer.byteLength(source) > 16 * 1024) throw new Error("Source exceeds 16 KiB");
-    const response = this.#wait(5_000, "Roves evaluation timed out");
-    this.#child.stdin.write(JSON.stringify(source) + "\n");
+    if (this.#pending) throw new Error("Another diagnostic request is in progress");
+    if (typeof payload === "string" && Buffer.byteLength(payload) > 16 * 1024) throw new Error("Source exceeds 16 KiB");
+    const response = this.#wait(5_000, "Roves diagnostic request timed out");
+    this.#child.stdin.write(JSON.stringify(payload) + "\n");
     const result = await response;
     if ("error" in result) throw new Error(result.error);
     return result.value;
@@ -116,17 +116,22 @@ for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
 
 await serveStdio(() => {
   const server = new McpServer({ name: "roves-dev", version: "0.0.0" });
-  server.registerTool("evaluate_script", {
-    description: "Evaluate synchronous JavaScript in the isolated Roves game page and return JSON.",
-    inputSchema: z.object({ source: z.string().max(16 * 1024) }),
-  }, async ({ source }) => {
+  async function run(payload) {
     try {
       child ??= new Probe();
-      const value = await child.evaluate(source);
+      const value = await child.request(payload);
       return { content: [{ type: "text", text: JSON.stringify(value) }] };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: error.message }] };
     }
-  });
+  }
+  server.registerTool("evaluate_script", {
+    description: "Evaluate synchronous JavaScript in the isolated Roves game page and return JSON.",
+    inputSchema: z.object({ source: z.string().max(16 * 1024) }),
+  }, ({ source }) => run(source));
+  server.registerTool("performance_sample", {
+    description: "Summarize game ticks and CPU rendering phases sampled in the last five seconds.",
+    inputSchema: z.object({}),
+  }, () => run({ method: "performance_sample" }));
   return server;
 });

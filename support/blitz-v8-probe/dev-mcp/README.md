@@ -23,6 +23,13 @@ source and inspector responses. To observe asynchronous work, schedule it
 with one call and read its state with a later call. Closing the MCP connection
 closes this game instance and removes its temporary storage.
 
+Call `performance_sample` with `{}` to read frame timings from the previous
+five seconds. Durations are in milliseconds. Each series reports its sample
+count, percentiles and lifetime count. Presentation and skip counters, when
+available, cover the session. Displayed-frame counts and GPU execution times
+are unavailable through this tool. Use a PresentMon capture on Windows to
+measure displayed frames.
+
 The normal probe build excludes the bridge. Even a feature-enabled probe
 requires a per-process token on a game-window launch. The server generates that
 token and supplies a fresh storage directory. Game bundles need no extra

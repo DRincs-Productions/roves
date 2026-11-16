@@ -62,7 +62,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// Samples kept per series: about 60 seconds at 60 Hz.
 pub const MAX_SAMPLES: usize = 3600;
@@ -72,7 +72,7 @@ const BUDGET_MS: f64 = 16.67;
 
 /// A bounded ring buffer of durations in milliseconds.
 pub struct Samples {
-    values: Vec<f64>,
+    values: Vec<(Instant, f64)>,
     capacity: usize,
     next: usize,
     /// All samples seen, including those overwritten.
@@ -95,17 +95,27 @@ impl Samples {
     }
 
     fn push_ms(&mut self, value: f64) {
+        let sample = (Instant::now(), value);
         if self.values.len() < self.capacity {
-            self.values.push(value);
+            self.values.push(sample);
         } else {
-            self.values[self.next] = value;
+            self.values[self.next] = sample;
         }
         self.next = (self.next + 1) % self.capacity;
         self.total += 1;
     }
 
     pub fn summary(&self) -> Summary {
-        let mut sorted = self.values.clone();
+        self.summary_since(None)
+    }
+
+    fn summary_since(&self, since: Option<Instant>) -> Summary {
+        let mut sorted: Vec<_> = self
+            .values
+            .iter()
+            .filter(|(time, _)| since.is_none_or(|since| *time >= since))
+            .map(|(_, value)| *value)
+            .collect();
         sorted.sort_by(f64::total_cmp);
         Summary {
             count: sorted.len(),
@@ -1030,10 +1040,14 @@ impl PhaseSamples {
     }
 
     fn json(&self) -> String {
+        self.json_since(None)
+    }
+
+    fn json_since(&self, since: Option<Instant>) -> String {
         let fields: Vec<String> = Phase::ALL
             .iter()
             .map(|phase| {
-                let summary = self.0[*phase as usize].summary();
+                let summary = self.0[*phase as usize].summary_since(since);
                 format!("\"{}\":{}", phase.key(), summary.json())
             })
             .collect();
@@ -1065,6 +1079,23 @@ pub struct FrameTimings {
 pub type SharedFrameTimings = Rc<RefCell<FrameTimings>>;
 
 impl FrameTimings {
+    #[cfg(feature = "dev-mcp")]
+    pub fn live_sample(&self) -> deno_core::serde_json::Value {
+        let since = Instant::now().checked_sub(Duration::from_secs(5));
+        let phases = self
+            .render_phases
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |phases| phases.json_since(since));
+        let sample = format!(
+            "{{\"unit\":\"ms\",\"window_ms\":5000,\"renderer\":\"{}\",\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"render_phases\":{phases},\"displayed_frames\":null,\"gpu_time_ms\":null}}",
+            self.renderer,
+            self.frame_step_interval.summary_since(since).json(),
+            self.cpu_frame_step.summary_since(since).json(),
+            self.cpu_render_present.summary_since(since).json(),
+        );
+        deno_core::serde_json::from_str(&sample).expect("frame timing summaries emit valid JSON")
+    }
+
     fn new() -> Self {
         Self {
             frame_step_interval: Samples::with_capacity(MAX_SAMPLES),

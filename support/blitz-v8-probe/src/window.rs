@@ -739,7 +739,9 @@ impl Document for RovesDocument {
         let run_animation_frame = &self.run_animation_frame;
         let mut tick = || {
             #[cfg(feature = "dev-mcp")]
-            if !self.close_requested && crate::dev_mcp::poll(runtime) {
+            if !self.close_requested
+                && crate::dev_mcp::poll(runtime, self.timings.as_ref(), self.stats.as_deref())
+            {
                 return false;
             }
             crate::frame_step(runtime, run_animation_frame);

@@ -66,7 +66,11 @@ impl Bridge {
 }
 
 /// Returns true when the controlling process has closed its input pipe.
-pub fn poll(runtime: &mut JsRuntime) -> bool {
+pub fn poll(
+    runtime: &mut JsRuntime,
+    timings: Option<&crate::frame_timings::SharedFrameTimings>,
+    stats: Option<&std::cell::RefCell<crate::presentation::PresentStats>>,
+) -> bool {
     BRIDGE.with(|bridge| {
         let Some(bridge) = bridge else { return false };
         let line = match bridge.requests.try_recv() {
@@ -74,8 +78,22 @@ pub fn poll(runtime: &mut JsRuntime) -> bool {
             Err(TryRecvError::Empty) => return false,
             Err(TryRecvError::Disconnected) => return true,
         };
-        let response = match deno_core::serde_json::from_str::<String>(&line) {
-            Ok(source) if source.len() <= MAX_SOURCE => evaluate(runtime, &source),
+        let response = match deno_core::serde_json::from_str::<Value>(&line) {
+            Ok(Value::Object(request))
+                if request.get("method").and_then(Value::as_str) == Some("performance_sample") =>
+            {
+                timings
+                    .map(|timings| {
+                        let mut sample = timings.borrow().live_sample();
+                        let stats = stats.map(std::cell::RefCell::borrow);
+                        sample["session_present_calls"] = json!(stats.as_ref().map(|s| s.frames));
+                        sample["session_skipped_frames"] =
+                            json!(stats.as_ref().map(|s| s.skipped_frames));
+                        sample
+                    })
+                    .ok_or_else(|| "frame timings are unavailable".into())
+            },
+            Ok(Value::String(source)) if source.len() <= MAX_SOURCE => evaluate(runtime, &source),
             _ => Err("expected a JSON string of at most 16 KiB".into()),
         };
         bridge.reply(match response {

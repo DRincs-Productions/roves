@@ -47,7 +47,7 @@ try {
   });
   send({ method: "notifications/initialized" });
   const { tools } = await call("tools/list", {});
-  assert.deepEqual(tools.map(({ name }) => name), ["evaluate_script"]);
+  assert.deepEqual(tools.map(({ name }) => name).sort(), ["evaluate_script", "performance_sample"]);
   if (!listOnly) {
     const result = await evaluate(`({
       text: document.getElementById("fixture").textContent,
@@ -78,6 +78,12 @@ try {
       if (!timerReady) await delay(50);
     }
     assert.equal(timerReady, true, "a timer scheduled through MCP should run on the game loop");
+    const sample = await call("tools/call", { name: "performance_sample", arguments: {} });
+    assert.ok(!sample.isError, sample.content[0].text);
+    const metrics = JSON.parse(sample.content[0].text);
+    assert.equal(metrics.window_ms, 5000);
+    assert.ok(metrics.cpu_frame_step.count > 0);
+    assert.equal(metrics.displayed_frames, null);
   }
   child.stdin.end();
   assert.deepEqual(await closed, [0, null]);
