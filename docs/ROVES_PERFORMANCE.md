@@ -2575,3 +2575,15 @@ la durata delle fence prima di Start. Confrontare il template originale
 su WARP e Mesa lavapipe (già usato dal workflow Netrender). Verificare
 se clip, texture intermedie o un rendering invariato spiegano il carico.
 Misurare separatamente la fluidità in finestra sulla GTX 1050.
+
+Una prova locale JITless senza finestra ha forzato `forceFallbackAdapter`
+nel solo HTML di una copia del template `8a8d59b`, con una build debug
+precedente ai nuovi contatori. Il log identifica DX12 Microsoft Basic
+Render Driver, driver `10.0.26100.9818`. Skip ha superato la richiesta
+del nome, la conferma e la battuta successiva. Il pacing ha rinviato
+805 tick su 930 (86,6%), con intervallo massimo di 3,3 s e 248 submit.
+La coda ha richiesto altri 15,1 s per svuotarsi durante la chiusura.
+PixiJS ha segnalato due WAV senza parser. Questi dati riguardano il
+percorso software senza finestra. La run diagnostica
+[43962093218](https://github.com/DRincs-Productions/roves/actions/runs/43962093218)
+prova il template originale con i nuovi contatori.
