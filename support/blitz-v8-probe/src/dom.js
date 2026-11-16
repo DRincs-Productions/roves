@@ -3259,6 +3259,14 @@
   // (waiting for the last batch), `saturation` = share of
   // ticks deferred.
   function gpuPacingReport() {
+    const canvases = [];
+    for (const ref of gpuCanvasContexts) {
+      const context = ref.deref();
+      const format = context?.getConfiguration()?.format;
+      if (!format) continue;
+      canvases.push({ width: context.canvas.width, height: context.canvas.height, format });
+      if (canvases.length === 8) break;
+    }
     return {
       ...gpuPacing,
       saturated: gpuPacingDeferring,
@@ -3267,6 +3275,8 @@
       pending_batch_ms: gpuPacingDeferring && gpuPacingBatchStartedAt !== null
         ? Math.round((performance.now() - gpuPacingBatchStartedAt) * 10) / 10
         : null,
+      canvas_backing_stores: canvases,
+      queue_submits: gpuSubmits,
     };
   }
   function gpuPacingTick() {
