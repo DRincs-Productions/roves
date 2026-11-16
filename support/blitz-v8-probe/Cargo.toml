@@ -10,7 +10,7 @@ license = "MPL-2.0"
 exclude = ["vendor/blitz-dom", "vendor/blitz-paint"]
 
 [features]
-dev-mcp = []
+dev-mcp = ["dep:getrandom"]
 # Opt-in A/B experiment, off by default (the default build is the single-thread
 # reference): forwards to anyrender_vello_cpu 0.18's own `multithreading`
 # feature (vello_cpu 0.3 MultiThreadedDispatcher, rayon pool of
@@ -28,6 +28,7 @@ vello-mt = ["anyrender_vello_cpu/multithreading"]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("netrender"))'] }
 
 [dependencies]
+getrandom = { version = "=0.3.4", optional = true }
 deno_core = "=0.413.0"
 deno_error = "=0.7.1"
 # custom-widget: canvas elements paint as an in-order placeholder (src/presentation.rs).

@@ -5,6 +5,7 @@ use deno_core::serde_json::{Value, json};
 use deno_core::{InspectorMsgKind, InspectorSessionKind, JsRuntimeInspector};
 use std::io::{BufRead, Read, Write};
 use std::net::TcpListener;
+use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, sync_channel};
 use std::time::Duration;
 
@@ -15,24 +16,53 @@ thread_local! {
     static BRIDGE: Option<Bridge> = Bridge::start();
 }
 
+fn game_window() -> bool {
+    std::env::args().any(|arg| arg == "--game") && std::env::args().any(|arg| arg == "--window")
+}
+
 fn token() -> Option<String> {
-    if !std::env::args().any(|arg| arg == "--game")
-        || !std::env::args().any(|arg| arg == "--window")
-    {
-        return None;
-    }
     let token = std::env::var("ROVES_PROBE_DEV_MCP_TOKEN").ok()?;
     (token.len() == 32 && token.bytes().all(|byte| byte.is_ascii_hexdigit())).then_some(token)
 }
 
 pub fn enabled() -> bool {
-    token().is_some()
+    game_window() && (discovery_enabled() || token().is_some())
+}
+
+pub fn discovery_enabled() -> bool {
+    cfg!(windows) && std::env::args().any(|arg| arg == "--mcp-discover")
 }
 
 struct Bridge {
     token: String,
     requests: Receiver<Request>,
     attached: bool,
+    record: Option<PathBuf>,
+}
+
+impl Drop for Bridge {
+    fn drop(&mut self) {
+        if let Some(path) = &self.record {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+}
+
+fn publish_session(port: u16, token: &str) -> Option<PathBuf> {
+    let directory = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+        .join("Roves")
+        .join("mcp");
+    std::fs::create_dir_all(&directory).ok()?;
+    let pid = std::process::id();
+    let path = directory.join(format!("{pid}.json"));
+    let temporary = directory.join(format!("{pid}.tmp"));
+    let record = json!({ "version": 1, "pid": pid, "port": port, "token": token });
+    std::fs::write(&temporary, record.to_string()).ok()?;
+    if std::fs::rename(&temporary, &path).is_err() {
+        let _ = std::fs::remove_file(&temporary);
+        return None;
+    }
+    Some(path)
 }
 
 struct Request {
@@ -51,13 +81,32 @@ fn read_request(input: &mut impl BufRead) -> Option<String> {
 
 impl Bridge {
     fn start() -> Option<Self> {
-        let token = token()?;
+        if !game_window() {
+            return None;
+        }
+        let discover = discovery_enabled();
+        let token = if discover {
+            let mut bytes = [0_u8; 16];
+            getrandom::fill(&mut bytes).ok()?;
+            bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+        } else {
+            token()?
+        };
         let (send, requests) = sync_channel(1);
-        if let Ok(port) = std::env::var("ROVES_PROBE_DEV_MCP_ATTACH_PORT") {
-            let port = port.parse::<u16>().expect("invalid diagnostic port");
-            assert_ne!(port, 0, "configure an explicit diagnostic port");
-            let listener = TcpListener::bind(("127.0.0.1", port))
-                .expect("could not listen on the diagnostic port");
+        let port = if discover {
+            Some(0)
+        } else if let Ok(port) = std::env::var("ROVES_PROBE_DEV_MCP_ATTACH_PORT") {
+            Some(port.parse::<u16>().ok().filter(|port| *port != 0)?)
+        } else {
+            None
+        };
+        if let Some(port) = port {
+            let listener = TcpListener::bind(("127.0.0.1", port)).ok()?;
+            let record = if discover {
+                Some(publish_session(listener.local_addr().ok()?.port(), &token)?)
+            } else {
+                None
+            };
             let auth = token.clone();
             std::thread::spawn(move || {
                 for stream in listener.incoming().map_while(Result::ok) {
@@ -92,6 +141,7 @@ impl Bridge {
                 token,
                 requests,
                 attached: true,
+                record,
             });
         }
         std::thread::spawn(move || {
@@ -106,6 +156,7 @@ impl Bridge {
             token,
             requests,
             attached: false,
+            record: None,
         };
         bridge.reply(json!({ "ready": true }));
         Some(bridge)

@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -12,8 +12,9 @@ import { pixiStatus } from "./pixi.mjs";
 
 const [probe, game] = process.argv.slice(2);
 const attach = probe === "--attach";
-if (!probe || !game || process.argv.length !== 4) {
-  throw new Error("Usage: node server.mjs <dev-mcp probe executable> <game dist> | --attach <port>");
+const discover = probe === "--discover";
+if (discover ? process.argv.length > 4 : !probe || !game || process.argv.length !== 4) {
+  throw new Error("Usage: node server.mjs <dev-mcp probe executable> <game dist> | --attach <port> | --discover [pid]");
 }
 const attachToken = process.env.ROVES_PROBE_DEV_MCP_TOKEN;
 const attachPort = Number(game);
@@ -22,12 +23,44 @@ if (attach && (!Number.isInteger(attachPort) || attachPort < 1 || attachPort > 6
   throw new Error("Set a valid local attach port and ROVES_PROBE_DEV_MCP_TOKEN");
 }
 
-async function requestAttached(payload) {
-  const socket = createConnection({ host: "127.0.0.1", port: attachPort });
+function discoverSession() {
+  if (!process.env.LOCALAPPDATA) throw new Error("Discovery requires a Windows user profile");
+  const directory = join(process.env.LOCALAPPDATA, "Roves", "mcp");
+  let files;
+  try {
+    files = readdirSync(directory);
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    files = [];
+  }
+  const sessions = [];
+  for (const file of files) {
+    if (!/^\d+\.json$/.test(file) || (game && file !== game + ".json")) continue;
+    try {
+      const entry = JSON.parse(readFileSync(join(directory, file), "utf8"));
+      if (entry.version !== 1 || file !== entry.pid + ".json" ||
+          !Number.isInteger(entry.pid) || entry.pid < 1 ||
+          !Number.isInteger(entry.port) || entry.port < 1 || entry.port > 65535 ||
+          typeof entry.token !== "string" || !/^[0-9a-f]{32}$/.test(entry.token)) continue;
+      process.kill(entry.pid, 0);
+      sessions.push(entry);
+    } catch {
+      // A session can disappear between listing the directory and checking its PID.
+    }
+  }
+  if (!sessions.length) throw new Error("Open a Roves game with MCP discovery enabled");
+  if (sessions.length > 1) {
+    throw new Error("Multiple Roves games are open. Select a PID: " + sessions.map(({ pid }) => pid).join(", "));
+  }
+  return sessions[0];
+}
+
+async function requestAttached(payload, { port, token }) {
+  const socket = createConnection({ host: "127.0.0.1", port });
   socket.setTimeout(5_000, () => socket.destroy(new Error("Roves attach timed out")));
   const lines = createInterface({ input: socket });
   try {
-    socket.write(attachToken + "\n" + JSON.stringify(payload) + "\n");
+    socket.write(token + "\n" + JSON.stringify(payload) + "\n");
     for await (const line of lines) {
       const result = JSON.parse(line);
       if ("error" in result) throw new Error(result.error);
@@ -148,8 +181,12 @@ await serveStdio(() => {
       if (typeof payload === "string" && Buffer.byteLength(payload) > 16 * 1024) {
         throw new Error("Source exceeds 16 KiB");
       }
-      if (!attach) child ??= new Probe();
-      const value = attach ? await requestAttached(payload) : await child.request(payload);
+      if (!attach && !discover) child ??= new Probe();
+      const value = discover
+        ? await requestAttached(payload, discoverSession())
+        : attach
+          ? await requestAttached(payload, { port: attachPort, token: attachToken })
+          : await child.request(payload);
       return { content: [{ type: "text", text: JSON.stringify(value) }] };
     } catch (error) {
       return { isError: true, content: [{ type: "text", text: error.message }] };

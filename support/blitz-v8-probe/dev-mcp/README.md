@@ -39,6 +39,16 @@ Treat calls as trusted development commands since they can change game state.
 
 ## Attach to an open probe window
 
+On Windows, add `--mcp-discover` to the feature-enabled probe's
+`--game <dist> --window` command. The probe selects a loopback port and
+publishes a session record under `%LOCALAPPDATA%\Roves\mcp`. Configure
+your client with `node server.mjs --discover`. If multiple games are open,
+add the PID indicated by the server after `--discover`. The server rereads
+session records on each tool call. Frame timing collection is enabled in
+this mode.
+
+An explicit endpoint is also available for development:
+
 Start the feature-enabled probe with `--game <dist> --window`. Set
 `ROVES_PROBE_DEV_MCP_ATTACH_PORT` to a free port and
 `ROVES_PROBE_DEV_MCP_TOKEN` to a fresh secret of 32 hexadecimal characters

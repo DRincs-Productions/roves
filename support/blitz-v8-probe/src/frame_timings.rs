@@ -1115,6 +1115,8 @@ impl FrameTimings {
     /// additionally needs `ROVES_PROBE_FRAME_TRACE=<path>`.
     pub fn from_env() -> Option<SharedFrameTimings> {
         let enabled = std::env::var("ROVES_PROBE_FRAME_TIMINGS").is_ok_and(|value| value == "1");
+        #[cfg(feature = "dev-mcp")]
+        let enabled = enabled || crate::dev_mcp::discovery_enabled();
         let trace_path = std::env::var("ROVES_PROBE_FRAME_TRACE").ok();
         let trace = crate::frame_trace::FrameTrace::from_values(enabled, trace_path.as_deref());
         enabled.then(|| {
