@@ -189,42 +189,73 @@ struct OpenLayer {
 }
 
 /// Device-space rectangle of `shape` under `transform`, if both are
-/// axis-aligned (scale/translate only, a closed four-corner polygon).
+/// axis-aligned (scale/translate only, a single straight-line subpath).
+///
+/// Accepted encodings (all from blitz-paint/kurbo, closed implicitly by the
+/// fill or explicitly by `ClosePath`): kurbo's `Rect` path
+/// (`MoveTo` + 3 `LineTo` + `ClosePath`), blitz-paint's sharp CSS box path
+/// (`MoveTo` + 3 `LineTo`, no `ClosePath`) and an explicit return to the start.
+/// Consecutive repeated points are dropped first: they add no area.
+///
+/// - Non-degenerate bounds: exactly four distinct corners of the bounds joined
+///   by axis-aligned edges, i.e. the rectangle itself.
+/// - Zero-width or zero-height bounds (e.g. the zero-height `html` box of a
+///   page whose children are all absolutely positioned): every point lies on
+///   one line segment, so the polygon has no area. It paints nothing as a fill
+///   and clips everything as a clip, exactly as the empty rectangle returned.
+///
+/// Curves, several subpaths and any other polygon (rotated, L-shaped,
+/// self-overlapping) are rejected.
 fn axis_aligned_rect(transform: Affine, shape: &kurbo::BezPath) -> Option<Rect> {
     let [a, b, c, d, _, _] = transform.as_coeffs();
     if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
         return None;
     }
     let mut points: Vec<Point> = Vec::with_capacity(5);
-    for (index, element) in shape.elements().iter().enumerate() {
-        match *element {
-            PathEl::MoveTo(point) if index == 0 => points.push(point),
-            PathEl::LineTo(point) if index > 0 => points.push(point),
-            PathEl::ClosePath if index > 0 => {},
+    let elements = shape.elements();
+    for (index, element) in elements.iter().enumerate() {
+        let point = match *element {
+            PathEl::MoveTo(point) if index == 0 => point,
+            PathEl::LineTo(point) if index > 0 => point,
+            // Only as the last element: a second subpath may follow otherwise.
+            PathEl::ClosePath if index > 0 && index + 1 == elements.len() => continue,
             _ => return None,
+        };
+        if points.last() != Some(&point) {
+            points.push(point);
         }
     }
-    if points.len() == 5 && points[4] == points[0] {
+    // The implicit or explicit closing edge back to the start.
+    while points.len() > 1 && points.last() == points.first() {
         points.pop();
     }
-    if points.len() != 4 {
+    if points.is_empty() || points.iter().any(|point| !point.is_finite()) {
         return None;
-    }
-    for index in 0..4 {
-        let (p, q) = (points[index], points[(index + 1) % 4]);
-        if (p.x != q.x) == (p.y != q.y) {
-            return None;
-        }
     }
     let bounds = shape.bounding_box();
-    let corners = [
-        Point::new(bounds.x0, bounds.y0),
-        Point::new(bounds.x1, bounds.y0),
-        Point::new(bounds.x0, bounds.y1),
-        Point::new(bounds.x1, bounds.y1),
-    ];
-    if !points.iter().all(|point| corners.contains(point)) {
-        return None;
+    let degenerate = bounds.width() == 0.0 || bounds.height() == 0.0;
+    if !degenerate {
+        if points.len() != 4 {
+            return None;
+        }
+        for index in 0..4 {
+            let (p, q) = (points[index], points[(index + 1) % 4]);
+            // Exactly one coordinate changes along each edge.
+            if (p.x != q.x) == (p.y != q.y) {
+                return None;
+            }
+        }
+        let corners = [
+            Point::new(bounds.x0, bounds.y0),
+            Point::new(bounds.x1, bounds.y0),
+            Point::new(bounds.x0, bounds.y1),
+            Point::new(bounds.x1, bounds.y1),
+        ];
+        // Four distinct corners: a repeated one (e.g. TL, TR, BR, TR) would
+        // pass the edge test with no area.
+        if !corners.iter().all(|corner| points.contains(corner)) {
+            return None;
+        }
     }
     let p0 = transform * Point::new(bounds.x0, bounds.y0);
     let p1 = transform * Point::new(bounds.x1, bounds.y1);
@@ -307,6 +338,10 @@ pub fn translate(
                 if let Some(resource) = canvas_fill(fill) {
                     if !is_canvas(resource) {
                         return Err("image resource that is not a WebGPU canvas".into());
+                    }
+                    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+                        // A zero-area canvas box shows nothing.
+                        continue;
                     }
                     if clip.intersect(rect) != rect {
                         return Err("clipped canvas".into());
@@ -954,6 +989,136 @@ mod tests {
             brush_transform: None,
             shape,
         })
+    }
+
+    fn polygon(points: &[(f64, f64)], close: bool) -> kurbo::BezPath {
+        let mut path = kurbo::BezPath::new();
+        for (index, point) in points.iter().enumerate() {
+            if index == 0 {
+                path.move_to(*point);
+            } else {
+                path.line_to(*point);
+            }
+        }
+        if close {
+            path.close_path();
+        }
+        path
+    }
+
+    /// The encodings recorded for the fixture (CI 43850232485 fell back at
+    /// frame 0 on the second): blitz-paint's CSS box path has no `ClosePath`,
+    /// and the zero-height `html` box repeats a corner.
+    #[test]
+    fn blitz_rect_encodings_are_accepted() {
+        let translate_at = |x: f64, y: f64| Affine::translate((x, y));
+        // Sharp CSS box (`#before`): MoveTo + 3 LineTo, implicit close.
+        let open_box = polygon(
+            &[(0.0, 0.0), (400.0, 0.0), (400.0, 200.0), (0.0, 200.0)],
+            false,
+        );
+        assert_eq!(
+            axis_aligned_rect(translate_at(40.0, 40.0), &open_box),
+            Some(Rect::new(40.0, 40.0, 440.0, 240.0))
+        );
+        // Explicit return to the start, with and without ClosePath.
+        for close in [false, true] {
+            let returned = polygon(
+                &[(0.0, 0.0), (8.0, 0.0), (8.0, 4.0), (0.0, 4.0), (0.0, 0.0)],
+                close,
+            );
+            assert_eq!(
+                axis_aligned_rect(Affine::IDENTITY, &returned),
+                Some(Rect::new(0.0, 0.0, 8.0, 4.0))
+            );
+        }
+        // Zero-height `html` box: no area, nothing painted.
+        let flat = polygon(&[(0.0, 0.0), (640.0, 0.0), (640.0, 0.0), (0.0, 0.0)], false);
+        assert_eq!(
+            axis_aligned_rect(Affine::IDENTITY, &flat),
+            Some(Rect::new(0.0, 0.0, 640.0, 0.0))
+        );
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                fill(flat, Paint::Solid(peniko::Color::BLACK)),
+                fill(open_box, Paint::Solid(peniko::Color::WHITE)),
+            ],
+        };
+        assert_eq!(
+            translate(&scene, (640, 360), |_| false),
+            Ok(vec![PlanOp::Rect {
+                rect: [0.0, 0.0, 400.0, 200.0],
+                color: [1.0, 1.0, 1.0, 1.0]
+            }])
+        );
+    }
+
+    #[test]
+    fn non_rectangular_polygons_are_rejected() {
+        let rejected = [
+            // Repeated corner: axis-aligned edges, no area.
+            polygon(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (8.0, 0.0)], false),
+            // Bow tie over the four corners.
+            polygon(&[(0.0, 0.0), (8.0, 8.0), (8.0, 0.0), (0.0, 8.0)], true),
+            // L shape.
+            polygon(
+                &[
+                    (0.0, 0.0),
+                    (8.0, 0.0),
+                    (8.0, 4.0),
+                    (4.0, 4.0),
+                    (4.0, 8.0),
+                    (0.0, 8.0),
+                ],
+                true,
+            ),
+            // Triangle.
+            polygon(&[(0.0, 0.0), (8.0, 0.0), (0.0, 8.0)], true),
+            // Two subpaths (ClosePath before more elements).
+            {
+                let mut path = polygon(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)], true);
+                path.line_to((4.0, 4.0));
+                path
+            },
+            {
+                let mut path = polygon(&[(0.0, 0.0), (8.0, 0.0), (8.0, 8.0), (0.0, 8.0)], true);
+                path.move_to((20.0, 20.0));
+                path.line_to((30.0, 20.0));
+                path
+            },
+            // Curved corner.
+            Rect::new(0.0, 0.0, 8.0, 8.0)
+                .to_rounded_rect(2.0)
+                .to_path(0.1),
+        ];
+        for shape in &rejected {
+            assert_eq!(
+                axis_aligned_rect(Affine::IDENTITY, shape),
+                None,
+                "{shape:?}"
+            );
+        }
+        // A zero-area polygon is still rejected when transformed.
+        let flat = polygon(&[(0.0, 0.0), (8.0, 0.0)], false);
+        assert_eq!(axis_aligned_rect(Affine::rotate(0.5), &flat), None);
+        // A zero-area fill is skipped, but a zero-area clip hides what it clips.
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushClipLayer(anyrender::recording::ClipCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    clip: flat,
+                }),
+                fill(
+                    Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.1),
+                    Paint::Solid(peniko::Color::WHITE),
+                ),
+                RenderCommand::PopLayer,
+            ],
+        };
+        assert_eq!(translate(&scene, (64, 64), |_| false), Ok(vec![]));
     }
 
     #[test]

@@ -156,6 +156,29 @@ Scope: minimal fixture and feature wiring only; no template run, no wiki, no com
   negative (`--locked`) and positive (order fix by path override, lock diff checked and
   restored) with `check_log.py`. Shared-source changes (`main.rs`, `presentation.rs`,
   `dom.js`) are covered by `blitz-probe.yml` for the default build.
+- **First CI (run 43850232485, commit `9b32a08e52f`) and fix (2026-11-16, uncommitted).**
+  Linux job 133240562560: negative and positive both fell back at frame 0 with
+  `non-rectangular or transformed fill`, so no `netrender_window_fixture` record; Windows job
+  133240562980: `fixture_scene_translates_in_paint_order` panicked on the same `Err`. Exact
+  command, from a local dump of the fixture painted by blitz-paint (temporary example on the
+  default probe's cache, deleted): the second `Fill`, the black background of `html`, whose box
+  is 640x0 because every child is absolutely positioned, recorded with identity transform as
+  `MoveTo(0,0) LineTo(640,0) LineTo(640,0) LineTo(0,0)` (blitz-paint's `CssBox::shape`: one
+  point per corner, no `ClosePath`). The edge test rejected the zero-length edge. The other
+  fills are the root background (kurbo `Rect`: 4 points + `ClosePath`, accepted) and the
+  `#before`/`#after` boxes (4 points, no `ClosePath`, accepted). Fix in `axis_aligned_rect`:
+  consecutive repeated points and the return to the start are dropped; `ClosePath` only as
+  the last element (one subpath); with non-degenerate bounds the polygon must still be exactly
+  the four distinct bounds corners joined by axis-aligned edges (a repeated corner such as
+  TL, TR, BR, TR is rejected); with zero-width or zero-height bounds the straight-line polygon
+  has no area, so it is translated as the empty rectangle (the fill paints nothing, a clip
+  hides everything; a zero-area canvas box is skipped). Transforms, curves, several subpaths,
+  triangles, L shapes and bow ties stay rejected. Pixel oracles (`FIXTURE_CHECKS`, tolerance
+  2), `check_log.py` gates and the fallback switch are unchanged. New unit tests:
+  `blitz_rect_encodings_are_accepted`, `non_rectangular_polygons_are_rejected`. Local evidence
+  (light): `rustfmt --check`; the new function copied into a temporary example of the default
+  probe passed every accept/reject case (deleted). **Not run locally:** the `netrender` feature
+  build and its unit tests, any window or pixel (CI).
 - **Next:** push with the next allowed batch and read both jobs (expect Linux system-package
   iterations); then resize in a resizable window, an injected device loss
   (`GPUDevice.destroy()` mid-run must produce one fallback and no panic), translation of text,
