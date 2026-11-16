@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { createInterface } from "node:readline";
+import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
 const probe = process.argv[2];
@@ -66,6 +67,17 @@ try {
     assert.match(failure.content[0].text, /fixture exception/);
     assert.equal((await evaluate("Promise.resolve(42)")).isError, true);
     assert.equal(JSON.parse((await evaluate("40 + 2")).content[0].text), 42);
+    const scheduled = await evaluate(`globalThis.rovesMcpTimerReady = false;
+      setTimeout(() => { globalThis.rovesMcpTimerReady = true; }, 0);
+      true`);
+    assert.equal(JSON.parse(scheduled.content[0].text), true);
+    let timerReady = false;
+    for (let attempt = 0; attempt < 10 && !timerReady; attempt++) {
+      const response = await evaluate("globalThis.rovesMcpTimerReady");
+      timerReady = JSON.parse(response.content[0].text);
+      if (!timerReady) await delay(50);
+    }
+    assert.equal(timerReady, true, "a timer scheduled through MCP should run on the game loop");
   }
   child.stdin.end();
   assert.deepEqual(await closed, [0, null]);
