@@ -1,3 +1,36 @@
+## 2026-11-16 - Story harness: wait for the accepted name dialog to finish closing
+
+Changed: `support/blitz-v8-probe/src/game.rs` (`name_input`, new `NAME_DIALOG_GONE` /
+`name_dialog_settled`). Harness only; no engine, template or workflow change.
+
+CI run 43872481331 (Windows normal, SHA `442174f2c19`) failed `game_name_input`, so the
+required `game_hud_save_load` gate reported `not_run`. Typing, clearing, the value check, the
+enabled Confirm and Enter acceptance all passed. The first Enter after the prompt then produced
+no new story state within 1800 frames. The commit changed only the Netrender window path. The
+template SHA (`1ac2c1cce0`) was the same as the previous green run, and jitless passed on the
+same SHA.
+
+Cause: a race in the harness. It snapshotted the page and sent the advance key as soon as the
+dialog had `data-closed`. The Base UI dialog can stay mounted during its exit and keep focus in
+its input. An Enter sent then goes to that input. The template's hotkeys ignore form fields,
+so the story does not advance. Three local runs used the template at the same SHA and the
+existing probe build, which has the same `game.rs`. All three passed, but two of them sent that
+first Enter to the dialog's input (`target_node` was not the body). They passed only because the
+dialog unmounting changed the snapshot, which counted as a state. On CPU-adapter CI, GPU pacing
+defers rAF; this run had the longest deferred run (705 ticks against 121-451 in green runs),
+which shifts that timing. The truncated annotation cannot tell whether the dialog had already
+unmounted before the snapshot, or whether the game ignored the key for some other reason. The
+fix closes the observed race in both cases.
+
+Fix: after the dialog is accepted, `name_dialog_settled` waits up to `DIALOG_FRAMES`. No mounted
+dialog may still be visible, focus must be outside dialogs, and the page text must be unchanged
+for `STORY_STABLE_CHECKS` checks. Only then does the harness take the baseline snapshot and
+press Enter. A dialog that never finishes closing now fails with its dialogs/focus state, not
+with a generic story timeout. The checks are unchanged: real typing, the cleared and typed
+values, the enabled Confirm, Enter/pointer acceptance, a committed narration line with the
+typed name, and the HUD Save/Load gate. The step list records the new
+`input dialog settled` step.
+
 ## 2026-11-16 - Netrender window surface lifecycle: native resize and page device loss
 
 Changed: `support/blitz-v8-probe/{README.md,src/netrender_window.rs,src/window.rs,src/main.rs,src/presentation.rs}`, `support/blitz-v8-probe/fixtures/netrender-window/index.html`, `support/blitz-v8-probe/netrender-window/check_log.py`, `.github/workflows/netrender-window.yml`, `TODO.md`, `docs/handoff/2026-11-15-netrender-blitz.md`. No new dependency, no change to the default probe renderer or to any release. Opt-in Netrender only (`ROVES_PROBE_WINDOW_RENDERER=netrender`, isolated manifest). Two fixture scenarios (`ROVES_PROBE_NETRENDER_SCENARIO=resize|device-destroy`, with `ROVES_PROBE_NETRENDER_FIXTURE=1`) start right after the unchanged six-pixel read back, on separate runs of the positive executable. `resize` requests a native resize once through winit's `Window::request_surface_size` on the Blitz shell window (`window::ScenarioApplication` forwards every winit handler to the unchanged `BlitzApplication`), so blitz-shell handles the `SurfaceResized` it causes exactly as a user resize; after ten frames at the new size, `netrender_window_resize` checks eight pixels (the latest canvas texture, since the page switches its clear color when `innerWidth` changes; the area added by the resize; no stretched frame). `device-destroy` has the page call its own `GPUDevice.destroy()` (invoked once by `RovesDocument`). The renderer now reads deno_webgpu's public `DeviceErrorHandler::is_lost` of the page device (cloned in `op_blitz_present_device`) before each frame. wgpu drops `DeviceLost` errors by design, so loss is never inferred from errors, and no device-lost callback is installed: deno_webgpu resolves the page's `lost` promise itself. On loss the window stops once (`netrender_window_device_lost`), drops Netrender's objects and surface (or the fallback's surface), does not switch to `GpuWindowRenderer` (it shares the lost device), reports itself inactive so the shell stops redrawing, and leaves JS, close and teardown unchanged. The fixture scale is now fixed at the first resume. Before, it was computed from the read-back width, which gives the same value before a resize. Chromium f2700724 comparison (Viz `DirectRenderer::DrawFrame` lazy reshape, `Display::DrawAndSwap` size-mismatch skip, `Display::OnContextLost`, `DisplayResourceProvider::ScopedReadLockSharedImage`/`DeclareUsedResourcesFromChild`) is in the module docs and the handoff. New gates: `check_log.py resize|device-destroy`. The negative and positive gates are unchanged, and plain runs must not run a scenario. Not yet run in CI.

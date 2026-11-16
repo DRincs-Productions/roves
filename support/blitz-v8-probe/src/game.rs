@@ -1754,6 +1754,51 @@ const TYPED_NAME: &str = "Zorvaq";
 /// is not required.
 const NAME_DIALOG_CLOSED: &str = "JSON.parse(__rovesStory.dialogs()).every((dialog) => dialog.closed || !dialog.open) ? 'closed' : ''";
 
+/// The accepted name dialog has finished closing. No mounted dialog is still
+/// visible (an exiting dialog keeps its box), and focus is not inside one.
+/// A keypress sent now reaches the game's hotkeys, not the dialog's input.
+const NAME_DIALOG_GONE: &str = "(() => { const focus = JSON.parse(__rovesStory.focused()); return JSON.parse(__rovesStory.dialogs()).every((dialog) => !dialog.visible) && !(focus && focus.in_dialog) ? 'gone' : ''; })()";
+
+/// Waits, within `DIALOG_FRAMES`, for `NAME_DIALOG_GONE`. The page text must
+/// then stay unchanged for `STORY_STABLE_CHECKS` checks (10 frames each).
+/// Returns the frames driven, or the failure reason.
+async fn name_dialog_settled(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    toasts: &mut Vec<deno_core::serde_json::Value>,
+) -> Result<u32, String> {
+    let mut frames = 0;
+    let mut last = String::new();
+    let mut stable = 0;
+    while frames < DIALOG_FRAMES {
+        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        frames += 10;
+        collect_toasts(runtime, toasts);
+        crate::resolve_layout(document);
+        if crate::evaluate_string(runtime, NAME_DIALOG_GONE).is_empty() {
+            last.clear();
+            stable = 0;
+            continue;
+        }
+        let text = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+        if text == last {
+            stable += 1;
+            if stable >= STORY_STABLE_CHECKS {
+                return Ok(frames);
+            }
+        } else {
+            last = text;
+            stable = 0;
+        }
+    }
+    Err(format!(
+        "the accepted input dialog did not finish closing (hidden, focus outside it, stable page) within {DIALOG_FRAMES} frames (dialogs: {}, focused: {})",
+        crate::evaluate_string(runtime, "__rovesStory.dialogs()"),
+        crate::evaluate_string(runtime, "__rovesStory.focused()")
+    ))
+}
+
 /// Frames driven after the first committed narration line with the accepted
 /// name, while Skip keeps advancing the story (the 14 November 2026 crash
 /// aborted right after the name was accepted).
@@ -2219,6 +2264,23 @@ async fn name_input(
                     crate::evaluate_string(runtime, "__rovesStory.dialogs()")
                 ));
             },
+        }
+        // `data-closed` only starts the exit: the dialog can stay mounted and
+        // keep focus in its input until the exit finishes. An Enter sent then is
+        // consumed by the input (the template's hotkeys ignore form fields), so
+        // the story does not advance. Locally 2 of 3 runs sent the first advance
+        // to that input and passed only because the dialog unmounting changed
+        // the snapshot. CI run 43872481331 timed out after one such ignored
+        // advance. Wait until the dialog is hidden, focus is outside it, and the
+        // page text is stable. Then the baseline below is the real narration
+        // state, and the advance reaches the game.
+        match name_dialog_settled(runtime, document, run_animation_frame, &mut toasts).await {
+            Ok(frames) => steps.push(json!({
+                "result": "input dialog settled",
+                "frames": frames,
+                "focused": crate::evaluate_string(runtime, "__rovesStory.focused()"),
+            })),
+            Err(reason) => break 'name Some(reason),
         }
         // The accepted value is used by the following steps: advance until a
         // dialogue line (not only the speaker label) contains the name.
