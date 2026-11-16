@@ -2,6 +2,44 @@
 
 Changed: `support/blitz-v8-probe/src/netrender_window.rs`, `support/blitz-v8-probe/fixtures/netrender-window/index.html`, `support/blitz-v8-probe/netrender-window/check_log.py`, `.github/workflows/netrender-window.yml`, `TODO.md`, `docs/handoff/2026-11-15-netrender-blitz.md`. Opt-in Netrender path only; no new dependency, no change to the default probe graph or renderer, the template or any release. Recorded AnyRender `GlyphRunCommand`s (already shaped by Blitz/parley) are now translated with Netrender's public `Scene::push_glyph_run_full`: same glyph ids and positions, the run transform as a Netrender transform, the clip stack's device rect, and a premultiplied solid color with the brush alpha folded in. The font is the recorded `peniko::FontData` itself. Its `Blob` is cloned, not copied, so its `Blob::id()` stays stable. It is interned per frame with Netrender's `FontRegistry`, so Vello's glyph cache can reuse the same id across frames. `hint` is dropped because Netrender has no hinting field; Vello hints vertically only, so only antialiased edges can differ. Stroked or even-odd text, non-solid brushes, synthetic oblique (`glyph_transform`) or bold (`embolden`) text, non-default variation coordinates (Netrender takes user-space axis values) and text under group opacity are named and fall back once to `GpuWindowRenderer`. Rect colors now reach Netrender premultiplied, as its `SceneRect` expects. The straight colors used before rendered the fixture correctly only because the unpremultiply step clamped; the six pixels are unchanged. New fixture scenario `ROVES_PROBE_NETRENDER_SCENARIO=text`: after the unchanged six-pixel read back, the page shows a hidden `#text` (two opaque yellow U+2588 glyphs, `DejaVu Sans Mono`, installed on the Linux job with `fonts-dejavu-core`) over the WebGPU canvas. `netrender_window_text` then checks four pixels derived from the translated glyph run (cell centers, canvas left of and below the text), requires them over the canvas and left of `#after`, and reports glyph ids (no `.notdef`). Gate: `check_log.py text`; every kind now rejects scenario records that do not belong to it. Chromium f2700724 `cc/paint` comparison (`DrawTextBlobOp`, slugs and strike server) is in the module docs. Verified locally: `cargo fmt --check`, `cargo check --locked --bins --tests` of the default probe and the isolated manifest, gates on 17 synthetic logs, and the real blitz-paint recording of the shown fixture on Windows (one run: hint true, no coords, no embolden or glyph transform, solid brush, translation only; all derived pixels over the canvas). Not run: the opt-in unit tests, any window or pixel (CI).
 
+## 2026-11-16 - Story harness: count page frames, not embedder ticks, under GPU pacing
+
+Changed: `support/blitz-v8-probe/src/{dom.js,main.rs,game.rs}`. Harness only; no engine,
+template, workflow or gate-outcome change.
+
+CI run 43882158044 (Windows, software adapter) failed in both modes after the name was typed and
+Enter accepted it: `name_dialog_settled` timed out at 600 frames with the dialog still mounted
+(`open=false`, `closed=true`, `visible=true`, `running=0`). In normal mode, `--story-skip` also
+found no open dialog within 1800 frames. The page text was still the per-letter typewriter
+output (`W h a t i s y o u r n a m e ?`).
+
+Cause: harness budgets and stability checks counted embedder ticks. On a Cpu adapter, GPU
+pacing (`gpuPacingAllowsFrame`) holds back the rAF queue until the queue drains. In the green
+artifact of an earlier run, `--story` got 117 rAF frames out of 4460 ticks, with saturation 0.974
+and a deferral of 1652 consecutive ticks. That is longer than `DIALOG_FRAMES` and close to
+`STORY_STATE_FRAMES`. Both failures need rAF to progress:
+
+- Base UI 1.9 (`useUnmountAfterClose` -> `useOpenChangeComplete` -> `useAnimationsFinished`)
+  unmounts a closed popup only from a rAF callback that waits for the popup's finite animations.
+  Focus returns only after the unmount. Stylo still finishes the exit animation on every tick,
+  which explains the observed state.
+- The template's `markdown-typewriter` animates with motion, which also runs on rAF. The input
+  dialog opens only after the typing ends and a debounce.
+
+With a hardware GPU, both runs pass locally. Every tick is a page frame there, and the dialog
+unmounted 40 frames after Enter, with focus back on the body.
+
+Fix: `runAnimationFrame` now returns whether the tick ran the rAF queue. The new
+`drive_page_frames` uses the same 60 Hz ticks until the requested number of page frames has run.
+`wait_until`/`wait_until_collecting`, `wait_for_state`, `menu_ready`, `name_dialog_settled` and the
+HUD narration settle check now count budgets and the 10-frame stability checks in page frames.
+While rAF is held back, unchanged text proves nothing. On hardware adapters the behavior is
+identical. The waits have no cap in ticks: a queue that never drains is caught by the process
+timeout and by `gpu_teardown`. The conditions themselves are unchanged. `game_story_skip` now
+also reports `pacing`, and the `name_dialog_settled` failure reports the ticks driven. Fixed
+dwells (`HUD_ADVANCE_FRAMES`, `SKIP_AFTER_NAME_FRAMES`, post-typing re-renders) still count
+ticks. Under saturation, CI wall time grows with the page frames that settling needs.
+
 ## 2026-11-16 - Story harness: wait for the accepted name dialog to finish closing
 
 Changed: `support/blitz-v8-probe/src/game.rs` (`name_input`, new `NAME_DIALOG_GONE` /

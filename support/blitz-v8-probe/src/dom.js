@@ -3022,7 +3022,9 @@
   // queue is deferred for this tick: the callbacks stay queued in order (a
   // cancellation still removes them) and run in a later tick with that tick's
   // timestamp. Everything else in the tick still runs, and the embedder's
-  // microtask checkpoint, timers and input are unaffected.
+  // microtask checkpoint, timers and input are unaffected. Returns whether this
+  // tick ran the rAF queue (a page frame), so harness waits can count frames
+  // the page actually received instead of embedder ticks.
   function runAnimationFrame() {
     gpuPacingTick();
     webAudio.dispatchPendingEvents();
@@ -3033,7 +3035,8 @@
     } catch (error) {
       reportException(error);
     }
-    if (gpuPacingAllowsFrame()) {
+    const ran = gpuPacingAllowsFrame();
+    if (ran) {
       gpuPacing.frames++;
       const timestamp = performance.now();
       for (const handle of [...animationFrameCallbacks.keys()]) {
@@ -3051,6 +3054,7 @@
     processResizeObservations();
     sweepWrappers();
     gpuPacingAfterFrame();
+    return ran;
   }
 
   // The global object is an EventTarget (like Window) so reported exceptions

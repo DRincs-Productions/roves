@@ -2356,15 +2356,27 @@ fn write_png(path: &str, pixels: &[u8]) {
 /// non-blocking poll of the deno_core event loop (timers, op completions). Style
 /// and layout are resolved by the caller (headless loop) or the window shell.
 fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Function>) {
-    {
+    page_frame_step(runtime, run_animation_frame);
+}
+
+/// `frame_step`, returning whether the tick ran the page's rAF queue. On a
+/// software adapter GPU pacing defers that queue while the GPU drains (see
+/// `gpuPacingAllowsFrame` in dom.js); such a tick is not a frame for the page.
+fn page_frame_step(
+    runtime: &mut JsRuntime,
+    run_animation_frame: &v8::Global<v8::Function>,
+) -> bool {
+    let ran = {
         deno_core::scope!(scope, runtime);
         let function = v8::Local::new(scope, run_animation_frame);
         let receiver = v8::undefined(scope).into();
-        function
+        let ran = function
             .call(scope, receiver, &[])
-            .expect("animation frame should not throw past reportException");
+            .expect("animation frame should not throw past reportException")
+            .is_true();
         scope.perform_microtask_checkpoint();
-    }
+        ran
+    };
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
     if let std::task::Poll::Ready(Err(error)) =
@@ -2372,6 +2384,41 @@ fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Func
     {
         panic!("event loop error: {error}");
     }
+    ran
+}
+
+/// Drives ticks exactly as `drive_frames` (60 Hz in real time, `frame_step`,
+/// then Blitz layout) until `frames` of them ran the page's rAF queue; returns
+/// the ticks driven. Equal to `frames` whenever GPU pacing does not defer the
+/// queue (hardware adapters). Harness waits use it so a budget or a stability
+/// check measures frames the page received: on CI's software adapter pacing
+/// can withhold rAF for over 1600 consecutive ticks, during which rAF-driven
+/// page work (Base UI's exit check before unmounting, motion's typewriter)
+/// cannot progress and unchanged text proves nothing. Not bounded in ticks:
+/// a queue that never drains is caught by the process timeout and by
+/// `gpu_teardown`.
+async fn drive_page_frames(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    frames: u32,
+) -> u32 {
+    let frame_interval = std::time::Duration::from_micros(16_667);
+    let start = std::time::Instant::now();
+    let mut ticks: u32 = 0;
+    let mut ran = 0;
+    while ran < frames {
+        let deadline = start + frame_interval * ticks;
+        if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
+            tokio::time::sleep(wait).await;
+        }
+        if page_frame_step(runtime, run_animation_frame) {
+            ran += 1;
+        }
+        resolve_layout(document);
+        ticks += 1;
+    }
+    ticks
 }
 
 /// Drives `frames` frames without a window, paced at 60 Hz in real time (awaiting

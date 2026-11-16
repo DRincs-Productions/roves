@@ -847,7 +847,9 @@ fn collect_toasts(runtime: &mut JsRuntime, seen: &mut Vec<deno_core::serde_json:
 
 /// Drives frames until the toast-free page text differs from every `previous`
 /// state and stays unchanged for `STORY_STABLE_CHECKS` checks, within
-/// `STORY_STATE_FRAMES`.
+/// `STORY_STATE_FRAMES`. Checks and budget count page frames
+/// (`crate::drive_page_frames`): text cannot settle while GPU pacing withholds
+/// the rAF queue that drives the typewriter.
 async fn wait_for_state(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -859,7 +861,7 @@ async fn wait_for_state(
     let mut stable = 0;
     let mut frames = 0;
     while frames < STORY_STATE_FRAMES {
-        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
         // Checked before settling: a crash fallback is reported at once, never
@@ -1265,7 +1267,8 @@ struct MenuReady {
     frames: u32,
 }
 
-/// Drives frames (10 per check, at most `MENU_READY_FRAMES`) until the page
+/// Drives page frames (10 per check, at most `MENU_READY_FRAMES`; see
+/// `crate::drive_page_frames`) until the page
 /// shows a visible Start/New game button and its text is unchanged for
 /// `STORY_STABLE_CHECKS` checks, so the menu snapshot that separates dialogue
 /// from menu text is complete. An error-boundary fallback fails at once; a
@@ -1312,7 +1315,7 @@ async fn menu_ready(
                 crate::evaluate_string(runtime, "location.href")
             ));
         }
-        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
     }
@@ -1404,10 +1407,10 @@ fn errors_since(runtime: &mut JsRuntime, before: u64) -> (u64, String) {
     (count, messages)
 }
 
-/// Drives frames (10 per check, at most `max_frames`) until `probe` (a script
-/// returning a string) returns a non-empty value; returns it with the frames
-/// driven, or `None` with the last value on timeout. Toasts are collected at
-/// every check.
+/// Drives page frames (10 per check, at most `max_frames`; see
+/// `crate::drive_page_frames`) until `probe` (a script returning a string)
+/// returns a non-empty value; returns it with the page frames driven, or the
+/// last value on timeout. Toasts are collected at every check.
 async fn wait_until(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -1447,7 +1450,7 @@ async fn wait_until_collecting(
         if collect {
             runtime.v8_isolate().low_memory_notification();
         }
-        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
         crate::resolve_layout(document);
@@ -1459,7 +1462,7 @@ async fn wait_until_collecting(
     Err(last)
 }
 
-/// Upper bound, in frames, for a dialog to mount, finish opening or unmount.
+/// Upper bound, in page frames, for a dialog to mount, finish opening or unmount.
 const DIALOG_FRAMES: u32 = 600;
 
 /// Continue after launching a fresh process with the story run's storage.
@@ -1759,9 +1762,16 @@ const NAME_DIALOG_CLOSED: &str = "JSON.parse(__rovesStory.dialogs()).every((dial
 /// A keypress sent now reaches the game's hotkeys, not the dialog's input.
 const NAME_DIALOG_GONE: &str = "(() => { const focus = JSON.parse(__rovesStory.focused()); return JSON.parse(__rovesStory.dialogs()).every((dialog) => !dialog.visible) && !(focus && focus.in_dialog) ? 'gone' : ''; })()";
 
-/// Waits, within `DIALOG_FRAMES`, for `NAME_DIALOG_GONE`. The page text must
-/// then stay unchanged for `STORY_STABLE_CHECKS` checks (10 frames each).
-/// Returns the frames driven, or the failure reason.
+/// Waits, within `DIALOG_FRAMES` page frames, for `NAME_DIALOG_GONE`. The page
+/// text must then stay unchanged for `STORY_STABLE_CHECKS` checks (10 page
+/// frames each). Base UI 1.9 (`useOpenChangeComplete` ->
+/// `useAnimationsFinished`) unmounts a closed popup only from a rAF callback
+/// that awaits the popup's finite animations, and focus returns on unmount, so
+/// the dialog stays mounted, `data-closed` and visible with no running
+/// animation until the page receives a frame. CI run 43882158044 timed out in
+/// that state after 600 embedder ticks while software-adapter GPU pacing
+/// withheld rAF (a green run had episodes of 1652 ticks). Returns the page
+/// frames driven, or the failure reason with the ticks driven.
 async fn name_dialog_settled(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -1769,10 +1779,11 @@ async fn name_dialog_settled(
     toasts: &mut Vec<deno_core::serde_json::Value>,
 ) -> Result<u32, String> {
     let mut frames = 0;
+    let mut ticks = 0;
     let mut last = String::new();
     let mut stable = 0;
     while frames < DIALOG_FRAMES {
-        crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+        ticks += crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
         frames += 10;
         collect_toasts(runtime, toasts);
         crate::resolve_layout(document);
@@ -1793,7 +1804,7 @@ async fn name_dialog_settled(
         }
     }
     Err(format!(
-        "the accepted input dialog did not finish closing (hidden, focus outside it, stable page) within {DIALOG_FRAMES} frames (dialogs: {}, focused: {})",
+        "the accepted input dialog did not finish closing (hidden, focus outside it, stable page) within {DIALOG_FRAMES} page frames ({ticks} ticks; dialogs: {}, focused: {})",
         crate::evaluate_string(runtime, "__rovesStory.dialogs()"),
         crate::evaluate_string(runtime, "__rovesStory.focused()")
     ))
@@ -1995,6 +2006,10 @@ async fn story_skip(
         report["final_narration"] = deno_core::serde_json::from_str(&last).unwrap_or(Value::Null);
         None
     };
+    // Page frames against embedder ticks (software-adapter GPU pacing).
+    report["pacing"] =
+        deno_core::serde_json::from_str(&crate::call_hook(runtime, gpu_pacing_stats, &[]))
+            .unwrap_or(Value::Null);
     let (status, report) = phase_result(
         runtime,
         "game_story_skip",
@@ -2488,18 +2503,19 @@ async fn hud_save_load(
                 crate::evaluate_string(runtime, "__rovesStory.dialogs()")
             ));
         }
-        // Settled narration: the same non-empty lines for STORY_STABLE_CHECKS checks.
+        // Settled narration: the same non-empty lines for STORY_STABLE_CHECKS
+        // checks of 10 page frames (crate::drive_page_frames).
         let mut before = String::new();
         let mut stable = 0;
         let mut frames = 0;
         while stable < STORY_STABLE_CHECKS {
             if frames >= STORY_STATE_FRAMES {
                 break 'hud Some(format!(
-                    "the narration did not settle within {STORY_STATE_FRAMES} frames (last: {:?})",
+                    "the narration did not settle within {STORY_STATE_FRAMES} page frames (last: {:?})",
                     excerpt(&before)
                 ));
             }
-            crate::drive_frames(runtime, document, run_animation_frame, 10).await;
+            crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
             frames += 10;
             collect_toasts(runtime, &mut toasts);
             let lines = evaluate_owned(runtime, narration_probe.clone());
