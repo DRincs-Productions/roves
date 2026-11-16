@@ -2543,3 +2543,20 @@ On PowerShell, pipe stdout to `Out-File` to wait for the GUI-subsystem executabl
 Quote URLs containing `&` in PowerShell. Do not add `-x` to the audio benchmarks: it exits
 when the image becomes stable, before the timed audio checks finish. `-o` requires an image
 filename and is not needed for these tests; the benchmark's `auto=1` closes the window.
+### Blitz — Windows CI software GPU pacing
+
+La [run 43890394989](https://github.com/DRincs-Productions/roves/actions/runs/43890394989)
+ha esaurito i timeout di storia e Skip con il software adapter. Il vecchio
+gate attendeva `QueueEmpty` e quindi includeva anche il lavoro accodato dopo
+l'inizio della deferral. Chromium `f2700724f59f`, in
+`cc/scheduler/scheduler_state_machine.cc`, limita i frame pendenti e riapre il
+flusso in base agli ACK (`DidReceiveCompositorFrameAck`). In Roves la coda
+wgpu è condivisa con il gioco. Per limitare la dipendenza dal lavoro
+successivo, la prova usa il completamento del batch già inviato con
+`wgpu-core` e mantiene il poll non bloccante. L'implementazione di
+`onSubmittedWorkDone` in deno_webgpu 0.227.0 usa un poll bloccante, perciò
+qui si riusa la callback wgpu sottostante. Il nuovo watchdog segnala quante
+animazioni sono state consegnate e quanti tick sono stati rinviati dopo 45 s
+senza completare un gruppo. La prova sintetica riprende anche quando
+`Poll` indica ancora lavoro in coda. Restano da misurare il progresso del
+template su WARP e l'effetto sulla fluidità in una finestra reale.

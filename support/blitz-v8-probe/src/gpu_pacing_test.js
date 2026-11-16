@@ -6,7 +6,7 @@
 //
 // Ticks: T1 runs `first` (which queues A, B, C) and starts a deferral; T2-T4
 // see a busy queue (deferred; between T2 and T3 Rust cancels B, queues D and
-// dispatches a trusted click); T5 sees QueueEmpty and runs A, C, D in order
+// dispatches a trusted click); T5 sees the completed batch and runs A, C, D in order
 // with T5's timestamp. Then T6 runs E (queues F) and starts a second deferral;
 // T7's poll errors, which disables pacing and runs F in the same tick; T8
 // with a full batch no longer defers.

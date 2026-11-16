@@ -737,6 +737,12 @@ impl Document for RovesDocument {
             .as_mut()
             .expect("the runtime is only taken when the document drops");
         let run_animation_frame = &self.run_animation_frame;
+        #[cfg(feature = "dev-mcp")]
+        if !self.close_requested && crate::dev_mcp::poll(runtime) {
+            self.close_requested = true;
+            self.document.borrow().shell_provider.request_window_close();
+            return false;
+        }
         match &self.tokio {
             // Yield once so the scheduler runs spawned tasks and turns the
             // timer/IO drivers (`park_yield`, zero timeout) before the poll.

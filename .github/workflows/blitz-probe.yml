@@ -12,6 +12,10 @@ name: Blitz + Deno/V8 probe
         description: 'Also build the release Vello CPU single/multi-thread A/B executables'
         type: boolean
         default: false
+      dev_mcp:
+        description: 'Also exercise the optional MCP bridge in a native game window'
+        type: boolean
+        default: false
 
 concurrency:
   group: blitz-probe-${{ github.ref }}
@@ -598,6 +602,18 @@ jobs:
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn
+      # Runs after the ordinary probe executable has been uploaded.
+      - name: smoke-test optional dev MCP bridge
+        if: ${{ !cancelled() && (inputs.dev_mcp || contains(github.event.head_commit.message, '[dev-mcp]')) }}
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+        run: |
+          cargo build --locked --features dev-mcp --manifest-path support/blitz-v8-probe/Cargo.toml
+          cd support/blitz-v8-probe/dev-mcp
+          npm ci
+          node smoke.mjs "$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe.exe"
 
   # Opt-in performance experiment only (docs/ROVES_PERFORMANCE.md, "A/B Vello
   # CPU multithreading"): release executables of the single-thread reference

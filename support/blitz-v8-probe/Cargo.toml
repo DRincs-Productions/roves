@@ -10,6 +10,7 @@ license = "MPL-2.0"
 exclude = ["vendor/blitz-dom", "vendor/blitz-paint"]
 
 [features]
+dev-mcp = []
 # Opt-in A/B experiment, off by default (the default build is the single-thread
 # reference): forwards to anyrender_vello_cpu 0.18's own `multithreading`
 # feature (vello_cpu 0.3 MultiThreadedDispatcher, rayon pool of

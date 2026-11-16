@@ -3219,8 +3219,8 @@
   // 42874854967 then showed the blocking mid-frame drain that replaced it
   // stalling the host for 15 s. Now, on a Cpu adapter only, once
   // GPU_SUBMIT_BATCH submissions succeeded since the queue was last seen
-  // empty, the next ticks defer the rAF queue until a NON-blocking
-  // op_blitz_gpu_poll (wgpu-core PollType::Poll) reports QueueEmpty. Nothing
+  // preceding batch completed, the next ticks defer the rAF queue until a
+  // NON-blocking wgpu poll signals completion of those submissions. Nothing
   // waits on the GPU mid-run: the host loop, timers, microtasks and input keep
   // running, and no rAF callback or submission is dropped. Hardware adapters
   // are never paced. A poll error is reported once and disables pacing (the
@@ -3253,7 +3253,7 @@
     };
   }
   // Snapshot with the derived saturation fields: `saturated` = still deferring
-  // (the queue never emptied since the last batch), `saturation` = share of
+  // (waiting for the last batch), `saturation` = share of
   // ticks deferred.
   function gpuPacingReport() {
     return {
@@ -3278,9 +3278,9 @@
   }
   function pollGpuQueue() {
     if (gpuPacingScript !== null) {
-      return gpuPacingScript.shift() ?? { ok: true, queue_empty: true, poll_status: "QueueEmpty" };
+      return gpuPacingScript.shift() ?? { ok: true, batch_complete: true, poll_status: "QueueEmpty" };
     }
-    return JSON.parse(op_blitz_gpu_poll(gpuDevice));
+    return JSON.parse(op_blitz_gpu_poll(gpuDevice, false));
   }
   // Whether this tick may run the rAF queue.
   function gpuPacingAllowsFrame() {
@@ -3297,7 +3297,7 @@
       core.print(`ROVES_PROBE_RESULT ${JSON.stringify({ check: "gpu_backpressure", status: "poll_error", simulated: gpuPacingScript !== null, error: result.error, ...gpuPacingReport() })}\n`, false);
       return true;
     }
-    if (result.queue_empty) {
+    if (result.batch_complete) {
       gpuPacingDeferring = false;
       gpuSubmitsSinceEmpty = 0;
       return true;
@@ -3310,6 +3310,7 @@
   function gpuPacingAfterFrame() {
     if (gpuPacingDeferring || gpuSubmitsSinceEmpty < GPU_SUBMIT_BATCH || !gpuPacingApplies()) return;
     gpuPacingDeferring = true;
+    if (gpuPacingScript === null) op_blitz_gpu_poll(gpuDevice, true);
     gpuPacingRun = 0;
     gpuPacing.active = true;
     gpuPacing.deferrals++;

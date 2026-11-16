@@ -1,7 +1,10 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
 
 use blitz_dom::node::{SpecialElementData, TextInputData};
 use blitz_dom::{
@@ -20,6 +23,8 @@ mod animation_clock;
 mod audio;
 #[cfg(test)]
 mod box_tree;
+#[cfg(feature = "dev-mcp")]
+mod dev_mcp;
 mod frame_timings;
 mod frame_trace;
 mod game;
@@ -1868,24 +1873,35 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
-/// Frame pacing for software (`Cpu`) adapters only (captured by the
-/// bootstrap's frame loop, never exposed to the guest): one NON-blocking
-/// wgpu-core `device_poll(PollType::Poll)`, which runs completed-submission
-/// maintenance and reports whether the queue is empty, without waiting. The
-/// bootstrap defers the rAF queue while it is not empty (run 42874854967: the
-/// previous blocking `PollType::Wait` drain stalled the host for 15 s mid-run).
-/// Never throws: returns JSON with `ok`, `queue_empty` and the poll status, or
-/// the wgpu error; the caller decides.
+struct GpuPacingFence(Arc<AtomicBool>);
+
+/// Software-GPU pacing tracks the submitted batch, even if later timer or
+/// resource work keeps the shared queue busy. Polling drives wgpu completion
+/// callbacks without blocking the game thread.
 #[op2]
 #[string]
-fn op_blitz_gpu_poll(#[cppgc] device: &deno_webgpu::device::GPUDevice) -> String {
+fn op_blitz_gpu_poll(
+    state: &mut OpState,
+    #[cppgc] device: &deno_webgpu::device::GPUDevice,
+    arm: bool,
+) -> String {
+    if arm {
+        let completed = Arc::new(AtomicBool::new(false));
+        let signal = Arc::clone(&completed);
+        device.instance.queue_on_submitted_work_done(
+            device.queue,
+            Box::new(move || signal.store(true, Ordering::Release)),
+        );
+        state.put(GpuPacingFence(completed));
+        return String::new();
+    }
     let json = match device
         .instance
         .device_poll(device.id, deno_webgpu::wgpu_types::PollType::Poll)
     {
         Ok(status) => deno_core::serde_json::json!({
             "ok": true,
-            "queue_empty": matches!(status, deno_webgpu::wgpu_types::PollStatus::QueueEmpty),
+            "batch_complete": state.borrow::<GpuPacingFence>().0.load(Ordering::Acquire),
             "poll_status": format!("{status:?}"),
         }),
         Err(error) => deno_core::serde_json::json!({
@@ -2394,20 +2410,27 @@ fn page_frame_step(
 /// check measures frames the page received: on CI's software adapter pacing
 /// can withhold rAF for over 1600 consecutive ticks, during which rAF-driven
 /// page work (Base UI's exit check before unmounting, motion's typewriter)
-/// cannot progress and unchanged text proves nothing. Not bounded in ticks:
-/// a queue that never drains is caught by the process timeout and by
-/// `gpu_teardown`.
+/// cannot progress and unchanged text proves nothing. Bound each batch so
+/// the caller can report starvation before the harness process is killed.
 async fn drive_page_frames(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
     run_animation_frame: &v8::Global<v8::Function>,
     frames: u32,
-) -> u32 {
+) -> Result<u32, String> {
     let frame_interval = std::time::Duration::from_micros(16_667);
     let start = std::time::Instant::now();
+    let budget = std::time::Duration::from_secs(45);
     let mut ticks: u32 = 0;
     let mut ran = 0;
     while ran < frames {
+        if start.elapsed() >= budget {
+            return Err(format!(
+                "page animation frame wait exceeded {}s: delivered {ran}/{frames} frames after {ticks} ticks ({} deferred)",
+                budget.as_secs(),
+                ticks - ran,
+            ));
+        }
         let deadline = start + frame_interval * ticks;
         if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
             tokio::time::sleep(wait).await;
@@ -2418,7 +2441,7 @@ async fn drive_page_frames(
         resolve_layout(document);
         ticks += 1;
     }
-    ticks
+    Ok(ticks)
 }
 
 /// Drives `frames` frames without a window, paced at 60 Hz in real time (awaiting
@@ -2583,11 +2606,12 @@ async fn single_tick(
 }
 
 /// Simulated pacing poll results for `gpuPacingTest("batch", ...)`.
-const PACING_BUSY: &str = r#"{"ok":true,"queue_empty":false,"poll_status":"Poll"}"#;
-const PACING_EMPTY: &str = r#"{"ok":true,"queue_empty":true,"poll_status":"QueueEmpty"}"#;
+const PACING_BUSY: &str = r#"{"ok":true,"batch_complete":false,"poll_status":"Poll"}"#;
+// The rest of the queue can still be busy when this batch gets its ACK.
+const PACING_COMPLETE: &str = r#"{"ok":true,"batch_complete":true,"poll_status":"Poll"}"#;
 
 /// Fixture regression of the software-GPU frame pacing (dom.js): rAF queue
-/// deferred while scripted polls report a busy queue, resumed on QueueEmpty in
+/// deferred until the scripted batch completes, then resumed in
 /// order with cancellation and the resuming tick's timestamp, while timers,
 /// microtasks and trusted input continue; a poll error disables pacing without
 /// dropping callbacks. No GPU is used or claimed (see gpu_pacing_test.js).
@@ -2602,7 +2626,7 @@ async fn gpu_pacing_regression(
     runtime
         .execute_script("roves-blitz-gpu-pacing-test.js", GPU_PACING_TEST)
         .expect("GPU pacing test setup should run");
-    let script = format!("[{PACING_BUSY},{PACING_BUSY},{PACING_BUSY},{PACING_EMPTY}]");
+    let script = format!("[{PACING_BUSY},{PACING_BUSY},{PACING_BUSY},{PACING_COMPLETE}]");
     call_hook(runtime, pacing_test, &["batch", script.as_str()]);
     let mut phases = Vec::new();
     // T1 (runs, starts the deferral), T2 (busy).
@@ -2617,7 +2641,7 @@ async fn gpu_pacing_regression(
         .expect("pacing deferral step should run");
     let target = find_element_by_id(&document.borrow(), "pacing-target").expect("#pacing-target");
     dispatch_trusted(runtime, dispatcher, target, "click", r#"{"button":0}"#);
-    // T3, T4 (busy), T5 (QueueEmpty: resumes).
+    // T3, T4 (busy), T5 (batch complete: resumes).
     for _ in 0..3 {
         single_tick(runtime, document, run_animation_frame).await;
     }
@@ -2852,6 +2876,8 @@ fn main() {
         }));
         stage("create_js_runtime");
         let mut runtime = JsRuntime::new(RuntimeOptions {
+            #[cfg(feature = "dev-mcp")]
+            inspector: dev_mcp::enabled(),
             extensions: vec![
                 deno_webidl::deno_webidl::init(),
                 deno_web::deno_web::init(

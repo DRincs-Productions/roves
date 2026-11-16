@@ -1,0 +1,132 @@
+import { McpServer } from "@modelcontextprotocol/server";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
+import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { createInterface } from "node:readline";
+import { z } from "zod";
+
+const [probe, game] = process.argv.slice(2);
+if (!probe || !game || process.argv.length !== 4) {
+  throw new Error("Usage: node server.mjs <dev-mcp probe executable> <game dist>");
+}
+
+class Probe {
+  #pending;
+  #closed = false;
+  #child;
+  #ready;
+  #stopping = false;
+
+  constructor() {
+    const token = randomBytes(16).toString("hex");
+    const prefix = "ROVES_DEV_MCP_" + token + " ";
+    const storage = mkdtempSync(join(tmpdir(), "roves-dev-mcp-"));
+    this.#child = spawn(resolve(probe), ["--game", resolve(game), "--window"], {
+      env: { ...process.env, ROVES_PROBE_DEV_MCP_TOKEN: token, ROVES_PROBE_STORAGE_DIR: storage },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    });
+    this.#ready = this.#wait(60_000, "Roves did not become ready");
+    const lines = createInterface({ input: this.#child.stdout });
+    lines.on("line", (line) => {
+      if (line.startsWith(prefix) && this.#pending) {
+        try {
+          this.#finish(null, JSON.parse(line.slice(prefix.length)));
+        } catch (error) {
+          this.#finish(error);
+        }
+      } else if (!line.startsWith(prefix)) {
+        process.stderr.write(line.slice(0, 1024) + "\n");
+      }
+    });
+    this.#child.stderr.pipe(process.stderr, { end: false });
+    this.#child.stdin.on("error", (error) => this.#finish(error));
+    this.#child.on("error", (error) => this.#finish(error));
+    this.#child.once("close", (code) => {
+      this.#closed = true;
+      if (this.#stopping && code !== 0) {
+        process.exitCode ||= 1;
+        process.stderr.write("Roves did not exit cleanly (exit " + code + ")\n");
+      }
+      this.#finish(new Error("Roves closed (exit " + code + ")"));
+      lines.close();
+      try {
+        rmSync(storage, { recursive: true, force: true });
+      } catch (error) {
+        process.stderr.write("Could not remove isolated test storage: " + error.message + "\n");
+      }
+    });
+  }
+
+  #finish(error, result) {
+    const pending = this.#pending;
+    if (!pending) return;
+    this.#pending = undefined;
+    clearTimeout(pending.timer);
+    if (error) pending.reject(error);
+    else pending.resolve(result);
+  }
+
+  #wait(milliseconds, message) {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.#finish(new Error(message));
+        this.stop();
+      }, milliseconds);
+      this.#pending = { resolve, reject, timer };
+    });
+  }
+
+  async evaluate(source) {
+    const ready = await this.#ready;
+    if (!ready.ready || this.#closed) throw new Error("Roves is not ready");
+    if (this.#pending) throw new Error("Another evaluation is in progress");
+    if (Buffer.byteLength(source) > 16 * 1024) throw new Error("Source exceeds 16 KiB");
+    const response = this.#wait(5_000, "Roves evaluation timed out");
+    this.#child.stdin.write(JSON.stringify(source) + "\n");
+    const result = await response;
+    if ("error" in result) throw new Error(result.error);
+    return result.value;
+  }
+
+  stop() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#stopping = true;
+    this.#child.stdin.end();
+    const deadline = setTimeout(() => this.#child.kill(), 8_000);
+    deadline.unref();
+    this.#child.once("close", () => clearTimeout(deadline));
+  }
+}
+
+let child;
+const shutdown = () => child?.stop();
+process.stdin.once("end", shutdown);
+for (const [signal, code] of [["SIGINT", 130], ["SIGTERM", 143]]) {
+  process.once(signal, () => {
+    shutdown();
+    process.stdin.destroy();
+    process.exitCode = code;
+  });
+}
+
+await serveStdio(() => {
+  const server = new McpServer({ name: "roves-dev", version: "0.0.0" });
+  server.registerTool("evaluate_script", {
+    description: "Evaluate synchronous JavaScript in the isolated Roves game page and return JSON.",
+    inputSchema: z.object({ source: z.string().max(16 * 1024) }),
+  }, async ({ source }) => {
+    try {
+      child ??= new Probe();
+      const value = await child.evaluate(source);
+      return { content: [{ type: "text", text: JSON.stringify(value) }] };
+    } catch (error) {
+      return { isError: true, content: [{ type: "text", text: error.message }] };
+    }
+  });
+  return server;
+});

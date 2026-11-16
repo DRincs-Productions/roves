@@ -33,6 +33,9 @@ netrender = ["dep:netrender", "dep:wgpu", "dep:roves-netrender-shared-device-pro
 # Same meaning as in ../Cargo.toml.
 vello-mt = ["anyrender_vello_cpu/multithreading"]
 
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("dev-mcp"))'] }
+
 [dependencies]
 # Opt-in Netrender path. Exact pins of the shared-device proof
 # (support/netrender-shared-device-proof/Cargo.toml): Netrender d2f13ca5 is the last

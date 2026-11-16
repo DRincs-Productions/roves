@@ -819,6 +819,7 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
 
 /// Outcome of waiting for a new settled page state.
 enum StoryState {
+    FrameStarved(String),
     Settled(String, u32),
     Timeout(String),
     /// The page shows an error-boundary fallback (text, frames): fails at once.
@@ -861,7 +862,11 @@ async fn wait_for_state(
     let mut stable = 0;
     let mut frames = 0;
     while frames < STORY_STATE_FRAMES {
-        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
+        if let Err(reason) =
+            crate::drive_page_frames(runtime, document, run_animation_frame, 10).await
+        {
+            return StoryState::FrameStarved(reason);
+        }
         frames += 10;
         collect_toasts(runtime, toasts);
         // Checked before settling: a crash fallback is reported at once, never
@@ -1101,6 +1106,7 @@ async fn two_dialogues(
                     dialogue.push(lines);
                     break;
                 },
+                StoryState::FrameStarved(reason) => break 'story Some(reason),
                 StoryState::Timeout(last) => {
                     break 'story Some(format!(
                         "no settled state after Start within {STORY_STATE_FRAMES} frames (last text: {:?})",
@@ -1148,6 +1154,7 @@ async fn two_dialogues(
                     dialogue.push(new_lines);
                     break;
                 },
+                StoryState::FrameStarved(reason) => break 'story Some(reason),
                 StoryState::Timeout(last) => {
                     steps.push(json!({ "action": method, "input": dispatched, "result": "no new settled state", "last_text": excerpt(&last) }));
                     // A text that appeared without settling (e.g. an animation)
@@ -1315,7 +1322,7 @@ async fn menu_ready(
                 crate::evaluate_string(runtime, "location.href")
             ));
         }
-        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
+        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await?;
         frames += 10;
         collect_toasts(runtime, toasts);
     }
@@ -1450,7 +1457,7 @@ async fn wait_until_collecting(
         if collect {
             runtime.v8_isolate().low_memory_notification();
         }
-        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
+        crate::drive_page_frames(runtime, document, run_animation_frame, 10).await?;
         frames += 10;
         collect_toasts(runtime, toasts);
         crate::resolve_layout(document);
@@ -1783,7 +1790,7 @@ async fn name_dialog_settled(
     let mut last = String::new();
     let mut stable = 0;
     while frames < DIALOG_FRAMES {
-        ticks += crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
+        ticks += crate::drive_page_frames(runtime, document, run_animation_frame, 10).await?;
         frames += 10;
         collect_toasts(runtime, toasts);
         crate::resolve_layout(document);
@@ -2086,6 +2093,7 @@ async fn name_input(
                     steps.push(json!({ "action": method, "input": dispatched, "frames": frames, "text": excerpt(&text) }));
                     previous.push(text);
                 },
+                StoryState::FrameStarved(reason) => break 'name Some(reason),
                 StoryState::Timeout(last) => {
                     break 'name Some(format!(
                         "no settled state after {method} within {STORY_STATE_FRAMES} frames (last text: {:?})",
@@ -2368,6 +2376,7 @@ async fn name_input(
                     }
                     previous.push(text);
                 },
+                StoryState::FrameStarved(reason) => break 'name Some(reason),
                 StoryState::Timeout(last) => {
                     break 'name Some(format!(
                         "no settled state after the prompt within {STORY_STATE_FRAMES} frames (last text: {:?})",
@@ -2515,7 +2524,11 @@ async fn hud_save_load(
                     excerpt(&before)
                 ));
             }
-            crate::drive_page_frames(runtime, document, run_animation_frame, 10).await;
+            if let Err(reason) =
+                crate::drive_page_frames(runtime, document, run_animation_frame, 10).await
+            {
+                break 'hud Some(reason);
+            }
             frames += 10;
             collect_toasts(runtime, &mut toasts);
             let lines = evaluate_owned(runtime, narration_probe.clone());
