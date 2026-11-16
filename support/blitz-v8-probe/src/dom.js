@@ -3232,6 +3232,7 @@
   let gpuPacingDisabled = false;
   let gpuPacingRun = 0; // consecutive deferred ticks of the current deferral
   let gpuPacingLastTickAt = null;
+  let gpuPacingBatchStartedAt = null;
   // Fixture-only scripted poll results (gpuPacingTest hook): replaces the op,
   // so the pacing logic is tested without a GPU and without claiming one.
   let gpuPacingScript = null;
@@ -3250,6 +3251,8 @@
       polls: 0,
       poll_errors: 0,
       disabled: false,
+      completed_batches: 0,
+      max_completed_batch_ms: null,
     };
   }
   // Snapshot with the derived saturation fields: `saturated` = still deferring
@@ -3261,6 +3264,9 @@
       saturated: gpuPacingDeferring,
       saturation: gpuPacing.ticks === 0 ? 0 : Math.round((gpuPacing.deferred_ticks / gpuPacing.ticks) * 1000) / 1000,
       pending_submits: gpuSubmitsSinceEmpty,
+      pending_batch_ms: gpuPacingDeferring && gpuPacingBatchStartedAt !== null
+        ? Math.round((performance.now() - gpuPacingBatchStartedAt) * 10) / 10
+        : null,
     };
   }
   function gpuPacingTick() {
@@ -3298,6 +3304,9 @@
       return true;
     }
     if (result.batch_complete) {
+      const elapsed = Math.round((performance.now() - gpuPacingBatchStartedAt) * 10) / 10;
+      gpuPacing.completed_batches++;
+      gpuPacing.max_completed_batch_ms = Math.max(gpuPacing.max_completed_batch_ms ?? 0, elapsed);
       gpuPacingDeferring = false;
       gpuSubmitsSinceEmpty = 0;
       return true;
@@ -3310,6 +3319,7 @@
   function gpuPacingAfterFrame() {
     if (gpuPacingDeferring || gpuSubmitsSinceEmpty < GPU_SUBMIT_BATCH || !gpuPacingApplies()) return;
     gpuPacingDeferring = true;
+    gpuPacingBatchStartedAt = performance.now();
     if (gpuPacingScript === null) op_blitz_gpu_poll(gpuDevice, true);
     gpuPacingRun = 0;
     gpuPacing.active = true;
