@@ -47,7 +47,7 @@ try {
   });
   send({ method: "notifications/initialized" });
   const { tools } = await call("tools/list", {});
-  assert.deepEqual(tools.map(({ name }) => name).sort(), ["evaluate_script", "performance_sample"]);
+  assert.deepEqual(tools.map(({ name }) => name).sort(), ["evaluate_script", "performance_sample", "pixi_status"]);
   if (!listOnly) {
     const result = await evaluate(`({
       text: document.getElementById("fixture").textContent,
@@ -84,6 +84,22 @@ try {
     assert.equal(metrics.window_ms, 5000);
     assert.ok(metrics.cpu_frame_step.count > 0);
     assert.equal(metrics.displayed_frames, null);
+    async function pixi() {
+      const reply = await call("tools/call", { name: "pixi_status", arguments: {} });
+      assert.ok(!reply.isError, reply.content[0].text);
+      return JSON.parse(reply.content[0].text);
+    }
+    assert.equal((await pixi()).status, "not_detected");
+    await evaluate("globalThis.PIXI = {}; true");
+    assert.equal((await pixi()).status, "detected_without_scene");
+    await evaluate(`globalThis.__PIXI_APP__ = {
+      stage: { label: "fixture-stage", visible: true, children: [] },
+      renderer: { name: "webgpu", resolution: 2, canvas: { width: 640, height: 360 } }
+    }; true`);
+    const registered = await pixi();
+    assert.equal(registered.status, "scene_available");
+    assert.equal(registered.scene.label, "fixture-stage");
+    assert.equal(registered.renderer.canvas_width, 640);
   }
   child.stdin.end();
   assert.deepEqual(await closed, [0, null]);

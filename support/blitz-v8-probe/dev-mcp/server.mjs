@@ -7,6 +7,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { z } from "zod";
+import { pixiStatus } from "./pixi.mjs";
 
 const [probe, game] = process.argv.slice(2);
 if (!probe || !game || process.argv.length !== 4) {
@@ -133,5 +134,9 @@ await serveStdio(() => {
     description: "Summarize game ticks and CPU rendering phases sampled in the last five seconds.",
     inputSchema: z.object({}),
   }, () => run({ method: "performance_sample" }));
+  server.registerTool("pixi_status", {
+    description: "Inspect a registered PixiJS scene and renderer without modifying the game.",
+    inputSchema: z.object({}),
+  }, () => run(pixiStatus));
   return server;
 });
