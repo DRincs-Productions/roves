@@ -26,7 +26,6 @@ on:
     paths-ignore:
       - '**/*.md'
       - 'docs/**'
-      - 'patches/**'
       - 'roves-action'
       - 'roves-packmaster'
       - 'roves-wiki'

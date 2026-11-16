@@ -16,10 +16,15 @@ the `style::animation::DocumentAnimationSet` in `BaseDocument.animations`, which
 `pub(crate)` both in 0.3.0-beta.4 and on upstream `main` (as checked when the patch was
 made, 11 November 2026), and exposes no getter or snapshot.
 
-## Patch
+## Changes
 
-`patches/blitz-dom-0.3.0-beta.4/0001-read-only-animations-accessor.patch` (relative to
-this directory) adds one method to `src/document.rs`:
+The fixes are edited directly in this directory; Roves keeps no separate diff files. Get
+the exact differences by comparing it with the published crate (commit above) or through
+git history. The numbered `patches/blitz-dom-0.3.0-beta.4/` files that used to describe
+them were removed on 2026-11-16 (last present at commit `d7905291f71`); the numbers below
+are kept as names for the individual changes.
+
+0001 (`read-only-animations-accessor`) adds one method to `src/document.rs`:
 
 ```rust
 pub fn animations(&self) -> &DocumentAnimationSet { &self.animations }
@@ -30,7 +35,7 @@ already advances the state machine (`Pending -> Running -> Finished`, canceled e
 dropped) inside `resolve_stylist` (`src/stylo.rs`), so no embedder state update is
 needed.
 
-`0002-record-finished-animations.patch` (`src/stylo.rs`, `src/document.rs`,
+0002 (`record-finished-animations`) (`src/stylo.rs`, `src/document.rs`,
 `src/lib.rs`): Stylo's restyle, which runs in `resolve_stylist` right after Blitz's
 `Running -> Finished` step, removes finished transitions AND finished animations from
 the set (Stylo 0.22 `matching.rs` retains only entries whose state is not `Finished`;
@@ -51,7 +56,7 @@ behavior is unchanged; this is the point where Servo emits `transitionend`
 (`components/script/animations.rs`, `finish_running_animations`). It covers headless
 flushes and blitz-shell's own `resolve` in `--window` alike.
 
-`0003-input-type-state.patch` (`src/layout/construct.rs`): Blitz created the
+0003 (`input-type-state`) (`src/layout/construct.rs`): Blitz created the
 `TextInputData` editor only when an `input`'s raw `type` attribute was missing or one
 of the literal keywords `text`, `password`, `email`, `number`, `search`, `tel`, `url`
 (and the checkbox state only for literal `checkbox`/`radio`). HTML's `type` is ASCII
@@ -62,7 +67,7 @@ The patch maps the attribute to its type state (lowercased keyword, otherwise `t
 before the same checks. A fix of a game-blocking library defect, not a behavior change
 for valid lowercase values.
 
-`0004-positioned-paint-layer-tree-order.patch` (`src/layout/paint_tree.rs`,
+0004 (`positioned-paint-layer-tree-order`) (`src/layout/paint_tree.rs`,
 `src/node/node.rs`), for [Blitz #1493](https://github.com/DioxusLabs/blitz/issues/1493):
 the paint tree kept a positioned `z-index: auto` box together with its whole subtree in
 its parent's list, so a later positioned box nested in it (or in a static box) painted
@@ -88,7 +93,7 @@ explicit z-index stacking only. Regression: `support/blitz-v8-probe/src/paint_or
 unpatched crates and pass with this patch plus blitz-paint 0001; an overflow clip
 check passes in both).
 
-`0005-detach-boxes-leaving-the-box-tree.patch` (`src/resolve.rs`): a game-blocking
+0005 (`detach-boxes-leaving-the-box-tree`) (`src/resolve.rs`): a game-blocking
 defect of the published crate. `resolve_layout_children` only visits boxes reachable
 from the root's `layout_children`. When a container's reconstruction dropped a child
 box that still existed (a `display: none` ancestor, a node detached from the DOM, a box

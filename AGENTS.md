@@ -17,7 +17,7 @@ issue e pull request upstream quando possibile e aggiungere TODO per ricontrolla
 correzione e rimuovere il fork appena una release ufficiale supera le regressioni.
 L'utente autorizza esplicitamente la pubblicazione upstream di issue/PR relative al fix.
 Non chiedere nuovamente questa autorizzazione per l'incarico0428. Build pesanti online,
-revisione, patch e gate CI restano validi. Windows verra sbloccato piu tardi: nessun input
+revisione, record dei fork e gate CI restano validi. Windows verra sbloccato piu tardi: nessun input
 alla schermata di accesso e nessuna falsa verifica di clic/notice/chiusura UI.
 
 ### Ricontrollo periodico autorizzato ogni cinque ore — 28 ottobre 2026
@@ -44,8 +44,9 @@ restano respinti. Non riproporre il workaround side-module che altera questo con
 ## Lingua e direzione del progetto
 
 - **In chat rispondi sempre in italiano.** Codice, commit e `CUSTOMIZATIONS.md` restano
-  in inglese come oggi. Non si creano più patch di tracciamento verso Servo upstream
-  (decisione del 7 novembre 2026, vedi sotto).
+  in inglese come oggi. Non si creano più file patch di tracciamento, né verso Servo upstream
+  (decisione del 7 novembre 2026) né per le librerie vendorizzate (16 novembre 2026): il
+  sorgente si modifica direttamente, vedi sotto.
 - **Allontanarsi da Servo upstream non è un problema.** L'obiettivo è avere meno codice nostro:
   delegare il più possibile a librerie mantenute da altri e scrivere solo il codice che serve a
   farle lavorare insieme. Togli il codice non usato e, quando una libreria esistente copre una
@@ -215,7 +216,7 @@ DIRETTAMENTE nel frattempo. Codex prende runtime/adapter/policy0385 e relative v
 questa autorizzazione prevale sulla precedente divisione dei file per la prosecuzione
 corrente. Nessun incarico Claude attivo. Il retry13:21 e stato eliminato per evitare due
 implementazioni concorrenti. Riprendere la delega solo coordinando nuovamente lo scope;
-nessun cambio modello per aggirare quote. CI, patch, revisione, test e divieto di pubblicare
+nessun cambio modello per aggirare quote. CI, revisione, test e divieto di pubblicare
 WIP restano invariati; le build complete del browser restano online.
 
 ### Eccezione autorizzata per questa sessione: lavoro coordinato (27 ottobre 2026)
@@ -225,7 +226,7 @@ Claude mantiene l'incarico0385 di adozione produttiva deno_core (runtime/moduli/
 Codex implementa la policy della shell in ports/servoshell, senza modificare quei file.
 Un solo incarico Claude attivo; nessuna ricerca o implementazione duplicata. Le interfacce
 condivise richiedono integrazione e revisione prima di cambiare ownership. Questa eccezione
-vale per la sessione corrente; quote, verifiche, patch e vincoli CI restano invariati.
+vale per la sessione corrente; quote, verifiche e vincoli CI restano invariati.
 
 ## Coordinamento con Claude e pubblicazione durante la CI
 
@@ -280,7 +281,7 @@ piu2minuti, tramite scheduler dell'app; riusare un ricontrollo equivalente gia e
 L'utente autorizza questa ripresa una tantum: non occorre una nuova conferma ogni volta.
 
 Il promemoria deve leggere AGENTS e il solo handoff corrente, controllare Git e quota, poi
-riprendere il lavoro autorizzato se disponibile rispettando ownership, patch e gate CI.
+riprendere il lavoro autorizzato se disponibile rispettando ownership e gate CI.
 Disattivarlo dopo il tentativo. Se lo stesso limite persiste, salvare l'esito e fermarsi:
 nessuna catena di retry, polling, cambio modello o consumo di reset dell'abbonamento.
 Se reset/quota non sono disponibili o ambigui, non inventare un orario; se lo scheduler
@@ -393,18 +394,26 @@ This repository started as a **vendored copy** of [Servo](https://github.com/ser
 (upstream tag `v0.5.0`, after an initial `v0.4.0` import) and has since diverged permanently:
 it is now Roves' own engine/shell codebase, not a tracked derivative of Servo.
 
-## No upstream-Servo patch tracking (since 2026-11-07)
+## Independent source, no generated tracking diffs
 
-The user decided on 2026-11-07 that Roves no longer tracks its differences from upstream
-Servo. The former `patches/servo-v0.4.0/` and `patches/servo-v0.5.0/` series (and
-`REMOVED_PATHS.txt`) were deleted, and `test.yml` now builds directly from this checkout
-like `release.yml`. **Do not create new Servo patch files** and do not reconstruct the tree
-from a pristine Servo download. Future Servo releases are not merged as a whole; pick
-individual upstream fixes by hand only when concretely useful.
+The Servo-derived code here is Roves' own, independent copy: **edit the source directly**.
+Since 2026-11-07 Roves no longer tracks its differences from upstream Servo, and since
+2026-11-16 the repository has no root `patches/` directory at all (the former Servo series
+and the deno_core/Blitz diff files were removed; they remain in git history). **Do not
+create or regenerate patch files** for Servo, for vendored libraries, or as a record of a
+change, and do not reconstruct the tree from a pristine Servo download. Both workflows
+(`test.yml`, `release.yml`) build directly from this checkout. Future Servo releases are not
+merged as a whole; pick individual upstream fixes by hand only when concretely useful.
 
-This does not cover forks of third-party libraries authorized above (e.g. the deno_core fork
-in `components/roves-js/vendor/deno_core`, documented by `patches/deno_core-0.413.0/` for
-upstream issues/PRs and eventual removal): keep those records accurate.
+Temporary forks of third-party libraries authorized above (the deno_core snapshot in
+`components/roves-js/vendor/deno_core`, the Blitz crates in
+`support/blitz-v8-probe/vendor/blitz-{dom,paint}`) are also edited in place. Keep their
+`ROVES_PATCHES.md` accurate as prose: provenance (published version, checksum or upstream
+commit), what each change does and why, the regression tests, the upstream issues/PRs, and
+the removal criteria. Exact diffs come from comparing with the published crate or from git
+history. Upstream patch fixtures that a CI proof actually consumes (for example
+`support/netrender-shared-device-proof/upstream/`) are test inputs, not tracking records,
+and stay where they are.
 
 ## Standing authorization: autonomous CI/push/release loop
 
@@ -460,7 +469,7 @@ Strict rules for it, every time one is provided, in any repo in this ecosystem:
 For every significant change (behavior, build/bundle surface, platform support, dependencies),
 add or update an entry in [`CUSTOMIZATIONS.md`](./CUSTOMIZATIONS.md) in the same turn: files
 touched, what changed and why. It is the prose changelog of the engine; no matching patch
-file is required anymore.
+file is required or wanted.
 
 ## CRITICAL: keep `roves-action` in sync with CI/CD changes here
 

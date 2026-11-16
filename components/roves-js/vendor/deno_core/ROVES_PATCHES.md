@@ -42,9 +42,12 @@ returning to `load_side_es_module`).
 - Contract not covered: loaders whose `pump_event_loop_during_load()` is true need their
   caller to run the event loop between polls; Roves' loader keeps the default (false).
 
-The bounded cooperative-yield follow-up is kept separately as
-`patches/deno_core-0.413.0/0458-cooperative-module-poll.patch`. It is a zero-context
-diff; replay it after 0457 with `git apply --unidiff-zero`.
+The bounded cooperative-yield follow-up (task 0458: at most one source per poll, one
+cooperative wake when another step is ready) is part of semantic change 2 as described
+above. Roves keeps no separate diff files: edit this snapshot directly, and obtain the
+exact differences by comparing this directory with the published crate (SHA256 above) or
+through git history. The former `patches/deno_core-0.413.0/` files (0457, 0458) were
+removed on 2026-11-16; they last exist at commit `d7905291f71`.
 
 Roves callers: components/roves-js/src/deno_impl.rs (`start_module_graph`,
 `poll_module_graph`, and the blocking `load_module_graph` driving the same handle).

@@ -16,8 +16,8 @@
 //! nothing happened at all, with no way to tell why.
 //!
 //! `log::set_boxed_logger` only ever succeeds once per process — see
-//! `components/servo/servo.rs`'s `setup_logging`/`set_logger`, both patched
-//! (`patches/servo-v0.4.0/0030-...patch`) to no-op instead of panicking on
+//! `components/servo/servo.rs`'s `setup_logging`/`set_logger`, both changed
+//! (CUSTOMIZATIONS.md, startup file logging) to no-op instead of panicking on
 //! the second call this now causes, since this module's logger always
 //! installs first. The trade-off: `FromEmbedderLogger`'s
 //! constellation-forwarding (an embedder-side crash/warning-UI hook) never

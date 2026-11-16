@@ -913,8 +913,7 @@ impl HeadedWindow {
     /// `handle_winit_window_event`, handling ~16 real winit `WindowEvent` variants — keyboard
     /// input, mouse buttons/motion/wheel, IME composition, modifiers, touch, pinch gesture,
     /// dropped files, theme/scale-factor changes, egui event forwarding and focus routing (see
-    /// this file's own git history for that full body, or the pristine-vs-patched diff under
-    /// `patches/servo-v0.5.0/0001-desktop-shell-core.patch` from before this migration branch).
+    /// this file's own git history for that full body, from before this migration branch).
     /// Only resize/close/redraw/focus are ported so far — a real window now opens, shows the
     /// boot splash, resizes, and closes cleanly, but does not yet accept any input at all.
     /// `handle_keyboard_input`/`handle_mouse_button_event`/`handle_mouse_move_event`/

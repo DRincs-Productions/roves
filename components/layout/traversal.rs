@@ -191,7 +191,7 @@ pub(crate) fn compute_damage_and_rebuild_box_tree_above_dirty_root<'dom>(
 /// actually reaches this element, which needs `LayoutDamage::DescendantHasBoxDamage`/
 /// `BoxDamage` bits already set on it — and a `color`-only restyle produces only `stylo`'s
 /// `RestyleDamage::REPAINT` (the `color` longhand is declared `servo_restyle_damage =
-/// "repaint"` in the vendored `stylo` crate, which this fork's `patches/` don't cover),
+/// "repaint"` in the vendored `stylo` crate, which Roves does not modify),
 /// which never sets those bits. Without this check, an SVG's `currentColor` permanently
 /// misses any restyle that doesn't *also* change some layout-affecting property — reproduced
 /// directly: a `.dark` class toggled onto `<html>` after first paint (common for anything

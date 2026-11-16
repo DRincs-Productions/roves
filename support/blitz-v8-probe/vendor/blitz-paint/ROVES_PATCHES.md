@@ -18,10 +18,13 @@ the clip rectangle, while `Node::hit_inner` also descends into the hoisted boxes
 `StackingContext::hoisted_content_bbox`. A hoisted box outside its root's overflow
 could therefore be hit but never drawn.
 
-## Patch
+## Change
 
-`patches/blitz-paint-0.3.0-beta.4/0001-cull-with-hoisted-content.patch` (relative to
-this directory) changes `src/render.rs`: for a node with a non-empty stacking context,
+Change 0001 (`cull-with-hoisted-content`) is edited directly in this directory; Roves keeps
+no separate diff file (the former
+`patches/blitz-paint-0.3.0-beta.4/0001-cull-with-hoisted-content.patch` was removed on
+2026-11-16, last present at commit `d7905291f71`; compare with the published crate or use
+git history for the exact diff). It changes `src/render.rs`: for a node with a non-empty stacking context,
 the cull extent is the union of its overflow, its border box and
 `hoisted_content_bbox` (CSS px relative to the border box, scaled to device px like
 `overflow`). Drawing order and offsets are unchanged; nothing is drawn that was not in

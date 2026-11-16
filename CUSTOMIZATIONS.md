@@ -1,3 +1,23 @@
+## 2026-11-16 - Remove the root `patches/` directory; edit vendored sources directly
+
+Deleted (git rm) the last tracked diff files under the root `patches/`:
+`blitz-dom-0.3.0-beta.4/0001`-`0005`, `blitz-paint-0.3.0-beta.4/0001` and
+`deno_core-0.413.0/0457`, `0458`. They only mirrored changes that already live in the vendored
+sources (`support/blitz-v8-probe/vendor/blitz-{dom,paint}`, `components/roves-js/vendor/deno_core`),
+which are unchanged; the files remain in git history (last present at `d7905291f71`). Roves no
+longer generates tracking diffs for Servo, vendored libraries or its own changes: sources are
+edited directly, and exact differences come from comparing a vendored crate with its published
+version or from git history. Each vendor `ROVES_PATCHES.md` keeps provenance, a prose description
+of every change (the former patch numbers are kept as change names), regressions, upstream
+issues/PRs and removal criteria. `AGENTS.md` now states this policy (independent source, edit
+directly, no generated diffs) and drops "patch" from the per-task gate lists.
+`.github/workflows/test.yml` loses the dead `patches/**` `paths-ignore` entry. Current references
+updated in `TODO.md`, `support/blitz-v8-probe/{Cargo.toml (comment only),README.md,compat/manifest.json}`,
+and comments in `components/layout/traversal.rs`, `ports/servoshell/desktop/{headed_window,logging}.rs`.
+Unchanged: `[patch.crates-io]` overrides, the netrender proof's `upstream/*.patch` fixtures and
+`netrender-proof.yml` (CI test inputs, not tracking records), Python tooling, the Chromium reference
+submodule, and historical entries/handoffs that name the old paths.
+
 ## 2026-11-16 - Remove the unused inherited C API (`ffi/capi`)
 
 Deleted `ffi/capi/` (`Cargo.toml`, `README.md`, `cbindgen.toml`, `lib.rs`, `options.rs`, `preferences.rs`, `rendering_context.rs`, `servo.rs`, `webview.rs`, `webview_delegate.rs`), the `ffi/capi` workspace member in `Cargo.toml` and the `servo-capi` package entry in `Cargo.lock`; `docs/AUDIT_MIGRAZIONE_LIBRERIE.md` no longer lists it as a `Servo::setup_logging` caller. The crate was Servo's `cdylib` C embedding API (cbindgen/cargo-c metadata) and nothing in Roves consumed it: no workflow, `mach` command, bundle step, port or sibling project builds or links it, so no replacement library is needed. Its dependencies (`dpi`, `libc`, `log`, `servo`, `url`) remain in use by other workspace crates. Other FFI crates and configuration are unchanged. Kept on purpose: `resources/resource_protocol/license.html` still lists `servo-capi`, like the already stale `servo-capi-tests` entry; that generated list is left untouched here.
