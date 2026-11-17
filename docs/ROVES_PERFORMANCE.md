@@ -2587,3 +2587,13 @@ PixiJS ha segnalato due WAV senza parser. Questi dati riguardano il
 percorso software senza finestra. La run diagnostica
 [43962093218](https://github.com/DRincs-Productions/roves/actions/runs/43962093218)
 prova il template originale con i nuovi contatori.
+
+La CI 43962093218 ha pubblicato entrambi gli artefatti Windows. Lo smoke
+MCP passa in normal e JITless. I gate HUD Save/Load e Skip falliscono
+in entrambe le modalità. In JITless, il test base registra un canvas
+`bgra8unorm` da 1920 × 1080, 168 submit e 482 tick rinviati su 567.
+Venti batch terminano con un massimo di 29,4 ms. Il batch ancora
+pendente al campionamento aveva già accumulato 1.047,4 ms. Il test
+storia raggiunge le prime due battute prima del timeout complessivo.
+Skip scade senza risultato. La durata dei batch completati va quindi
+letta insieme a quella dei batch rimasti pendenti.
