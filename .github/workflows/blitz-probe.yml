@@ -16,6 +16,14 @@ name: Blitz + Deno/V8 probe
         description: 'Also exercise the optional MCP bridge in a native game window'
         type: boolean
         default: false
+      lavapipe:
+        description: 'Also run the template startup/Save-Load/Skip comparison on Linux Mesa lavapipe'
+        type: boolean
+        default: false
+      template_ref:
+        description: 'visual-novel-template commit for the lavapipe job (empty: default branch)'
+        type: string
+        default: ''
 
 concurrency:
   group: blitz-probe-${{ github.ref }}
@@ -873,6 +881,254 @@ jobs:
             ${{ runner.temp }}/blitz-mcp-playthrough.log
             ${{ runner.temp }}/blitz-mcp-playthrough.err
             ${{ runner.temp }}/blitz-mcp-playthrough.json
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Opt-in diagnostic only (docs/ROVES_PERFORMANCE.md, "Confronto lavapipe"):
+  # the same probe sources and the same unmodified visual-novel-template on
+  # Linux with Mesa lavapipe (llvmpipe Vulkan ICD) instead of Windows WARP, to
+  # tell a WARP-specific stall from a general software-WebGPU one. Runs only on
+  # a manual dispatch with `lavapipe` or a push whose head commit message
+  # contains [lavapipe]. Same commands and assertions as the Windows startup
+  # smoke, game_hud_save_load gate and game_story_skip gate; nothing here
+  # changes those gates or their acceptance. continue-on-error at job level:
+  # a lavapipe failure is a diagnostic result and never turns the workflow
+  # red, while the job itself still shows it. The comparison is valid only
+  # when the template SHA in the summary equals the one the Windows API
+  # compatibility report annotates for the same run (pin it with
+  # template_ref on a manual dispatch).
+  linux-lavapipe:
+    if: ${{ (github.event_name == 'workflow_dispatch' && inputs.lavapipe) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[lavapipe]')) }}
+    runs-on: ubuntu-24.04
+    continue-on-error: true
+    # Debug build (V8 prebuilt download, no cache) + startup (300 s) + story
+    # (900 s) + Skip (600 s).
+    timeout-minutes: 110
+    strategy:
+      fail-fast: false
+      matrix:
+        mode: [normal, jitless]
+    env:
+      CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+      DENO_WEBGPU_BACKEND: vulkan
+      ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+      RUST_BACKTRACE: '1'
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      # Same lavapipe-only ICD selection as netrender-proof.yml (see its
+      # comment): exactly one lavapipe manifest from the package's own file
+      # list, pinned through VK_DRIVER_FILES/VK_ICD_FILENAMES so no other
+      # Vulkan driver can satisfy the adapter check by chance. Plus the probe's
+      # Linux build inputs: ALSA (cpal) and fontconfig headers, and a system
+      # font for Blitz's system-fonts.
+      - name: install lavapipe (Mesa Vulkan software driver) and build deps
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q --no-install-recommends mesa-vulkan-drivers libvulkan1 vulkan-tools \
+            pkg-config libasound2-dev libfontconfig1-dev fonts-dejavu-core
+          echo "::notice::mesa-vulkan-drivers $(dpkg-query -W -f='${Version}' mesa-vulkan-drivers)"
+          mapfile -t icds < <(dpkg-query -L mesa-vulkan-drivers | grep -E '/vulkan/icd\.d/lvp_icd(\.x86_64)?\.json$' || true)
+          if [ "${#icds[@]}" -ne 1 ] || [ ! -f "${icds[0]}" ]; then
+            echo "::error::expected exactly one lavapipe ICD manifest from mesa-vulkan-drivers, found ${#icds[@]}: ${icds[*]:-none}"
+            { dpkg-query -L mesa-vulkan-drivers | grep -F '/vulkan/'; ls -l /usr/share/vulkan/icd.d /etc/vulkan/icd.d; } 2>&1 | sed 's/^/::notice::vulkan files: /' || true
+            exit 1
+          fi
+          icd=${icds[0]}
+          echo "::notice::lavapipe ICD $icd"
+          echo "VK_DRIVER_FILES=$icd" >> "$GITHUB_ENV"
+          echo "VK_ICD_FILENAMES=$icd" >> "$GITHUB_ENV"
+          VK_DRIVER_FILES=$icd vulkaninfo --summary 2>&1 | grep -E 'deviceName|deviceType|driverInfo|apiVersion' | sed 's/^/::notice::lavapipe: /' || true
+      - uses: dtolnay/rust-toolchain@1.95.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: support/blitz-v8-probe/js/package-lock.json
+      - name: bundle the Motion scenario (include_str! input)
+        working-directory: support/blitz-v8-probe/js
+        run: |
+          npm ci
+          npm run build
+      # Same build profile (debug) and the same transient-only V8 download
+      # retry as the Windows matrix. No Cargo cache: this opt-in job must not
+      # evict the Windows caches.
+      - name: build probe executable
+        run: |
+          for attempt in 1 2 3; do
+            log="$RUNNER_TEMP/cargo-build-$attempt.log"
+            set +e
+            cargo build --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$log"
+            status=${PIPESTATUS[0]}
+            set -e
+            [ "$status" -eq 0 ] && exit 0
+            if [ "$attempt" -lt 3 ] \
+              && grep -q 'Failed to download V8 prebuilt archive' "$log" \
+              && grep -qE 'HTTP Error 50[234]' "$log"; then
+              echo "::warning::V8 prebuilt download failed with HTTP 502/503/504 (attempt $attempt); retrying"
+              sleep $((attempt * 60))
+              continue
+            fi
+            grep -E '^error' "$log" | head -n 8 | cut -c1-500 | sed 's/^/::notice::/' || true
+            exit "$status"
+          done
+      - name: checkout visual-novel-template
+        uses: actions/checkout@v4
+        with:
+          repository: DRincs-Productions/visual-novel-template
+          ref: ${{ inputs.template_ref }}
+          path: visual-novel-template
+      - name: build visual-novel-template
+        working-directory: visual-novel-template
+        run: |
+          echo "::notice::visual-novel-template $(git rev-parse HEAD)"
+          npm install
+          npm run build
+      # Startup: the Windows smoke command (--game --media-matrix) and its
+      # pass conditions (no panic, game_page ran, media matrix baseline,
+      # WebGPU teardown passed).
+      - name: startup on lavapipe
+        id: startup
+        continue-on-error: true
+        timeout-minutes: 7
+        env:
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-game-storage
+        run: |
+          exe="$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe"
+          log="$RUNNER_TEMP/blitz-game.log"
+          set +e +o pipefail
+          timeout 300 "$exe" --game visual-novel-template/dist --media-matrix > "$log" 2>&1
+          status=$?
+          set -e
+          echo "::notice::startup exit=$status"
+          grep -F '"check":"game_page"' "$log" | head -n 1 | grep -oE '"(pathname|start_menu_like)":("[^"]*"|[a-z]+)' | paste -sd ' ' - | sed 's/^/::notice::startup route: /' || true
+          grep -F '"check":"game_frame_pacing"' "$log" | head -n 1 | cut -c1-600 | sed 's/^/::notice::/' || true
+          grep -F '"check":"gpu_teardown"' "$log" | head -n 1 | cut -c1-500 | sed 's/^/::notice::/' || true
+          if grep -q 'panicked' "$log"; then
+            echo "::error::startup: the probe panicked $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400)"
+            exit 1
+          fi
+          grep -Fq '"check":"game_page","status":"ran"' "$log" || { echo "::error::startup: no game_page report (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2))"; exit 1; }
+          grep -Fq '"check":"media_matrix_baseline","status":"passed"' "$log" || { echo "::error::startup: media matrix baseline failed"; exit 1; }
+          grep -Fq '"check":"gpu_teardown","status":"passed"' "$log" || { echo "::error::startup: WebGPU teardown not passed"; exit 1; }
+      # Save/Load: the Windows story command (--story) and the
+      # game_hud_save_load gate's conditions on its log (exactly one result
+      # line, status passed). game_story itself is reported, not required.
+      - name: story and HUD Save/Load on lavapipe
+        id: save_load
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 17
+        env:
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-story-storage
+          ROVES_PROBE_STORY_SCREENSHOT: ${{ runner.temp }}/blitz-story.png
+        run: |
+          exe="$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe"
+          log="$RUNNER_TEMP/blitz-story.log"
+          set +e +o pipefail
+          timeout 900 "$exe" --game visual-novel-template/dist --story > "$log" 2>&1
+          status=$?
+          [ "$status" -eq 124 ] && echo "::notice::story harness killed by timeout 900 s"
+          story=$(grep -F '"check":"game_story"' "$log" | head -n 1)
+          echo "::notice::story exit=$status $(printf '%s' "${story:-no game_story result}" | cut -c1-700)"
+          printf '%s' "$story" | grep -oE '"pacing":\{[^}]*\}' | cut -c1-500 | sed 's/^/::notice::story pacing: /'
+          lines=$(grep -F 'ROVES_PROBE_RESULT {"check":"game_hud_save_load",' "$log")
+          count=$(printf '%s' "$lines" | grep -c .)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::game_hud_save_load: expected exactly one result line, found $count (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400))"
+            exit 1
+          fi
+          if ! printf '%s' "$lines" | grep -Fq 'ROVES_PROBE_RESULT {"check":"game_hud_save_load","status":"passed"'; then
+            echo "::error::game_hud_save_load: not passed $(printf '%s' "$lines" | cut -c1-900)"
+            exit 1
+          fi
+          echo "::notice::game_hud_save_load passed $(printf '%s' "$lines" | cut -c1-700)"
+      # Skip: the Windows gate's command and conditions, unchanged.
+      - name: Skip through name confirmation on lavapipe
+        id: skip
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        timeout-minutes: 12
+        env:
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-skip-storage
+        run: |
+          exe="$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe"
+          log="$RUNNER_TEMP/blitz-story-skip.log"
+          set +e +o pipefail
+          timeout 600 "$exe" --game visual-novel-template/dist --story-skip > "$log" 2>&1
+          status=$?
+          lines=$(grep -F 'ROVES_PROBE_RESULT {"check":"game_story_skip",' "$log")
+          count=$(printf '%s' "$lines" | grep -c .)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::game_story_skip: exit=$status, expected exactly one result line, found $count (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400))"
+            exit 1
+          fi
+          if ! printf '%s' "$lines" | grep -Fq 'ROVES_PROBE_RESULT {"check":"game_story_skip","status":"passed"'; then
+            echo "::error::game_story_skip: not passed $(printf '%s' "$lines" | cut -c1-900)"
+            exit 1
+          fi
+          expected=false
+          if [ "$ROVES_PROBE_JITLESS" = 1 ]; then expected=true; fi
+          if ! printf '%s' "$lines" | grep -Fq "ROVES_PROBE_RESULT {\"check\":\"game_story_skip\",\"status\":\"passed\",\"jitless\":$expected,"; then
+            echo "::error::game_story_skip: expected jitless=$expected for mode ${{ matrix.mode }} $(printf '%s' "$lines" | cut -c1-300)"
+            exit 1
+          fi
+          if [ "$status" -ne 0 ]; then
+            echo "::error::game_story_skip passed, but the probe exited with $status"
+            exit 1
+          fi
+          echo "::notice::game_story_skip passed $(printf '%s' "$lines" | cut -c1-900)"
+      # The comparison counts only if every run that created a WebGPU device
+      # reports wgpu's Vulkan backend on a Cpu-type llvmpipe adapter; the
+      # startup run must report one. Writes one summary row per gate.
+      - name: lavapipe comparison summary
+        if: ${{ !cancelled() }}
+        env:
+          STARTUP: ${{ steps.startup.outcome }}
+          SAVE_LOAD: ${{ steps.save_load.outcome }}
+          SKIP: ${{ steps.skip.outcome }}
+        run: |
+          template_sha=$(git -C visual-novel-template rev-parse HEAD 2>/dev/null || echo unknown)
+          invalid=0
+          {
+            echo "### lavapipe ${{ matrix.mode }}"
+            echo
+            echo "Roves \`${{ github.sha }}\`, visual-novel-template \`$template_sha\`, ICD \`${VK_DRIVER_FILES:-none}\`"
+            echo
+            echo "| Gate | Result | Adapter |"
+            echo "| --- | --- | --- |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          for row in "startup:blitz-game.log:$STARTUP" "save_load:blitz-story.log:$SAVE_LOAD" "skip:blitz-story-skip.log:$SKIP"; do
+            IFS=: read -r gate file outcome <<< "$row"
+            adapter=$(grep -F '"check":"gpu_adapter"' "$RUNNER_TEMP/$file" 2>/dev/null | head -n 1 \
+              | grep -oE '"(backend|device_type|name|driver_info)":"[^"]*"' | paste -sd ' ' -)
+            if [ -z "$adapter" ]; then
+              [ "$gate" = startup ] && { echo "::error::$gate: no gpu_adapter line, CPU Vulkan adapter not identified"; invalid=1; }
+              adapter="no gpu_adapter line"
+            elif ! { printf '%s' "$adapter" | grep -Fq '"backend":"Vulkan"' \
+                && printf '%s' "$adapter" | grep -Fq '"device_type":"Cpu"' \
+                && printf '%s' "$adapter" | grep -qi 'llvmpipe'; }; then
+              echo "::error::$gate: adapter is not lavapipe ($adapter); comparison invalid"
+              invalid=1
+            fi
+            echo "::notice::lavapipe ${{ matrix.mode }} $gate=$outcome template=$template_sha adapter: $adapter"
+            echo "| $gate | $outcome | ${adapter//|/\\|} |" >> "$GITHUB_STEP_SUMMARY"
+          done
+          [ "$invalid" -eq 0 ] || exit 1
+          [ "$STARTUP" = success ] && [ "$SAVE_LOAD" = success ] && [ "$SKIP" = success ]
+      - name: upload lavapipe logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: blitz-probe-lavapipe-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/cargo-build-*.log
+            ${{ runner.temp }}/blitz-game.log
+            ${{ runner.temp }}/blitz-story.log
+            ${{ runner.temp }}/blitz-story-skip.log
+            ${{ runner.temp }}/blitz-story.png
           retention-days: 7
           if-no-files-found: warn
 

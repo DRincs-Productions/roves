@@ -2671,3 +2671,22 @@ Lettura: se `tex2_1080_s*` resta nell'ordine delle decine di ms e
 frame. In quel caso la causa è nel contenuto Pixi del template e il passo
 successivo è contare passate, draw e target per batch. Se invece la
 latenza scala con pixel e campioni, o cresce nel tempo, WARP è il limite.
+
+### Confronto lavapipe (diagnostico, opt-in)
+
+Il job `linux-lavapipe` di `blitz-probe.yml` parte solo con dispatch
+manuale `lavapipe` o con `[lavapipe]` nel messaggio del commit di un push
+che tocca la probe. Compila la stessa probe in debug su Ubuntu 24.04 e
+installa Mesa lavapipe con la stessa selezione dell'ICD del workflow
+Netrender (`VK_DRIVER_FILES` su un solo manifest), con
+`DENO_WEBGPU_BACKEND=vulkan`. Sul template originale esegue, in normal e
+JITless, gli stessi comandi e le stesse condizioni dello smoke di avvio,
+del gate `game_hud_save_load` e del gate `game_story_skip` di Windows.
+Il riepilogo riporta SHA della probe e del template, esito per gate e
+l'adattatore di ogni run. Il confronto è valido solo con backend
+`Vulkan`, tipo `Cpu` e nome `llvmpipe`. Lo SHA del template deve essere
+uguale a quello del report di compatibilità Windows; per fissarlo,
+usare l'input `template_ref`. Il job ha `continue-on-error` e non
+modifica i gate Windows. Lettura: se lavapipe supera Save/Load e Skip
+dove WARP scade, il limite è specifico di WARP; se fallisce allo stesso
+punto, il problema riguarda il WebGPU software in generale.
