@@ -248,6 +248,41 @@ jobs:
           teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms|device)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
           [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)"
           echo "::notice::WebGPU fixture (dx12) teardown: $teardown"
+      # Diagnostic only (run 44134799443, JITless: the template's slowest batch
+      # took 17369.9 ms for 8 submits / 4 rAF with zero texture bytes, the
+      # menu's first batches <= 57.8 ms). Controlled raw-WebGPU frame on the
+      # same runner adapter, no Pixi and no template: per-frame completion
+      # latency by canvas backing (1920x1080 vs 960x540), MSAA 1/4, full-screen
+      # texture draws, Pixi's second (uniform copy) submit, and a constant
+      # workload over 40 frames. Loaded into the already built probe through
+      # ROVES_PROBE_WEBGPU_SCENARIO (reported in the webgpu_pixi_8_19_0 slot).
+      # continue-on-error, separate storage, never touches the game runs.
+      - name: WARP frame cost matrix (diagnostic, JITless)
+        if: ${{ !cancelled() && matrix.mode == 'jitless' }}
+        continue-on-error: true
+        timeout-minutes: 7
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: '1'
+          ROVES_PROBE_WEBGPU: '1'
+          ROVES_PROBE_WEBGPU_SCENARIO: ${{ github.workspace }}/support/blitz-v8-probe/fixtures/warp-cost/scenario.js
+          DENO_WEBGPU_BACKEND: dx12
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-warp-cost-storage
+        run: |
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          [ -x "$exe" ] || { echo "::notice::WARP cost matrix skipped: probe executable missing"; exit 0; }
+          log="$RUNNER_TEMP/blitz-warp-cost.log"
+          set +e +o pipefail
+          timeout 330 "$exe" > "$log" 2>&1
+          status=$?
+          line=$(grep -F '"check":"webgpu_pixi_8_19_0"' "$log" | head -n 1)
+          if [ -z "$line" ]; then
+            echo "::notice::WARP cost matrix exit=$status: no result line (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-300))"
+            exit 0
+          fi
+          echo "::notice::WARP cost matrix exit=$status $(printf '%s' "$line" | cut -c1-3500)"
+          gpu=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1 | grep -oE '"(backend|device_type|name)":"[^"]*"' | paste -sd ' ' -)
+          echo "::notice::WARP cost matrix adapter: ${gpu:-no gpu_adapter line}"
       # Diagnostic only (run 42684745291: normal mode reached the template menu,
       # then the teardown device_poll Wait timed out after 120 s; JITless passed).
       # Re-runs the same unmodified template once per forced wgpu backend

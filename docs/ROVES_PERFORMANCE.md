@@ -2608,3 +2608,39 @@ iniziale ha contato una singola chiamata da 8.294.400 byte e al massimo
 631 ms di tempo CPU. Questa misura non spiega le attese ripetute.
 Il confronto successivo deve isolare il costo dei render pass e della
 risoluzione senza cambiare il template o i gate di storia e Skip.
+
+La CI 44134799443 (JITless) separa i batch lenti dagli upload. Nel test
+base i batch completati restano sotto 57,8 ms, ma il batch pendente alla
+chiusura ha già 1.405 ms. In Story il pacing rinvia 7.035 tick su 7.164.
+Il batch completato più lento dura 17.369,9 ms con 8 submit, 4 rAF e
+zero byte di texture; in Skip arriva a 18.000 ms, sempre senza byte.
+L'unico `writeTexture` è di 8.294.400 byte, cioè un'immagine 1920 × 1080,
+e `copyExternalImageToTexture` costa al massimo 630,7 ms di CPU. Gli
+upload non spiegano quindi gli stalli ripetuti.
+
+I due submit per rAF vengono da PixiJS 8.19.0, non dalla probe:
+`GpuUniformBatchPipe` copia gli UBO con un submit separato e
+`GpuEncoderSystem.postrender` invia il frame. Unirli nel motore non
+ridurrebbe il lavoro GPU e cambierebbe l'ordine osservabile delle risorse.
+Chromium `f2700724` (`third_party/blink/renderer/modules/webgpu/
+gpu_canvas_context.cc`, `getCurrentTexture`) usa come backing proprio
+`canvas.width/height` e crea una texture nuova per frame da un pool.
+Ridurre il backing nel motore cambierebbe dimensioni e readback del
+canvas, quindi non è un intervento ammesso. Chrome DevTools MCP non era
+autorizzato in questa sessione: nessun riferimento Chrome raccolto.
+
+Esperimento controllato: `support/blitz-v8-probe/fixtures/warp-cost/
+scenario.js` è caricato con `ROVES_PROBE_WEBGPU_SCENARIO` nella probe già
+compilata, su DX12 forzato, nel job JITless (passo diagnostico, senza
+effetti sui gate del gioco). Senza Pixi né template, disegna un frame
+con la stessa forma attraverso il contesto canvas della probe. Misura la
+latenza di completamento di ogni frame con `onSubmittedWorkDone`. Varia
+il backing (1920 × 1080 contro 960 × 540), MSAA 1/4, i draw a schermo
+intero di un'immagine 1920 × 1080 (2 o 8) e il secondo submit di Pixi.
+Un carico costante di 40 frame verifica se la latenza cresce nel tempo.
+La configurazione `empty` misura il bias costante della misura.
+Lettura: se `tex2_1080_s*` resta nell'ordine delle decine di ms e
+`growth` non cresce, né la risoluzione né i submit spiegano i 4 s per
+frame. In quel caso la causa è nel contenuto Pixi del template e il passo
+successivo è contare passate, draw e target per batch. Se invece la
+latenza scala con pixel e campioni, o cresce nel tempo, WARP è il limite.
