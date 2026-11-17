@@ -89,6 +89,15 @@ jobs:
             fi
             exit "$status"
           done
+      # Milestone for steps that only need the probe executable (the packaged
+      # launch smoke): its success proves this run built the current sources,
+      # not a stale binary restored from the target-directory cache.
+      - name: build probe executable
+        id: probe_build
+        shell: bash
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+        run: cargo build --locked --manifest-path support/blitz-v8-probe/Cargo.toml
       - name: run probe
         shell: bash
         env:
@@ -607,7 +616,11 @@ jobs:
       # --window-frames. Packed: the boot archive is extracted into the shared
       # per-install cache (<LOCALAPPDATA>/<manifest name>/cache/<id>, emptied
       # first) and data.pack only on the JSON module's first request.
+      # Independent of the earlier template/HUD/Skip/window gates: it runs
+      # whenever this run built the probe, so a failing gate above still fails
+      # the job but no longer hides the packaged-launch result.
       - name: packaged launch without arguments (loose files and .pack)
+        if: ${{ !cancelled() && steps.probe_build.outcome == 'success' }}
         timeout-minutes: 12
         shell: pwsh
         env:
@@ -717,6 +730,7 @@ jobs:
             ${{ runner.temp }}/blitz-game.log
             ${{ runner.temp }}/blitz-game-*.log
             ${{ runner.temp }}/blitz-webgpu-fixture-*.log
+            ${{ runner.temp }}/blitz-warp-cost.log
             ${{ runner.temp }}/blitz-game.png
             ${{ runner.temp }}/blitz-settings.log
             ${{ runner.temp }}/blitz-story.log
