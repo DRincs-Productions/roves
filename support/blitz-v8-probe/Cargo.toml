@@ -90,6 +90,10 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 # The CSP implementation Roves' production engine uses (root Cargo.lock 0.8.1):
 # document connect-src for remote fetch.
 content-security-policy = "=0.8.1"
+# The shared packed-content library the Servo shell links (support/content-packer):
+# manifest, boot and on-demand extraction and per-install cache of a packaged
+# `.pack` launch (src/launch.rs). Not duplicated here.
+roves-content-packer = { path = "../content-packer" }
 # Already locked (through content-security-policy/deno_net): the per-bundle storage id of a
 # packaged launch, SHA-256 of the canonical bundle path, the same digest and
 # 8-byte prefix the Servo shell's content-packer uses for its cache directory.

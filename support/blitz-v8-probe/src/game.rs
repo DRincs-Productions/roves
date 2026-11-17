@@ -37,6 +37,9 @@ pub struct GameContent {
     /// The document parsed at `GAME_URL`: `index.html` for `--game`, the
     /// `launch.json` entry for a packaged launch (src/launch.rs).
     entry_html: String,
+    /// Packed content of a packaged launch: `root` is its extraction cache and
+    /// archives past the boot set are extracted on first access.
+    packed: Option<Arc<crate::launch::PackedContent>>,
 }
 
 impl GameContent {
@@ -47,6 +50,7 @@ impl GameContent {
             return Some(Arc::new(Self {
                 root: bundled.content_root.clone(),
                 entry_html: bundled.entry_html.clone(),
+                packed: bundled.packed.clone(),
             }));
         }
         let mut args = crate::launch::args().skip(1);
@@ -56,6 +60,7 @@ impl GameContent {
                 return Some(Arc::new(Self {
                     root,
                     entry_html: "index.html".to_owned(),
+                    packed: None,
                 }));
             }
         }
@@ -89,10 +94,28 @@ impl GameContent {
         Some(full)
     }
 
+    /// [`Self::path_for`], then, for packed content, extraction of the archive
+    /// holding the file if it was not extracted yet. A failed extraction is
+    /// reported (`ROVES_PROBE_GAME_PACK_ERROR`) and the file treated as
+    /// unavailable, never replaced by other content.
+    fn file_for(&self, scheme: &str, host: Option<&str>, path: &str) -> Result<PathBuf, String> {
+        let full = self
+            .path_for(scheme, host, path)
+            .ok_or("not a game://content/ path")?;
+        if let Some(packed) = &self.packed {
+            packed
+                .ensure_available(&full)
+                .inspect_err(|error| eprintln!("ROVES_PROBE_GAME_PACK_ERROR {error}"))?;
+        }
+        Ok(full)
+    }
+
     /// Bytes of a `game://content/...` file (the probe's `fetch`), if it exists.
     pub fn read(&self, url: &str) -> Option<Vec<u8>> {
         let url = deno_core::url::Url::parse(url).ok()?;
-        let path = self.path_for(url.scheme(), url.host_str(), url.path())?;
+        let path = self
+            .file_for(url.scheme(), url.host_str(), url.path())
+            .ok()?;
         std::fs::read(path).ok()
     }
 
@@ -133,7 +156,10 @@ impl GameNetProvider {
             let data = data_url::DataUrl::process(url.as_str()).ok()?;
             return data.decode_to_vec().ok().map(|(bytes, _fragment)| bytes);
         }
-        let path = self.0.path_for(url.scheme(), url.host_str(), url.path())?;
+        let path = self
+            .0
+            .file_for(url.scheme(), url.host_str(), url.path())
+            .ok()?;
         std::fs::read(path).ok()
     }
 }
@@ -178,6 +204,7 @@ mod tests {
         GameNetProvider(Arc::new(GameContent {
             root: root.to_path_buf(),
             entry_html: "index.html".to_owned(),
+            packed: None,
         }))
     }
 
@@ -212,6 +239,7 @@ mod tests {
         let content = GameContent {
             root: PathBuf::from("game-root"),
             entry_html: "index.html".to_owned(),
+            packed: None,
         };
         let path = |path: &str| content.path_for("game", Some("content"), path);
         assert_eq!(
@@ -255,6 +283,7 @@ mod tests {
         let content = GameContent {
             root: bundled.content_root.clone(),
             entry_html: bundled.entry_html.clone(),
+            packed: None,
         };
         assert!(content.read("game://content/main.js").is_some());
         assert!(content.read("game://content/../launch.json").is_none());
@@ -300,9 +329,50 @@ mod tests {
         let invalid = resolve("{");
         let loose = resolve(r#"{"content_dir":null,"url":"dist/index.html","args":[]}"#);
         std::fs::remove_dir_all(&dir).ok();
-        assert!(packed.unwrap_err().contains("--content-compress none"));
+        // Packed content without its manifest: an error, not the fixture run.
+        assert!(packed.unwrap_err().contains("manifest.json"));
         assert!(escape.is_err() && missing.is_err() && invalid.is_err());
         loose.unwrap();
+    }
+
+    // Packed layout (`--content-compress auto`, fixtures/bundle-packed): the boot
+    // archive is extracted before the page loads and becomes game://content/;
+    // the archive of a file the entry document does not name is extracted on
+    // its first request.
+    #[test]
+    fn packaged_packed_layout_extracts_boot_then_on_demand() {
+        let (root, exe, cache) = crate::launch::packed_test_bundle("game");
+        let launch =
+            crate::launch::resolve_into(vec!["play".into()], Some(&exe), None, Some(cache.clone()))
+                .unwrap();
+        let bundled = launch.bundled.as_ref().expect("packaged launch");
+        let content = GameContent {
+            root: bundled.content_root.clone(),
+            entry_html: bundled.entry_html.clone(),
+            packed: bundled.packed.clone(),
+        };
+        let boot = cache.join("game.html").is_file() && cache.join("main.js").is_file();
+        let lazy_before = cache.join("data/lazy.json").exists();
+        let lazy = content.read("game://content/data/lazy.json");
+        let module = content.read("game://content/main.js");
+        let escape = content.read("game://content/../launch.json");
+        let missing = content.read("game://content/missing.js");
+        std::fs::remove_dir_all(&root).ok();
+
+        assert_eq!(bundled.content_root, cache);
+        assert_eq!(bundled.entry_html, "game.html");
+        assert_eq!(
+            bundled.window_title.as_deref(),
+            Some("Roves bundle fixture")
+        );
+        let cache = cache.to_string_lossy().into_owned();
+        assert_eq!(launch.args, ["play", "--game", cache.as_str(), "--window"]);
+        assert!(boot, "boot archive extracted at launch");
+        assert!(!lazy_before, "the non-boot archive waits for a request");
+        let lazy = String::from_utf8(lazy.expect("extracted on first access")).unwrap();
+        assert!(lazy.contains("lazy-pack ok"), "{lazy}");
+        assert!(module.is_some());
+        assert!(escape.is_none() && missing.is_none());
     }
 }
 
@@ -329,10 +399,8 @@ impl ModuleLoader for GameModuleLoader {
         let load = || {
             let path = self
                 .0
-                .path_for(specifier.scheme(), specifier.host_str(), specifier.path())
-                .ok_or_else(|| {
-                    JsErrorBox::type_error(format!("not a game:// module: {specifier}"))
-                })?;
+                .file_for(specifier.scheme(), specifier.host_str(), specifier.path())
+                .map_err(|error| JsErrorBox::type_error(format!("{specifier}: {error}")))?;
             let code = std::fs::read(&path)
                 .map_err(|error| JsErrorBox::generic(format!("{specifier}: {error}")))?;
             let json = path

@@ -1,3 +1,26 @@
+## 2026-11-17 - Blitz probe: packaged launch of packed (`.pack`) content
+
+Changed: `support/blitz-v8-probe/src/{launch.rs,game.rs}`, `Cargo.toml`/`Cargo.lock` and
+`netrender-window/Cargo.toml`/`Cargo.lock`, `fixtures/bundle-loose/dist/{main.js,data/lazy.json}`,
+`fixtures/bundle-packed/` (new), `README.md`, `.github/workflows/blitz-probe.yml`,
+`.gitattributes`. The no-argument packaged launch now also accepts the default
+`--content-compress auto` layout (`launch.json` with `content_dir`, a `manifest.json` and
+`.pack` archives; on macOS under `Contents/Resources/`, as the Servo shell reads it). It links
+the shared `support/content-packer` library instead of duplicating it: `extract::resolve_dest`
+picks the same per-install cache the Servo shell uses, `extract::extract_boot` extracts the boot
+archives (with its content-hash invalidation) before the page is parsed, synchronously because
+the probe has no boot splash, and `extract::ensure_file_available` extracts any other archive the
+first time a `game://content/` request (Blitz resources, modules, `fetch`) touches one of its
+files. A manifest of another format version, an entry document outside the bundle or missing from
+the boot set, a missing or corrupt archive is an explicit error (`ROVES_PROBE_LAUNCH_ERROR`, or
+`ROVES_PROBE_GAME_PACK_ERROR` on access), never a fallback. Supported compression is exactly the
+packer's: zstd-compressed tar and plain tar for already-compressed media. Loose and `--game`/CLI
+runs, per-bundle storage (now rooted through the shared `extract::game_data_dir`), the `game://`
+policy and the `ROVES_EXTRA_ARGS` diagnostics opt-in are unchanged. New in the probe graphs:
+`roves-content-packer` (path) with `tar`, `zstd 0.14.4`, `bpaf`, `sha2 0.11` (additions only).
+The CI packaged smoke runs both fixtures; the packed one checks the shared cache, the boot
+extraction and the on-demand extraction of `data.pack`.
+
 ## 2026-11-16 - Netrender window: solid filled vector paths and a path-over-canvas check
 
 Changed: `support/blitz-v8-probe/src/netrender_window.rs`, `support/blitz-v8-probe/fixtures/netrender-window/index.html`, `support/blitz-v8-probe/netrender-window/check_log.py`, `.github/workflows/netrender-window.yml`, `support/blitz-v8-probe/README.md`, `TODO.md`, `docs/handoff/2026-11-15-netrender-blitz.md`. Opt-in Netrender path only; no new dependency, no change to the default probe graph or renderer, the template or any release. A solid `Fill` that is not an axis-aligned rectangle (curves, rotated or skewed boxes, any polygon) is now translated with Netrender's public `Scene::push_shape`: a `SceneShape` with the recorded path's verbs one to one (`f32` points, as in Vello's own encoding), the fill transform as a Netrender transform, the clip stack's device rect, and a premultiplied color with a single draw's group opacity folded in. Netrender d2f13ca5's `SceneShape` has no fill-rule field and its emitter always fills `NonZero`, so even-odd fills fall back once to `GpuWindowRenderer`, as do non-solid brushes, paths without an initial `MoveTo`, coordinates that are not finite as `f32` and non-rectangular resource/canvas fills. Non-rectangular clips, strokes and shadows still fall back. New fixture scenario `ROVES_PROBE_NETRENDER_SCENARIO=path`: after the unchanged six-pixel read back, the page shows a hidden 50% green `border-radius: 50%` circle over the WebGPU canvas and a 50% green square under `rotate(45deg)` over `#before`; `netrender_window_path` checks five pixels (inside each shape, the circle's box corner, the diamond's tip beyond the unrotated square and the unrotated square's corner). Gate: `check_log.py path`. Chromium f2700724 `cc/paint` `DrawPathOp` comparison is in the module docs. Verified locally: `cargo fmt --check`, `cargo check --locked --bins --tests` of the default probe and the isolated manifest, the gate on 13 synthetic logs, and the real blitz-paint recording of the shown fixture on Windows (one NonZero solid fill each, 4 cubics for the circle, a 45 degree transform for the diamond, no layers; every check pixel inside exactly the expected shapes). Not run: the opt-in unit tests, any window or pixel (CI).

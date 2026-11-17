@@ -105,11 +105,22 @@ CI entry: `.github/workflows/blitz-probe.yml` (Windows, `cargo check --locked` a
 
 Started with no arguments and a `launch.json` next to the executable, the probe runs the
 bundled game instead of the fixtures: the same rule and file the Servo shell reads
-(`ports/servoshell/desktop/bundle_launch.rs`). Supported layout: loose files only
-(`mach bundle`/Packmaster `--content-compress none`), i.e.
-`{"content_dir": null, "url": "<dir>/<entry>.html", "args": [...]}`; it becomes
-`--game <dir> --window` with `<entry>.html` as the document at `game://content/`, so origin,
-URL checks, CSP/fetch policy and window close are the `--game` ones. The window takes
+(`ports/servoshell/desktop/bundle_launch.rs`). Both layouts written by `mach bundle`/Packmaster:
+loose files (`--content-compress none`), i.e.
+`{"content_dir": null, "url": "<dir>/<entry>.html", "args": [...]}`, which becomes
+`--game <dir> --window` with `<entry>.html` as the document at `game://content/`; and packed
+content (`--content-compress auto`, the default), i.e. `{"content_dir": "<dir>", "url": null}`
+with `manifest.json` and `.pack` archives in `<dir>` (under `Contents/Resources/` on macOS).
+Packed content goes through the shared `support/content-packer` library, as in the Servo shell:
+the boot archives are extracted, before the page is parsed and without a splash, into the same
+per-install cache (`<user cache>/<manifest name>/cache/<id>`, rebuilt when the manifest's content
+hash changes), which becomes `--game`'s directory with the manifest's `entry_html` as document;
+any other archive is extracted the first time a `game://content/` request touches one of its
+files. Supported compression is the packer's: zstd-compressed tar, and plain tar for archives
+of already-compressed media. A manifest of another format version, a missing or corrupt archive
+or an entry document outside the boot set is an error (`ROVES_PROBE_LAUNCH_ERROR` at launch,
+`ROVES_PROBE_GAME_PACK_ERROR` on access), never a fallback. Origin, URL checks, CSP/fetch policy
+and window close are the `--game` ones. The window takes
 `--window-title` from `args` and gets normal decorations; other Servo options (`--window-size`)
 are reported and ignored. localStorage, and the IndexedDB subset stored through it, persist
 per bundle under `<user cache>/roves/blitz-webstorage/<id>`, where `<id>` is the first 8 bytes
@@ -117,13 +128,15 @@ per bundle under `<user cache>/roves/blitz-webstorage/<id>`, where `<id>` is the
 content-packer derives its cache directory: two copies of a game never share storage, the
 same folder reached through `.`/`..`, a symlink/junction or other letter case keeps one id, and
 a moved bundle starts fresh storage. An explicit `ROVES_PROBE_STORAGE_DIR` still overrides it;
-fixture and `--game` runs keep the shared temporary directory. Packed content (`content_dir` set, `.pack`) and an
-invalid `launch.json` exit with `ROVES_PROBE_LAUNCH_ERROR` (code 2) instead of running the
-fixtures. Diagnostics are enabled only explicitly through `ROVES_EXTRA_ARGS` (e.g.
-`--mcp-discover` in a `dev-mcp` build). Fixture layout: `fixtures/bundle-loose/`; CI copies the
-built probe next to it, starts it without arguments (`ROVES_EXTRA_ARGS=--window-frames 300`)
-and checks the entry module ran at `game://content/`, the window title, the per-bundle storage
-directory and a clean exit through the window close path. Entry-document URLs are checked per
+fixture and `--game` runs keep the shared temporary directory. An invalid `launch.json` exits
+with `ROVES_PROBE_LAUNCH_ERROR` (code 2) instead of running the fixtures. Diagnostics are enabled only explicitly through `ROVES_EXTRA_ARGS` (e.g.
+`--mcp-discover` in a `dev-mcp` build). Fixture layouts: `fixtures/bundle-loose/` and
+`fixtures/bundle-packed/` (its two zstd archives packed from the loose sources; a unit test fails
+when they drift). CI copies the built probe next to each, starts it without arguments
+(`ROVES_EXTRA_ARGS=--window-frames 300`) and checks the entry module and its JSON module ran at
+`game://content/`, the window title, the per-bundle storage directory and a clean exit through
+the window close path; for the packed one also the shared cache, the boot extraction and the
+on-demand extraction of the JSON module's archive. Entry-document URLs are checked per
 segment on every platform (`..`, `\`, `:` drive or stream prefixes refused); symlinks inside the
 content directory are followed, since the bundle author controls them.
 

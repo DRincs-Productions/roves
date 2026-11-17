@@ -7,3 +7,6 @@ tests/wpt/** linguist-vendored
 *.jpg binary
 *.ico binary
 *.icns binary
+
+# Packed-content fixtures (zstd tar archives).
+*.pack binary

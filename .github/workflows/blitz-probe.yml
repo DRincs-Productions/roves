@@ -37,8 +37,8 @@ jobs:
     # 77: room for the normal-mode WebGPU fixture (200 s), backend comparison
     # (up to 3 x 200 s), story harness (600 s) and Skip gate (600 s) after the
     # primary smoke run, so a hang there cannot cancel the job and hide results;
-    # +6 for the bounded packaged-launch smoke (step timeout 6).
-    timeout-minutes: 83
+    # +12 for the bounded packaged-launch smoke, loose and packed (step timeout 12).
+    timeout-minutes: 89
     strategy:
       fail-fast: false
       matrix:
@@ -107,7 +107,9 @@ jobs:
           # null-not-zero serialization, QPC units/errors. No PresentMon needed.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::
           # Packaged launch (src/launch.rs): per-bundle storage id, explicit
-          # ROVES_PROBE_STORAGE_DIR and non-bundled runs unchanged.
+          # ROVES_PROBE_STORAGE_DIR and non-bundled runs unchanged; packed
+          # fixture in step with the loose sources, cache reuse/invalidation
+          # and explicit errors for broken packed content.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml launch::
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
@@ -594,14 +596,19 @@ jobs:
             Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 40
             throw "window mode failed with exit code $($process.ExitCode)"
           }
-      # Packaged (double-click) launch, src/launch.rs: the built probe copied
-      # next to the loose-file fixture's launch.json and started with no
-      # arguments and no ROVES_PROBE_STORAGE_DIR. Checks the bundled entry
-      # document ran at game://content/, the OS window carried the bundle's
-      # title, the per-bundle storage directory, and a clean exit through the
-      # window close path after ROVES_EXTRA_ARGS' --window-frames.
-      - name: packaged loose-file launch without arguments
-        timeout-minutes: 6
+      # Packaged (double-click) launch, src/launch.rs, for both bundle layouts:
+      # loose files (fixtures/bundle-loose, --content-compress none) and packed
+      # content (fixtures/bundle-packed, zstd .pack archives from the shared
+      # content-packer). The built probe is copied next to each launch.json and
+      # started with no arguments and no ROVES_PROBE_STORAGE_DIR. Checks the
+      # bundled entry document and its JSON module ran at game://content/, the
+      # OS window carried the bundle's title, the per-bundle storage directory
+      # and a clean exit through the window close path after ROVES_EXTRA_ARGS'
+      # --window-frames. Packed: the boot archive is extracted into the shared
+      # per-install cache (<LOCALAPPDATA>/<manifest name>/cache/<id>, emptied
+      # first) and data.pack only on the JSON module's first request.
+      - name: packaged launch without arguments (loose files and .pack)
+        timeout-minutes: 12
         shell: pwsh
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
@@ -609,48 +616,68 @@ jobs:
         run: |
           Remove-Item Env:ROVES_PROBE_STORAGE_DIR -ErrorAction SilentlyContinue
           $built = Join-Path $env:RUNNER_TEMP 'blitz-probe-target/debug/roves-blitz-v8-probe.exe'
-          $bundle = Join-Path $env:RUNNER_TEMP 'blitz-bundle-loose'
-          Remove-Item -Recurse -Force $bundle -ErrorAction SilentlyContinue
-          Copy-Item -Recurse support/blitz-v8-probe/fixtures/bundle-loose $bundle
-          $exe = Join-Path $bundle 'play.exe'
-          Copy-Item $built $exe
-          $log = Join-Path $env:RUNNER_TEMP 'blitz-bundle-launch.log'
-          $err = Join-Path $env:RUNNER_TEMP 'blitz-bundle-launch.err'
-          $process = Start-Process -FilePath $exe -WorkingDirectory $bundle -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -NoNewWindow
-          # The real OS window title, sampled while the window is open.
-          $title = $null
-          $deadline = (Get-Date).AddSeconds(240)
-          while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
-            $process.Refresh()
-            if ($process.MainWindowTitle) { $title = $process.MainWindowTitle }
-            Start-Sleep -Milliseconds 100
-          }
-          if (-not $process.HasExited) { $process.Kill(); throw 'the packaged launch did not exit within 240 s' }
-          $process.WaitForExit()
-          Select-String -Path $log -Pattern 'ROVES_PROBE_STAGE (bundled_launch|game_page|game_window)|ROVES_PROBE_LAUNCH_STORAGE|"check":"(game_page|gpu_window_prepare|game_window_closed)"' | ForEach-Object { $_.Line.Substring(0, [Math]::Min(600, $_.Line.Length)) }
-          Get-Content $err -ErrorAction SilentlyContinue | Select-String -Pattern 'ROVES_PROBE_LAUNCH|panicked' | ForEach-Object { $_.Line }
+          $packedCache = Join-Path $env:LOCALAPPDATA 'Roves bundle fixture'
+          Remove-Item -Recurse -Force $packedCache -ErrorAction SilentlyContinue
           $failures = @()
-          if ($process.ExitCode -ne 0) { $failures += "exit code $($process.ExitCode)" }
-          if (Select-String -Path $log, $err -Pattern 'panicked' -Quiet) { $failures += 'panic' }
-          if (-not (Select-String -Path $log -Pattern 'ROVES_PROBE_STAGE bundled_launch ' -SimpleMatch -Quiet)) { $failures += 'no bundled_launch stage (launch.json not used)' }
-          $page = Select-String -Path $log -Pattern '"check":"game_page","status":"ran"' -SimpleMatch | Select-Object -First 1
-          if (-not $page) { $failures += 'no game_page report' }
-          elseif ($page.Line -notmatch 'bundle ok game://content/') { $failures += 'the entry module did not run at game://content/' }
-          if (-not (Select-String -Path $log -Pattern '"check":"game_window_closed","status":"ran","reason":"frame_limit"' -SimpleMatch -Quiet)) { $failures += 'the game window did not close after --window-frames' }
-          Write-Host "window title: '$title'"
-          if ($title -ne 'Roves bundle fixture') { $failures += "window title '$title'" }
-          $storage = Select-String -Path $log -Pattern '^ROVES_PROBE_LAUNCH_STORAGE (.*)$' | Select-Object -First 1
-          $root = Join-Path $env:LOCALAPPDATA 'roves\blitz-webstorage'
-          if (-not $storage) { $failures += 'no storage directory reported' }
-          else {
-            $dir = $storage.Matches[0].Groups[1].Value
-            if ((Split-Path $dir -Parent) -ne $root -or (Split-Path $dir -Leaf) -notmatch '^[0-9a-f]{16}$' -or -not (Test-Path $dir)) { $failures += "storage directory $dir is not a per-bundle directory under $root" }
+          foreach ($layout in 'loose', 'packed') {
+            $bundle = Join-Path $env:RUNNER_TEMP "blitz-bundle-$layout"
+            Remove-Item -Recurse -Force $bundle -ErrorAction SilentlyContinue
+            Copy-Item -Recurse "support/blitz-v8-probe/fixtures/bundle-$layout" $bundle
+            $exe = Join-Path $bundle 'play.exe'
+            Copy-Item $built $exe
+            $log = Join-Path $env:RUNNER_TEMP "blitz-bundle-$layout.log"
+            $err = Join-Path $env:RUNNER_TEMP "blitz-bundle-$layout.err"
+            $process = Start-Process -FilePath $exe -WorkingDirectory $bundle -RedirectStandardOutput $log -RedirectStandardError $err -PassThru -NoNewWindow
+            # The real OS window title, sampled while the window is open.
+            $title = $null
+            $deadline = (Get-Date).AddSeconds(240)
+            while (-not $process.HasExited -and (Get-Date) -lt $deadline) {
+              $process.Refresh()
+              if ($process.MainWindowTitle) { $title = $process.MainWindowTitle }
+              Start-Sleep -Milliseconds 100
+            }
+            if (-not $process.HasExited) { $process.Kill(); $failures += "${layout}: did not exit within 240 s"; continue }
+            $process.WaitForExit()
+            Write-Host "== $layout"
+            Select-String -Path $log -Pattern 'ROVES_PROBE_STAGE (bundled_launch|game_page|game_window)|ROVES_PROBE_LAUNCH_(STORAGE|PACKED)|"check":"(game_page|gpu_window_prepare|game_window_closed)"' | ForEach-Object { $_.Line.Substring(0, [Math]::Min(600, $_.Line.Length)) }
+            Get-Content $err -ErrorAction SilentlyContinue | Select-String -Pattern 'ROVES_PROBE_LAUNCH|ROVES_PROBE_GAME_(PACK_ERROR|MISSING)|panicked' | ForEach-Object { $_.Line }
+            $mine = @()
+            if ($process.ExitCode -ne 0) { $mine += "exit code $($process.ExitCode)" }
+            if (Select-String -Path $log, $err -Pattern 'panicked' -Quiet) { $mine += 'panic' }
+            if (Select-String -Path $err -Pattern 'ROVES_PROBE_GAME_PACK_ERROR' -Quiet) { $mine += 'on-demand extraction failed' }
+            $stage = Select-String -Path $log -Pattern '^ROVES_PROBE_STAGE bundled_launch (.*) (\S+)$' | Select-Object -First 1
+            if (-not $stage) { $mine += 'no bundled_launch stage (launch.json not used)' }
+            $page = Select-String -Path $log -Pattern '"check":"game_page","status":"ran"' -SimpleMatch | Select-Object -First 1
+            if (-not $page) { $mine += 'no game_page report' }
+            elseif ($page.Line -notmatch 'bundle ok game://content/ lazy-pack ok') { $mine += 'the entry module and its JSON module did not run at game://content/' }
+            if (-not (Select-String -Path $log -Pattern '"check":"game_window_closed","status":"ran","reason":"frame_limit"' -SimpleMatch -Quiet)) { $mine += 'the game window did not close after --window-frames' }
+            Write-Host "window title: '$title'"
+            if ($title -ne 'Roves bundle fixture') { $mine += "window title '$title'" }
+            $storage = Select-String -Path $log -Pattern '^ROVES_PROBE_LAUNCH_STORAGE (.*)$' | Select-Object -First 1
+            $root = Join-Path $env:LOCALAPPDATA 'roves\blitz-webstorage'
+            if (-not $storage) { $mine += 'no storage directory reported' }
+            else {
+              $dir = $storage.Matches[0].Groups[1].Value
+              if ((Split-Path $dir -Parent) -ne $root -or (Split-Path $dir -Leaf) -notmatch '^[0-9a-f]{16}$' -or -not (Test-Path $dir)) { $mine += "storage directory $dir is not a per-bundle directory under $root" }
+            }
+            if ($layout -eq 'packed') {
+              if (-not (Select-String -Path $log -Pattern 'ROVES_PROBE_LAUNCH_PACKED 2 archives (2 compressed, 1 boot)' -SimpleMatch -Quiet)) { $mine += 'packed manifest not read as 2 zstd archives, 1 boot' }
+              if ($stage) {
+                $cache = $stage.Matches[0].Groups[1].Value
+                if ((Split-Path (Split-Path $cache -Parent) -Parent) -ne $packedCache -or (Split-Path $cache -Leaf) -notmatch '^[0-9a-f]{16}$') { $mine += "content root $cache is not the shared per-install cache under $packedCache" }
+                foreach ($file in 'game.html', 'main.js', 'data/lazy.json', '.roves-extracted/__boot__.pack', '.roves-extracted/data.pack') {
+                  if (-not (Test-Path (Join-Path $cache $file))) { $mine += "cache lacks $file" }
+                }
+                if (Test-Path (Join-Path $bundle 'dist/game.html')) { $mine += 'content extracted next to the bundle' }
+              }
+            }
+            if ($mine) {
+              Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 20
+              Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 30
+              $failures += $mine | ForEach-Object { "${layout}: $_" }
+            }
           }
-          if ($failures) {
-            Get-Content $log -ErrorAction SilentlyContinue | Select-Object -Last 20
-            Get-Content $err -ErrorAction SilentlyContinue | Select-Object -Last 30
-            throw "packaged launch: $($failures -join '; ')"
-          }
+          if ($failures) { throw "packaged launch: $($failures -join '; ')" }
       # Unified API compatibility report (support/blitz-v8-probe/compat): the
       # declared implementation state of each API and template path, combined
       # with this run's ROVES_PROBE_RESULT evidence from every log above, as
@@ -685,8 +712,8 @@ jobs:
             ${{ runner.temp }}/blitz-window.png
             ${{ runner.temp }}/blitz-window.log
             ${{ runner.temp }}/blitz-window.err
-            ${{ runner.temp }}/blitz-bundle-launch.log
-            ${{ runner.temp }}/blitz-bundle-launch.err
+            ${{ runner.temp }}/blitz-bundle-*.log
+            ${{ runner.temp }}/blitz-bundle-*.err
             ${{ runner.temp }}/blitz-game.log
             ${{ runner.temp }}/blitz-game-*.log
             ${{ runner.temp }}/blitz-webgpu-fixture-*.log
