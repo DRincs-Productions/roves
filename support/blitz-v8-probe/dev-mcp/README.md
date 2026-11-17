@@ -66,6 +66,99 @@ Run `node smoke.mjs --list-only` after `npm ci` to check MCP tool discovery.
 Run `node smoke.mjs <probe executable>` to check evaluation, error handling, and
 shutdown against the included HTML fixture in a real window.
 
+## Downloadable Windows bundle (experimental)
+
+A `blitz-probe.yml` run dispatched with `dev_mcp`, or a push whose head
+commit message contains `[dev-mcp]`, publishes the `roves-dev-mcp-windows`
+artifact from the normal leg. `package-windows.ps1` stages it. Ordinary
+probe artifacts do not change. The artifact contains:
+
+| Path | Content |
+| --- | --- |
+| `roves-blitz-v8-probe.exe` | debug probe built with `--features dev-mcp` |
+| `node/node.exe`, `node/LICENSE` | the Node runtime used by the CI smoke test (Node 22) |
+| `mcp/` | this sidecar, its README, `smoke.mjs`, the demo `fixture/` and its locked production `node_modules/` |
+| `deno-extension-sources/` | JS/TS sources and licences of the locked `deno_*` crates |
+| `bundle-info.json` | commit, Node version and crate list |
+
+Both legs smoke-test the staged copy with its own `node.exe`, in launch mode
+and in `--discover` mode. During that test, `C:\roves-cargo\registry\src`
+is replaced by a junction to `deno-extension-sources`, so the executable
+cannot read the build machine's registry. Only the normal leg uploads the
+bundle. The executable is the same in both legs, so set
+`ROVES_PROBE_JITLESS=1` to run it JIT-less.
+
+The bundle is experimental, not a product package. Node SEA was not used
+because a single-file executable would need a bundler, a CommonJS entry point
+and `postject` in addition to the sidecar. Instead, the bundle includes the
+runtime that the smoke test used. A system Node 20 or newer also works with
+`mcp/server.mjs`.
+
+### Install contract
+
+The probe has no deno_core startup snapshot yet (see `TODO.md`). It loads
+extension JS from
+`C:\roves-cargo\registry\src\index.crates.io-*\deno_*`. Extract the
+artifact to a directory, for example `C:\roves-mcp`, and mount the shipped
+sources at that path once. No administrator rights are needed:
+
+```powershell
+New-Item -ItemType Directory -Force C:\roves-cargo\registry | Out-Null
+New-Item -ItemType Junction -Path C:\roves-cargo\registry\src -Target C:\roves-mcp\deno-extension-sources
+```
+
+Skip this if `C:\roves-cargo\registry\src` already exists, for example as a
+developer junction to a Cargo registry that holds the same locked crates.
+The executable also needs the Microsoft Visual C++ runtime that Windows
+usually provides. To check the extracted bundle, run
+`C:\roves-mcp\node\node.exe C:\roves-mcp\mcp\smoke.mjs C:\roves-mcp\roves-blitz-v8-probe.exe`,
+then run the same command with `--discover` added.
+
+Register the MCP server with absolute paths. Launch mode opens the demo
+game or any `dist` directory:
+
+```json
+{
+  "command": "C:/roves-mcp/node/node.exe",
+  "args": [
+    "C:/roves-mcp/mcp/server.mjs",
+    "C:/roves-mcp/roves-blitz-v8-probe.exe",
+    "C:/roves-mcp/mcp/fixture"
+  ]
+}
+```
+
+To use discover mode, start the game yourself with
+`C:\roves-mcp\roves-blitz-v8-probe.exe --game <dist> --window --mcp-discover`,
+then register `["C:/roves-mcp/mcp/server.mjs", "--discover"]` as the
+arguments.
+
+## Template playthrough (CI, opt-in)
+
+The same `[dev-mcp]` / `dev_mcp` runs also play the start of
+visual-novel-template through this MCP server, in both legs. The template
+already passes its live props and narration actions to Pixi'VN's
+`Game.testing` (`useTestingBridge`: `setProps` and `setActions`), but only in
+`vite dev`. CI builds a disposable copy where `template-testing-optin.mjs`
+removes that DEV gate and adds the `Game.testing.enable()` call the Vite plugin
+makes in dev. The template repository, the ordinary build and its native-UI
+Save/Load/Skip gates are unchanged, and Roves gets no new capability: the
+bridge is ordinary page JavaScript.
+
+`playthrough.mjs <probe> <dist> [--out result.json]` launches the game in a
+window with isolated storage, waits up to 240 s for `window.pixiVN` with live
+`navigate`/`t`/`toast` props, a registered `navigate` action and the `start`
+label. It then calls `start("start")`, `continue()`, `goBack()`,
+`selectChoice()` and `setInput()`. Since `evaluate_script` rejects promises,
+every async action is scheduled in the page and polled for at most 60 s. The
+run requires the narration route, at least four distinct dialogue states,
+`goBack` returning to the previous line and replaying the next one, the name
+prompt answered with `RovesMcp`, that name in later dialogue, no errors in
+`pixiVN.errors` and a clean exit after the client disconnects. It prints one
+`ROVES_MCP_PLAYTHROUGH` JSON line with timed milestones; CI annotates it and
+uploads `blitz-mcp-playthrough-<mode>`. Each MCP request still has the
+server's 5 s limit, so a longer stall of the game thread fails the run.
+
 ## Chromium reference
 
 Chromium `f2700724f59fb554eb19a4f827b1d256e2a13286` routes protocol messages

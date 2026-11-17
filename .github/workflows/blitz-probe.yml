@@ -37,8 +37,10 @@ jobs:
     # 77: room for the normal-mode WebGPU fixture (200 s), backend comparison
     # (up to 3 x 200 s), story harness (600 s) and Skip gate (600 s) after the
     # primary smoke run, so a hang there cannot cancel the job and hide results;
-    # +12 for the bounded packaged-launch smoke, loose and packed (step timeout 12).
-    timeout-minutes: 89
+    # +12 for the bounded packaged-launch smoke, loose and packed (step timeout 12);
+    # +10 for the opt-in downloadable dev MCP bundle smoke (step timeout 10);
+    # +22 for the opt-in MCP template playthrough (step timeouts 10 + 12).
+    timeout-minutes: 121
     strategy:
       fail-fast: false
       matrix:
@@ -743,6 +745,7 @@ jobs:
           if-no-files-found: warn
       # Runs after the ordinary probe executable has been uploaded.
       - name: smoke-test optional dev MCP bridge
+        id: dev_mcp
         if: ${{ !cancelled() && (inputs.dev_mcp || contains(github.event.head_commit.message, '[dev-mcp]')) }}
         shell: bash
         env:
@@ -754,6 +757,116 @@ jobs:
           npm ci
           node smoke.mjs "$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe.exe"
           node smoke.mjs "$CARGO_TARGET_DIR/debug/roves-blitz-v8-probe.exe" --discover
+      # Experimental downloadable bundle (dev-mcp/README.md, "Downloadable
+      # Windows bundle"): the dev-mcp executable built above, the Node runtime,
+      # the sidecar with its locked dependencies, the demo fixture and the Deno
+      # extension sources. The staged copy is smoke-tested in launch and
+      # discover mode with C:/roves-cargo/registry/src replaced by a junction to
+      # the shipped sources, so the executable cannot fall back to the build
+      # registry. The original directory is restored for the cache post step.
+      - name: package and smoke the downloadable dev MCP bundle
+        id: dev_mcp_bundle
+        if: ${{ !cancelled() && steps.dev_mcp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+        run: |
+          $bundle = Join-Path $env:RUNNER_TEMP 'roves-dev-mcp-windows'
+          ./support/blitz-v8-probe/dev-mcp/package-windows.ps1 `
+            -Probe (Join-Path $env:RUNNER_TEMP 'blitz-probe-target/debug/roves-blitz-v8-probe.exe') -Out $bundle
+          $src = 'C:\roves-cargo\registry\src'
+          $saved = 'C:\roves-cargo\registry\src.ci-build'
+          Rename-Item $src $saved
+          try {
+            New-Item -ItemType Junction -Path $src -Target (Join-Path $bundle 'deno-extension-sources') | Out-Null
+            $node = Join-Path $bundle 'node/node.exe'
+            $smoke = Join-Path $bundle 'mcp/smoke.mjs'
+            $exe = Join-Path $bundle 'roves-blitz-v8-probe.exe'
+            & $node $smoke $exe
+            if ($LASTEXITCODE -ne 0) { throw "packaged launch-mode smoke failed ($LASTEXITCODE)" }
+            & $node $smoke $exe --discover
+            if ($LASTEXITCODE -ne 0) { throw "packaged discover-mode smoke failed ($LASTEXITCODE)" }
+          } finally {
+            if (Test-Path $src) { (Get-Item $src).Delete() }
+            Rename-Item $saved $src
+          }
+      # Published from the normal leg only: the executable is identical in both
+      # legs (JIT-less is the run-time ROVES_PROBE_JITLESS=1), which the JIT-less
+      # leg still smoke-tests above. Conventional artifacts are unchanged.
+      - name: upload downloadable dev MCP bundle
+        if: ${{ !cancelled() && matrix.mode == 'normal' && steps.dev_mcp_bundle.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: roves-dev-mcp-windows
+          path: ${{ runner.temp }}/roves-dev-mcp-windows/
+          retention-days: 7
+          if-no-files-found: error
+      # Opt-in MCP playthrough (dev-mcp/README.md, "Template playthrough"). A
+      # disposable copy of the template already built above gets only its own
+      # DEV-gated Game.testing bridge switched on (template-testing-optin.mjs:
+      # live setProps/setActions, no faked props), then playthrough.mjs drives
+      # it through the stdio MCP server in a native window with isolated
+      # storage. The ordinary template build and the native-UI Save/Load/Skip
+      # gates above stay unchanged.
+      - name: build the Game.testing copy of visual-novel-template
+        id: dev_mcp_template
+        if: ${{ !cancelled() && steps.dev_mcp.outcome == 'success' }}
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          copy="$RUNNER_TEMP/vnt-testing"
+          rm -rf "$copy"
+          [ -d visual-novel-template/node_modules ] || { echo "::error::MCP playthrough NOT RUN: visual-novel-template dependencies missing"; exit 1; }
+          cp -a visual-novel-template "$copy"
+          rm -rf "$copy/dist" "$copy/.git"
+          node support/blitz-v8-probe/dev-mcp/template-testing-optin.mjs "$copy"
+          log="$RUNNER_TEMP/blitz-mcp-template-build.log"
+          if ! (cd "$copy" && npm run build) > "$log" 2>&1; then
+            tail -n 30 "$log" | cut -c1-400 | sed 's/^/::notice::/'
+            echo "::error::the Game.testing copy of visual-novel-template did not build"
+            exit 1
+          fi
+          [ -f "$copy/dist/index.html" ] || { echo "::error::the Game.testing copy produced no dist/index.html"; exit 1; }
+      - name: MCP playthrough of visual-novel-template via Game.testing
+        if: ${{ !cancelled() && steps.dev_mcp_template.outcome == 'success' }}
+        timeout-minutes: 12
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+        run: |
+          log="$RUNNER_TEMP/blitz-mcp-playthrough.log"
+          set +e
+          node support/blitz-v8-probe/dev-mcp/playthrough.mjs \
+            "$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe" \
+            "$RUNNER_TEMP/vnt-testing/dist" --out "$RUNNER_TEMP/blitz-mcp-playthrough.json" \
+            > "$log" 2> "$RUNNER_TEMP/blitz-mcp-playthrough.err"
+          status=$?
+          set -e
+          line=$(grep -m 1 -F 'ROVES_MCP_PLAYTHROUGH ' "$log" || true)
+          if [ -z "$line" ]; then
+            echo "::error::MCP playthrough exit=$status without a result line: $(grep -m 1 -A 1 -E 'panicked|Error' "$RUNNER_TEMP/blitz-mcp-playthrough.err" | tr '\n' ' ' | cut -c1-500)"
+            exit 1
+          fi
+          node -e '
+            const r = JSON.parse(process.argv[1].slice("ROVES_MCP_PLAYTHROUGH ".length));
+            for (const m of r.milestones) console.log("::notice::playthrough " + JSON.stringify(m).slice(0, 600));
+            console.log("::notice::playthrough " + r.status + " jitless=" + r.jitless + " distinct=" + r.distinct_states + " shutdown=" + JSON.stringify(r.shutdown) + " ms=" + r.duration_ms);
+            if (r.status !== "passed") console.log("::error::MCP playthrough failed: " + String(r.reason).slice(0, 900));
+          ' "$line"
+          grep -Fq 'ROVES_MCP_PLAYTHROUGH {"status":"passed"' "$log" && [ "$status" -eq 0 ] || exit 1
+      - name: upload MCP playthrough evidence
+        if: ${{ !cancelled() && steps.dev_mcp_template.outcome != 'skipped' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: blitz-mcp-playthrough-${{ matrix.mode }}
+          path: |
+            ${{ runner.temp }}/blitz-mcp-template-build.log
+            ${{ runner.temp }}/blitz-mcp-playthrough.log
+            ${{ runner.temp }}/blitz-mcp-playthrough.err
+            ${{ runner.temp }}/blitz-mcp-playthrough.json
+          retention-days: 7
+          if-no-files-found: warn
 
   # Opt-in performance experiment only (docs/ROVES_PERFORMANCE.md, "A/B Vello
   # CPU multithreading"): release executables of the single-thread reference
