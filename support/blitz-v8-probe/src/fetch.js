@@ -138,12 +138,28 @@ globalThis.__rovesCreateFetch = (dependencies) => {
       headers.set("origin", origin);
       // "manual": deno_fetch returns the 3xx itself, so the hop is never
       // followed without passing through this loop.
-      const response = await denoFetch(current.href, {
-        method: request.method,
-        headers,
-        redirect: "manual",
-        signal: request.signal,
-      });
+      let response;
+      try {
+        response = await denoFetch(current.href, {
+          method: request.method,
+          headers,
+          redirect: "manual",
+          signal: request.signal,
+        });
+      } catch (error) {
+        // Diagnostics only (the error is rethrown unchanged): deno_fetch reports
+        // transport failures (DNS, net_policy::PublicResolver refusals, connection
+        // reset/closed, TLS) as TypeError "fetch failed" with the detail only in
+        // `.cause`, which games such as Pixi'VN drop when they log `.message`.
+        if (error?.cause !== undefined) {
+          const cause = String(error.cause?.message ?? error.cause)
+            .replace(/https?:\/\/[^\s)]+/gi, "[URL]")
+            .replace(/[\r\n]+/g, " ")
+            .slice(0, 500);
+          core.print(`ROVES_PROBE_FETCH_FAILED ${current.origin}: fetch failed; cause: ${cause}\n`, true);
+        }
+        throw error;
+      }
       urls.push(current.href);
       const allowOrigin = response.headers.get("access-control-allow-origin");
       if (allowOrigin !== "*" && allowOrigin !== origin) {
