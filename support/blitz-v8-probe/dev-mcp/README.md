@@ -82,9 +82,9 @@ probe artifacts do not change. The artifact contains:
 | `bundle-info.json` | commit, Node version and crate list |
 
 Both legs smoke-test the staged copy with its own `node.exe`, in launch mode
-and in `--discover` mode. During that test, `C:\roves-cargo\registry\src`
-is replaced by a junction to `deno-extension-sources`, so the executable
-cannot read the build machine's registry. Only the normal leg uploads the
+and in `--discover` mode, after moving it to a folder whose path contains
+spaces. During that test, `C:\roves-cargo\registry\src` is renamed away, so
+the executable cannot read the build machine's registry. Only the normal leg uploads the
 bundle. The executable is the same in both legs, so set
 `ROVES_PROBE_JITLESS=1` to run it JIT-less.
 
@@ -96,19 +96,13 @@ runtime that the smoke test used. A system Node 20 or newer also works with
 
 ### Install contract
 
-The probe has no deno_core startup snapshot yet (see `TODO.md`). It loads
-extension JS from
-`C:\roves-cargo\registry\src\index.crates.io-*\deno_*`. Extract the
-artifact to a directory, for example `C:\roves-mcp`, and mount the shipped
-sources at that path once. No administrator rights are needed:
-
-```powershell
-New-Item -ItemType Directory -Force C:\roves-cargo\registry | Out-Null
-New-Item -ItemType Junction -Path C:\roves-cargo\registry\src -Target C:\roves-mcp\deno-extension-sources
-```
-
-Skip this if `C:\roves-cargo\registry\src` already exists, for example as a
-developer junction to a Cargo registry that holds the same locked crates.
+Extract the artifact to any folder on any drive, for example `C:\roves-mcp`;
+no administrator rights, junction or fixed path are needed. The probe has no
+deno_core startup snapshot yet (see `TODO.md`), so it reads the Deno extension
+JS at start-up from the `deno-extension-sources` folder next to the
+executable. Keep that folder beside `roves-blitz-v8-probe.exe`: when it is
+present, the executable never reads the build machine's Cargo registry, and a
+missing file stops the start-up with an error naming the expected path.
 The executable also needs the Microsoft Visual C++ runtime that Windows
 usually provides. To check the extracted bundle, run
 `C:\roves-mcp\node\node.exe C:\roves-mcp\mcp\smoke.mjs C:\roves-mcp\roves-blitz-v8-probe.exe`,

@@ -122,6 +122,10 @@ jobs:
           # fixture in step with the loose sources, cache reuse/invalidation
           # and explicit errors for broken packed content.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml launch::
+          # Bundle-relative extension sources (src/ext_sources.rs): the bundled
+          # copy is evaluated without the build path, and a missing bundled file
+          # fails runtime creation instead of falling back to the build registry.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml ext_sources::
           cargo run --locked --manifest-path support/blitz-v8-probe/Cargo.toml 2>&1 | tee "$RUNNER_TEMP/blitz-probe.log"
           grep -q '"jitless":${{ matrix.mode == 'jitless' && 'true' || 'false' }}' "$RUNNER_TEMP/blitz-probe.log"
           grep -Fq '"check":"web_audio_backend_offline","status":"passed"' "$RUNNER_TEMP/blitz-probe.log"
@@ -760,10 +764,13 @@ jobs:
       # Experimental downloadable bundle (dev-mcp/README.md, "Downloadable
       # Windows bundle"): the dev-mcp executable built above, the Node runtime,
       # the sidecar with its locked dependencies, the demo fixture and the Deno
-      # extension sources. The staged copy is smoke-tested in launch and
-      # discover mode with C:/roves-cargo/registry/src replaced by a junction to
-      # the shipped sources, so the executable cannot fall back to the build
-      # registry. The original directory is restored for the cache post step.
+      # extension sources. The executable reads extension JS from the
+      # deno-extension-sources folder next to it (src/ext_sources.rs). The staged
+      # copy is moved to a folder whose path contains spaces on the runner's temp
+      # drive and smoke-tested in launch and discover mode while
+      # C:/roves-cargo/registry/src is renamed away, so the executable can use
+      # neither the build registry nor a fixed install path. The original
+      # directory is restored for the cache post step.
       - name: package and smoke the downloadable dev MCP bundle
         id: dev_mcp_bundle
         if: ${{ !cancelled() && steps.dev_mcp.outcome == 'success' }}
@@ -775,21 +782,22 @@ jobs:
           $bundle = Join-Path $env:RUNNER_TEMP 'roves-dev-mcp-windows'
           ./support/blitz-v8-probe/dev-mcp/package-windows.ps1 `
             -Probe (Join-Path $env:RUNNER_TEMP 'blitz-probe-target/debug/roves-blitz-v8-probe.exe') -Out $bundle
+          $moved = Join-Path $env:RUNNER_TEMP 'moved dev mcp (copy)'
+          Copy-Item -Recurse $bundle $moved
           $src = 'C:\roves-cargo\registry\src'
           $saved = 'C:\roves-cargo\registry\src.ci-build'
           Rename-Item $src $saved
           try {
-            New-Item -ItemType Junction -Path $src -Target (Join-Path $bundle 'deno-extension-sources') | Out-Null
-            $node = Join-Path $bundle 'node/node.exe'
-            $smoke = Join-Path $bundle 'mcp/smoke.mjs'
-            $exe = Join-Path $bundle 'roves-blitz-v8-probe.exe'
+            $node = Join-Path $moved 'node/node.exe'
+            $smoke = Join-Path $moved 'mcp/smoke.mjs'
+            $exe = Join-Path $moved 'roves-blitz-v8-probe.exe'
             & $node $smoke $exe
             if ($LASTEXITCODE -ne 0) { throw "packaged launch-mode smoke failed ($LASTEXITCODE)" }
             & $node $smoke $exe --discover
             if ($LASTEXITCODE -ne 0) { throw "packaged discover-mode smoke failed ($LASTEXITCODE)" }
           } finally {
-            if (Test-Path $src) { (Get-Item $src).Delete() }
             Rename-Item $saved $src
+            Remove-Item -Recurse -Force $moved
           }
       # Published from the normal leg only: the executable is identical in both
       # legs (JIT-less is the run-time ROVES_PROBE_JITLESS=1), which the JIT-less

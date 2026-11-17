@@ -326,7 +326,7 @@ fn run_worker(
     };
     tokio.block_on(async {
         let mut runtime = JsRuntime::new(RuntimeOptions {
-            extensions: vec![
+            extensions: crate::ext_sources::portable(vec![
                 deno_webidl::deno_webidl::init(),
                 deno_web::deno_web::init(
                     Arc::new(deno_web::BlobStore::default()),
@@ -335,7 +335,7 @@ fn run_worker(
                     deno_web::InMemoryBroadcastChannel::default(),
                 ),
                 roves_blitz_worker_scope::init(),
-            ],
+            ]),
             ..Default::default()
         });
         {

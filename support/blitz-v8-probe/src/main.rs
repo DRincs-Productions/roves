@@ -25,6 +25,7 @@ mod audio;
 mod box_tree;
 #[cfg(feature = "dev-mcp")]
 mod dev_mcp;
+mod ext_sources;
 mod frame_timings;
 mod frame_trace;
 mod game;
@@ -2890,7 +2891,8 @@ fn main() {
         let mut runtime = JsRuntime::new(RuntimeOptions {
             #[cfg(feature = "dev-mcp")]
             inspector: dev_mcp::enabled(),
-            extensions: vec![
+            // Extension JS from the bundle's deno-extension-sources, if shipped.
+            extensions: ext_sources::portable(vec![
                 deno_webidl::deno_webidl::init(),
                 deno_web::deno_web::init(
                     Arc::new(deno_web::BlobStore::default()),
@@ -2932,7 +2934,7 @@ fn main() {
                 // --window GPU presentation ops (captured by dom.js).
                 presentation::roves_blitz_presentation::init(),
                 roves_blitz_v8_probe::init(),
-            ],
+            ]),
             module_loader: game.as_ref().map(|game| game.module_loader()),
             ..Default::default()
         });

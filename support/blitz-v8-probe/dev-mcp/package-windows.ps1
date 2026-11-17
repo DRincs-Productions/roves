@@ -34,10 +34,11 @@ Copy-Item -Recurse (Join-Path $PSScriptRoot 'fixture') $mcp
 Push-Location $mcp
 try { npm ci --omit=dev --ignore-scripts --no-audit --no-fund } finally { Pop-Location }
 
-# Without a startup snapshot, deno_core loads extension JS from the absolute
-# crate paths of the build machine (C:/roves-cargo/registry/src/<index>/...).
+# Without a startup snapshot, deno_core records extension JS by the absolute
+# crate paths of the build machine (<CARGO_HOME>/registry/src/<index>/...).
 # Ship the JS/TS files and licences of every locked deno_* crate, keeping the
-# <index>/<crate>-<version> layout, so that tree can be mounted at that path.
+# <index>/<crate>-<version> layout: the executable reads them from this folder
+# next to itself instead (src/ext_sources.rs).
 $crates = [regex]::Matches((Get-Content -Raw $Lock), '(?m)^name = "(deno_[^"]+)"\r?\nversion = "([^"]+)"') |
   ForEach-Object { "$($_.Groups[1].Value)-$($_.Groups[2].Value)" }
 if (-not $crates) { throw "no deno_* crates in $Lock" }
