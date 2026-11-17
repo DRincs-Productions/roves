@@ -2598,6 +2598,15 @@ storia raggiunge le prime due battute prima del timeout complessivo.
 Skip scade senza risultato. La durata dei batch completati va quindi
 letta insieme a quella dei batch rimasti pendenti.
 
+La matrice WebGPU controllata della [CI 44144132690](https://github.com/DRincs-Productions/roves/actions/runs/44144132690)
+riporta Microsoft Basic Render Driver. In JITless, due disegni
+testurizzati hanno una mediana di 593,5 ms a 1920 × 1080 e 174 ms
+a 960 × 540. Con quattro campioni MSAA erano 606,4 e 177,7 ms.
+Il secondo submit porta il caso 1080p da 593,5 a 616,4 ms. Il caso
+vuoto misura 31,6 ms. La probe termina al caso con otto disegni e
+non completa la misura di crescita. Questi dati isolano il costo
+dei disegni e dei pixel su WARP. Non stimano la fluidità su GTX 1050.
+
 La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
 ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
 7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s
