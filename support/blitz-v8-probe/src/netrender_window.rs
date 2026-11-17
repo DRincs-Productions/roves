@@ -10,13 +10,30 @@
 //! - The recorded Blitz scene is translated into a Netrender `Scene`
 //!   (`translate`): solid axis-aligned rectangles, rectangular clips, group
 //!   opacity over a single draw, solid-color glyph runs (`translate_glyph_run`),
-//!   and each WebGPU canvas placeholder as an external texture at its scene-op
-//!   boundary, so content painted after the canvas stays above it. Anything
-//!   else (paths, images, gradients, strokes, shadows, filters, blend modes,
+//!   solid nonzero fills of any other path, curved or transformed
+//!   (`translate_path_fill`), and each WebGPU canvas placeholder as an
+//!   external texture at its scene-op boundary, so content painted after the
+//!   canvas stays above it. Anything else (even-odd paths, images, gradients,
+//!   strokes, shadows, filters, blend modes, non-rectangular clips,
 //!   transformed canvases, and text that is stroked, gradient-filled,
 //!   synthetic bold/oblique, a variable-font instance or under group opacity)
 //!   is not translated yet: the window switches once to the existing
 //!   `GpuWindowRenderer` (`src/presentation.rs`), which stays the fallback.
+//!
+//! Paths (Chromium f2700724, `cc/paint/paint_op.h` `DrawPathOp`,
+//! `paint_op.cc` `DrawPathOp::RasterWithFlags`/`Serialize`/`Deserialize`,
+//! `paint_op_writer.cc` `Write(const SkPath&, UsePaintCache)`): Chromium
+//! records an `SkPath` (verbs, `f32` points) plus `PaintFlags` and draws it
+//! with `SkCanvas::drawPath` under the current matrix and clip. The fill type
+//! is serialized next to the path explicitly (changing it does not change the
+//! path's generation id), and out-of-process raster sends each path once,
+//! keyed by that generation id in the paint cache. Here the recorded
+//! `FillCommand` is the same triple (path, paint, matrix); its verbs map one
+//! to one to Netrender's `ScenePath`, the clip stack's device rect becomes
+//! `SceneShape::clip_rect`. No serialization or path cache is needed in one
+//! process: the path is copied into the frame's scene (one `f32` pair per
+//! point, as Vello's own encoding). Difference: `SceneShape` has no fill type
+//! (its emitter always fills nonzero), so even-odd fills fall back.
 //!
 //! Text (Chromium f2700724, `cc/paint/paint_op.h` `DrawTextBlobOp`,
 //! `paint_op.cc` `RasterWithFlags`, `paint_op_buffer_serializer.cc`): Chromium
@@ -239,6 +256,16 @@ pub enum PlanOp {
         /// Device-space clip of the enclosing layers (`None`: the viewport).
         clip: Option<[f32; 4]>,
     },
+    /// A solid nonzero fill of the recorded `kurbo::BezPath` (local space,
+    /// verbs unchanged), mapped to device space by `transform`.
+    Path {
+        path: kurbo::BezPath,
+        transform: Affine,
+        /// Straight-alpha sRGB-encoded color, group opacity folded in.
+        color: [f32; 4],
+        /// Device-space clip of the enclosing layers (`None`: the viewport).
+        clip: Option<[f32; 4]>,
+    },
 }
 
 /// Netrender's `SceneRect`/`SceneGlyphRun` colors are premultiplied (its Vello
@@ -311,6 +338,93 @@ fn translate_glyph_run(
         color: [r, g, b, a * run.brush_alpha],
         clip: (clip != viewport).then(|| rect_array(clip)),
     }))
+}
+
+/// Translates one recorded solid fill whose shape is not an axis-aligned
+/// rectangle, or names what Netrender's public `SceneShape` cannot express
+/// exactly.
+///
+/// `SceneShape` (d2f13ca5) carries `ScenePath` verbs (MoveTo, LineTo, QuadTo,
+/// CubicTo, Close: kurbo's `PathEl` one to one), a premultiplied solid fill
+/// color, a transform id and an axis-aligned device clip; its Vello emitter
+/// rebuilds the same `BezPath` and always fills it with `Fill::NonZero`. So:
+///
+/// - Even-odd fills are rejected (no fill-rule field), as are gradient, image
+///   and custom brushes (only a solid color field).
+/// - Coordinates become `f32`. Vello encodes path points and transforms as
+///   `f32` itself, so the fallback (and Vello behind Netrender) sees the same
+///   values; non-finite inputs or `f32` overflow are rejected.
+/// - A path must start with `MoveTo` (kurbo's `BezPath::line_to` asserts on an
+///   uninitialized subpath when Netrender rebuilds it).
+/// - Group opacity is folded into the color: exact for a single fill, and the
+///   caller already rejects group opacity over several draws.
+fn translate_path_fill(
+    fill: &FillCommand,
+    clip: Rect,
+    viewport: Rect,
+    group_alpha: f32,
+) -> Result<Option<PlanOp>, String> {
+    let Paint::Solid(color) = &fill.brush else {
+        return Err("gradient, image or custom fill".into());
+    };
+    if fill.fill != peniko::Fill::NonZero {
+        return Err("even-odd path fill".into());
+    }
+    let elements = fill.shape.elements();
+    if elements.is_empty() || clip.width() <= 0.0 || clip.height() <= 0.0 {
+        return Ok(None);
+    }
+    if !matches!(elements[0], PathEl::MoveTo(_)) {
+        return Err("path without an initial MoveTo".into());
+    }
+    let fits_f32 = |value: f64| (value as f32).is_finite();
+    let point_fits = |p: &Point| fits_f32(p.x) && fits_f32(p.y);
+    let points_fit = elements.iter().all(|element| match element {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => point_fits(p),
+        PathEl::QuadTo(p1, p2) => point_fits(p1) && point_fits(p2),
+        PathEl::CurveTo(p1, p2, p3) => point_fits(p1) && point_fits(p2) && point_fits(p3),
+        PathEl::ClosePath => true,
+    });
+    if !points_fit || !fill.transform.as_coeffs().into_iter().all(fits_f32) {
+        return Err("non-finite path transform or point".into());
+    }
+    let [r, g, b, a] = color.components;
+    Ok(Some(PlanOp::Path {
+        path: fill.shape.clone(),
+        transform: fill.transform,
+        color: [r, g, b, a * group_alpha],
+        clip: (clip != viewport).then(|| rect_array(clip)),
+    }))
+}
+
+/// Netrender's `ScenePath` of a recorded path: the same verbs, `f32` points.
+fn scene_path(path: &kurbo::BezPath) -> netrender::ScenePath {
+    let mut scene = netrender::ScenePath::with_capacity(path.elements().len());
+    let f = |p: Point| (p.x as f32, p.y as f32);
+    for element in path.elements() {
+        match *element {
+            PathEl::MoveTo(p) => {
+                let (x, y) = f(p);
+                scene.move_to(x, y);
+            },
+            PathEl::LineTo(p) => {
+                let (x, y) = f(p);
+                scene.line_to(x, y);
+            },
+            PathEl::QuadTo(c, p) => {
+                let ((cx, cy), (x, y)) = (f(c), f(p));
+                scene.quad_to(cx, cy, x, y);
+            },
+            PathEl::CurveTo(c1, c2, p) => {
+                let ((c1x, c1y), (c2x, c2y), (x, y)) = (f(c1), f(c2), f(p));
+                scene.cubic_to(c1x, c1y, c2x, c2y, x, y);
+            },
+            PathEl::ClosePath => {
+                scene.close();
+            },
+        }
+    }
+    scene
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -465,8 +579,16 @@ pub fn translate(
                 for layer in &mut layers {
                     layer.draws += 1;
                 }
-                let rect = axis_aligned_rect(fill.transform, &fill.shape)
-                    .ok_or("non-rectangular or transformed fill")?;
+                let Some(rect) = axis_aligned_rect(fill.transform, &fill.shape) else {
+                    if canvas_fill(fill).is_some() {
+                        return Err("non-rectangular or transformed canvas or image".into());
+                    }
+                    // Any other solid shape: a Netrender path (or a named reason).
+                    if let Some(op) = translate_path_fill(fill, clip, viewport, alpha)? {
+                        ops.push(op);
+                    }
+                    continue;
+                };
                 if let Some(resource) = canvas_fill(fill) {
                     if !is_canvas(resource) {
                         return Err("image resource that is not a WebGPU canvas".into());
@@ -600,6 +722,9 @@ pub enum Scenario {
     /// The page shows `#text` over the canvas (`netrenderFixtureShowText`),
     /// then `text_checks` at the glyph run's own geometry.
     Text,
+    /// The page shows `#circle` (over the canvas) and `#diamond` (over
+    /// `#before`) (`netrenderFixtureShowPaths`), then `PATH_CHECKS`.
+    Path,
 }
 
 impl Scenario {
@@ -608,6 +733,7 @@ impl Scenario {
             "resize" => Some(Self::Resize),
             "device-destroy" => Some(Self::DeviceDestroy),
             "text" => Some(Self::Text),
+            "path" => Some(Self::Path),
             _ => None,
         }
     }
@@ -617,9 +743,56 @@ impl Scenario {
             Self::Resize => "resize",
             Self::DeviceDestroy => "device-destroy",
             Self::Text => "text",
+            Self::Path => "path",
         }
     }
 }
+
+/// Frames presented with a filled path before the path read back.
+const PATH_SETTLE_FRAMES: u64 = 10;
+
+/// Path scenario pixels (CSS px, expected sRGB-encoded RGBA), sampled at
+/// pixel centers. `#circle` is a 60x60 `border-radius: 50%` box at (130, 90)
+/// (cubic Béziers, center (160, 120), radius 30) over the 50% blue canvas over
+/// `#before`; `#diamond` is a 40x40 box at (55, 130) under
+/// `transform: rotate(45deg)` (center (75, 150): |dx| + |dy| <= 28.28) over
+/// `#before` alone. Both are 50% green. Each shape has an inside pixel, and a
+/// control that a wrong translation would paint: the circle's bounding-box
+/// corner (painted if drawn as its box), the diamond's tip beyond the
+/// unrotated square (missing if the rotation were dropped) and the unrotated
+/// square's corner (painted if the rotation were dropped).
+const PATH_CHECKS: [(&str, f64, f64, [u8; 4]); 5] = [
+    (
+        "circle path over 50% canvas over before layer",
+        160.0,
+        120.0,
+        [64, 128, 64, 255],
+    ),
+    (
+        "canvas in the circle's box corner, outside its curve",
+        134.0,
+        94.0,
+        [128, 0, 128, 255],
+    ),
+    (
+        "diamond path center over before layer",
+        75.0,
+        150.0,
+        [128, 128, 0, 255],
+    ),
+    (
+        "diamond tip beyond the unrotated square",
+        99.0,
+        150.0,
+        [128, 128, 0, 255],
+    ),
+    (
+        "before layer in the unrotated square's corner, outside the diamond",
+        58.0,
+        133.0,
+        [255, 0, 0, 255],
+    ),
+];
 
 /// Logical size requested by the resize scenario: larger than the 640x360
 /// viewport in both directions, so the added area is checked too.
@@ -707,6 +880,11 @@ pub struct NetrenderWindowRenderer {
     text_requested: bool,
     frames_with_text: u64,
     text_reported: bool,
+    /// Filled paths drawn by Netrender (all frames).
+    paths: u64,
+    paths_requested: bool,
+    frames_with_paths: u64,
+    paths_reported: bool,
 }
 
 impl NetrenderWindowRenderer {
@@ -789,6 +967,10 @@ impl NetrenderWindowRenderer {
             text_requested: false,
             frames_with_text: 0,
             text_reported: false,
+            paths: 0,
+            paths_requested: false,
+            frames_with_paths: 0,
+            paths_reported: false,
         })
     }
 
@@ -849,6 +1031,12 @@ impl NetrenderWindowRenderer {
                 shared
                     .page_call
                     .set(Some("globalThis.netrenderFixtureShowText()"));
+            },
+            Scenario::Path => {
+                self.paths_requested = true;
+                shared
+                    .page_call
+                    .set(Some("globalThis.netrenderFixtureShowPaths()"));
             },
         }
     }
@@ -982,6 +1170,7 @@ impl NetrenderWindowRenderer {
         let mut nr_scene = netrender::Scene::new(width, height);
         let mut canvases: Vec<(wgpu::TextureView, ExternalTexturePlacement, usize)> = Vec::new();
         let mut glyph_runs = 0u64;
+        let mut paths = 0u64;
         {
             let presentation = self.presentation.borrow();
             let mut textures: HashMap<u64, wgpu::Texture> = HashMap::new();
@@ -1037,6 +1226,27 @@ impl NetrenderWindowRenderer {
                             netrender::SHARP_CLIP,
                         );
                         glyph_runs += 1;
+                    },
+                    PlanOp::Path {
+                        path,
+                        transform,
+                        color,
+                        clip,
+                    } => {
+                        let transform_id = if *transform == Affine::IDENTITY {
+                            0
+                        } else {
+                            nr_scene.push_transform(netrender_transform(*transform))
+                        };
+                        nr_scene.push_shape(netrender::SceneShape {
+                            path: scene_path(path),
+                            fill_color: Some(premultiplied(*color)),
+                            stroke: None,
+                            transform_id,
+                            clip_rect: clip.unwrap_or(netrender::NO_CLIP),
+                            clip_corner_radii: netrender::SHARP_CLIP,
+                        });
+                        paths += 1;
                     },
                     PlanOp::Canvas {
                         resource,
@@ -1145,6 +1355,7 @@ impl NetrenderWindowRenderer {
         }
         self.own.frames += 1;
         self.glyph_runs += glyph_runs;
+        self.paths += paths;
         self.own.canvas_layers += canvases.len() as u64;
         self.own.max_layers = self.own.max_layers.max(canvases.len() + 1);
         if !self.fixture {
@@ -1203,6 +1414,29 @@ impl NetrenderWindowRenderer {
                     .wgpu_device
                     .read_rgba8_texture(&master, width, height);
                 report_text(&plan, &bytes, (width, height), scale, self.frames_with_text);
+            }
+        } else if self.paths_requested && !self.paths_reported {
+            if paths > 0 {
+                self.frames_with_paths += 1;
+            }
+            if self.frames_with_paths >= PATH_SETTLE_FRAMES {
+                self.paths_reported = true;
+                let Some(gpu) = &self.gpu else { return Ok(()) };
+                let bytes = gpu
+                    .renderer
+                    .wgpu_device
+                    .read_rgba8_texture(&master, width, height);
+                report_pixels(
+                    "netrender_window_path",
+                    &PATH_CHECKS,
+                    &bytes,
+                    (width, height),
+                    scale,
+                    &format!(
+                        ",\"frames_with_paths\":{},\"paths_in_frame\":{paths}",
+                        self.frames_with_paths
+                    ),
+                );
             }
         }
         Ok(())
@@ -1370,7 +1604,7 @@ fn report_pixels(
 impl Drop for NetrenderWindowRenderer {
     fn drop(&mut self) {
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"glyph_runs\":{},\"skipped_frames\":{},\"errors\":{},\"size\":[{},{}],\"calls_after_device_lost\":{},\"fallback_reason\":{}}}",
+            "ROVES_PROBE_RESULT {{\"check\":\"netrender_window\",\"status\":\"{}\",\"netrender_frames\":{},\"canvas_layers\":{},\"glyph_runs\":{},\"paths\":{},\"skipped_frames\":{},\"errors\":{},\"size\":[{},{}],\"calls_after_device_lost\":{},\"fallback_reason\":{}}}",
             if self.device_lost {
                 "device_lost"
             } else if self.fallback_reason.is_none() && self.own.frames > 0 {
@@ -1381,6 +1615,7 @@ impl Drop for NetrenderWindowRenderer {
             self.own.frames,
             self.own.canvas_layers,
             self.glyph_runs,
+            self.paths,
             self.own.skipped_frames,
             self.own.errors,
             self.width,
@@ -1568,7 +1803,7 @@ mod tests {
             .iter()
             .filter_map(|op| match op {
                 PlanOp::Rect { rect, color } => Some((*rect, *color)),
-                PlanOp::Canvas { .. } | PlanOp::Glyphs { .. } => None,
+                PlanOp::Canvas { .. } | PlanOp::Glyphs { .. } | PlanOp::Path { .. } => None,
             })
             .collect();
         assert!(rects.contains(&([40.0, 40.0, 440.0, 240.0], [1.0, 0.0, 0.0, 1.0])));
@@ -1590,6 +1825,289 @@ mod tests {
             !plan.iter().any(|op| matches!(op, PlanOp::Glyphs { .. })),
             "#text stays hidden until the text scenario"
         );
+        assert!(
+            !plan.iter().any(|op| matches!(op, PlanOp::Path { .. })),
+            "#circle and #diamond stay hidden until the path scenario"
+        );
+    }
+
+    /// The fixture page painted by blitz-paint with `shown` hidden elements
+    /// made visible, translated (viewport 640x360, scale 1).
+    fn fixture_plan(shown: &[&str]) -> Vec<PlanOp> {
+        use blitz_dom::DocumentConfig;
+        use blitz_html::HtmlDocument;
+        use blitz_traits::shell::{ColorScheme, Viewport};
+
+        let mut html = FIXTURE.to_string();
+        for id in shown {
+            let hidden = format!("<div id=\"{id}\" class=\"hidden\">");
+            assert!(html.contains(&hidden), "fixture markup changed: {id}");
+            html = html.replace(&hidden, &format!("<div id=\"{id}\">"));
+        }
+        let mut document = HtmlDocument::from_html(&html, DocumentConfig::default());
+        document.set_viewport(Viewport::new(640, 360, 1.0, ColorScheme::Light));
+        let canvas = crate::find_element_by_id(&document, "canvas").expect("fixture canvas");
+        let presentation: SharedPresentation = Rc::default();
+        crate::presentation::attach_canvas_widget(&presentation, &mut document, canvas);
+        document.resolve(0.0);
+        let mut scene = Scene::new();
+        blitz_paint::paint_scene(&mut scene, &mut document, 1.0, 640, 360, 0, 0);
+        let presentation = presentation.borrow();
+        translate(&scene, (640, 360), |id| presentation.is_canvas(id)).expect("translated")
+    }
+
+    /// The path scenario's page state: `#circle` (cubic Béziers) and the
+    /// rotated `#diamond` translate into two Netrender paths painted after the
+    /// canvas, and every `PATH_CHECKS` pixel is discriminating on the
+    /// translated geometry itself: pixels expected green lie inside exactly
+    /// one path, the controls inside none, each at least 0.75 px from an edge
+    /// (antialiasing cannot blur them), over the layers their colors assume.
+    #[test]
+    fn path_fixture_translates_over_the_canvas() {
+        let plan = fixture_plan(&["circle", "diamond"]);
+        let canvas_index = plan
+            .iter()
+            .position(|op| matches!(op, PlanOp::Canvas { .. }))
+            .expect("canvas op");
+        let paths: Vec<_> = plan
+            .iter()
+            .enumerate()
+            .filter_map(|(index, op)| match op {
+                PlanOp::Path {
+                    path,
+                    transform,
+                    color,
+                    clip,
+                } => Some((index, path, *transform, *color, *clip)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(paths.len(), 2, "{plan:?}");
+        for (index, _, _, color, clip) in &paths {
+            assert!(*index > canvas_index, "paths paint above the canvas");
+            assert_eq!((*color, *clip), ([0.0, 1.0, 0.0, 0.5], None));
+        }
+        assert!(
+            paths.iter().any(|(_, path, ..)| path
+                .elements()
+                .iter()
+                .any(|el| matches!(el, PathEl::CurveTo(..)))),
+            "the circle is drawn with curves"
+        );
+        assert!(
+            paths.iter().any(|(_, _, transform, ..)| {
+                let [_, b, c, ..] = transform.as_coeffs();
+                b.abs() > 0.5 && c.abs() > 0.5
+            }),
+            "the diamond keeps its 45 degree rotation"
+        );
+        // Device-space paths with every subpath closed: a fill closes them
+        // implicitly, kurbo's `contains` (winding of `segments()`) does not,
+        // and blitz-paint's box paths have no `ClosePath`.
+        let device: Vec<kurbo::BezPath> = paths
+            .iter()
+            .map(|(_, path, transform, ..)| {
+                let mut closed = kurbo::BezPath::new();
+                for element in (*transform * (*path).clone()).elements() {
+                    let open = !matches!(closed.elements().last(), None | Some(PathEl::ClosePath));
+                    if matches!(element, PathEl::MoveTo(_)) && open {
+                        closed.close_path();
+                    }
+                    closed.push(*element);
+                }
+                if !matches!(closed.elements().last(), None | Some(PathEl::ClosePath)) {
+                    closed.close_path();
+                }
+                closed
+            })
+            .collect();
+        let inside = |point: Point| device.iter().filter(|path| path.contains(point)).count();
+        let canvas = Rect::new(120.0, 80.0, 280.0, 200.0);
+        let before = Rect::new(40.0, 40.0, 440.0, 240.0);
+        for (name, x, y, expected) in PATH_CHECKS {
+            let center = Point::new(x + 0.5, y + 0.5);
+            let green = expected == [64, 128, 64, 255] || expected == [128, 128, 0, 255];
+            for (dx, dy) in [
+                (0.0, 0.0),
+                (-0.75, 0.0),
+                (0.75, 0.0),
+                (0.0, -0.75),
+                (0.0, 0.75),
+            ] {
+                let count = inside(center + kurbo::Vec2::new(dx, dy));
+                assert_eq!(count, usize::from(green), "{name} ({dx}, {dy})");
+            }
+            let over_canvas = expected == [64, 128, 64, 255] || expected == [128, 0, 128, 255];
+            assert_eq!(canvas.contains(center), over_canvas, "{name}");
+            assert!(
+                before.contains(center) && center.x < AFTER_LEFT_CSS,
+                "{name}"
+            );
+        }
+    }
+
+    /// Verbs, transform, the clip stack's device rect and a single draw's
+    /// group opacity pass through; Netrender's `ScenePath` has the same verbs.
+    #[test]
+    fn paths_keep_verbs_transform_clip_and_alpha() {
+        let mut shape = kurbo::Circle::new((10.0, 10.0), 5.0).to_path(0.1);
+        shape.quad_to((0.0, 0.0), (3.0, 4.0));
+        let transform = Affine::rotate(0.3).then_translate((20.0, 30.0).into());
+        let scene = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushLayer(anyrender::recording::LayerCommand {
+                    fill: peniko::Fill::NonZero,
+                    blend: peniko::BlendMode::default(),
+                    alpha: 0.5,
+                    transform: Affine::IDENTITY,
+                    clip: Rect::new(0.0, 0.0, 50.0, 40.0).to_path(0.1),
+                    filter: None,
+                    backdrop_filter: None,
+                }),
+                RenderCommand::Fill(FillCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform,
+                    brush: Paint::Solid(peniko::Color::new([0.0, 1.0, 0.0, 0.8])),
+                    brush_transform: None,
+                    shape: shape.clone(),
+                }),
+                RenderCommand::PopLayer,
+            ],
+        };
+        let plan = translate(&scene, (64, 64), |_| false).expect("translated");
+        assert_eq!(
+            plan,
+            vec![PlanOp::Path {
+                path: shape.clone(),
+                transform,
+                color: [0.0, 1.0, 0.0, 0.4],
+                clip: Some([0.0, 0.0, 50.0, 40.0]),
+            }]
+        );
+        let ops = scene_path(&shape).ops;
+        assert_eq!(ops.len(), shape.elements().len());
+        for (op, element) in ops.iter().zip(shape.elements()) {
+            let f = |p: Point| (p.x as f32, p.y as f32);
+            match (*op, *element) {
+                (netrender::PathOp::MoveTo(x, y), PathEl::MoveTo(p))
+                | (netrender::PathOp::LineTo(x, y), PathEl::LineTo(p)) => assert_eq!((x, y), f(p)),
+                (netrender::PathOp::QuadTo(cx, cy, x, y), PathEl::QuadTo(c, p)) => {
+                    assert_eq!([(cx, cy), (x, y)], [f(c), f(p)]);
+                },
+                (netrender::PathOp::CubicTo(ax, ay, bx, by, x, y), PathEl::CurveTo(a, b, p)) => {
+                    assert_eq!([(ax, ay), (bx, by), (x, y)], [f(a), f(b), f(p)]);
+                },
+                (netrender::PathOp::Close, PathEl::ClosePath) => {},
+                other => panic!("verb mismatch {other:?}"),
+            }
+        }
+        // Group opacity over two paths cannot be folded.
+        let mut two = scene.clone();
+        two.commands.insert(2, two.commands[1].clone());
+        assert_eq!(
+            translate(&two, (64, 64), |_| false),
+            Err("group opacity over several draws".into())
+        );
+        // A path clipped away entirely paints nothing.
+        let hidden = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushClipLayer(anyrender::recording::ClipCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    clip: Rect::new(0.0, 0.0, 0.0, 40.0).to_path(0.1),
+                }),
+                fill(shape, Paint::Solid(peniko::Color::WHITE)),
+                RenderCommand::PopLayer,
+            ],
+        };
+        assert_eq!(translate(&hidden, (64, 64), |_| false), Ok(vec![]));
+    }
+
+    #[test]
+    fn unsupported_paths_are_named() {
+        let circle = kurbo::Circle::new((10.0, 10.0), 5.0).to_path(0.1);
+        let solid = Paint::Solid(peniko::Color::WHITE);
+        let with = |fill_rule, transform, brush: Paint, shape: kurbo::BezPath| Scene {
+            tolerance: 0.1,
+            commands: vec![RenderCommand::Fill(FillCommand {
+                fill: fill_rule,
+                transform,
+                brush,
+                brush_transform: None,
+                shape,
+            })],
+        };
+        let nonzero = peniko::Fill::NonZero;
+        let mut no_move = kurbo::BezPath::new();
+        no_move.push(PathEl::LineTo((4.0, 4.0).into()));
+        no_move.push(PathEl::LineTo((8.0, 0.0).into()));
+        let mut far = circle.clone();
+        far.line_to((1e300, 0.0));
+        let cases = [
+            (
+                with(
+                    peniko::Fill::EvenOdd,
+                    Affine::IDENTITY,
+                    solid.clone(),
+                    circle.clone(),
+                ),
+                "even-odd path fill",
+            ),
+            (
+                with(
+                    nonzero,
+                    Affine::IDENTITY,
+                    Paint::Gradient(peniko::Gradient::new_linear((0.0, 0.0), (1.0, 0.0))),
+                    circle.clone(),
+                ),
+                "gradient, image or custom fill",
+            ),
+            (
+                with(
+                    nonzero,
+                    Affine::IDENTITY,
+                    Paint::Resource(peniko::ImageBrush {
+                        image: ResourceId::new(),
+                        sampler: peniko::ImageSampler::default(),
+                    }),
+                    circle.clone(),
+                ),
+                "non-rectangular or transformed canvas or image",
+            ),
+            (
+                with(nonzero, Affine::IDENTITY, solid.clone(), no_move),
+                "path without an initial MoveTo",
+            ),
+            (
+                with(nonzero, Affine::IDENTITY, solid.clone(), far),
+                "non-finite path transform or point",
+            ),
+            (
+                with(
+                    nonzero,
+                    Affine::new([1.0, 0.0, 0.0, 1.0, f64::NAN, 0.0]),
+                    solid.clone(),
+                    circle.clone(),
+                ),
+                "non-finite path transform or point",
+            ),
+        ];
+        for (scene, reason) in cases {
+            assert_eq!(translate(&scene, (64, 64), |_| false), Err(reason.into()));
+        }
+        // An even-odd rectangle stays a rectangle (both rules agree on it).
+        let rect = Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.1);
+        assert!(matches!(
+            translate(
+                &with(peniko::Fill::EvenOdd, Affine::IDENTITY, solid, rect),
+                (64, 64),
+                |_| false
+            )
+            .as_deref(),
+            Ok([PlanOp::Rect { .. }])
+        ));
     }
 
     /// The text scenario's page state (`#text` shown): one glyph run, painted
@@ -2001,7 +2519,9 @@ mod tests {
             Scenario::parse("device-destroy"),
             Some(Scenario::DeviceDestroy)
         );
-        for other in ["", "Resize", "destroy", "device_destroy"] {
+        assert_eq!(Scenario::parse("text"), Some(Scenario::Text));
+        assert_eq!(Scenario::parse("path"), Some(Scenario::Path));
+        for other in ["", "Resize", "destroy", "device_destroy", "paths"] {
             assert_eq!(Scenario::parse(other), None, "{other}");
         }
     }
@@ -2055,14 +2575,20 @@ mod tests {
 
     #[test]
     fn untranslated_constructs_are_named() {
+        // Curved and rotated solid fills are paths now, not fallback reasons.
         let circle = kurbo::Circle::new((10.0, 10.0), 5.0).to_path(0.1);
         let scene = Scene {
             tolerance: 0.1,
-            commands: vec![fill(circle, Paint::Solid(peniko::Color::WHITE))],
+            commands: vec![fill(circle.clone(), Paint::Solid(peniko::Color::WHITE))],
         };
         assert_eq!(
             translate(&scene, (64, 64), |_| false),
-            Err("non-rectangular or transformed fill".into())
+            Ok(vec![PlanOp::Path {
+                path: circle,
+                transform: Affine::IDENTITY,
+                color: [1.0, 1.0, 1.0, 1.0],
+                clip: None,
+            }])
         );
         let rect = Rect::new(0.0, 0.0, 8.0, 8.0).to_path(0.1);
         let rotated = Scene {
@@ -2075,7 +2601,27 @@ mod tests {
                 shape: rect.clone(),
             })],
         };
-        assert!(translate(&rotated, (64, 64), |_| false).is_err());
+        assert!(matches!(
+            translate(&rotated, (64, 64), |_| false).as_deref(),
+            Ok([PlanOp::Path { .. }])
+        ));
+        // A non-rectangular clip still falls back.
+        let clipped = Scene {
+            tolerance: 0.1,
+            commands: vec![
+                RenderCommand::PushClipLayer(anyrender::recording::ClipCommand {
+                    fill: peniko::Fill::NonZero,
+                    transform: Affine::IDENTITY,
+                    clip: kurbo::Circle::new((10.0, 10.0), 5.0).to_path(0.1),
+                }),
+                fill(rect.clone(), Paint::Solid(peniko::Color::WHITE)),
+                RenderCommand::PopLayer,
+            ],
+        };
+        assert_eq!(
+            translate(&clipped, (64, 64), |_| false),
+            Err("non-rectangular or transformed clip".into())
+        );
         let solid = Scene {
             tolerance: 0.1,
             commands: vec![fill(rect, Paint::Solid(peniko::Color::WHITE))],

@@ -334,6 +334,69 @@ unchanged.
   Netrender layers, paths and images. Propose upstream the missing glyph fields (hint,
   glyph transform/embolden, normalized coordinates).
 
+### Eighth assignment: solid filled vector paths (2026-11-16, uncommitted, not pushed)
+
+Scope: opt-in Netrender only, while standard Blitz CI was running; no new dependency, no
+template, wiki or story-timing edit; the default probe renderer and the six-pixel, resize,
+device-loss and text gates unchanged.
+
+- **Netrender d2f13ca5 public API (read in the pinned checkout).** `Scene::push_shape(SceneShape)`:
+  `path: ScenePath` (`PathOp::{MoveTo, LineTo, QuadTo, CubicTo, Close}`, `f32`), `fill_color:
+  Option<[f32; 4]>` (premultiplied), `stroke`, `transform_id`, `clip_rect` (device-space,
+  axis-aligned, `NO_CLIP`), `clip_corner_radii`. Its Vello emitter (`vello_rasterizer/emit.rs`
+  `emit_shape`, `build_bez_path`) rebuilds the same `kurbo::BezPath` verb by verb and always calls
+  `fill(Fill::NonZero, …)`; the tile filter culls by the transformed control-point AABB
+  (conservative). **Concrete limit:** no fill-rule field, so even-odd fills cannot be represented;
+  no brush other than a solid color.
+- **Translation (`translate_path_fill`).** Every solid `Fill` that `axis_aligned_rect` does not
+  accept (curved, rotated/skewed, any polygon) becomes `PlanOp::Path` (recorded `BezPath` kept
+  as is, transform, straight color with group alpha folded, clip stack's device rect or `None`),
+  pushed as `SceneShape` with a fill only, transform via `push_transform` (identity = id 0).
+  Accepted: `Fill::NonZero`, solid brush, first element `MoveTo` (kurbo asserts on a missing
+  one when Netrender rebuilds the path), every point and transform coefficient finite as `f32`
+  (Vello itself encodes points and transforms as `f32`, so no precision is lost relative to the
+  fallback). Group opacity: exact for one fill; the existing "several draws" rule still rejects
+  the rest. Named fallbacks: `even-odd path fill`, `gradient, image or custom fill`, `path
+  without an initial MoveTo`, `non-finite path transform or point`, `non-rectangular or
+  transformed canvas or image` (resource brushes still need a rectangle). Even-odd rectangles
+  stay rectangles (both rules agree). Non-rectangular clips, strokes and shadows are unchanged
+  fallbacks.
+- **Chromium f2700724** (`cc/paint/paint_op.h` `DrawPathOp`, `paint_op.cc`
+  `RasterWithFlags`/`Serialize`/`Deserialize`, `paint_op_writer.cc` `Write(const SkPath&,
+  UsePaintCache)`): an `SkPath` (verbs, `f32` points) plus `PaintFlags`, drawn with
+  `SkCanvas::drawPath` under the current matrix and clip. The fill type is serialized explicitly
+  next to the path (changing it does not bump the generation id), and OOP raster sends each path
+  once per generation id through the paint cache. Roves maps the same triple (path, paint,
+  matrix) to `SceneShape`; one process, so no serialization or path cache, only a per-frame `f32`
+  copy of the points. Difference: no fill type in Netrender, so even-odd falls back.
+- **Fixture scenario `path`.** Hidden `#circle` (60x60 at 130,90, `border-radius: 50%`, 50% green,
+  over the canvas) and `#diamond` (40x40 at 55,130, `transform: rotate(45deg)`, 50% green, over
+  `#before` only), both left of `#after`; shown by `netrenderFixtureShowPaths()` after the
+  verified frame. After 10 frames containing a path, `netrender_window_path` reads back five
+  pixels (`PATH_CHECKS`, tolerance 2): circle inside `[64,128,64]`; the circle box's corner
+  outside the curve `[128,0,128]` (fails if drawn as its box); diamond center and its tip
+  beyond the unrotated square `[128,128,0]` (fails if the rotation is dropped); the unrotated
+  square's corner outside the diamond `[255,0,0]`. `check_log.py path`: positive gates, one page
+  call, one page `paths` event, one passed record with 5 pixels and `paths_in_frame` 2,
+  `paths > 0` in `netrender_window`, no fallback, no panic; other kinds reject the record.
+  Workflow: new step after `text`.
+- **Evidence (local, light).** `cargo fmt --check` (probe). `cargo check --locked --bins --tests`
+  clean for the default probe and the isolated manifest (pre-existing warnings only). 13 synthetic
+  logs accepted/rejected by `check_log.py` as intended. A temporary example on the default probe's
+  cache (deleted) painted the shown fixture with blitz-paint: `#circle` is one `Fill` (NonZero,
+  solid `[0,1,0,0.5]`, `translate(130,90)`, 8 elements with 4 cubics), `#diamond` one `Fill`
+  (NonZero, same color, transform `[0.7071, 0.7071, -0.7071, 0.7071, 75, 121.72]`, 4 elements,
+  no `ClosePath`), no layer around either. With subpaths closed, every check pixel center and its
+  ±0.75 px neighbours lie inside exactly the expected shapes. Note: kurbo's `contains` does not
+  close open subpaths (a fill does), so the unit test closes them first. **Not run:** the opt-in
+  unit tests (new: `path_fixture_translates_over_the_canvas`,
+  `paths_keep_verbs_transform_clip_and_alpha`, `unsupported_paths_are_named`; updated:
+  `untranslated_constructs_are_named`, `scenarios_parse_only_known_names`,
+  `fixture_scene_translates_in_paint_order`), any window or pixel (CI).
+- **Next:** with the next allowed push, read the `path` step and the Windows unit tests. Propose a
+  fill-rule field for `SceneShape` upstream (with the glyph fields). Then images, non-rectangular
+  clips and text under group opacity (Netrender layers).
+
 ## Follow-up assignments after the proof
 
 1. Translate Blitz paint commands directly where practical, reusing Netrender's

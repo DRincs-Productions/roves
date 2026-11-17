@@ -21,6 +21,13 @@
                     canvas and #before, left of #after. TEXT checks in
                     src/netrender_window.rs derive their pixels from the
                     translated glyph run itself (origins, advance, size).
+    path            the renderer calls netrenderFixtureShowPaths(): #circle (a
+                    50% green border-radius: 50% box, cubic Bezier path) over
+                    the canvas and #diamond (a 50% green square under
+                    transform: rotate(45deg)) over #before appear, both left
+                    of #after and hidden until then. PATH_CHECKS in
+                    src/netrender_window.rs (inside pixels and controls that a
+                    box-shaped or unrotated fill would get wrong).
   Page events are printed as "NETRENDER_FIXTURE_PAGE <json>" lines.
 -->
 <html>
@@ -34,6 +41,10 @@
            background: rgba(255, 255, 255, 0.5); }
   #text { position: absolute; left: 130px; top: 96px; margin: 0; white-space: pre;
           font: 48px/48px "DejaVu Sans Mono", monospace; color: rgb(255, 255, 0); }
+  #circle { position: absolute; left: 130px; top: 90px; width: 60px; height: 60px;
+            border-radius: 50%; background: rgba(0, 255, 0, 0.5); }
+  #diamond { position: absolute; left: 55px; top: 130px; width: 40px; height: 40px;
+             transform: rotate(45deg); background: rgba(0, 255, 0, 0.5); }
   .hidden { display: none; }
 </style>
 </head>
@@ -42,6 +53,8 @@
 <canvas id="canvas" width="160" height="120"></canvas>
 <div id="after"></div>
 <div id="text" class="hidden">&#x2588;&#x2588;</div>
+<div id="circle" class="hidden"></div>
+<div id="diamond" class="hidden"></div>
 <script>
 (async () => {
   const report = (event) => console.log("NETRENDER_FIXTURE_PAGE " + JSON.stringify(event));
@@ -62,6 +75,11 @@
   globalThis.netrenderFixtureShowText = () => {
     document.getElementById("text").setAttribute("class", "");
     report({ event: "text" });
+  };
+  globalThis.netrenderFixtureShowPaths = () => {
+    document.getElementById("circle").setAttribute("class", "");
+    document.getElementById("diamond").setAttribute("class", "");
+    report({ event: "paths" });
   };
   const context = document.getElementById("canvas").getContext("webgpu");
   context.configure({ device, format: "rgba8unorm", alphaMode: "premultiplied" });

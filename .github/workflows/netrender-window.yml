@@ -18,11 +18,12 @@ name: Netrender window renderer (opt-in probe build)
 #   (support/netrender-shared-device-proof/README.md, "WARP").
 # linux-lavapipe-window: first Linux build of the probe; runs the window
 #   fixture (fixtures/netrender-window) under Xvfb on Mesa lavapipe, negative
-#   and positive, gated by netrender-window/check_log.py; then three
+#   and positive, gated by netrender-window/check_log.py; then four
 #   scenarios on the positive executable (ROVES_PROBE_NETRENDER_SCENARIO):
-#   a native resize, the page's own GPUDevice.destroy() and text shown over
-#   the WebGPU canvas (glyph runs drawn by Netrender), each started after the
-#   verified first frame. fonts-dejavu-core gives the text a fixed font.
+#   a native resize, the page's own GPUDevice.destroy(), text shown over
+#   the WebGPU canvas (glyph runs drawn by Netrender) and filled vector paths
+#   (a curved one over the canvas, a rotated one beside it), each started
+#   after the verified first frame. fonts-dejavu-core gives the text a fixed font.
 'on':
   push:
     paths:
@@ -250,6 +251,17 @@ jobs:
           set -e
           echo "::group::text (exit $status)"; cat "$log"; echo "::endgroup::"
           python3 -I netrender-window/check_log.py text "$log" "$status"
+      - name: path scenario (filled vector paths over the WebGPU canvas after the verified frame)
+        if: ${{ !cancelled() && steps.build_positive.outcome == 'success' }}
+        working-directory: support/blitz-v8-probe
+        run: |
+          log="$RUNNER_TEMP/netrender-window/logs/path.log"
+          set +e
+          ROVES_PROBE_WINDOW_RENDERER=netrender ROVES_PROBE_NETRENDER_FIXTURE=1 ROVES_PROBE_NETRENDER_SCENARIO=path timeout 900             xvfb-run -a --server-args="-screen 0 1280x720x24"             "$RUNNER_TEMP/netrender-window/positive/roves-blitz-v8-probe-netrender"             --game fixtures/netrender-window --window --window-frames 180 > "$log" 2>&1
+          status=$?
+          set -e
+          echo "::group::path (exit $status)"; cat "$log"; echo "::endgroup::"
+          python3 -I netrender-window/check_log.py path "$log" "$status"
       - name: upload logs and executables
         if: ${{ always() }}
         uses: actions/upload-artifact@v4

@@ -1,6 +1,6 @@
 """Gates for the Netrender window fixture log (CI and local runs).
 
-    python -I check_log.py negative|positive|resize|device-destroy|text LOG STATUS
+    python -I check_log.py negative|positive|resize|device-destroy|text|path LOG STATUS
 
 negative: Netrender d2f13ca5 as published. The renderer must be ready, never
 fall back, and the fixture must fail exactly the three pixels covered by the
@@ -27,6 +27,12 @@ once after that read back, Netrender drew the glyph runs itself (no fallback),
 and netrender_window_text passed: the two glyph cells are text-colored, the
 canvas left of and below them is unchanged (no text box), every pixel derived
 from the translated run lies over the canvas, and no glyph is .notdef.
+path: the page showed #circle (a curved path over the canvas) and #diamond (a
+rotated square over #before) once after that read back, Netrender drew the
+filled paths itself (no fallback), and netrender_window_path passed all five
+PATH_CHECKS pixels: inside each shape, the circle's box corner outside its
+curve, the diamond's tip beyond the unrotated square and the unrotated
+square's corner outside the diamond.
 """
 
 import json
@@ -38,6 +44,7 @@ SCENARIO_CHECKS = (
     "netrender_window_resize",
     "netrender_window_device_lost",
     "netrender_window_text",
+    "netrender_window_path",
 )
 
 # Scenario records each kind may contain (all others must be absent).
@@ -45,7 +52,10 @@ ALLOWED_SCENARIO_CHECKS = {
     "resize": {"window_scenario_resize", "netrender_window_resize"},
     "device-destroy": {"window_scenario_page_call", "netrender_window_device_lost"},
     "text": {"window_scenario_page_call", "netrender_window_text"},
+    "path": {"window_scenario_page_call", "netrender_window_path"},
 }
+
+PATH_PIXELS = 5
 
 AFTER_LAYER_PIXELS = {
     "after layer over before layer",
@@ -125,6 +135,8 @@ def main(kind, log, status):
         errors += device_destroy_errors(found, page_events(log), panics(log))
     elif kind == "text":
         errors += text_errors(found, page_events(log), panics(log))
+    elif kind == "path":
+        errors += path_errors(found, page_events(log), panics(log))
     unexpected = sorted(
         check for check in SCENARIO_CHECKS
         if check in found and check not in ALLOWED_SCENARIO_CHECKS.get(kind, set())
@@ -137,6 +149,8 @@ def main(kind, log, status):
         print(f"::notice::{kind} after resize {pixel['name']}: {pixel['actual']} expected {pixel['expected']}")
     for pixel in (found.get("netrender_window_text") or [{}])[-1].get("pixels", []):
         print(f"::notice::{kind} text {pixel['name']} at ({pixel['x']}, {pixel['y']}): {pixel['actual']} expected {pixel['expected']}")
+    for pixel in (found.get("netrender_window_path") or [{}])[-1].get("pixels", []):
+        print(f"::notice::{kind} path {pixel['name']} at ({pixel['x']}, {pixel['y']}): {pixel['actual']} expected {pixel['expected']}")
     if errors:
         for error in errors:
             print(f"::error::{kind}: {error}"[:900])
@@ -225,6 +239,34 @@ def text_errors(found, events, panic_lines):
         errors.append(f"text: Netrender drew no glyph run: {window}")
     if panic_lines:
         errors.append(f"text: panic in the log: {panic_lines[:3]}")
+    return errors
+
+
+def path_errors(found, events, panic_lines):
+    errors = []
+    calls = found.get("window_scenario_page_call", [])
+    if len(calls) != 1 or calls[0].get("status") != "ran":
+        errors.append(f"path: expected one page call that ran, got {calls}")
+    shown = [e for e in events if e.get("event") == "paths"]
+    if len(shown) != 1:
+        errors.append(f"path: the page must show the shapes once, got {shown}")
+    records = found.get("netrender_window_path", [])
+    if len(records) != 1:
+        errors.append(f"path: expected one netrender_window_path record, got {records}")
+        return errors
+    record = records[0]
+    failing = sorted(p["name"] for p in record.get("pixels", []) if not p.get("pass"))
+    if record.get("status") != "passed" or failing or len(record.get("pixels", [])) != PATH_PIXELS:
+        errors.append(f"path: failing pixels {failing} of {len(record.get('pixels', []))}")
+    if record.get("readback") != "final_output_only":
+        errors.append("path: the read back must be of the final output only")
+    if record.get("paths_in_frame") != 2:
+        errors.append(f"path: {record.get('paths_in_frame')} paths in the read-back frame, expected 2")
+    window = (found.get("netrender_window") or [{}])[-1]
+    if not window.get("paths"):
+        errors.append(f"path: Netrender drew no path: {window}")
+    if panic_lines:
+        errors.append(f"path: panic in the log: {panic_lines[:3]}")
     return errors
 
 
