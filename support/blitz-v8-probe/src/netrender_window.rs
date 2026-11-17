@@ -355,7 +355,8 @@ fn translate_glyph_run(
 ///   `f32` itself, so the fallback (and Vello behind Netrender) sees the same
 ///   values; non-finite inputs or `f32` overflow are rejected.
 /// - A path must start with `MoveTo` (kurbo's `BezPath::line_to` asserts on an
-///   uninitialized subpath when Netrender rebuilds it).
+///   uninitialized subpath when Netrender rebuilds it). kurbo's invariant is
+///   only debug-asserted and safe `elements_mut`/`Extend` bypass it.
 /// - Group opacity is folded into the color: exact for a single fill, and the
 ///   caller already rejects group opacity over several draws.
 fn translate_path_fill(
@@ -2040,9 +2041,17 @@ mod tests {
             })],
         };
         let nonzero = peniko::Fill::NonZero;
+        // kurbo documents that a `BezPath` begins with `MoveTo` and enforces it
+        // with debug assertions in `push`/`from_vec`/`line_to`, so building the
+        // invalid path with those panics in debug test builds. The safe
+        // `elements_mut` (like `Extend`) does not check the invariant, so a
+        // path without an initial `MoveTo` can still reach the translator in
+        // any build: rewrite the first element of a valid path to cover that.
         let mut no_move = kurbo::BezPath::new();
-        no_move.push(PathEl::LineTo((4.0, 4.0).into()));
-        no_move.push(PathEl::LineTo((8.0, 0.0).into()));
+        no_move.move_to((0.0, 0.0));
+        no_move.line_to((4.0, 4.0));
+        no_move.line_to((8.0, 0.0));
+        no_move.elements_mut()[0] = PathEl::LineTo((0.0, 0.0).into());
         let mut far = circle.clone();
         far.line_to((1e300, 0.0));
         let cases = [
