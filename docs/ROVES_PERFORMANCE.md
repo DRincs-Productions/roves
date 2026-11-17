@@ -2597,3 +2597,14 @@ pendente al campionamento aveva già accumulato 1.047,4 ms. Il test
 storia raggiunge le prime due battute prima del timeout complessivo.
 Skip scade senza risultato. La durata dei batch completati va quindi
 letta insieme a quella dei batch rimasti pendenti.
+
+La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
+ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
+7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s
+per otto submit in quattro frame, con zero byte osservati via
+`queue.writeTexture`. Il batch più lento in Skip ha impiegato 18 s,
+anch'esso con zero byte via `writeTexture`. La conversione e scrittura
+iniziale ha contato una singola chiamata da 8.294.400 byte e al massimo
+631 ms di tempo CPU. Questa misura non spiega le attese ripetute.
+Il confronto successivo deve isolare il costo dei render pass e della
+risoluzione senza cambiare il template o i gate di storia e Skip.
