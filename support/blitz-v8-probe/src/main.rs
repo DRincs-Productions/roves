@@ -3674,7 +3674,8 @@ enum Teardown {
 
 /// A window prepared inside `tokio.block_on` and run after it returns: winit's
 /// event loop blocks, so inside `block_on` it would starve the current-thread
-/// runtime's timer/IO drivers (`window::run` drives them once per frame).
+/// runtime's timer/IO drivers (`window::run` drives them in each frame step and
+/// while the window waits for the next frame).
 struct WindowLaunch {
     document: window::RovesDocument,
     renderer: Option<SelectedRenderer>,

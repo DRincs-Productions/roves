@@ -13,6 +13,14 @@
 //!   short `Runtime::block_on` that yields once: that turns the timer/IO
 //!   drivers (due `setTimeout`/`setInterval` sleeps fire, sockets progress)
 //!   and runs spawned local tasks before the deno_core event loop is polled.
+//!   Between frames (`about_to_wait`, after the shell has painted) the main
+//!   thread waits for the next frame tick inside `block_on` too (`FrameIo`),
+//!   so deno_fetch's hyper connection tasks, TLS reads and the IO driver keep
+//!   running while the window is idle, as they do while the headless loop
+//!   awaits its frame deadline. Without it they ran only once per frame, and
+//!   remote transfers of JITless window runs were aborted by the peer
+//!   (WSAECONNABORTED, TLS close without close_notify) while the same
+//!   requests passed headless.
 //!   V8, deno_core and winit stay on the main thread; no worker thread is
 //!   needed (deno_unsync's spawned futures are not `Send`).
 //! - `handle_ui_event` receives real OS input and passes it to
@@ -33,6 +41,7 @@
 
 use std::cell::{Cell, Ref, RefCell, RefMut};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::task::Context;
 use std::time::{Duration, Instant};
 
@@ -308,6 +317,60 @@ pub type SharedWindowScenario = Rc<WindowScenario>;
 struct ScenarioApplication<R: WindowRenderer> {
     shell: BlitzApplication<R>,
     scenario: Option<SharedWindowScenario>,
+    io: Rc<FrameIo>,
+}
+
+/// Drives the probe's current-thread Tokio runtime on the main thread while the
+/// window waits for its next frame, like the headless loop's awaited frame
+/// deadline. deno_fetch's hyper client spawns each connection's driver task on
+/// this runtime and registers its socket with this runtime's IO driver, so only
+/// the main thread can progress them (`deno_unsync` futures keep the runtime
+/// current-thread). Chromium (f2700724, `base/message_loop/message_pump_win.cc`)
+/// never needs this: sockets live on the network service's IO thread and its UI
+/// pump waits in `MsgWaitForMultipleObjectsEx` for native messages or work. The
+/// probe cannot move deno_fetch's sockets to another thread without forking it,
+/// so it gives the runtime the idle time instead.
+///
+/// The wait ends on the frame ticker's `Notify` (a remote wake that unparks the
+/// IO driver at once), not on a timeout: Tokio's IOCP wait has the system timer
+/// granularity and would shift frames. Input arriving during the wait is handled
+/// when it ends, before that frame's step (at most one tick later; the page's
+/// response to it is presented in the same frame as before).
+struct FrameIo {
+    tokio: Rc<tokio::runtime::Runtime>,
+    frame_tick: Arc<tokio::sync::Notify>,
+    /// Set once the frame ticker runs: before, nothing would end the wait.
+    armed: Cell<bool>,
+}
+
+impl FrameIo {
+    fn new(tokio: Rc<tokio::runtime::Runtime>) -> Self {
+        Self {
+            tokio,
+            frame_tick: Arc::new(tokio::sync::Notify::new()),
+            armed: Cell::new(false),
+        }
+    }
+
+    /// The ticker's handle; from now on `drive_until_frame` waits for it.
+    fn arm(&self) -> Arc<tokio::sync::Notify> {
+        self.armed.set(true);
+        self.frame_tick.clone()
+    }
+
+    /// Runs ready tasks and turns the timer/IO drivers once, then keeps the
+    /// runtime parked on its drivers until the next frame tick (immediately,
+    /// if a tick already arrived during the frame).
+    fn drive_until_frame(&self) {
+        if !self.armed.get() {
+            return;
+        }
+        let frame_tick = self.frame_tick.clone();
+        self.tokio.block_on(async move {
+            tokio::task::yield_now().await;
+            frame_tick.notified().await;
+        });
+    }
 }
 
 impl<R: WindowRenderer> ScenarioApplication<R> {
@@ -376,6 +439,11 @@ impl<R: WindowRenderer> ApplicationHandler for ScenarioApplication<R> {
 
     fn about_to_wait(&mut self, event_loop: &dyn ActiveEventLoop) {
         self.shell.about_to_wait(event_loop);
+        // Dispatched events (and the frame's paint) are done; the main thread
+        // would now block in the platform wait until the next tick.
+        if !event_loop.exiting() {
+            self.io.drive_until_frame();
+        }
     }
 
     fn suspended(&mut self, event_loop: &dyn ActiveEventLoop) {
@@ -406,8 +474,9 @@ pub struct RovesDocument {
     /// (close request or `request_window_close`), so it outlives the window
     /// renderer and the caller can run the WebGPU teardown before dropping it.
     parked: Option<ParkedRuntime>,
-    /// Set by `run`: the current-thread runtime whose drivers each frame turns.
-    tokio: Option<Rc<tokio::runtime::Runtime>>,
+    /// Set by `run`: the current-thread runtime whose drivers each frame turns,
+    /// and the frame tick the idle wait between frames ends on.
+    io: Option<Rc<FrameIo>>,
     /// The game window asked the shell to close (frame limit reached).
     close_requested: bool,
     pub dispatcher: v8::Global<v8::Function>,
@@ -437,7 +506,7 @@ impl RovesDocument {
             document,
             runtime: Some(runtime),
             parked: None,
-            tokio: None,
+            io: None,
             close_requested: false,
             dispatcher,
             run_animation_frame,
@@ -706,11 +775,17 @@ impl Document for RovesDocument {
         if !self.ticker_started {
             if let Some(context) = &task_context {
                 // The shell polls when its waker fires; tick it every frame.
+                // The same tick ends `FrameIo`'s idle wait (a Tokio `Notify`
+                // wakes the parked current-thread runtime from this thread).
                 let waker = context.waker().clone();
+                let frame_tick = self.io.as_ref().map(|io| io.arm());
                 std::thread::spawn(move || {
                     loop {
                         std::thread::sleep(Duration::from_micros(16_667));
                         waker.wake_by_ref();
+                        if let Some(frame_tick) = &frame_tick {
+                            frame_tick.notify_one();
+                        }
                     }
                 });
                 self.ticker_started = true;
@@ -747,10 +822,10 @@ impl Document for RovesDocument {
             crate::frame_step(runtime, run_animation_frame);
             true
         };
-        let ran = match &self.tokio {
+        let ran = match &self.io {
             // Yield once so the scheduler runs spawned tasks and turns the
             // timer/IO drivers (`park_yield`, zero timeout) before the poll.
-            Some(tokio) => tokio.block_on(async {
+            Some(io) => io.tokio.block_on(async {
                 tokio::task::yield_now().await;
                 tick()
             }),
@@ -790,7 +865,8 @@ pub fn run<R: WindowRenderer + 'static>(
 ) -> Option<JsRuntime> {
     let parked = ParkedRuntime::default();
     document.parked = Some(parked.clone());
-    document.tokio = Some(tokio.clone());
+    let io = Rc::new(FrameIo::new(tokio.clone()));
+    document.io = Some(io.clone());
     // Input handlers run JS outside the per-frame block_on: timers and spawned
     // tasks they create register with this runtime's context.
     let _context = tokio.enter();
@@ -821,6 +897,7 @@ pub fn run<R: WindowRenderer + 'static>(
         .run_app(ScenarioApplication {
             shell: application,
             scenario,
+            io,
         })
         .expect("window event loop should run");
     parked.borrow_mut().take()
