@@ -90,6 +90,10 @@ hyper-util = { version = "0.1", features = ["client-legacy"] }
 # The CSP implementation Roves' production engine uses (root Cargo.lock 0.8.1):
 # document connect-src for remote fetch.
 content-security-policy = "=0.8.1"
+# Already locked (through content-security-policy/deno_net): the per-bundle storage id of a
+# packaged launch, SHA-256 of the canonical bundle path, the same digest and
+# 8-byte prefix the Servo shell's content-packer uses for its cache directory.
+sha2 = "=0.10.9"
 # The crate's own `cpal` backend is compiled in, but contexts use the device-free
 # "none" sink unless ROVES_PROBE_AUDIO_OUTPUT=1 (src/audio.rs), so CI needs no device.
 web-audio-api = { version = "=1.7.0", default-features = false, features = ["cpal"] }

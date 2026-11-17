@@ -4767,6 +4767,7 @@ dependencies = [
  "png 0.18.1",
  "raw-window-handle",
  "resvg",
+ "sha2",
  "stylo",
  "sys_traits",
  "tokio",

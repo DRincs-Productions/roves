@@ -4846,6 +4846,7 @@ dependencies = [
  "raw-window-handle",
  "resvg",
  "roves-netrender-shared-device-proof",
+ "sha2",
  "stylo",
  "sys_traits",
  "tokio",

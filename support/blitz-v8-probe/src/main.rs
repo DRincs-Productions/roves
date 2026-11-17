@@ -28,6 +28,7 @@ mod dev_mcp;
 mod frame_timings;
 mod frame_trace;
 mod game;
+mod launch;
 mod net_policy;
 // Opt-in Netrender window renderer: only the isolated manifest
 // netrender-window/Cargo.toml enables this feature (patched wgpu graph).
@@ -2792,7 +2793,7 @@ fn flush_stdout() {
 /// `--window-frames N`: the game window exits after N frames (default: runs
 /// until the window is closed).
 fn exit_after_frames() -> Option<u32> {
-    let mut args = std::env::args().skip(1);
+    let mut args = launch::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--window-frames" {
             return args.next().and_then(|value| value.parse().ok());
@@ -2803,7 +2804,7 @@ fn exit_after_frames() -> Option<u32> {
 
 /// `--exit-after-frames N` (default 8): frames driven by the headless loop.
 fn frame_count() -> u32 {
-    let mut args = std::env::args().skip(1);
+    let mut args = launch::args().skip(1);
     while let Some(arg) = args.next() {
         if arg == "--exit-after-frames" {
             let value = args.next().expect("--exit-after-frames needs a value");
@@ -2824,7 +2825,13 @@ fn stage(name: &str) {
 }
 
 fn main() {
-    if std::env::args().len() == 1 {
+    // Before anything reads the command line: a packaged launch (no arguments,
+    // launch.json next to the executable) becomes `--game <dir> --window`.
+    if let Err(error) = launch::init() {
+        eprintln!("ROVES_PROBE_LAUNCH_ERROR {error}");
+        std::process::exit(2);
+    }
+    if launch::args().len() == 1 {
         audio::check_offline_render();
     }
     let tokio = tokio::runtime::Builder::new_current_thread()
@@ -2842,10 +2849,15 @@ fn main() {
     assert!(rejected.len() == 1, "V8 rejected flags: {rejected:?}");
     // Origin storage for deno_webstorage; CI points two runs at the same directory
     // to check that localStorage persists across processes.
-    let storage_dir = std::env::var_os("ROVES_PROBE_STORAGE_DIR")
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::env::temp_dir().join("roves-blitz-probe-storage"));
+    // A packaged launch persists it per user and per bundle (launch::storage_dir).
+    let storage_dir = launch::storage_dir(
+        std::env::var_os("ROVES_PROBE_STORAGE_DIR"),
+        launch::bundled(),
+    );
     std::fs::create_dir_all(&storage_dir).expect("storage directory");
+    if launch::bundled().is_some() {
+        println!("ROVES_PROBE_LAUNCH_STORAGE {}", storage_dir.display());
+    }
     let launch = tokio.block_on(async {
         stage("parse_html");
         let game = game::GameContent::from_args();
@@ -2949,7 +2961,7 @@ fn main() {
 
         // The bootstrap evaluates to the embedder hooks. Keeping them as Rust-held
         // handles means no dispatch or frame entry point is left on the guest global.
-        if std::env::args().len() == 1 {
+        if launch::args().len() == 1 {
             runtime
                 .execute_script("roves-blitz-audio-test.js", include_str!("audio_test.js"))
                 .expect("V8 should create and close a headless audio context");
@@ -3031,7 +3043,7 @@ fn main() {
                 frame_count().max(120),
             )
             .await;
-            if std::env::args().any(|arg| arg == "--window") {
+            if launch::has_flag("--window") {
                 // The loaded game in a native window, composed on the page's
                 // WebGPU device (src/presentation.rs) until the window closes
                 // or after --window-frames window frames; then the shell drops
@@ -3606,7 +3618,7 @@ fn main() {
                 "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"not_run\",\"reason\":\"set ROVES_PROBE_WEBGPU=1 on a machine with a GPU\"}}"
             );
         }
-        if !std::env::args().any(|arg| arg == "--window") {
+        if !launch::has_flag("--window") {
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"window_presentation_real_input\",\"status\":\"not_run\",\"reason\":\"pass --window\"}}"
             );

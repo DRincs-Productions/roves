@@ -34,23 +34,39 @@ pub const GAME_URL: &str = "game://content/";
 
 pub struct GameContent {
     root: PathBuf,
+    /// The document parsed at `GAME_URL`: `index.html` for `--game`, the
+    /// `launch.json` entry for a packaged launch (src/launch.rs).
+    entry_html: String,
 }
 
 impl GameContent {
-    /// `--game <dir>` from the command line.
+    /// The packaged launch's content (src/launch.rs), else `--game <dir>` from
+    /// the command line.
     pub fn from_args() -> Option<Arc<Self>> {
-        let mut args = std::env::args().skip(1);
+        if let Some(bundled) = crate::launch::bundled() {
+            return Some(Arc::new(Self {
+                root: bundled.content_root.clone(),
+                entry_html: bundled.entry_html.clone(),
+            }));
+        }
+        let mut args = crate::launch::args().skip(1);
         while let Some(arg) = args.next() {
             if arg == "--game" {
                 let root = PathBuf::from(args.next().expect("--game needs a directory"));
-                return Some(Arc::new(Self { root }));
+                return Some(Arc::new(Self {
+                    root,
+                    entry_html: "index.html".to_owned(),
+                }));
             }
         }
         None
     }
 
     /// Maps `game://content/<path>` to a file under the content root. Other
-    /// schemes/hosts and any `..` segment are refused.
+    /// schemes/hosts, any `..` segment and any segment the OS would read as
+    /// more than one plain name (`a\..\..`, a `C:` drive prefix, which
+    /// `PathBuf::push` lets replace the root on Windows) are refused, on every
+    /// platform alike.
     fn path_for(&self, scheme: &str, host: Option<&str>, path: &str) -> Option<PathBuf> {
         if scheme != "game" || host != Some("content") {
             return None;
@@ -60,7 +76,14 @@ impl GameContent {
             match part {
                 "" | "." => {},
                 ".." => return None,
-                part => full.push(part),
+                part if part.contains(['\\', ':']) => return None,
+                part => {
+                    let mut components = std::path::Path::new(part).components();
+                    match (components.next(), components.next()) {
+                        (Some(std::path::Component::Normal(_)), None) => full.push(part),
+                        _ => return None,
+                    }
+                },
             }
         }
         Some(full)
@@ -74,8 +97,13 @@ impl GameContent {
     }
 
     pub fn document(self: &Arc<Self>) -> HtmlDocument {
-        let html = std::fs::read_to_string(self.root.join("index.html"))
-            .expect("the game directory must contain index.html");
+        let html =
+            std::fs::read_to_string(self.root.join(&self.entry_html)).unwrap_or_else(|error| {
+                panic!(
+                    "the game directory must contain {}: {error}",
+                    self.entry_html
+                )
+            });
         HtmlDocument::from_html(
             &html,
             DocumentConfig {
@@ -149,6 +177,7 @@ mod tests {
     fn provider(root: &std::path::Path) -> GameNetProvider {
         GameNetProvider(Arc::new(GameContent {
             root: root.to_path_buf(),
+            entry_html: "index.html".to_owned(),
         }))
     }
 
@@ -176,6 +205,104 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
         assert_eq!(served.map(|(_, bytes)| bytes), Some(b"a{}".to_vec()));
         assert!(other_host.is_none() && remote.is_none() && bad_data.is_none());
+    }
+
+    #[test]
+    fn game_paths_refuse_os_specific_escapes() {
+        let content = GameContent {
+            root: PathBuf::from("game-root"),
+            entry_html: "index.html".to_owned(),
+        };
+        let path = |path: &str| content.path_for("game", Some("content"), path);
+        assert_eq!(
+            path("/assets/a.png"),
+            Some(PathBuf::from("game-root").join("assets").join("a.png"))
+        );
+        for escape in [
+            "/../x",
+            "/a/../../x",
+            "/C:/Windows/win.ini",
+            "/a\\..\\..\\x",
+            "/D:x",
+        ] {
+            assert_eq!(path(escape), None, "{escape}");
+        }
+    }
+
+    fn fixture_bundle() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/bundle-loose")
+    }
+
+    // Packaged layout (src/launch.rs): no arguments + launch.json next to the
+    // executable becomes the --game path on the entry document's directory.
+    #[test]
+    fn packaged_loose_layout_runs_the_game_path() {
+        let bundle = fixture_bundle();
+        let exe = bundle.join("play.exe");
+        let launch = crate::launch::resolve(vec!["play".into()], Some(&exe), None).unwrap();
+        let bundled = launch.bundled.as_ref().expect("packaged launch");
+        assert_eq!(bundled.content_root, bundle.join("dist"));
+        assert_eq!(bundled.entry_html, "game.html");
+        assert_eq!(
+            bundled.window_title.as_deref(),
+            Some("Roves bundle fixture")
+        );
+        assert_eq!(bundled.ignored_args, ["--window-size", "1280x720"]);
+        let dist = bundle.join("dist").to_string_lossy().into_owned();
+        assert_eq!(launch.args, ["play", "--game", dist.as_str(), "--window"]);
+
+        // Its content is served from game://content/ like --game.
+        let content = GameContent {
+            root: bundled.content_root.clone(),
+            entry_html: bundled.entry_html.clone(),
+        };
+        assert!(content.read("game://content/main.js").is_some());
+        assert!(content.read("game://content/../launch.json").is_none());
+
+        // Diagnostics only through the explicit ROVES_EXTRA_ARGS switch.
+        let extra =
+            crate::launch::resolve(vec!["play".into()], Some(&exe), Some(" --mcp-discover "))
+                .unwrap();
+        assert_eq!(
+            extra.args.last().map(String::as_str),
+            Some("--mcp-discover")
+        );
+    }
+
+    #[test]
+    fn explicit_arguments_and_missing_launch_json_keep_argv() {
+        let exe = fixture_bundle().join("play.exe");
+        let argv: Vec<String> = vec!["play".into(), "--game".into(), "dist".into()];
+        let launch = crate::launch::resolve(argv.clone(), Some(&exe), Some("--story")).unwrap();
+        assert!(launch.bundled.is_none());
+        assert_eq!(launch.args, argv);
+
+        // A development binary without launch.json: the fixture run, unchanged.
+        let dev = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("probe.exe");
+        let launch = crate::launch::resolve(vec!["probe".into()], Some(&dev), None).unwrap();
+        assert!(launch.bundled.is_none());
+        assert_eq!(launch.args, ["probe"]);
+    }
+
+    #[test]
+    fn unusable_launch_json_is_an_error() {
+        let dir = std::env::temp_dir().join(format!("roves-launch-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("dist")).unwrap();
+        std::fs::write(dir.join("dist/index.html"), "<html></html>").unwrap();
+        let exe = dir.join("play.exe");
+        let resolve = |config: &str| {
+            std::fs::write(dir.join("launch.json"), config).unwrap();
+            crate::launch::resolve(vec!["play".into()], Some(&exe), None).map(|_| ())
+        };
+        let packed = resolve(r#"{"content_dir":"content","url":null,"args":[]}"#);
+        let escape = resolve(r#"{"content_dir":null,"url":"../dist/index.html","args":[]}"#);
+        let missing = resolve(r#"{"content_dir":null,"url":"dist/missing.html","args":[]}"#);
+        let invalid = resolve("{");
+        let loose = resolve(r#"{"content_dir":null,"url":"dist/index.html","args":[]}"#);
+        std::fs::remove_dir_all(&dir).ok();
+        assert!(packed.unwrap_err().contains("--content-compress none"));
+        assert!(escape.is_err() && missing.is_err() && invalid.is_err());
+        loose.unwrap();
     }
 }
 
@@ -396,12 +523,13 @@ addEventListener("unhandledrejection", (event) => {
         crate::call_hook(runtime, gpu_pacing_stats, &[])
     );
 
-    if std::env::args().any(|arg| arg == "--media-matrix") {
+    if crate::launch::has_flag("--media-matrix") {
         media_matrix(runtime, document, run_animation_frame).await;
     }
 
-    if std::env::args()
-        .any(|arg| arg == "--story" || arg == "--settings-popup" || arg == "--story-skip")
+    if ["--story", "--settings-popup", "--story-skip"]
+        .into_iter()
+        .any(crate::launch::has_flag)
     {
         story(
             runtime,
@@ -411,7 +539,7 @@ addEventListener("unhandledrejection", (event) => {
             gpu_pacing_stats,
         )
         .await;
-    } else if std::env::args().any(|arg| arg == "--story-restore") {
+    } else if crate::launch::has_flag("--story-restore") {
         restore_story(runtime, document, run_animation_frame, dispatcher).await;
     }
     // Sound files over the whole run (page and story): decode requests, buffers
@@ -968,12 +1096,12 @@ async fn story(
     runtime
         .execute_script("roves-blitz-story-helpers.js", STORY_HELPERS)
         .expect("story helpers should install");
-    if std::env::args().any(|arg| arg == "--settings-popup") {
+    if crate::launch::has_flag("--settings-popup") {
         crate::stage("game_settings_popup");
         settings_popup(runtime, document, run_animation_frame, dispatcher).await;
         return;
     }
-    if std::env::args().any(|arg| arg == "--story-skip") {
+    if crate::launch::has_flag("--story-skip") {
         crate::stage("game_story");
         story_skip(
             runtime,

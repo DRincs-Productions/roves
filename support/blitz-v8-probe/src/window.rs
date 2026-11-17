@@ -799,11 +799,18 @@ pub fn run<R: WindowRenderer + 'static>(
     let scenario = document.scenario.clone();
     let mut application = BlitzApplication::new(proxy, receiver);
     let (width, height) = crate::VIEWPORT;
+    // A packaged launch (src/launch.rs) gets the bundle's title and a normal,
+    // closable frame; probe runs keep the undecorated window their input
+    // scenarios position against.
+    let bundled = crate::launch::bundled();
+    let title = bundled
+        .and_then(|bundled| bundled.window_title.clone())
+        .unwrap_or_else(|| "Roves Blitz probe".to_owned());
     let attributes = WindowAttributes::default()
-        .with_title("Roves Blitz probe")
+        .with_title(title)
         .with_position(LogicalPosition::new(WINDOW_ORIGIN.0, WINDOW_ORIGIN.1))
         .with_surface_size(LogicalSize::new(f64::from(width), f64::from(height)))
-        .with_decorations(false)
+        .with_decorations(bundled.is_some())
         .with_resizable(false);
     application.add_window(WindowConfig::with_attributes(
         Box::new(document),

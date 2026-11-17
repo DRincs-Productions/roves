@@ -79,6 +79,7 @@ sys_traits = { version = "0.1", features = ["real", "libc", "winapi"] }
 http = "1"
 hyper-util = { version = "0.1", features = ["client-legacy"] }
 content-security-policy = "=0.8.1"
+sha2 = "=0.10.9"
 web-audio-api = { version = "=1.7.0", default-features = false, features = ["cpal"] }
 
 [target.'cfg(windows)'.dependencies]

@@ -101,6 +101,32 @@ cargo tree --manifest-path support/blitz-v8-probe/Cargo.toml -i v8
 
 CI entry: `.github/workflows/blitz-probe.yml` (Windows, `cargo check --locked` and run; manually dispatchable).
 
+### Packaged launch (no arguments, `src/launch.rs`)
+
+Started with no arguments and a `launch.json` next to the executable, the probe runs the
+bundled game instead of the fixtures: the same rule and file the Servo shell reads
+(`ports/servoshell/desktop/bundle_launch.rs`). Supported layout: loose files only
+(`mach bundle`/Packmaster `--content-compress none`), i.e.
+`{"content_dir": null, "url": "<dir>/<entry>.html", "args": [...]}`; it becomes
+`--game <dir> --window` with `<entry>.html` as the document at `game://content/`, so origin,
+URL checks, CSP/fetch policy and window close are the `--game` ones. The window takes
+`--window-title` from `args` and gets normal decorations; other Servo options (`--window-size`)
+are reported and ignored. localStorage, and the IndexedDB subset stored through it, persist
+per bundle under `<user cache>/roves/blitz-webstorage/<id>`, where `<id>` is the first 8 bytes
+(hex) of the SHA-256 of the bundle directory's canonical path, as the Servo shell's
+content-packer derives its cache directory: two copies of a game never share storage, the
+same folder reached through `.`/`..`, a symlink/junction or other letter case keeps one id, and
+a moved bundle starts fresh storage. An explicit `ROVES_PROBE_STORAGE_DIR` still overrides it;
+fixture and `--game` runs keep the shared temporary directory. Packed content (`content_dir` set, `.pack`) and an
+invalid `launch.json` exit with `ROVES_PROBE_LAUNCH_ERROR` (code 2) instead of running the
+fixtures. Diagnostics are enabled only explicitly through `ROVES_EXTRA_ARGS` (e.g.
+`--mcp-discover` in a `dev-mcp` build). Fixture layout: `fixtures/bundle-loose/`; CI copies the
+built probe next to it, starts it without arguments (`ROVES_EXTRA_ARGS=--window-frames 300`)
+and checks the entry module ran at `game://content/`, the window title, the per-bundle storage
+directory and a clean exit through the window close path. Entry-document URLs are checked per
+segment on every platform (`..`, `\`, `:` drive or stream prefixes refused); symlinks inside the
+content directory are followed, since the bundle author controls them.
+
 ## API compatibility report
 
 `compat/manifest.json` is the single list of the probe's Web API surface and of the

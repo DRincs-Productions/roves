@@ -17,7 +17,7 @@ thread_local! {
 }
 
 fn game_window() -> bool {
-    std::env::args().any(|arg| arg == "--game") && std::env::args().any(|arg| arg == "--window")
+    crate::launch::has_flag("--game") && crate::launch::has_flag("--window")
 }
 
 fn token() -> Option<String> {
@@ -30,7 +30,7 @@ pub fn enabled() -> bool {
 }
 
 pub fn discovery_enabled() -> bool {
-    cfg!(windows) && std::env::args().any(|arg| arg == "--mcp-discover")
+    cfg!(windows) && crate::launch::has_flag("--mcp-discover")
 }
 
 struct Bridge {
