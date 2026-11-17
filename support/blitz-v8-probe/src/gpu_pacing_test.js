@@ -93,11 +93,19 @@
       const [afterFirstDeferred, afterResume, afterError, afterDisabled] = phases;
       if (state.log.join(",") !== "first,A,C,D,E,F,G") fail("callbacks did not run once each, in order, with B cancelled");
       if (state.loggedDuringDeferral?.join(",") !== "first") fail("rAF callbacks ran while the queue was busy");
-      expect(afterFirstDeferred, "after T2", { ticks: 2, frames: 1, deferrals: 1, deferred_ticks: 1, polls: 1, saturated: true, active: true });
+      expect(afterFirstDeferred, "after T2", {
+        ticks: 2, frames: 1, deferrals: 1, deferred_ticks: 1, polls: 1, saturated: true, active: true,
+        completed_batches: 0, slowest_batch_submits: null, slowest_batch_frames: null,
+      });
+      // The completed batch is described by what was armed at T1: the
+      // simulated 8 submits, the one page frame (T1) and no texture writes.
       expect(afterResume, "after T5", {
         ticks: 5, frames: 2, deferrals: 1, deferred_ticks: 3, polls: 4, max_deferred_run: 3,
         poll_errors: 0, saturated: false, disabled: false, script_left: 0,
+        completed_batches: 1, slowest_batch_submits: 8, slowest_batch_frames: 1, slowest_batch_texture_bytes: 0,
+        texture_writes: 0, copy_external_calls: 0,
       });
+      if (!(afterResume.max_completed_batch_ms >= 0)) fail("max_completed_batch_ms not recorded");
       expect(afterError, "after T7", { ticks: 7, frames: 4, deferrals: 2, deferred_ticks: 3, polls: 5, poll_errors: 1, disabled: true, saturated: false });
       expect(afterDisabled, "after T8", { ticks: 8, frames: 5, deferrals: 2, deferred_ticks: 3, polls: 5, saturated: false });
       if (!(afterResume.max_tick_gap_ms > 0)) fail("max_tick_gap_ms not recorded");

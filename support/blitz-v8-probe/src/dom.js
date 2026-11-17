@@ -136,6 +136,14 @@
     if (!proto || typeof proto.copyExternalImageToTexture === "function") return;
     const xy = (value) => (Array.isArray(value) ? [value[0] ?? 0, value[1] ?? 0] : [value?.x ?? 0, value?.y ?? 0]);
     proto.copyExternalImageToTexture = function (source, destination, copySize) {
+      const started = performance.now();
+      try {
+        copyExternalImage.call(this, source, destination, copySize);
+      } finally {
+        gpuPacingCountCopyExternal(performance.now() - started);
+      }
+    };
+    const copyExternalImage = function (source, destination, copySize) {
       const image = source.source;
       let width;
       let pixels;
@@ -3038,6 +3046,7 @@
     const ran = gpuPacingAllowsFrame();
     if (ran) {
       gpuPacing.frames++;
+      gpuWindowFrames++;
       const timestamp = performance.now();
       for (const handle of [...animationFrameCallbacks.keys()]) {
         const callback = animationFrameCallbacks.get(handle);
@@ -3233,6 +3242,14 @@
   let gpuPacingRun = 0; // consecutive deferred ticks of the current deferral
   let gpuPacingLastTickAt = null;
   let gpuPacingBatchStartedAt = null;
+  // Discriminator for slow software batches (CI 43962093218: WARP batches of
+  // 8 submits took up to 8.7 s): what the fenced batch contained. The window
+  // runs from the previous completion to the arming tick; texture bytes
+  // written while deferred are flushed with a later submit, so they count
+  // toward the next window.
+  let gpuWindowFrames = 0;
+  let gpuWindowTextureBytes = 0;
+  let gpuArmedBatch = null;
   // Fixture-only scripted poll results (gpuPacingTest hook): replaces the op,
   // so the pacing logic is tested without a GPU and without claiming one.
   let gpuPacingScript = null;
@@ -3253,7 +3270,23 @@
       disabled: false,
       completed_batches: 0,
       max_completed_batch_ms: null,
+      // Contents of the slowest completed batch: submits, page frames and
+      // queue.writeTexture bytes (including the copyExternalImageToTexture
+      // shim). Large bytes point at uploads, few bytes at the page's draws.
+      slowest_batch_submits: null,
+      slowest_batch_frames: null,
+      slowest_batch_texture_bytes: null,
+      texture_writes: 0,
+      texture_bytes: 0,
+      // CPU time of the copyExternalImageToTexture shim (pixel conversion in
+      // JS, synchronous within the tick).
+      copy_external_calls: 0,
+      max_copy_external_ms: 0,
     };
+  }
+  function gpuPacingCountCopyExternal(elapsed) {
+    gpuPacing.copy_external_calls++;
+    gpuPacing.max_copy_external_ms = Math.max(gpuPacing.max_copy_external_ms, Math.round(elapsed * 10) / 10);
   }
   // Snapshot with the derived saturation fields: `saturated` = still deferring
   // (waiting for the last batch), `saturation` = share of
@@ -3267,8 +3300,14 @@
       canvases.push({ width: context.canvas.width, height: context.canvas.height, format });
       if (canvases.length === 8) break;
     }
+    // The batch discriminator goes last, so CI's truncated `"pacing":{...}`
+    // notices keep the fields they already showed.
+    const {
+      slowest_batch_submits, slowest_batch_frames, slowest_batch_texture_bytes,
+      texture_writes, texture_bytes, copy_external_calls, max_copy_external_ms, ...pacing
+    } = gpuPacing;
     return {
-      ...gpuPacing,
+      ...pacing,
       saturated: gpuPacingDeferring,
       saturation: gpuPacing.ticks === 0 ? 0 : Math.round((gpuPacing.deferred_ticks / gpuPacing.ticks) * 1000) / 1000,
       pending_submits: gpuSubmitsSinceEmpty,
@@ -3277,6 +3316,13 @@
         : null,
       canvas_backing_stores: canvases,
       queue_submits: gpuSubmits,
+      slowest_batch_submits,
+      slowest_batch_frames,
+      slowest_batch_texture_bytes,
+      texture_writes,
+      texture_bytes,
+      copy_external_calls,
+      max_copy_external_ms,
     };
   }
   function gpuPacingTick() {
@@ -3316,7 +3362,13 @@
     if (result.batch_complete) {
       const elapsed = Math.round((performance.now() - gpuPacingBatchStartedAt) * 10) / 10;
       gpuPacing.completed_batches++;
-      gpuPacing.max_completed_batch_ms = Math.max(gpuPacing.max_completed_batch_ms ?? 0, elapsed);
+      if (gpuPacing.max_completed_batch_ms === null || elapsed >= gpuPacing.max_completed_batch_ms) {
+        gpuPacing.max_completed_batch_ms = elapsed;
+        gpuPacing.slowest_batch_submits = gpuArmedBatch?.submits ?? null;
+        gpuPacing.slowest_batch_frames = gpuArmedBatch?.frames ?? null;
+        gpuPacing.slowest_batch_texture_bytes = gpuArmedBatch?.texture_bytes ?? null;
+      }
+      gpuArmedBatch = null;
       gpuPacingDeferring = false;
       gpuSubmitsSinceEmpty = 0;
       return true;
@@ -3330,6 +3382,9 @@
     if (gpuPacingDeferring || gpuSubmitsSinceEmpty < GPU_SUBMIT_BATCH || !gpuPacingApplies()) return;
     gpuPacingDeferring = true;
     gpuPacingBatchStartedAt = performance.now();
+    gpuArmedBatch = { submits: gpuSubmitsSinceEmpty, frames: gpuWindowFrames, texture_bytes: gpuWindowTextureBytes };
+    gpuWindowFrames = 0;
+    gpuWindowTextureBytes = 0;
     if (gpuPacingScript === null) op_blitz_gpu_poll(gpuDevice, true);
     gpuPacingRun = 0;
     gpuPacing.active = true;
@@ -3346,6 +3401,17 @@
       const result = submit.call(this, commandBuffers);
       // Counted for pacing only once the submission was accepted.
       gpuSubmitsSinceEmpty++;
+      return result;
+    };
+    const writeTexture = proto.writeTexture;
+    if (typeof writeTexture !== "function") return;
+    proto.writeTexture = function (destination, data, dataLayout, size) {
+      const result = writeTexture.call(this, destination, data, dataLayout, size);
+      // Counted once accepted; bytes the copy can read from `data`.
+      const bytes = Math.max(0, (data?.byteLength ?? 0) - (Number(dataLayout?.offset) || 0));
+      gpuPacing.texture_writes++;
+      gpuPacing.texture_bytes += bytes;
+      gpuWindowTextureBytes += bytes;
       return result;
     };
   }
@@ -3488,6 +3554,9 @@
           gpuPacing = newGpuPacingStats();
           gpuPacingScript = [];
           gpuPacingLastTickAt = null;
+          gpuWindowFrames = 0;
+          gpuWindowTextureBytes = 0;
+          gpuArmedBatch = null;
           return "";
         case "batch": // scripted poll results for the next deferral + a full batch
           gpuPacingScript = JSON.parse(argument);
@@ -3504,6 +3573,9 @@
           gpuPacingDisabled = false;
           gpuSubmitsSinceEmpty = 0;
           gpuPacingLastTickAt = null;
+          gpuWindowFrames = 0;
+          gpuWindowTextureBytes = 0;
+          gpuArmedBatch = null;
           return stats;
         }
         default:
