@@ -2607,6 +2607,24 @@ vuoto misura 31,6 ms. La probe termina al caso con otto disegni e
 non completa la misura di crescita. Questi dati isolano il costo
 dei disegni e dei pixel su WARP. Non stimano la fluidità su GTX 1050.
 
+### Vello release sulla GTX 1050, menu fermo (17 novembre)
+
+Artefatto `blitz-probe-vello-ab-release` della
+[CI 44160443066](https://github.com/DRincs-Productions/roves/actions/runs/44160443066),
+template originale `1ac2c1cce04443e15c4482484864e87556709964`, Vulkan,
+V8 normale, storage isolato. Tre coppie alternate single/multi, multi/single,
+single/multi, con 180 tick di finestra ciascuna. Tutte le prove escono con
+codice 0, 185 presentazioni contate dal renderer e due upload raster.
+
+| Variante | P95 intervallo tick (ms) | P99 intervallo tick (ms) | P95 render CPU (ms) |
+| --- | ---: | ---: | ---: |
+| Single | 16,802–16,858 | 16,991–17,055 | 16,143–16,149 |
+| Multi | 16,776–16,833 | 16,900–17,184 | 16,126–16,142 |
+
+Il menu fermo non mostra un vantaggio ripetibile sulla cadenza dei tick.
+La cache lascia solo due upload per prova. Restano da misurare scene
+con raster frequente, parità visiva e frame mostrati da PresentMon.
+
 La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
 ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
 7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s
