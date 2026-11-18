@@ -3,6 +3,8 @@
 // The dist must come from template-testing-optin.mjs. Usage:
 //   node playthrough.mjs <dev-mcp probe executable> <game dist> [--out <result.json>]
 // Prints one `ROVES_MCP_PLAYTHROUGH {...}` line and exits 1 on any failure.
+// ROVES_MCP_PLAYTHROUGH_PERF=1 additionally samples performance_sample in the
+// menu and first-dialogue scenes (see README); it never changes pass/fail.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
@@ -23,6 +25,36 @@ const started = Date.now();
 const milestones = [];
 const result = { status: "failed", jitless: process.env.ROVES_PROBE_JITLESS === "1", milestones };
 const milestone = (name, detail = {}) => milestones.push({ name, at_ms: Date.now() - started, ...detail });
+
+// Opt-in scene sampling. Each performance_sample call summarizes the
+// previous PERF_WINDOW_MS (fixed by the probe), so samples are spaced by that
+// window and do not overlap; the first one starts after PERF_WARMUP_MS.
+const PERF = process.env.ROVES_MCP_PLAYTHROUGH_PERF === "1";
+const PERF_SCHEMA = 1;
+const PERF_WARMUP_MS = 2_000;
+const PERF_WINDOW_MS = 5_000;
+const PERF_SAMPLES_PER_SCENE = 3;
+const PERF_SERIES = ["frame_step_interval", "cpu_frame_step", "cpu_render_present", "cpu_shell_redraw"];
+const PERF_COUNTERS = ["session_present_calls", "session_skipped_frames", "session_unchanged_frames"];
+if (PERF) {
+  result.performance = {
+    schema: PERF_SCHEMA,
+    warmup_ms: PERF_WARMUP_MS,
+    window_ms: PERF_WINDOW_MS,
+    samples_per_scene: PERF_SAMPLES_PER_SCENE,
+    // What each figure is and is not, so records are not over-read.
+    meaning: {
+      frame_step_interval: "interval between game ticks (frame steps); not displayed frames",
+      cpu_frame_step: "CPU time of one game tick",
+      cpu_render_present: "CPU time of render + present calls; not displayed frames",
+      cpu_shell_redraw: "CPU time of a shell redraw",
+      session_counters: "process-lifetime presentation counters; *_delta are differences between consecutive samples of the same scene over counter_interval_ms",
+      displayed_frames: "not measured by this tool (always null); no OS-level present capture is run here",
+    },
+    scenes: [],
+    skip: null,
+  };
+}
 
 const server = spawn(process.execPath, [fileURLToPath(new URL("./server.mjs", import.meta.url)), probe, dist],
   { stdio: ["pipe", "pipe", "inherit"], windowsHide: true });
@@ -109,6 +141,62 @@ function assertNoErrors(s, where) {
   assert.deepEqual(s.errors, [], `Game.testing captured game errors ${where}`);
 }
 
+async function performanceSample() {
+  const reply = await rpc("tools/call", { name: "performance_sample", arguments: {} });
+  const text = reply.content?.[0]?.text ?? "";
+  if (reply.isError) throw new Error("performance_sample: " + text.slice(0, 500));
+  return JSON.parse(text);
+}
+
+const sceneOf = (s) => ({ path: s.path, label: s.label, step: s.step });
+
+// Samples the scene currently on screen without acting on the game. A failure
+// is recorded in the scene record and never changes the playthrough outcome;
+// the gates that follow still observe the same game.
+async function sampleScene(scene) {
+  if (!PERF) return;
+  const record = { scene, warmup_ms: PERF_WARMUP_MS, samples: [] };
+  result.performance.scenes.push(record);
+  try {
+    const entry = sceneOf(await state());
+    Object.assign(record, { entry, warmup_started_at_ms: Date.now() - started });
+    await delay(PERF_WARMUP_MS);
+    let previous = null;
+    for (let index = 0; index < PERF_SAMPLES_PER_SCENE; index++) {
+      await delay(PERF_WINDOW_MS);
+      const at = Date.now();
+      const raw = await performanceSample();
+      const now = sceneOf(await state());
+      const sample = {
+        index,
+        at_ms: at - started,
+        timestamp: new Date(at).toISOString(),
+        renderer: raw.renderer ?? null,
+        window_ms: raw.window_ms ?? null,
+        scene_unchanged: now.path === entry.path && now.step === entry.step && now.label === entry.label,
+        ticks: raw.frame_step_interval?.count ?? null,
+        displayed_frames: raw.displayed_frames ?? null,
+        gpu_time_ms: raw.gpu_time_ms ?? null,
+      };
+      for (const series of PERF_SERIES) sample[series] = raw[series] ?? null;
+      sample.render_phases = raw.render_phases ?? null;
+      for (const counter of PERF_COUNTERS) {
+        sample[counter] = raw[counter] ?? null;
+        sample[counter + "_delta"] = previous && raw[counter] != null && previous.raw[counter] != null
+          ? raw[counter] - previous.raw[counter] : null;
+      }
+      sample.counter_interval_ms = previous ? at - previous.at : null;
+      record.samples.push(sample);
+      console.log("ROVES_MCP_PERF " + JSON.stringify({ schema: PERF_SCHEMA, jitless: result.jitless, scene, ...sample }));
+      previous = { raw, at };
+    }
+    record.status = record.samples.every((sample) => sample.scene_unchanged) ? "sampled" : "scene_changed";
+  } catch (error) {
+    record.status = "error";
+    record.error = String(error?.message ?? error).slice(0, 600);
+  }
+}
+
 try {
   await rpc("initialize", {
     protocolVersion: "2025-11-25",
@@ -139,6 +227,7 @@ try {
   assert.equal(bridge.deno, "undefined", "privileged Deno API exposed to the game");
   milestone("bridge_ready", bridge);
   await evaluate("window.pixiVN.clearErrors(), true");
+  await sampleScene("menu");
 
   // The template's start action navigates to /game/narration, then starts.
   await act("Game.testing start", `window.pixiVN.start("start")`);
@@ -148,6 +237,18 @@ try {
   assertNoErrors(current, "after start");
   const states = [current];
   milestone("dialogue", current);
+  await sampleScene("dialogue");
+  if (PERF) {
+    // Skip is the template's native UI control; this bridge is only inspected,
+    // never used to emulate it, so Skip stays with the existing native harness.
+    try {
+      const keys = await evaluate(`Object.keys(window.pixiVN).filter((key) => /skip/i.test(key)).sort()`);
+      result.performance.skip = { measured: false, bridge_skip_members: keys,
+        reason: "Game.testing drives continue/choices/input only; native Skip flow is left to the existing harness" };
+    } catch (error) {
+      result.performance.skip = { measured: false, error: String(error?.message ?? error).slice(0, 300) };
+    }
+  }
 
   let backChecked = false;
   let nameRequested = false;

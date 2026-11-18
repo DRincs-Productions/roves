@@ -153,6 +153,33 @@ prompt answered with `RovesMcp`, that name in later dialogue, no errors in
 uploads `blitz-mcp-playthrough-<mode>`. Each MCP request still has the
 server's 5 s limit, so a longer stall of the game thread fails the run.
 
+### Scene performance records (opt-in)
+
+Set `ROVES_MCP_PLAYTHROUGH_PERF=1` to also sample `performance_sample` in two
+scenes of the same run, with the same artifact and the same internal counters:
+`menu` (after the bridge is ready, before `start`) and `dialogue` (the first
+dialogue line, before any `continue`). CI does not set it. In each scene the
+script only reads the game: it waits a 2 s warmup, which every record
+reports as `warmup_ms`, then takes three samples 5 s apart. Each sample covers
+the previous 5 s, so the windows do not overlap. The JSON result gains a
+`performance` object, and every sample is also printed as a
+`ROVES_MCP_PERF {...}` line with a timestamp, the renderer and `jitless`.
+
+The figures keep three things apart. `ticks` and `frame_step_interval` count
+and time game ticks. `cpu_render_present` times CPU render and present calls.
+`session_present_calls`, `session_skipped_frames` and
+`session_unchanged_frames` are lifetime counters, and their `*_delta` fields
+give the change between consecutive samples over `counter_interval_ms`.
+None of them is a displayed frame. `displayed_frames` and `gpu_time_ms` stay
+`null`, and this script runs no OS-level capture. `scene_unchanged` reports
+whether the route, label and step were still those of the scene start.
+
+Sampling never changes the gates, the result status or the exit code. A
+sampling failure is stored as that scene's `error`. Skip is not measured:
+`Game.testing` drives `continue`, choices and input, not the template's
+native Skip control. The record lists any `skip` members found on the bridge
+and leaves the Skip flow to the existing native harness.
+
 ## Chromium reference
 
 Chromium `f2700724f59fb554eb19a4f827b1d256e2a13286` routes protocol messages

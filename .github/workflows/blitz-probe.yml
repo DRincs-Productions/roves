@@ -859,6 +859,7 @@ jobs:
         shell: bash
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_MCP_PLAYTHROUGH_PERF: '1'
         run: |
           log="$RUNNER_TEMP/blitz-mcp-playthrough.log"
           set +e
