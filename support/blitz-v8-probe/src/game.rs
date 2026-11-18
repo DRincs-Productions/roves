@@ -456,8 +456,26 @@ fn page_scripts(document: &Rc<RefCell<HtmlDocument>>) -> Vec<(String, Option<Str
         .collect()
 }
 
-/// Runs the game page: installs error collection, evaluates its scripts in
-/// document order, drives `frames` frames and prints a report.
+/// Headless diagnostics that need the page driven before (or instead of) a
+/// window: the story/settings/restore harnesses, the media matrix, an explicit
+/// `--exit-after-frames` count and the `ROVES_PROBE_SCREENSHOT` capture. Without
+/// any of them a `--window` game opens its window right after `boot`.
+pub fn headless_diagnostics_requested() -> bool {
+    [
+        "--story",
+        "--settings-popup",
+        "--story-skip",
+        "--story-restore",
+        "--media-matrix",
+        "--exit-after-frames",
+    ]
+    .into_iter()
+    .any(crate::launch::has_flag)
+        || std::env::var_os("ROVES_PROBE_SCREENSHOT").is_some()
+}
+
+/// Runs the game page headless: `boot`, then drives `frames` frames, prints the
+/// `game_page` report and runs the requested diagnostics (media matrix, story).
 pub async fn run(
     runtime: &mut JsRuntime,
     document: &Rc<RefCell<HtmlDocument>>,
@@ -468,6 +486,49 @@ pub async fn run(
     web_audio_trace: &v8::Global<v8::Function>,
     frames: u32,
 ) {
+    let load_errors = boot(runtime, document, document_loaded).await;
+
+    crate::drive_frames(runtime, document, run_animation_frame, frames).await;
+
+    if let Ok(path) = std::env::var("ROVES_PROBE_SCREENSHOT") {
+        let pixels = crate::render_rgba(document);
+        crate::write_png(&path, &pixels);
+    }
+    print_page_report(runtime, "ran", "headless", frames, &load_errors);
+    print_frame_pacing(runtime, gpu_pacing_stats);
+
+    if crate::launch::has_flag("--media-matrix") {
+        media_matrix(runtime, document, run_animation_frame).await;
+    }
+
+    if ["--story", "--settings-popup", "--story-skip"]
+        .into_iter()
+        .any(crate::launch::has_flag)
+    {
+        story(
+            runtime,
+            document,
+            run_animation_frame,
+            dispatcher,
+            gpu_pacing_stats,
+        )
+        .await;
+    } else if crate::launch::has_flag("--story-restore") {
+        restore_story(runtime, document, run_animation_frame, dispatcher).await;
+    }
+    print_audio_report(runtime, web_audio_trace);
+}
+
+/// Boots the game page without driving any frame: installs error collection,
+/// evaluates its scripts in document order (each module's evaluation, top-level
+/// await included, runs the event loop until it settles), then readyState
+/// interactive/complete, DOMContentLoaded and load. Returns the script load
+/// errors as a JSON array for the `game_page` report.
+pub async fn boot(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    document_loaded: &v8::Global<v8::Function>,
+) -> String {
     runtime
         .execute_script(
             "roves-blitz-game-errors.js",
@@ -536,14 +597,20 @@ addEventListener("unhandledrejection", (event) => {
         function.call(scope, receiver, &[]);
     }
 
-    crate::drive_frames(runtime, document, run_animation_frame, frames).await;
+    format!(
+        "[{}]",
+        load_errors
+            .iter()
+            .map(|error| format!("{:?}", error))
+            .collect::<Vec<_>>()
+            .join(",")
+    )
+}
 
-    let report = crate::evaluate_string(
-        runtime,
-        // Route/connectivity diagnostics (also extracted into a separate CI
-        // annotation). `start_menu_like` is a text heuristic over the rendered
-        // buttons, not a guarantee the menu works.
-        r#"(() => {
+/// Route/connectivity diagnostics of the `game_page` report (also extracted
+/// into a separate CI annotation). `start_menu_like` is a text heuristic over
+/// the rendered buttons, not a guarantee the menu works.
+const PAGE_REPORT: &str = r#"(() => {
   const text = (document.body?.textContent ?? "").replace(/\s+/g, " ").trim();
   let buttons = [];
   try {
@@ -567,53 +634,56 @@ addEventListener("unhandledrejection", (event) => {
     body_elements: document.body?.querySelectorAll("*").length ?? -1,
     text: text.slice(0, 300),
   });
-})()"#,
-    );
-    let load_errors = format!(
-        "[{}]",
-        load_errors
-            .iter()
-            .map(|error| format!("{:?}", error))
-            .collect::<Vec<_>>()
-            .join(",")
-    );
-    if let Ok(path) = std::env::var("ROVES_PROBE_SCREENSHOT") {
-        let pixels = crate::render_rgba(document);
-        crate::write_png(&path, &pixels);
-    }
+})()"#;
+
+/// Window readiness, checked after window frame steps until it first holds:
+/// the page has content a first contentful paint would show (non-blank text,
+/// an image, SVG, video or canvas element), the condition Chromium's paint
+/// holding (`cc::PaintHoldingReason::kFirstContentfulPaint`) waits for. A DOM
+/// check at the frame step; the shell paints that frame afterwards.
+pub const PAGE_CONTENTFUL: &str = r#"(() => {
+  try {
+    const body = document.body;
+    if (!body) return "false";
+    if ((body.textContent ?? "").trim() !== "") return "true";
+    return String(body.querySelector("img, svg, video, canvas") !== null);
+  } catch {
+    return "false";
+  }
+})()"#;
+
+/// Prints the `game_page` report. `source` is `headless` (after the headless
+/// frames) or `window` (at the window frame where the page first became
+/// contentful, `frames` being that frame; `status` `not_ready` when the window
+/// closed before). `"check":"game_page","status":"ran"` stays the prefix of a
+/// ready report.
+pub fn print_page_report(
+    runtime: &mut JsRuntime,
+    status: &str,
+    source: &str,
+    frames: u32,
+    load_errors: &str,
+) {
+    let report = crate::evaluate_string(runtime, PAGE_REPORT);
     println!(
-        "ROVES_PROBE_RESULT {{\"check\":\"game_page\",\"status\":\"ran\",\"frames\":{frames},\"load_errors\":{load_errors},\"page\":{report}}}"
+        "ROVES_PROBE_RESULT {{\"check\":\"game_page\",\"status\":\"{status}\",\"source\":\"{source}\",\"frames\":{frames},\"load_errors\":{load_errors},\"page\":{report}}}"
     );
-    // Frame pacing over the page run (ticks, frames, deferred rAF ticks, max
-    // tick gap, saturation, poll errors); all zero-deferral on hardware.
+}
+
+/// Frame pacing over the frames run so far (ticks, frames, deferred rAF ticks,
+/// max tick gap, saturation, poll errors); all zero-deferral on hardware.
+pub fn print_frame_pacing(runtime: &mut JsRuntime, gpu_pacing_stats: &v8::Global<v8::Function>) {
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"game_frame_pacing\",\"status\":\"ran\",\"pacing\":{}}}",
         crate::call_hook(runtime, gpu_pacing_stats, &[])
     );
+}
 
-    if crate::launch::has_flag("--media-matrix") {
-        media_matrix(runtime, document, run_animation_frame).await;
-    }
-
-    if ["--story", "--settings-popup", "--story-skip"]
-        .into_iter()
-        .any(crate::launch::has_flag)
-    {
-        story(
-            runtime,
-            document,
-            run_animation_frame,
-            dispatcher,
-            gpu_pacing_stats,
-        )
-        .await;
-    } else if crate::launch::has_flag("--story-restore") {
-        restore_story(runtime, document, run_animation_frame, dispatcher).await;
-    }
-    // Sound files over the whole run (page and story): decode requests, buffers
-    // ready or decode errors, and starts of sources playing a decoded buffer, in
-    // order. Informational, printed once. `output` is the configured sink path
-    // (device/none), never a device name.
+/// Sound files over the whole run (page, story or window): decode requests,
+/// buffers ready or decode errors, and starts of sources playing a decoded
+/// buffer, in order. Informational, printed once. `output` is the configured
+/// sink path (device/none), never a device name.
+pub fn print_audio_report(runtime: &mut JsRuntime, web_audio_trace: &v8::Global<v8::Function>) {
     println!(
         "ROVES_PROBE_RESULT {{\"check\":\"game_audio\",\"status\":\"ran\",\"output\":\"{}\",\"audio\":{}}}",
         crate::audio::AudioOutput::configured().label(),

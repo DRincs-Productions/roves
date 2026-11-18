@@ -2803,7 +2803,10 @@ fn exit_after_frames() -> Option<u32> {
     None
 }
 
-/// `--exit-after-frames N` (default 8): frames driven by the headless loop.
+/// `--exit-after-frames N` (default 8): frames driven by the headless loop (at
+/// least 120 for a headless `--game` run). A `--game --window` run drives no
+/// headless frame unless this flag or another headless diagnostic asks for
+/// them (`game::headless_diagnostics_requested`).
 fn frame_count() -> u32 {
     let mut args = launch::args().skip(1);
     while let Some(arg) = args.next() {
@@ -3034,18 +3037,34 @@ fn main() {
             // A real game page instead of the fixture tests.
             stage("game_page");
             resolve_layout(&document);
-            game::run(
-                &mut runtime,
-                &document,
-                &run_animation_frame,
-                &document_loaded,
-                &dispatcher,
-                &gpu_pacing_stats,
-                &web_audio_trace,
-                frame_count().max(120),
-            )
-            .await;
-            if launch::has_flag("--window") {
+            let window = launch::has_flag("--window");
+            // An ordinary game window (CLI `--game --window` or a packaged
+            // launch) only boots the page here; the window loop then drives
+            // every frame and reports readiness at the first contentful frame
+            // (window::GamePage). Chromium (f2700724) likewise never warms a
+            // page up offscreen: `Shell::CreateShell` creates the platform
+            // window before `LoadURL` (content/shell/browser/shell.cc), and cc
+            // holds paint until first contentful paint
+            // (`PaintHoldingReason::kFirstContentfulPaint`). The headless
+            // frames and reports stay for headless runs and for diagnostics
+            // that need them before a window (game::headless_diagnostics_requested).
+            let window_boot = if window && !game::headless_diagnostics_requested() {
+                Some(game::boot(&mut runtime, &document, &document_loaded).await)
+            } else {
+                game::run(
+                    &mut runtime,
+                    &document,
+                    &run_animation_frame,
+                    &document_loaded,
+                    &dispatcher,
+                    &gpu_pacing_stats,
+                    &web_audio_trace,
+                    frame_count().max(120),
+                )
+                .await;
+                None
+            };
+            if window {
                 // The loaded game in a native window, composed on the page's
                 // WebGPU device (src/presentation.rs) until the window closes
                 // or after --window-frames window frames; then the shell drops
@@ -3058,9 +3077,16 @@ fn main() {
                 let mode = window::WindowMode::Game {
                     exit_after: exit_after_frames(),
                 };
-                let document =
+                let mut document =
                     window::RovesDocument::new(document, runtime, dispatcher, run_animation_frame)
                         .with_mode(mode);
+                if let Some(load_errors) = window_boot {
+                    document = document.with_game_page(window::GamePage::new(
+                        load_errors,
+                        gpu_pacing_stats,
+                        web_audio_trace,
+                    ));
+                }
                 return Some(WindowLaunch {
                     document,
                     renderer: select_renderer(renderer, &shared_presentation),

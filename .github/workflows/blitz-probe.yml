@@ -624,7 +624,9 @@ jobs:
       # content (fixtures/bundle-packed, zstd .pack archives from the shared
       # content-packer). The built probe is copied next to each launch.json and
       # started with no arguments and no ROVES_PROBE_STORAGE_DIR. Checks the
-      # bundled entry document and its JSON module ran at game://content/, the
+      # bundled entry document and its JSON module ran at game://content/ (the
+      # single game_page report, printed by the window loop at its first
+      # contentful frame: a packaged launch drives no headless frame), the
       # OS window carried the bundle's title, the per-bundle storage directory
       # and a clean exit through the window close path after ROVES_EXTRA_ARGS'
       # --window-frames. Packed: the boot archive is extracted into the shared
@@ -674,10 +676,16 @@ jobs:
             if (Select-String -Path $err -Pattern 'ROVES_PROBE_GAME_PACK_ERROR' -Quiet) { $mine += 'on-demand extraction failed' }
             $stage = Select-String -Path $log -Pattern '^ROVES_PROBE_STAGE bundled_launch (.*) (\S+)$' | Select-Object -First 1
             if (-not $stage) { $mine += 'no bundled_launch stage (launch.json not used)' }
-            $page = Select-String -Path $log -Pattern '"check":"game_page","status":"ran"' -SimpleMatch | Select-Object -First 1
-            if (-not $page) { $mine += 'no game_page report' }
+            # No headless warm-up: the only game_page report comes from the
+            # window loop, at its first contentful frame, while the window is open.
+            $pages = @(Select-String -Path $log -Pattern '"check":"game_page"' -SimpleMatch)
+            $page = $pages | Where-Object { $_.Line.Contains('"check":"game_page","status":"ran","source":"window"') } | Select-Object -First 1
+            $closed = Select-String -Path $log -Pattern '"check":"game_window_closed","status":"ran","reason":"frame_limit"' -SimpleMatch | Select-Object -First 1
+            if (-not $page) { $mine += "no game_page report from the window ($($pages.Count) game_page lines)" }
+            elseif ($pages.Count -ne 1) { $mine += "$($pages.Count) game_page reports, expected only the window's" }
             elseif ($page.Line -notmatch 'bundle ok game://content/ lazy-pack ok') { $mine += 'the entry module and its JSON module did not run at game://content/' }
-            if (-not (Select-String -Path $log -Pattern '"check":"game_window_closed","status":"ran","reason":"frame_limit"' -SimpleMatch -Quiet)) { $mine += 'the game window did not close after --window-frames' }
+            if (-not $closed) { $mine += 'the game window did not close after --window-frames' }
+            elseif ($page -and $page.LineNumber -gt $closed.LineNumber) { $mine += 'game_page was reported after the window closed' }
             Write-Host "window title: '$title'"
             if ($title -ne 'Roves bundle fixture') { $mine += "window title '$title'" }
             $storage = Select-String -Path $log -Pattern '^ROVES_PROBE_LAUNCH_STORAGE (.*)$' | Select-Object -First 1

@@ -290,6 +290,39 @@ pub enum WindowMode {
     Game { exit_after: Option<u32> },
 }
 
+/// Window readiness of a game booted without headless frames (main.rs): the
+/// window loop checks `game::PAGE_CONTENTFUL` after its frame steps and prints
+/// the `game_page` report (`source` `window`) plus `game_frame_pacing` at the
+/// first frame where it holds; at close it prints `game_audio`, and a
+/// `not_ready` `game_page` report if the page never became contentful.
+pub struct GamePage {
+    load_errors: String,
+    gpu_pacing_stats: v8::Global<v8::Function>,
+    web_audio_trace: v8::Global<v8::Function>,
+    ready_frame: Option<u32>,
+}
+
+impl GamePage {
+    /// Checked after every frame step up to this frame, then every
+    /// `READY_CHECK_INTERVAL` frames, so a page that never becomes contentful
+    /// costs no per-frame script evaluation for the rest of the run.
+    const READY_CHECK_EVERY_FRAME: u32 = 120;
+    const READY_CHECK_INTERVAL: u32 = 30;
+
+    pub fn new(
+        load_errors: String,
+        gpu_pacing_stats: v8::Global<v8::Function>,
+        web_audio_trace: v8::Global<v8::Function>,
+    ) -> Self {
+        Self {
+            load_errors,
+            gpu_pacing_stats,
+            web_audio_trace,
+            ready_frame: None,
+        }
+    }
+}
+
 /// Where `RovesDocument::drop` parks its `JsRuntime` (see `run`).
 type ParkedRuntime = Rc<RefCell<Option<JsRuntime>>>;
 
@@ -493,6 +526,8 @@ pub struct RovesDocument {
     timings: Option<crate::frame_timings::SharedFrameTimings>,
     /// Opt-in Netrender fixture scenario only (see `WindowScenario`).
     scenario: Option<SharedWindowScenario>,
+    /// A game booted without headless frames (see `GamePage`).
+    game_page: Option<GamePage>,
 }
 
 impl RovesDocument {
@@ -519,7 +554,61 @@ impl RovesDocument {
             stats_printed: false,
             timings: None,
             scenario: None,
+            game_page: None,
         }
+    }
+
+    pub fn with_game_page(mut self, page: GamePage) -> Self {
+        self.game_page = Some(page);
+        self
+    }
+
+    /// `GamePage` readiness after a frame step (see there).
+    fn check_game_page(&mut self) {
+        let frame = self.frames;
+        let Some(page) = self.game_page.as_mut() else {
+            return;
+        };
+        if page.ready_frame.is_some()
+            || (frame > GamePage::READY_CHECK_EVERY_FRAME
+                && frame % GamePage::READY_CHECK_INTERVAL != 0)
+        {
+            return;
+        }
+        let runtime = self
+            .runtime
+            .as_mut()
+            .expect("the runtime is only taken when the document drops");
+        if crate::evaluate_string(runtime, crate::game::PAGE_CONTENTFUL) != "true" {
+            return;
+        }
+        page.ready_frame = Some(frame);
+        crate::game::print_page_report(runtime, "ran", "window", frame, &page.load_errors);
+        crate::game::print_frame_pacing(runtime, &page.gpu_pacing_stats);
+        flush();
+    }
+
+    /// `GamePage` reports at close, while the runtime is still here.
+    fn finish_game_page(&mut self) {
+        let frames = self.frames;
+        let (Some(page), Some(runtime)) = (self.game_page.as_ref(), self.runtime.as_mut()) else {
+            return;
+        };
+        if std::thread::panicking() {
+            return;
+        }
+        if page.ready_frame.is_none() {
+            crate::game::print_page_report(
+                runtime,
+                "not_ready",
+                "window",
+                frames,
+                &page.load_errors,
+            );
+            crate::game::print_frame_pacing(runtime, &page.gpu_pacing_stats);
+        }
+        crate::game::print_audio_report(runtime, &page.web_audio_trace);
+        flush();
     }
 
     /// Opt-in Netrender build only (`main.rs`).
@@ -673,6 +762,7 @@ impl RovesDocument {
         self.frames += 1;
         self.print_presentation(false);
         if let WindowMode::Game { exit_after } = self.mode {
+            self.check_game_page();
             if !self.close_requested && exit_after.is_some_and(|limit| self.frames >= limit) {
                 // Same path as a user close (blitz-shell's `CloseWindow`, handled
                 // like `CloseRequested`): the shell drops the window, `Drop`
@@ -723,6 +813,7 @@ fn flush() {
 impl Drop for RovesDocument {
     fn drop(&mut self) {
         if let WindowMode::Game { .. } = self.mode {
+            self.finish_game_page();
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"game_window_closed\",\"status\":\"ran\",\"reason\":\"{}\",\"frames\":{}}}",
                 if self.close_requested {
