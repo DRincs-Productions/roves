@@ -18,6 +18,7 @@ assert.ok(probe && dist && (outFlag === undefined || (outFlag === "--out" && out
 const PLAYER_NAME = "RovesMcp";
 const MIN_DISTINCT_STATES = 4;
 const MAX_ADVANCES = 25;
+const SERVER_EXIT_BUDGET_MS = 180_000;
 const started = Date.now();
 const milestones = [];
 const result = { status: "failed", jitless: process.env.ROVES_PROBE_JITLESS === "1", milestones };
@@ -204,7 +205,10 @@ try {
   clearTimeout(deadline);
   // Closing stdin closes the game and removes its isolated storage.
   server.stdin.end();
-  const [code, signal] = await Promise.race([closed, delay(20_000).then(() => ["timeout", null])]);
+  // Above server.mjs's CHILD_EXIT_BUDGET_MS (150 s, itself above the Rust
+  // GPU teardown budget), so a slow but bounded GPU drain is not cut short
+  // and a hung game is reported by the server's own kill first.
+  const [code, signal] = await Promise.race([closed, delay(SERVER_EXIT_BUDGET_MS).then(() => ["timeout", null])]);
   if (code === "timeout") server.kill();
   result.shutdown = { exit: code, signal };
   milestone("shut_down", { exit: code, signal });

@@ -846,7 +846,8 @@ jobs:
           [ -f "$copy/dist/index.html" ] || { echo "::error::the Game.testing copy produced no dist/index.html"; exit 1; }
       - name: MCP playthrough of visual-novel-template via Game.testing
         if: ${{ !cancelled() && steps.dev_mcp_template.outcome == 'success' }}
-        timeout-minutes: 12
+        # playthrough.mjs: 600 s run deadline + 180 s bounded shutdown wait.
+        timeout-minutes: 15
         shell: bash
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}

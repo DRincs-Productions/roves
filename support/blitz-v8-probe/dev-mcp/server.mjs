@@ -10,6 +10,13 @@ import { createConnection } from "node:net";
 import { z } from "zod";
 import { pixiStatus } from "./pixi.mjs";
 
+// After stdin closes, Roves may legitimately spend up to its Rust
+// GPU_SHUTDOWN_TIMEOUT (120 s, src/main.rs) draining the WebGPU queue, plus
+// wgpu-core's own ~6 s Queue Drop wait; a slow software adapter needs well
+// over 8 s. Keep this above that sum and below playthrough.mjs's
+// SERVER_EXIT_BUDGET_MS so each layer's own timeout reports the failure.
+const CHILD_EXIT_BUDGET_MS = 150_000;
+
 const [probe, game] = process.argv.slice(2);
 const attach = probe === "--attach";
 const discover = probe === "--discover";
@@ -157,7 +164,14 @@ class Probe {
     this.#closed = true;
     this.#stopping = true;
     this.#child.stdin.end();
-    const deadline = setTimeout(() => this.#child.kill(), 8_000);
+    // Last-resort guard for a hung exit, never the expected path: Roves closes
+    // the window on stdin EOF and then drains the WebGPU queue, failing loudly
+    // itself (non-zero exit) after GPU_SHUTDOWN_TIMEOUT. A kill still fails the
+    // run through the `close` handler above.
+    const deadline = setTimeout(() => {
+      process.stderr.write("Roves did not exit within " + CHILD_EXIT_BUDGET_MS / 1000 + " s after stdin closed; killing it\n");
+      this.#child.kill();
+    }, CHILD_EXIT_BUDGET_MS);
     deadline.unref();
     this.#child.once("close", () => clearTimeout(deadline));
   }
