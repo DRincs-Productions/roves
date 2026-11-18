@@ -2625,6 +2625,26 @@ Il menu fermo non mostra un vantaggio ripetibile sulla cadenza dei tick.
 La cache lascia solo due upload per prova. Restano da misurare scene
 con raster frequente, parità visiva e frame mostrati da PresentMon.
 
+### Avvio da argomenti e da pacchetto sulla GTX 1050 (18 novembre)
+
+Stesso binario Windows release single-thread della CI 44160443066 e
+stesso template `1ac2c1cc`, Vulkan, V8 normale, audio attivo. Tre coppie
+alternate hanno usato `--game --window` e lancio senza argomenti con
+`launch.json`. Entrambe le modalità hanno chiuso dopo 240 tick di
+finestra. La prima prova CLI ha impiegato 6,92 s prima dell'handle
+finestra (2,02 s CPU). Le cinque prove successive hanno impiegato
+3,02–3,34 s (1,34–1,97 s CPU), con intervalli sovrapposti tra modalità.
+Il P99 dei tick di finestra è 32,28–33,03 ms con due upload per prova.
+Il lancio senza argomenti è stato invocato dal processo di misura e segue
+lo stesso ramo di un doppio clic. L'handle indica la creazione della
+finestra, non il primo frame mostrato o la disponibilità dell'input.
+La prima prova è stata l'unica a freddo. Non è un confronto cold A/B.
+
+Chrome DevTools MCP ha confermato lo stesso canvas 1920 × 1080, DPR 1
+e il menu atteso, ma con viewport 929 × 861 e browser già aperto. La
+misura web di navigazione non è comparabile all'avvio del processo.
+PresentMon CLI ha restituito `access denied` all'apertura di ETW.
+
 La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
 ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
 7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s
