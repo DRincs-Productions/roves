@@ -2848,3 +2848,16 @@ Chrome DevTools MCP, Chrome 157 su Windows, template `1ac2c1cce04443e15c44824848
 | Prima battuta dopo Start | 168 | 17,8 | 18,6 | 19,2 | 19,2 | 0 |
 
 Lo scatto singolo del menu emerge dal massimo ma resta fuori dal P99 del campione. Restano da correlare le tre prove alternate con i frame mostrati, il refresh effettivo e il costo CPU/GPU. In questa sessione PresentMon non ha potuto aprire la sessione ETW per mancanza di privilegi.
+
+### Prime tre prove alternate delle fixture isolate
+
+Su GTX 1050, probe release `0cdb0da9300` e Chrome 157. Stage 640 × 360 a DPR 1, 120 callback di riscaldamento e 600 misurati per corsa. Chrome ha una viewport di 644 × 381 con lo stesso stage e l'occlusione disabilitata. Tutte le 24 corse sono completate. I CSV e i log originali sono in `D:/roves-ci/fixture-matrix-first-triples/`.
+
+| Scena | P99 rAF Roves (ms) | P99 rAF Chrome (ms) | P99 render/present Roves (ms) |
+| --- | ---: | ---: | ---: |
+| Vuota | 18,17–18,81 | 18,7–18,8 | 0,09–0,10 |
+| Testo a comparsa | 18,08–18,25 | 18,7–18,9 | 8,09–8,29 |
+| Pixi statico | 18,41–18,47 | 18,8–18,9 | 0,14 |
+| Pixi animato | 18,25–18,58 | 18,8–18,9 | 1,21–1,27 |
+
+Nessuna di queste scene riproduce gli scatti del template. Il testo incrementale è il caso isolato più costoso del gruppo, ma regge la cadenza dei callback. Pixi usa WebGPU con backing 640 × 360 nella fixture, contro 1920 × 1080 nel template. Queste misure non attribuiscono il lag alla GPU o alla CPU e non coprono gli intervalli tra frame mostrati.
