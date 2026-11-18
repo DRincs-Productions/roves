@@ -918,7 +918,7 @@ jobs:
       matrix:
         mode: [normal, jitless]
     env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+      CARGO_TARGET_DIR: ${{ github.workspace }}/../blitz-probe-target
       DENO_WEBGPU_BACKEND: vulkan
       ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
       RUST_BACKTRACE: '1'
