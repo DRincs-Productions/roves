@@ -2664,6 +2664,15 @@ diversi e la prima misura di 6,11 s non rappresenta un A/B a freddo.
 Il primo report della finestra, al tick 1, vede un canvas ma non i
 pulsanti del menu. Serve una misura separata del menu utilizzabile.
 
+Il confronto release sulla soppressione delle presentazioni, tra
+`5fa5c889008` e `0cdb0da9300`, ha usato tre coppie alternate in Vulkan
+e lo stesso template `1ac2c1cc`. CPU a menu fermo mediana: 28,40% di un
+core prima e 27,32% dopo, con intervalli sovrapposti. P99 mediano dei
+tick: 19,26 e 20,71 ms. Dopo la modifica sono state evitate 2–4
+presentazioni per prova e 858–863 presentazioni sono state attribuite
+alla coda WebGPU. Il risparmio non è ripetibile nel menu del template.
+Questi sono tempi interni, non misure dei frame mostrati.
+
 Nel confronto [CI 44358884769](https://github.com/DRincs-Productions/roves/actions/runs/44358884769),
 lavapipe Vulkan/llvmpipe ha superato avvio e Skip in normal e JITless sul
 template `e88e9ac29e736e007904e0767815e21cd8725941`. Save/Load passa in
