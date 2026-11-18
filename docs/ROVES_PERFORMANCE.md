@@ -2837,3 +2837,14 @@ usare l'input `template_ref`. Il job ha `continue-on-error` e non
 modifica i gate Windows. Lettura: se lavapipe supera Save/Load e Skip
 dove WARP scade, il limite è specifico di WARP; se fallisce allo stesso
 punto, il problema riguarda il WebGPU software in generale.
+
+### Campione Chrome visibile del template originale
+
+Chrome DevTools MCP, Chrome 157 su Windows, template `1ac2c1cce04443e15c4482484864e87556709964` servito da loopback, storage isolato, viewport 640 × 360 a DPR 1 e canvas Pixi 1920 × 1080. Scheda in primo piano durante entrambi i campioni. Campioni esplorativi da circa 3 s, intervalli fra callback `requestAnimationFrame` in ms.
+
+| Scena | Intervalli | P50 | P95 | P99 | Massimo | Oltre 25 ms |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Menu | 165 | 18,0 | 18,6 | 18,7 | 71,7 | 1 |
+| Prima battuta dopo Start | 168 | 17,8 | 18,6 | 19,2 | 19,2 | 0 |
+
+Lo scatto singolo del menu emerge dal massimo ma resta fuori dal P99 del campione. Restano da correlare le tre prove alternate con i frame mostrati, il refresh effettivo e il costo CPU/GPU. In questa sessione PresentMon non ha potuto aprire la sessione ETW per mancanza di privilegi.
