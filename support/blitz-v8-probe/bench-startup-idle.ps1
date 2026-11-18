@@ -19,6 +19,9 @@
       token). Requires probes built with --features dev-mcp; reported separately.
     - idle_cpu_s / idle_cpu_pct: probe CPU over a fixed wall-clock interval
       (-IdleSeconds) that starts -SettleSeconds after the window (or Start button).
+    - idle_threads: the same interval split per thread (thread description, module
+      of the Win32 start address, main = earliest-started thread), top 16 by CPU,
+      plus the process CPU not covered by surviving threads.
     - frame timings: the ROVES_PROBE_FRAME_TIMINGS record printed at window close
       (whole session, last 3,600 samples), including present cause counters.
       presented_frames counts successful surface_present calls, not displayed
@@ -152,6 +155,87 @@ function Stop-McpClient($client) {
 
 function Get-ProbeCpu($proc) { $proc.Refresh(); return $proc.TotalProcessorTime.TotalSeconds }
 
+# Per-thread CPU attribution of the idle interval (no elevation, no ETW): thread
+# description (Rust/V8/Tokio names; drivers usually leave it empty) and the
+# module of the Win32 start address, so unnamed GPU-driver threads are told
+# apart from the probe's own.
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class RovesThreadInfo {
+  [DllImport("kernel32.dll", SetLastError = true)]
+  static extern IntPtr OpenThread(uint access, bool inherit, uint id);
+  [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr h);
+  [DllImport("kernel32.dll")] static extern int GetThreadDescription(IntPtr h, out IntPtr desc);
+  [DllImport("kernel32.dll")] static extern IntPtr LocalFree(IntPtr p);
+  [DllImport("ntdll.dll")] static extern int NtQueryInformationThread(IntPtr h, int cls, out IntPtr info, int len, IntPtr ret);
+  const uint QUERY_LIMITED = 0x0800, QUERY = 0x0040;
+  public static string Name(int id) {
+    IntPtr h = OpenThread(QUERY_LIMITED, false, (uint)id);
+    if (h == IntPtr.Zero) return null;
+    try {
+      IntPtr p;
+      if (GetThreadDescription(h, out p) < 0 || p == IntPtr.Zero) return null;
+      try { return Marshal.PtrToStringUni(p); } finally { LocalFree(p); }
+    } finally { CloseHandle(h); }
+  }
+  // ThreadQuerySetWin32StartAddress (9).
+  public static long StartAddress(int id) {
+    IntPtr h = OpenThread(QUERY, false, (uint)id);
+    if (h == IntPtr.Zero) return 0;
+    try {
+      IntPtr a;
+      return NtQueryInformationThread(h, 9, out a, IntPtr.Size, IntPtr.Zero) == 0 ? a.ToInt64() : 0;
+    } finally { CloseHandle(h); }
+  }
+}
+'@
+
+function Get-ThreadSnapshot($proc) {
+  $proc.Refresh()
+  $snap = @{}
+  foreach ($t in $proc.Threads) {
+    try { $snap[$t.Id] = @{ cpu = $t.TotalProcessorTime.TotalSeconds; start = $t.StartTime } } catch { }
+  }
+  return $snap
+}
+
+function Get-ThreadModule($modules, [long]$address) {
+  if ($address -eq 0) { return $null }
+  foreach ($m in $modules) {
+    $base = $m.BaseAddress.ToInt64()
+    if ($address -ge $base -and $address -lt $base + $m.ModuleMemorySize) { return $m.ModuleName }
+  }
+  return $null
+}
+
+# Threads alive at the end of the interval, by CPU over it (threads created
+# inside it count from zero); `unattributed_s` is the process delta not covered
+# (threads that exited inside the interval, rounding). `main` marks the
+# earliest-started thread, the shell/JS thread.
+function Get-IdleThreads($proc, $before, $after, [double]$processCpu, [double]$wall) {
+  $modules = @(); try { $modules = @($proc.Modules) } catch { }
+  $main = ($after.GetEnumerator() | Sort-Object { $_.Value.start } | Select-Object -First 1).Key
+  $rows = foreach ($e in $after.GetEnumerator()) {
+    $base = if ($before.ContainsKey($e.Key)) { $before[$e.Key].cpu } else { 0 }
+    $cpu = $e.Value.cpu - $base
+    $name = [RovesThreadInfo]::Name($e.Key)
+    [pscustomobject][ordered]@{
+      tid = $e.Key; main = ($e.Key -eq $main); name = $(if ($name) { $name } else { $null })
+      module = Get-ThreadModule $modules ([RovesThreadInfo]::StartAddress($e.Key))
+      new = -not $before.ContainsKey($e.Key)
+      cpu_s = [math]::Round($cpu, 3); cpu_pct = [math]::Round(100 * $cpu / $wall, 2)
+    }
+  }
+  $rows = @($rows | Sort-Object cpu_s -Descending)
+  $sum = ($rows | Measure-Object cpu_s -Sum).Sum
+  return [ordered]@{
+    threads = $rows.Count; exited = @($before.Keys | Where-Object { -not $after.ContainsKey($_) }).Count
+    unattributed_s = [math]::Round($processCpu - $sum, 3)
+    top = @($rows | Where-Object { $_.cpu_s -gt 0 } | Select-Object -First 16)
+  }
+}
+
 function Invoke-Run([string]$side, [string]$exe, [int]$index) {
   $runDir = Join-Path $script:RunsDir ('{0:D2}-{1}' -f $index, $side)
   $storage = Join-Path $runDir 'storage'
@@ -161,7 +245,7 @@ function Invoke-Run([string]$side, [string]$exe, [int]$index) {
   $run = [ordered]@{
     index = $index; side = $side; exit_code = $null; killed = $false; error = $null
     window_ms = $null; window_cpu_s = $null; start_ms = $null; start_cpu_s = $null; start_error = $null
-    idle_wall_s = $null; idle_cpu_s = $null; idle_cpu_pct = $null; private_mb_end = $null
+    idle_wall_s = $null; idle_cpu_s = $null; idle_cpu_pct = $null; idle_threads = $null; private_mb_end = $null
     adapter_backend = $null; frame_timings = $null; idle_tail_sample = $null; log_dir = $runDir
   }
   Write-Host ("[{0}] {1} ..." -f $index, $side)
@@ -237,13 +321,17 @@ function Invoke-Run([string]$side, [string]$exe, [int]$index) {
     $settleUntil = $ready / 1000 + $SettleSeconds
     while ($clock.Elapsed.TotalSeconds -lt $settleUntil -and -not $proc.HasExited) { [System.Threading.Thread]::Sleep(50) }
     if ($proc.HasExited) { throw 'probe exited before the idle interval' }
+    $threads0 = Get-ThreadSnapshot $proc
     $cpu0 = Get-ProbeCpu $proc; $t0 = $clock.Elapsed.TotalSeconds
     [System.Threading.Thread]::Sleep([int]($IdleSeconds * 1000))
     $cpu1 = Get-ProbeCpu $proc; $t1 = $clock.Elapsed.TotalSeconds
+    $threads1 = Get-ThreadSnapshot $proc
     if ($proc.HasExited) { throw 'probe exited during the idle interval' }
     $run.idle_wall_s = [math]::Round($t1 - $t0, 3)
     $run.idle_cpu_s = [math]::Round($cpu1 - $cpu0, 3)
     $run.idle_cpu_pct = [math]::Round(100 * ($cpu1 - $cpu0) / ($t1 - $t0), 2)
+    try { $run.idle_threads = Get-IdleThreads $proc $threads0 $threads1 ($cpu1 - $cpu0) ($t1 - $t0) }
+    catch { $run.idle_threads = 'error: ' + $_.Exception.Message }
     $run.private_mb_end = [math]::Round($proc.PrivateMemorySize64 / 1MB, 1)
 
     if ($mcp) {
@@ -352,6 +440,7 @@ $meta = [ordered]@{
     'window_ms: visible top-level window handle, not a usable menu; polling resolution ~15 ms.',
     'start_ms: enabled Start element observed through a scoped dev-mcp attach connection.',
     'idle_cpu_pct: probe CPU / wall clock over the idle interval, 100 = one logical CPU.',
+    'idle_threads: per-thread CPU over the same interval (description, start-address module, main = earliest thread); unattributed_s covers threads that exited inside it.',
     'frame_timings: whole session up to 3,600 samples; presented_frames are surface_present calls, not displayed frames; cpu_* are wall-clock, not GPU time.'
   )
 }

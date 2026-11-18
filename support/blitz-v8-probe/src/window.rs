@@ -354,6 +354,8 @@ struct ScenarioApplication<R: WindowRenderer> {
     /// The GPU presentation state: a window shown again
     /// (`Occluded(false)`) presents its next frame even if unchanged.
     presentation: Option<crate::presentation::SharedPresentation>,
+    /// `ROVES_PROBE_FRAME_TIMINGS=1` only (see `frame_timings`).
+    timings: Option<crate::frame_timings::SharedFrameTimings>,
 }
 
 /// Drives the probe's current-thread Tokio runtime on the main thread while the
@@ -467,7 +469,16 @@ impl<R: WindowRenderer> ApplicationHandler for ScenarioApplication<R> {
         {
             presentation.borrow_mut().invalidate();
         }
+        // ROVES_PROBE_FRAME_TIMINGS only: the shell's whole redraw (Blitz
+        // resolve + render), see `frame_timings::FrameTimings::cpu_shell_redraw`.
+        let redraw = matches!(event, WindowEvent::RedrawRequested)
+            .then_some(self.timings.as_ref())
+            .flatten()
+            .map(|_| Instant::now());
         self.shell.window_event(event_loop, window_id, event);
+        if let (Some(start), Some(timings)) = (redraw, &self.timings) {
+            timings.borrow_mut().cpu_shell_redraw.push(start.elapsed());
+        }
         self.apply();
     }
 
@@ -882,15 +893,20 @@ impl Document for RovesDocument {
                 // wakes the parked current-thread runtime from this thread).
                 let waker = context.waker().clone();
                 let frame_tick = self.io.as_ref().map(|io| io.arm());
-                std::thread::spawn(move || {
-                    loop {
-                        std::thread::sleep(Duration::from_micros(16_667));
-                        waker.wake_by_ref();
-                        if let Some(frame_tick) = &frame_tick {
-                            frame_tick.notify_one();
+                // Named so per-thread CPU attribution (bench-startup-idle.ps1
+                // `idle_threads`) tells it apart from other unnamed threads.
+                std::thread::Builder::new()
+                    .name("roves-frame-ticker".into())
+                    .spawn(move || {
+                        loop {
+                            std::thread::sleep(Duration::from_micros(16_667));
+                            waker.wake_by_ref();
+                            if let Some(frame_tick) = &frame_tick {
+                                frame_tick.notify_one();
+                            }
                         }
-                    }
-                });
+                    })
+                    .expect("frame ticker thread should start");
                 self.ticker_started = true;
             }
         }
@@ -983,6 +999,7 @@ pub fn run<R: WindowRenderer + 'static>(
             .try_borrow::<crate::presentation::SharedPresentation>()
             .cloned()
     });
+    let timings = document.timings.clone();
     let mut application = BlitzApplication::new(proxy, receiver);
     let (width, height) = crate::VIEWPORT;
     // A packaged launch (src/launch.rs) gets the bundle's title and a normal,
@@ -1009,6 +1026,7 @@ pub fn run<R: WindowRenderer + 'static>(
             scenario,
             io,
             presentation,
+            timings,
         })
         .expect("window event loop should run");
     parked.borrow_mut().take()

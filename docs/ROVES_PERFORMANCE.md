@@ -2673,6 +2673,57 @@ presentazioni per prova e 858–863 presentazioni sono state attribuite
 alla coda WebGPU. Il risparmio non è ripetibile nel menu del template.
 Questi sono tempi interni, non misure dei frame mostrati.
 
+#### Lavoro DOM nei frame con solo il canvas cambiato (18 novembre)
+
+Riferimento Chromium `f2700724`: `cc/layers/texture_layer.cc`
+(`TextureLayer::Update` passa una nuova `TransferableResource` senza
+ridipingere il DOM, "no need to do another [commit]"),
+`components/viz/service/display/direct_renderer.cc` (`CanSkipRenderPass`
+riusa i render pass non radice in cache senza danno; la radice si ridisegna
+sempre) e `third_party/blink/renderer/modules/webgpu/gpu_canvas_context.cc`
+(`DidDraw`/`SetNeedsCompositingUpdate`). La metà Viz esiste già nella probe:
+la cache raster ha servito 1.771 segmenti su 1.821 nella prova dopo. Manca la
+metà Blink, l'invalidazione del paint che evita di registrare di nuovo il DOM
+invariato. Blitz non ha un segnale affidabile equivalente. `has_changes()`
+copre solo le mutazioni e restituisce `changed_nodes.is_empty()`, cioè il
+contrario del nome. `geometry_generation` copre solo la geometria. Il paint
+dipende anche da scroll animato, dissolvenza delle scrollbar calcolata sul
+tempo trascorso, hover ricalcolato dopo il layout, immagini arrivate via
+messaggi e cursore di testo. Un segnale corretto richiederebbe un fork ampio di
+blitz-dom, non autorizzato per un difetto che non blocca i giochi.
+
+Limite superiore dalla prova dopo (`0cdb0da9300`, run 2): per frame, p50
+`cpu_scene_paint` 0,146 ms + `cpu_split` 0,012 + `cpu_cache_check` 0,011 +
+`cpu_compose_segments` 0,005 = 0,17 ms (somma dei p95: 0,78 ms). A circa 60
+render al secondo sono 1–1,5 punti di un core su 27, sotto la dispersione tra
+prove (25,1–30,7%). Nessuna ottimizzazione implementata.
+
+Attribuzione per thread (`bench-startup-idle.ps1`, nuovo campo `idle_threads`;
+`D:/roves-ci/idle-threads-20261118-b`, una coppia, stessi eseguibili e
+template, 10 s, granularità Windows ~15,6 ms):
+
+| Lato | Processo | Thread principale | Thread probe senza nome | Driver `nvoglv64.dll` |
+|---|---|---|---|---|
+| prima `5fa5c889008` | 24,64% | 14,35% | 4,68% | 4,99% (4 thread) |
+| dopo `0cdb0da9300` | 26,69% | 16,70% | 3,75% | 5,16% (4 thread) |
+
+Il campionamento per thread colloca la maggior parte del consumo sul
+thread principale. Il resolve di Blitz è un candidato da misurare.
+La nuova serie `cpu_shell_redraw` misura il tempo trascorso nell'intero
+redraw della shell. La differenza con `cpu_render_present` include il
+resolve e il resto del lavoro della shell, quando le finestre temporali
+e i campioni coincidono. Sono tempi di parete, mentre `idle_threads`
+misura il tempo CPU. Il thread ticker ha ora un nome.
+
+Traccia successiva, con pacchetti dev-mcp che contengono la strumentazione e lo
+stesso eseguibile su entrambi i lati: tre coppie, `-SettleSeconds 6
+-IdleSeconds 10 -McpSidecar`. `idle_tail_sample` copre gli ultimi 5 s del
+periodo fermo. Confrontare la copertura di `cpu_shell_redraw` e
+`cpu_render_present`, la quota delle presentazioni attribuite al canvas
+e il consumo per thread. Se emerge un costo significativo fuori dal
+renderer, aggiungere una misura diretta del resolve prima di modificarlo.
+L'identità del thread senza nome da circa 4% resta da verificare.
+
 Nel confronto [CI 44358884769](https://github.com/DRincs-Productions/roves/actions/runs/44358884769),
 lavapipe Vulkan/llvmpipe ha superato avvio e Skip in normal e JITless sul
 template `e88e9ac29e736e007904e0767815e21cd8725941`. Save/Load passa in

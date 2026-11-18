@@ -2,7 +2,7 @@
 //! (`ROVES_PROBE_FRAME_TIMINGS=1`).
 //!
 //! Without the variable nothing is allocated or measured: the window and the
-//! GPU renderer only check an `Option`. With it, three series are sampled into
+//! GPU renderer only check an `Option`. With it, four series are sampled into
 //! bounded ring buffers (the last `MAX_SAMPLES` values, about 60 seconds at
 //! 60 Hz) and one `ROVES_PROBE_FRAME_TIMINGS` JSON record is printed when the
 //! window closes:
@@ -16,6 +16,12 @@
 //!   compose submit and the `surface_present` call). It is NOT GPU execution
 //!   time and does not prove that a frame became visible on screen: the queue
 //!   runs asynchronously and the compositor/display timing is not observed.
+//! - `cpu_shell_redraw`: wall-clock duration of the shell's whole
+//!   `RedrawRequested` handling on the same thread (`blitz-shell`'s
+//!   `View::redraw`: Blitz `resolve` — style, damage, layout, paint tree —
+//!   then `render`, then the `is_animating` check). Minus `cpu_render_present`
+//!   it is the Blitz resolve/bookkeeping cost no other series covers. Every
+//!   summary also carries `sum` (milliseconds over the samples in the window).
 //!
 //! With the GPU window renderer two more blocks are reported:
 //!
@@ -125,6 +131,7 @@ impl Samples {
             p99: percentile(&sorted, 99.0),
             max: sorted.last().copied(),
             over_budget: sorted.iter().filter(|value| **value > BUDGET_MS).count(),
+            sum: sorted.iter().sum(),
         }
     }
 }
@@ -150,6 +157,9 @@ pub struct Summary {
     pub max: Option<f64>,
     /// Samples in the window above 16.67 ms.
     pub over_budget: usize,
+    /// Sum of the samples in the window, in milliseconds: with `count` it
+    /// gives the mean, and it can be compared with a thread's CPU time.
+    pub sum: f64,
 }
 
 impl Summary {
@@ -159,7 +169,7 @@ impl Summary {
             None => "null".to_owned(),
         };
         format!(
-            "{{\"count\":{},\"total\":{},\"p50\":{},\"p95\":{},\"p99\":{},\"max\":{},\"over_16_67ms\":{}}}",
+            "{{\"count\":{},\"total\":{},\"p50\":{},\"p95\":{},\"p99\":{},\"max\":{},\"over_16_67ms\":{},\"sum\":{:.3}}}",
             self.count,
             self.total,
             number(self.p50),
@@ -167,6 +177,7 @@ impl Summary {
             number(self.p99),
             number(self.max),
             self.over_budget,
+            self.sum,
         )
     }
 }
@@ -1059,6 +1070,8 @@ pub struct FrameTimings {
     pub frame_step_interval: Samples,
     pub cpu_frame_step: Samples,
     pub cpu_render_present: Samples,
+    /// The shell's whole redraw (resolve + render), see the module docs.
+    pub cpu_shell_redraw: Samples,
     /// GPU renderer only, created on its first frame.
     render_phases: Option<Box<PhaseSamples>>,
     /// Committed cache-miss reasons of the GPU renderer, if any.
@@ -1087,11 +1100,12 @@ impl FrameTimings {
             .as_ref()
             .map_or_else(|| "null".to_owned(), |phases| phases.json_since(since));
         let sample = format!(
-            "{{\"unit\":\"ms\",\"window_ms\":5000,\"renderer\":\"{}\",\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"render_phases\":{phases},\"displayed_frames\":null,\"gpu_time_ms\":null}}",
+            "{{\"unit\":\"ms\",\"window_ms\":5000,\"renderer\":\"{}\",\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"render_phases\":{phases},\"displayed_frames\":null,\"gpu_time_ms\":null}}",
             self.renderer,
             self.frame_step_interval.summary_since(since).json(),
             self.cpu_frame_step.summary_since(since).json(),
             self.cpu_render_present.summary_since(since).json(),
+            self.cpu_shell_redraw.summary_since(since).json(),
         );
         deno_core::serde_json::from_str(&sample).expect("frame timing summaries emit valid JSON")
     }
@@ -1101,6 +1115,7 @@ impl FrameTimings {
             frame_step_interval: Samples::with_capacity(MAX_SAMPLES),
             cpu_frame_step: Samples::with_capacity(MAX_SAMPLES),
             cpu_render_present: Samples::with_capacity(MAX_SAMPLES),
+            cpu_shell_redraw: Samples::with_capacity(MAX_SAMPLES),
             render_phases: None,
             raster_cache_misses: None,
             raster_cache_content_diff: None,
@@ -1181,12 +1196,13 @@ impl FrameTimings {
             .as_ref()
             .map_or_else(|| "null".to_owned(), DiffCounts::json);
         println!(
-            "ROVES_PROBE_FRAME_TIMINGS {{\"check\":\"frame_timings\",\"unit\":\"ms\",\"window_max_samples\":{MAX_SAMPLES},\"renderer\":\"{}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},{counters},\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"render_phases\":{render_phases},\"raster_cache_misses\":{misses},\"raster_cache_content_diff\":{content_diff},\"note\":\"cpu_* are shell-thread wall-clock durations; cpu_render_present is not GPU time and does not prove a visible frame\",\"phase_note\":\"render_phases are per-frame CPU sums sampled only on frames that reached the phase (all render calls, skipped ones included); cpu_compose_segments is the compose segment loop minus its nested cpu_cache_check/cpu_cache_diff/cpu_raster/cpu_texture_upload time; cpu_cache_diff is diagnostics-only comparison work; cpu_surface_acquire and cpu_present may include swapchain/VSync waits; the unattributed remainder of cpu_render_present is not reported; raster_cache_misses cover presented frames and add up to raster_uploads; raster_cache_content_diff covers the same presented content_changed misses (first_command + length_only + no_command_diff = content_changed; length_changed and kind_changed are overlapping flags; fill.area buckets the transformed bounding-box area, in squared scene units, of first-differing fills, and fill.compared counts those whose cached command is also a fill, the only ones carrying the overlapping *_changed flags (other_changed: transform, brush and path are equal); brush_only is the subset where only the brush differs; fill.current_path covers every first-differing fill and fill.cached_path only the compared ones: elements buckets the path element count, bounds names the first non-finite stage in the order path points, transform, untransformed bounding box, transformed bounding box, area, or finite)\"}}",
+            "ROVES_PROBE_FRAME_TIMINGS {{\"check\":\"frame_timings\",\"unit\":\"ms\",\"window_max_samples\":{MAX_SAMPLES},\"renderer\":\"{}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},{counters},\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"render_phases\":{render_phases},\"raster_cache_misses\":{misses},\"raster_cache_content_diff\":{content_diff},\"note\":\"cpu_* are shell-thread wall-clock durations; cpu_render_present is not GPU time and does not prove a visible frame\",\"phase_note\":\"render_phases are per-frame CPU sums sampled only on frames that reached the phase (all render calls, skipped ones included); cpu_compose_segments is the compose segment loop minus its nested cpu_cache_check/cpu_cache_diff/cpu_raster/cpu_texture_upload time; cpu_cache_diff is diagnostics-only comparison work; cpu_surface_acquire and cpu_present may include swapchain/VSync waits; the unattributed remainder of cpu_render_present is not reported; raster_cache_misses cover presented frames and add up to raster_uploads; raster_cache_content_diff covers the same presented content_changed misses (first_command + length_only + no_command_diff = content_changed; length_changed and kind_changed are overlapping flags; fill.area buckets the transformed bounding-box area, in squared scene units, of first-differing fills, and fill.compared counts those whose cached command is also a fill, the only ones carrying the overlapping *_changed flags (other_changed: transform, brush and path are equal); brush_only is the subset where only the brush differs; fill.current_path covers every first-differing fill and fill.cached_path only the compared ones: elements buckets the path element count, bounds names the first non-finite stage in the order path points, transform, untransformed bounding box, transformed bounding box, area, or finite)\"}}",
             self.renderer,
             crate::presentation::RASTER_THREADING,
             self.frame_step_interval.summary().json(),
             self.cpu_frame_step.summary().json(),
             self.cpu_render_present.summary().json(),
+            self.cpu_shell_redraw.summary().json(),
         );
         use std::io::Write;
         let _ = std::io::stdout().flush();
@@ -1213,6 +1229,12 @@ mod tests {
         assert_eq!(summary.max, Some(100.0));
         // 17..=100 are above 16.67 ms.
         assert_eq!(summary.over_budget, 84);
+        assert_eq!(summary.sum, 5050.0);
+        assert!(
+            summary
+                .json()
+                .ends_with(",\"over_16_67ms\":84,\"sum\":5050.000}")
+        );
 
         let mut single = Samples::with_capacity(4);
         single.push(Duration::from_millis(20));
@@ -1227,7 +1249,7 @@ mod tests {
     fn empty_series_report_null() {
         let summary = Samples::with_capacity(4).summary();
         assert_eq!(summary.count, 0);
-        assert_eq!((summary.p50, summary.max), (None, None));
+        assert_eq!((summary.p50, summary.max, summary.sum), (None, None, 0.0));
         assert!(summary.json().contains("\"p99\":null"));
     }
 
@@ -1244,6 +1266,8 @@ mod tests {
         assert_eq!(summary.max, Some(4.0));
         assert_eq!(summary.p50, Some(3.0));
         assert_eq!(summary.over_budget, 0);
+        // Only the samples still in the window.
+        assert_eq!(summary.sum, 9.0);
         assert_eq!(MAX_SAMPLES, 3600);
     }
 
