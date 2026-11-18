@@ -2861,3 +2861,22 @@ Su GTX 1050, probe release `0cdb0da9300` e Chrome 157. Stage 640 × 360 a DPR 1,
 | Pixi animato | 18,25–18,58 | 18,8–18,9 | 1,21–1,27 |
 
 Nessuna di queste scene riproduce gli scatti del template. Il testo incrementale è il caso isolato più costoso del gruppo, ma regge la cadenza dei callback. Pixi usa WebGPU con backing 640 × 360 nella fixture, contro 1920 × 1080 nel template. Queste misure non attribuiscono il lag alla GPU o alla CPU e non coprono gli intervalli tra frame mostrati.
+
+Nelle altre 30 corse dello stesso confronto, tutte concluse, il P99 rAF
+Roves/Chrome è stato 18,40–18,54 / 18,7–18,8 ms per DOM statico,
+18,09–18,14 / 18,7 ms per transform, 18,16–18,23 / 18,6–19,0 ms per
+opacity e 18,09–18,28 / 18,6–18,9 ms per Pixi con overlay.
+Il P99 render/present di transform e opacity in Roves è arrivato
+rispettivamente a 6,80 e 7,01 ms. La variante backdrop-filter è esclusa
+dal confronto visivo per la mancata sfocatura in questa build Roves.
+Dati: `D:/roves-ci/fixture-matrix-combined-triples/`.
+
+La [CI Windows 44378941279](https://github.com/DRincs-Productions/roves/actions/runs/44378941279)
+ripete il blocco del gate narrativo in normal e JITless: 8 callback su 10
+in 45 s, quindi Save/Load non parte. La prova Skip normal si interrompe
+per il prerequisito delle due battute e non riporta eccezioni JS né toast.
+Nel log di quella prova la coda WebGPU è stata satura nel 98,5% dei tick.
+Il batch completato più lento ha richiesto 16,6 s (8 submit, 4 frame,
+zero byte di upload). Questo dato è del runner CI, non della GTX 1050,
+e indirizza la diagnosi del gate verso il lavoro GPU pendente e il
+pacing, senza provare un crash nella finestra reale.
