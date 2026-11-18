@@ -2654,6 +2654,15 @@ Il contatore è della superficie, mentre il tempo render include le
 attese. Per attribuire quel consumo restano da separare i thread e
 misurare un tratto equivalente di Chrome.
 
+Nel confronto [CI 44358884769](https://github.com/DRincs-Productions/roves/actions/runs/44358884769),
+lavapipe Vulkan/llvmpipe ha superato avvio e Skip in normal e JITless sul
+template `e88e9ac29e736e007904e0767815e21cd8725941`. Save/Load passa in
+normal. In JITless il gate Save/Load non è stato raggiunto perché il
+click della prova nome non ha prodotto uno stato narrativo stabile
+entro 1.800 frame consegnati. Skip sulla stessa immagine runner è
+passato. Il timeout diffuso di Skip su Windows WARP non si riproduce
+su questo backend.
+
 ### Presentazioni ridondanti a scena invariata (18 novembre, non ancora eseguito)
 
 Riferimento Chromium `f2700724`: `cc/scheduler/scheduler_state_machine.cc`
