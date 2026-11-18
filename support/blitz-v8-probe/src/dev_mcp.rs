@@ -193,6 +193,8 @@ pub fn poll(
                         sample["session_present_calls"] = json!(stats.as_ref().map(|s| s.frames));
                         sample["session_skipped_frames"] =
                             json!(stats.as_ref().map(|s| s.skipped_frames));
+                        sample["session_unchanged_frames"] =
+                            json!(stats.as_ref().map(|s| s.unchanged_frames));
                         sample
                     })
                     .ok_or_else(|| "frame timings are unavailable".into())

@@ -127,6 +127,10 @@ pub enum Outcome {
     PresentFailed,
     /// Presented, but a wgpu error was reported during the frame (skipped).
     FrameError,
+    /// Not presented on purpose: the window would show exactly the last
+    /// presented frame (`PresentStats::unchanged_frames`); no acquire,
+    /// compose or present call.
+    Unchanged,
     /// `render` returned before any of the above (should not happen).
     #[default]
     NotReached,
@@ -140,6 +144,7 @@ impl Outcome {
             Outcome::AcquireStatus => "acquire_status",
             Outcome::PresentFailed => "present_failed",
             Outcome::FrameError => "frame_error",
+            Outcome::Unchanged => "unchanged",
             Outcome::NotReached => "not_reached",
         }
     }
@@ -400,7 +405,7 @@ impl FrameTrace {
         };
         writeln!(
             out,
-            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included\"}}",
+            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included\"}}",
             if self.frequency.is_some() {
                 "qpc"
             } else {

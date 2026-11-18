@@ -74,6 +74,7 @@
     op_blitz_present_canvas,
     op_blitz_present_canvas_clear,
     op_blitz_present_canvas_forget,
+    op_blitz_present_queue_write,
     op_blitz_matches,
     op_blitz_create_comment,
     op_blitz_clone_node,
@@ -3390,11 +3391,19 @@
     gpuPacing.active = true;
     gpuPacing.deferrals++;
   }
+  // Installed on the first navigator.gpu access, before the page can obtain a
+  // device or the GPUQueue prototype (the class is not a global), so every page
+  // queue write goes through these wrappers. op_blitz_present_queue_write
+  // tells the --window presentation that a canvas texture may have changed:
+  // an unchanged window frame is skipped only when no such write happened
+  // (src/presentation.rs, `unchanged_frame`). Called before the original, so
+  // a write that throws after partly reaching the queue is still counted.
   function countSubmits() {
     const proto = webgpu.GPUQueue?.prototype;
     const submit = proto?.submit;
     if (typeof submit !== "function") return;
     proto.submit = function (commandBuffers) {
+      op_blitz_present_queue_write();
       gpuSubmits++;
       gpuCommandBuffers += commandBuffers?.length ?? 0;
       gpuLastSubmitAt = performance.now();
@@ -3406,6 +3415,7 @@
     const writeTexture = proto.writeTexture;
     if (typeof writeTexture !== "function") return;
     proto.writeTexture = function (destination, data, dataLayout, size) {
+      op_blitz_present_queue_write();
       const result = writeTexture.call(this, destination, data, dataLayout, size);
       // Counted once accepted; bytes the copy can read from `data`.
       const bytes = Math.max(0, (data?.byteLength ?? 0) - (Number(dataLayout?.offset) || 0));

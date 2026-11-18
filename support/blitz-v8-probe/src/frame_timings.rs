@@ -1156,13 +1156,15 @@ impl FrameTimings {
         };
         let counters = match stats {
             Some(stats) => format!(
-                "\"presented_frames\":{},\"raster_segments\":{},\"raster_uploads\":{},\"raster_cache_hits\":{},\"upload_bytes\":{},\"skipped_frames\":{}",
+                "\"presented_frames\":{},\"raster_segments\":{},\"raster_uploads\":{},\"raster_cache_hits\":{},\"upload_bytes\":{},\"skipped_frames\":{},\"unchanged_frames\":{},\"present_causes\":{}",
                 stats.frames,
                 stats.raster_segments,
                 stats.raster_uploads,
                 stats.raster_cache_hits,
                 stats.upload_bytes,
                 stats.skipped_frames,
+                stats.unchanged_frames,
+                stats.causes_json(),
             ),
             None => "\"presented_frames\":null".to_owned(),
         };

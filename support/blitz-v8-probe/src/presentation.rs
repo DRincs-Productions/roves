@@ -129,6 +129,13 @@ pub struct Presentation {
     /// a separate cell because widgets drop inside document mutations that
     /// may run while `Presentation` is borrowed.
     retired: Rc<RefCell<Vec<ResourceId>>>,
+    /// Content generation of everything the window shows besides the recorded
+    /// Blitz scene: bumped by every page write to the shared GPU queue
+    /// (`op_blitz_present_queue_write`, from dom.js's `GPUQueue.submit` and
+    /// `writeTexture` wrappers), by every canvas texture change or removal,
+    /// and by `invalidate` (window exposed again). `GpuWindowRenderer` skips
+    /// a present only while it is unchanged (see `unchanged_frame`).
+    generation: u64,
     /// Opt-in Netrender window renderer only: embedder-owned adapter, device
     /// and queue ids cloned while the page's objects were borrowed, taken by
     /// `NetrenderWindowRenderer::new`.
@@ -139,6 +146,12 @@ pub struct Presentation {
 pub type SharedPresentation = Rc<RefCell<Presentation>>;
 
 impl Presentation {
+    /// Something outside the Blitz scene may have changed what the window
+    /// shows: the next frame is presented.
+    pub fn invalidate(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
     pub(crate) fn is_canvas(&self, resource: ResourceId) -> bool {
         self.canvases.contains_key(&resource.into_ffi())
     }
@@ -154,7 +167,9 @@ impl Presentation {
 
     /// Removes `resource` from both maps; returns its canvas node, if any.
     fn unregister(&mut self, resource: ResourceId) -> Option<NodeId> {
-        self.canvases.remove(&resource.into_ffi());
+        if self.canvases.remove(&resource.into_ffi()).is_some() {
+            self.invalidate();
+        }
         let node = self
             .widgets
             .iter()
@@ -335,7 +350,9 @@ pub fn op_blitz_present_canvas(
     let core_texture = crate::netrender_window::OwnedTexture::clone_from_page(texture)?;
     let resource = attach_canvas_widget(&presentation, &mut document.borrow_mut(), node);
     // Replaces (and drops the view of) the previous texture.
-    presentation.borrow_mut().canvases.insert(
+    let mut presentation = presentation.borrow_mut();
+    presentation.invalidate();
+    presentation.canvases.insert(
         resource.into_ffi(),
         Some(CanvasSource {
             view,
@@ -358,7 +375,17 @@ pub fn op_blitz_present_canvas_clear(state: Rc<RefCell<OpState>>, resource: f64)
     presentation.prune();
     if let Some(source) = presentation.canvases.get_mut(&(resource as u64)) {
         *source = None;
+        presentation.invalidate();
     }
+}
+
+/// The page wrote to the shared GPU queue (`GPUQueue.submit` or
+/// `writeTexture`, wrapped by dom.js before any device exists): any canvas
+/// texture may have new content, so the next window frame is presented.
+/// Captured by dom.js.
+#[op2(fast)]
+pub fn op_blitz_present_queue_write(state: Rc<RefCell<OpState>>) {
+    shared(&state).borrow_mut().invalidate();
 }
 
 /// The canvas context owning `resource` was garbage collected (dom.js
@@ -380,6 +407,7 @@ deno_core::extension!(
         op_blitz_present_canvas,
         op_blitz_present_canvas_clear,
         op_blitz_present_canvas_forget,
+        op_blitz_present_queue_write,
     ],
 );
 
@@ -632,6 +660,100 @@ pub struct PresentStats {
     pub max_layers: usize,
     pub skipped_frames: u64,
     pub errors: u64,
+    /// Render attempts that neither acquired, composed nor presented because
+    /// the window would show exactly the last presented frame (see
+    /// `unchanged_frame`). Not part of `frames` or `skipped_frames`.
+    pub unchanged_frames: u64,
+    /// Presented frames by the first reason they could not be skipped (they
+    /// add up to `frames`): `cause_surface` no reusable presented frame
+    /// (first frame, surface (re)configured or resumed, previous attempt
+    /// discarded); `cause_scene` the Blitz scene changed (DOM, style, CSS
+    /// animation, scroll, layout; also every frame while the raster cache is
+    /// disabled); `cause_canvas` only page GPU queue writes or canvas texture
+    /// changes since the last present, with an equal Blitz scene: the
+    /// redundant-draw candidates that equality of commands cannot rule out
+    /// without comparing canvas pixels; `cause_unretained` unchanged, but
+    /// presented because the platform may not keep the window content
+    /// (X11).
+    pub cause_surface: u64,
+    pub cause_scene: u64,
+    pub cause_canvas: u64,
+    pub cause_unretained: u64,
+}
+
+impl PresentStats {
+    /// `{"surface":..,"scene":..,"canvas":..,"unretained":..}` for result lines.
+    pub fn causes_json(&self) -> String {
+        format!(
+            "{{\"surface\":{},\"scene\":{},\"canvas\":{},\"unretained\":{}}}",
+            self.cause_surface, self.cause_scene, self.cause_canvas, self.cause_unretained
+        )
+    }
+}
+
+/// Why a frame had to be presented (see `PresentStats::cause_*`).
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum PresentCause {
+    Surface,
+    Scene,
+    Canvas,
+    Unretained,
+}
+
+/// What the last frame presented without error showed besides the raster
+/// cache contents: the content generation of `Presentation` when it was
+/// composed and the order of its segments (`None` for a raster segment, the
+/// canvas draw otherwise).
+#[derive(Debug)]
+struct PresentedFrame {
+    generation: u64,
+    layout: Vec<Option<CanvasDraw>>,
+}
+
+fn segment_layout(segments: &[Segment]) -> Vec<Option<CanvasDraw>> {
+    segments
+        .iter()
+        .map(|segment| match segment {
+            Segment::Raster(_) => None,
+            Segment::Canvas(draw) => Some(draw.clone()),
+        })
+        .collect()
+}
+
+/// Whether composing `segments` would draw exactly what `last` presented, so
+/// the window can keep showing it. Sound only together with the invariants
+/// kept by `GpuWindowRenderer`: `last` is reset whenever the surface is
+/// (re)configured, resumed or an attempt is discarded, and `cache` holds the
+/// segments of the last committed frame (each raster texture keeps the
+/// pixels of the scene stored for it). Then:
+/// - every raster segment is reusable and equal to its texture's scene
+///   (`RasterCache::is_current`, the audited equality of the cache; a
+///   segment with external or mutable paint never compares current);
+/// - every canvas draw (resource, quad, opacity, clip flag) is equal at the
+///   same position, and the content generation did not change, so no canvas
+///   texture was replaced, cleared or forgotten and the page made no GPU
+///   queue write that could have changed a canvas texture's pixels.
+fn unchanged_frame(
+    cache: &RasterCache,
+    last: &PresentedFrame,
+    generation: u64,
+    segments: &[Segment],
+) -> bool {
+    if last.generation != generation || last.layout.len() != segments.len() {
+        return false;
+    }
+    let mut raster_index = 0;
+    segments
+        .iter()
+        .zip(&last.layout)
+        .all(|(segment, previous)| match segment {
+            Segment::Raster(scene) => {
+                let index = raster_index;
+                raster_index += 1;
+                previous.is_none() && cache.is_current(index, scene)
+            },
+            Segment::Canvas(draw) => previous.as_ref() == Some(draw),
+        })
 }
 
 struct RasterTexture {
@@ -1657,6 +1779,17 @@ impl GpuCompositor {
         }
     }
 
+    /// Records why the frame being composed is presented (committed with it).
+    fn set_cause(&mut self, cause: PresentCause) {
+        let counter = match cause {
+            PresentCause::Surface => &mut self.frame.cause_surface,
+            PresentCause::Scene => &mut self.frame.cause_scene,
+            PresentCause::Canvas => &mut self.frame.cause_canvas,
+            PresentCause::Unretained => &mut self.frame.cause_unretained,
+        };
+        *counter = 1;
+    }
+
     fn commit_frame(&mut self) {
         self.trace_counters();
         let frame = std::mem::take(&mut self.frame);
@@ -1667,6 +1800,10 @@ impl GpuCompositor {
         self.stats.raster_cache_hits += frame.raster_cache_hits;
         self.stats.upload_bytes += frame.upload_bytes;
         self.stats.max_layers = self.stats.max_layers.max(frame.max_layers);
+        self.stats.cause_surface += frame.cause_surface;
+        self.stats.cause_scene += frame.cause_scene;
+        self.stats.cause_canvas += frame.cause_canvas;
+        self.stats.cause_unretained += frame.cause_unretained;
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.misses.commit_frame();
         }
@@ -1746,6 +1883,16 @@ pub struct GpuWindowRenderer {
     width: u32,
     height: u32,
     configured: bool,
+    /// The last frame presented without error on the current surface
+    /// configuration; `None` forces the next attempt to present.
+    last_presented: Option<PresentedFrame>,
+    /// Whether the window system keeps showing the last presented image
+    /// until the next present (set on resume from the window handle): DWM
+    /// on Windows, Core Animation on macOS/iOS, Wayland and Android
+    /// compositors. X11 (Xlib/Xcb) without a compositor loses obscured
+    /// content and reports an Expose as an ordinary redraw, indistinguishable
+    /// here from a requested one, so unchanged frames are still presented.
+    retains_content: bool,
     /// Shared with the document so it can print the result line.
     pub stats: Rc<RefCell<PresentStats>>,
     /// `ROVES_PROBE_FRAME_TIMINGS=1` only: samples `cpu_render_present`, its
@@ -1764,6 +1911,8 @@ impl GpuWindowRenderer {
             width: 0,
             height: 0,
             configured: false,
+            last_presented: None,
+            retains_content: false,
             stats: Rc::default(),
             timings: None,
         })
@@ -1774,6 +1923,8 @@ impl GpuWindowRenderer {
     }
 
     fn configure(&mut self) {
+        // A (re)configured surface has new, undefined images.
+        self.last_presented = None;
         let Some(active) = &self.surface else { return };
         if self.width == 0 || self.height == 0 {
             return;
@@ -1814,6 +1965,36 @@ impl GpuWindowRenderer {
         let presentation = self.presentation.borrow();
         let segments = split_scene(scene, |id| presentation.is_canvas(id));
         self.compositor.phase_end(split, Phase::Split);
+        // Read after `prune` (which may retire canvases) and before compose;
+        // no page script runs until this attempt returns.
+        let generation = presentation.generation;
+        let mut cause = match &self.last_presented {
+            None => PresentCause::Surface,
+            // Refined after compose: a changed segment makes it `Scene`.
+            Some(last) if last.generation != generation => PresentCause::Canvas,
+            Some(last)
+                if unchanged_frame(&self.compositor.raster_cache, last, generation, &segments) =>
+            {
+                if self.retains_content {
+                    // The window keeps showing the identical last frame: no
+                    // acquire, upload, submit or present. JS, timers, audio,
+                    // fetch and input are driven by the document, not here.
+                    self.compositor.stats.unchanged_frames += 1;
+                    self.compositor.set_outcome(Outcome::Unchanged);
+                    *self.stats.borrow_mut() = self.compositor.stats;
+                    return;
+                }
+                PresentCause::Unretained
+            },
+            Some(_) => PresentCause::Scene,
+        };
+        let layout = segment_layout(&segments);
+        let same_layout = self
+            .last_presented
+            .as_ref()
+            .is_some_and(|last| last.layout == layout);
+        // Kept only if this attempt is presented without error.
+        self.last_presented = None;
         let global = self.compositor.device().instance.clone();
         let acquire = self.compositor.phase_start();
         let output = global.surface_get_current_texture(surface, None);
@@ -1864,6 +2045,12 @@ impl GpuWindowRenderer {
             self.width,
             self.height,
         );
+        if cause == PresentCause::Canvas
+            && (self.compositor.frame.raster_uploads > 0 || !same_layout)
+        {
+            cause = PresentCause::Scene;
+        }
+        self.compositor.set_cause(cause);
         global.texture_view_drop(target);
         let present = self.compositor.phase_start();
         let present_start_qpc = self.compositor.trace_stamp();
@@ -1892,6 +2079,7 @@ impl GpuWindowRenderer {
         if presented && self.compositor.stats.errors == errors_before {
             self.compositor.set_outcome(Outcome::Presented);
             self.compositor.commit_frame();
+            self.last_presented = Some(PresentedFrame { generation, layout });
         } else {
             self.compositor.set_outcome(if presented {
                 Outcome::FrameError
@@ -1924,8 +2112,14 @@ impl WindowRenderer for GpuWindowRenderer {
             .expect("window display handle")
             .as_raw();
         let handle = window.window_handle().expect("window handle").as_raw();
+        self.retains_content = !matches!(
+            handle,
+            raw_window_handle::RawWindowHandle::Xlib(_)
+                | raw_window_handle::RawWindowHandle::Xcb(_)
+        );
         // Drop the previous surface (if any) before creating the new one.
         self.surface = None;
+        self.last_presented = None;
         let instance = self.compositor.device().instance.clone();
         // SAFETY: `ActiveSurface` keeps the window and its `Drop` destroys the
         // surface before releasing it (suspend, resume or renderer drop).
@@ -1949,6 +2143,7 @@ impl WindowRenderer for GpuWindowRenderer {
         // `ActiveSurface::drop`: surface first, then the window handle.
         self.surface = None;
         self.configured = false;
+        self.last_presented = None;
     }
 
     fn is_active(&self) -> bool {
@@ -2150,6 +2345,126 @@ mod tests {
         assert!(!cache.is_current(0, &second[0]));
         cache.clear();
         assert!(!cache.is_current(1, &second[1]));
+    }
+
+    /// Fixture for the present skip: the cache test's document (text, a
+    /// canvas placeholder, an overlay above it), painted and split like the
+    /// window renderer does. Only a repaint with equal segments, equal canvas
+    /// draws and an unchanged content generation may skip the present.
+    #[test]
+    fn unchanged_frames_need_equal_segments_draws_and_generation() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut document = blitz_html::HtmlDocument::from_html(
+            r#"<!doctype html><html><head><style>
+            body { margin: 0 } canvas { width: 120px; height: 60px }
+            #over { position: absolute; left: 0; top: 0; color: rgb(255, 0, 0) }
+            </style></head><body><p>Before</p><canvas id="c"></canvas>
+            <div id="over">Over the canvas</div></body></html>"#,
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.set_viewport(Viewport::new(240, 120, 1.0, ColorScheme::Light));
+        let node = crate::find_element_by_id(&document, "c").expect("canvas");
+        let presentation: SharedPresentation = Rc::default();
+        let canvas = attach_canvas_widget(&presentation, &mut document, node);
+        document.resolve(0.0);
+        let paint = |document: &mut blitz_html::HtmlDocument| {
+            let mut scene = Scene::new();
+            blitz_paint::paint_scene(&mut scene, document, 1.0, 240, 120, 0, 0);
+            split_scene(scene, |id| id == canvas)
+        };
+
+        // The committed frame: its raster segments are in the cache.
+        let first = paint(&mut document);
+        let mut cache = RasterCache::default();
+        let rasters = raster_scenes(paint(&mut document));
+        for (index, scene) in rasters.iter().enumerate() {
+            cache.store(index, scene.clone());
+        }
+        let generation = presentation.borrow().generation;
+        let last = PresentedFrame {
+            generation,
+            layout: segment_layout(&first),
+        };
+        assert_eq!(
+            last.layout.iter().filter(|draw| draw.is_some()).count(),
+            1,
+            "one canvas draw between two raster segments expected"
+        );
+
+        // An identical repaint with no page GPU write: redundant, skipped.
+        let same = paint(&mut document);
+        assert!(unchanged_frame(&cache, &last, generation, &same));
+
+        // A page queue write (submit/writeTexture) or canvas texture change.
+        presentation.borrow_mut().invalidate();
+        let written = presentation.borrow().generation;
+        assert_ne!(written, generation);
+        assert!(!unchanged_frame(&cache, &last, written, &same));
+
+        // A changed raster command (DOM or style change of the overlay).
+        let mut changed = paint(&mut document);
+        let Some(Segment::Raster(overlay)) = changed.last_mut() else {
+            panic!("overlay segment last");
+        };
+        let RenderCommand::GlyphRun(run) = overlay
+            .commands
+            .iter_mut()
+            .find(|command| matches!(command, RenderCommand::GlyphRun(_)))
+            .expect("overlay text")
+        else {
+            unreachable!()
+        };
+        run.brush = Paint::Solid(peniko::Color::BLACK);
+        assert!(!unchanged_frame(&cache, &last, generation, &changed));
+
+        // A moved canvas, or a different opacity around it.
+        let mut moved = paint(&mut document);
+        for segment in &mut moved {
+            if let Segment::Canvas(draw) = segment {
+                draw.quad[0].x += 1.0;
+            }
+        }
+        assert!(!unchanged_frame(&cache, &last, generation, &moved));
+        let mut faded = paint(&mut document);
+        for segment in &mut faded {
+            if let Segment::Canvas(draw) = segment {
+                draw.alpha = 0.5;
+            }
+        }
+        assert!(!unchanged_frame(&cache, &last, generation, &faded));
+
+        // A segment more or less (canvas removed, a layer split).
+        let mut fewer = paint(&mut document);
+        fewer.retain(|segment| matches!(segment, Segment::Raster(_)));
+        assert!(!unchanged_frame(&cache, &last, generation, &fewer));
+
+        // Raster textures recreated or a discarded attempt (cache cleared).
+        cache.clear();
+        assert!(!unchanged_frame(&cache, &last, generation, &same));
+    }
+
+    #[test]
+    fn canvas_texture_changes_invalidate_the_presented_frame() {
+        let (mut document, canvas) = canvas_document();
+        let presentation: SharedPresentation = Rc::default();
+        let resource = attach_canvas_widget(&presentation, &mut document, canvas);
+        let before = presentation.borrow().generation;
+        // Forgetting a registered canvas (collected context) changes it.
+        presentation.borrow_mut().forget(&mut document, resource);
+        let forgotten = presentation.borrow().generation;
+        assert_ne!(forgotten, before);
+        // Unknown resources do not.
+        presentation
+            .borrow_mut()
+            .forget(&mut document, ResourceId::new());
+        assert_eq!(presentation.borrow().generation, forgotten);
+        // A widget Blitz dropped (node removed) is pruned and changes it.
+        let again = attach_canvas_widget(&presentation, &mut document, canvas);
+        let attached = presentation.borrow().generation;
+        document.remove_custom_widget(canvas);
+        presentation.borrow_mut().prune();
+        assert!(!presentation.borrow().is_canvas(again));
+        assert_ne!(presentation.borrow().generation, attached);
     }
 
     #[test]

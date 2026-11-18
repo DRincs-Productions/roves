@@ -1076,6 +1076,13 @@ impl NetrenderWindowRenderer {
             max_layers: own.max_layers.max(fallback.max_layers),
             skipped_frames: own.skipped_frames + fallback.skipped_frames,
             errors: own.errors + fallback.errors,
+            // Only the fallback (`GpuWindowRenderer`) skips unchanged frames
+            // and classifies causes; Netrender always presents.
+            unchanged_frames: own.unchanged_frames + fallback.unchanged_frames,
+            cause_surface: own.cause_surface + fallback.cause_surface,
+            cause_scene: own.cause_scene + fallback.cause_scene,
+            cause_canvas: own.cause_canvas + fallback.cause_canvas,
+            cause_unretained: own.cause_unretained + fallback.cause_unretained,
         };
     }
 

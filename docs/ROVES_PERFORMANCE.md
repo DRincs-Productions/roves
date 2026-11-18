@@ -2654,6 +2654,45 @@ Il contatore è della superficie, mentre il tempo render include le
 attese. Per attribuire quel consumo restano da separare i thread e
 misurare un tratto equivalente di Chrome.
 
+### Presentazioni ridondanti a scena invariata (18 novembre, non ancora eseguito)
+
+Riferimento Chromium `f2700724`: `cc/scheduler/scheduler_state_machine.cc`
+(`ShouldDraw` disegna solo con `needs_redraw_` e senza `skip_draw_`),
+`components/viz/service/display/display.cc` (`DrawAndSwap`: con
+`damage_rect` vuoto e senza copy request lo swap viene saltato, "Swap
+skipped") e `third_party/blink/renderer/modules/webgpu/gpu_canvas_context.cc`
+(`getCurrentTexture` marca il canvas sporco con `DidDraw` quando crea una
+texture; dopo la presentazione la texture viene sostituita). Nel probe la
+texture del canvas resta la stessa fra i frame, quindi la pagina può
+riscriverla senza `getCurrentTexture`: il segnale equivalente al danno del
+canvas è ogni scrittura della pagina sulla coda GPU, non la chiamata a
+`getCurrentTexture`. Il danno di Blitz non è tracciato per rettangoli: la
+prova di invarianza riusa l'uguaglianza dei comandi già verificata per la
+cache raster.
+
+`GpuWindowRenderer` salta acquire, upload, composizione, submit e
+`surface_present` solo se ogni segmento raster coincide con la texture in
+cache, i disegni dei canvas sono uguali e la generazione di contenuto è
+invariata. La generazione cresce a ogni `GPUQueue.submit`/`writeTexture` della
+pagina, a ogni cambio, svuotamento o rimozione di texture canvas e quando la
+finestra torna visibile. Resize, resume, suspend e tentativi scartati
+obbligano la presentazione successiva. Su X11 si presenta sempre (un Expose
+arriva come redraw ordinario). JS, timer, audio, fetch e input non cambiano;
+il loop resta cadenzato da `FrameIo::drive_until_frame`, che su Win32 segue
+ogni `RedrawRequested` (winit interrompe il dispatch prima di `about_to_wait`).
+
+Effetto atteso, da misurare: nel menu del template Pixi 8.19 rende a ogni rAF
+(due submit), quindi i frame con passo JS restano presentati con causa
+`canvas`. Possono sparire solo i redraw senza passo JS intermedio
+(`CanvasWidget::requires_redraw` mantiene Blitz in animazione), cioè una
+parte delle circa 174 presentazioni oltre i 1.800 tick della prova
+precedente. Pagine senza canvas o con canvas fermo smettono di presentare
+finché nulla cambia. Nessun pixel viene confrontato e il ticker di Pixi non
+viene fermato. Da leggere nella prossima prova: `unchanged_frames` e
+`present_causes` (`surface`, `scene`, `canvas`, `unretained`) in
+`gpu_window_presentation`, l'esito `unchanged` nella trace e CPU per secondo
+reale con lo stesso eseguibile, la stessa scena e lo stesso hardware.
+
 La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
 ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
 7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s

@@ -351,6 +351,9 @@ struct ScenarioApplication<R: WindowRenderer> {
     shell: BlitzApplication<R>,
     scenario: Option<SharedWindowScenario>,
     io: Rc<FrameIo>,
+    /// The GPU presentation state: a window shown again
+    /// (`Occluded(false)`) presents its next frame even if unchanged.
+    presentation: Option<crate::presentation::SharedPresentation>,
 }
 
 /// Drives the probe's current-thread Tokio runtime on the main thread while the
@@ -457,6 +460,13 @@ impl<R: WindowRenderer> ApplicationHandler for ScenarioApplication<R> {
         window_id: WindowId,
         event: WindowEvent,
     ) {
+        // Before the shell handles it: its `Occluded(false)` branch requests
+        // the redraw that must not be skipped as unchanged.
+        if matches!(event, WindowEvent::Occluded(false))
+            && let Some(presentation) = &self.presentation
+        {
+            presentation.borrow_mut().invalidate();
+        }
         self.shell.window_event(event_loop, window_id, event);
         self.apply();
     }
@@ -715,7 +725,7 @@ impl RovesDocument {
         let passed =
             stats.frames > 0 && stats.errors == 0 && (!needs_canvas || stats.canvas_layers > 0);
         println!(
-            "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_presentation\",\"status\":\"{}\",\"requires_canvas\":{needs_canvas},\"frames\":{},\"canvas_layers\":{},\"raster_segments\":{},\"raster_uploads\":{},\"raster_cache_hits\":{},\"upload_bytes\":{},\"max_layers\":{},\"skipped_frames\":{},\"errors\":{},\"readback\":false}}",
+            "ROVES_PROBE_RESULT {{\"check\":\"gpu_window_presentation\",\"status\":\"{}\",\"requires_canvas\":{needs_canvas},\"frames\":{},\"canvas_layers\":{},\"raster_segments\":{},\"raster_uploads\":{},\"raster_cache_hits\":{},\"upload_bytes\":{},\"max_layers\":{},\"skipped_frames\":{},\"errors\":{},\"unchanged_frames\":{},\"present_causes\":{},\"readback\":false}}",
             if passed { "passed" } else { "failed" },
             stats.frames,
             stats.canvas_layers,
@@ -726,6 +736,8 @@ impl RovesDocument {
             stats.max_layers,
             stats.skipped_frames,
             stats.errors,
+            stats.unchanged_frames,
+            stats.causes_json(),
         );
         flush();
     }
@@ -964,6 +976,13 @@ pub fn run<R: WindowRenderer + 'static>(
     let event_loop = create_default_event_loop();
     let (proxy, receiver) = BlitzShellProxy::new(event_loop.create_proxy());
     let scenario = document.scenario.clone();
+    let presentation = document.runtime.as_ref().and_then(|runtime| {
+        runtime
+            .op_state()
+            .borrow()
+            .try_borrow::<crate::presentation::SharedPresentation>()
+            .cloned()
+    });
     let mut application = BlitzApplication::new(proxy, receiver);
     let (width, height) = crate::VIEWPORT;
     // A packaged launch (src/launch.rs) gets the bundle's title and a normal,
@@ -989,6 +1008,7 @@ pub fn run<R: WindowRenderer + 'static>(
             shell: application,
             scenario,
             io,
+            presentation,
         })
         .expect("window event loop should run");
     parked.borrow_mut().take()
