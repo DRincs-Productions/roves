@@ -2654,6 +2654,16 @@ Il contatore è della superficie, mentre il tempo render include le
 attese. Per attribuire quel consumo restano da separare i thread e
 misurare un tratto equivalente di Chrome.
 
+Il confronto release prima/dopo sulla stessa GTX 1050 e sullo stesso
+template `1ac2c1cc` ha alternato tre coppie di avvii CLI. Prima:
+6,11/3,05/3,00 s fino all'handle della finestra e 1,42/1,50/1,41 s CPU.
+Dopo, dall'[artefatto CI 44358884769](https://github.com/DRincs-Productions/roves/actions/runs/44358884769):
+1,25/1,07/1,01 s e 0,70/0,59/0,63 s CPU. Tutti i processi
+sono usciti con codice 0. La prima prova prima/dopo ha avuto ordini
+diversi e la prima misura di 6,11 s non rappresenta un A/B a freddo.
+Il primo report della finestra, al tick 1, vede un canvas ma non i
+pulsanti del menu. Serve una misura separata del menu utilizzabile.
+
 Nel confronto [CI 44358884769](https://github.com/DRincs-Productions/roves/actions/runs/44358884769),
 lavapipe Vulkan/llvmpipe ha superato avvio e Skip in normal e JITless sul
 template `e88e9ac29e736e007904e0767815e21cd8725941`. Save/Load passa in
