@@ -2645,6 +2645,15 @@ e il menu atteso, ma con viewport 929 × 861 e browser già aperto. La
 misura web di navigazione non è comparabile all'avvio del processo.
 PresentMon CLI ha restituito `access denied` all'apertura di ETW.
 
+Prova a menu fermo dello stesso eseguibile impacchettato, 1.800 tick
+di finestra. Dopo 14 s dall'avvio, il processo ha consumato 1,94 s CPU
+in 12,04 s (0,161 s CPU per secondo reale, circa il 16% di un core).
+La finestra ha contato 1.974 presentazioni con due upload raster in
+tutto, P95 render CPU 16,68 ms e P99 intervallo tick 33,12 ms.
+Il contatore è della superficie, mentre il tempo render include le
+attese. Per attribuire quel consumo restano da separare i thread e
+misurare un tratto equivalente di Chrome.
+
 La [run 44134799443](https://github.com/DRincs-Productions/roves/actions/runs/44134799443)
 ha isolato meglio il costo su WARP JITless. In Story sono stati rinviati
 7.035 tick su 7.164. Il batch completato più lento ha richiesto 17,37 s
