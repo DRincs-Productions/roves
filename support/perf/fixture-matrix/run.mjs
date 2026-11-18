@@ -13,8 +13,10 @@ import { createInterface } from "node:readline";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ALL_CASES = ["blank", "static-dom", "text-incremental", "transform", "opacity", "backdrop-filter",
-  "pixi-static", "pixi-animated", "pixi-text-blur"];
+  "pixi-static", "pixi-animated", "pixi-text-blur",
+  "pixi-static-hd", "pixi-animated-hd", "pixi-text-incremental", "pixi-text-incremental-hd"];
 const DOM_CASES = ALL_CASES.filter((c) => !c.startsWith("pixi"));
+const PIXI_CASES = ALL_CASES.filter((c) => c.startsWith("pixi"));
 const PIXI_DIR = resolve(HERE, "../../blitz-v8-probe/js/node_modules/pixi.js");
 const PIXI_VERSION = "8.19.0";
 
@@ -29,7 +31,7 @@ function parseArgs(argv) {
     const next = () => { if (i + 1 >= argv.length) throw new Error(`${a} needs a value`); return argv[++i]; };
     switch (a) {
       case "--engines": opts.engines = next().split(","); break;
-      case "--cases": { const v = next(); opts.cases = v === "dom" ? DOM_CASES : v === "all" ? ALL_CASES : v.split(","); break; }
+      case "--cases": { const v = next(); opts.cases = v === "dom" ? DOM_CASES : v === "pixi" ? PIXI_CASES : v === "all" ? ALL_CASES : v.split(","); break; }
       case "--reps": opts.reps = Number(next()); break;
       case "--warmup-frames": opts.warmup = Number(next()); break;
       case "--measure-frames": opts.measure = Number(next()); break;
@@ -61,6 +63,13 @@ const sha256 = (file) => new Promise((ok, ko) => {
 });
 const log = (...m) => console.log(new Date().toISOString().slice(11, 19), ...m);
 const sleep = (ms) => new Promise((ok) => setTimeout(ok, ms));
+// Cancellable sleep: a pending plain sleep() used as a race timeout kept Node alive
+// for up to --timeout-s after the last Roves run had already exited.
+function deadline(ms, value) {
+  let timer = null;
+  const promise = new Promise((ok) => { timer = setTimeout(() => ok(value), ms); });
+  return { promise, cancel: () => clearTimeout(timer) };
+}
 
 function prepareFixtures(opts) {
   const root = join(opts.out, "fixtures");
@@ -174,13 +183,16 @@ async function runRoves(opts, root, name, runDir) {
       try { timings = JSON.parse(line.slice(26)); } catch { timings = null; }
     }
   });
-  const timeout = sleep(opts.timeoutS * 1000).then(() => "timeout");
-  let code = await Promise.race([exited, timeout]);
+  const timeout = deadline(opts.timeoutS * 1000, "timeout");
+  let code = await Promise.race([exited, timeout.promise]);
+  timeout.cancel();
   let error = null;
   if (code === "timeout") {
     error = page ? "window did not close after result" : "timeout: no page result";
     if (!closing) { closing = true; await closeWindow(proc.pid); }
-    code = await Promise.race([exited, sleep(10000).then(() => "kill")]);
+    const grace = deadline(10000, "kill");
+    code = await Promise.race([exited, grace.promise]);
+    grace.cancel();
     if (code === "kill") { proc.kill(); code = await exited; }
   }
   await sleep(100);
@@ -197,7 +209,9 @@ function csvRow(r) {
   return [r.engine, r.case, r.rep, p.status ?? "missing", r.error ?? "", p.raf_fps ?? "", iv.p50 ?? "", iv.p95 ?? "", iv.p99 ?? "",
     iv.max ?? "", iv.over_25ms ?? "", iv.over_33_34ms ?? "", w.p50 ?? "", w.p99 ?? "",
     p.viewport ? `${p.viewport.inner_width}x${p.viewport.inner_height}@${p.viewport.device_pixel_ratio}` : "",
-    p.pixi ? p.pixi.backend : "", p.supports ? p.supports.backdrop_filter : "",
+    p.pixi ? p.pixi.backend : "",
+    p.pixi && p.pixi.at_end ? `${p.pixi.at_end.canvas.join("x")}/${(p.pixi.at_end.css_client || []).join("x")}` : "",
+    p.supports ? p.supports.backdrop_filter : "",
     s("cpu_render_present"), s("cpu_shell_redraw"), s("frame_step_interval"),
     p.visibility ? `${p.visibility.at_measure_start}/${p.visibility.at_end}/${p.visibility.changes_during_measure}` : ""].join(",");
 }
@@ -242,7 +256,7 @@ async function main() {
   meta.finished = new Date().toISOString();
   writeFileSync(join(opts.out, "results.json"), JSON.stringify({ meta, runs }, null, 2));
   const header = "engine,case,rep,status,error,raf_fps,raf_p50_ms,raf_p95_ms,raf_p99_ms,raf_max_ms,raf_over_25ms,raf_over_33ms," +
-    "work_p50_ms,work_p99_ms,viewport,pixi_backend,supports_backdrop_filter,roves_render_present_p99_ms,roves_shell_redraw_p99_ms,roves_step_interval_p99_ms,visibility_start_end_changes";
+    "work_p50_ms,work_p99_ms,viewport,pixi_backend,pixi_backing_css,supports_backdrop_filter,roves_render_present_p99_ms,roves_shell_redraw_p99_ms,roves_step_interval_p99_ms,visibility_start_end_changes";
   writeFileSync(join(opts.out, "runs.csv"), [header, ...runs.map(csvRow)].join("\n") + "\n");
   const failed = runs.filter((r) => !r.page || r.page.status !== "ok" || r.error);
   log(`done: ${runs.length} runs, ${failed.length} failed -> ${join(opts.out, "results.json")}`);
