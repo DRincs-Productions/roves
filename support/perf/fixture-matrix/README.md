@@ -47,7 +47,8 @@ Incremental dialogue (`pixi-text-incremental*`): the same `#glass` box and `#lin
 the overlay, without `backdrop-filter` (not rasterized by the probe, so not required). Every
 frame appends one `<span>` holding the next character of the fixed passage; earlier spans are
 never touched, mirroring typewriter renderers that split visible text across nodes. When the
-passage (~370 characters) is complete the paragraph is emptied and starts again. The work
+passage (390 characters) is complete the paragraph is emptied with `textContent = ""` and
+starts again (frames 390, 781, ...). The work
 function runs the Pixi frame and then the dialogue step, so `work_ms` covers both.
 
 All work is a pure function of the frame index (seeded PRNG for layout, no
@@ -135,6 +136,10 @@ cancelled once the probe exits (before 2026-11-18 a pending timeout kept Node al
   `canvas`. The `-hd` cases report a 1920x1080 backing and a 640x360 CSS box in both
   engines, but that the backing is actually downscaled into the box on screen is not
   pixel-verified.
+- The probe's DOM is a subset (see `support/blitz-v8-probe/README.md`): use only APIs it
+  implements. The bench wraps the per-frame work in `try/catch` and reports `status:
+  "failed"` with `step: "frame N"`, because the probe does not log exceptions thrown in rAF
+  callbacks (see the 2026-11-18 diagnosis below).
 - The `-hd` cases reproduce the backing size, not the template itself: no textures, sprites,
   Pixi filters, React tree, fonts or audio. The incremental dialogue has no backdrop blur,
   Markdown, per-character animation or React reconciliation.
@@ -188,3 +193,33 @@ and rect 640x360, stage scale 3; other cases 640x360 / 640x360 / scale 1. Roves 
 causes: `pixi-animated(-hd)` canvas 71; `pixi-text-incremental(-hd)` scene 58 + canvas 13,
 with `cpu_render_present` P99 2.86/3.14 ms versus 1.12/1.10 ms without the dialogue. One
 repetition of 60 frames; rAF cadence was ~58 fps (Roves) and ~56 fps (Chrome) in every case.
+
+## Diagnosis: missing Roves dialogue runs (2026-11-18)
+
+`D:/roves-ci/fixture-matrix-pixi-hd-triples` (120 warm-up + 600 frames, 3 reps): all six
+Roves `pixi-text-incremental(-hd)` runs were `missing` (Chrome `ok`; the 60-frame smoke had
+passed because it never reached the passage end). The probe presented 392 frames, then only
+unchanged ticks until `--window-frames`, and exited clean with no error in any log.
+
+Cause: the dialogue reset called `Element.replaceChildren()`, which the probe does not
+implement. At frame 390 the call threw `TypeError`, the rAF callback ended before
+re-requesting a frame, and the page never reported. Fixed in the bench only: the reset uses
+`textContent = ""` (same effect in both engines: all children removed, no text node
+inserted), workload otherwise unchanged; a throwing frame now reports a failed run.
+
+Reproduction (same probe `44364448564-vello-ab/single`), page and logs in
+`D:/roves-ci/diag-replacechildren-20261118/`: `typeof replaceChildren` is `undefined` on
+elements and `Node.prototype`; calling it throws `TypeError: p.replaceChildren is not a
+function` (negative); `textContent = ""` empties 3 spans to 0 children and a following
+`appendChild` works (positive); a `replaceChildren()` thrown inside a rAF callback produced
+no output on stdout/stderr and `game_page.errors` stayed `[]`.
+
+Boundary smoke after the fix (10 warm-up + 800 measured frames, crosses the reset twice),
+output `D:/roves-ci/fixture-matrix-dialogue-boundary-smoke-20261118`: 4/4 runs `ok`; Roves
+presented 812 frames in both cases (scene 658 + canvas 153 + surface 1). One repetition;
+not a measurement.
+
+Roves follow-ups (probe DOM, not fixed here): `ParentNode.replaceChildren()` is missing
+(also used by real UI code); exceptions thrown in rAF callbacks go to deno_web
+`reportException` without any console/stderr output or `game_page.errors` entry, so a page
+can stop animating silently.

@@ -121,7 +121,10 @@
   // Incremental dialogue: same glass box as the overlay but without backdrop-filter
   // (the probe does not rasterize CSS filters). One <span> holding one character is
   // appended per frame; earlier spans are never touched (typewriter renderers split text
-  // across nodes the same way). The paragraph is emptied when the passage completes.
+  // across nodes the same way). The paragraph is emptied when the passage completes,
+  // with `textContent = ""` (removes every child in both engines): the Roves Blitz probe
+  // has no `replaceChildren()`, whose TypeError at the passage boundary (frame 390) used
+  // to stop the rAF loop silently.
   function buildDialogue() {
     const glass = document.createElement("div");
     glass.id = "glass";
@@ -131,7 +134,7 @@
     stage.appendChild(glass);
     let shown = 0;
     return () => {
-      if (shown === PASSAGE.length) { text.replaceChildren(); shown = 0; return; }
+      if (shown === PASSAGE.length) { text.textContent = ""; shown = 0; return; }
       const span = document.createElement("span");
       span.textContent = PASSAGE[shown++];
       text.appendChild(span);
@@ -269,7 +272,9 @@
       last = now;
       if (work) {
         const begin = performance.now();
-        work(frame);
+        // A throwing work function would end the loop without a report (the probe
+        // does not log exceptions from rAF callbacks): report it as a failed run.
+        try { work(frame); } catch (error) { fail("frame " + frame, error); return; }
         if (frame >= config.warmupFrames) workMs.push(performance.now() - begin);
       }
       frame++;
