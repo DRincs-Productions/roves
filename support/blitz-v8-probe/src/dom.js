@@ -3121,6 +3121,24 @@
   saveGlobalThisReference(globalThis);
   // deno_core's own queueMicrotask wrapper reports through this callback.
   core.setReportExceptionCallback(reportException);
+  // window.onerror(message, filename, lineno, colno, error); returning true
+  // cancels the event, as in browsers.
+  defineEventHandler(globalThis, "error", undefined, true);
+  // deno_web's reportException hands an error event no listener cancelled, and
+  // an error thrown while one is being dispatched, to reportUnhandledException,
+  // which in deno_core terminates the isolate (Deno's CLI semantics): one
+  // uncancelled throw in a rAF callback, timer or listener would stop the page.
+  // Chromium (ExecutionContext::DispatchErrorEvent) logs both as "Uncaught ..."
+  // and keeps running; the window does the same. Workers keep Deno's semantics.
+  core.reportUnhandledException = (error) => {
+    let text;
+    try {
+      text = String(error?.stack ?? error);
+    } catch {
+      text = "exception";
+    }
+    core.print(`Uncaught ${text}\n`, true);
+  };
   // Unhandled promise rejections become `unhandledrejection` events (as in
   // browsers) instead of terminating the runtime.
   core.setUnhandledPromiseRejectionHandler((promise, reason) => {

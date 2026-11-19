@@ -1,3 +1,19 @@
+## 2026-11-19 - Blitz probe: window error contract for callback exceptions
+
+Changed: `support/blitz-v8-probe/src/{dom.js,game.rs,frame_test.js,frame_check.js}`, `README.md`,
+`support/perf/fixture-matrix/README.md`. A `TypeError` thrown in a rAF callback stopped a
+fixture page with no output: the `--game` collector cancelled every `error` event and its report
+is a snapshot at readiness. It cancelled because deno_web's `reportException` hands an
+uncancelled event (and an error thrown by an error listener) to deno_core's
+`reportUnhandledException`, which terminates the isolate. In the window realm that hook now only
+prints `Uncaught <stack>` to stderr and the page keeps running, as in Chromium f2700724
+(`ExecutionContext::DispatchErrorEvent` logs uncancelled and nested errors; rAF callbacks use
+`InvokeAndReportException`, cancelled ones are skipped). `window.onerror` is deno_web's
+`defineEventHandler` special error handler (returning `true` cancels). The `--game` collector
+still records errors but no longer cancels them. Workers keep Deno's terminate semantics. The
+frame fixture covers cancelled, uncancelled, `onerror`-cancelled, listener-rethrow and
+cancelled-handle callbacks; later callbacks and frames must still run. No new dependency.
+
 ## 2026-11-18 - Blitz probe: `ParentNode.replaceChildren()`
 
 Changed: `support/blitz-v8-probe/src/{main.rs,dom.js,dom_api_test.js}`, `README.md`. Real UI code

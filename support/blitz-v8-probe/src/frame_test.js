@@ -43,22 +43,57 @@
     second = timestamp;
   });
 
-  // A throwing callback is reported as an error event and does not stop others.
+  // Errors thrown by callbacks follow the window error contract (Chromium
+  // ExecutionContext::DispatchErrorEvent): a cancelable ErrorEvent reaches the
+  // window listeners and window.onerror(message, filename, lineno, colno, error),
+  // whose `true` return cancels it. An uncancelled error, or one thrown by an
+  // error listener (not dispatched again), is only logged ("Uncaught ...") and
+  // stops neither the later callbacks of the frame nor the next frames (the step
+  // chain above). A cancelled callback that would throw is never reported.
   // Other errors are collected so frame_check.js reports them by message.
-  let reported = false;
+  const errors = [];
   const unexpected = [];
+  const expected = new Set(["boom", "uncancelled", "via onerror", "recursive"]);
   addEventListener("error", (event) => {
-    if (event.error?.message === "boom") {
-      reported = true;
-    } else {
-      unexpected.push(String(event.error?.message ?? event.message));
+    const message = event.error?.message;
+    if (!expected.has(message)) {
+      unexpected.push(String(message ?? event.message));
+      event.preventDefault();
+      return;
     }
-    event.preventDefault();
+    errors.push(`listener ${message} ${event.cancelable}`);
+    if (message === "boom") event.preventDefault();
+    if (message === "recursive") throw new Error("thrown by an error listener");
+  });
+  window.onerror = (message, filename, lineno, colno, error) => {
+    const args = typeof message === "string" && message.includes(error?.message)
+      && typeof filename === "string" && lineno > 0 && colno > 0;
+    errors.push(`onerror ${error?.message} ${args}`);
+    return error?.message === "via onerror";
+  };
+  addEventListener("error", (event) => {
+    const message = event.error?.message;
+    if (expected.has(message)) errors.push(`after ${message} ${event.defaultPrevented}`);
   });
   requestAnimationFrame(() => {
     throw new Error("boom");
   });
   requestAnimationFrame(() => log.push("after boom"));
+  requestAnimationFrame(() => {
+    throw new Error("uncancelled");
+  });
+  requestAnimationFrame(() => log.push("after uncancelled"));
+  requestAnimationFrame(() => {
+    throw new Error("via onerror");
+  });
+  requestAnimationFrame(() => {
+    throw new Error("recursive");
+  });
+  requestAnimationFrame(() => log.push("after recursive"));
+  const cancelledThrow = requestAnimationFrame(() => {
+    throw new Error("cancelled callback threw");
+  });
+  cancelAnimationFrame(cancelledThrow);
 
   let timerFired = false;
   setTimeout(() => {
@@ -85,6 +120,6 @@
   const idleHandlesValid = idleHandles.every((handle) => typeof handle === "number" && handle > 0);
 
   globalThis.frameResults = () => ({
-    frames, first, second, nested, reported, unexpected, timerFired, idleDeadline, idleHandlesValid, log,
+    frames, first, second, nested, errors, unexpected, timerFired, idleDeadline, idleHandlesValid, log,
   });
 })();

@@ -532,10 +532,13 @@ pub async fn boot(
     runtime
         .execute_script(
             "roves-blitz-game-errors.js",
+            // Errors are not cancelled here, so the page's own cancellation
+            // (preventDefault, onerror returning true) decides whether the
+            // window logs "Uncaught ..." to stderr when it happens; the
+            // `game_page` report is only a snapshot at readiness.
             r#"globalThis.__rovesGameErrors = [];
 addEventListener("error", (event) => {
   __rovesGameErrors.push("error: " + String(event.error?.stack ?? event.message));
-  event.preventDefault();
 });
 addEventListener("unhandledrejection", (event) => {
   __rovesGameErrors.push("unhandledrejection: " + String(event.reason?.stack ?? event.reason));

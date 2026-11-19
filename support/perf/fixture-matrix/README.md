@@ -223,3 +223,18 @@ Roves follow-ups (probe DOM, not fixed here): `ParentNode.replaceChildren()` is 
 (also used by real UI code); exceptions thrown in rAF callbacks go to deno_web
 `reportException` without any console/stderr output or `game_page.errors` entry, so a page
 can stop animating silently.
+
+Diagnosis of the silent rAF error (2026-11-19, code reading, Chromium f2700724
+`frame_request_callback_collection.cc`, `execution_context.cc`, `js_event_handler.cc`): the
+`ErrorEvent` did reach window listeners. `--game` installs a collector that called
+`preventDefault()` on every error, so nothing was printed, and `game_page` is a snapshot taken
+at the first contentful frame, long before frame 390, so the late entry was never reported.
+The collector cancelled because an uncancelled error reaches deno_core
+`reportUnhandledException`, which terminates the isolate (Deno CLI semantics; Chromium only
+logs `Uncaught ...` and keeps running). Probe fix (`src/dom.js`, `src/game.rs`): in the window
+an uncancelled error, or one thrown by an error listener, is logged to stderr as
+`Uncaught ...` without terminating; `window.onerror` exists (returning `true` cancels); the
+collector no longer cancels, so late errors appear on stderr when they happen.
+Regression: `src/frame_test.js`/`frame_check.js` (cancelled, uncancelled, `onerror`-cancelled,
+listener-rethrow and cancelled-handle callbacks; later callbacks and frames still run).
+Needs CI (`frames_style` check); not yet verified on a build.
