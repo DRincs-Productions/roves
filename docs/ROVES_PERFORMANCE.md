@@ -3039,3 +3039,11 @@ fra tick è stato 99,4 ms in normal e 456,0 ms in JITless. Dati in
 `D:/roves-ci/skip-hardware-e88e9ac-*.log`. Questo replay automatizzato
 non prova l'assenza del crash durante uso manuale in finestra. La CI
 Windows su WARP resta rossa nel prerequisito delle prime due battute.
+
+Riferimento esplorativo Chrome 157 visibile sullo stesso template
+`e88e9ac29e73`, servito da loopback con storage isolato e senza bridge
+MCP. Chrome DevTools MCP, viewport 640 × 360 a DPR 1, canvas Pixi
+1920 × 1080. In una finestra di 5 s P99 rAF 18,7 ms in menu (280 intervalli)
+e 19,3 ms alla prima battuta (282); massimo 19,1 e 88,8 ms. Queste sono
+misure dei callback del browser. Gli intervalli dei tick Roves e quelli
+mostrati a monitor sono metriche diverse.
