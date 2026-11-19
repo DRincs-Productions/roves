@@ -1,3 +1,28 @@
+## 2026-11-19 - Blitz probe: opt-in submitted WebGPU render-work counters
+
+Changed: `support/blitz-v8-probe/src/{dom.js,main.rs,gpu_pacing_test.js}`, `README.md`,
+`docs/ROVES_PERFORMANCE.md`. Diagnostic only, for the visual-novel template on Windows WARP and
+the GTX 1050: with `ROVES_PROBE_GPU_WORK=1` (read once by the new `op_blitz_gpu_work_counters`)
+the probe wraps `GPUCommandEncoder.beginRenderPass/finish` and the `GPURenderPassEncoder` draw
+methods and `end`, keeping descriptors, name and length; the original runs first with the same
+arguments, so brand checks and exceptions are unchanged, and the wrappers never read a
+game-supplied argument (no render-pass/view descriptor, hence no render-target size metric).
+Counts (render passes, draw/drawIndexed/indirect draws) move from encoder to command buffer at
+`finish()` and are added once when `GPUQueue.submit` accepts the buffer; abandoned encoders,
+unsubmitted buffers and draws after `end()` are not counted (bootstrap `SafeWeakMap`s).
+deno_webgpu 0.227.0 converts the submit sequence inside the Rust op with no JS hook, so buffers
+are attributed only for a plain, non-Proxy `Array` with boot-time array iteration and own data
+elements, read through descriptors before the original; any other accepted submission
+(iterable, Proxy, accessor/hole, patched iteration) only increments `uncounted_submits`.
+Reported in the pacing JSON as `slowest_batch_render_work` (beside the slowest batch's
+submits/frames/texture bytes) and `render_work` (totals, per-tick maxima, `uncounted_submits`).
+Without the variable nothing new is wrapped; the submit wrapper and the tick only test a null.
+Compared with Chromium f2700724 cc `DidSubmitCompositorFrame` and Viz
+`DirectRenderer::DrawRenderPass`. No thresholds, gates, CI configuration or dependencies
+changed; the scripted pacing fixture covers it with fake brand-checked classes, including a
+descriptor getter that throws on a second read and one-shot/Proxy/accessor/patched-iteration
+submit sequences that must be consumed exactly once by the original.
+
 ## 2026-11-19 - Blitz probe: window error contract for callback exceptions
 
 Changed: `support/blitz-v8-probe/src/{dom.js,game.rs,frame_test.js,frame_check.js}`, `README.md`,

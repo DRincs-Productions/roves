@@ -2819,6 +2819,41 @@ frame. In quel caso la causa è nel contenuto Pixi del template e il passo
 successivo è contare passate, draw e target per batch. Se invece la
 latenza scala con pixel e campioni, o cresce nel tempo, WARP è il limite.
 
+### Contatori del lavoro di render inviato (diagnostico, opt-in, 19 novembre)
+
+Riferimento Chromium `f2700724`: `cc/scheduler/scheduler_state_machine.cc`
+(`DidSubmitCompositorFrame` incrementa `pending_submit_frames_` e apre la
+traccia `Scheduler:pending_submit_frames`, chiusa da
+`DidReceiveCompositorFrameAck`), `cc/trees/layer_tree_host_impl.cc`
+(`SubmitCompositorFrame`) e `components/viz/service/display/direct_renderer.cc`
+(`DrawRenderPass` traccia `NumberOfQuads` per render pass; `DrawFrame`
+registra `TotalPixelsRendered` per frame). Chromium conta quindi il lavoro
+nel momento dell'invio e lo attribuisce al frame in attesa di ACK. In Roves
+l'equivalente dell'ACK è la fence del batch di pacing e l'unità inviata è
+il `GPUCommandBuffer`: i conteggi registrati sull'encoder passano al buffer
+in `finish()` e si sommano solo quando `queue.submit` lo accetta. Encoder
+abbandonati, buffer mai inviati e draw dopo `end()` restano esclusi.
+
+Con `ROVES_PROBE_GPU_WORK=1` il JSON di pacing aggiunge
+`slowest_batch_render_work` accanto a submit, frame e byte del batch più
+lento, e `render_work` con totali, massimo per tick e `uncounted_submits`.
+I campi sono buffer di comandi con render pass, render pass, `draw`,
+`drawIndexed` e draw indiretti. Le dimensioni dei target non sono misurate:
+richiederebbero di rileggere descrittori forniti dal gioco (getter
+osservabili). I wrapper non leggono mai gli argomenti. deno_webgpu 0.227.0
+converte la sequenza di `submit` nell'op Rust senza hook JS, quindi i buffer
+si attribuiscono solo per un `Array` semplice (non Proxy, iterazione array
+originale, elementi dati propri) letto tramite descrittori prima
+dell'originale; ogni altro submit accettato (iterabile, Proxy, accessor o
+buco, iterazione modificata) incrementa solo `uncounted_submits`. Per Pixi
+ci si attende `uncounted_submits` = 0 (array letterali, non verificato qui):
+fa fede il valore riportato. Su GTX il pacing non si attiva, quindi valgono totali e massimo
+per tick. Senza variabile non si avvolgono metodi nuovi: restano solo un
+controllo null nel submit e nel tick, senza costo misurabile atteso. Non
+conteggiati: render bundle, compute pass ed errori di validazione GPU
+asincroni. Nessuna misura è stata ancora raccolta; nessuna soglia, gate o
+configurazione CI è cambiata.
+
 ### Confronto lavapipe (diagnostico, opt-in)
 
 Il job `linux-lavapipe` di `blitz-probe.yml` parte solo con dispatch

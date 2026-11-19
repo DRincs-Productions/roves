@@ -70,6 +70,7 @@
     op_blitz_encode_png,
     op_blitz_gpu_wait_idle,
     op_blitz_gpu_poll,
+    op_blitz_gpu_work_counters,
     op_blitz_gpu_adapter_info,
     op_blitz_present_device,
     op_blitz_present_canvas,
@@ -3320,6 +3321,169 @@
   let gpuPacingScript = null;
   let gpuPacing = newGpuPacingStats();
   let savedGpuPacing = null;
+  // Optional submitted render-work counters (ROVES_PROBE_GPU_WORK=1, read by
+  // op_blitz_gpu_work_counters). Chromium f2700724 counts a frame when it is
+  // submitted (cc SchedulerStateMachine::DidSubmitCompositorFrame, pending
+  // until DidReceiveCompositorFrameAck) and traces what Viz drew per frame
+  // (DirectRenderer::DrawRenderPass "NumberOfQuads"). Here the unit is the
+  // command buffer: counts recorded on a GPUCommandEncoder move to its
+  // GPUCommandBuffer at finish() and are added once, when queue.submit
+  // accepts that buffer. Encoders never finished, buffers never submitted and
+  // draws after pass.end() are not counted. The window between two armed
+  // pacing batches gives `slowest_batch_render_work`, beside the batch's
+  // submits, frames and texture bytes. Disabled (the default), no encoder or
+  // pass method is wrapped: the existing submit wrapper and the tick only
+  // test `gpuWork !== null`.
+  // The wrappers never read game-supplied arguments: no render-pass or view
+  // descriptor (so no target size is measured) and no submit sequence through
+  // a path that can run page code. deno_webgpu 0.227.0 converts that
+  // sequence inside the Rust op (`#[webidl] Vec<Ref<GPUCommandBuffer>>`,
+  // queue.rs) with no JS hook, so its buffers are known here only for a plain
+  // Array whose iteration runs no page code: not a Proxy, prototype
+  // Array.prototype, no own Symbol.iterator, the boot-time
+  // Array.prototype[Symbol.iterator] and %ArrayIteratorPrototype%.next, and
+  // every index an own data property. Those elements are read before the
+  // original through property descriptors, which run no page code on such an
+  // array. Any other accepted submission (iterable, Proxy, subclass, accessor
+  // or hole, patched array iteration) only increments `uncounted_submits`
+  // and its buffers are left to the GC. Primordials are captured at
+  // bootstrap, before page code.
+  const {
+    ArrayIsArray, ArrayPrototype, MathMax, ObjectGetOwnPropertyDescriptor, ObjectGetPrototypeOf,
+    ObjectHasOwn, ObjectKeys, ReflectApply, SafeSet, SafeWeakMap, SymbolIterator,
+  } = globalThis.__bootstrap.primordials;
+  const bootArrayValues = ObjectGetOwnPropertyDescriptor(ArrayPrototype, SymbolIterator).value;
+  const bootArrayIteratorPrototype = ObjectGetPrototypeOf(ReflectApply(bootArrayValues, [], []));
+  const bootArrayIteratorNext = ObjectGetOwnPropertyDescriptor(bootArrayIteratorPrototype, "next").value;
+  // The elements the original's sequence conversion will see, or null when
+  // they cannot be known without running page code.
+  function plainArrayElements(value) {
+    if (!ArrayIsArray(value) || core.isProxy(value)) return null;
+    if (ObjectGetPrototypeOf(value) !== ArrayPrototype) return null;
+    if (ObjectGetOwnPropertyDescriptor(value, SymbolIterator) !== undefined) return null;
+    if (ObjectGetOwnPropertyDescriptor(ArrayPrototype, SymbolIterator)?.value !== bootArrayValues) return null;
+    if (ObjectGetOwnPropertyDescriptor(bootArrayIteratorPrototype, "next")?.value !== bootArrayIteratorNext) return null;
+    const length = ObjectGetOwnPropertyDescriptor(value, "length").value;
+    const elements = new SafeSet();
+    for (let index = 0; index < length; index++) {
+      const descriptor = ObjectGetOwnPropertyDescriptor(value, index);
+      if (descriptor === undefined || !ObjectHasOwn(descriptor, "value")) return null;
+      elements.add(descriptor.value);
+    }
+    return elements;
+  }
+  let gpuWork = null;
+  let savedGpuWork = null;
+  function newGpuWorkCounts() {
+    return {
+      render_command_buffers: 0, // submitted buffers that began a render pass
+      render_passes: 0,
+      draws: 0,
+      draw_indexed: 0,
+      draw_indirect: 0, // drawIndirect + drawIndexedIndirect
+    };
+  }
+  function addGpuWorkCounts(into, from) {
+    for (const key of ObjectKeys(from)) into[key] += from[key];
+  }
+  const isObjectLike = (value) => value !== null && (typeof value === "object" || typeof value === "function");
+  // Replaces a prototype method keeping its property attributes, name and
+  // length. The original runs first with the same receiver and arguments, so
+  // its brand checks and exceptions are unchanged; counting happens only
+  // after it returns and never reads the arguments.
+  function wrapGpuMethod(proto, name, makeWrapper) {
+    if (!isObjectLike(proto)) return false;
+    const descriptor = Object.getOwnPropertyDescriptor(proto, name);
+    if (typeof descriptor?.value !== "function") return false;
+    const original = descriptor.value;
+    const wrapper = makeWrapper(original);
+    Object.defineProperty(wrapper, "name", { value: original.name, configurable: true });
+    Object.defineProperty(wrapper, "length", { value: original.length, configurable: true });
+    Object.defineProperty(proto, name, { ...descriptor, value: wrapper });
+    return true;
+  }
+  // `api` holds the GPUCommandEncoder and GPURenderPassEncoder classes:
+  // deno_webgpu's, or the fixture's fakes (gpuPacingTest "work").
+  function installGpuWorkCounters(api) {
+    const recording = new SafeWeakMap(); // GPUCommandEncoder -> counts
+    const passes = new SafeWeakMap(); // open GPURenderPassEncoder -> its encoder's counts
+    const finished = new SafeWeakMap(); // GPUCommandBuffer -> counts, until submitted
+    const work = {
+      total: newGpuWorkCounts(),
+      window: newGpuWorkCounts(), // since the last armed pacing batch
+      tick: newGpuWorkCounts(), // since the last embedder tick
+      max_tick: newGpuWorkCounts(), // per-field maximum over ticks
+      uncounted_submits: 0,
+      // Before the original submit: the buffers to count if it is accepted,
+      // or null (see plainArrayElements).
+      beforeSubmit: plainArrayElements,
+      // Once the original submit returned.
+      submitted(buffers) {
+        if (buffers === null) {
+          work.uncounted_submits++;
+          return;
+        }
+        for (const buffer of buffers) {
+          if (!isObjectLike(buffer)) continue;
+          const counts = finished.get(buffer);
+          if (counts === undefined) continue;
+          finished.delete(buffer);
+          counts.render_command_buffers = 1;
+          addGpuWorkCounts(work.total, counts);
+          addGpuWorkCounts(work.window, counts);
+          addGpuWorkCounts(work.tick, counts);
+        }
+      },
+      endTick() {
+        for (const key of ObjectKeys(work.tick)) work.max_tick[key] = MathMax(work.max_tick[key], work.tick[key]);
+        work.tick = newGpuWorkCounts();
+      },
+      takeWindow() {
+        const taken = work.window;
+        work.window = newGpuWorkCounts();
+        return taken;
+      },
+      report() {
+        return { submitted: work.total, max_tick: work.max_tick, uncounted_submits: work.uncounted_submits };
+      },
+    };
+    const encoderProto = api.GPUCommandEncoder?.prototype;
+    wrapGpuMethod(encoderProto, "beginRenderPass", (beginRenderPass) => function (...args) {
+      const pass = ReflectApply(beginRenderPass, this, args);
+      let counts = recording.get(this);
+      if (counts === undefined) recording.set(this, (counts = newGpuWorkCounts()));
+      counts.render_passes++;
+      if (isObjectLike(pass)) passes.set(pass, counts);
+      return pass;
+    });
+    wrapGpuMethod(encoderProto, "finish", (finish) => function (...args) {
+      const buffer = ReflectApply(finish, this, args);
+      const counts = recording.get(this);
+      recording.delete(this);
+      if (counts !== undefined && isObjectLike(buffer)) finished.set(buffer, counts);
+      return buffer;
+    });
+    const passProto = api.GPURenderPassEncoder?.prototype;
+    for (const [name, field] of [
+      ["draw", "draws"],
+      ["drawIndexed", "draw_indexed"],
+      ["drawIndirect", "draw_indirect"],
+      ["drawIndexedIndirect", "draw_indirect"],
+    ]) {
+      wrapGpuMethod(passProto, name, (draw) => function (...args) {
+        const result = ReflectApply(draw, this, args);
+        const counts = passes.get(this);
+        if (counts !== undefined) counts[field]++;
+        return result;
+      });
+    }
+    wrapGpuMethod(passProto, "end", (end) => function (...args) {
+      const result = ReflectApply(end, this, args);
+      passes.delete(this);
+      return result;
+    });
+    return work;
+  }
   function newGpuPacingStats() {
     return {
       batch: GPU_SUBMIT_BATCH,
@@ -3341,6 +3505,9 @@
       slowest_batch_submits: null,
       slowest_batch_frames: null,
       slowest_batch_texture_bytes: null,
+      // ROVES_PROBE_GPU_WORK=1 only: render work submitted in that batch's
+      // window (newGpuWorkCounts); null when the counters are disabled.
+      slowest_batch_render_work: null,
       texture_writes: 0,
       texture_bytes: 0,
       // CPU time of the copyExternalImageToTexture shim (pixel conversion in
@@ -3368,7 +3535,7 @@
     // The batch discriminator goes last, so CI's truncated `"pacing":{...}`
     // notices keep the fields they already showed.
     const {
-      slowest_batch_submits, slowest_batch_frames, slowest_batch_texture_bytes,
+      slowest_batch_submits, slowest_batch_frames, slowest_batch_texture_bytes, slowest_batch_render_work,
       texture_writes, texture_bytes, copy_external_calls, max_copy_external_ms, ...pacing
     } = gpuPacing;
     return {
@@ -3388,6 +3555,9 @@
       texture_bytes,
       copy_external_calls,
       max_copy_external_ms,
+      // Opt-in (ROVES_PROBE_GPU_WORK=1), after the existing fields.
+      slowest_batch_render_work,
+      render_work: gpuWork === null ? null : gpuWork.report(),
     };
   }
   function gpuPacingTick() {
@@ -3397,6 +3567,7 @@
     }
     gpuPacingLastTickAt = now;
     gpuPacing.ticks++;
+    if (gpuWork !== null) gpuWork.endTick();
   }
   function gpuPacingApplies() {
     if (gpuPacingDisabled) return false;
@@ -3432,6 +3603,7 @@
         gpuPacing.slowest_batch_submits = gpuArmedBatch?.submits ?? null;
         gpuPacing.slowest_batch_frames = gpuArmedBatch?.frames ?? null;
         gpuPacing.slowest_batch_texture_bytes = gpuArmedBatch?.texture_bytes ?? null;
+        gpuPacing.slowest_batch_render_work = gpuArmedBatch?.render_work ?? null;
       }
       gpuArmedBatch = null;
       gpuPacingDeferring = false;
@@ -3447,7 +3619,12 @@
     if (gpuPacingDeferring || gpuSubmitsSinceEmpty < GPU_SUBMIT_BATCH || !gpuPacingApplies()) return;
     gpuPacingDeferring = true;
     gpuPacingBatchStartedAt = performance.now();
-    gpuArmedBatch = { submits: gpuSubmitsSinceEmpty, frames: gpuWindowFrames, texture_bytes: gpuWindowTextureBytes };
+    gpuArmedBatch = {
+      submits: gpuSubmitsSinceEmpty,
+      frames: gpuWindowFrames,
+      texture_bytes: gpuWindowTextureBytes,
+      render_work: gpuWork === null ? null : gpuWork.takeWindow(),
+    };
     gpuWindowFrames = 0;
     gpuWindowTextureBytes = 0;
     if (gpuPacingScript === null) op_blitz_gpu_poll(gpuDevice, true);
@@ -3471,9 +3648,11 @@
       gpuSubmits++;
       gpuCommandBuffers += commandBuffers?.length ?? 0;
       gpuLastSubmitAt = performance.now();
+      const workBuffers = gpuWork === null ? null : gpuWork.beforeSubmit(commandBuffers);
       const result = submit.call(this, commandBuffers);
       // Counted for pacing only once the submission was accepted.
       gpuSubmitsSinceEmpty++;
+      if (gpuWork !== null) gpuWork.submitted(workBuffers);
       return result;
     };
     const writeTexture = proto.writeTexture;
@@ -3495,6 +3674,7 @@
     if (patchedGpu !== null) return patchedGpu;
     installCopyExternalImage();
     countSubmits();
+    if (op_blitz_gpu_work_counters()) gpuWork = installGpuWorkCounters(webgpu);
     const requestAdapter = gpu.requestAdapter.bind(gpu);
     gpu.requestAdapter = async (options) => {
       const adapter = await requestAdapter(options);
@@ -3626,12 +3806,30 @@
           if (gpuDevice !== null) throw new Error("gpuPacingTest needs a run without a GPU device");
           savedGpuPacing = gpuPacing;
           gpuPacing = newGpuPacingStats();
+          savedGpuWork = gpuWork;
+          gpuWork = null;
           gpuPacingScript = [];
           gpuPacingLastTickAt = null;
           gpuWindowFrames = 0;
           gpuWindowTextureBytes = 0;
           gpuArmedBatch = null;
           return "";
+        case "work": {
+          // Render-work counters on the fixture's fake classes
+          // (gpuPacingTestState.fakeGpu); its fake queue reports accepted
+          // submissions as the real submit wrapper does.
+          if (gpuPacingScript === null) throw new Error("gpuPacingTest work needs begin");
+          const fake = globalThis.gpuPacingTestState?.fakeGpu;
+          const work = installGpuWorkCounters(fake);
+          wrapGpuMethod(fake.GPUQueue.prototype, "submit", (submit) => function (commandBuffers) {
+            const buffers = work.beforeSubmit(commandBuffers);
+            const result = ReflectApply(submit, this, [commandBuffers]);
+            work.submitted(buffers);
+            return result;
+          });
+          gpuWork = work;
+          return "";
+        }
         case "batch": // scripted poll results for the next deferral + a full batch
           gpuPacingScript = JSON.parse(argument);
           gpuSubmitsSinceEmpty = GPU_SUBMIT_BATCH;
@@ -3642,6 +3840,8 @@
           const stats = JSON.stringify(gpuPacingReport());
           gpuPacing = savedGpuPacing;
           savedGpuPacing = null;
+          gpuWork = savedGpuWork;
+          savedGpuWork = null;
           gpuPacingScript = null;
           gpuPacingDeferring = false;
           gpuPacingDisabled = false;

@@ -2013,6 +2013,15 @@ fn op_blitz_gpu_wait_idle(
     ))
 }
 
+/// Opt-in submitted render-work counters (dom.js `installGpuWorkCounters`):
+/// `ROVES_PROBE_GPU_WORK=1`. Read once, when the page first touches
+/// `navigator.gpu`; without it no WebGPU encoder, pass or texture method is
+/// wrapped.
+#[op2(fast)]
+fn op_blitz_gpu_work_counters() -> bool {
+    std::env::var("ROVES_PROBE_GPU_WORK").is_ok_and(|value| value == "1")
+}
+
 struct GpuPacingFence(Arc<AtomicBool>);
 
 /// Software-GPU pacing tracks the submitted batch, even if later timer or
@@ -2285,6 +2294,7 @@ deno_core::extension!(
         op_blitz_encode_png,
         op_blitz_gpu_wait_idle,
         op_blitz_gpu_poll,
+        op_blitz_gpu_work_counters,
         op_blitz_gpu_adapter_info,
         op_blitz_measure,
         op_blitz_box_sizes,
@@ -2767,6 +2777,8 @@ async fn gpu_pacing_regression(
     runtime
         .execute_script("roves-blitz-gpu-pacing-test.js", GPU_PACING_TEST)
         .expect("GPU pacing test setup should run");
+    // Render-work counters on the fixture's fake WebGPU classes.
+    call_hook(runtime, pacing_test, &["work"]);
     let script = format!("[{PACING_BUSY},{PACING_BUSY},{PACING_BUSY},{PACING_COMPLETE}]");
     call_hook(runtime, pacing_test, &["batch", script.as_str()]);
     let mut phases = Vec::new();
