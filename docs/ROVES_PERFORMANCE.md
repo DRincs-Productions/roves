@@ -3027,3 +3027,15 @@ avanzare la storia; non misura Skip nativo o latenza da input a display.
 Il vecchio trace NDJSON del secondo replay conteneva 1.446 tentativi di
 render e 1.453 tick nel riepilogo, ma il massimo tick associato a un
 tentativo era 15,4 ms. Risultati e log in `D:/roves-ci/vnt-e88e9ac-mcp-gtx1050*.json`.
+
+### Regressione Skip sulla GTX 1050
+
+L'harness `--story-skip` è passato su Vulkan, in normal e JITless, con il
+binario release `0cdb0da9300` della CI 44364448564 e due build originali
+del template con storage separato: `1ac2c1cce044` e `e88e9ac29e73`.
+Sul template più recente, entrambe le modalità hanno confermato Peter
+e proseguito la narrazione con zero nuovi errori. L'intervallo massimo
+fra tick è stato 99,4 ms in normal e 456,0 ms in JITless. Dati in
+`D:/roves-ci/skip-hardware-e88e9ac-*.log`. Questo replay automatizzato
+non prova l'assenza del crash durante uso manuale in finestra. La CI
+Windows su WARP resta rossa nel prerequisito delle prime due battute.
