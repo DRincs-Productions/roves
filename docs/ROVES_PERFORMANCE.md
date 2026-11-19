@@ -2880,3 +2880,26 @@ Il batch completato più lento ha richiesto 16,6 s (8 submit, 4 frame,
 zero byte di upload). Questo dato è del runner CI, non della GTX 1050,
 e indirizza la diagnosi del gate verso il lavoro GPU pendente e il
 pacing, senza provare un crash nella finestra reale.
+
+### Dimensione del canvas Pixi e testo progressivo
+
+Tre prove alternate per caso, sulla stessa release, con Pixi WebGPU e
+stage 640 × 360. I dati escludono la prima serie dei casi con testo, che
+si interrompeva al reset del paragrafo perché `replaceChildren()` mancava
+nel binario. Il reset della fixture ora usa `textContent` e segnala le
+eccezioni dal callback. La ripetizione corretta ha completato 12/12 corse.
+
+| Caso | P99 rAF Roves (ms) | P99 rAF Chrome (ms) | P99 render/present Roves (ms) |
+| --- | ---: | ---: | ---: |
+| Pixi animato 640 × 360 | 17,98–18,32 | 18,7–19,0 | 1,20–1,30 |
+| Pixi animato 1920 × 1080 | 18,23–18,39 | 18,7–19,0 | 1,16–1,21 |
+| Pixi e testo 640 × 360 | 17,98–18,40 | 17,1–18,4 | 6,50–7,79 |
+| Pixi e testo 1920 × 1080 | 18,04–18,38 | 17,1–17,2 | 6,72–7,28 |
+
+Aumentare la risoluzione interna del canvas non ha riprodotto il lag.
+Il testo aumenta il costo del renderer anche con WebGPU attivo, ma
+resta entro il budget del frame nei casi sintetici. Prossima misura sul
+gioco: associare i cambi di stato narrativo e i frame lunghi alle fasi
+raster, upload e acquisizione, sullo stesso artifact e sullo stesso
+template. Dati in `D:/roves-ci/fixture-matrix-pixi-hd-triples/` e
+`D:/roves-ci/fixture-matrix-dialogue-triples/`.
