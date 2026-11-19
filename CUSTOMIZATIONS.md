@@ -1,3 +1,18 @@
+## 2026-11-19 - Blitz probe: slow frame steps recorded independently in the frame trace
+
+Changed: `support/blitz-v8-probe/src/frame_trace.rs`, `README.md`, `docs/ROVES_PERFORMANCE.md`.
+Diagnostic only. A real GTX 1050 replay had 1,453 steps, 1,446 render attempts and 253-330 ms
+P99 `cpu_frame_step`, yet the largest step linked to a frame record was 15.4 ms: frame records
+carry only the latest step before each attempt. With `ROVES_PROBE_FRAME_TRACE`, every step
+longer than 16.67 ms (`SLOW_STEP_THRESHOLD`, the `over_16_67ms` rule) is now also pushed into the
+same bounded ring when it ends, as a `slow_step` record (`step_seq`, `step_start_qpc`,
+`cpu_frame_step_ns`, `renders_before`, `step_phases_ns`); the header adds `slow_steps` and
+`slow_step_threshold_ns`. Additive within `roves-frame-trace` v1 (unknown `type` values must be
+ignored); join on `step_seq`, count slow steps from `slow_step` records only. No extra clock read,
+allocation or dependency; disabled tracing is unchanged. Modeled on Chromium f2700724
+`PerformanceMonitor::DidProcessTask` (long tasks reported at task end, independently of frames).
+Test: `frame_trace::a_slow_step_survives_later_steps_before_one_render`.
+
 ## 2026-11-19 - Blitz probe: opt-in attribution of the main-thread frame step
 
 Changed: `support/blitz-v8-probe/src/{frame_timings.rs,frame_trace.rs,main.rs,window.rs}`,

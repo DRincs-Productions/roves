@@ -2890,6 +2890,37 @@ nella fase in cui avviene. Senza variabile non si legge alcun orologio (un
 controllo `Option` per lap); scheduling, soglie e gate sono invariati.
 Nessuna misura è stata ancora raccolta con questa diagnostica.
 
+#### Tick lenti indipendenti dai render (19 novembre)
+
+Nel replay reale GTX 1050 (1.453 tick, 1.446 tentativi di render, P99 dei
+tick 253-330 ms) il tick più lungo collegato a un record frame era 15,4 ms:
+ogni record frame porta solo l'ULTIMO step precedente al tentativo, quindi uno
+step lento seguito da altri step prima dello stesso render spariva dal trace.
+Ora ogni step con `cpu_frame_step` strettamente sopra 16,67 ms (la stessa
+regola di `over_16_67ms`) viene inserito, alla sua fine, come record
+`{"type":"slow_step"}` nello stesso anello limitato del trace: `step_seq`,
+`step_start_qpc`, `cpu_frame_step_ns`, `renders_before` (`render_seq`
+dell'ultimo tentativo precedente; il primo tentativo che può mostrarne gli
+effetti è `renders_before + 1`) e `step_phases_ns`. L'header aggiunge
+`slow_steps` (totale, confrontabile con `over_16_67ms` del riepilogo salvo
+arrotondamenti al nanosecondo) e `slow_step_threshold_ns`. Estensione
+additiva di v1: i parser esistenti devono ignorare i `type` sconosciuti.
+Join: chiave `step_seq`; al più un `slow_step` per step, ma un record frame
+successivo può riferire lo stesso `step_seq` con campi identici, quindi i tick
+lenti si contano solo dai record `slow_step`. Nessuna lettura d'orologio o
+allocazione in più (si riusa il QPC già letto a inizio step); se l'anello
+sovrascrive, anche i `slow_step` più vecchi possono andare persi e
+`records_overwritten` lo dichiara.
+
+Confronto Chromium (`f2700724`):
+`third_party/blink/renderer/core/frame/performance_monitor.cc`
+(`PerformanceMonitor::WillProcessTask`/`DidProcessTask`): il long task è
+valutato e riportato alla fine del task, con il suo inizio e fine, in modo
+indipendente dai frame; allo stesso modo il tracing del main thread registra
+una slice per task, non per frame. Chromium usa 50 ms per i Long Tasks; qui si
+usa il budget di 16,67 ms perché l'obiettivo è spiegare i frame persi e la
+soglia coincide con il riepilogo esistente. Nessuna misura raccolta ancora.
+
 ### Confronto lavapipe (diagnostico, opt-in)
 
 Il job `linux-lavapipe` di `blitz-probe.yml` parte solo con dispatch

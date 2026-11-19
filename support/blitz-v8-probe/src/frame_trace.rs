@@ -26,6 +26,22 @@
 //! called, QPC read failure) are `null`, never zero. Records are numeric
 //! only: no URL, text, node id, asset, key code or pointer position.
 //!
+//! Slow frame steps (19 November): a frame record only carries the LATEST
+//! step before its attempt, so with several steps between two attempts a long
+//! step could vanish from the trace. Every step whose `cpu_frame_step` exceeds
+//! `SLOW_STEP_THRESHOLD` (the summary's `over_16_67ms` rule) is therefore also
+//! pushed as its own `slow_step` record when it ends, independently of render
+//! attempts, into the same ring (no extra storage, clock read or allocation).
+//! Join on `step_seq`: a `slow_step` exists at most once per step, and a later
+//! frame record may point at the same `step_seq` (same QPC, duration and
+//! phases); count slow steps from `slow_step` records only. `renders_before` is
+//! the `render_seq` of the last attempt before the step ended, so the first
+//! attempt that can show the step's effects is `renders_before + 1`. Mirrors
+//! Chromium's per-task main-thread slices and Long Tasks (pinned `f2700724`,
+//! `PerformanceMonitor::DidProcessTask` in
+//! `third_party/blink/renderer/core/frame/performance_monitor.cc`): a long
+//! task is reported when it ends, from its own start/end, not via a frame.
+//!
 //! `std::time::Instant` cannot expose its QPC value, so the only addition is
 //! `windows-sys` (already locked through winit/wgpu, `Win32_System_Performance`
 //! feature) for `QueryPerformanceCounter`/`QueryPerformanceFrequency`.
@@ -42,6 +58,10 @@ pub const MAX_RECORDS: usize = 3600;
 
 pub const SCHEMA: &str = "roves-frame-trace";
 pub const SCHEMA_VERSION: u32 = 1;
+
+/// Frame steps strictly longer than this get a `slow_step` record (the same
+/// 16.67 ms budget as the summary's `over_16_67ms`).
+pub const SLOW_STEP_THRESHOLD: Duration = Duration::from_micros(16_670);
 
 /// Reads the QPC timebase; `None` when unavailable.
 pub type Clock = fn() -> Option<i64>;
@@ -230,10 +250,19 @@ pub struct MarkerRecord {
     cpu_dispatch: Duration,
 }
 
+/// A frame step longer than `SLOW_STEP_THRESHOLD`, recorded when it ends.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SlowStepRecord {
+    step: StepInfo,
+    /// `render_seq` of the last render attempt before the step ended (0: none).
+    renders_before: u64,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Record {
     Frame(FrameRecord),
     Marker(MarkerRecord),
+    SlowStep(SlowStepRecord),
 }
 
 pub struct FrameTrace {
@@ -249,6 +278,7 @@ pub struct FrameTrace {
     presented: u64,
     step_seq: u64,
     marker_seq: u64,
+    slow_steps: u64,
     last_step: Option<StepInfo>,
     steps_since_render: u32,
     /// QPC reads that failed while the timebase was available.
@@ -294,6 +324,7 @@ impl FrameTrace {
             presented: 0,
             step_seq: 0,
             marker_seq: 0,
+            slow_steps: 0,
             last_step: None,
             steps_since_render: 0,
             qpc_errors: 0,
@@ -334,12 +365,20 @@ impl FrameTrace {
     pub fn record_step(&mut self, start_qpc: Option<i64>, cpu: Duration, phases: &StepPhases) {
         self.step_seq += 1;
         self.steps_since_render += 1;
-        self.last_step = Some(StepInfo {
+        let step = StepInfo {
             seq: self.step_seq,
             start_qpc,
             cpu: Some(cpu),
             phases: *phases,
-        });
+        };
+        self.last_step = Some(step);
+        if cpu > SLOW_STEP_THRESHOLD {
+            self.slow_steps += 1;
+            self.push(Record::SlowStep(SlowStepRecord {
+                step,
+                renders_before: self.render_seq,
+            }));
+        }
     }
 
     /// One render attempt. The present timestamps come from the renderer's
@@ -408,7 +447,7 @@ impl FrameTrace {
         };
         writeln!(
             out,
-            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included; step_phases_ns (additive in version 1, last field) splits cpu_frame_step_ns of the same step into consecutive non-overlapping cpu_step_* phases that add up to it, null when no step or phase not reached\"}}",
+            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"slow_steps\":{},\"slow_step_threshold_ns\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included; step_phases_ns (additive in version 1, last field) splits cpu_frame_step_ns of the same step into consecutive non-overlapping cpu_step_* phases that add up to it, null when no step or phase not reached; slow_step records (additive in version 1, ignore unknown type values) are pushed when a frame step longer than slow_step_threshold_ns ends, independently of render attempts, at most one per step_seq: a frame record may reference the same step_seq with identical step fields, so count slow steps from slow_step records only and join frames on step_seq; renders_before is the render_seq of the last attempt before the step ended\"}}",
             if self.frequency.is_some() {
                 "qpc"
             } else {
@@ -425,12 +464,15 @@ impl FrameTrace {
             self.step_seq,
             self.marker_seq,
             self.qpc_errors,
+            self.slow_steps,
+            SLOW_STEP_THRESHOLD.as_nanos(),
             crate::presentation::RASTER_THREADING,
         )?;
         for record in self.ordered() {
             match record {
                 Record::Frame(frame) => writeln!(out, "{}", frame_json(frame))?,
                 Record::Marker(marker) => writeln!(out, "{}", marker_json(marker))?,
+                Record::SlowStep(slow) => writeln!(out, "{}", slow_step_json(slow))?,
             }
         }
         out.flush()
@@ -529,6 +571,18 @@ fn frame_json(frame: &FrameRecord) -> String {
             || "null".to_owned(),
             |step| step.phases.json(|duration| nanos(duration).to_string())
         ),
+    )
+}
+
+fn slow_step_json(slow: &SlowStepRecord) -> String {
+    let step = &slow.step;
+    format!(
+        "{{\"type\":\"slow_step\",\"step_seq\":{},\"step_start_qpc\":{},\"cpu_frame_step_ns\":{},\"renders_before\":{},\"step_phases_ns\":{}}}",
+        step.seq,
+        opt(step.start_qpc),
+        opt(step.cpu.map(nanos)),
+        slow.renders_before,
+        step.phases.json(|duration| nanos(duration).to_string()),
     )
 }
 
@@ -663,6 +717,43 @@ mod tests {
         assert!(lines[0].contains("\"frame_steps\":2"));
         // The step's phases are the last field and add up to its duration.
         assert!(lines[2].ends_with(",\"step_phases_ns\":{\"cpu_step_tokio_yield\":null,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":null,\"cpu_step_microtasks\":null,\"cpu_step_event_loop\":null,\"cpu_step_other\":800000}}"));
+    }
+
+    #[test]
+    fn a_slow_step_survives_later_steps_before_one_render() {
+        let mut trace = trace(8, fixed_clock, Some(10_000_000));
+        trace.record_frame(
+            presented(10),
+            Duration::from_millis(1),
+            &FramePhases::default(),
+        );
+        // At the threshold: not slow (strictly above, like over_16_67ms).
+        let mut phases = StepPhases::default();
+        phases.finish(SLOW_STEP_THRESHOLD);
+        trace.record_step(Some(50), SLOW_STEP_THRESHOLD, &phases);
+        let slow = Duration::from_millis(300);
+        phases.finish(slow);
+        trace.record_step(Some(60), slow, &phases);
+        phases.finish(Duration::from_millis(2));
+        trace.record_step(Some(70), Duration::from_millis(2), &phases);
+        trace.record_frame(
+            presented(100),
+            Duration::from_millis(1),
+            &FramePhases::default(),
+        );
+        let lines = output(&trace);
+        assert_eq!(lines.len(), 4);
+        assert!(lines[0].contains("\"records_total\":3,"));
+        assert!(lines[0].contains("\"frame_steps\":3,"));
+        assert!(lines[0].contains("\"slow_steps\":1,\"slow_step_threshold_ns\":16670000,"));
+        // The slow step keeps its own id, QPC, duration and phases.
+        assert_eq!(
+            lines[2],
+            "{\"type\":\"slow_step\",\"step_seq\":2,\"step_start_qpc\":60,\"cpu_frame_step_ns\":300000000,\"renders_before\":1,\"step_phases_ns\":{\"cpu_step_tokio_yield\":null,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":null,\"cpu_step_microtasks\":null,\"cpu_step_event_loop\":null,\"cpu_step_other\":300000000}}"
+        );
+        // The following attempt still links only the latest (fast) step.
+        assert!(lines[3].contains("\"render_seq\":2,"));
+        assert!(lines[3].contains("\"step_seq\":3,\"step_start_qpc\":70,\"cpu_frame_step_ns\":2000000,\"steps_since_previous_render\":3"));
     }
 
     #[test]
