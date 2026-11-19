@@ -97,6 +97,10 @@ const DOCUMENT_NODE: i32 = 9;
 const OK: i32 = 0;
 const HIERARCHY_REQUEST_ERROR: i32 = 1;
 const NOT_FOUND_ERROR: i32 = 2;
+const NOT_SUPPORTED_ERROR: i32 = 3;
+/// OR'ed into `op_blitz_replace_children`'s status when the listed nodes left
+/// their old parents (multi-node DocumentFragment step), even if it then failed.
+const DETACHED_FLAG: i32 = 0x100;
 
 /// "No node" handle returned to JS.
 const NO_NODE: f64 = -1.0;
@@ -1076,6 +1080,140 @@ fn op_blitz_insert_before(
     let mut document = document.borrow_mut();
     let reference = (reference_handle >= 0.0).then_some(reference_handle);
     insert_child(&mut document, parent_handle, child_handle, reference)
+}
+
+/// ParentNode `replaceChildren`, after Chromium f2700724
+/// (`Node::ConvertNodeUnionsIntoNodes`, `ContainerNode::ReplaceChildren`,
+/// `EnsurePreInsertionValidity`, `Document::CanAcceptChild`). `dom.js` has already
+/// turned strings into text nodes and kept the last occurrence of duplicates.
+/// With more than one node they leave their old parents first (the spec's
+/// DocumentFragment step, observable even when validation then fails, reported
+/// with `DETACHED_FLAG`); the hierarchy checks run before any existing child is
+/// removed. Exception: calls that list the document's root element and would
+/// fail, or would move it under an element, are refused before any detach, and
+/// so are Roves' own NotSupportedError cases, since Blitz cannot run without a
+/// root element. The detach and the swap share one mutator. The swap itself is
+/// Blitz's own `DocumentMutator::replace_children` (detach, remove, append with
+/// its damage/restyle bookkeeping). Replaced children nobody references from JS
+/// are freed like in `op_blitz_set_text_content`.
+#[op2]
+fn op_blitz_replace_children(
+    state: Rc<RefCell<OpState>>,
+    parent_handle: f64,
+    #[serde] child_handles: Vec<f64>,
+) -> Result<i32, JsErrorBox> {
+    let document = probe_document(&state);
+    let mut document = document.borrow_mut();
+    let parent = attached_node(&document, parent_handle)?;
+    let parent_id = parent.id;
+    let parent_is_document = matches!(parent.data, NodeData::Document(_));
+    if !parent_is_document && parent.element_data().is_none() {
+        return Ok(HIERARCHY_REQUEST_ERROR);
+    }
+    let mut nodes: Vec<NodeId> = Vec::with_capacity(child_handles.len());
+    for handle in child_handles {
+        let id = attached_node(&document, handle)?.id;
+        nodes.retain(|existing| *existing != id);
+        nodes.push(id);
+    }
+    let status = replace_children_validity(&document, parent_id, parent_is_document, &nodes);
+    // Blitz requires a root element (`BaseDocument::root_element` unwraps), so a
+    // call that lists the current root and does not end with it back under the
+    // document is refused before anything is detached.
+    let root_id = document.root_element().id;
+    let lists_root = nodes.contains(&root_id);
+    if status != OK && (lists_root || status == NOT_SUPPORTED_ERROR) {
+        return Ok(status);
+    }
+    let detach = nodes.len() > 1;
+    let old_children: Vec<NodeId> = document.get_node(parent_id).unwrap().children.to_vec();
+    {
+        let mut mutator = document.mutate();
+        if detach {
+            for id in nodes.iter().copied() {
+                if mutator.node_has_parent(id) {
+                    mutator.remove_node(id);
+                }
+            }
+        }
+        if status == OK {
+            mutator.replace_children(parent_id, &nodes);
+        }
+    }
+    let detached_flag = if detach { DETACHED_FLAG } else { 0 };
+    if status != OK {
+        return Ok(status | detached_flag);
+    }
+    let state = state.borrow();
+    let wrapped = state.borrow::<WrappedNodes>();
+    for child in old_children {
+        if !nodes.contains(&child) {
+            drop_if_unreferenced(&mut document, wrapped, child);
+        }
+    }
+    Ok(OK | detached_flag)
+}
+
+/// Pre-insertion validity of `replaceChildren`, computed before the multi-node
+/// detach but equal to Chromium's post-detach result: detaching listed nodes
+/// never changes whether one is an inclusive ancestor of `parent`, and listed
+/// nodes are not counted among the document's current children.
+fn replace_children_validity(
+    document: &BaseDocument,
+    parent_id: NodeId,
+    parent_is_document: bool,
+    nodes: &[NodeId],
+) -> i32 {
+    for id in nodes.iter().copied() {
+        let node = document.get_node(id).unwrap();
+        if matches!(
+            node.data,
+            NodeData::Document(_) | NodeData::AnonymousBlock(_)
+        ) {
+            return HIERARCHY_REQUEST_ERROR;
+        }
+        let mut ancestor = Some(parent_id);
+        while let Some(ancestor_id) = ancestor {
+            if ancestor_id == id {
+                return HIERARCHY_REQUEST_ERROR;
+            }
+            ancestor = document.get_node(ancestor_id).and_then(|node| node.parent);
+        }
+    }
+    if !parent_is_document {
+        // Moving the root element under an element leaves the document rootless.
+        return if nodes.contains(&document.root_element().id) {
+            NOT_SUPPORTED_ERROR
+        } else {
+            OK
+        };
+    }
+    // Like Chromium, the current children still count (minus the nodes the
+    // multi-node detach would remove): a document keeps at most one element and
+    // no text.
+    let detached = |id: &NodeId| nodes.len() > 1 && nodes.contains(id);
+    let is_element = |id: &NodeId| document.get_node(*id).unwrap().is_element();
+    if nodes
+        .iter()
+        .any(|id| document.get_node(*id).unwrap().is_text_node())
+    {
+        return HIERARCHY_REQUEST_ERROR;
+    }
+    let remaining = document
+        .get_node(parent_id)
+        .unwrap()
+        .children
+        .iter()
+        .filter(|id| !detached(*id) && is_element(*id))
+        .count();
+    let new_elements = nodes.iter().filter(|id| is_element(*id)).count();
+    if remaining + new_elements > 1 {
+        return HIERARCHY_REQUEST_ERROR;
+    }
+    if new_elements == 0 {
+        return NOT_SUPPORTED_ERROR;
+    }
+    OK
 }
 
 #[op2(fast)]
@@ -2163,6 +2301,7 @@ deno_core::extension!(
         op_blitz_set_text_control_value,
         op_blitz_set_text_control_selection,
         op_blitz_insert_before,
+        op_blitz_replace_children,
         op_blitz_child_count,
         op_blitz_child_at,
         op_blitz_sibling,

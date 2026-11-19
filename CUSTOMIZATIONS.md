@@ -1,3 +1,27 @@
+## 2026-11-18 - Blitz probe: `ParentNode.replaceChildren()`
+
+Changed: `support/blitz-v8-probe/src/{main.rs,dom.js,dom_api_test.js}`, `README.md`. Real UI code
+and the fixture-matrix dialogue reset called `replaceChildren()`, which threw `TypeError` (the
+reset in a rAF callback then stopped the page silently). `dom.js` converts the arguments with the
+deno_webidl `DOMString` converter, keeps the last occurrence of a repeated node and queues the
+MutationObserver records; the new `op_blitz_replace_children` follows Chromium f2700724
+(`Node::ConvertNodeUnionsIntoNodes`, `ContainerNode::ReplaceChildren`,
+`EnsurePreInsertionValidity`, `Document::CanAcceptChild`): with several nodes they leave their old
+parents first, then ancestor/self, `Document`, text-under-document and second-root-element checks
+throw `HierarchyRequestError` before any existing child is removed. The swap reuses Blitz's own
+`DocumentMutator::replace_children` (damage/restyle as for other mutations); no new dependency.
+The method lives on `Element` and `Document` only (Chromium's ParentNode mixin; `Text`/`Comment`
+have none, a mismatched `this` is `TypeError`). Limits: the probe has no `DocumentFragment`.
+Blitz's `root_element()` unwraps, so the root invariant is checked before any detach: validity is
+computed up front (equal to the post-detach result), and a call that lists the document's root
+element and would fail, or would move it under an element, returns its error without detaching
+anything; a `document.replaceChildren` that would leave no root element throws
+`NotSupportedError`, also without side effects. The op reports the Chromium-style multi-node detach
+with a flag so `dom.js` queues old-parent records only when it happened; detach and swap share one
+mutator. `dom_api_test.js` covers strings, identity/moves, duplicates, records, rejected calls,
+the root-element regressions (root stays connected, no records, layout queries still work) and
+layout after the swap.
+
 ## 2026-11-17 - Blitz probe: packaged launch of packed (`.pack`) content
 
 Changed: `support/blitz-v8-probe/src/{launch.rs,game.rs}`, `Cargo.toml`/`Cargo.lock` and

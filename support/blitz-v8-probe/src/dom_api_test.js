@@ -122,6 +122,129 @@
   appended.append("text", document.createElement("b"));
   check(appended.childNodes.length === 2 && appended.lastChild.localName === "b", "append()");
 
+  // ParentNode.replaceChildren: missing until 2026-11-18, when the fixture-matrix
+  // dialogue reset threw `TypeError: p.replaceChildren is not a function` in rAF.
+  check(typeof host.replaceChildren === "function" && typeof document.replaceChildren === "function"
+    && typeof Element.prototype.replaceChildren === "function"
+    && typeof Document.prototype.replaceChildren === "function"
+    && Element.prototype.replaceChildren.length === 0, "replaceChildren exists");
+  // ParentNode mixin only (Chromium): no method on Node, Text or Comment.
+  check(!("replaceChildren" in Node.prototype) && !("replaceChildren" in document.createTextNode("t"))
+    && !("replaceChildren" in document.createComment("c")), "replaceChildren is not on Node/Text/Comment");
+  let brandError = null;
+  try {
+    Element.prototype.replaceChildren.call(document.createTextNode("t"));
+  } catch (error) {
+    brandError = error;
+  }
+  check(brandError instanceof TypeError, "Element.prototype.replaceChildren on a text node is Illegal invocation");
+  const swap = document.createElement("div");
+  host.appendChild(swap);
+  const keep = document.createElement("i");
+  const gone = document.createElement("u");
+  swap.append(keep, gone, "old");
+  const elsewhere = appended.lastChild;
+  const swapObserver = new MutationObserver(() => {});
+  swapObserver.observe(swap, { childList: true });
+  const elsewhereObserver = new MutationObserver(() => {});
+  elsewhereObserver.observe(appended, { childList: true });
+  check(swap.replaceChildren("a", keep, elsewhere, 7) === undefined, "replaceChildren returns undefined");
+  const swapped = [...swap.childNodes];
+  check(swapped.length === 4 && swapped[0].textContent === "a" && swapped[1] === keep && swapped[2] === elsewhere
+    && swapped[3].nodeType === Node.TEXT_NODE && swapped[3].textContent === "7",
+    `replaceChildren converts strings and keeps identities: ${swapped.map((node) => node.nodeName).join()}`);
+  check(gone.parentNode === null && keep.parentNode === swap && elsewhere.parentNode === swap
+    && appended.childNodes.length === 1, "replaceChildren detaches old children and moves nodes");
+  const swapRecords = swapObserver.takeRecords();
+  check(swapRecords.length === 2 && swapRecords[0].removedNodes[0] === keep && swapRecords[0].addedNodes.length === 0
+    && swapRecords[1].addedNodes.length === 4 && swapRecords[1].removedNodes.length === 2
+    && swapRecords[1].removedNodes[0] === gone && swapRecords[1].removedNodes[1].textContent === "old",
+    `replaceChildren mutation records on the parent: ${swapRecords.map((record) => `${record.addedNodes.length}+${record.removedNodes.length}-`).join()}`);
+  const elsewhereRecords = elsewhereObserver.takeRecords();
+  check(elsewhereRecords.length === 1 && elsewhereRecords[0].removedNodes[0] === elsewhere,
+    "replaceChildren queues the removal from the old parent");
+  swap.replaceChildren(keep);
+  const singleRecords = swapObserver.takeRecords();
+  check(swap.childNodes.length === 1 && swap.firstChild === keep && singleRecords.length === 1
+    && singleRecords[0].addedNodes[0] === keep && singleRecords[0].removedNodes.length === 4,
+    "replaceChildren(existing child) keeps only that child in one record");
+  swap.replaceChildren(gone, keep, gone);
+  check(swap.childNodes.length === 2 && swap.firstChild === keep && swap.lastChild === gone,
+    "replaceChildren keeps the last occurrence of a repeated node");
+  swap.replaceChildren();
+  check(!swap.hasChildNodes() && swapObserver.takeRecords().length > 0, "replaceChildren() empties the parent");
+  swapObserver.disconnect();
+  elsewhereObserver.disconnect();
+  // Hierarchy validation runs before any existing child is removed.
+  const inner = document.createElement("p");
+  swap.appendChild(inner);
+  inner.appendChild(keep);
+  throwsDom(() => inner.replaceChildren(swap), "HierarchyRequestError", "replaceChildren(ancestor)");
+  throwsDom(() => inner.replaceChildren(inner), "HierarchyRequestError", "replaceChildren(self)");
+  check(inner.firstChild === keep && inner.parentNode === swap && swap.parentNode === host,
+    "a rejected single-node replaceChildren leaves the tree unchanged");
+  throwsDom(() => inner.replaceChildren(gone, swap), "HierarchyRequestError", "replaceChildren(node, ancestor)");
+  check(inner.firstChild === keep && swap.parentNode === null && gone.parentNode === null,
+    "a rejected multi-node replaceChildren keeps the children; listed nodes left their parents first (Chromium)");
+  throwsDom(() => swap.replaceChildren(document), "HierarchyRequestError", "replaceChildren(document)");
+  let symbolError = null;
+  try {
+    swap.replaceChildren(Symbol("s"));
+  } catch (error) {
+    symbolError = error;
+  }
+  check(symbolError instanceof TypeError && swap.firstChild === inner, "replaceChildren(Symbol) throws TypeError first");
+  const rootElement = document.documentElement;
+  throwsDom(() => document.replaceChildren(document.createElement("html")), "HierarchyRequestError",
+    "document.replaceChildren with a second element");
+  throwsDom(() => document.replaceChildren("text"), "HierarchyRequestError", "document.replaceChildren(text)");
+  throwsDom(() => document.replaceChildren(), "NotSupportedError", "document.replaceChildren() without a root element");
+  check(document.documentElement === rootElement && rootElement.parentNode === document,
+    "document keeps its root element");
+  // Invalid calls listing the root element are refused before the multi-node
+  // detach: Blitz unwraps root_element, so the root must never leave the document
+  // (regression of the first replaceChildren draft, which detached it first).
+  const anchored = document.createElement("s");
+  swap.appendChild(anchored);
+  const rootless = document.createElement("div");
+  const rootObserver = new MutationObserver(() => {});
+  rootObserver.observe(document, { childList: true });
+  rootObserver.observe(swap, { childList: true });
+  throwsDom(() => host.replaceChildren(anchored, rootElement), "HierarchyRequestError",
+    "connected element.replaceChildren(node, root)");
+  throwsDom(() => rootless.replaceChildren(anchored, rootElement), "NotSupportedError",
+    "detached element.replaceChildren(node, root)");
+  throwsDom(() => rootless.replaceChildren(rootElement), "NotSupportedError", "detached element.replaceChildren(root)");
+  throwsDom(() => document.replaceChildren("text", rootElement), "HierarchyRequestError",
+    "document.replaceChildren(text, root)");
+  throwsDom(() => document.replaceChildren(document.createElement("html"), rootElement), "HierarchyRequestError",
+    "document.replaceChildren(element, root)");
+  throwsDom(() => document.replaceChildren(anchored, document, rootElement), "HierarchyRequestError",
+    "document.replaceChildren(node, document, root)");
+  check(document.documentElement === rootElement && rootElement.parentNode === document && rootElement.isConnected
+    && anchored.parentNode === swap && !rootless.hasChildNodes() && rootObserver.takeRecords().length === 0,
+    "invalid mixed calls with the root element detach nothing and queue no records");
+  rootObserver.disconnect();
+  anchored.remove();
+  const rootRect = rootElement.getBoundingClientRect();
+  const bodyRect = body.getBoundingClientRect();
+  check(Number.isFinite(rootRect.width) && rootRect.width > 0 && Number.isFinite(bodyRect.height),
+    `layout queries still work after the refused root calls: ${rootRect.width}x${rootRect.height}`);
+  // Renderer invalidation: layout follows the replaced children.
+  const layoutHost = document.createElement("div");
+  layoutHost.setAttribute("style", "position: absolute; left: 0; top: 0; width: 10px");
+  body.appendChild(layoutHost);
+  const tall = document.createElement("div");
+  tall.setAttribute("style", "height: 40px");
+  layoutHost.appendChild(tall);
+  check(Math.abs(layoutHost.getBoundingClientRect().height - 40) < 1, "layout before replaceChildren");
+  const short = document.createElement("div");
+  short.setAttribute("style", "height: 5px");
+  layoutHost.replaceChildren(short);
+  check(Math.abs(layoutHost.getBoundingClientRect().height - 5) < 1 && tall.parentNode === null,
+    `layout follows replaceChildren: ${layoutHost.getBoundingClientRect().height}`);
+  layoutHost.remove();
+
   // Serialization and replacement.
   const paragraph = host.querySelector("p");
   check(paragraph.innerHTML === "tail &amp; end", `innerHTML getter: ${paragraph.innerHTML}`);

@@ -40,6 +40,7 @@
     op_blitz_release,
     op_blitz_is_connected,
     op_blitz_insert_before,
+    op_blitz_replace_children,
     op_blitz_child_count,
     op_blitz_child_at,
     op_blitz_sibling,
@@ -267,6 +268,9 @@
     }
     if (status === 2) {
       throw new DOMException("The node is not a child of this node", "NotFoundError");
+    }
+    if (status === 3) {
+      throw new DOMException("Roves Blitz requires the document to keep its root element", "NotSupportedError");
     }
   }
 
@@ -509,6 +513,42 @@
       const parent = this.parentNode;
       if (parent !== null) parent.removeChild(this);
     }
+  }
+  // ParentNode.replaceChildren (Chromium f2700724 Node::replaceChildren), exposed
+  // only on Element and Document like Chromium's ParentNode mixin (Text and
+  // Comment have no such method). Every (Node or DOMString) argument becomes a
+  // node, only the last occurrence of a repeated node counts, and
+  // op_blitz_replace_children validates and swaps the children atomically through
+  // Blitz's own replace_children.
+  const REPLACE_CHILDREN_DETACHED = 0x100;
+  function replaceChildren(parent, Interface, args) {
+    if (!(parent instanceof Interface)) throw new TypeError("Illegal invocation");
+    const parentHandle = handleOf(parent, "replaceChildren");
+    const prefix = "Failed to execute 'replaceChildren'";
+    const converted = args.map((value, index) => (handles.has(value)
+      ? value
+      : document.createTextNode(webidl.converters.DOMString(value, prefix, `Argument ${index + 1}`))));
+    const nodes = converted.filter((node, index) => converted.lastIndexOf(node) === index);
+    // Old parents are read even without observers: their records also bump
+    // treeVersion for live HTMLCollections.
+    const oldParents = nodes.map((node) => node.parentNode);
+    let removed = mutationObserversActive() ? [...parent.childNodes] : [];
+    if (nodes.length > 1) removed = removed.filter((child) => !nodes.includes(child));
+    const result = op_blitz_replace_children(parentHandle, nodes.map((node) => handles.get(node)));
+    if (result & REPLACE_CHILDREN_DETACHED) {
+      // The nodes left their old parents before validation (the spec's
+      // DocumentFragment step), each with its own record, even if it then failed.
+      // Rust skips this step when it would detach the document's root element.
+      oldParents.forEach((oldParent, index) => {
+        if (oldParent !== null) queueMutation(oldParent, "childList", { removedNodes: [nodes[index]] });
+      });
+    }
+    checkStatus(result & ~REPLACE_CHILDREN_DETACHED);
+    if (nodes.length === 1 && oldParents[0] !== null && oldParents[0] !== parent) {
+      queueMutation(oldParents[0], "childList", { removedNodes: [nodes[0]] });
+    }
+    for (const node of nodes) retainIfConnected(handles.get(node));
+    queueMutation(parent, "childList", { addedNodes: nodes, removedNodes: removed });
   }
   for (const [name, value] of Object.entries(NODE_CONSTANTS)) {
     const descriptor = { value, enumerable: true, writable: false, configurable: false };
@@ -891,6 +931,9 @@
   }
 
   class Element extends Node {
+    replaceChildren(...nodes) {
+      replaceChildren(this, Element, nodes);
+    }
     get localName() {
       return op_blitz_local_name(handleOf(this, "localName"));
     }
@@ -2835,6 +2878,9 @@
   class Comment extends Node {}
 
   class Document extends Node {
+    replaceChildren(...nodes) {
+      replaceChildren(this, Document, nodes);
+    }
     getElementById(id) {
       const handle = op_blitz_get_element_by_id(String(id));
       return handle < 0 ? null : wrap(handle);
