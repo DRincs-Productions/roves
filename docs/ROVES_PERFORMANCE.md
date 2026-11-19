@@ -3005,3 +3005,25 @@ gioco: associare i cambi di stato narrativo e i frame lunghi alle fasi
 raster, upload e acquisizione, sullo stesso artifact e sullo stesso
 template. Dati in `D:/roves-ci/fixture-matrix-pixi-hd-triples/` e
 `D:/roves-ci/fixture-matrix-dialogue-triples/`.
+
+### Replay della prima battuta sulla GTX 1050
+
+Tre replay in finestra, Vulkan, driver NVIDIA 581.63. Pacchetto diagnostico
+Windows della CI 44378941279, revisione Roves `c36c0c0fc7a`. Copia temporanea
+del template `e88e9ac29e736e007904e0767815e21cd8725941` con il solo bridge
+Game.testing abilitato. Ogni replay ha raggiunto 7 stati e chiuso il
+processo con codice 0. Tre finestre di campionamento da 5 s per scena.
+
+| Replay | P99 tick menu (ms) | P99 tick dialogo (ms) | P99 render/present dialogo (ms) |
+| --- | ---: | ---: | ---: |
+| Normal 1 | 2,09–7,38 | 283,91–304,57 | 8,34–8,75 |
+| Normal 2 | 5,83–6,34 | 253,15–329,57 | 6,06–8,77 |
+| JITless | 6,02–6,76 | 269,73–283,10 | 8,62–8,74 |
+
+Le durate del tick sono tempo trascorso sul thread della finestra. La
+riproduzione in entrambe le modalità giustifica la misura per fase,
+senza attribuire lo stallo al JIT o al raster. La prova usa l'MCP per
+avanzare la storia; non misura Skip nativo o latenza da input a display.
+Il vecchio trace NDJSON del secondo replay conteneva 1.446 tentativi di
+render e 1.453 tick nel riepilogo, ma il massimo tick associato a un
+tentativo era 15,4 ms. Risultati e log in `D:/roves-ci/vnt-e88e9ac-mcp-gtx1050*.json`.
