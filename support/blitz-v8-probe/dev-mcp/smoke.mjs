@@ -106,6 +106,23 @@ try {
     assert.equal(metrics.window_ms, 5000);
     assert.ok(metrics.cpu_frame_step.count > 0);
     assert.equal(metrics.displayed_frames, null);
+    // cpu_frame_step split into consecutive phases (frame_timings::StepPhase):
+    // every window step yields to Tokio, polls MCP, calls rAF, checkpoints
+    // microtasks and polls deno_core, so each series has samples and their
+    // sums add up to cpu_frame_step (one sample may straddle the window edge).
+    const stepPhases = ["cpu_step_tokio_yield", "cpu_step_mcp_poll", "cpu_step_animation_frame",
+      "cpu_step_microtasks", "cpu_step_event_loop", "cpu_step_other"];
+    assert.deepEqual(Object.keys(metrics.step_phases), stepPhases);
+    for (const phase of stepPhases) {
+      const series = metrics.step_phases[phase];
+      assert.ok(series.count > 0, `${phase} should have samples`);
+      for (const field of ["total", "p50", "p95", "p99", "max", "over_16_67ms", "sum"]) {
+        assert.equal(typeof series[field], "number", `${phase}.${field}`);
+      }
+    }
+    const phaseSum = stepPhases.reduce((sum, phase) => sum + metrics.step_phases[phase].sum, 0);
+    assert.ok(Math.abs(phaseSum - metrics.cpu_frame_step.sum) <= metrics.cpu_frame_step.max + 0.01,
+      `step phases (${phaseSum} ms) should add up to cpu_frame_step (${metrics.cpu_frame_step.sum} ms)`);
     async function pixi() {
       const reply = await call("tools/call", { name: "pixi_status", arguments: {} });
       assert.ok(!reply.isError, reply.content[0].text);

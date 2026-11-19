@@ -30,6 +30,18 @@ available, cover the session. Displayed-frame counts and GPU execution times
 are unavailable through this tool. Use a PresentMon capture on Windows to
 measure displayed frames.
 
+`step_phases` splits `cpu_frame_step` (one game tick on the shell thread) into
+consecutive, non-overlapping series: `cpu_step_tokio_yield` (the per-tick Tokio
+yield, which runs spawned tasks and timer/IO drivers), `cpu_step_mcp_poll` (this
+bridge, including any `evaluate_script` run in that tick),
+`cpu_step_animation_frame` (the V8 call that runs the page's rAF callbacks),
+`cpu_step_microtasks` (the explicit microtask checkpoint after it),
+`cpu_step_event_loop` (one deno_core event-loop poll: op completions, timers
+and the microtasks they queue) and `cpu_step_other` (the rest of the tick).
+Within a tick the phases add up to `cpu_frame_step`; percentiles of different
+series do not add up. The field is additive: older clients can ignore it. It
+names engine phases only and does not profile individual scripts.
+
 The normal probe build excludes the bridge. Even a feature-enabled probe
 requires a per-process token on a game-window launch. The server generates that
 token and supplies a fresh storage directory. Game bundles need no extra

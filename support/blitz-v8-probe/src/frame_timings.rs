@@ -22,6 +22,16 @@
 //!   then `render`, then the `is_animating` check). Minus `cpu_render_present`
 //!   it is the Blitz resolve/bookkeeping cost no other series covers. Every
 //!   summary also carries `sum` (milliseconds over the samples in the window).
+//! - `step_phases`: `cpu_frame_step` split into consecutive, non-overlapping
+//!   `StepPhase`s (Tokio yield, dev-MCP poll, V8 rAF call, explicit microtask
+//!   checkpoint, deno_core `poll_event_loop`, and the remainder `other`), one
+//!   bounded series each. Per step the phases add up to `cpu_frame_step`; a
+//!   phase not reached (MCP poll without the `dev-mcp` feature or after a
+//!   close request, Tokio yield without the frame IO runtime) gets no sample;
+//!   a step ended by an MCP disconnect is not recorded at all, as before. Percentiles of different series do not add up: the per-step
+//!   split is in the `ROVES_PROBE_FRAME_TRACE` records (`step_phases_ns`).
+//!   This names shell-side phases only; it does not attribute time to JS
+//!   functions or scripts. `null` before the first step.
 //!
 //! With the GPU window renderer two more blocks are reported:
 //!
@@ -266,6 +276,120 @@ impl FramePhases {
     /// The summed durations of `phases` so far (unreached ones count zero).
     pub fn sum(&self, phases: &[Phase]) -> Duration {
         phases.iter().filter_map(|phase| self.get(*phase)).sum()
+    }
+}
+
+/// A consecutive, non-overlapping part of one frame step
+/// (`RovesDocument::poll`, the `cpu_frame_step` interval), in run order.
+/// Shell-thread wall-clock only: no JS function, script or call site is
+/// attributed (no JS profiling).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum StepPhase {
+    /// Entering the per-frame Tokio `block_on` up to the tick: the
+    /// `yield_now`, during which the current-thread scheduler runs spawned
+    /// tasks and turns the timer/IO drivers.
+    TokioYield,
+    /// `dev_mcp::poll` (dev-mcp builds): at most one request per tick; an
+    /// `evaluate_script` request runs its JS here.
+    McpPoll,
+    /// The V8 call of the page's animation frame function (rAF callbacks;
+    /// microtasks run in the next phase, deno_core uses an explicit policy).
+    AnimationFrame,
+    /// The explicit `perform_microtask_checkpoint` after the rAF call.
+    Microtasks,
+    /// One non-blocking deno_core `poll_event_loop` (op completions, timers
+    /// and the microtask checkpoints deno_core runs itself).
+    EventLoop,
+    /// The rest of `cpu_frame_step` (frame-interval bookkeeping, scenario
+    /// page call, `block_on` exit): the step total minus the phases above.
+    Other,
+}
+
+impl StepPhase {
+    pub const ALL: [StepPhase; 6] = [
+        StepPhase::TokioYield,
+        StepPhase::McpPoll,
+        StepPhase::AnimationFrame,
+        StepPhase::Microtasks,
+        StepPhase::EventLoop,
+        StepPhase::Other,
+    ];
+
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            StepPhase::TokioYield => "cpu_step_tokio_yield",
+            StepPhase::McpPoll => "cpu_step_mcp_poll",
+            StepPhase::AnimationFrame => "cpu_step_animation_frame",
+            StepPhase::Microtasks => "cpu_step_microtasks",
+            StepPhase::EventLoop => "cpu_step_event_loop",
+            StepPhase::Other => "cpu_step_other",
+        }
+    }
+}
+
+/// Phase durations of one frame step; `None` for phases not reached.
+#[derive(Default, Clone, Copy, Debug, PartialEq)]
+pub struct StepPhases([Option<Duration>; StepPhase::ALL.len()]);
+
+impl StepPhases {
+    fn add(&mut self, phase: StepPhase, duration: Duration) {
+        let slot = &mut self.0[phase as usize];
+        *slot = Some(slot.unwrap_or_default() + duration);
+    }
+
+    pub fn get(&self, phase: StepPhase) -> Option<Duration> {
+        self.0[phase as usize]
+    }
+
+    /// Sets `Other` to `total` (the measured `cpu_frame_step`) minus the
+    /// measured phases, so the phases add up to the step.
+    pub fn finish(&mut self, total: Duration) {
+        self.0[StepPhase::Other as usize] = None;
+        let measured: Duration = self.0.iter().flatten().sum();
+        self.0[StepPhase::Other as usize] = Some(total.saturating_sub(measured));
+    }
+
+    pub(crate) fn json(&self, value: impl Fn(Duration) -> String) -> String {
+        let fields: Vec<String> = StepPhase::ALL
+            .iter()
+            .map(|phase| {
+                let value = self.get(*phase).map_or_else(|| "null".to_owned(), &value);
+                format!("\"{}\":{value}", phase.key())
+            })
+            .collect();
+        format!("{{{}}}", fields.join(","))
+    }
+}
+
+/// Lap timer over consecutive step phases. Disabled (no `StepPhases`), a lap
+/// is one `Option` check and reads no clock.
+pub struct StepClock<'a>(Option<(&'a mut StepPhases, Instant)>);
+
+impl<'a> StepClock<'a> {
+    /// Starts timing now when `phases` is `Some`.
+    pub fn new(phases: Option<&'a mut StepPhases>) -> Self {
+        Self(phases.map(|phases| (phases, Instant::now())))
+    }
+
+    pub fn disabled() -> Self {
+        Self(None)
+    }
+
+    /// Attributes the time since the previous lap (or the start) to `phase`.
+    pub fn lap(&mut self, phase: StepPhase) {
+        if let Some((phases, last)) = &mut self.0 {
+            let now = Instant::now();
+            phases.add(phase, now - *last);
+            *last = now;
+        }
+    }
+
+    /// Restarts the lap without attributing the elapsed time (it falls into
+    /// `Other`); the skipped phase stays `None`.
+    pub fn restart(&mut self) {
+        if let Some((_, last)) = &mut self.0 {
+            *last = Instant::now();
+        }
     }
 }
 
@@ -1066,9 +1190,40 @@ impl PhaseSamples {
     }
 }
 
+/// One bounded series per `StepPhase`.
+pub struct StepPhaseSamples([Samples; StepPhase::ALL.len()]);
+
+impl StepPhaseSamples {
+    fn new() -> Self {
+        Self(std::array::from_fn(|_| Samples::with_capacity(MAX_SAMPLES)))
+    }
+
+    /// Samples the phases `step` reached; the others get no sample.
+    fn record(&mut self, step: &StepPhases) {
+        for phase in StepPhase::ALL {
+            if let Some(duration) = step.get(phase) {
+                self.0[phase as usize].push(duration);
+            }
+        }
+    }
+
+    fn json_since(&self, since: Option<Instant>) -> String {
+        let fields: Vec<String> = StepPhase::ALL
+            .iter()
+            .map(|phase| {
+                let summary = self.0[*phase as usize].summary_since(since);
+                format!("\"{}\":{}", phase.key(), summary.json())
+            })
+            .collect();
+        format!("{{{}}}", fields.join(","))
+    }
+}
+
 pub struct FrameTimings {
     pub frame_step_interval: Samples,
     pub cpu_frame_step: Samples,
+    /// `cpu_frame_step` split into `StepPhase`s, created on the first step.
+    step_phases: Option<Box<StepPhaseSamples>>,
     pub cpu_render_present: Samples,
     /// The shell's whole redraw (resolve + render), see the module docs.
     pub cpu_shell_redraw: Samples,
@@ -1099,8 +1254,9 @@ impl FrameTimings {
             .render_phases
             .as_ref()
             .map_or_else(|| "null".to_owned(), |phases| phases.json_since(since));
+        let step_phases = self.step_phases_json(since);
         let sample = format!(
-            "{{\"unit\":\"ms\",\"window_ms\":5000,\"renderer\":\"{}\",\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"render_phases\":{phases},\"displayed_frames\":null,\"gpu_time_ms\":null}}",
+            "{{\"unit\":\"ms\",\"window_ms\":5000,\"renderer\":\"{}\",\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"render_phases\":{phases},\"step_phases\":{step_phases},\"displayed_frames\":null,\"gpu_time_ms\":null}}",
             self.renderer,
             self.frame_step_interval.summary_since(since).json(),
             self.cpu_frame_step.summary_since(since).json(),
@@ -1114,6 +1270,7 @@ impl FrameTimings {
         Self {
             frame_step_interval: Samples::with_capacity(MAX_SAMPLES),
             cpu_frame_step: Samples::with_capacity(MAX_SAMPLES),
+            step_phases: None,
             cpu_render_present: Samples::with_capacity(MAX_SAMPLES),
             cpu_shell_redraw: Samples::with_capacity(MAX_SAMPLES),
             render_phases: None,
@@ -1148,6 +1305,24 @@ impl FrameTimings {
         if let Some(trace) = &mut self.trace {
             trace.write_once(renderer, raster_cache_disabled);
         }
+    }
+
+    /// One frame step of `elapsed` (started at `start_qpc` for the trace),
+    /// split into `phases` (already `finish`ed with `elapsed`).
+    pub fn record_step(&mut self, start_qpc: Option<i64>, elapsed: Duration, phases: &StepPhases) {
+        self.cpu_frame_step.push(elapsed);
+        self.step_phases
+            .get_or_insert_with(|| Box::new(StepPhaseSamples::new()))
+            .record(phases);
+        if let Some(trace) = &mut self.trace {
+            trace.record_step(start_qpc, elapsed, phases);
+        }
+    }
+
+    fn step_phases_json(&self, since: Option<Instant>) -> String {
+        self.step_phases
+            .as_ref()
+            .map_or_else(|| "null".to_owned(), |phases| phases.json_since(since))
     }
 
     /// Samples the phases of one GPU `render` call.
@@ -1195,8 +1370,9 @@ impl FrameTimings {
             .raster_cache_content_diff
             .as_ref()
             .map_or_else(|| "null".to_owned(), DiffCounts::json);
+        let step_phases = self.step_phases_json(None);
         println!(
-            "ROVES_PROBE_FRAME_TIMINGS {{\"check\":\"frame_timings\",\"unit\":\"ms\",\"window_max_samples\":{MAX_SAMPLES},\"renderer\":\"{}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},{counters},\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"render_phases\":{render_phases},\"raster_cache_misses\":{misses},\"raster_cache_content_diff\":{content_diff},\"note\":\"cpu_* are shell-thread wall-clock durations; cpu_render_present is not GPU time and does not prove a visible frame\",\"phase_note\":\"render_phases are per-frame CPU sums sampled only on frames that reached the phase (all render calls, skipped ones included); cpu_compose_segments is the compose segment loop minus its nested cpu_cache_check/cpu_cache_diff/cpu_raster/cpu_texture_upload time; cpu_cache_diff is diagnostics-only comparison work; cpu_surface_acquire and cpu_present may include swapchain/VSync waits; the unattributed remainder of cpu_render_present is not reported; raster_cache_misses cover presented frames and add up to raster_uploads; raster_cache_content_diff covers the same presented content_changed misses (first_command + length_only + no_command_diff = content_changed; length_changed and kind_changed are overlapping flags; fill.area buckets the transformed bounding-box area, in squared scene units, of first-differing fills, and fill.compared counts those whose cached command is also a fill, the only ones carrying the overlapping *_changed flags (other_changed: transform, brush and path are equal); brush_only is the subset where only the brush differs; fill.current_path covers every first-differing fill and fill.cached_path only the compared ones: elements buckets the path element count, bounds names the first non-finite stage in the order path points, transform, untransformed bounding box, transformed bounding box, area, or finite)\"}}",
+            "ROVES_PROBE_FRAME_TIMINGS {{\"check\":\"frame_timings\",\"unit\":\"ms\",\"window_max_samples\":{MAX_SAMPLES},\"renderer\":\"{}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},{counters},\"frame_step_interval\":{},\"cpu_frame_step\":{},\"cpu_render_present\":{},\"cpu_shell_redraw\":{},\"step_phases\":{step_phases},\"render_phases\":{render_phases},\"raster_cache_misses\":{misses},\"raster_cache_content_diff\":{content_diff},\"note\":\"cpu_* are shell-thread wall-clock durations; cpu_render_present is not GPU time and does not prove a visible frame\",\"phase_note\":\"render_phases are per-frame CPU sums sampled only on frames that reached the phase (all render calls, skipped ones included); cpu_compose_segments is the compose segment loop minus its nested cpu_cache_check/cpu_cache_diff/cpu_raster/cpu_texture_upload time; cpu_cache_diff is diagnostics-only comparison work; cpu_surface_acquire and cpu_present may include swapchain/VSync waits; the unattributed remainder of cpu_render_present is not reported; raster_cache_misses cover presented frames and add up to raster_uploads; raster_cache_content_diff covers the same presented content_changed misses (first_command + length_only + no_command_diff = content_changed; length_changed and kind_changed are overlapping flags; fill.area buckets the transformed bounding-box area, in squared scene units, of first-differing fills, and fill.compared counts those whose cached command is also a fill, the only ones carrying the overlapping *_changed flags (other_changed: transform, brush and path are equal); brush_only is the subset where only the brush differs; fill.current_path covers every first-differing fill and fill.cached_path only the compared ones: elements buckets the path element count, bounds names the first non-finite stage in the order path points, transform, untransformed bounding box, transformed bounding box, area, or finite)\"}}",
             self.renderer,
             crate::presentation::RASTER_THREADING,
             self.frame_step_interval.summary().json(),
@@ -1663,6 +1839,87 @@ mod tests {
             }),
         });
         assert_eq!(*counts.fill(), FillCounts::default());
+    }
+
+    #[test]
+    fn step_phases_are_consecutive_and_add_up_to_the_step() {
+        // Disabled: no phases, laps are no-ops.
+        let mut disabled = StepClock::disabled();
+        disabled.lap(StepPhase::AnimationFrame);
+        disabled.restart();
+        assert!(disabled.0.is_none());
+
+        let mut step = StepPhases::default();
+        let mut clock = StepClock::new(Some(&mut step));
+        // No Tokio runtime: the yield phase is skipped, not zero.
+        clock.restart();
+        std::thread::sleep(Duration::from_millis(2));
+        clock.lap(StepPhase::AnimationFrame);
+        clock.lap(StepPhase::Microtasks);
+        clock.lap(StepPhase::EventLoop);
+        drop(clock);
+        let measured: Duration = [
+            StepPhase::AnimationFrame,
+            StepPhase::Microtasks,
+            StepPhase::EventLoop,
+        ]
+        .iter()
+        .map(|phase| step.get(*phase).expect("lapped phase"))
+        .sum();
+        assert!(step.get(StepPhase::AnimationFrame).unwrap() >= Duration::from_millis(2));
+        let total = measured + Duration::from_millis(3);
+        step.finish(total);
+        assert_eq!(step.get(StepPhase::TokioYield), None);
+        assert_eq!(step.get(StepPhase::McpPoll), None);
+        assert_eq!(step.get(StepPhase::Other), Some(Duration::from_millis(3)));
+        let sum: Duration = StepPhase::ALL.iter().filter_map(|p| step.get(*p)).sum();
+        assert_eq!(sum, total);
+        // A total below the measured phases never underflows.
+        let mut short = step;
+        short.finish(Duration::ZERO);
+        assert_eq!(short.get(StepPhase::Other), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn step_phase_series_serialize_every_phase_with_null_when_unreached() {
+        let mut timings = FrameTimings::new();
+        assert_eq!(timings.step_phases_json(None), "null");
+        let mut step = StepPhases::default();
+        step.add(StepPhase::TokioYield, Duration::from_millis(1));
+        step.add(StepPhase::AnimationFrame, Duration::from_millis(250));
+        step.add(StepPhase::Microtasks, Duration::from_millis(4));
+        step.add(StepPhase::EventLoop, Duration::from_millis(2));
+        step.finish(Duration::from_millis(260));
+        timings.record_step(None, Duration::from_millis(260), &step);
+        assert_eq!(timings.cpu_frame_step.summary().count, 1);
+        let json = timings.step_phases_json(None);
+        assert!(json.starts_with("{\"cpu_step_tokio_yield\":{\"count\":1,"));
+        assert!(json.contains("\"cpu_step_mcp_poll\":{\"count\":0,\"total\":0,\"p50\":null"));
+        assert!(
+            json.contains("\"cpu_step_animation_frame\":{\"count\":1,\"total\":1,\"p50\":250.000,")
+        );
+        assert!(json.contains("\"cpu_step_other\":{\"count\":1,\"total\":1,\"p50\":3.000,"));
+        assert_eq!(json.matches("\"cpu_step_").count(), StepPhase::ALL.len());
+        assert_eq!(
+            step.json(|d| d.as_nanos().to_string()),
+            "{\"cpu_step_tokio_yield\":1000000,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":250000000,\"cpu_step_microtasks\":4000000,\"cpu_step_event_loop\":2000000,\"cpu_step_other\":3000000}"
+        );
+    }
+
+    #[cfg(feature = "dev-mcp")]
+    #[test]
+    fn the_live_sample_carries_step_phases() {
+        let mut timings = FrameTimings::new();
+        assert!(timings.live_sample()["step_phases"].is_null());
+        let mut step = StepPhases::default();
+        step.add(StepPhase::McpPoll, Duration::from_millis(1));
+        step.finish(Duration::from_millis(1));
+        timings.record_step(None, Duration::from_millis(1), &step);
+        let sample = timings.live_sample();
+        assert_eq!(sample["step_phases"]["cpu_step_mcp_poll"]["count"], 1);
+        assert_eq!(sample["step_phases"]["cpu_step_other"]["p50"], 0.0);
+        assert!(sample["step_phases"]["cpu_step_event_loop"]["p99"].is_null());
+        assert_eq!(sample["cpu_frame_step"]["count"], 1);
     }
 
     #[test]

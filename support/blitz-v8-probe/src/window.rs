@@ -931,14 +931,28 @@ impl Document for RovesDocument {
             .as_mut()
             .expect("the runtime is only taken when the document drops");
         let run_animation_frame = &self.run_animation_frame;
-        let mut tick = || {
-            #[cfg(feature = "dev-mcp")]
-            if !self.close_requested
-                && crate::dev_mcp::poll(runtime, self.timings.as_ref(), self.stats.as_deref())
-            {
-                return false;
+        // Frame timings only: consecutive phases of this step (see
+        // `frame_timings::StepPhase`); without timings no clock is read.
+        let mut step_phases = crate::frame_timings::StepPhases::default();
+        let mut clock = crate::frame_timings::StepClock::new(
+            self.timings.is_some().then_some(&mut step_phases),
+        );
+        let mut tick = |yielded: bool| {
+            if yielded {
+                clock.lap(crate::frame_timings::StepPhase::TokioYield);
+            } else {
+                clock.restart();
             }
-            crate::frame_step(runtime, run_animation_frame);
+            #[cfg(feature = "dev-mcp")]
+            if !self.close_requested {
+                let closed =
+                    crate::dev_mcp::poll(runtime, self.timings.as_ref(), self.stats.as_deref());
+                clock.lap(crate::frame_timings::StepPhase::McpPoll);
+                if closed {
+                    return false;
+                }
+            }
+            crate::frame_step(runtime, run_animation_frame, &mut clock);
             true
         };
         let ran = match &self.io {
@@ -946,9 +960,9 @@ impl Document for RovesDocument {
             // timer/IO drivers (`park_yield`, zero timeout) before the poll.
             Some(io) => io.tokio.block_on(async {
                 tokio::task::yield_now().await;
-                tick()
+                tick(true)
             }),
-            None => tick(),
+            None => tick(false),
         };
         if !ran {
             self.close_requested = true;
@@ -957,11 +971,10 @@ impl Document for RovesDocument {
         }
         if let Some(timings) = &self.timings {
             let elapsed = start.elapsed();
-            let mut timings = timings.borrow_mut();
-            timings.cpu_frame_step.push(elapsed);
-            if let Some(trace) = &mut timings.trace {
-                trace.record_step(step_qpc, elapsed);
-            }
+            step_phases.finish(elapsed);
+            timings
+                .borrow_mut()
+                .record_step(step_qpc, elapsed, &step_phases);
         }
         self.after_frame();
         true

@@ -1,3 +1,22 @@
+## 2026-11-19 - Blitz probe: opt-in attribution of the main-thread frame step
+
+Changed: `support/blitz-v8-probe/src/{frame_timings.rs,frame_trace.rs,main.rs,window.rs}`,
+`dev-mcp/{smoke.mjs,playthrough.mjs,README.md}`, `README.md`, `docs/ROVES_PERFORMANCE.md`,
+`.github/workflows/blitz-probe.yml`. Diagnostic only, for dialogue ticks on the GTX 1050 whose
+`cpu_frame_step` P99 reached 253-330 ms while render/present stayed under 9 ms: with frame
+timings enabled (`ROVES_PROBE_FRAME_TIMINGS=1`, implied by dev MCP) a lap timer
+(`StepClock`) splits each step into consecutive, non-overlapping `StepPhase`s - Tokio yield,
+dev-MCP poll, V8 rAF call, explicit microtask checkpoint, deno_core `poll_event_loop`, and the
+remainder - that add up to `cpu_frame_step`. They are reported as `step_phases` in the
+`ROVES_PROBE_FRAME_TIMINGS` record and MCP `performance_sample` (additive key), and as
+`step_phases_ns`, the new last field of every `ROVES_PROBE_FRAME_TRACE` frame record (additive
+within `roves-frame-trace` v1). No JS function or script is attributed. Without timings no clock
+is read (headless loops pass a disabled clock); scheduling, thresholds and gates are unchanged.
+Compared with Chromium f2700724 Blink `PageAnimator::ServiceScriptedAnimations`,
+`EventLoop::PerformMicrotaskCheckpoint` and `AnimationFrameTimingMonitor` (LoAF). Unit tests in
+`frame_timings::` (now run by the probe CI job next to `frame_trace::`) and a dev-MCP smoke
+check of the `step_phases` schema; no dependency added.
+
 ## 2026-11-19 - Blitz probe: opt-in submitted WebGPU render-work counters
 
 Changed: `support/blitz-v8-probe/src/{dom.js,main.rs,gpu_pacing_test.js}`, `README.md`,

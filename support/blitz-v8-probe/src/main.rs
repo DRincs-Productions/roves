@@ -2522,8 +2522,14 @@ fn write_png(path: &str, pixels: &[u8]) {
 /// One frame of the JS side: rAF callbacks, a microtask checkpoint and one
 /// non-blocking poll of the deno_core event loop (timers, op completions). Style
 /// and layout are resolved by the caller (headless loop) or the window shell.
-fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Function>) {
-    page_frame_step(runtime, run_animation_frame);
+/// `clock` laps the rAF call, the microtask checkpoint and the event loop poll
+/// (`frame_timings::StepPhase`); a disabled clock reads no time.
+fn frame_step(
+    runtime: &mut JsRuntime,
+    run_animation_frame: &v8::Global<v8::Function>,
+    clock: &mut frame_timings::StepClock<'_>,
+) {
+    page_frame_step(runtime, run_animation_frame, clock);
 }
 
 /// `frame_step`, returning whether the tick ran the page's rAF queue. On a
@@ -2532,7 +2538,9 @@ fn frame_step(runtime: &mut JsRuntime, run_animation_frame: &v8::Global<v8::Func
 fn page_frame_step(
     runtime: &mut JsRuntime,
     run_animation_frame: &v8::Global<v8::Function>,
+    clock: &mut frame_timings::StepClock<'_>,
 ) -> bool {
+    use frame_timings::StepPhase;
     let ran = {
         deno_core::scope!(scope, runtime);
         let function = v8::Local::new(scope, run_animation_frame);
@@ -2541,14 +2549,16 @@ fn page_frame_step(
             .call(scope, receiver, &[])
             .expect("animation frame should not throw past reportException")
             .is_true();
+        clock.lap(StepPhase::AnimationFrame);
         scope.perform_microtask_checkpoint();
+        clock.lap(StepPhase::Microtasks);
         ran
     };
     let waker = std::task::Waker::noop();
     let mut context = std::task::Context::from_waker(waker);
-    if let std::task::Poll::Ready(Err(error)) =
-        runtime.poll_event_loop(&mut context, Default::default())
-    {
+    let polled = runtime.poll_event_loop(&mut context, Default::default());
+    clock.lap(StepPhase::EventLoop);
+    if let std::task::Poll::Ready(Err(error)) = polled {
         panic!("event loop error: {error}");
     }
     ran
@@ -2586,7 +2596,11 @@ async fn drive_page_frames(
         if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
             tokio::time::sleep(wait).await;
         }
-        if page_frame_step(runtime, run_animation_frame) {
+        if page_frame_step(
+            runtime,
+            run_animation_frame,
+            &mut frame_timings::StepClock::disabled(),
+        ) {
             ran += 1;
         }
         resolve_layout(document);
@@ -2612,7 +2626,11 @@ async fn drive_frames(
             // mapAsync and other tokio-based ops only progress while it does.
             tokio::time::sleep(wait).await;
         }
-        frame_step(runtime, run_animation_frame);
+        frame_step(
+            runtime,
+            run_animation_frame,
+            &mut frame_timings::StepClock::disabled(),
+        );
         resolve_layout(document);
     }
 }

@@ -34,7 +34,7 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use crate::frame_timings::{FramePhases, MissCounts, MissReason, Phase};
+use crate::frame_timings::{FramePhases, MissCounts, MissReason, Phase, StepPhases};
 
 /// Records kept (frames and input markers together): about 60 seconds of
 /// render attempts at 60 Hz.
@@ -180,6 +180,7 @@ struct StepInfo {
     seq: u64,
     start_qpc: Option<i64>,
     cpu: Option<Duration>,
+    phases: StepPhases,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -328,14 +329,16 @@ impl FrameTrace {
         self.total += 1;
     }
 
-    /// A frame step started at `start_qpc` and took `cpu`.
-    pub fn record_step(&mut self, start_qpc: Option<i64>, cpu: Duration) {
+    /// A frame step started at `start_qpc` and took `cpu`, split into
+    /// `phases` (see `frame_timings::StepPhase`).
+    pub fn record_step(&mut self, start_qpc: Option<i64>, cpu: Duration, phases: &StepPhases) {
         self.step_seq += 1;
         self.steps_since_render += 1;
         self.last_step = Some(StepInfo {
             seq: self.step_seq,
             start_qpc,
             cpu: Some(cpu),
+            phases: *phases,
         });
     }
 
@@ -405,7 +408,7 @@ impl FrameTrace {
         };
         writeln!(
             out,
-            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included\"}}",
+            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included; step_phases_ns (additive in version 1, last field) splits cpu_frame_step_ns of the same step into consecutive non-overlapping cpu_step_* phases that add up to it, null when no step or phase not reached\"}}",
             if self.frequency.is_some() {
                 "qpc"
             } else {
@@ -504,7 +507,7 @@ fn frame_json(frame: &FrameRecord) -> String {
         },
     );
     format!(
-        "{{\"type\":\"frame\",\"render_seq\":{},\"present_seq\":{},\"step_seq\":{},\"step_start_qpc\":{},\"cpu_frame_step_ns\":{},\"steps_since_previous_render\":{},\"render_start_qpc\":{},\"present_start_qpc\":{},\"present_end_qpc\":{},\"render_end_qpc\":{},\"present_result\":{},\"outcome\":\"{}\",\"cpu_render_present_ns\":{},\"phases_ns\":{{{}}},\"counters\":{counters}}}",
+        "{{\"type\":\"frame\",\"render_seq\":{},\"present_seq\":{},\"step_seq\":{},\"step_start_qpc\":{},\"cpu_frame_step_ns\":{},\"steps_since_previous_render\":{},\"render_start_qpc\":{},\"present_start_qpc\":{},\"present_end_qpc\":{},\"render_end_qpc\":{},\"present_result\":{},\"outcome\":\"{}\",\"cpu_render_present_ns\":{},\"phases_ns\":{{{}}},\"counters\":{counters},\"step_phases_ns\":{}}}",
         frame.render_seq,
         opt(frame.present_seq),
         opt(frame.step.map(|step| step.seq)),
@@ -522,6 +525,10 @@ fn frame_json(frame: &FrameRecord) -> String {
         attempt.outcome.key(),
         nanos(frame.cpu_render_present),
         phases.join(","),
+        frame.step.map_or_else(
+            || "null".to_owned(),
+            |step| step.phases.json(|duration| nanos(duration).to_string())
+        ),
     )
 }
 
@@ -628,8 +635,11 @@ mod tests {
     #[test]
     fn markers_and_steps_share_the_qpc_timeline_without_content() {
         let mut trace = trace(8, fixed_clock, Some(10_000_000));
-        trace.record_step(Some(90), Duration::from_micros(700));
-        trace.record_step(Some(95), Duration::from_micros(800));
+        let mut phases = StepPhases::default();
+        phases.finish(Duration::from_micros(700));
+        trace.record_step(Some(90), Duration::from_micros(700), &phases);
+        phases.finish(Duration::from_micros(800));
+        trace.record_step(Some(95), Duration::from_micros(800), &phases);
         trace.record_marker(MarkerKind::KeyDown, Some(96), Duration::from_micros(30));
         trace.record_frame(
             presented(100),
@@ -651,6 +661,8 @@ mod tests {
         assert!(lines[3].contains("\"step_seq\":2,"));
         assert!(lines[3].contains("\"steps_since_previous_render\":0"));
         assert!(lines[0].contains("\"frame_steps\":2"));
+        // The step's phases are the last field and add up to its duration.
+        assert!(lines[2].ends_with(",\"step_phases_ns\":{\"cpu_step_tokio_yield\":null,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":null,\"cpu_step_microtasks\":null,\"cpu_step_event_loop\":null,\"cpu_step_other\":800000}}"));
     }
 
     #[test]
@@ -694,7 +706,7 @@ mod tests {
         assert!(first.contains("\"cpu_present\":null}"));
         // Every phase plus cpu_frame_step_ns and cpu_render_present_ns.
         assert_eq!(first.matches("\"cpu_").count(), Phase::ALL.len() + 2);
-        assert!(first.ends_with("\"counters\":null}"));
+        assert!(first.ends_with("\"counters\":null,\"step_phases_ns\":null}"));
         let second = &lines[2];
         assert!(second.contains("\"present_seq\":1,"));
         assert!(second.contains("\"present_result\":\"outdated\",\"outcome\":\"present_failed\""));

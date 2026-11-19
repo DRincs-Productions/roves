@@ -46,6 +46,7 @@ if (PERF) {
     meaning: {
       frame_step_interval: "interval between game ticks (frame steps); not displayed frames",
       cpu_frame_step: "CPU time of one game tick",
+      step_phases: "cpu_frame_step split into consecutive shell-side phases (Tokio yield, MCP poll, V8 rAF call, microtask checkpoint, deno_core event loop poll, other); per tick they add up to cpu_frame_step, but percentiles of different series do not add up; null from probes without this field; no JS function attribution",
       cpu_render_present: "CPU time of render + present calls; not displayed frames",
       cpu_shell_redraw: "CPU time of a shell redraw",
       session_counters: "process-lifetime presentation counters; *_delta are differences between consecutive samples of the same scene over counter_interval_ms",
@@ -180,6 +181,7 @@ async function sampleScene(scene) {
       };
       for (const series of PERF_SERIES) sample[series] = raw[series] ?? null;
       sample.render_phases = raw.render_phases ?? null;
+      sample.step_phases = raw.step_phases ?? null;
       for (const counter of PERF_COUNTERS) {
         sample[counter] = raw[counter] ?? null;
         sample[counter + "_delta"] = previous && raw[counter] != null && previous.raw[counter] != null

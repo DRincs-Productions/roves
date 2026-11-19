@@ -125,6 +125,9 @@ jobs:
           # Opt-in per-frame trace (ROVES_PROBE_FRAME_TRACE): bounded ring,
           # null-not-zero serialization, QPC units/errors. No PresentMon needed.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::
+          # Opt-in frame timings (ROVES_PROBE_FRAME_TIMINGS): percentiles, bounded
+          # windows and the cpu_frame_step split into consecutive step phases.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_timings::
           # Packaged launch (src/launch.rs): per-bundle storage id, explicit
           # ROVES_PROBE_STORAGE_DIR and non-bundled runs unchanged; packed
           # fixture in step with the loose sources, cache reuse/invalidation

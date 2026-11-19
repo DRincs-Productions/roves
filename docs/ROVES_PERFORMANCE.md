@@ -2854,6 +2854,42 @@ conteggiati: render bundle, compute pass ed errori di validazione GPU
 asincroni. Nessuna misura è stata ancora raccolta; nessuna soglia, gate o
 configurazione CI è cambiata.
 
+### Attribuzione del tick sul thread principale (diagnostico, opt-in, 19 novembre)
+
+Motivazione: due corse MCP reali del template più recente sulla GTX 1050
+riportano nel dialogo `cpu_frame_step` P99 253–330 ms, mentre render/present
+resta sotto 9 ms P99 e i tick del menu sotto 8 ms. Serve sapere in quale parte
+del tick si trova il tempo prima di proporre correzioni.
+
+Riferimento Chromium `f2700724`:
+`third_party/blink/renderer/core/page/page_animator.cc`
+(`PageAnimator::ServiceScriptedAnimations`, `TRACE_EVENT0("blink,rail")`
+attorno al servizio delle callback rAF),
+`third_party/blink/renderer/platform/scheduler/common/event_loop.cc`
+(`EventLoop::PerformMicrotaskCheckpoint` come passo distinto,
+`RunPendingMicrotask` tracciato per singolo microtask) e
+`third_party/blink/renderer/core/frame/animation_frame_timing_monitor.h`
+(LoAF: `WillProcessTask`/`DidProcessTask` per task, durate di stile/layout e
+attribuzione per entry point di script). Chromium separa quindi rAF, microtask
+e task del loop come eventi di traccia distinti, con costo quasi nullo a
+categoria disattivata. Roves riprende soltanto la separazione delle fasi:
+nessuna dipendenza di tracing, nessuna attribuzione per script o funzione JS
+(come LoAF), campioni negli anelli limitati già esistenti.
+
+Con `ROVES_PROBE_FRAME_TIMINGS=1` (anche implicito in MCP) `cpu_frame_step` è
+diviso in fasi consecutive e senza sovrapposizioni: `cpu_step_tokio_yield`,
+`cpu_step_mcp_poll`, `cpu_step_animation_frame`, `cpu_step_microtasks`,
+`cpu_step_event_loop` e il resto `cpu_step_other`. Il record finale e
+`performance_sample` aggiungono `step_phases`; con `ROVES_PROBE_FRAME_TRACE`
+ogni record frame aggiunge come ultimo campo `step_phases_ns`, estensione
+additiva di `roves-frame-trace` v1. Per singolo tick le fasi sommano a
+`cpu_frame_step`; i percentili di serie diverse non si sommano. Limiti:
+`cpu_step_event_loop` include i microtask che deno_core esegue durante il
+poll; `cpu_step_tokio_yield` include i task Tokio pronti; il GC di V8 cade
+nella fase in cui avviene. Senza variabile non si legge alcun orologio (un
+controllo `Option` per lap); scheduling, soglie e gate sono invariati.
+Nessuna misura è stata ancora raccolta con questa diagnostica.
+
 ### Confronto lavapipe (diagnostico, opt-in)
 
 Il job `linux-lavapipe` di `blitz-probe.yml` parte solo con dispatch
