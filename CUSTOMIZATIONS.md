@@ -1,3 +1,48 @@
+## 2026-11-20 - Blitz probe: opacity 0 inlines culled (vendored blitz-paint 0002)
+
+Changed: `support/blitz-v8-probe/vendor/blitz-paint/src/{text.rs,render.rs,ROVES_PATCHES.md}`,
+`support/blitz-v8-probe/src/inline_opacity.rs`,
+`support/blitz-v8-probe/fixtures/inline-opacity/{index.html,check_png.py}`,
+`.github/workflows/blitz-probe.yml`. Probe only; the production engine, its dependencies and
+layout are unchanged. The negative was confirmed on Roves release `0cdb0da9300` (opacity 0
+inline 1786 glyph pixels, same as opacity 1; opacity 0.5 inline darkest 0; computed values
+correct). Glyph runs under a non-atomic inline with computed `opacity: 0` (not `display:
+contents`) are now skipped by `draw_inline_backgrounds` and `stroke_text` in the existing
+single pass: same paint order, no layer, no dependence on the 1024-layer frame limit, one
+ancestor walk per run. A draft that painted every `opacity < 1` inline as a recursive layer
+group was withdrawn in review before commit (over the layer limit it painted partial groups
+opaque, and rescanned all runs per group). Partial opacity on non-atomic inlines is not
+implemented (still alpha 1) and is reported as an explicit diagnostic
+(`INLINE_OPACITY_PARTIAL_DIAGNOSTIC`, `partial_diagnostic` in `check_png.py`); the box path
+(inline root, `inline-block`) is unchanged. Chromium f2700724 reference verified by the
+reviewer (`paint_property_tree_builder.cc`: effect node from `style.Opacity()`,
+`DirectlyUpdateOpacity`). The gate covers opacity 0/1 spans, box opacity applied once, 1200
+per-character opacity 0 spans after 1100 box layers, nested zero, and a CSS-animated stagger;
+`inline_opacity::` joins the `blitz-probe.yml` test gate. Not compiled or run locally: CI
+decides.
+
+## 2026-11-20 - Blitz probe: inline span opacity paint regression (test only)
+
+New: `support/blitz-v8-probe/src/inline_opacity.rs` (`#[cfg(test)]`, registered in `main.rs`),
+`support/blitz-v8-probe/fixtures/inline-opacity/{index.html,check_png.py}`. No engine, paint,
+workflow or gate change; no new dependency. Suspected defect in the vendored blitz-paint: the
+inline root's `draw_inline_layout` -> `text::stroke_text` draws each glyph run with the run
+node's `color` and a fixed alpha of 1.0, while `opacity` is applied only as the layer of the
+box being rendered (`render.rs`), so the glyphs of a non-atomic inline such as
+`<span style="opacity: 0">` would stay fully visible. The static fixture has four lines of
+the same black 48px monospace text at fixed geometry: opacity 1 (positive), opacity 0
+(negative under test), opacity 0.5 (expected about 50% grey) and an `inline-block` at
+opacity 0 (control on the box opacity path), each with a background-only control region.
+The test checks Stylo's computed `opacity` (serialized as `getComputedStyle` does)
+separately from the painted pixels, resolves and paints the same state twice at time 0 and
+requires identical buffers, then asserts the pixel oracle. Expected to fail on the `hidden`
+and `half` lines until fixed; it is deliberately not in the CI gate yet. The same oracle runs
+on a published executable without rebuild: `--game fixtures/inline-opacity` with
+`ROVES_PROBE_SCREENSHOT`, then `check_png.py` (stdlib only), which also reads the computed
+opacities the page writes into the `game_page` report. Chromium f2700724 comparison not
+verified in this session: the Blink layout/paint files are outside the local sparse checkout
+and web reads were denied; to confirm before the fix. Not compiled or run locally.
+
 ## 2026-11-20 - Blitz probe: name harness uses Enter on a scrollable dialogue candidate
 
 Changed: `support/blitz-v8-probe/src/game.rs`. Harness only; game, runtime, template, gate

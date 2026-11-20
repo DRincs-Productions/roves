@@ -122,6 +122,11 @@ jobs:
           # Blitz box-tree lifetime regression (vendor/blitz-dom 0005): hide /
           # free / reinsert must not leave freed nodes in a layout child list.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml box_tree::
+          # Inline opacity paint (vendor/blitz-paint 0002): opacity 0 inlines
+          # culled (also nested, per-character and past the layer limit), box
+          # opacity applied once, CSS-animated stagger; partial opacity on
+          # non-atomic inlines is printed as INLINE_OPACITY_PARTIAL_DIAGNOSTIC.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml inline_opacity::
           # Opt-in per-frame trace (ROVES_PROBE_FRAME_TRACE): bounded ring,
           # null-not-zero serialization, QPC units/errors. No PresentMon needed.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::

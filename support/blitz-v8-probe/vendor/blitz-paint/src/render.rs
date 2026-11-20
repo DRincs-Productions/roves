@@ -879,37 +879,37 @@ impl ElementCx<'_, '_> {
             let transform =
                 self.transform * Affine::translate((pos.x * self.scale, pos.y * self.scale));
 
+            let layout = &text_layout.layout;
+
+            // Roves patch (inline opacity, change 0002): `true` skips the runs of
+            // `opacity: 0` non-atomic inlines in both passes, without layers.
+
             // Render inline element backgrounds (e.g. `<span style="background: ...">`)
             // behind the text and selection highlight.
             crate::text::draw_inline_backgrounds(
                 scene,
-                text_layout.layout.lines(),
+                layout.lines(),
                 self.context.dom,
                 transform,
                 self.node.id,
+                true,
             );
 
             // Render text selection highlight (if any) using cached selection ranges
             if let Some(&(sel_start, sel_end)) = self.context.selection_ranges.get(&self.node.id) {
-                crate::text::draw_text_selection(
-                    scene,
-                    &text_layout.layout,
-                    transform,
-                    sel_start,
-                    sel_end,
-                );
+                crate::text::draw_text_selection(scene, layout, transform, sel_start, sel_end);
             }
 
             // Render text
-            let mut draw_text_context = self.context.draw_text_context.borrow_mut();
             crate::text::stroke_text(
                 scene,
-                text_layout.layout.lines(),
+                layout.lines(),
                 self.context.dom,
                 transform,
                 self.scale,
                 self.node.id,
-                &mut draw_text_context,
+                true,
+                &mut self.context.draw_text_context.borrow_mut(),
             );
         }
     }
@@ -975,6 +975,7 @@ impl ElementCx<'_, '_> {
                 transform,
                 self.scale,
                 self.node.id,
+                false,
                 &mut draw_text_context,
             );
         }
@@ -1030,6 +1031,7 @@ impl ElementCx<'_, '_> {
                 transform,
                 self.scale,
                 self.node.id,
+                false,
                 &mut draw_text_context,
             );
         }

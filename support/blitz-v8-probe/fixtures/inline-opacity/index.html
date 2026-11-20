@@ -1,0 +1,73 @@
+<!doctype html>
+<!--
+  Inline opacity paint fixture (Blitz defect: the glyphs of a non-atomic inline
+  element were painted at full alpha whatever its `opacity`). The vendored
+  blitz-paint fixes only `opacity: 0` (culled); the cells marked [diagnostic]
+  (partial opacity on non-atomic inlines) are reported, not gated.
+
+  Static page, no animation or timer: every frame paints the same state.
+  Absolutely positioned cells (width 140px, black 40px monospace "MM",
+  line-height 60px, no wrapping). In each cell x +0..+100 holds the text and
+  x +110..+140 is background only (control that the page is white there).
+  Expected darkest glyph channel over white: opaque ~0, opacity 0.5 ~128,
+  opacity 0.25 (two nested 0.5) ~191, opacity 0 nothing painted.
+
+    row top 20:   #visible-cell  span opacity 1                      -> opaque
+                  #hidden-cell   span opacity 0                      -> nothing
+                  #half-cell     span opacity 0.5                    -> half [diagnostic]
+                  #atomic-cell   inline-block opacity 0              -> nothing
+    row top 100:  #atomic-half-cell inline-block opacity 0.5 (box
+                                 opacity path, applied once)         -> half
+                  #nested-cell   span 0.5 > span 0.5 (multiplied)    -> quarter [diagnostic]
+                  #ancestor-cell cell 0.5 > span 1 (inline root
+                                 opacity applied once)               -> half
+                  #ancestor-nested-cell cell 0.5 > span 0.5          -> quarter [diagnostic]
+    row top 180:  #decor-cell    span 0.5 with underline (the
+                                 decoration is inside the group)     -> half [diagnostic]
+                  #stagger-cell  one inline root, three sibling spans
+                                 on three 50px lines (left 175,
+                                 tops 180/230/280): opacity 1, 0.5, 0
+                                 (a staggered reveal frozen mid-way) -> opaque, half [diagnostic], nothing
+
+  Rust oracle (no JS, same document, CPU raster, 640x360, DPR 1):
+    cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml inline_opacity::
+  Published executable (no rebuild): see check_png.py in this directory.
+  The script below writes the computed opacities (getComputedStyle) into the
+  display:none #report, which the probe prints in the game_page report text.
+-->
+<html>
+<head>
+<style>
+  html, body { margin: 0; background: rgb(255, 255, 255); overflow: hidden; }
+  .cell { position: absolute; width: 140px; height: 60px; margin: 0;
+          font-family: monospace; font-size: 40px; line-height: 60px;
+          color: rgb(0, 0, 0); white-space: nowrap; }
+  #visible-cell { left: 20px; top: 20px; }
+  #hidden-cell { left: 175px; top: 20px; }
+  #half-cell { left: 330px; top: 20px; }
+  #atomic-cell { left: 485px; top: 20px; }
+  #atomic-half-cell { left: 20px; top: 100px; }
+  #nested-cell { left: 175px; top: 100px; }
+  #ancestor-cell { left: 330px; top: 100px; opacity: 0.5; }
+  #ancestor-nested-cell { left: 485px; top: 100px; opacity: 0.5; }
+  #decor-cell { left: 20px; top: 180px; }
+  #stagger-cell { left: 175px; top: 180px; height: 150px; line-height: 50px; }
+  #report { display: none; }
+</style>
+</head>
+<body><div id="report"></div><div id="visible-cell" class="cell"><span id="visible" style="opacity: 1">MM</span></div><div id="hidden-cell" class="cell"><span id="hidden" style="opacity: 0">MM</span></div><div id="half-cell" class="cell"><span id="half" style="opacity: 0.5">MM</span></div><div id="atomic-cell" class="cell"><span id="atomic" style="opacity: 0; display: inline-block">MM</span></div><div id="atomic-half-cell" class="cell"><span id="atomic-half" style="opacity: 0.5; display: inline-block">MM</span></div><div id="nested-cell" class="cell"><span id="nested-outer" style="opacity: 0.5"><span id="nested" style="opacity: 0.5">MM</span></span></div><div id="ancestor-cell" class="cell"><span id="ancestor" style="opacity: 1">MM</span></div><div id="ancestor-nested-cell" class="cell"><span id="ancestor-nested" style="opacity: 0.5">MM</span></div><div id="decor-cell" class="cell"><span id="decor" style="opacity: 0.5; text-decoration: underline">MM</span></div><div id="stagger-cell" class="cell"><span id="stagger-1" style="opacity: 1">MM</span><br><span id="stagger-2" style="opacity: 0.5">MM</span><br><span id="stagger-3" style="opacity: 0">MM</span></div>
+<script>
+  (() => {
+    const ids = ["visible", "hidden", "half", "atomic", "atomic-half", "nested-outer",
+      "nested", "ancestor-cell", "ancestor", "ancestor-nested-cell", "ancestor-nested",
+      "decor", "stagger-1", "stagger-2", "stagger-3"];
+    const computed = {};
+    for (const id of ids) {
+      computed[id] = getComputedStyle(document.getElementById(id)).opacity;
+    }
+    document.getElementById("report").textContent =
+      "INLINE_OPACITY_COMPUTED " + JSON.stringify(computed);
+  })();
+</script>
+</body>
+</html>

@@ -13,6 +13,39 @@ use style::values::generics::text::{GenericTextDecorationInset, GenericTextDecor
 use crate::color::{Color, ToColorColor as _};
 use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 
+/// Roves patch (inline opacity, change 0002): whether a glyph run lies inside a
+/// non-atomic inline element whose computed `opacity` is 0, so it paints nothing.
+///
+/// Walks from the run's node up to, but excluding, the inline root. The root's own
+/// opacity, like that of every ancestor box and of atomic inlines (which are their
+/// own inline roots), is handled by `render_element`, which skips a box at opacity
+/// 0 before any layer is pushed. `display: contents` elements generate no box, so
+/// their `opacity` has no effect. A run whose walk does not reach the root keeps
+/// the upstream behaviour (painted). No layer is involved, so the result never
+/// depends on `LayerManager`'s layer limit; the cost is one ancestor walk per run
+/// per paint, like the decoration stack's. Opacity strictly between 0 and 1 is not
+/// handled here: such runs still paint at alpha 1 (see `ROVES_PATCHES.md`, 0002).
+fn run_is_transparent(doc: &BaseDocument, run_node_id: NodeId, inline_root_id: NodeId) -> bool {
+    let mut transparent = false;
+    let mut walk_id = Some(run_node_id);
+    while let Some(node_id) = walk_id {
+        if node_id == inline_root_id {
+            return transparent;
+        }
+        let Some(node) = doc.get_node(node_id) else {
+            return false;
+        };
+        if !transparent {
+            if let Some(styles) = node.primary_styles() {
+                transparent = styles.get_effects().opacity == 0.0
+                    && !styles.clone_display().is_contents();
+            }
+        }
+        walk_id = node.parent;
+    }
+    false
+}
+
 /// Draw the backgrounds of inline elements (e.g. `<span style="background: ...">`).
 ///
 /// Each glyph run carries the node id of the innermost inline element it belongs to
@@ -22,12 +55,16 @@ use crate::{FONT_EMBOLDEN_ENABLED, SELECTION_COLOR};
 ///
 /// The inline root's own background is painted separately (as a normal block box), so
 /// runs belonging to the root are skipped to avoid drawing it twice.
+///
+/// Roves patch (inline opacity, change 0002): with `cull_transparent`, runs inside
+/// an `opacity: 0` inline are skipped (see [`run_is_transparent`]).
 pub(crate) fn draw_inline_backgrounds<'a>(
     scene: &mut impl PaintScene,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
     doc: &BaseDocument,
     transform: Affine,
     inline_root_id: NodeId,
+    cull_transparent: bool,
 ) {
     for line in lines {
         for item in line.items() {
@@ -37,6 +74,9 @@ pub(crate) fn draw_inline_backgrounds<'a>(
 
             let node_id = glyph_run.style().brush.id;
             if node_id == inline_root_id {
+                continue;
+            }
+            if cull_transparent && run_is_transparent(doc, node_id, inline_root_id) {
                 continue;
             }
 
@@ -562,6 +602,14 @@ fn flush_line_decorations(
     }
 }
 
+/// Draw the glyph runs of an inline layout and their text decorations.
+///
+/// Roves patch (inline opacity, change 0002): with `cull_transparent`, runs inside
+/// an `opacity: 0` inline are skipped before drawing (see [`run_is_transparent`]):
+/// neither their glyphs nor their contribution to a decoration are painted, in the
+/// same single pass and paint order as upstream. Text inputs and list markers pass
+/// `false` (upstream behaviour).
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn stroke_text<'a>(
     scene: &mut impl PaintScene,
     lines: impl Iterator<Item = Line<'a, TextBrush>>,
@@ -569,6 +617,7 @@ pub(crate) fn stroke_text<'a>(
     transform: Affine,
     scale: f64,
     inline_root_id: NodeId,
+    cull_transparent: bool,
     context: &mut DrawTextContext,
 ) {
     let DrawTextContext {
@@ -608,6 +657,10 @@ pub(crate) fn stroke_text<'a>(
                     .map(|angle| Affine::skew(angle.to_radians().tan() as f64, 0.0));
 
                 let css_font_size = font_size as f64 / scale;
+
+                if cull_transparent && run_is_transparent(doc, style.brush.id, inline_root_id) {
+                    continue;
+                }
 
                 // Reconcile the stack with this run's ancestor path. Build the path
                 // (inline root -> run node), keep the shared prefix already on the stack,

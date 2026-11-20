@@ -29,6 +29,8 @@ mod ext_sources;
 mod frame_timings;
 mod frame_trace;
 mod game;
+#[cfg(test)]
+mod inline_opacity;
 mod launch;
 mod net_policy;
 // Opt-in Netrender window renderer: only the isolated manifest
