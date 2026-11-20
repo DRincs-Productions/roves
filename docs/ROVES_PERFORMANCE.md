@@ -3117,3 +3117,23 @@ Il confronto è per scena, senza join dei singoli tick. I dati spostano
 la priorità sulla fase esterna ai callback osservati. Restano necessari
 la scomposizione nativa e il controllo senza MCP con input reale.
 Risultati e script temporanei in `D:/roves-ci/raf-attribution-e88/`.
+
+### Skip e Save/Load con input nativo, senza MCP
+
+Finestra reale su GTX 1050/Vulkan, pacchetto diagnostico `c36c0c0fc7a`,
+template originale `e88e9ac29e73` e storage isolato. Da Start, Skip ha
+raggiunto il prompt del nome, accettato Peter e proseguito attraverso
+più battute. Dopo aver fermato Skip, Q.Save ha mostrato “Save successful”.
+Dalla scelta successiva L.Load e la conferma hanno ripristinato la
+battuta di Steph con “Load successful”. Nessun crash osservato, chiusura
+normale e teardown WebGPU passato.
+
+Sull'intera sessione mista (menu, Skip, salvataggio e caricamento), tick
+P99 269,6 ms e massimo 2.342 ms su 2.877 tick. Render/present P99
+225,8 ms e massimo 403,2 ms su 2.762 tentativi. La fase raster ha 86
+campioni e massimo 400,3 ms; acquisizione e upload restano sotto 1 ms
+al massimo. È un run misto, distinto dalla prima battuta dei replay
+MCP, dove render/present resta sotto 9 ms al P99. Il lag si riproduce
+anche senza MCP, e i raster lunghi ricompaiono durante cambi di stato.
+La traccia ha 16 marker nativi e nessuna sovrascrittura. Dati in
+`D:/roves-ci/native-skip-e88-20261120.*`. PresentMon non è attivo.
