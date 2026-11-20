@@ -177,6 +177,12 @@ Il profiling samply è già stato eseguito: non ripartire dall'ipotesi che manch
 
 - [ ] Ripetere il confronto visibile con Chrome su pagina production, stessa risoluzione,
   warm-up e durata; raccogliere CPU per processo, memoria privata/residente, GPU e VRAM.
+- [ ] **Probe typewriter del template tra motori (20 novembre, preparato, non eseguito).**
+  `support/perf/typewriter-probe/` (osservatore unico, harness dev-mcp, server statico per
+  Chrome MCP, confronto): visibilità calcolata per carattere, tempi/gap, completamento
+  naturale e annullamento con Enter sintetico sul template e88e9ac (copia usa e getta con
+  `template-testing-optin.mjs`); pixel solo tramite il gate inline-opacity. Da fare: prima
+  esecuzione Roves (normale e JITless) e Chrome visibile, registrando versioni e risultati.
 - [ ] Profilare script/layout sui frame lunghi del typewriter: il trace GC già eseguito
   trova una coincidenza su sette frame lunghi; aumentare l'heap iniziale non ha migliorato
   il pacing. La causa dei restanti frame resta aperta.

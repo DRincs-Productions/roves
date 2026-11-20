@@ -140,6 +140,8 @@ wait in step 3 times out instead of reporting; record that as not run, not as a 
 ## Not covered (next tranche)
 
 WebGPU canvas compositing with DOM, clip and `backdrop-filter` is the separate
-`../gpu-composite/` fixture (GPU window, native screen capture). Still not covered: full
-Markdown typewriter timing, CSS transitions driven by wall-clock time, `filter`, text rendering,
+`../gpu-composite/` fixture (GPU window, native screen capture). The real template
+typewriter (computed per-character visibility, timing, completion and cancel) is observed
+by `../typewriter-probe/`, which relies on the inline-opacity gate above for pixels. Still
+not covered: pixel timelines of the typewriter, CSS transitions driven by wall-clock time, `filter`, text rendering,
 `scroll` events, smooth scrolling and DPR other than 1.
