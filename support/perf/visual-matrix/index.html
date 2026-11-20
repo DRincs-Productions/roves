@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  Roves vs Chrome deterministic visual matrix (see README.md next to this file).
+  One self-contained file, the same bytes in both engines: the Roves probe
+  `--game <this dir>` (headless, ROVES_PROBE_SCREENSHOT) and Chrome DevTools on
+  file:///.../index.html at a 640x360 DPR 1 viewport. Inline classic script only:
+  the probe skips external classic scripts and Chrome refuses module scripts on
+  file://. Static geometry lives in the stylesheet; the script only drives
+  transform, opacity and scroll offsets as a pure function of the rAF callback
+  index (no wall clock), then reports computed state at `report_frame`.
+  The #vm-cases JSON is the single source of geometry and expectations for both
+  the page and check.py.
+-->
+<html>
+<head>
+<meta charset="utf-8">
+<title>Roves visual matrix</title>
+<style>
+  html, body { margin: 0; padding: 0; background: rgb(255, 255, 255); overflow: hidden; }
+  .box { position: absolute; width: 40px; height: 40px; margin: 0; }
+  .red { background-color: rgb(200, 30, 30); }
+  .green { background-color: rgb(30, 160, 60); }
+  .blue { background-color: rgb(0, 0, 255); }
+  .clip { position: absolute; top: 250px; width: 60px; height: 60px; overflow: hidden; margin: 0; }
+  .clip-child { position: absolute; left: -30px; top: -30px; width: 120px; height: 120px; }
+  .stripes-v { position: relative; width: 60px; height: 180px; }
+  .stripes-h { position: relative; width: 180px; height: 60px; }
+  .stripe { position: absolute; width: 60px; height: 60px; }
+  #transform-mid { left: 20px; top: 30px; transform: translateX(0px); }
+  #transform-done { left: 180px; top: 30px; transform: translateX(0px); }
+  #scale-mid { left: 360px; top: 20px; width: 60px; height: 60px; transform: scale(0.3333333333333333); }
+  #css-anim-paused-mid { left: 500px; top: 30px;
+    animation: vm-slide 1000ms linear -500ms 1 normal both paused; }
+  #fade-mid { left: 20px; top: 140px; opacity: 0; }
+  #fade-done { left: 180px; top: 140px; opacity: 0; }
+  #fade-out-done { left: 340px; top: 140px; opacity: 1; }
+  #css-anim-forwards-done { left: 500px; top: 140px; opacity: 0;
+    animation: vm-fade-in 1ms linear 0s 1 normal forwards running; }
+  #clip-overflow { left: 20px; }
+  #clip-radius { left: 180px; border-radius: 30px; }
+  #scroll-top { left: 340px; }
+  #scroll-left-mid { left: 500px; }
+  @keyframes vm-slide { from { transform: translateX(0px); } to { transform: translateX(80px); } }
+  @keyframes vm-fade-in { from { opacity: 0; } to { opacity: 1; } }
+  #vm-report { display: none; }
+</style>
+<script type="application/json" id="vm-cases">
+{
+  "fixture_version": "2026-11-20.1",
+  "viewport": [640, 360],
+  "background": [255, 255, 255],
+  "drive_frames": 20,
+  "report_frame": 30,
+  "tolerance": { "color": 6, "background": 3, "opacity": 0.001, "px": 0.5,
+                 "inset_paint": 3, "inset_blank": 2, "ring_inner": 2, "ring_outer": 6 },
+  "cases": [
+    { "id": "transform-mid", "group": "transform", "gate": true,
+      "drive": { "kind": "translateX", "from": 0, "to": 80, "stop": 0.5 },
+      "state": { "rect": [60, 30, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [60, 30, 40, 40], "color": [200, 30, 30] }],
+      "blank": [[20, 30, 40, 40]], "bounds": [60, 30, 40, 40] },
+    { "id": "transform-done", "group": "transform", "gate": true,
+      "drive": { "kind": "translateX", "from": 0, "to": 80, "stop": 1 },
+      "state": { "rect": [260, 30, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [260, 30, 40, 40], "color": [200, 30, 30] }],
+      "blank": [[180, 30, 80, 40]], "bounds": [260, 30, 40, 40] },
+    { "id": "scale-mid", "group": "transform", "gate": true,
+      "drive": { "kind": "scale", "from": 0.3333333333333333, "to": 1, "stop": 0.5 },
+      "state": { "rect": [370, 30, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [370, 30, 40, 40], "color": [200, 30, 30] }],
+      "blank": [], "bounds": [370, 30, 40, 40] },
+    { "id": "css-anim-paused-mid", "group": "css-animation", "gate": false,
+      "note": "CSS animation paused at a negative delay: time-independent midpoint (translateX 40px)",
+      "state": { "rect": [540, 30, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [540, 30, 40, 40], "color": [200, 30, 30] }],
+      "blank": [[500, 30, 40, 40]], "bounds": [540, 30, 40, 40] },
+    { "id": "fade-mid", "group": "opacity", "gate": true,
+      "drive": { "kind": "opacity", "from": 0, "to": 1, "stop": 0.5 },
+      "state": { "rect": [20, 140, 40, 40], "opacity": 0.5 },
+      "paint": [{ "rect": [20, 140, 40, 40], "color": [128, 128, 255], "tolerance": 10 }],
+      "blank": [], "bounds": [20, 140, 40, 40] },
+    { "id": "fade-done", "group": "opacity", "gate": true,
+      "drive": { "kind": "opacity", "from": 0, "to": 1, "stop": 1 },
+      "state": { "rect": [180, 140, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [180, 140, 40, 40], "color": [0, 0, 255] }],
+      "blank": [], "bounds": [180, 140, 40, 40] },
+    { "id": "fade-out-done", "group": "opacity", "gate": true,
+      "drive": { "kind": "opacity", "from": 1, "to": 0, "stop": 1 },
+      "state": { "rect": [340, 140, 40, 40], "opacity": 0 },
+      "paint": [], "blank": [[340, 140, 40, 40]], "bounds": [340, 140, 40, 40] },
+    { "id": "css-anim-forwards-done", "group": "css-animation", "gate": false,
+      "note": "1 ms CSS animation with fill forwards: completed long before report_frame",
+      "state": { "rect": [500, 140, 40, 40], "opacity": 1 },
+      "paint": [{ "rect": [500, 140, 40, 40], "color": [0, 0, 255] }],
+      "blank": [], "bounds": [500, 140, 40, 40] },
+    { "id": "clip-overflow", "group": "clip", "gate": true,
+      "state": { "rect": [20, 250, 60, 60] },
+      "paint": [{ "rect": [20, 250, 60, 60], "color": [30, 160, 60] }],
+      "blank": [], "bounds": [20, 250, 60, 60] },
+    { "id": "clip-radius", "group": "clip", "gate": false,
+      "note": "overflow hidden with border-radius 30px: corners must stay unpainted",
+      "state": { "rect": [180, 250, 60, 60] },
+      "paint": [{ "rect": [190, 260, 40, 40], "color": [30, 160, 60] }],
+      "blank": [[180, 250, 8, 8], [232, 250, 8, 8], [180, 302, 8, 8], [232, 302, 8, 8]],
+      "bounds": [180, 250, 60, 60] },
+    { "id": "scroll-top", "group": "scroll", "gate": true,
+      "drive": { "kind": "scrollTop", "from": 60, "to": 60, "stop": 1 },
+      "state": { "rect": [340, 250, 60, 60], "scrollTop": 60, "scrollHeight": 180 },
+      "paint": [{ "rect": [340, 250, 60, 60], "color": [30, 160, 60] }],
+      "blank": [], "bounds": [340, 250, 60, 60] },
+    { "id": "scroll-left-mid", "group": "scroll", "gate": true,
+      "drive": { "kind": "scrollLeft", "from": 0, "to": 60, "stop": 0.5 },
+      "state": { "rect": [500, 250, 60, 60], "scrollLeft": 30, "scrollWidth": 180 },
+      "paint": [{ "rect": [500, 250, 30, 60], "color": [200, 30, 30] },
+                { "rect": [530, 250, 30, 60], "color": [30, 160, 60] }],
+      "blank": [], "bounds": [500, 250, 60, 60] }
+  ]
+}
+</script>
+</head>
+<body><div id="vm-report"></div><div id="transform-mid" class="box red"></div><div id="transform-done" class="box red"></div><div id="scale-mid" class="box red"></div><div id="css-anim-paused-mid" class="box red"></div><div id="fade-mid" class="box blue"></div><div id="fade-done" class="box blue"></div><div id="fade-out-done" class="box blue"></div><div id="css-anim-forwards-done" class="box blue"></div><div id="clip-overflow" class="clip"><div class="clip-child green"></div></div><div id="clip-radius" class="clip"><div class="clip-child green"></div></div><div id="scroll-top" class="clip"><div class="stripes-v"><div class="stripe red" style="top: 0px"></div><div class="stripe green" style="top: 60px"></div><div class="stripe blue" style="top: 120px"></div></div></div><div id="scroll-left-mid" class="clip"><div class="stripes-h"><div class="stripe red" style="left: 0px"></div><div class="stripe green" style="left: 60px"></div><div class="stripe blue" style="left: 120px"></div></div></div>
+<script>
+  (() => {
+    "use strict";
+    const MAX_ERRORS = 5;
+    const out = {
+      schema: "roves-visual-matrix", version: 1, fixture_version: null, status: "running",
+      frames: 0, viewport: null, user_agent: String(globalThis.navigator?.userAgent ?? ""),
+      cases: {}, errors: [],
+    };
+    globalThis.__rovesVisualMatrix = out;
+    const message = (error) => String((error && (error.stack || error.message)) || error).slice(0, 400);
+    const finish = (status) => {
+      out.status = status;
+      try {
+        out.viewport = { inner_width: innerWidth, inner_height: innerHeight, device_pixel_ratio: devicePixelRatio };
+      } catch (error) {
+        out.errors.push("viewport: " + message(error));
+      }
+      console.log("ROVES_VISUAL_RESULT " + JSON.stringify(out));
+      document.getElementById("vm-report").textContent = "VISUAL_MATRIX_DONE " + status;
+    };
+    let spec;
+    let entries;
+    try {
+      spec = JSON.parse(document.getElementById("vm-cases").textContent);
+      out.fixture_version = spec.fixture_version;
+      entries = spec.cases.map((c) => {
+        const entry = { c, el: document.getElementById(c.id), errors: [] };
+        if (!entry.el) entry.errors.push("setup: missing #" + c.id);
+        out.cases[c.id] = { errors: entry.errors, state: {} };
+        return entry;
+      });
+    } catch (error) {
+      out.errors.push("setup: " + message(error));
+      finish("failed");
+      return;
+    }
+    const note = (entry, step, error) => {
+      if (entry.errors.length < MAX_ERRORS) entry.errors.push(step + ": " + message(error));
+    };
+    // Driven value at frame f (1-based): linear in f, held once `stop` is reached.
+    function apply(entry, frame) {
+      const drive = entry.c.drive;
+      if (!drive || !entry.el) return;
+      const progress = Math.min(frame / spec.drive_frames, drive.stop);
+      const value = drive.from + (drive.to - drive.from) * progress;
+      const el = entry.el;
+      switch (drive.kind) {
+        case "translateX": el.style.transform = "translateX(" + value + "px)"; break;
+        case "scale": el.style.transform = "scale(" + value + ")"; break;
+        case "opacity": el.style.opacity = String(value); break;
+        case "scrollTop": el.scrollTop = value; break;
+        case "scrollLeft": el.scrollLeft = value; break;
+        default: throw new Error("unknown drive kind " + drive.kind);
+      }
+    }
+    function read(entry) {
+      const el = entry.el;
+      const state = out.cases[entry.c.id].state;
+      if (!el) return;
+      const take = (key, fn) => {
+        try {
+          const value = fn();
+          state[key] = value === undefined ? null : value;
+        } catch (error) {
+          state[key] = null;
+          note(entry, "read " + key, error);
+        }
+      };
+      take("rect", () => {
+        const r = el.getBoundingClientRect();
+        return [r.left, r.top, r.width, r.height];
+      });
+      take("opacity", () => getComputedStyle(el).opacity);
+      take("transform", () => getComputedStyle(el).transform);
+      take("scrollTop", () => el.scrollTop);
+      take("scrollLeft", () => el.scrollLeft);
+      take("scrollWidth", () => el.scrollWidth);
+      take("scrollHeight", () => el.scrollHeight);
+    }
+    let frame = 0;
+    function tick() {
+      frame += 1;
+      out.frames = frame;
+      if (frame <= spec.drive_frames) {
+        for (const entry of entries) {
+          try {
+            apply(entry, frame);
+          } catch (error) {
+            note(entry, "frame " + frame, error);
+          }
+        }
+      }
+      if (frame >= spec.report_frame) {
+        for (const entry of entries) read(entry);
+        finish("ok");
+        return;
+      }
+      requestAnimationFrame(tick);
+    }
+    requestAnimationFrame(tick);
+  })();
+</script>
+</body>
+</html>

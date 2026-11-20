@@ -3221,3 +3221,15 @@ L'inline-block a zero passa in entrambi. L'output Chrome RGB è convertito
 in RGBA senza modificare i colori per il checker esistente. La prova
 non verifica ancora il binario con il fix. Artefatti in
 `D:/roves-ci/inline-opacity-negative/`.
+
+### Matrice visiva condivisa per DOM e CSS
+
+Chrome 157 (DevTools, viewport 640 × 360, DPR 1, ricaricata dopo
+l'emulazione) e Roves release `0cdb0da9300` (offscreen) hanno superato
+12/12 checkpoint della stessa pagina. Il checker verifica regioni di
+pixel e stato per translate/scale, animazione CSS in pausa e conclusa,
+fade, overflow, clip arrotondato e scroll verticale/orizzontale.
+Riferimento HTML SHA-256
+`0920e5e0c94e4a5112ad440f6feb2e40299cfe689b6826bcf95ac149e1cf057b`.
+Output in `D:/roves-ci/visual-matrix-first/`. Questi checkpoint
+non misurano Motion, i caratteri del template o i frame visualizzati.

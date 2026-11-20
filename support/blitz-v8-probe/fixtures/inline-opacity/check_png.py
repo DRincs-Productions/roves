@@ -3,6 +3,9 @@
 Applies to the ROVES_PROBE_SCREENSHOT capture of `--game fixtures/inline-opacity`
 the same regions and thresholds as src/inline_opacity.rs, and reads the computed
 opacities that the page wrote into the game_page report (optional log argument).
+The same check accepts a Chrome DevTools screenshot of the same file at a
+640x360 DPR 1 viewport (RGB PNG) and, as log, a file holding the #report text
+(see support/perf/visual-matrix/README.md).
 
     python -I check_png.py <screenshot.png> [<probe.log>]
 
@@ -72,10 +75,12 @@ def read_rgba(path):
         elif kind == b"IEND":
             break
     width, height, depth, color, _, _, interlace = header
-    if (width, height, depth, color, interlace) != (WIDTH, HEIGHT, 8, 6, 0):
-        raise ValueError(f"expected {WIDTH}x{HEIGHT} RGBA8 non-interlaced, got {header}")
+    # RGBA8 (probe capture) or RGB8 (Chrome DevTools screenshot), returned as RGBA.
+    if (width, height, depth, interlace) != (WIDTH, HEIGHT, 8, 0) or color not in (2, 6):
+        raise ValueError(f"expected {WIDTH}x{HEIGHT} RGB8/RGBA8 non-interlaced, got {header}")
     raw = zlib.decompress(bytes(idat))
-    stride, bpp = width * 4, 4
+    bpp = 4 if color == 6 else 3
+    stride = width * bpp
     rows, previous, position = [], bytearray(stride), 0
     for _ in range(height):
         kind, line = raw[position], bytearray(raw[position + 1 : position + 1 + stride])
@@ -97,7 +102,14 @@ def read_rgba(path):
                 line[i] = (line[i] + predictor) & 0xFF
             elif kind != 0:
                 raise ValueError(f"bad PNG filter {kind}")
-        rows.append(bytes(line))
+        if bpp == 4:
+            rows.append(bytes(line))
+        else:
+            rgba = bytearray(width * 4)
+            for x in range(width):
+                rgba[x * 4 : x * 4 + 3] = line[x * 3 : x * 3 + 3]
+                rgba[x * 4 + 3] = 255
+            rows.append(bytes(rgba))
         previous = line
     return rows
 
