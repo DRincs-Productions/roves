@@ -2819,6 +2819,23 @@ frame. In quel caso la causa è nel contenuto Pixi del template e il passo
 successivo è contare passate, draw e target per batch. Se invece la
 latenza scala con pixel e campioni, o cresce nel tempo, WARP è il limite.
 
+Limiti della matrice (19 novembre, run su `c36c0c0fc7a`): i 60 lotti fissi
+del driver finivano con lo stato `running` su `tex8_1080_s1` e l'asserzione
+di `main.rs` interrompeva casi successivi e teardown. Ora lo scenario
+dichiara `budget_ms` (125 s) e il driver lo rispetta, con 15 s di margine,
+solo per gli override; il gate WebGPU incorporato mantiene i 60 lotti e
+richiede `passed`. Ogni caso ha uno slot proprio (8 s, `growth` 24 s) e
+l'attesa di `onSubmittedWorkDone` di ciascun frame è limitata al resto dello
+slot. Dopo un timeout la coda ha un solo drenaggio limitato; se non si
+svuota, i casi restanti sono `queue_not_drained` e non vengono misurati
+dietro lavoro pendente. Esiti: `passed`, `partial` (caso fermato dal proprio
+limite, con `stopped`/`skipped` per caso), `failed` (eccezione, device perso
+o errore WebGPU non catturato, mai declassato) e `running` (scadenza del
+driver). Con esiti diversi da `passed`/`partial` il teardown limitato gira
+prima dell'asserzione. Ambito di misura invariato rispetto a Chromium
+`f2700724`: un campione è il completamento di un solo frame inviato,
+equivalente all'ACK del frame in `scheduler_state_machine.cc`.
+
 ### Contatori del lavoro di render inviato (diagnostico, opt-in, 19 novembre)
 
 Riferimento Chromium `f2700724`: `cc/scheduler/scheduler_state_machine.cc`

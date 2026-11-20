@@ -2892,6 +2892,10 @@ fn evaluate_hook(runtime: &mut JsRuntime, hook: &v8::Global<v8::Function>) -> St
 /// adapter can finish; exceeding it fails the run loudly.
 const GPU_SHUTDOWN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Extra wall time the driver grants a diagnostic WebGPU scenario override past
+/// its own declared `webgpuResult.budget_ms` (timer and frame granularity).
+const WEBGPU_SCENARIO_DEADLINE_GRACE: std::time::Duration = std::time::Duration::from_secs(15);
+
 /// Orderly WebGPU teardown before the runtime (and with it deno_webgpu's wgpu
 /// Instance, Device and Queue) is dropped: awaits the bootstrap's `shutdownGpu`
 /// (settles a pending `requestDevice`, waits for the queue to be idle through
@@ -3788,28 +3792,71 @@ fn main() {
             stage("webgpu_pixi");
             // ROVES_PROBE_WEBGPU_SCENARIO=<bundle.js> overrides the embedded bundle,
             // so the scenario can be iterated on with a downloaded executable.
-            let scenario = match std::env::var("ROVES_PROBE_WEBGPU_SCENARIO") {
-                Ok(path) => std::fs::read_to_string(&path).expect("WebGPU scenario override"),
-                Err(_) => WEBGPU_SCENARIO.to_string(),
+            let override_path = std::env::var("ROVES_PROBE_WEBGPU_SCENARIO").ok();
+            let scenario = match &override_path {
+                Some(path) => std::fs::read_to_string(path).expect("WebGPU scenario override"),
+                None => WEBGPU_SCENARIO.to_string(),
             };
             runtime
                 .execute_script("roves-blitz-webgpu-scenario.js", scenario)
                 .expect("WebGPU scenario should load");
+            // Diagnostic overrides only: a scenario may declare its own wall-clock
+            // bound (webgpuResult.budget_ms, set synchronously). The driver then
+            // runs until that bound plus a grace instead of a fixed batch count,
+            // and accepts a self-classified "partial" result. The embedded gate
+            // scenario keeps the fixed 60 batches and requires "passed".
+            let declared_budget_ms = override_path.as_ref().and_then(|_| {
+                evaluate_string(
+                    &mut runtime,
+                    "String(Number.isSafeInteger(globalThis.webgpuResult?.budget_ms) ? globalThis.webgpuResult.budget_ms : '')",
+                )
+                .parse::<u64>()
+                .ok()
+            });
+            let deadline = declared_budget_ms
+                .map(|ms| std::time::Duration::from_millis(ms) + WEBGPU_SCENARIO_DEADLINE_GRACE);
+            let started = std::time::Instant::now();
             let mut status = String::from("running");
             // A single-frame call starts at frame zero and does not wait.
             // Batch the frames so Pixi's Image load/error tasks can run.
-            for _ in 0..60 {
+            let mut batches = 0u32;
+            loop {
                 drive_frames(&mut runtime, &document, &run_animation_frame, 10).await;
+                batches += 1;
                 status = evaluate_string(&mut runtime, "webgpuResult.status");
                 if status != "running" {
                     break;
                 }
+                let exhausted = match deadline {
+                    Some(deadline) => started.elapsed() >= deadline,
+                    None => batches >= 60,
+                };
+                if exhausted {
+                    break;
+                }
             }
             let detail = evaluate_string(&mut runtime, "JSON.stringify(webgpuResult)");
+            let driver = match declared_budget_ms {
+                Some(budget_ms) => format!(
+                    ",\"driver\":{{\"budget_ms\":{budget_ms},\"grace_ms\":{},\"elapsed_ms\":{},\"deadline_hit\":{}}}",
+                    WEBGPU_SCENARIO_DEADLINE_GRACE.as_millis(),
+                    started.elapsed().as_millis(),
+                    status == "running"
+                ),
+                None => String::new(),
+            };
             println!(
-                "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"{status}\",\"detail\":{detail}}}"
+                "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"{status}\"{driver},\"detail\":{detail}}}"
             );
-            assert!(status == "passed", "WebGPU/Pixi scenario did not pass: {detail}");
+            let accepted =
+                status == "passed" || (declared_budget_ms.is_some() && status == "partial");
+            if !accepted && declared_budget_ms.is_some() {
+                // Bounded teardown first: its gpu_adapter line and queue-idle wait
+                // classify a stuck or lost device (and panic on their own) before
+                // the scenario failure below.
+                shutdown_gpu_before_drop(&mut runtime, &shutdown_gpu).await;
+            }
+            assert!(accepted, "WebGPU/Pixi scenario did not pass: {detail}");
         } else {
             println!(
                 "ROVES_PROBE_RESULT {{\"check\":\"webgpu_pixi_8_19_0\",\"status\":\"not_run\",\"reason\":\"set ROVES_PROBE_WEBGPU=1 on a machine with a GPU\"}}"

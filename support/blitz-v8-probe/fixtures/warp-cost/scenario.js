@@ -17,18 +17,49 @@
 // Loaded with ROVES_PROBE_WEBGPU=1 ROVES_PROBE_WEBGPU_SCENARIO=<this file> into
 // an already built probe (no rebuild); it reports through the same
 // `webgpuResult` slot as the embedded Pixi scenario (check webgpu_pixi_8_19_0).
-// Bounded by a wall-clock budget so a pathological adapter still reports.
+//
+// Bounds (CI c36c0c0fc7a: the driver's fixed frame batches ended while
+// tex8_1080_s1 was still waiting, so the probe asserted on "running" and the
+// last cases and teardown never reported). The scenario now declares its total
+// wall-clock budget in `budget_ms`; the probe driver honours it (plus a grace)
+// for overrides only. Every case has its own slot, and each frame's
+// onSubmittedWorkDone() is raced against what is left of that slot, so one
+// stalled WARP frame cannot consume the others. After a frame timeout the
+// queue gets one bounded drain; if it drains, the next case starts on an idle
+// queue, otherwise the remaining cases are skipped as "queue_not_drained"
+// (measuring behind pending work would be wrong). Status: "passed" = every case
+// ran its fixed frames; "partial" = some case stopped on its own bound (see
+// `stopped`/`skipped` per case); "failed" = exception, device loss or an
+// uncaptured WebGPU error, never downgraded to partial.
 (() => {
   "use strict";
-  const result = { status: "running", step: "start", detail: null, adapter: null };
+  // Upload slot + 8 cases x 8 s + growth 24 s + one drain, with margin for
+  // pipeline creation. Driver deadline = BUDGET_MS + 15 s, then teardown <= 120 s,
+  // inside the workflow's `timeout 330`.
+  const BUDGET_MS = 125_000;
+  const CASE_MS = 8_000;
+  const GROWTH_CASE_MS = 24_000;
+  const UPLOAD_MS = 15_000;
+  const DRAIN_MS = 15_000;
+  const MIN_SLOT_MS = 1_000;
+  const result = { status: "running", step: "start", detail: null, adapter: null, budget_ms: BUDGET_MS };
   globalThis.webgpuResult = result;
   const finish = (status, detail = null) => {
     result.status = status;
     result.detail = detail;
   };
-  const BUDGET_MS = 150_000;
-  const CONFIG_BUDGET_MS = 25_000;
   const startedAt = performance.now();
+  const elapsed = () => performance.now() - startedAt;
+  const TIMED_OUT = Symbol("timed_out");
+  // Resolves with the promise's value, or TIMED_OUT after `ms`. The GPU work is
+  // not cancelled: the caller must treat the queue as still busy.
+  const within = (promise, ms) => {
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(TIMED_OUT), Math.max(0, ms));
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  };
   const round = (value) => Math.round(value * 10) / 10;
   const median = (values) => {
     if (values.length === 0) return null;
@@ -69,6 +100,19 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
       result.adapter = { error: String(error) };
     }
     const device = await adapter.requestDevice();
+    // Real device errors end the run as "failed", never as a partial result.
+    let lostInfo = null;
+    device.lost?.then((info) => {
+      lostInfo = { reason: info?.reason ?? null, message: String(info?.message ?? "") };
+    });
+    const uncapturedErrors = [];
+    device.addEventListener?.("uncapturederror", (event) => {
+      if (uncapturedErrors.length < 5) uncapturedErrors.push(String(event?.error?.message ?? event?.error ?? event));
+    });
+    const assertDevice = () => {
+      if (lostInfo !== null) throw new Error(`device lost: ${JSON.stringify(lostInfo)}`);
+      if (uncapturedErrors.length > 0) throw new Error(`uncaptured WebGPU error: ${uncapturedErrors.join(" | ")}`);
+    };
     const format = navigator.gpu.getPreferredCanvasFormat();
     const canvas = document.createElement("canvas");
     document.body.appendChild(canvas);
@@ -98,8 +142,32 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
     device.queue.writeTexture({ texture: image }, pixels, { bytesPerRow: IMAGE_W * 4, rowsPerImage: IMAGE_H }, [IMAGE_W, IMAGE_H]);
     device.queue.submit([device.createCommandEncoder().finish()]);
     const uploadCpuMs = performance.now() - started;
-    await device.queue.onSubmittedWorkDone();
-    const upload = { bytes: pixels.byteLength, cpu_ms: round(uploadCpuMs), done_ms: round(performance.now() - started) };
+    // Pending GPU work after a timeout (frame or upload); later cases never
+    // measure behind it.
+    let pending = null;
+    const uploadDone = device.queue.onSubmittedWorkDone();
+    const upload = { bytes: pixels.byteLength, cpu_ms: round(uploadCpuMs), done_ms: null };
+    if (await within(uploadDone, UPLOAD_MS) === TIMED_OUT) {
+      upload.timed_out_ms = UPLOAD_MS;
+      pending = uploadDone;
+    } else {
+      upload.done_ms = round(performance.now() - started);
+    }
+    assertDevice();
+    // One bounded wait for pending work; records the outcome on `report`.
+    const drain = async (report) => {
+      const waitMs = Math.min(DRAIN_MS, BUDGET_MS - elapsed());
+      const drainStart = performance.now();
+      if (waitMs > 0 && await within(pending, waitMs) !== TIMED_OUT) {
+        report.drain_ms = round(performance.now() - drainStart);
+        pending = null;
+      } else {
+        report.drain = "not_done";
+        report.drain_wait_ms = round(Math.max(0, waitMs));
+      }
+      assertDevice();
+    };
+    if (pending) await drain(upload);
 
     result.step = "pipelines";
     const module = device.createShaderModule({ code: SHADER });
@@ -154,17 +222,22 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
       { name: "tex2_1080_s1_pixi2submits", width: 1920, height: 1080, samples: 1, draws: 2, uniformSubmit: true, frames: 8 },
       { name: "tex8_1080_s1", width: 1920, height: 1080, samples: 1, draws: 8, uniformSubmit: false, frames: 8 },
       // Constant workload over time: does the per-frame latency grow?
-      { name: "growth_tex2_1080_s1", width: 1920, height: 1080, samples: 1, draws: 2, uniformSubmit: true, frames: 40 },
+      { name: "growth_tex2_1080_s1", width: 1920, height: 1080, samples: 1, draws: 2, uniformSubmit: true, frames: 40, slotMs: GROWTH_CASE_MS },
     ];
     const WARMUP = 2;
     const reports = [];
-    // Published live: if the embedder's tick budget ends first, the result
-    // line (status "running") still carries the configurations measured.
+    // Published live: if the embedder's deadline ends first, the result line
+    // (status "running") still carries the configurations measured.
     result.configs = reports;
     result.upload = upload;
     let budgetExhausted = false;
     for (const config of CONFIGS) {
-      if (performance.now() - startedAt > BUDGET_MS) {
+      if (pending) {
+        reports.push({ name: config.name, skipped: "queue_not_drained" });
+        continue;
+      }
+      const slotMs = Math.min(config.slotMs ?? CASE_MS, BUDGET_MS - elapsed());
+      if (slotMs < MIN_SLOT_MS) {
         budgetExhausted = true;
         reports.push({ name: config.name, skipped: "budget" });
         continue;
@@ -176,11 +249,17 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
         ? device.createTexture({ size: [config.width, config.height], format, sampleCount: config.samples, usage: GPUTextureUsage.RENDER_ATTACHMENT })
         : null;
       const latencies = [];
+      const warmupLatencies = [];
       const cpu = [];
       const configStart = performance.now();
-      let frames = 0;
+      let stopped = "complete";
+      let timedOutFrame = null;
       for (let frame = 0; frame < WARMUP + config.frames; frame++) {
-        if (performance.now() - configStart > CONFIG_BUDGET_MS) break;
+        assertDevice();
+        if (performance.now() - configStart >= slotMs) {
+          stopped = "slot";
+          break;
+        }
         const frameStart = performance.now();
         if (config.uniformSubmit) {
           device.queue.writeBuffer(uniformSource, 0, new Float32Array([frame, 1, 2, 3]));
@@ -209,14 +288,16 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
         }
         device.queue.submit([encoder.finish()]);
         const submitted = performance.now();
-        await device.queue.onSubmittedWorkDone();
-        if (frame >= WARMUP) {
-          cpu.push(submitted - frameStart);
-          latencies.push(performance.now() - frameStart);
+        const done = device.queue.onSubmittedWorkDone();
+        if (await within(done, slotMs - (submitted - configStart)) === TIMED_OUT) {
+          stopped = "frame_timeout";
+          timedOutFrame = frame;
+          pending = done;
+          break;
         }
-        frames++;
+        (frame >= WARMUP ? latencies : warmupLatencies).push(performance.now() - frameStart);
+        if (frame >= WARMUP) cpu.push(submitted - frameStart);
       }
-      msaa?.destroy();
       const report = {
         name: config.name,
         width: config.width,
@@ -225,23 +306,40 @@ struct Out { @builtin(position) position: vec4f, @location(0) uv: vec2f };
         draws: config.draws,
         submits_per_frame: config.uniformSubmit ? 2 : 1,
         frames: latencies.length,
+        frames_planned: config.frames,
+        stopped,
+        slot_ms: round(slotMs),
+        warmup_ms: warmupLatencies.map(round),
         median_ms: median(latencies),
         max_ms: latencies.length ? round(Math.max(...latencies)) : null,
         cpu_median_ms: median(cpu),
         config_ms: round(performance.now() - configStart),
       };
+      if (timedOutFrame !== null) report.timed_out_frame = timedOutFrame;
       if (latencies.length >= 20) {
         report.first10_median_ms = median(latencies.slice(0, 10));
         report.last10_median_ms = median(latencies.slice(-10));
       }
       reports.push(report);
+      result.step = `${config.name}:drain`;
+      if (pending) await drain(report);
+      // Destroyed only once its last frame completed (or is known still busy).
+      msaa?.destroy();
+      assertDevice();
     }
-    finish("passed", {
+    const incomplete = reports
+      .filter((report) => report.skipped || report.stopped !== "complete")
+      .map((report) => report.name);
+    if (upload.timed_out_ms) incomplete.unshift("upload");
+    finish(incomplete.length === 0 ? "passed" : "partial", {
       format,
       upload,
       warmup_frames: WARMUP,
+      budget_ms: BUDGET_MS,
       budget_exhausted: budgetExhausted,
-      total_ms: round(performance.now() - startedAt),
+      incomplete,
+      queue_pending_at_end: pending !== null,
+      total_ms: round(elapsed()),
       configs: reports,
     });
   })().catch((error) => finish("failed", { step: result.step, error: String(error?.stack ?? error) }));

@@ -289,6 +289,13 @@ jobs:
       # workload over 40 frames. Loaded into the already built probe through
       # ROVES_PROBE_WEBGPU_SCENARIO (reported in the webgpu_pixi_8_19_0 slot).
       # continue-on-error, separate storage, never touches the game runs.
+      # Bounded per case (run on c36c0c0fc7a asserted on "running" at
+      # tex8_1080_s1 when the fixed driver batches ran out): the scenario
+      # declares budget_ms (125 s); the probe honours it plus 15 s for overrides
+      # only, then tears down (<= 120 s) inside `timeout 330`. Result classes:
+      # passed, partial (a case hit its own slot/frame bound; per-case
+      # stopped/skipped), failed (exception, device loss, uncaptured error) and
+      # running (driver deadline). Only passed/partial exit 0.
       - name: WARP frame cost matrix (diagnostic, JITless)
         if: ${{ !cancelled() && matrix.mode == 'jitless' }}
         continue-on-error: true
@@ -312,9 +319,22 @@ jobs:
             echo "::notice::WARP cost matrix exit=$status: no result line (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2); $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-300))"
             exit 0
           fi
-          echo "::notice::WARP cost matrix exit=$status $(printf '%s' "$line" | cut -c1-3500)"
+          [ "$status" -eq 124 ] && echo "::notice::WARP cost matrix: killed by timeout 330 s"
+          result=$(printf '%s' "$line" | grep -oE '"status":"[a-z_]+"' | head -n 1 | cut -d'"' -f4)
+          case "$result" in
+            passed) class="complete: every case ran its fixed frames" ;;
+            partial) class="partial: a case stopped on its own slot/frame bound or was skipped (see stopped/skipped/drain per case); not a device error by itself" ;;
+            running) class="incomplete: scenario exceeded its declared budget (driver deadline_hit)" ;;
+            failed) class="FAILED: exception, device loss or uncaptured WebGPU error" ;;
+            *) class="unclassified" ;;
+          esac
+          echo "::notice::WARP cost matrix exit=$status result=${result:-none} ($class)"
+          echo "::notice::WARP cost matrix detail $(printf '%s' "$line" | cut -c1-3500)"
           gpu=$(grep -F '"check":"gpu_adapter"' "$log" | head -n 1 | grep -oE '"(backend|device_type|name)":"[^"]*"' | paste -sd ' ' -)
           echo "::notice::WARP cost matrix adapter: ${gpu:-no gpu_adapter line}"
+          teardown=$(grep -F '"check":"gpu_teardown","status":"passed"' "$log" | head -n 1 | grep -oE '"(elapsed_ms|poll_status|queue_idle_wait_ms)":("[^"]*"|[0-9a-z]+)' | paste -sd ' ' -)
+          [ -n "$teardown" ] || teardown="NOT PASSED: $(grep -m 1 -E 'panicked|did not become idle' "$log" | cut -c1-300)"
+          echo "::notice::WARP cost matrix teardown: $teardown"
       # Diagnostic only (run 42684745291: normal mode reached the template menu,
       # then the teardown device_poll Wait timed out after 120 s; JITless passed).
       # Re-runs the same unmodified template once per forced wgpu backend
