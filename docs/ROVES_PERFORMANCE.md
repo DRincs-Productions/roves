@@ -3244,3 +3244,19 @@ canvas oltre il contenitore con `overflow: hidden`. Chrome passa 7/7.
 Il checker usa screenshot PNG senza perdita, rettangoli calcolati e
 regioni di pixel, con le due divergenze classificate esplicitamente.
 Roves è stato chiuso dopo la cattura. Dati `D:/roves-ci/gpu-composite-first/`.
+
+### Rivelazione MarkdownTypewriter sul template e88e9ac
+
+Sulla stessa build temporanea del template con Game.testing, Chrome 157
+e Roves `c36c0c0fc7a` hanno entrambi montato i 34 caratteri non bianchi
+della prima battuta nel ramo animato. Chrome ne ha mostrati 34/34 prima
+del passaggio alla versione statica (443 ms); Roves ne ha osservati
+30/34 prima del passaggio a statico (1.040 ms), con pausa massima fra
+callback di circa 250 ms contro 20 ms in Chrome. Sulla seconda battuta
+la stessa richiesta di completamento ha funzionato in entrambi:
+armata a 8 caratteri, è scattata al primo campione utile con 26
+caratteri in Roves e 10 in Chrome. Non è una misura assoluta di
+fluidità: la sonda legge opacità calcolate e ha occupato fino a
+157 ms per campione su Roves e 21 ms su Chrome. La prova PNG
+dell'opacità inline conferma separatamente il difetto dei pixel sul
+binario Roves precedente al fix. Dati: `D:/roves-ci/typewriter-probe-cross/`.
