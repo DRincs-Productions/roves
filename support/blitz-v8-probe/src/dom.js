@@ -119,6 +119,15 @@
   const HTML_NAMESPACE = "http://www.w3.org/1999/xhtml";
   const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
   const { DOMException } = core.loadExtScript("ext:deno_web/01_dom_exception.js");
+  // deno_webgpu reports OperationError with the op error class
+  // "DOMExceptionOperationError" (failed requestDevice, mapAsync access errors,
+  // popErrorScope on an empty stack). Deno's own runtime bootstrap registers
+  // that builder; without it deno_core falls back to a TypeError. Only this one
+  // builder is registered, over deno_web's DOMException (standard name/message).
+  core.registerErrorBuilder(
+    "DOMExceptionOperationError",
+    (message) => new DOMException(message, "OperationError"),
+  );
   const { URL, URLSearchParams } = core.loadExtScript("ext:deno_web/00_url.js");
   // URL.createObjectURL/revokeObjectURL come from deno_web's blob URL script
   // (PixiJS starts its workers from blob: URLs).

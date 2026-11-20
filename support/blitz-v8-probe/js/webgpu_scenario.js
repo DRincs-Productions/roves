@@ -54,6 +54,30 @@ import { Application, Assets, Graphics, Sprite } from "pixi.js";
       result.adapter = { error: String(error) };
     }
 
+    // OperationError mapping: a real deno_webgpu op (popErrorScope on the
+    // shared device's still-empty error scope stack, before Pixi exists)
+    // rejects with the "DOMExceptionOperationError" op error class, which must
+    // reach the page as deno_web's DOMException named OperationError (not the
+    // TypeError deno_core falls back to for an unregistered class).
+    result.step = "operation_error";
+    const sharedDevice = await adapter.requestDevice();
+    let popError = null;
+    try {
+      await sharedDevice.popErrorScope();
+    } catch (error) {
+      popError = error;
+    }
+    result.operationError = {
+      domException: popError instanceof DOMException,
+      name: popError?.name ?? null,
+      code: popError?.code ?? null,
+      message: popError?.message ?? null,
+    };
+    if (!(popError instanceof DOMException) || popError.name !== "OperationError" || popError.code !== 0
+      || typeof popError.message !== "string" || popError.message === "") {
+      return finish("failed", { operationError: result.operationError });
+    }
+
     const canvas = document.createElement("canvas");
     canvas.width = 256;
     canvas.height = 256;

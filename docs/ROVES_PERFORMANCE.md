@@ -3079,3 +3079,16 @@ Pixi in finestra fallisce nel percorso CPU; il pass di Skip senza invii
 GPU non prova il backend. Log in `D:/roves-ci/windows-lavapipe-adapter-fixture/`.
 La prova non distingue un difetto del driver, di wgpu o del ponte Deno.
 Distribuzione e procedura: [mesa-dist-win 26.3.0](https://github.com/pal1000/mesa-dist-win/releases/tag/26.3.0).
+
+### WebGPU OperationError e lavapipe su Windows
+
+La fixture Vulkan nativa crea un device con una coda grafica, mentre
+`deno_webgpu` con il descrittore WebGPU standard fallisce. Il ponte Blitz
+non registrava `DOMExceptionOperationError`, la classe con cui
+`deno_webgpu` segnala un errore restituito da wgpu in `requestDevice`.
+La correzione riusa `DOMException` di deno_web. La fixture WebGPU verifica
+la classe anche con `popErrorScope` sullo stack vuoto, un'operazione
+riproducibile senza dipendere dai limiti dell'adattatore.
+Chromium `f2700724`, `gpu_adapter.cc` e `gpu_device.cc`, usa
+`RejectWithDOMException(kOperationError, message)` nei due percorsi.
+Restano da verificare il gate binario e il messaggio wgpu su lavapipe.
