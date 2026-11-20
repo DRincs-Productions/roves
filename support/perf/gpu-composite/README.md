@@ -46,7 +46,7 @@ change; Python standard library only.
 | `dom-foreground-alpha` | yes | 50% white box over blue | ~(128,128,255), blue ring | match |
 | `backdrop-tint` | yes | `#glass`: `rgba(255,255,255,.25)` + `backdrop-filter: blur(8px)` across the red/blue edge (x 220) | tints (255,64,64) / (64,64,255) >= 26 px from every edge; canvas unchanged just outside | match (tint painted, no blur needed there) |
 | `backdrop-blur-edge` | no, `known_no_blur` | columns x 218 and 221 (1.5 px from the edge) under `#glass` | red/blue mix (~174/145 for sigma 8) | sharp tints: `known_no_blur` |
-| `canvas-clip` | no, `known_no_canvas_clip` | 200x160 canvas in a 120x80 `overflow: hidden` box, black DOM child over it | cyan only inside the box, white strips outside, black box above | cyan in the strips: `known_no_canvas_clip` |
+| `canvas-clip` | no, `known_no_canvas_clip` | 200x160 canvas in a 120x80 `overflow: hidden` box, black DOM child over it | cyan only inside the box, white strips outside, black box above | before 2026-11-20 cyan in the strips: `known_no_canvas_clip`; with the rectangular scissor expected `match`, not yet verified on a GPU |
 
 Classification: `match`, the declared `known_*` label (only when every `paint` region is
 right, the `expect` regions are wrong and the declared `alternative` regions are right),
@@ -64,9 +64,18 @@ Why these divergences are expected in Roves (not hidden, not gated):
   backdrop under `#glass` is a separate GPU canvas quad (`presentation.rs` `split_scene`),
   not part of the raster segment that the CPU filter would read. The element's own
   background is still painted, which `backdrop-tint` gates.
-- No canvas clip: `split_scene` records `clipped` for a canvas under an open clip layer but
-  the compositor draws the full quad (README "GPU window presentation": the canvas quad
-  ignores clip layers). The netrender renderer falls back for clipped canvases.
+- No canvas clip (expected to disappear, not yet verified): since 2026-11-20 `split_scene`
+  intersects the open explicit clip layers that are exact axis-aligned rectangles into
+  `CanvasDraw::clip` and the compositor applies it as the render pass scissor of the canvas
+  draw (wgpu-core 29.0.4 `render_pass_set_scissor_rect`), so `#clipbox` (sharp
+  `overflow: hidden`, integer coordinates) should clip `#gpu-b` exactly and classify
+  `canvas-clip` as `match`. The checker already accepts `match` for this non-gated case and
+  warns "known divergence no longer observed". **After one positive real-GPU run** of the
+  recipe below (Roves `match`, Chrome `match`, rects equal), set `canvas-clip` to
+  `"gate": true`, drop `known`/`expect`/`alternative`, bump `fixture_version` and update
+  this table; until then keep `known_no_canvas_clip` accepted. Rounded, rotated or path
+  clips and opacity-layer clips are still not applied (probe README). The netrender
+  renderer still falls back for clipped canvases (unchanged classification).
 
 ## Capture: no deterministic readback in the GPU window path
 
@@ -161,10 +170,23 @@ GPU, backend (`chrome://gpu`) and whether the page was visible.
 - `cc/trees/clip_node.h`: overflow clips are clip-tree rects applied to every layer in the
   subtree, canvas layers included (see the visual matrix README); `canvas-clip` checks the
   observable effect.
+- `components/viz/common/quads/shared_quad_state.h` (L71-72): each quad's clip is an
+  optional integer `gfx::Rect clip_rect` in target space, separate from the quad rect;
+  rounded corners travel separately in `mask_filter_info` (L67-70, applied by
+  `skia_renderer.cc` as an antialiased `SkRRect` clip, ~L1737-1753).
+  `components/viz/service/display/direct_renderer.cc` `SetScissorStateForQuad`
+  (~L532-547) intersects the render pass scissor with `clip_rect` and sets it as the
+  scissor test for that quad, or disables the scissor when there is no clip; quads stay
+  untouched. Roves follows the same split: the exact rectangular part becomes a per-draw
+  wgpu scissor (integer, intersected with the viewport, reset for every layer), the quad
+  and UVs are unchanged. Differences: Roves has no rounded/mask stage (rounded clips are
+  ignored for canvases, not approximated), rounds a fractional clip outwards because
+  scissors are integer, and does not apply the clip of opacity layers.
 - Roves differences: Chrome composites the canvas as a texture layer in viz with clips and
   filters on its property trees; the probe composites Vello CPU raster segments and
-  canvas quads with one textured-quad pipeline (premultiplied source-over) and no clip or
-  filter stage. The fixture compares the observable result only.
+  canvas quads with one textured-quad pipeline (premultiplied source-over), a
+  rectangular-scissor-only clip stage and no filter stage. The fixture compares the
+  observable result only.
 
 ## Not covered
 

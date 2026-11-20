@@ -115,7 +115,7 @@ use netrender::{
 use peniko::{Compose, Mix};
 use roves_netrender_shared_device_proof::{CanvasDesc, adopt_device, adopt_texture};
 
-use crate::presentation::{GpuWindowRenderer, PresentStats, SharedPresentation};
+use crate::presentation::{GpuWindowRenderer, PresentStats, SharedPresentation, axis_aligned_rect};
 
 // ---------------------------------------------------------------------------
 // Embedder-owned ids (scoped reads of the page's objects)
@@ -433,80 +433,6 @@ struct OpenLayer {
     clip: Rect,
     alpha: f32,
     draws: usize,
-}
-
-/// Device-space rectangle of `shape` under `transform`, if both are
-/// axis-aligned (scale/translate only, a single straight-line subpath).
-///
-/// Accepted encodings (all from blitz-paint/kurbo, closed implicitly by the
-/// fill or explicitly by `ClosePath`): kurbo's `Rect` path
-/// (`MoveTo` + 3 `LineTo` + `ClosePath`), blitz-paint's sharp CSS box path
-/// (`MoveTo` + 3 `LineTo`, no `ClosePath`) and an explicit return to the start.
-/// Consecutive repeated points are dropped first: they add no area.
-///
-/// - Non-degenerate bounds: exactly four distinct corners of the bounds joined
-///   by axis-aligned edges, i.e. the rectangle itself.
-/// - Zero-width or zero-height bounds (e.g. the zero-height `html` box of a
-///   page whose children are all absolutely positioned): every point lies on
-///   one line segment, so the polygon has no area. It paints nothing as a fill
-///   and clips everything as a clip, exactly as the empty rectangle returned.
-///
-/// Curves, several subpaths and any other polygon (rotated, L-shaped,
-/// self-overlapping) are rejected.
-fn axis_aligned_rect(transform: Affine, shape: &kurbo::BezPath) -> Option<Rect> {
-    let [a, b, c, d, _, _] = transform.as_coeffs();
-    if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
-        return None;
-    }
-    let mut points: Vec<Point> = Vec::with_capacity(5);
-    let elements = shape.elements();
-    for (index, element) in elements.iter().enumerate() {
-        let point = match *element {
-            PathEl::MoveTo(point) if index == 0 => point,
-            PathEl::LineTo(point) if index > 0 => point,
-            // Only as the last element: a second subpath may follow otherwise.
-            PathEl::ClosePath if index > 0 && index + 1 == elements.len() => continue,
-            _ => return None,
-        };
-        if points.last() != Some(&point) {
-            points.push(point);
-        }
-    }
-    // The implicit or explicit closing edge back to the start.
-    while points.len() > 1 && points.last() == points.first() {
-        points.pop();
-    }
-    if points.is_empty() || points.iter().any(|point| !point.is_finite()) {
-        return None;
-    }
-    let bounds = shape.bounding_box();
-    let degenerate = bounds.width() == 0.0 || bounds.height() == 0.0;
-    if !degenerate {
-        if points.len() != 4 {
-            return None;
-        }
-        for index in 0..4 {
-            let (p, q) = (points[index], points[(index + 1) % 4]);
-            // Exactly one coordinate changes along each edge.
-            if (p.x != q.x) == (p.y != q.y) {
-                return None;
-            }
-        }
-        let corners = [
-            Point::new(bounds.x0, bounds.y0),
-            Point::new(bounds.x1, bounds.y0),
-            Point::new(bounds.x0, bounds.y1),
-            Point::new(bounds.x1, bounds.y1),
-        ];
-        // Four distinct corners: a repeated one (e.g. TL, TR, BR, TR) would
-        // pass the edge test with no area.
-        if !corners.iter().all(|corner| points.contains(corner)) {
-            return None;
-        }
-    }
-    let p0 = transform * Point::new(bounds.x0, bounds.y0);
-    let p1 = transform * Point::new(bounds.x1, bounds.y1);
-    Some(Rect::new(p0.x, p0.y, p1.x, p1.y))
 }
 
 fn rect_array(rect: Rect) -> [f32; 4] {

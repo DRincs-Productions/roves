@@ -1,3 +1,26 @@
+## 2026-11-20 - Blitz probe: rectangular canvas clip in the GPU window compositor
+
+Changed: `support/blitz-v8-probe/src/{presentation.rs,netrender_window.rs,README.md}`,
+`support/perf/gpu-composite/README.md`, `.github/workflows/blitz-probe.yml`, `TODO.md`. Probe
+only; the production engine and dependencies are unchanged. The WebGPU canvas quad ignored
+every clip layer, so a canvas inside a sharp `overflow: hidden` box was drawn whole
+(`support/perf/gpu-composite` `canvas-clip`, `known_no_canvas_clip`). `split_scene` now
+intersects the open explicit `PushClipLayer` clips (anyrender 0.14 `ClipCommand`) that are
+exact axis-aligned rectangles into `CanvasDraw::clip`, using `axis_aligned_rect`, moved from
+`netrender_window.rs` into `presentation.rs` and shared by both. `GpuCompositor::compose`
+sets a wgpu-core render pass scissor (`render_pass_set_scissor_rect`, wgpu-core 29.0.4) for
+every layer: the full target for raster segments and unclipped canvases, the clip
+intersected with the viewport and rounded outwards for a clipped canvas; a draw whose clip
+leaves nothing visible is skipped. Quad, UVs, framebuffer coordinates, alpha and segment
+order are unchanged. Not applied, unchanged from before: rounded/rotated/path clips
+(`CanvasDraw::inexact_clip`), the clip of opacity/filter/blend `PushLayer`s, antialiased
+fractional clip edges. Netrender keeps its `clipped canvas` fallback. Chromium f2700724
+comparison (`SharedQuadState::clip_rect`, `DirectRenderer::SetScissorStateForQuad`) in the
+fixture README. New focused tests `presentation::tests::canvas_clip_*` join the
+`blitz-probe.yml` test gate and `presentation_scene_split` now requires the exact clip.
+`canvas-clip` stays non-gated (known negative still accepted) until a positive real-GPU run.
+Not compiled or run locally: CI decides.
+
 ## 2026-11-20 - Blitz probe: opacity 0 inlines culled (vendored blitz-paint 0002)
 
 Changed: `support/blitz-v8-probe/vendor/blitz-paint/src/{text.rs,render.rs,ROVES_PATCHES.md}`,

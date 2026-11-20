@@ -24,8 +24,12 @@
 //!   `blitz-shell`: a wgpu-core surface on the window from deno_webgpu's
 //!   Instance, configured for the shared device.
 //!
-//! Limits (documented in the README): the canvas quad ignores clip layers
-//! (overflow, clip-path, border radius) but honours the 2D transform and the
+//! Limits (documented in the README): the canvas quad honours explicit
+//! `PushClipLayer` clips that are exact axis-aligned rectangles (sharp
+//! `overflow` boxes, CSS `clip`), intersected and applied as a render pass
+//! scissor; it ignores rounded, rotated or path clips (`border-radius`,
+//! `clip-path`) and the clip of opacity/filter/blend layers, as before. It
+//! honours the 2D transform and the
 //! product of open group opacities; a group with opacity or a blend mode that
 //! spans a canvas is applied separately to each side of the cut; a raster
 //! segment is either reused unchanged (`RasterCache`) or re-rasterized and
@@ -422,8 +426,150 @@ pub struct CanvasDraw {
     pub quad: [Point; 4],
     /// Product of the opacities of the layers open around the placeholder.
     pub alpha: f32,
-    /// A clip or layer was open around it (ignored by the compositor).
+    /// A clip or layer was open around it.
     pub clipped: bool,
+    /// Device-space intersection of the open explicit `PushClipLayer` clips
+    /// that are exact axis-aligned rectangles (`axis_aligned_rect`); `None`
+    /// when no such clip is open. Applied by the compositor as a render pass
+    /// scissor (`scissor_rect`). Clips of `PushLayer` (opacity, filter, blend)
+    /// and non-rectangular, rotated or skewed `PushClipLayer` clips are not
+    /// part of it and stay ignored, as before (`inexact_clip`).
+    pub clip: Option<Rect>,
+    /// At least one open `PushClipLayer` clip is not an exact axis-aligned
+    /// rectangle (rounded corners, `clip-path`, rotation): it is not applied.
+    pub inexact_clip: bool,
+}
+
+/// Device-space rectangle of `shape` under `transform`, if both are
+/// axis-aligned (scale/translate only, a single straight-line subpath).
+/// Shared by the GPU compositor's canvas scissor (`split_scene`) and the
+/// opt-in Netrender translation.
+///
+/// Accepted encodings (all from blitz-paint/kurbo, closed implicitly by the
+/// fill or explicitly by `ClosePath`): kurbo's `Rect` path
+/// (`MoveTo` + 3 `LineTo` + `ClosePath`), blitz-paint's sharp CSS box path
+/// (`MoveTo` + 3 `LineTo`, no `ClosePath`) and an explicit return to the start.
+/// Consecutive repeated points are dropped first: they add no area.
+///
+/// - Non-degenerate bounds: exactly four distinct corners of the bounds joined
+///   by axis-aligned edges, i.e. the rectangle itself.
+/// - Zero-width or zero-height bounds (e.g. the zero-height `html` box of a
+///   page whose children are all absolutely positioned): every point lies on
+///   one line segment, so the polygon has no area. It paints nothing as a fill
+///   and clips everything as a clip, exactly as the empty rectangle returned.
+///
+/// Curves, several subpaths and any other polygon (rotated, L-shaped,
+/// self-overlapping) are rejected.
+pub(crate) fn axis_aligned_rect(transform: Affine, shape: &kurbo::BezPath) -> Option<Rect> {
+    use kurbo::PathEl;
+    let [a, b, c, d, _, _] = transform.as_coeffs();
+    if b != 0.0 || c != 0.0 || a <= 0.0 || d <= 0.0 {
+        return None;
+    }
+    let mut points: Vec<Point> = Vec::with_capacity(5);
+    let elements = shape.elements();
+    for (index, element) in elements.iter().enumerate() {
+        let point = match *element {
+            PathEl::MoveTo(point) if index == 0 => point,
+            PathEl::LineTo(point) if index > 0 => point,
+            // Only as the last element: a second subpath may follow otherwise.
+            PathEl::ClosePath if index > 0 && index + 1 == elements.len() => continue,
+            _ => return None,
+        };
+        if points.last() != Some(&point) {
+            points.push(point);
+        }
+    }
+    // The implicit or explicit closing edge back to the start.
+    while points.len() > 1 && points.last() == points.first() {
+        points.pop();
+    }
+    if points.is_empty() || points.iter().any(|point| !point.is_finite()) {
+        return None;
+    }
+    let bounds = shape.bounding_box();
+    let degenerate = bounds.width() == 0.0 || bounds.height() == 0.0;
+    if !degenerate {
+        if points.len() != 4 {
+            return None;
+        }
+        for index in 0..4 {
+            let (p, q) = (points[index], points[(index + 1) % 4]);
+            // Exactly one coordinate changes along each edge.
+            if (p.x != q.x) == (p.y != q.y) {
+                return None;
+            }
+        }
+        let corners = [
+            Point::new(bounds.x0, bounds.y0),
+            Point::new(bounds.x1, bounds.y0),
+            Point::new(bounds.x0, bounds.y1),
+            Point::new(bounds.x1, bounds.y1),
+        ];
+        // Four distinct corners: a repeated one (e.g. TL, TR, BR, TR) would
+        // pass the edge test with no area.
+        if !corners.iter().all(|corner| points.contains(corner)) {
+            return None;
+        }
+    }
+    let p0 = transform * Point::new(bounds.x0, bounds.y0);
+    let p1 = transform * Point::new(bounds.x1, bounds.y1);
+    Some(Rect::new(p0.x, p0.y, p1.x, p1.y))
+}
+
+/// The exact clip of the open layers for a canvas draw: the intersection of
+/// every explicit `PushClipLayer` whose clip is an exact axis-aligned
+/// rectangle with finite device coordinates, and whether any other
+/// `PushClipLayer` was skipped. `PushLayer` clips are never included.
+fn open_clip(open: &[RenderCommand]) -> (Option<Rect>, bool) {
+    let mut clip: Option<Rect> = None;
+    let mut inexact = false;
+    for layer in open {
+        let RenderCommand::PushClipLayer(layer) = layer else {
+            continue;
+        };
+        match axis_aligned_rect(layer.transform, &layer.clip).filter(Rect::is_finite) {
+            Some(rect) => {
+                // Nested clips intersect; disjoint ones give an empty rect.
+                let next = clip.map_or(rect, |clip| clip.intersect(rect));
+                clip = Some(next);
+            },
+            None => inexact = true,
+        }
+    }
+    (clip, inexact)
+}
+
+/// The render pass scissor `(x, y, width, height)` for a canvas `clip` in a
+/// `width`x`height` target, or `None` when nothing of the canvas can be
+/// visible (empty clip, or clip outside the target). Without a clip the
+/// scissor is the full target.
+///
+/// The clip is intersected with the target and rounded outwards to whole
+/// pixels: an integer-aligned clip (the usual case for `overflow` boxes at
+/// integer device coordinates) is exact; for a fractional edge only pixels
+/// with no coverage at all are removed and the partially covered edge pixel
+/// keeps drawing the full canvas sample, as before this clip existed
+/// (no antialiased edge, no approximation inwards).
+pub(crate) fn scissor_rect(clip: Option<Rect>, width: u32, height: u32) -> Option<[u32; 4]> {
+    if width == 0 || height == 0 {
+        return None;
+    }
+    let Some(clip) = clip else {
+        return Some([0, 0, width, height]);
+    };
+    let target = Rect::new(0.0, 0.0, f64::from(width), f64::from(height));
+    // `Rect::intersect` keeps x0 <= x1 only for overlapping rects: check the
+    // area explicitly (also covers zero-area and disjoint clips).
+    let clip = clip.abs().intersect(target);
+    if !(clip.x1 > clip.x0 && clip.y1 > clip.y0) {
+        return None;
+    }
+    let x0 = clip.x0.floor().max(0.0) as u32;
+    let y0 = clip.y0.floor().max(0.0) as u32;
+    let x1 = (clip.x1.ceil() as u32).min(width);
+    let y1 = (clip.y1.ceil() as u32).min(height);
+    (x1 > x0 && y1 > y0).then(|| [x0, y0, x1 - x0, y1 - y0])
 }
 
 #[derive(Debug)]
@@ -481,6 +627,7 @@ pub fn split_scene(scene: Scene, is_canvas: impl Fn(ResourceId) -> bool) -> Vec<
                 let Paint::Resource(brush) = &fill.brush else {
                     unreachable!()
                 };
+                let (clip, inexact_clip) = open_clip(&open);
                 let draw = CanvasDraw {
                     resource: brush.image,
                     quad: canvas_quad(fill),
@@ -492,6 +639,8 @@ pub fn split_scene(scene: Scene, is_canvas: impl Fn(ResourceId) -> bool) -> Vec<
                         })
                         .product(),
                     clipped: !open.is_empty(),
+                    clip,
+                    inexact_clip,
                 };
                 flush(
                     std::mem::replace(&mut current, open.clone()),
@@ -580,16 +729,25 @@ pub fn self_check() {
             draw.quad[3].y,
         ]
     });
+    // `#stage` (overflow: hidden, sharp corners) is the canvas's exact clip.
+    let clip = canvas_draw
+        .as_ref()
+        .and_then(|draw| draw.clip)
+        .map(|clip| [clip.x0, clip.y0, clip.x1, clip.y1]);
+    let inexact_clip = canvas_draw.as_ref().is_some_and(|draw| draw.inexact_clip);
     let passed = shape == ["raster", "canvas", "raster"]
         && canvas_draw
             .as_ref()
             .is_some_and(|draw| draw.resource == resource)
         && quad == Some([10.0, 20.0, 130.0, 80.0])
+        && clip == Some([0.0, 0.0, 200.0, 100.0])
+        && !inexact_clip
         && overlay_after_canvas
         && balanced;
     let quad_json = quad.map_or_else(|| "null".to_string(), |quad| format!("{quad:?}"));
+    let clip_json = clip.map_or_else(|| "null".to_string(), |clip| format!("{clip:?}"));
     println!(
-        "ROVES_PROBE_RESULT {{\"check\":\"presentation_scene_split\",\"status\":\"{}\",\"segments\":{shape:?},\"canvas_quad\":{quad_json},\"overlay_after_canvas\":{overlay_after_canvas},\"balanced\":{balanced},\"clipped\":{}}}",
+        "ROVES_PROBE_RESULT {{\"check\":\"presentation_scene_split\",\"status\":\"{}\",\"segments\":{shape:?},\"canvas_quad\":{quad_json},\"overlay_after_canvas\":{overlay_after_canvas},\"balanced\":{balanced},\"clipped\":{},\"canvas_clip\":{clip_json},\"inexact_clip\":{inexact_clip}}}",
         if passed { "passed" } else { "failed" },
         canvas_draw.as_ref().is_some_and(|draw| draw.clipped),
     );
@@ -643,6 +801,10 @@ struct GpuLayer {
     quad: [Point; 4],
     alpha: f32,
     opaque: bool,
+    /// Render pass scissor `(x, y, width, height)` in target pixels, set
+    /// before each draw (full target for raster segments and unclipped
+    /// canvases), so a clip never leaks into the next layer.
+    scissor: [u32; 4],
 }
 
 /// Counters for the `gpu_window_presentation` result line.
@@ -741,7 +903,8 @@ fn segment_layout(segments: &[Segment]) -> Vec<Option<CanvasDraw>> {
 /// - every raster segment is reusable and equal to its texture's scene
 ///   (`RasterCache::is_current`, the audited equality of the cache; a
 ///   segment with external or mutable paint never compares current);
-/// - every canvas draw (resource, quad, opacity, clip flag) is equal at the
+/// - every canvas draw (resource, quad, opacity, clip flags and exact clip
+///   rectangle, hence the scissor) is equal at the
 ///   same position, and the content generation did not change, so no canvas
 ///   texture was replaced, cleared or forgotten and the page made no GPU
 ///   queue write that could have changed a canvas texture's pixels.
@@ -1587,6 +1750,7 @@ impl GpuCompositor {
                         quad: full,
                         alpha: 1.0,
                         opaque: false,
+                        scissor: [0, 0, width, height],
                     });
                 },
                 Segment::Canvas(draw) => {
@@ -1596,6 +1760,13 @@ impl GpuCompositor {
                     if source.width == 0 || source.height == 0 {
                         continue;
                     }
+                    // Exact rectangular clips become the scissor; the quad
+                    // and its UVs stay those of the whole canvas box, so the
+                    // visible pixels sample exactly what they did unclipped.
+                    // A clip that leaves nothing visible skips the draw.
+                    let Some(scissor) = scissor_rect(draw.clip, width, height) else {
+                        continue;
+                    };
                     // The embedder-owned view keeps the canvas texture alive
                     // for this draw and its submission.
                     self.frame.canvas_layers += 1;
@@ -1604,6 +1775,7 @@ impl GpuCompositor {
                         quad: draw.quad,
                         alpha: draw.alpha,
                         opaque: source.opaque,
+                        scissor,
                     });
                 },
             }
@@ -1622,6 +1794,7 @@ impl GpuCompositor {
         let encode = self.phase_start();
         let global = self.device.instance.clone();
         let mut bind_groups = Vec::new();
+        let scissors: Vec<[u32; 4]> = layers.iter().map(|layer| layer.scissor).collect();
         for (index, layer) in layers.iter().enumerate() {
             let uniform = self.uniform(index);
             let clip = |point: Point| {
@@ -1722,7 +1895,16 @@ impl GpuCompositor {
                 .render_pass_set_pipeline(&mut pass, self.pipeline)
                 .err(),
         );
-        for bind_group in &bind_groups {
+        for (bind_group, [x, y, w, h]) in bind_groups.iter().zip(&scissors) {
+            // Per layer, so a canvas clip is restored to the full target for
+            // the next layer (wgpu-core `render_pass_set_scissor_rect`).
+            report(
+                &mut self.stats,
+                "set scissor",
+                global
+                    .render_pass_set_scissor_rect(&mut pass, *x, *y, *w, *h)
+                    .err(),
+            );
             report(
                 &mut self.stats,
                 "set bind group",
@@ -3346,5 +3528,205 @@ mod tests {
         // The layer is reopened, the black fill drawn, then the original pop.
         assert!(matches!(last.commands[0], RenderCommand::PushLayer(_)));
         assert_eq!(last.commands.len(), 3);
+        // An opacity layer is not a clip for the compositor.
+        assert_eq!(draw.clip, None);
+        assert!(!draw.inexact_clip);
+    }
+
+    /// Splits `scene` and returns its only canvas draw.
+    fn only_canvas_draw(scene: Scene, canvas: ResourceId) -> CanvasDraw {
+        let mut draws = split_scene(scene, |id| id == canvas)
+            .into_iter()
+            .filter_map(|segment| match segment {
+                Segment::Canvas(draw) => Some(draw),
+                Segment::Raster(_) => None,
+            });
+        let draw = draws.next().expect("one canvas draw");
+        assert!(draws.next().is_none());
+        draw
+    }
+
+    fn canvas_fill(scene: &mut Scene, canvas: ResourceId, rect: Rect) {
+        scene.fill(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            Paint::Resource(ImageBrush {
+                image: canvas,
+                sampler: ImageSampler::default(),
+            })
+            .as_ref(),
+            None,
+            &rect,
+        );
+    }
+
+    #[test]
+    fn canvas_clip_nested_exact_clips_intersect_and_other_clips_are_not_applied() {
+        let canvas = ResourceId::new();
+        let quad = Rect::new(-40.0, -40.0, 160.0, 120.0);
+        // Two nested sharp rectangles, one translated: their intersection.
+        let mut scene = Scene::new();
+        scene.push_clip_layer(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 120.0, 80.0),
+        );
+        scene.push_clip_layer(
+            peniko::Fill::NonZero,
+            Affine::translate((10.0, 5.0)),
+            &Rect::new(0.0, 0.0, 200.0, 50.0),
+        );
+        canvas_fill(&mut scene, canvas, quad);
+        scene.pop_layer();
+        scene.pop_layer();
+        let draw = only_canvas_draw(scene, canvas);
+        assert_eq!(draw.clip, Some(Rect::new(10.0, 5.0, 120.0, 55.0)));
+        assert!(!draw.inexact_clip && draw.clipped);
+        // The quad (hence the UVs) is still the whole canvas box.
+        assert_eq!(draw.quad[0], Point::new(-40.0, -40.0));
+        assert_eq!(draw.quad[3], Point::new(160.0, 120.0));
+
+        // A rounded clip (border-radius) and a rotated rectangle are not
+        // exact: not applied, flagged; the exact one around them still is.
+        for (transform, shape) in [
+            (
+                Affine::IDENTITY,
+                Rect::new(0.0, 0.0, 50.0, 50.0)
+                    .to_rounded_rect(4.0)
+                    .to_path(0.1),
+            ),
+            (
+                Affine::rotate(0.3),
+                Rect::new(0.0, 0.0, 50.0, 50.0).to_path(0.1),
+            ),
+        ] {
+            let mut scene = Scene::new();
+            scene.push_clip_layer(
+                peniko::Fill::NonZero,
+                Affine::IDENTITY,
+                &Rect::new(0.0, 0.0, 120.0, 80.0),
+            );
+            scene.push_clip_layer(peniko::Fill::NonZero, transform, &shape);
+            canvas_fill(&mut scene, canvas, quad);
+            scene.pop_layer();
+            scene.pop_layer();
+            let draw = only_canvas_draw(scene, canvas);
+            assert_eq!(draw.clip, Some(Rect::new(0.0, 0.0, 120.0, 80.0)));
+            assert!(draw.inexact_clip);
+        }
+
+        // Only an inexact clip: no scissor, as before.
+        let mut scene = Scene::new();
+        scene.push_clip_layer(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            &kurbo::Circle::new((20.0, 20.0), 10.0),
+        );
+        canvas_fill(&mut scene, canvas, quad);
+        scene.pop_layer();
+        let draw = only_canvas_draw(scene, canvas);
+        assert_eq!(draw.clip, None);
+        assert!(draw.inexact_clip);
+
+        // The clip of an opacity layer under an exact clip is not added.
+        let mut scene = Scene::new();
+        scene.push_clip_layer(
+            peniko::Fill::NonZero,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 120.0, 80.0),
+        );
+        scene.push_layer(
+            peniko::Fill::NonZero,
+            peniko::Mix::Normal,
+            0.5,
+            Affine::IDENTITY,
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+            None,
+            None,
+        );
+        canvas_fill(&mut scene, canvas, quad);
+        scene.pop_layer();
+        scene.pop_layer();
+        let draw = only_canvas_draw(scene, canvas);
+        assert_eq!(draw.clip, Some(Rect::new(0.0, 0.0, 120.0, 80.0)));
+        assert_eq!(draw.alpha, 0.5);
+        assert!(!draw.inexact_clip);
+
+        // A non-finite rectangle is not exact.
+        let mut scene = Scene::new();
+        scene.push_clip_layer(
+            peniko::Fill::NonZero,
+            Affine::new([f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            &Rect::new(0.0, 0.0, 10.0, 10.0),
+        );
+        canvas_fill(&mut scene, canvas, quad);
+        scene.pop_layer();
+        let draw = only_canvas_draw(scene, canvas);
+        assert_eq!(draw.clip, None);
+        assert!(draw.inexact_clip);
+    }
+
+    #[test]
+    fn canvas_clip_scissor_is_the_clip_in_target_pixels_or_skips_the_draw() {
+        // No clip: the full target.
+        assert_eq!(scissor_rect(None, 640, 360), Some([0, 0, 640, 360]));
+        // Integer clip: exact.
+        assert_eq!(
+            scissor_rect(Some(Rect::new(460.0, 20.0, 580.0, 100.0)), 640, 360),
+            Some([460, 20, 120, 80])
+        );
+        // Fractional edges round outwards (only zero-coverage pixels removed).
+        assert_eq!(
+            scissor_rect(Some(Rect::new(10.25, 4.5, 20.75, 9.5)), 640, 360),
+            Some([10, 4, 11, 6])
+        );
+        // Intersected with the viewport.
+        assert_eq!(
+            scissor_rect(Some(Rect::new(-30.0, 300.0, 100.0, 500.0)), 640, 360),
+            Some([0, 300, 100, 60])
+        );
+        // Empty: zero area, disjoint nested clips, outside the target.
+        for clip in [
+            Rect::new(10.0, 10.0, 10.0, 50.0),
+            Rect::new(0.0, 0.0, 120.0, 80.0).intersect(Rect::new(200.0, 0.0, 300.0, 80.0)),
+            Rect::new(700.0, 10.0, 800.0, 50.0),
+            Rect::new(10.0, -50.0, 50.0, 0.0),
+        ] {
+            assert_eq!(scissor_rect(Some(clip), 640, 360), None, "{clip:?}");
+        }
+        // Zero-sized target: nothing to draw.
+        assert_eq!(scissor_rect(None, 0, 360), None);
+    }
+
+    /// The `canvas-clip` geometry of `support/perf/gpu-composite`: a 200x160
+    /// canvas at -40,-40 inside a 120x80 `overflow: hidden` box at 460,20,
+    /// painted by blitz-paint, gets the box as its exact scissor.
+    #[test]
+    fn canvas_clip_overflow_hidden_box_is_the_canvas_scissor() {
+        use blitz_traits::shell::{ColorScheme, Viewport};
+        let mut document = blitz_html::HtmlDocument::from_html(
+            r#"<!doctype html><html><head><style>
+            html, body { margin: 0; padding: 0 }
+            #clipbox { position: absolute; left: 460px; top: 20px; width: 120px; height: 80px;
+                       overflow: hidden }
+            canvas { position: absolute; left: -40px; top: -40px; width: 200px; height: 160px;
+                     display: block }
+            </style></head><body><div id="clipbox"><canvas id="c" width="200" height="160">
+            </canvas></div></body></html>"#,
+            blitz_dom::DocumentConfig::default(),
+        );
+        document.set_viewport(Viewport::new(640, 360, 1.0, ColorScheme::Light));
+        let canvas = crate::find_element_by_id(&document, "c").expect("canvas");
+        let presentation: SharedPresentation = Rc::default();
+        let resource = attach_canvas_widget(&presentation, &mut document, canvas);
+        document.resolve(0.0);
+        let mut scene = Scene::new();
+        blitz_paint::paint_scene(&mut scene, &mut document, 1.0, 640, 360, 0, 0);
+        let draw = only_canvas_draw(scene, resource);
+        assert_eq!(draw.quad[0], Point::new(420.0, -20.0));
+        assert_eq!(draw.quad[3], Point::new(620.0, 140.0));
+        assert_eq!(draw.clip, Some(Rect::new(460.0, 20.0, 580.0, 100.0)));
+        assert!(!draw.inexact_clip);
+        assert_eq!(scissor_rect(draw.clip, 640, 360), Some([460, 20, 120, 80]));
     }
 }
