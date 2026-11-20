@@ -3260,3 +3260,14 @@ fluidità: la sonda legge opacità calcolate e ha occupato fino a
 157 ms per campione su Roves e 21 ms su Chrome. La prova PNG
 dell'opacità inline conferma separatamente il difetto dei pixel sul
 binario Roves precedente al fix. Dati: `D:/roves-ci/typewriter-probe-cross/`.
+
+### Motion: confronto della sequenza già inclusa nella probe
+
+Stesso bundle esbuild della fixture Motion (12.38.0) in una pagina
+temporanea. Chrome 157 e Roves release `0cdb0da9300` completano le
+due animazioni senza errori. Entrambi riportano traslazione finale
+100 px e opacità finale 0,5 per il fade che legge lo stile iniziale.
+Chrome espone `Element.animate`; Roves usa il percorso rAF di Motion.
+Questo campione verifica stato finale e completion. Il controllo
+intermedio e l'annullamento restano separati. Dati:
+`D:/roves-ci/motion-existing-cross/`.
