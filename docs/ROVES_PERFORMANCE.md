@@ -3155,3 +3155,26 @@ coppia il P99 del tick rimane sopra budget e non migliora. Corsa
 esplorativa senza confronto pixel o costo CPU per thread. Dati Roves
 `D:/roves-ci/pm-real-e88-*.{log,ndjson}`. La cattura PresentMon è
 separata, ancora attiva alla registrazione di questo risultato.
+
+### PresentMon sul gioco reale e costo idle delle due release
+
+PresentMon 2.6.0 ha registrato la cattura ETW elevata sulla GTX 1050.
+Nelle finestre da 10 s dopo il marker Start dei due run nativi, i frame
+mostrati hanno avuto P95/P99 50,2/83,3 ms (single, 442 frame) e
+50,0/66,9 ms (multi, 477 frame). I massimi sono rispettivamente 283,0 e
+133,3 ms. Una coppia esplorativa, senza conclusioni sulla latenza input:
+nel CSV completo solo quattro click single hanno `MsClickToPhotonLatency`
+disponibile e nessuno multi. Chrome DevTools dichiarava la scheda visibile
+e attiva, ma PresentMon associa al suo swapchain principale solo
+205 frame mostrati in menu e 254 dopo Start nei rispettivi 10 s. Queste
+condizioni di composizione non permettono un confronto Chrome–Roves valido.
+
+Tre coppie menu fermo, 10 s di assestamento e 30 s di misura, stesso
+template, release e adattatore. CPU processo espressa come percentuale
+di un core: single 34,14 / 38,90 / 36,92%; multi 43,47 / 34,10 / 38,99%.
+La mediana è 36,92 contro 38,99%. La differenza cambia segno tra run;
+nessun risparmio idle dimostrato. La memoria privata rilevata è
+425–427 MB single e 428–430 MB multi. Alcune sessioni menu erano
+parzialmente occluse, quindi i loro intervalli di presentazione sono
+esclusi dal confronto visivo. Dati `D:/roves-ci/pm-idle-vello-triples-e88/`,
+`D:/roves-ci/presentmon-roves-chrome-comparison-20261120.csv` e relativi marker.
