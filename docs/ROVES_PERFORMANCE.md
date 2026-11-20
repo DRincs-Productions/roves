@@ -3064,3 +3064,18 @@ MCP. Chrome DevTools MCP, viewport 640 × 360 a DPR 1, canvas Pixi
 e 19,3 ms alla prima battuta (282); massimo 19,1 e 88,8 ms. Queste sono
 misure dei callback del browser. Gli intervalli dei tick Roves e quelli
 mostrati a monitor sono metriche diverse.
+
+### Lavapipe isolato su Windows
+
+Su Windows, con la distribuzione mesa-dist-win 26.3.0 e `VK_DRIVER_FILES`
+limitato al manifesto lavapipe x64 per il processo, `vulkaninfo --summary`
+identifica llvmpipe (LLVM 23.1.5, adattatore CPU). Con il pacchetto Roves
+`c36c0c0fc7a`, la fixture minima ottiene l'adattatore ma riceve
+`TypeError: invalid_argument` da `requestDevice()`, anche chiamando
+direttamente il metodo del prototipo col descrittore standard, senza
+richiedere le feature di compressione del ponte. Un buffer vuoto viene
+accettato sulla GTX 1050/Vulkan e con DX12 esplicitamente in fallback.
+Pixi in finestra fallisce nel percorso CPU; il pass di Skip senza invii
+GPU non prova il backend. Log in `D:/roves-ci/windows-lavapipe-adapter-fixture/`.
+La prova non distingue un difetto del driver, di wgpu o del ponte Deno.
+Distribuzione e procedura: [mesa-dist-win 26.3.0](https://github.com/pal1000/mesa-dist-win/releases/tag/26.3.0).
