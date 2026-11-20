@@ -3233,3 +3233,14 @@ Riferimento HTML SHA-256
 `0920e5e0c94e4a5112ad440f6feb2e40299cfe689b6826bcf95ac149e1cf057b`.
 Output in `D:/roves-ci/visual-matrix-first/`. Questi checkpoint
 non misurano Motion, i caratteri del template o i frame visualizzati.
+
+### Parità della composizione di una finestra WebGPU
+
+Stesso HTML a 640 × 360 DPR 1, Chrome 157 via DevTools e Roves release
+`0cdb0da9300` in finestra GTX 1050/Vulkan. Canvas e pannelli DOM sopra e
+sotto, incluso alpha e tinta, passano 5/5 in entrambi. Roves non sfuma
+il confine del canvas sotto `backdrop-filter` e disegna il secondo
+canvas oltre il contenitore con `overflow: hidden`. Chrome passa 7/7.
+Il checker usa screenshot PNG senza perdita, rettangoli calcolati e
+regioni di pixel, con le due divergenze classificate esplicitamente.
+Roves è stato chiuso dopo la cattura. Dati `D:/roves-ci/gpu-composite-first/`.

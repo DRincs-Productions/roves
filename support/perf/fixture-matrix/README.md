@@ -130,7 +130,8 @@ cancelled once the probe exits (before 2026-11-18 a pending timeout kept Node al
 - rAF cadence is not presentation: for displayed-frame P95/P99 use PresentMon (Roves
   `ROVES_PROBE_FRAME_TRACE`, procedure in `docs/ROVES_PERFORMANCE.md`) or a Chrome DevTools
   trace; CPU/GPU cost per process is not collected yet.
-- No pixel/screenshot check is done by the runner; the probe's `present_causes.canvas`
+- No pixel/screenshot check is done by the runner (DOM transform/opacity/clip/scroll
+  correctness is checked separately by `../visual-matrix/`); the probe's `present_causes.canvas`
   confirms Pixi canvas presents per frame. `present_causes` are exclusive per present: when
   the DOM also changes (`pixi-text-incremental*`) the present is counted as `scene`, not
   `canvas`. The `-hd` cases report a 1920x1080 backing and a 640x360 CSS box in both
