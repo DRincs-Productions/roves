@@ -1,3 +1,39 @@
+## 2026-11-20 - Blitz probe: name harness uses Enter on a scrollable dialogue candidate
+
+Changed: `support/blitz-v8-probe/src/game.rs`. Harness only; game, runtime, template, gate
+budgets and other gates are unchanged. On Linux lavapipe JITless `game_name_input` reused
+`dialogue_click` after state 1 and timed out. Reference collected in Chrome 157 on the untouched
+template e88e9ac at 640x360, DPR 1: at state 2 ("Don't worry...") the chosen `<p>` center
+[320, 267.8] hits the paragraph, an ancestor with `overflow-y: scroll` has clientHeight 73 and
+scrollHeight 84; a bubbling click at that center keeps the same dialogue, while a real Enter
+advances to Me / "...". The decision is the template's own code: its pointerdown handler returns
+early when `hasScrollableParent(e.target)` (e88e9ac `src/lib/utils/scroll-utils.ts`) is true,
+which walks from the target itself through every `parentElement` up to null and returns true
+for the first element with computed `overflow-y` auto/scroll AND scrollHeight > clientHeight;
+an overflow container whose content fits does not stop the walk. The harness now mirrors that
+algorithm before choosing an input: a new read-only helper `__rovesStory.candidateScroll`
+performs the same walk (including `<body>`/`<html>`) and reports the first actually
+scrollable element (depth, tag, class excerpt, sizes) or `walked` when none is;
+`name_advance_action` sends Enter (an existing `ADVANCE_METHODS` action) instead of
+`dialogue_click` when it is scrollable, keeps the method otherwise or when the evidence is
+unavailable, and never redirects other methods. Limitation: the walk starts at the advance
+candidate, not at the element Blitz's hit-test resolves at its center, because the guest DOM
+has no `elementFromPoint` (only the embedder's Rust `element_from_point`, used by `click_at`)
+and adding a guest API for a harness was not justified; scrollable elements between a deeper
+hit descendant and the candidate would be missed. The choice is made once before dispatch (no
+retry after an input); every name-harness step logs `selection` (method, action,
+classification `scrollable_candidate_keyboard` / `candidate_not_scrollable` /
+`scroll_evidence_unavailable` / `not_a_dialogue_click`, scroll evidence) next to the existing
+`before`/`after` diagnostics. `two_dialogues` still tries methods in order. Pinned Chromium
+f2700724: the relevant behaviour is the template's own guard, not an engine path. The reviewer
+verified that `third_party/blink/renderer/core/dom/element.cc` at that revision contains
+`Element::clientHeight` and `Element::scrollHeight`; whether those getters force a layout update
+before reading dimensions was not verified in this session (the file is outside the local sparse
+checkout and no command was run), so it is not claimed here. The probe calls
+`resolve_layout` before reading the evidence either way. Test:
+`game::tests::name_advance_uses_enter_for_a_scrollable_dialogue_candidate`. Not compiled or run
+locally (no build in this session); CI must confirm.
+
 ## 2026-11-19 - Blitz probe: slow frame steps recorded independently in the frame trace
 
 Changed: `support/blitz-v8-probe/src/frame_trace.rs`, `README.md`, `docs/ROVES_PERFORMANCE.md`.

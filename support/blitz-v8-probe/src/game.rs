@@ -235,6 +235,50 @@ mod tests {
         );
     }
 
+    // Regression (Linux lavapipe JITless; Chrome 157 on template e88e9ac at
+    // 640x360 DPR 1): after state 1 the name harness reused `dialogue_click` on
+    // text whose overflow-y:scroll container overflowed (clientHeight 73,
+    // scrollHeight 84); the template keeps the dialogue on that click, Enter
+    // advances. The input is chosen before dispatch, not retried after it.
+    #[test]
+    fn name_advance_uses_enter_for_a_scrollable_dialogue_candidate() {
+        use deno_core::serde_json::{Value, json};
+        let scrollable = json!({
+            "found": true,
+            "scrollable": true,
+            "container": { "depth": 1, "tag": "div", "overflow_y": "scroll", "client_height": 73, "scroll_height": 84 },
+        });
+        // No element up to the root is both overflow auto/scroll and
+        // overflowing (a fitting overflow-auto ancestor does not count).
+        let fits = json!({ "found": true, "scrollable": false, "container": null, "walked": 12 });
+        assert_eq!(
+            name_advance_action("dialogue_click", &scrollable),
+            ("enter_key", "scrollable_candidate_keyboard")
+        );
+        assert_eq!(
+            name_advance_action("dialogue_click", &fits),
+            ("dialogue_click", "candidate_not_scrollable")
+        );
+        // Helper error or missing evidence: the method is kept, not guessed.
+        assert_eq!(
+            name_advance_action("dialogue_click", &json!({ "error": "x" })),
+            ("dialogue_click", "scroll_evidence_unavailable")
+        );
+        assert_eq!(
+            name_advance_action("dialogue_click", &Value::Null),
+            ("dialogue_click", "scroll_evidence_unavailable")
+        );
+        // Other methods are never redirected.
+        for method in ["next_control", "enter_key", "space_key"] {
+            assert_eq!(
+                name_advance_action(method, &scrollable),
+                (method, "not_a_dialogue_click")
+            );
+        }
+        // The selected keyboard action is one the harness can dispatch.
+        assert!(ADVANCE_METHODS.contains(&"enter_key"));
+    }
+
     // Regression (artifact 43288469871, template bb9ea779): a save thumbnail is
     // an inline PNG and was reported as ROVES_PROBE_GAME_MISSING_RESOURCE.
     #[test]
@@ -1137,6 +1181,48 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
         return JSON.stringify({ error: String(error?.message ?? error).slice(0, 200) });
       }
     },
+    // Mirrors the template's pointer gate (e88e9ac src/lib/utils/scroll-utils.ts
+    // hasScrollableParent, called with the pointerdown target): starting at the
+    // element itself, walk EVERY parentElement up to null (including <body>
+    // and <html>) and report true for the first element that is actually
+    // scrollable: computed overflow-y auto/scroll AND scrollHeight >
+    // clientHeight. An overflow container whose content fits does not stop
+    // the walk. Chrome 157, template e88e9ac, 640x360: the dialogue's
+    // overflow-y:scroll container had clientHeight 73, scrollHeight 84, the
+    // click kept the dialogue while Enter advanced.
+    // Limitation: the walk starts at the advance candidate (the element
+    // `dialogue(menu)` clicks at its center), not at the element Blitz's
+    // hit-test resolves at that point, because the guest DOM exposes no
+    // elementFromPoint and the probe adds none. If the hit resolves to a
+    // descendant of the candidate, scrollable elements between that
+    // descendant and the candidate are not seen. No text content is reported.
+    candidateScroll(method, menu) {
+      try {
+        const element = method === "next_control" ? nextButton() : (dialogueBest(menu)?.element ?? null);
+        if (!element) return JSON.stringify({ found: false, scrollable: false, container: null });
+        let depth = 0;
+        for (let current = element; current; current = current.parentElement, depth += 1) {
+          const overflowY = globalThis.getComputedStyle(current).getPropertyValue("overflow-y");
+          if (overflowY !== "scroll" && overflowY !== "auto") continue;
+          if (!(current.scrollHeight > current.clientHeight)) continue;
+          return JSON.stringify({
+            found: true,
+            scrollable: true,
+            container: {
+              depth,
+              tag: current.localName ?? null,
+              class: attr(current, "class").slice(0, 80),
+              overflow_y: overflowY,
+              client_height: current.clientHeight,
+              scroll_height: current.scrollHeight,
+            },
+          });
+        }
+        return JSON.stringify({ found: true, scrollable: false, container: null, walked: depth });
+      } catch (error) {
+        return JSON.stringify({ error: String(error?.message ?? error).slice(0, 200) });
+      }
+    },
     lines(menu) {
       return JSON.stringify(dialogueLines(menu));
     },
@@ -1777,6 +1863,65 @@ fn classify_advance_timeout(preceding: &str, previous: &[String], current: &str)
     } else {
         "changed_without_settling"
     }
+}
+
+/// Input the name harness sends for `method`, chosen before dispatch from the
+/// candidate's scroll evidence (`__rovesStory.candidateScroll`), with the
+/// decision's classification. The template's own code is the decision: its
+/// pointerdown handler returns early when `hasScrollableParent(e.target)`
+/// (e88e9ac src/lib/utils/scroll-utils.ts) finds any element from the target
+/// up to the root with overflow-y auto/scroll and scrollHeight > clientHeight;
+/// `candidateScroll` mirrors that walk from the advance candidate (see its
+/// hit-target limitation). Observed case (Chrome 157, template e88e9ac,
+/// 640x360 DPR 1: at "Don't worry..." the <p> center hit the paragraph, the
+/// overflow-y:scroll container had clientHeight 73 and scrollHeight 84, the
+/// click kept the dialogue and a real Enter advanced; Linux lavapipe JITless
+/// timed out on that click). Only `dialogue_click` is redirected, to Enter;
+/// unknown evidence keeps the method. Nothing is retried after a dispatch.
+fn name_advance_action(
+    method: &'static str,
+    scroll: &deno_core::serde_json::Value,
+) -> (&'static str, &'static str) {
+    use deno_core::serde_json::Value;
+    if method != "dialogue_click" {
+        return (method, "not_a_dialogue_click");
+    }
+    match scroll.get("scrollable") {
+        Some(Value::Bool(true)) => ("enter_key", "scrollable_candidate_keyboard"),
+        Some(Value::Bool(false)) => (method, "candidate_not_scrollable"),
+        _ => (method, "scroll_evidence_unavailable"),
+    }
+}
+
+/// Reads the candidate scroll evidence for `method` and picks the name
+/// harness input (`name_advance_action`); returns the input and the logged
+/// decision. Read-only: it never sends input.
+fn select_name_advance(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    method: &'static str,
+    menu: &str,
+) -> (&'static str, deno_core::serde_json::Value) {
+    use deno_core::serde_json::{Value, from_str, json};
+    let scroll = if method == "dialogue_click" {
+        crate::resolve_layout(document);
+        let found = evaluate_owned(
+            runtime,
+            format!(
+                "__rovesStory.candidateScroll({}, {})",
+                Value::String(method.to_owned()),
+                Value::String(menu.to_owned())
+            ),
+        );
+        from_str(&found).unwrap_or(Value::Null)
+    } else {
+        Value::Null
+    };
+    let (action, classification) = name_advance_action(method, &scroll);
+    (
+        action,
+        json!({ "method": method, "action": action, "classification": classification, "scroll": scroll }),
+    )
 }
 
 /// Sends one advance input of `method` (see `ADVANCE_METHODS`); returns what was
@@ -2459,7 +2604,8 @@ async fn story_skip(
 }
 
 /// Name prompt with real typing, after the two-dialogue run: advances (with the
-/// method that produced state 2) until the template's InputRequestDialog shows
+/// method that produced state 2, or Enter instead of a dialogue click whose
+/// candidate scrolls, see `name_advance_action`) until the template's InputRequestDialog shows
 /// its text input (start.label step 5, `requestInput({type:"string"}, "Peter")`),
 /// focuses it with a pointer press through Blitz's `EventDriver` if the dialog
 /// did not focus it, clears the default with End and Backspace, types
@@ -2508,15 +2654,18 @@ async fn name_input(
             // step of every attempt, including the failing one.
             let preceding = previous.last().cloned().unwrap_or_default();
             let before = advance_evidence(runtime, document, method, &menu);
-            let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+            // Chosen once, before the input; a dispatched action is never retried.
+            let (action, selection) = select_name_advance(runtime, document, method, &menu);
+            let Some(dispatched) = advance(runtime, document, dispatcher, action, &menu) else {
                 steps.push(json!({
-                    "action": method,
+                    "action": action,
+                    "selection": selection,
                     "preceding_text": excerpt(&preceding),
                     "before": before,
                     "result": "no target",
                     "classification": "no_target",
                 }));
-                break 'name Some(format!("no target for the advance method {method}"));
+                break 'name Some(format!("no target for the advance action {action}"));
             };
             match wait_for_state(
                 runtime,
@@ -2528,18 +2677,19 @@ async fn name_input(
             .await
             {
                 StoryState::Settled(text, frames) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text) }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text) }));
                     previous.push(text);
                 },
                 StoryState::FrameStarved(reason) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "frame starved" }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "result": "frame starved" }));
                     break 'name Some(reason);
                 },
                 StoryState::Timeout(last) => {
                     let current = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
                     let classification = classify_advance_timeout(&preceding, &previous, &current);
                     steps.push(json!({
-                        "action": method,
+                        "action": action,
+                        "selection": selection,
                         "input": dispatched,
                         "preceding_text": excerpt(&preceding),
                         "before": before,
@@ -2550,14 +2700,14 @@ async fn name_input(
                         "after": advance_evidence(runtime, document, method, &menu),
                     }));
                     break 'name Some(format!(
-                        "no settled state after {method} within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
+                        "no settled state after {action} within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
                         excerpt(&last)
                     ));
                 },
                 StoryState::ErrorBoundary(text, frames) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
                     break 'name Some(format!(
-                        "error boundary shown after {method} ({frames} frames): {:?}",
+                        "error boundary shown after {action} ({frames} frames): {:?}",
                         excerpt(&text)
                     ));
                 },
@@ -2767,16 +2917,18 @@ async fn name_input(
         for _ in 0..4 {
             let preceding = previous.last().cloned().unwrap_or_default();
             let before = advance_evidence(runtime, document, method, &menu);
-            let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+            let (action, selection) = select_name_advance(runtime, document, method, &menu);
+            let Some(dispatched) = advance(runtime, document, dispatcher, action, &menu) else {
                 steps.push(json!({
-                    "action": method,
+                    "action": action,
+                    "selection": selection,
                     "preceding_text": excerpt(&preceding),
                     "before": before,
                     "result": "no target",
                     "classification": "no_target",
                 }));
                 break 'name Some(format!(
-                    "no target for the advance method {method} after the prompt"
+                    "no target for the advance action {action} after the prompt"
                 ));
             };
             match wait_for_state(
@@ -2793,7 +2945,7 @@ async fn name_input(
                         evaluate_owned(runtime, format!("__rovesStory.nameLines({needle})"));
                     let found: Value =
                         deno_core::serde_json::from_str(&found).unwrap_or(Value::Null);
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text), "name_lines": found }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text), "name_lines": found }));
                     if found["dialogue"]
                         .as_array()
                         .is_some_and(|lines| !lines.is_empty())
@@ -2841,14 +2993,15 @@ async fn name_input(
                     previous.push(text);
                 },
                 StoryState::FrameStarved(reason) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "frame starved" }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "result": "frame starved" }));
                     break 'name Some(reason);
                 },
                 StoryState::Timeout(last) => {
                     let current = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
                     let classification = classify_advance_timeout(&preceding, &previous, &current);
                     steps.push(json!({
-                        "action": method,
+                        "action": action,
+                        "selection": selection,
                         "input": dispatched,
                         "preceding_text": excerpt(&preceding),
                         "before": before,
@@ -2859,12 +3012,12 @@ async fn name_input(
                         "after": advance_evidence(runtime, document, method, &menu),
                     }));
                     break 'name Some(format!(
-                        "no settled state after the prompt within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
+                        "no settled state after the prompt ({action}) within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
                         excerpt(&last)
                     ));
                 },
                 StoryState::ErrorBoundary(text, frames) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
+                    steps.push(json!({ "action": action, "selection": selection, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
                     break 'name Some(format!(
                         "error boundary shown after the prompt ({frames} frames): {:?}",
                         excerpt(&text)
