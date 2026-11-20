@@ -693,11 +693,23 @@ impl PresentStats {
 
 /// Why a frame had to be presented (see `PresentStats::cause_*`).
 #[derive(Clone, Copy, Debug, PartialEq)]
-enum PresentCause {
+pub(crate) enum PresentCause {
     Surface,
     Scene,
     Canvas,
     Unretained,
+}
+
+impl PresentCause {
+    /// The `causes_json` key, also the frame trace's `cause` value.
+    pub(crate) fn key(self) -> &'static str {
+        match self {
+            PresentCause::Surface => "surface",
+            PresentCause::Scene => "scene",
+            PresentCause::Canvas => "canvas",
+            PresentCause::Unretained => "unretained",
+        }
+    }
 }
 
 /// What the last frame presented without error showed besides the raster
@@ -1788,6 +1800,11 @@ impl GpuCompositor {
             PresentCause::Unretained => &mut self.frame.cause_unretained,
         };
         *counter = 1;
+        // ROVES_PROBE_FRAME_TRACE: the same value, kept only if the frame is
+        // committed (`discard_frame` clears it, like the counter above).
+        if let Some(diagnostics) = &mut self.diagnostics {
+            diagnostics.attempt.cause = Some(cause);
+        }
     }
 
     fn commit_frame(&mut self) {
@@ -1817,6 +1834,7 @@ impl GpuCompositor {
         self.raster_cache.clear();
         if let Some(diagnostics) = &mut self.diagnostics {
             diagnostics.misses.discard_frame();
+            diagnostics.attempt.cause = None;
         }
         self.frame = PresentStats::default();
         self.stats.skipped_frames += 1;

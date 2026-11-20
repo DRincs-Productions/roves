@@ -42,6 +42,16 @@
 //! `third_party/blink/renderer/core/frame/performance_monitor.cc`): a long
 //! task is reported when it ends, from its own start/end, not via a frame.
 //!
+//! Present cause (20 November): each frame record ends with `cause`, the
+//! `PresentCause` the renderer already computes for `PresentStats::cause_*`
+//! (no new comparison, no behavior change), `null` unless the attempt was
+//! committed as `presented`. It splits presented frames into retained-DOM
+//! work (`scene`) and canvas-only updates (`canvas`) per QPC window. Mirrors
+//! Chromium (pinned `f2700724`, `cc/layers/texture_layer.cc`): new canvas
+//! content only sets `needs_set_resource_` and pushes properties of its
+//! `TextureLayer` (`SetTransferableResourceInternal`, no extra commit inside
+//! `Update`), so a canvas-only frame does not repaint retained DOM layers.
+//!
 //! `std::time::Instant` cannot expose its QPC value, so the only addition is
 //! `windows-sys` (already locked through winit/wgpu, `Win32_System_Performance`
 //! feature) for `QueryPerformanceCounter`/`QueryPerformanceFrequency`.
@@ -193,6 +203,10 @@ pub struct AttemptTrace {
     pub outcome: Outcome,
     /// `None` when the compositor did not reach commit/discard.
     pub counters: Option<AttemptCounters>,
+    /// The `PresentStats::cause_*` reason the renderer already computed for
+    /// this attempt; `Some` only for a committed (`presented`) attempt, like
+    /// those counters. No extra comparison is made for the trace.
+    pub cause: Option<crate::presentation::PresentCause>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -447,7 +461,7 @@ impl FrameTrace {
         };
         writeln!(
             out,
-            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"slow_steps\":{},\"slow_step_threshold_ns\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included; step_phases_ns (additive in version 1, last field) splits cpu_frame_step_ns of the same step into consecutive non-overlapping cpu_step_* phases that add up to it, null when no step or phase not reached; slow_step records (additive in version 1, ignore unknown type values) are pushed when a frame step longer than slow_step_threshold_ns ends, independently of render attempts, at most one per step_seq: a frame record may reference the same step_seq with identical step fields, so count slow steps from slow_step records only and join frames on step_seq; renders_before is the render_seq of the last attempt before the step ended\"}}",
+            "{{\"schema\":\"{SCHEMA}\",\"version\":{SCHEMA_VERSION},\"clock\":\"{}\",\"qpc_frequency\":{},\"qpc_unit\":\"ticks\",\"duration_unit\":\"ns\",\"max_records\":{},\"records_total\":{},\"records_kept\":{},\"records_overwritten\":{},\"render_attempts\":{},\"present_calls\":{},\"presented\":{},\"frame_steps\":{},\"input_markers\":{},\"qpc_errors\":{},\"slow_steps\":{},\"slow_step_threshold_ns\":{},\"renderer\":\"{renderer}\",\"raster_threading\":\"{}\",\"raster_cache\":{raster_cache},\"note\":\"one frame record per GpuWindowRenderer::render attempt; outcome presented means surface_present returned good/suboptimal with no wgpu error for the frame, not that the frame was displayed (use PresentMon DISPLAYED_TIME); outcome unchanged means the attempt skipped acquire, compose and present because the window already showed an identical frame; present QPCs are NOT tick-matched to PresentMon CPU_START_QPC (Vulkan captures of 15 November: at most 3 of 3,590 records per run within 100 us, nearest offsets of a few ms), so compare PresentMon per scene over shared QPC windows, not frame by frame; null means not reached or not measured, never zero; phases_ns are the same CPU wall-clock phase sums as ROVES_PROBE_FRAME_TIMINGS; counters cover this attempt only, discarded attempts included; step_phases_ns (additive in version 1) splits cpu_frame_step_ns of the same step into consecutive non-overlapping cpu_step_* phases that add up to it, null when no step or phase not reached; slow_step records (additive in version 1, ignore unknown type values) are pushed when a frame step longer than slow_step_threshold_ns ends, independently of render attempts, at most one per step_seq: a frame record may reference the same step_seq with identical step fields, so count slow steps from slow_step records only and join frames on step_seq; renders_before is the render_seq of the last attempt before the step ended; cause (additive in version 1, last field) is the reason the presented frame could not be skipped, the same value as the summary's present causes: surface, scene (Blitz scene changed, retained DOM raster work), canvas (only page canvas content changed, equal Blitz scene) or unretained; null when outcome is not presented\"}}",
             if self.frequency.is_some() {
                 "qpc"
             } else {
@@ -549,7 +563,7 @@ fn frame_json(frame: &FrameRecord) -> String {
         },
     );
     format!(
-        "{{\"type\":\"frame\",\"render_seq\":{},\"present_seq\":{},\"step_seq\":{},\"step_start_qpc\":{},\"cpu_frame_step_ns\":{},\"steps_since_previous_render\":{},\"render_start_qpc\":{},\"present_start_qpc\":{},\"present_end_qpc\":{},\"render_end_qpc\":{},\"present_result\":{},\"outcome\":\"{}\",\"cpu_render_present_ns\":{},\"phases_ns\":{{{}}},\"counters\":{counters},\"step_phases_ns\":{}}}",
+        "{{\"type\":\"frame\",\"render_seq\":{},\"present_seq\":{},\"step_seq\":{},\"step_start_qpc\":{},\"cpu_frame_step_ns\":{},\"steps_since_previous_render\":{},\"render_start_qpc\":{},\"present_start_qpc\":{},\"present_end_qpc\":{},\"render_end_qpc\":{},\"present_result\":{},\"outcome\":\"{}\",\"cpu_render_present_ns\":{},\"phases_ns\":{{{}}},\"counters\":{counters},\"step_phases_ns\":{},\"cause\":{}}}",
         frame.render_seq,
         opt(frame.present_seq),
         opt(frame.step.map(|step| step.seq)),
@@ -571,6 +585,9 @@ fn frame_json(frame: &FrameRecord) -> String {
             || "null".to_owned(),
             |step| step.phases.json(|duration| nanos(duration).to_string())
         ),
+        attempt
+            .cause
+            .map_or_else(|| "null".to_owned(), |cause| format!("\"{}\"", cause.key())),
     )
 }
 
@@ -599,6 +616,7 @@ fn marker_json(marker: &MarkerRecord) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::presentation::PresentCause;
 
     fn fixed_clock() -> Option<i64> {
         Some(42)
@@ -629,6 +647,7 @@ mod tests {
             present_result: Some(PresentResult::Good),
             outcome: Outcome::Presented,
             counters: Some(AttemptCounters::default()),
+            cause: Some(PresentCause::Canvas),
         }
     }
 
@@ -715,8 +734,8 @@ mod tests {
         assert!(lines[3].contains("\"step_seq\":2,"));
         assert!(lines[3].contains("\"steps_since_previous_render\":0"));
         assert!(lines[0].contains("\"frame_steps\":2"));
-        // The step's phases are the last field and add up to its duration.
-        assert!(lines[2].ends_with(",\"step_phases_ns\":{\"cpu_step_tokio_yield\":null,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":null,\"cpu_step_microtasks\":null,\"cpu_step_event_loop\":null,\"cpu_step_other\":800000}}"));
+        // The step's phases add up to its duration; the cause comes last.
+        assert!(lines[2].ends_with(",\"step_phases_ns\":{\"cpu_step_tokio_yield\":null,\"cpu_step_mcp_poll\":null,\"cpu_step_animation_frame\":null,\"cpu_step_microtasks\":null,\"cpu_step_event_loop\":null,\"cpu_step_other\":800000},\"cause\":\"canvas\"}"));
     }
 
     #[test]
@@ -782,6 +801,7 @@ mod tests {
                 present_result: Some(PresentResult::Outdated),
                 outcome: Outcome::PresentFailed,
                 counters: Some(counters),
+                cause: None,
                 ..presented(10)
             },
             Duration::from_millis(3),
@@ -797,13 +817,15 @@ mod tests {
         assert!(first.contains("\"cpu_present\":null}"));
         // Every phase plus cpu_frame_step_ns and cpu_render_present_ns.
         assert_eq!(first.matches("\"cpu_").count(), Phase::ALL.len() + 2);
-        assert!(first.ends_with("\"counters\":null,\"step_phases_ns\":null}"));
+        assert!(first.ends_with("\"counters\":null,\"step_phases_ns\":null,\"cause\":null}"));
         let second = &lines[2];
         assert!(second.contains("\"present_seq\":1,"));
         assert!(second.contains("\"present_result\":\"outdated\",\"outcome\":\"present_failed\""));
         assert!(second.contains(
             "\"raster_segments\":3,\"raster_uploads\":2,\"raster_cache_hits\":1,\"upload_bytes\":64"
         ));
+        // Not presented: no cause, even though the attempt was composed.
+        assert!(second.ends_with(",\"cause\":null}"));
         assert!(second.contains("\"first_use\":1,"));
         assert!(second.contains("\"content_changed\":1,"));
         assert!(lines[0].contains("\"render_attempts\":2,\"present_calls\":1,\"presented\":0"));
@@ -817,6 +839,33 @@ mod tests {
         assert!(lines[0].contains(&format!(
             "\"renderer\":\"gpu\",\"raster_threading\":\"{threading}\","
         )));
+    }
+
+    #[test]
+    fn the_present_cause_uses_the_summary_keys_and_is_the_last_field() {
+        let mut trace = trace(4, fixed_clock, Some(10_000_000));
+        for cause in [
+            PresentCause::Surface,
+            PresentCause::Scene,
+            PresentCause::Canvas,
+            PresentCause::Unretained,
+        ] {
+            trace.record_frame(
+                AttemptTrace {
+                    cause: Some(cause),
+                    ..presented(0)
+                },
+                Duration::from_millis(1),
+                &FramePhases::default(),
+            );
+        }
+        let lines = output(&trace);
+        for (line, key) in lines[1..]
+            .iter()
+            .zip(["surface", "scene", "canvas", "unretained"])
+        {
+            assert!(line.ends_with(&format!(",\"cause\":\"{key}\"}}")));
+        }
     }
 
     #[test]

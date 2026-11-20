@@ -2898,7 +2898,7 @@ diviso in fasi consecutive e senza sovrapposizioni: `cpu_step_tokio_yield`,
 `cpu_step_mcp_poll`, `cpu_step_animation_frame`, `cpu_step_microtasks`,
 `cpu_step_event_loop` e il resto `cpu_step_other`. Il record finale e
 `performance_sample` aggiungono `step_phases`; con `ROVES_PROBE_FRAME_TRACE`
-ogni record frame aggiunge come ultimo campo `step_phases_ns`, estensione
+ogni record frame aggiunge il campo `step_phases_ns` (seguito solo da `cause`, 20 novembre), estensione
 additiva di `roves-frame-trace` v1. Per singolo tick le fasi sommano a
 `cpu_frame_step`; i percentili di serie diverse non si sommano. Limiti:
 `cpu_step_event_loop` include i microtask che deno_core esegue durante il
@@ -2937,6 +2937,35 @@ indipendente dai frame; allo stesso modo il tracing del main thread registra
 una slice per task, non per frame. Chromium usa 50 ms per i Long Tasks; qui si
 usa il budget di 16,67 ms perché l'obiettivo è spiegare i frame persi e la
 soglia coincide con il riepilogo esistente. Nessuna misura raccolta ancora.
+
+#### Causa di presentazione per tentativo (20 novembre)
+
+Per quantificare il lavoro DOM trattenuto (vedi «Lavoro DOM nei frame con solo
+il canvas cambiato») ogni record frame di `ROVES_PROBE_FRAME_TRACE` termina ora
+con `cause`: `"surface"`, `"scene"`, `"canvas"` o `"unretained"`, lo stesso
+`PresentCause` già calcolato per i contatori `cause_*` del riepilogo, oppure
+`null` se l'esito non è `presented` (`unchanged`, errori di acquire/present,
+`frame_error`, come i contatori che contano solo i frame confermati).
+Estensione additiva di `roves-frame-trace` v1 (versione invariata, ultimo
+campo). Nessun nuovo confronto, orologio o allocazione: il valore viene
+copiato in `set_cause` e azzerato in `discard_frame`; comportamento,
+scheduling e soppressione delle presentazioni sono invariati. Consente di
+contare per finestra QPC quanti frame presentati hanno richiesto lavoro della
+scena Blitz (`scene`) rispetto a soli aggiornamenti del canvas (`canvas`).
+
+Confronto Chromium (`f2700724`, `cc/layers/texture_layer.cc`): quando il
+client fornisce una nuova risorsa, `TextureLayer::Update`/`UpdateAfterPaintEvent`
+chiamano `SetTransferableResourceInternal` con `requires_commit = false`
+("Already within a commit, no need to do another one immediately"), che imposta
+solo `needs_set_resource_` e `SetNeedsPushProperties`; in
+`PushDirtyPropertiesTo` passa la risorsa al `TextureLayerImpl`. Un frame con
+solo il canvas cambiato non ridipinge quindi i layer DOM trattenuti. Roves non
+ha ancora l'equivalente lato Blink (vedi sopra) e ridipinge la scena Blitz; il
+campo misura quanto spesso i frame presentati sono `canvas` (candidati al
+modello Chromium) o `scene`. Test: serializzazione delle quattro cause e
+`null` per tentativi non presentati in `frame_trace.rs`; il percorso reale di
+un tentativo non presentato richiede una GPU e non ha un test sintetico.
+Nessuna misura raccolta ancora.
 
 ### Confronto lavapipe (diagnostico, opt-in)
 
