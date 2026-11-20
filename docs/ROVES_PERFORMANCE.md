@@ -3092,3 +3092,28 @@ riproducibile senza dipendere dai limiti dell'adattatore.
 Chromium `f2700724`, `gpu_adapter.cc` e `gpu_device.cc`, usa
 `RejectWithDOMException(kOperationError, message)` nei due percorsi.
 Restano da verificare il gate binario e il messaggio wgpu su lavapipe.
+
+### Durata dei callback di animazione durante il lag
+
+Sul pacchetto diagnostico Windows `c36c0c0fc7a` e GTX 1050/Vulkan, due
+replay della copia MCP del template `e88e9ac29e73` con un wrapper
+temporaneo installato prima del bundle. Il wrapper somma il tempo
+trascorso nelle chiamate rAF consegnate allo stesso timestamp, incluse
+le chiamate sincrone effettuate da quei callback. Legge l'intervallo
+fra timestamp separatamente e non misura microtask eseguite a valle,
+poll Deno, MCP o lavoro nativo esterno al callback.
+
+| Replay | Tick P99, dialogo | Massimo somma callback, dialogo | Massimo intervallo rAF, dialogo |
+| --- | ---: | ---: | ---: |
+| Primo | 274,3–316,0 ms | 5,2 ms | 348,4 ms |
+| Secondo | 279,0–328,8 ms | 6,7 ms | 345,6 ms |
+
+Nel secondo replay il menu ha avuto tick P99 7,1–8,1 ms, massimo
+cumulato dei callback 6,9 ms e massimo intervallo fra callback 32,6 ms.
+Nel primo replay il report del menu superava il limite di 16 KiB
+dell'MCP e non è utilizzabile. Il secondo aggrega le misure in pagina.
+Entrambi hanno passato il playthrough con chiusura regolare.
+Il confronto è per scena, senza join dei singoli tick. I dati spostano
+la priorità sulla fase esterna ai callback osservati. Restano necessari
+la scomposizione nativa e il controllo senza MCP con input reale.
+Risultati e script temporanei in `D:/roves-ci/raf-attribution-e88/`.
