@@ -1,3 +1,17 @@
+## 2026-11-20 - Blitz probe CI: deterministic DOM/CSS visual matrix gate
+
+Changed: `.github/workflows/blitz-probe.yml`, `support/perf/visual-matrix/README.md`. CI
+only; probe sources, fixture, checker and the production engine are unchanged. The Windows
+job (normal and JITless) gains the required step "required gate - deterministic DOM/CSS
+visual matrix": the job's debug probe runs `--game support/perf/visual-matrix` headless with
+the existing `ROVES_PROBE_SCREENSHOT` capture, then the existing standard-library
+`check.py --engine roves` gates the 9 cases marked `gate: true` (the 3 CSS-animation /
+rounded-clip cases stay diagnostic). Fails on timeout, panic, non-zero exit or checker exit
+1/2. Log, PNG and checker JSON join the existing `blitz-probe-<mode>` artifact; the
+workflow's push paths now include `support/perf/visual-matrix/**`. Chrome stays a local
+baseline (DevTools MCP, 12/12), not run in CI. The inline-opacity Rust gate is unchanged;
+the GPU compositor and typewriter fixtures remain diagnostic and are not wired.
+
 ## 2026-11-20 - Blitz probe: rectangular canvas clip in the GPU window compositor
 
 Changed: `support/blitz-v8-probe/src/{presentation.rs,netrender_window.rs,README.md}`,

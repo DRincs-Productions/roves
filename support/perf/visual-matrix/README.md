@@ -111,6 +111,20 @@ python -I support/perf/visual-matrix/check.py --compare "$out/roves-visual.json"
 python -I support/blitz-v8-probe/fixtures/inline-opacity/check_png.py "$out/chrome-inline.png" "$out/chrome-inline.txt"
 ```
 
+## CI
+
+`.github/workflows/blitz-probe.yml`, Windows job, both `normal` and `jitless` legs: step
+"required gate - deterministic DOM/CSS visual matrix" runs the debug probe built by that
+job (`--game <workspace>/support/perf/visual-matrix`, `ROVES_PROBE_SCREENSHOT`, own
+storage directory, `timeout 240`) and then `check.py --engine roves`. The step fails on a
+missing executable, timeout, panic, non-zero probe exit, checker exit 2 (unusable input)
+or checker exit 1 (a gated case not `match`); the three non-gated cases are reported, not
+enforced. The `VISUAL_MATRIX` summary line is annotated. `blitz-visual-matrix.{log,png,json}`
+are uploaded in the existing `blitz-probe-<mode>` artifact. Chrome is not run in CI (it
+needs DevTools automation and a visible page for rAF): the Chrome baseline and
+`--compare` stay local, as above. The inline-opacity pixels stay covered by the Rust
+`inline_opacity::` tests in the same job.
+
 A hidden or occluded Chrome page stops rAF (see `../fixture-matrix/README.md`), so the
 wait in step 3 times out instead of reporting; record that as not run, not as a result.
 

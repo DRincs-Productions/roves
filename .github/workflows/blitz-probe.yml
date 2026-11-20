@@ -5,6 +5,7 @@ name: Blitz + Deno/V8 probe
   push:
     paths:
       - 'support/blitz-v8-probe/**'
+      - 'support/perf/visual-matrix/**'
       - '.github/workflows/blitz-probe.yml'
   workflow_dispatch:
     inputs:
@@ -745,6 +746,58 @@ jobs:
             }
           }
           if ($failures) { throw "packaged launch: $($failures -join '; ')" }
+      # Required gate: deterministic DOM/CSS visual matrix (support/perf/
+      # visual-matrix, README there). The fixture runs headless through --game
+      # with the existing ROVES_PROBE_SCREENSHOT capture (640x360, after the
+      # driven frames); check.py (standard library only, PNG decoding shared
+      # with the inline-opacity check_png.py) reads the #vm-cases table from the
+      # same index.html and classifies each case from the page report and fixed
+      # pixel regions. Fails on: missing executable, timeout, panic, non-zero
+      # probe exit, unusable input (checker exit 2) or any gated case not
+      # "match" (checker exit 1). css-anim-paused-mid, css-anim-forwards-done
+      # and clip-radius stay diagnostic (gate false in the fixture). Chrome is
+      # the baseline only locally (Chrome DevTools MCP, README "Invocation"),
+      # not run here. Independent of the template gates above.
+      - name: required gate - deterministic DOM/CSS visual matrix
+        if: ${{ !cancelled() && steps.probe_build.outcome == 'success' }}
+        timeout-minutes: 6
+        shell: bash
+        env:
+          ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
+          ROVES_PROBE_SCREENSHOT: ${{ runner.temp }}/blitz-visual-matrix.png
+          ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-visual-matrix-storage
+          RUST_BACKTRACE: '1'
+        run: |
+          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          log="$RUNNER_TEMP/blitz-visual-matrix.log"
+          out="$RUNNER_TEMP/blitz-visual-matrix.json"
+          [ -x "$exe" ] || { echo "::error::visual matrix NOT RUN: probe executable missing"; exit 1; }
+          rm -f "$ROVES_PROBE_SCREENSHOT" "$out"
+          set +e +o pipefail
+          timeout 240 "$exe" --game "$GITHUB_WORKSPACE/support/perf/visual-matrix" > "$log" 2>&1
+          status=$?
+          set -e
+          if [ "$status" -eq 124 ]; then
+            echo "::error::visual matrix: probe killed by timeout 240 s (last stage: $(grep -F ROVES_PROBE_STAGE "$log" | tail -n 1 | cut -d' ' -f2))"
+            exit 1
+          fi
+          if grep -q 'panicked' "$log"; then
+            echo "::error::visual matrix: the probe panicked $(grep -m 1 -A 1 'panicked' "$log" | tr '\n' ' ' | cut -c1-400)"
+            exit 1
+          fi
+          [ "$status" -eq 0 ] || { echo "::error::visual matrix: the probe exited with $status"; exit 1; }
+          set +e
+          summary=$(python -I support/perf/visual-matrix/check.py --engine roves \
+            --png "$ROVES_PROBE_SCREENSHOT" --report "$log" --out "$out")
+          check_status=$?
+          set -e
+          printf '%s\n' "$summary"
+          line=$(printf '%s\n' "$summary" | grep -m 1 '^VISUAL_MATRIX ' || true)
+          echo "::notice::visual matrix (${{ matrix.mode }}) checker exit=$check_status ${line:-no VISUAL_MATRIX line}" | cut -c1-1500
+          if [ "$check_status" -ne 0 ]; then
+            echo "::error::visual matrix (${{ matrix.mode }}) failed (checker exit $check_status, 1 = gated case not match, 2 = unusable input): $(printf '%s' "${line:-$summary}" | cut -c1-900)"
+            exit 1
+          fi
       # Unified API compatibility report (support/blitz-v8-probe/compat): the
       # declared implementation state of each API and template path, combined
       # with this run's ROVES_PROBE_RESULT evidence from every log above, as
@@ -792,6 +845,9 @@ jobs:
             ${{ runner.temp }}/blitz-story-skip.log
             ${{ runner.temp }}/blitz-story.png
             ${{ runner.temp }}/blitz-compat-report.json
+            ${{ runner.temp }}/blitz-visual-matrix.log
+            ${{ runner.temp }}/blitz-visual-matrix.png
+            ${{ runner.temp }}/blitz-visual-matrix.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn
