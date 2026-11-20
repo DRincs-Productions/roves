@@ -208,6 +208,33 @@ mod tests {
         }))
     }
 
+    // Regression (CI 44616324293 JITless): an advance timeout reported an empty
+    // last text whether the page went blank or kept the state before the input.
+    #[test]
+    fn advance_timeouts_are_classified_from_the_page_text() {
+        let previous = [
+            "menu".to_owned(),
+            "state 1".to_owned(),
+            "state 2".to_owned(),
+        ];
+        assert_eq!(
+            classify_advance_timeout("state 2", &previous, ""),
+            "text_became_empty"
+        );
+        assert_eq!(
+            classify_advance_timeout("state 2", &previous, "state 2"),
+            "ignored_input"
+        );
+        assert_eq!(
+            classify_advance_timeout("state 2", &previous, "state 1"),
+            "returned_to_earlier_state"
+        );
+        assert_eq!(
+            classify_advance_timeout("state 2", &previous, "state 3 typing"),
+            "changed_without_settling"
+        );
+    }
+
     // Regression (artifact 43288469871, template bb9ea779): a save thumbnail is
     // an inline PNG and was reported as ROVES_PROBE_GAME_MISSING_RESOURCE.
     #[test]
@@ -842,6 +869,20 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
       in_dialog: dialogElements().some((dialog) => dialog === element || dialog.contains(element)),
     };
   };
+  // A "next" control of the dialogue UI, by label/aria-label/title.
+  const nextButton = () => buttons().find((element) => /^(next|›|»|>|→)$/i.test(label(element)) || /\bnext\b/i.test(norm(element.getAttribute("aria-label")))) ?? null;
+  // The longest non-control text that was not on the menu, with its element.
+  const dialogueBest = (menu) => {
+    let best = null;
+    if (document.body) {
+      walk(document.body, (text, element, inButton) => {
+        if (!inButton && text.length >= 3 && !menu.includes(text) && (best === null || text.length > best.text.length)) {
+          best = { text, element };
+        }
+      }, () => {});
+    }
+    return best;
+  };
   return {
     snapshot,
     // The menu's Settings button (exact label).
@@ -1043,21 +1084,58 @@ const STORY_HELPERS: &str = r#"globalThis.__rovesStory = (() => {
     },
     // A "next" control of the dialogue UI, by label/aria-label/title.
     next() {
-      const button = buttons().find((element) => /^(next|›|»|>|→)$/i.test(label(element)) || /\bnext\b/i.test(norm(element.getAttribute("aria-label"))));
+      const button = nextButton();
       return button ? (center(button, { label: label(button) }) ?? "null") : "null";
     },
     // The element holding the longest non-control text that was not on the menu.
     dialogue(menu) {
-      let best = null;
-      if (document.body) {
-        walk(document.body, (text, element, inButton) => {
-          if (!inButton && text.length >= 3 && !menu.includes(text) && (best === null || text.length > best.text.length)) {
-            best = { text, element };
-          }
-        }, () => {});
-      }
+      const best = dialogueBest(menu);
       if (best === null || best.element === null) return "null";
       return center(best.element, { label: best.text.slice(0, 60) }) ?? "null";
+    },
+    // Read-only, sanitized layout evidence for an advance candidate (the
+    // element `next()`/`dialogue(menu)` would click) and up to five
+    // ancestors: tag, class excerpt, rect, client/scroll sizes, overflow and
+    // hit-relevant computed style. No text content is reported.
+    candidateLayout(method, menu) {
+      try {
+        const element = method === "next_control" ? nextButton() : (dialogueBest(menu)?.element ?? null);
+        const num = (value) => (typeof value === "number" && Number.isFinite(value) ? Math.round(value * 10) / 10 : null);
+        const style = (element) => {
+          try {
+            const computed = globalThis.getComputedStyle(element);
+            const value = (name) => (computed.getPropertyValue(name) || null);
+            return {
+              overflow_x: value("overflow-x"), overflow_y: value("overflow-y"), display: value("display"),
+              visibility: value("visibility"), pointer_events: value("pointer-events"), position: value("position"),
+            };
+          } catch {
+            return null;
+          }
+        };
+        const box = (element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            tag: element.localName ?? null,
+            class: attr(element, "class").slice(0, 80),
+            rect: [num(rect.left), num(rect.top), num(rect.width), num(rect.height)],
+            client: [num(element.clientWidth), num(element.clientHeight)],
+            scroll: [num(element.scrollWidth), num(element.scrollHeight), num(element.scrollTop)],
+            style: style(element),
+          };
+        };
+        const chain = [];
+        for (let current = element; current && chain.length < 6; current = current.parentElement) chain.push(box(current));
+        const root = document.scrollingElement ?? document.documentElement;
+        return JSON.stringify({
+          found: element !== null,
+          chain,
+          viewport: [num(globalThis.innerWidth), num(globalThis.innerHeight)],
+          root: root ? box(root) : null,
+        });
+      } catch (error) {
+        return JSON.stringify({ error: String(error?.message ?? error).slice(0, 200) });
+      }
     },
     lines(menu) {
       return JSON.stringify(dialogueLines(menu));
@@ -1616,6 +1694,91 @@ fn v8_jitless(runtime: &mut JsRuntime) -> bool {
 /// Advance methods tried, in order, to reach story state 2.
 const ADVANCE_METHODS: [&str; 4] = ["next_control", "dialogue_click", "enter_key", "space_key"];
 
+/// Page helper locating the pointer candidate of a click advance method.
+fn candidate_helper(method: &str, menu: &str) -> String {
+    if method == "next_control" {
+        "__rovesStory.next()".to_string()
+    } else {
+        format!(
+            "__rovesStory.dialogue({})",
+            deno_core::serde_json::Value::String(menu.to_owned())
+        )
+    }
+}
+
+/// Sanitized, read-only evidence of an advance attempt (CI 44616324293
+/// JITless: `game_name_input` timed out on `dialogue_click` with an empty last
+/// text and no step). Read in the same frame as the input, before it is sent
+/// (`advance` repeats the same lookup), or again after a timeout: focus and
+/// dialog flags, and for click methods the candidate point, whether it is in
+/// the viewport, the hit-test node and path (tags/classes, no text) and the
+/// candidate's layout chain (`candidateLayout`). It never sends input.
+fn advance_evidence(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    method: &str,
+    menu: &str,
+) -> deno_core::serde_json::Value {
+    use deno_core::serde_json::{Value, from_str, json};
+    crate::resolve_layout(document);
+    let dialogs = crate::evaluate_string(
+        runtime,
+        "JSON.stringify(JSON.parse(__rovesStory.dialogs()).map(({ role, open, closed, visible, running }) => ({ role, open, closed, visible, running })))",
+    );
+    let mut evidence = json!({
+        "focused": from_str::<Value>(&crate::evaluate_string(runtime, "__rovesStory.focused()")).unwrap_or(Value::Null),
+        "dialogs": from_str::<Value>(&dialogs).unwrap_or(Value::Null),
+        "dialog_input": crate::evaluate_string(runtime, "__rovesStory.dialogInput()") != "null",
+    });
+    if !matches!(method, "next_control" | "dialogue_click") {
+        return evidence;
+    }
+    let layout = evaluate_owned(
+        runtime,
+        format!(
+            "__rovesStory.candidateLayout({}, {})",
+            Value::String(method.to_owned()),
+            Value::String(menu.to_owned())
+        ),
+    );
+    evidence["layout"] = from_str(&layout).unwrap_or(Value::Null);
+    let found = evaluate_owned(runtime, candidate_helper(method, menu));
+    let Some((x, y, element)) = point(&found) else {
+        evidence["candidate"] = Value::Null;
+        return evidence;
+    };
+    let (width, height) = crate::VIEWPORT;
+    evidence["candidate"] = json!({
+        "x": x,
+        "y": y,
+        "w": element["w"],
+        "h": element["h"],
+        "in_viewport": x >= 0.0 && y >= 0.0 && x < width as f32 && y < height as f32,
+    });
+    let hit = crate::hit_target(document, x, y);
+    evidence["hit_node"] = json!(hit.map(|node| node.as_u64()));
+    evidence["hit_path"] = json!(hit.map(|node| hit_path(document, node).1));
+    evidence
+}
+
+/// Why an advance produced no new settled state (`StoryState::Timeout`). The
+/// timeout's candidate is empty both when the page text became empty and when
+/// it stayed equal to a known state, so it is classified from the page text
+/// read after the timeout: `text_became_empty`, `ignored_input` (still the
+/// state before the advance), `returned_to_earlier_state`, or
+/// `changed_without_settling`. A missing target is `no_target` at the call site.
+fn classify_advance_timeout(preceding: &str, previous: &[String], current: &str) -> &'static str {
+    if current.is_empty() {
+        "text_became_empty"
+    } else if current == preceding {
+        "ignored_input"
+    } else if previous.iter().any(|state| state == current) {
+        "returned_to_earlier_state"
+    } else {
+        "changed_without_settling"
+    }
+}
+
 /// Sends one advance input of `method` (see `ADVANCE_METHODS`); returns what was
 /// dispatched, or `None` when the page has no target for it.
 fn advance(
@@ -1625,16 +1788,11 @@ fn advance(
     method: &str,
     menu: &str,
 ) -> Option<deno_core::serde_json::Value> {
-    use deno_core::serde_json::{Value, json};
+    use deno_core::serde_json::json;
     crate::resolve_layout(document);
     match method {
         "next_control" | "dialogue_click" => {
-            let helper = if method == "next_control" {
-                "__rovesStory.next()".to_string()
-            } else {
-                format!("__rovesStory.dialogue({})", Value::String(menu.to_owned()))
-            };
-            let found = evaluate_owned(runtime, helper);
+            let found = evaluate_owned(runtime, candidate_helper(method, menu));
             let (x, y, element) = point(&found)?;
             crate::click_at(runtime, dispatcher, document, x, y)
                 .map(|hit| json!({ "element": element, "hit_node": hit.as_u64() }))
@@ -2346,7 +2504,18 @@ async fn name_input(
                 prompt = Some(input);
                 break;
             }
+            // Evidence only (CI 44616324293): read before the input, kept in the
+            // step of every attempt, including the failing one.
+            let preceding = previous.last().cloned().unwrap_or_default();
+            let before = advance_evidence(runtime, document, method, &menu);
             let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+                steps.push(json!({
+                    "action": method,
+                    "preceding_text": excerpt(&preceding),
+                    "before": before,
+                    "result": "no target",
+                    "classification": "no_target",
+                }));
                 break 'name Some(format!("no target for the advance method {method}"));
             };
             match wait_for_state(
@@ -2359,17 +2528,34 @@ async fn name_input(
             .await
             {
                 StoryState::Settled(text, frames) => {
-                    steps.push(json!({ "action": method, "input": dispatched, "frames": frames, "text": excerpt(&text) }));
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text) }));
                     previous.push(text);
                 },
-                StoryState::FrameStarved(reason) => break 'name Some(reason),
+                StoryState::FrameStarved(reason) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "frame starved" }));
+                    break 'name Some(reason);
+                },
                 StoryState::Timeout(last) => {
+                    let current = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+                    let classification = classify_advance_timeout(&preceding, &previous, &current);
+                    steps.push(json!({
+                        "action": method,
+                        "input": dispatched,
+                        "preceding_text": excerpt(&preceding),
+                        "before": before,
+                        "result": "no new settled state",
+                        "classification": classification,
+                        "last_candidate": excerpt(&last),
+                        "current_text": excerpt(&current),
+                        "after": advance_evidence(runtime, document, method, &menu),
+                    }));
                     break 'name Some(format!(
-                        "no settled state after {method} within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                        "no settled state after {method} within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
                         excerpt(&last)
                     ));
                 },
                 StoryState::ErrorBoundary(text, frames) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
                     break 'name Some(format!(
                         "error boundary shown after {method} ({frames} frames): {:?}",
                         excerpt(&text)
@@ -2579,7 +2765,16 @@ async fn name_input(
         let needle = Value::String(TYPED_NAME.into());
         let mut previous = vec![crate::evaluate_string(runtime, "__rovesStory.snapshot()")];
         for _ in 0..4 {
+            let preceding = previous.last().cloned().unwrap_or_default();
+            let before = advance_evidence(runtime, document, method, &menu);
             let Some(dispatched) = advance(runtime, document, dispatcher, method, &menu) else {
+                steps.push(json!({
+                    "action": method,
+                    "preceding_text": excerpt(&preceding),
+                    "before": before,
+                    "result": "no target",
+                    "classification": "no_target",
+                }));
                 break 'name Some(format!(
                     "no target for the advance method {method} after the prompt"
                 ));
@@ -2598,7 +2793,7 @@ async fn name_input(
                         evaluate_owned(runtime, format!("__rovesStory.nameLines({needle})"));
                     let found: Value =
                         deno_core::serde_json::from_str(&found).unwrap_or(Value::Null);
-                    steps.push(json!({ "action": method, "input": dispatched, "frames": frames, "text": excerpt(&text), "name_lines": found }));
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "frames": frames, "text": excerpt(&text), "name_lines": found }));
                     if found["dialogue"]
                         .as_array()
                         .is_some_and(|lines| !lines.is_empty())
@@ -2645,14 +2840,31 @@ async fn name_input(
                     }
                     previous.push(text);
                 },
-                StoryState::FrameStarved(reason) => break 'name Some(reason),
+                StoryState::FrameStarved(reason) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "frame starved" }));
+                    break 'name Some(reason);
+                },
                 StoryState::Timeout(last) => {
+                    let current = crate::evaluate_string(runtime, "__rovesStory.snapshot()");
+                    let classification = classify_advance_timeout(&preceding, &previous, &current);
+                    steps.push(json!({
+                        "action": method,
+                        "input": dispatched,
+                        "preceding_text": excerpt(&preceding),
+                        "before": before,
+                        "result": "no new settled state",
+                        "classification": classification,
+                        "last_candidate": excerpt(&last),
+                        "current_text": excerpt(&current),
+                        "after": advance_evidence(runtime, document, method, &menu),
+                    }));
                     break 'name Some(format!(
-                        "no settled state after the prompt within {STORY_STATE_FRAMES} frames (last text: {:?})",
+                        "no settled state after the prompt within {STORY_STATE_FRAMES} frames ({classification}; last text: {:?})",
                         excerpt(&last)
                     ));
                 },
                 StoryState::ErrorBoundary(text, frames) => {
+                    steps.push(json!({ "action": method, "input": dispatched, "before": before, "result": "error boundary", "frames": frames }));
                     break 'name Some(format!(
                         "error boundary shown after the prompt ({frames} frames): {:?}",
                         excerpt(&text)
