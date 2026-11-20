@@ -59,11 +59,12 @@ updated. Chrome must classify every case `match` (it validates the fixture).
 
 Why these divergences are expected in Roves (not hidden, not gated):
 
-- No blur: the probe graph does not enable anyrender_vello_cpu `filters` (see
-  `support/blitz-v8-probe/Cargo.toml` and the `vello-mt` TODO entry), and even with it the
-  backdrop under `#glass` is a separate GPU canvas quad (`presentation.rs` `split_scene`),
-  not part of the raster segment that the CPU filter would read. The element's own
-  background is still painted, which `backdrop-tint` gates.
+- No blur: AnyRender Vello CPU 0.18 ignores `_backdrop_filter` in `push_layer`
+  even with its foreground-filter feature enabled. The WebGPU canvas is
+  composited separately. Netrender's external-texture path preprocesses
+  backdrop filters without its interleaved canvas, including upstream
+  [7060634](https://github.com/merely-made/netrender/blob/7060634fb93c6df5b43c4971e03ccaef0b2b7feb/netrender/src/renderer/mod.rs).
+  The element background still paints, which `backdrop-tint` verifies.
 - No canvas clip (expected to disappear, not yet verified): since 2026-11-20 `split_scene`
   intersects the open explicit clip layers that are exact axis-aligned rectangles into
   `CanvasDraw::clip` and the compositor applies it as the render pass scissor of the canvas
