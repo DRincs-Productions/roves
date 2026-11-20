@@ -3137,3 +3137,21 @@ MCP, dove render/present resta sotto 9 ms al P99. Il lag si riproduce
 anche senza MCP, e i raster lunghi ricompaiono durante cambi di stato.
 La traccia ha 16 marker nativi e nessuna sovrascrittura. Dati in
 `D:/roves-ci/native-skip-e88-20261120.*`. PresentMon non è attivo.
+
+### Confronto preliminare Vello single/multi in release
+
+GTX 1050/Vulkan, stessa coppia release `0cdb0da9300` della CI 44364448564,
+template originale `e88e9ac29e73`, storage isolato. Una corsa nativa per
+variante con menu, Start, due battute, Skip e conferma del nome. Entrambe
+le finestre sono state chiuse dopo la sequenza.
+
+| Variante | P99 raster | Max raster | P99 tick | P99 render/present |
+| --- | ---: | ---: | ---: | ---: |
+| Single | 18,15 ms | 27,56 ms | 38,07 ms | 8,03 ms |
+| Multi | 6,91 ms | 7,19 ms | 41,77 ms | 7,24 ms |
+
+Il raster parallelo è il candidato per i picchi di raster. In questa
+coppia il P99 del tick rimane sopra budget e non migliora. Corsa
+esplorativa senza confronto pixel o costo CPU per thread. Dati Roves
+`D:/roves-ci/pm-real-e88-*.{log,ndjson}`. La cattura PresentMon è
+separata, ancora attiva alla registrazione di questo risultato.
