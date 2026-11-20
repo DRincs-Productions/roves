@@ -3207,3 +3207,17 @@ nessun risparmio idle dimostrato. La memoria privata rilevata è
 parzialmente occluse, quindi i loro intervalli di presentazione sono
 esclusi dal confronto visivo. Dati `D:/roves-ci/pm-idle-vello-triples-e88/`,
 `D:/roves-ci/presentmon-roves-chrome-comparison-20261120.csv` e relativi marker.
+
+### Riferimento Chrome per la regressione di opacità inline
+
+Stesso HTML della fixture `support/blitz-v8-probe/fixtures/inline-opacity`,
+640 × 360 a DPR 1, screenshot Chrome DevTools e raster offscreen della
+release Roves `0cdb0da9300`. Lo stesso checker verifica regioni e controlli.
+Chrome passa: zero pixel di testo nelle due caselle inline a opacità
+zero, intensità minima 127 a metà opacità e 191 a opacità annidata 0,25.
+Roves prima della correzione fallisce entrambe le caselle a opacità zero
+con 639 pixel di glifo ciascuna, lo stesso conteggio del controllo opaco.
+L'inline-block a zero passa in entrambi. L'output Chrome RGB è convertito
+in RGBA senza modificare i colori per il checker esistente. La prova
+non verifica ancora il binario con il fix. Artefatti in
+`D:/roves-ci/inline-opacity-negative/`.
