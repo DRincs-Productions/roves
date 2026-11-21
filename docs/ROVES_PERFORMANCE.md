@@ -3271,3 +3271,14 @@ Chrome espone `Element.animate`; Roves usa il percorso rAF di Motion.
 Questo campione verifica stato finale e completion. Il controllo
 intermedio e l'annullamento restano separati. Dati:
 `D:/roves-ci/motion-existing-cross/`.
+
+La fixture Motion estesa (commit `9a6fb108716`) usa il tempo della
+libreria per raggiungere metà animazione e poi invoca `cancel()`.
+Con opacità iniziale impostata a 0,2, Chrome e la release Roves
+`0cdb0da9300` (normale e JITless) riportano gli stessi valori:
+`x=50, opacity=0.6` a metà e `x=0, opacity=0.2` dopo la cancellazione.
+Le asserzioni del gate passano anche eseguite sul nuovo bundle caricato
+come pagina temporanea nei due modi Roves. L'integrazione nel binario
+CI resta da verificare. Nella prova esplorativa con opacità iniziale
+implicita, Chrome ripristina 1 e il fallback Motion su Roves mantiene
+0,2, il primo keyframe. Questi esiti appartengono al test di stato DOM.
