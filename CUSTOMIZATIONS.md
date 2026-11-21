@@ -20870,3 +20870,5 @@ actual story state without changing game/runtime input behavior.
 - Added a deterministic 32x24 five-frame VP8/WebM clip. Chrome 157 reports metadata, a presented frame, dimensions, pause, seek and end; Roves remains untested without its HTML media API. The clip was authored with ffmpeg 8.0.1 from `testsrc2` and embedded in the shared fixture matrix.
 - Fixed the intermittent `game_hud_save_load` CI gate: its readiness probe used a boolean result with `wait_until`, whose contract is an empty/non-empty string. The string `"false"` was treated as ready, allowing the HUD click before the named dialogue was committed. It now returns an explicit empty/ready sentinel. Reproduced locally on template SHA `8a8d59b`: name dialogue committed, HUD panel opened and closed, no new narration lines or script errors.
 - Updated `TODO.md`, `docs/ROVES_PERFORMANCE.md`, probe README, and compatibility manifest with evidence and follow-up. No dependency added.
+
+The animation callback error override was reverted after CI found that deno_core freezes the core object. The probe retains the previous error handling while an embedder-supported hook is investigated.
