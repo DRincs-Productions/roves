@@ -3282,3 +3282,13 @@ come pagina temporanea nei due modi Roves. L'integrazione nel binario
 CI resta da verificare. Nella prova esplorativa con opacità iniziale
 implicita, Chrome ripristina 1 e il fallback Motion su Roves mantiene
 0,2, il primo keyframe. Questi esiti appartengono al test di stato DOM.
+
+### Verifica dei fix grafici sul binario Windows della CI
+
+L'artefatto normale della CI 44894522399 ha superato il controllo PNG
+dell'opacità zero, con zero pixel di glifo nelle due caselle del test.
+Le caselle di opacità intermedia mantengono le divergenze diagnostiche.
+La stessa build, in finestra sulla GTX 1050 con Vulkan, ha riprodotto
+il ritaglio rettangolare del canvas osservato in Chrome. Il test ora
+richiede che i pixel esterni restino bianchi. La sfocatura resta una
+divergenza registrata. Dati in `D:/roves-ci/44894522399-normal/`.
