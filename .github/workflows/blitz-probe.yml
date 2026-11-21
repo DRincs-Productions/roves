@@ -49,7 +49,8 @@ jobs:
     # +12 for the bounded packaged-launch smoke, loose and packed (step timeout 12);
     # +10 for the opt-in downloadable dev MCP bundle smoke (step timeout 10);
     # +22 for the opt-in MCP template playthrough (step timeouts 10 + 12).
-    timeout-minutes: 121
+    # Additional time for the release build used by the two story gates.
+    timeout-minutes: 166
     strategy:
       fail-fast: false
       matrix:
@@ -398,6 +399,12 @@ jobs:
       # masks its failure, so the job result does not block on it. The
       # game_hud_save_load result it logs is enforced by the separate required
       # regression gate step right after it, which fails the job.
+      - name: build Windows release probe for story regressions
+        if: ${{ !cancelled() }}
+        timeout-minutes: 45
+        env:
+          CARGO_TARGET_DIR: ${{ runner.temp }}/blitz-probe-target
+        run: cargo build --release --locked --manifest-path support/blitz-v8-probe/Cargo.toml
       - name: template story Start and first two dialogue states (diagnostic)
         if: ${{ !cancelled() }}
         continue-on-error: true
@@ -407,9 +414,10 @@ jobs:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
           ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-story-storage
           ROVES_PROBE_STORY_SCREENSHOT: ${{ runner.temp }}/blitz-story.png
+          DENO_WEBGPU_BACKEND: dx12
           RUST_BACKTRACE: '1'
         run: |
-          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          exe="$RUNNER_TEMP/blitz-probe-target/release/roves-blitz-v8-probe.exe"
           if [ ! -x "$exe" ] || [ ! -d visual-novel-template/dist ]; then
             echo "::error::story harness NOT RUN: probe executable or game build missing"
             exit 1
@@ -505,9 +513,10 @@ jobs:
         env:
           ROVES_PROBE_JITLESS: ${{ matrix.mode == 'jitless' && '1' || '0' }}
           ROVES_PROBE_STORAGE_DIR: ${{ runner.temp }}/blitz-skip-storage
+          DENO_WEBGPU_BACKEND: dx12
           RUST_BACKTRACE: '1'
         run: |
-          exe="$RUNNER_TEMP/blitz-probe-target/debug/roves-blitz-v8-probe.exe"
+          exe="$RUNNER_TEMP/blitz-probe-target/release/roves-blitz-v8-probe.exe"
           if [ ! -x "$exe" ] || [ ! -d visual-novel-template/dist ]; then
             echo "::error::game_story_skip gate NOT RUN: probe executable or game build missing"
             exit 1
@@ -849,6 +858,7 @@ jobs:
             ${{ runner.temp }}/blitz-visual-matrix.png
             ${{ runner.temp }}/blitz-visual-matrix.json
             ${{ runner.temp }}/blitz-probe-target/debug/roves-blitz-v8-probe.exe
+            ${{ runner.temp }}/blitz-probe-target/release/roves-blitz-v8-probe.exe
           retention-days: 7
           if-no-files-found: warn
       # Runs after the ordinary probe executable has been uploaded.
