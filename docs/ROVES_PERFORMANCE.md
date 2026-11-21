@@ -3353,3 +3353,26 @@ di cambiare il percorso o introdurre una dipendenza.
 
 Dati: `D:/roves-ci/44894522399-animation-comparison/`,
 `D:/roves-ci/44894522399-normal/warm-start.ndjson` e relativi log.
+
+#### Ripetizione release dello stesso commit
+
+La [CI 44913321647](https://github.com/DRincs-Productions/roves/actions/runs/44913321647)
+ha compilato il commit 7f537758b66 in release. Con il binario Vello single-thread,
+stesse fixture e 24 corse alternate completate, i risultati sono:
+
+| Scena | P99 rAF Roves | P99 rAF Chrome | P99 render/present Roves |
+| --- | ---: | ---: | ---: |
+| Opacità | 18,0–18,5 ms | 18,4–18,6 ms | 6,35–6,53 ms |
+| Trasformazione | 17,8–18,7 ms | 18,5–18,6 ms | 6,53–6,77 ms |
+| Pixi animato | 17,8–18,2 ms | 18,7–18,8 ms | 0,95–1,30 ms |
+| Pixi animato e testo DOM incrementale | 18,0–18,6 ms | 18,4–18,7 ms | 4,29–4,46 ms |
+
+Il profilo release rimuove gli stalli osservati in debug sulle fixture.
+Il testo aggiunge circa 3 ms al P99 del renderer in questa configurazione.
+Per scegliere un intervento sul raster, ripetere sul template originale in
+release e raccogliere anche i frame mostrati. Nella traccia debug del template,
+il poll Deno ha raggiunto 270 ms anche dopo l'avanzamento alla seconda battuta.
+La prova PresentMon elevata ha confermato l'accesso ETW con codice 0.
+La cattura di prova contiene solo eventi del desktop.
+
+Dati: `D:/roves-ci/44913321647-vello-ab/animation-comparison/`.
