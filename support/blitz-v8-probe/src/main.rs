@@ -1954,6 +1954,19 @@ fn op_blitz_encode_png(
     canvas_png(width, height, rgba).map_err(JsErrorBox::range_error)
 }
 
+#[op2]
+#[buffer]
+async fn op_blitz_encode_png_async(
+    width: u32,
+    height: u32,
+    #[buffer(copy)] rgba: Vec<u8>,
+) -> Result<Vec<u8>, JsErrorBox> {
+    tokio::task::spawn_blocking(move || canvas_png(width, height, &rgba))
+        .await
+        .map_err(|error| JsErrorBox::generic(error.to_string()))?
+        .map_err(JsErrorBox::range_error)
+}
+
 fn canvas_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>, String> {
     if width == 0
         || height == 0
@@ -2294,6 +2307,7 @@ deno_core::extension!(
         op_blitz_image_bitmap_rgba,
         op_blitz_rasterize_svg,
         op_blitz_encode_png,
+        op_blitz_encode_png_async,
         op_blitz_gpu_wait_idle,
         op_blitz_gpu_poll,
         op_blitz_gpu_work_counters,

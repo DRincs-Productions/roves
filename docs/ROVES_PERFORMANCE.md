@@ -3484,3 +3484,16 @@ e `new-save-restore.log`).
 
 Il runner Windows DX12/WARP ha fallito entrambi i gate anche in
 release. Dati locali: `D:/roves-ci/44938526736-normal/`.
+
+#### Codifica della miniatura fuori dal thread della finestra
+
+Chromium `f2700724f59f`, in `canvas_async_blob_creator.cc`, può
+delegare la codifica di toBlob al pool di worker dopo aver acquisito i
+pixel. Roves riusa il medesimo encoder PNG e il pool bloccante di
+Tokio per toBlob. I pixel CPU vengono copiati all'invocazione e la
+copia WebGPU mantiene la stessa sequenza di readback. Il percorso
+sincrono toDataURL conserva il suo contratto. Il test Canvas già
+presente verifica che una modifica subito dopo toBlob non cambi il
+PNG consegnato e che il callback riceva null per una bitmap vuota.
+La compilazione e il confronto del primo salvataggio sono ancora
+da eseguire sulla build CI.

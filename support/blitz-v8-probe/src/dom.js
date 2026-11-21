@@ -68,6 +68,7 @@
     op_blitz_fetch_check,
     op_blitz_image_bitmap_rgba,
     op_blitz_encode_png,
+    op_blitz_encode_png_async,
     op_blitz_gpu_wait_idle,
     op_blitz_gpu_poll,
     op_blitz_gpu_work_counters,
@@ -2529,23 +2530,26 @@
       }
       // The bitmap is captured now; encoding and the callback happen later.
       const entry = canvasContexts.get(this);
-      let pixels;
+      const encode = async (snapshot) => {
+        if (snapshot === null) return null;
+        const { width, height, rgba } = snapshot;
+        const bytes = new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength);
+        const png = await op_blitz_encode_png_async(width, height, bytes);
+        return new Blob([png], { type: "image/png" });
+      };
+      let encoded;
       try {
         const readback = entry?.mode === "webgpu" ? startGpuCanvasReadback(entry.context) : null;
         if (readback !== null) {
-          pixels = readback();
+          encoded = readback().then(encode);
         } else {
-          const snapshot = this.#cpuSnapshot();
-          pixels = Promise.resolve(snapshot === null ? null : { ...snapshot, rgba: snapshot.rgba.slice() });
+          // The op copies the pixels at submission, before the canvas can change.
+          encoded = encode(this.#cpuSnapshot());
         }
       } catch (error) {
-        pixels = Promise.reject(error);
+        encoded = Promise.reject(error);
       }
-      pixels
-        .then((snapshot) => {
-          if (snapshot === null) return null;
-          return new Blob([encodePng(snapshot.width, snapshot.height, snapshot.rgba)], { type: "image/png" });
-        })
+      encoded
         .catch((error) => {
           // Serialization failure: the callback receives null (HTML toBlob).
           globalThis.console?.warn?.(`canvas.toBlob failed: ${error?.message ?? error}`);
