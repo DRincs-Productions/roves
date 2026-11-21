@@ -3476,8 +3476,11 @@ casi della matrice, mentre sul binario precedente falliva il paint.
 Sul template originale `e88e9ac29e73`, con quattro storage isolati,
 `--story` passa il gate Save/Load e `--story-skip` passa il gate Skip
 sia in normale sia in JITless, con exit 0. Il gate Save/Load verifica
-il pannello durante la storia. La lettura di un salvataggio precedente
-resta una verifica distinta.
+il pannello durante la storia. In una verifica distinta, il binario
+`7f537758b66` ha creato un quick save con stato e miniatura PNG.
+`359d0cc7bec` ha aperto lo stesso storage isolato con `--story-restore`
+e ripristinato la seconda battuta senza errori (log `old-save-compat.log`
+e `new-save-restore.log`).
 
 Il runner Windows DX12/WARP ha fallito entrambi i gate anche in
 release. Dati locali: `D:/roves-ci/44938526736-normal/`.
