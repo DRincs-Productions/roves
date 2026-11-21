@@ -1315,9 +1315,11 @@ jobs:
       # ── Swap in the Goldberg/GSE emulator ────────────────────────────────────
       - name: generate steam_settings fixtures and swap in Goldberg/GSE
         shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          URL=$(curl -fsSL --retry 5 --retry-delay 5 --retry-all-errors https://api.github.com/repos/Detanup01/gbe_fork/releases/latest \
-            | jq -r '.assets[] | select(.name=="emu-linux-release.tar.bz2") | .browser_download_url')
+          URL=$(gh api repos/Detanup01/gbe_fork/releases/latest \
+            --jq '.assets[] | select(.name=="emu-linux-release.tar.bz2") | .browser_download_url')
           if [ -z "$URL" ]; then
             echo "::error::could not resolve emu-linux-release.tar.bz2 from Detanup01/gbe_fork's latest release"
             exit 1
