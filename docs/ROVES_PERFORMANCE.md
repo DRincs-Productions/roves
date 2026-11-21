@@ -3391,6 +3391,20 @@ Chromium `f2700724f59f`, `base_rendering_context_2d.cc`, usa
 PlainTextPainter per le metriche e per il disegno. In Roves Parley
 e Vello CPU sono già nel grafo. Valutare un adattatore condiviso per
 misurazione e raster prima di introdurre una nuova libreria Canvas.
+La fixture equivalente eseguita via Chrome DevTools misura 204,08 px
+per `A few minutes later` a 24 px Arial, con ascendente effettivo 17 px
+e 1.646 pixel con alpha non nullo dopo fillText. Il riferimento distingue
+metriche restituite da raster effettivamente prodotto.
+
+Valutato [vl-convert-canvas2d-deno 2.0.0-rc7](https://crates.io/crates/vl-convert-canvas2d-deno/2.0.0-rc7):
+l'estensione dipende da deno_core ^0.411.0, mentre la probe usa =0.413.0.
+Il crate Rust sottostante, senza l'estensione, espone misura, riempimento,
+contorno e clearRect, ma nel sorgente verificato manca lo stato di ombra
+richiesto dalla scena. Non introdotto. Il backend Servo esistente
+`components/canvas/vello_cpu_backend.rs` mostra come riusare le glyph run
+Vello CPU, con dipendenze da font e WebRender della shell Servo. Per
+Blitz resta da verificare un adattatore piccolo che usi Parley per lo
+shaping e Vello CPU per i pixel, riusando il bitmap CSS/Canvas esistente.
 
 Le due build della probe escludevano la feature SVG di Blitz.
 Il renderer mantenuto in Blitz riusa usvg e anyrender_svg. Il nuovo
