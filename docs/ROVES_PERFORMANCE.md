@@ -3376,3 +3376,26 @@ La prova PresentMon elevata ha confermato l'accesso ETW con codice 0.
 La cattura di prova contiene solo eventi del desktop.
 
 Dati: `D:/roves-ci/44913321647-vello-ab/animation-comparison/`.
+
+### Verifiche di compatibilità prima del rilascio
+
+Template originale `e88e9ac29e73`, release Windows `7f537758b66`.
+La scelta «Yes, I want to continue» entra in `second_part`, che crea
+un Pixi Text con riempimento, contorno arrotondato e ombra. Il log
+riporta `measureText is not a function` sia nello step sia nello storico.
+La fixture minima conferma l'assenza di measureText, fillText,
+strokeText, clearRect, scale e resetTransform. Un fix limitato alle
+metriche lascerebbe incompleto il rendering del ramo.
+
+Chromium `f2700724f59f`, `base_rendering_context_2d.cc`, usa
+PlainTextPainter per le metriche e per il disegno. In Roves Parley
+e Vello CPU sono già nel grafo. Valutare un adattatore condiviso per
+misurazione e raster prima di introdurre una nuova libreria Canvas.
+
+Le due build della probe escludevano la feature SVG di Blitz.
+Il renderer mantenuto in Blitz riusa usvg e anyrender_svg. Il nuovo
+caso visual matrix crea un SVG via createElementNS con viewBox e
+stroke currentColor, come Lucide. Sulla release precedente fallisce
+solo il controllo dei pixel del nuovo caso. I due manifest abilitano
+ora il renderer SVG. Le nuove build e la prova sul template restano
+da verificare in CI.

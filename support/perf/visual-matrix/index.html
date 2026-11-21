@@ -36,6 +36,7 @@
   #fade-out-done { left: 340px; top: 140px; opacity: 1; }
   #css-anim-forwards-done { left: 500px; top: 140px; opacity: 0;
     animation: vm-fade-in 1ms linear 0s 1 normal forwards running; }
+  #svg-icon { position: absolute; left: 20px; top: 195px; width: 36px; height: 36px; color: rgb(200, 30, 30); }
   #clip-overflow { left: 20px; }
   #clip-radius { left: 180px; border-radius: 30px; }
   #scroll-top { left: 340px; }
@@ -46,7 +47,7 @@
 </style>
 <script type="application/json" id="vm-cases">
 {
-  "fixture_version": "2026-11-20.1",
+  "fixture_version": "2026-11-21.1",
   "viewport": [640, 360],
   "background": [255, 255, 255],
   "drive_frames": 20,
@@ -93,6 +94,10 @@
       "state": { "rect": [500, 140, 40, 40], "opacity": 1 },
       "paint": [{ "rect": [500, 140, 40, 40], "color": [0, 0, 255] }],
       "blank": [], "bounds": [500, 140, 40, 40] },
+    { "id": "svg-icon", "group": "svg", "gate": true,
+      "state": { "rect": [20, 195, 36, 36], "opacity": 1 },
+      "paint": [{ "rect": [26, 207, 24, 12], "color": [200, 30, 30] }],
+      "blank": [], "bounds": [20, 195, 36, 36] },
     { "id": "clip-overflow", "group": "clip", "gate": true,
       "state": { "rect": [20, 250, 60, 60] },
       "paint": [{ "rect": [20, 250, 60, 60], "color": [30, 160, 60] }],
@@ -143,6 +148,16 @@
     let spec;
     let entries;
     try {
+      const svgNamespace = "http://www.w3.org/2000/svg";
+      const svg = document.createElementNS(svgNamespace, "svg");
+      svg.setAttribute("id", "svg-icon");
+      svg.setAttribute("viewBox", "0 0 24 24");
+      const stroke = document.createElementNS(svgNamespace, "path");
+      stroke.setAttribute("d", "M4 12h16");
+      stroke.setAttribute("stroke", "currentColor");
+      stroke.setAttribute("stroke-width", "8");
+      svg.appendChild(stroke);
+      document.body.appendChild(svg);
       spec = JSON.parse(document.getElementById("vm-cases").textContent);
       out.fixture_version = spec.fixture_version;
       entries = spec.cases.map((c) => {
