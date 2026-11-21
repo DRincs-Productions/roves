@@ -3413,3 +3413,22 @@ stroke currentColor, come Lucide. Sulla release precedente fallisce
 solo il controllo dei pixel del nuovo caso. I due manifest abilitano
 ora il renderer SVG. Le nuove build e la prova sul template restano
 da verificare in CI.
+
+Chrome DevTools mostra il tratto nella stessa fixture e conferma
+rettangolo 36 × 36, namespace SVG e `currentColor` ereditato. La
+controprova con lo stesso SVG come immagine dà RGBA (200, 30, 30, 255)
+al centro. La release Roves precedente restituisce lo stato corretto
+e fallisce il controllo di paint dell’icona.
+
+Il dialogo del nome chiude lo stato Base UI quando la conferma fa
+avanzare la narrazione. Per attribuire il lampo, acquisire anche lo
+stesso dialogo con sfondo fermo. Il backdrop dipende da
+`@supports(backdrop-filter)`, mentre la fixture GPU ha già mostrato
+che il compositore Vello CPU non sfoca lo sfondo Pixi. Il risultato
+potrebbe incidere sulla transizione, ma manca una cattura che lo
+colleghi al lampo. Per il riallineamento, confrontare i due rami del
+typewriter: il template usa un override dei paragrafi a span nello
+stato statico, mentre lo stato animato usa i componenti predefiniti.
+Per il primo salvataggio, l’export dello stato precede l’estrazione
+della miniatura, poi l’item va a Roves Saves o IndexedDB. Misurare le
+tre fasi prima di modificare il percorso.
