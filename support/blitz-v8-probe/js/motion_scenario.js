@@ -21,9 +21,28 @@ import { animate } from "motion";
   fading.style.backgroundColor = "rgb(255, 255, 255)";
   app.appendChild(fading);
 
-  const result = { started: false, finished: false, error: null };
+  const result = { started: false, finished: false, midpoint: null, cancelled: null, error: null };
   globalThis.motionResult = result;
   try {
+    const interrupted = element.cloneNode();
+    interrupted.removeAttribute("id");
+    interrupted.style.opacity = "0.2";
+    app.appendChild(interrupted);
+    const animation = animate(interrupted, { x: [0, 100], opacity: [0.2, 1] },
+      { duration: 1, ease: "linear", autoplay: false });
+    const left = interrupted.getBoundingClientRect().left;
+    const sample = () => ({
+      x: interrupted.getBoundingClientRect().left - left,
+      opacity: Number(getComputedStyle(interrupted).opacity),
+    });
+    animation.time = 0.5;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      result.midpoint = sample();
+      animation.cancel();
+      requestAnimationFrame(() => requestAnimationFrame(() => {
+        result.cancelled = sample();
+      }));
+    }));
     const controls = Promise.all([
       animate(element, { x: [0, 100], opacity: [0.2, 1] }, { duration: 0.1, ease: "linear" }),
       animate(fading, { opacity: 0.5 }, { duration: 0.1, ease: "linear" }),
