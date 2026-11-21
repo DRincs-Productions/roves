@@ -3442,6 +3442,14 @@ campione. Serve la battuta completa nella scena reale, con le classi
 del template e i dati raccolti anche al completamento dell’animazione.
 Dati: `D:/roves-ci/typewriter-markup-ab/roves.log`.
 
+Una fixture isolata di chiusura, con fondale fermo e keyframe CSS da
+100 ms, scende a opacità zero in Roves e riporta `finished` per entrambi
+i nodi. Il primo campione ha già opacità 0,89 sul popup mentre il
+backdrop è ancora a 1. Chrome DevTools ha catturato gli estremi ma
+ha saltato l'intervallo intermedio. Il caso non include Base UI,
+Pixi o presentazioni visibili e non attribuisce il lampeggio del
+template. Dati: `D:/roves-ci/dialog-exit-static/roves.log`.
+
 #### Salvataggio: conversione e scrittura
 
 Il percorso IndexedDB Blitz serializza con V8 e chiama localStorage
@@ -3458,3 +3466,18 @@ scesa da circa 2–3 ms a 0,13–0,27 ms. Il codice IndexedDB e il data
 URL PNG usano ora le API native V8 mantenendo formato dei file e delle
 miniature. Da verificare in CI il caricamento di un salvataggio creato
 con la build precedente. Dati: `D:/roves-ci/save-idb-baseline/`.
+
+### Verifica Windows release del 21 novembre
+
+La [CI 44938526736](https://github.com/DRincs-Productions/roves/actions/runs/44938526736)
+ha prodotto il binario release `359d0cc7bec` con SVG e Base64 V8.
+Sulla GTX 1050/Vulkan il caso `svg-icon` passa insieme agli altri
+casi della matrice, mentre sul binario precedente falliva il paint.
+Sul template originale `e88e9ac29e73`, con quattro storage isolati,
+`--story` passa il gate Save/Load e `--story-skip` passa il gate Skip
+sia in normale sia in JITless, con exit 0. Il gate Save/Load verifica
+il pannello durante la storia. La lettura di un salvataggio precedente
+resta una verifica distinta.
+
+Il runner Windows DX12/WARP ha fallito entrambi i gate anche in
+release. Dati locali: `D:/roves-ci/44938526736-normal/`.
