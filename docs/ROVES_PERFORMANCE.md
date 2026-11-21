@@ -3292,3 +3292,64 @@ La stessa build, in finestra sulla GTX 1050 con Vulkan, ha riprodotto
 il ritaglio rettangolare del canvas osservato in Chrome. Il test ora
 richiede che i pixel esterni restino bianchi. La sfocatura resta una
 divergenza registrata. Dati in `D:/roves-ci/44894522399-normal/`.
+
+### Scatti HTML nella build della prova manuale
+
+Tre coppie alternate sulla GTX 1050 a 60 Hz, Chrome con la fixture visibile
+e Roves Vulkan dall'artefatto **debug** 44894522399, con 30 callback di
+riscaldamento e 120 misurati. Stage 640 × 360 a DPR 1 in entrambi, viewport
+Chrome 644 × 381. Il backing Pixi è 1920 × 1080 in entrambi.
+
+| Scena | P99 rAF Roves | P99 rAF Chrome | P99 render/present Roves |
+| --- | ---: | ---: | ---: |
+| Opacità | 101–106 ms | 18,6–19,4 ms | 102–106 ms |
+| Trasformazione | 101–107 ms | 18,5–18,7 ms | 108–125 ms |
+| Pixi animato | 17,9–18,8 ms | 18,1–18,6 ms | 3,4–3,8 ms |
+| Pixi animato e testo DOM incrementale | 66,5–102,7 ms | 18,5–18,6 ms | 58–92 ms |
+
+Nelle fixture di sola opacità e trasformazione il tick ha P99 circa 1 ms
+e ogni frame invalida il segmento rasterizzato. Nel primo run raster
+P99 107–109 ms contro acquisizione e presentazione sotto 0,13 ms.
+Pixi resta vicino alla cadenza del monitor con cache calda. L'inserimento
+del testo nella stessa scena causa miss e rallenta la cadenza comune.
+Il test isola aggiornamenti DOM da rAF, mentre i pulsanti e il typewriter
+del template richiedono una misura propria. Nelle prove precedenti con
+release 0cdb0da9300, opacità e trasformazione avevano P99 rAF circa 18 ms.
+Per attribuire il costo alla configurazione di build serve una release
+dello stesso commit e una ripetizione a parità di condizioni.
+
+Sul template originale e88e9ac, un clic nativo a menu stabilizzato ha
+avviato la storia e un secondo clic ha raggiunto la battuta successiva.
+Nel primo secondo dal rilascio di Start, due frame hanno richiesto
+128 e 115 ms di raster. Tra le presentazioni registrate dal renderer
+sono trascorsi circa 235 e 264 ms. Dopo il primo render, tre tick hanno
+occupato rispettivamente 113 ms (68 microtask, 44 poll Deno), 258 ms
+(256 poll Deno) e 1.024 ms (1.023 poll Deno). Sono tempi di parete.
+Il contatore aggregato delle copie di texture della sessione manuale
+riporta un massimo di 241 ms senza timestamp per singola copia, quindi
+questo valore lascia aperta l'attribuzione dentro il poll.
+
+Chrome via DevTools, con backing 1920 × 1080, ha impiegato 567 ms dal
+clic alla presenza del testo nel DOM in una prova esplorativa a menu
+stabilizzato (929 × 861, DPR 1). È una misura DOM e la viewport è diversa
+dalla finestra Roves. PresentMon 2.6.0 ha restituito exit 6 e
+`access denied` su ETW. Restano aperti gli intervalli dei frame mostrati,
+la latenza input-display e il confronto completo a parità di condizioni,
+incluso Start immediato.
+
+Riferimento Chromium f2700724f59f: `cc/README.md` e
+`cc/animation/README.md` descrivono il commit verso l'albero del
+compositore e le animazioni su layer. Blitz espone già le animazioni
+CSS di Stylo; il percorso Netrender è in un manifest separato e manca
+da questo binario. Prima di estendere WAAPI, misurare in release quanto
+compositing e riuso dei segmenti riducono il raster del template.
+Per Start, attribuire il poll con marcatori temporali di decode e copie
+immagine già strumentate a livello di totale. Chromium instrada
+`copyExternalImageToTexture` a Dawn in
+`third_party/blink/renderer/modules/webgpu/gpu_queue.cc`; Roves supplisce
+all'assenza dell'API in deno_webgpu 0.227 con conversione sincrona e
+`writeTexture`. Verificare il contributo di quella conversione prima
+di cambiare il percorso o introdurre una dipendenza.
+
+Dati: `D:/roves-ci/44894522399-animation-comparison/`,
+`D:/roves-ci/44894522399-normal/warm-start.ndjson` e relativi log.
