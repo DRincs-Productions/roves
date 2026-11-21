@@ -23,7 +23,7 @@
 // the V8 thread; their events fire on the request only (no bubbling).
 globalThis.__rovesCreateIndexedDB = (dependencies) => {
   "use strict";
-  const { storage, serialize, deserialize, atob, btoa, Event, EventTarget, DOMException, setIsTrusted, setTimeout } =
+  const { storage, serialize, deserialize, Event, EventTarget, DOMException, setIsTrusted, setTimeout } =
     dependencies;
 
   const INTERNAL = Symbol("internal");
@@ -104,18 +104,8 @@ globalThis.__rovesCreateIndexedDB = (dependencies) => {
       throw domError("DataCloneError", String(error?.message ?? error));
     }
   }
-  function toBase64(bytes) {
-    let binary = "";
-    for (let index = 0; index < bytes.length; index += 0x8000) {
-      binary += String.fromCharCode.apply(null, bytes.subarray(index, index + 0x8000));
-    }
-    return btoa(binary);
-  }
   function decodeValue(data) {
-    const binary = atob(data);
-    const bytes = new Uint8Array(binary.length);
-    for (let index = 0; index < binary.length; index++) bytes[index] = binary.charCodeAt(index);
-    return deserialize(bytes, { forStorage: true });
+    return deserialize(Uint8Array.fromBase64(data), { forStorage: true });
   }
 
   // ---- events -------------------------------------------------------------------
@@ -552,9 +542,9 @@ globalThis.__rovesCreateIndexedDB = (dependencies) => {
           if (store.current > 2 ** 53) throw domError("ConstraintError", "The key generator is exhausted");
           keyNow = store.current;
           clone[store.keyPath] = keyNow;
-          data = toBase64(serializeValue(clone));
+          data = serializeValue(clone).toBase64();
         } else {
-          data = toBase64(bytes);
+          data = bytes.toBase64();
         }
         const encoded = encodeKey(keyNow);
         const keys = indexKeys(store, clone);

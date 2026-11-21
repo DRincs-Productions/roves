@@ -2127,17 +2127,13 @@
       throw new RangeError(`Canvas bitmap ${width}x${height} exceeds the probe limit (${CANVAS_MAX_SIDE} per side, ${CANVAS_MAX_AREA} pixels)`);
     }
   }
-  // PNG data: URL of straight-alpha RGBA8 pixels (op_blitz_encode_png uses the
-  // `png` crate). btoa runs over binary-string chunks to keep argument lists short.
+  // PNG data URL of straight-alpha RGBA8 pixels (op_blitz_encode_png uses the
+  // `png` crate).
   function encodePng(width, height, rgba) {
     return op_blitz_encode_png(width, height, new Uint8Array(rgba.buffer, rgba.byteOffset, rgba.byteLength));
   }
   function pngDataUrl(png) {
-    let binary = "";
-    for (let offset = 0; offset < png.length; offset += 0x8000) {
-      binary += String.fromCharCode.apply(null, png.subarray(offset, offset + 0x8000));
-    }
-    return `data:image/png;base64,${btoa(binary)}`;
+    return `data:image/png;base64,${png.toBase64()}`;
   }
   const longOptions = { enforceRange: true };
   // HTMLCanvasElement context mode: the first successful getContext fixes it;
@@ -3058,8 +3054,6 @@
     storage: () => webStorage.localStorage(),
     serialize: core.serialize,
     deserialize: core.deserialize,
-    atob,
-    btoa,
     Event,
     EventTarget,
     DOMException,

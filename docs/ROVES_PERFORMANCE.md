@@ -3432,3 +3432,29 @@ stato statico, mentre lo stato animato usa i componenti predefiniti.
 Per il primo salvataggio, l’export dello stato precede l’estrazione
 della miniatura, poi l’item va a Roves Saves o IndexedDB. Misurare le
 tre fasi prima di modificare il percorso.
+
+Una fixture React/MarkdownTypewriter sul binario release `7f537758b66`
+ha confrontato l’override `p → span` sul solo testo statico e su entrambi
+i rami. Alla decima callback, a 420 px di larghezza, entrambe le
+varianti avevano altezza 48 px e nessun paragrafo annidato. La sola
+differenza tra gli override non riproduce il problema in questo
+campione. Serve la battuta completa nella scena reale, con le classi
+del template e i dati raccolti anche al completamento dell’animazione.
+Dati: `D:/roves-ci/typewriter-markup-ab/roves.log`.
+
+#### Salvataggio: conversione e scrittura
+
+Il percorso IndexedDB Blitz serializza con V8 e chiama localStorage
+sincrono di deno_webstorage, che scrive SQLite sul thread del gioco.
+Su tre storage nuovi, una fixture da 500 kB ha misurato 3–13 ms per
+la sola chiamata setItem e 38–73 ms dalla richiesta put a onsuccess.
+La prima scrittura non è sempre la più lenta. Esportazione dello stato
+e cattura della miniatura del gioco restano da misurare separatamente.
+
+Sul binario release della CI, V8 `Uint8Array.toBase64` ha restituito
+gli stessi byte del percorso con stringhe temporanee e il round trip
+è riuscito anche in JITless. A caldo la conversione di 500 kB è
+scesa da circa 2–3 ms a 0,13–0,27 ms. Il codice IndexedDB e il data
+URL PNG usano ora le API native V8 mantenendo formato dei file e delle
+miniature. Da verificare in CI il caricamento di un salvataggio creato
+con la build precedente. Dati: `D:/roves-ci/save-idb-baseline/`.
