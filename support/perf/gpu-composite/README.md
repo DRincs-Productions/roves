@@ -46,7 +46,7 @@ change; Python standard library only.
 | `dom-foreground-alpha` | yes | 50% white box over blue | ~(128,128,255), blue ring | match |
 | `backdrop-tint` | yes | `#glass`: `rgba(255,255,255,.25)` + `backdrop-filter: blur(8px)` across the red/blue edge (x 220) | tints (255,64,64) / (64,64,255) >= 26 px from every edge; canvas unchanged just outside | match (tint painted, no blur needed there) |
 | `backdrop-blur-edge` | no, `known_no_blur` | columns x 218 and 221 (1.5 px from the edge) under `#glass` | red/blue mix (~174/145 for sigma 8) | sharp tints: `known_no_blur` |
-| `canvas-clip` | no, `known_no_canvas_clip` | 200x160 canvas in a 120x80 `overflow: hidden` box, black DOM child over it | cyan only inside the box, white strips outside, black box above | before 2026-11-20 cyan in the strips: `known_no_canvas_clip`; with the rectangular scissor expected `match`, not yet verified on a GPU |
+| `canvas-clip` | yes | WebGPU canvas inside an `overflow: hidden` box with a foreground DOM child | cyan inside, white outside, black child above | match |
 
 Classification: `match`, the declared `known_*` label (only when every `paint` region is
 right, the `expect` regions are wrong and the declared `alternative` regions are right),
@@ -65,18 +65,9 @@ Why these divergences are expected in Roves (not hidden, not gated):
   backdrop filters without its interleaved canvas, including upstream
   [7060634](https://github.com/merely-made/netrender/blob/7060634fb93c6df5b43c4971e03ccaef0b2b7feb/netrender/src/renderer/mod.rs).
   The element background still paints, which `backdrop-tint` verifies.
-- No canvas clip (expected to disappear, not yet verified): since 2026-11-20 `split_scene`
-  intersects the open explicit clip layers that are exact axis-aligned rectangles into
-  `CanvasDraw::clip` and the compositor applies it as the render pass scissor of the canvas
-  draw (wgpu-core 29.0.4 `render_pass_set_scissor_rect`), so `#clipbox` (sharp
-  `overflow: hidden`, integer coordinates) should clip `#gpu-b` exactly and classify
-  `canvas-clip` as `match`. The checker already accepts `match` for this non-gated case and
-  warns "known divergence no longer observed". **After one positive real-GPU run** of the
-  recipe below (Roves `match`, Chrome `match`, rects equal), set `canvas-clip` to
-  `"gate": true`, drop `known`/`expect`/`alternative`, bump `fixture_version` and update
-  this table; until then keep `known_no_canvas_clip` accepted. Rounded, rotated or path
-  clips and opacity-layer clips are still not applied (probe README). The netrender
-  renderer still falls back for clipped canvases (unchanged classification).
+- The rectangular canvas clip is a required check after the Roves Windows
+  artifact from CI 44894522399 matched Chrome on the GTX 1050. Rounded,
+  rotated and path clips remain outside this case.
 
 ## Capture: no deterministic readback in the GPU window path
 

@@ -31,7 +31,7 @@
 </style>
 <script type="application/json" id="gc-cases">
 {
-  "fixture_version": "2026-11-20.1",
+  "fixture_version": "2026-11-21.1",
   "viewport": [640, 360],
   "background": [255, 255, 255],
   "report_frame": 30,
@@ -80,17 +80,14 @@
                  { "rect": [221, 106, 1, 48], "range": [[96, 224], [48, 80], [96, 224]], "inset": 0 }],
       "alternative": [{ "rect": [218, 106, 2, 48], "color": [255, 64, 64], "tolerance": 8, "inset": 0 },
                       { "rect": [220, 106, 2, 48], "color": [64, 64, 255], "tolerance": 8, "inset": 0 }] },
-    { "id": "canvas-clip", "gate": false, "known": "known_no_canvas_clip",
+    { "id": "canvas-clip", "gate": true,
       "note": "200x160 canvas inside a 120x80 overflow:hidden box with a DOM child over it: clipped to the box, black box above the canvas",
       "paint": [{ "rect": [460, 20, 40, 80], "color": [0, 255, 255] },
                 { "rect": [540, 20, 40, 80], "color": [0, 255, 255] },
-                { "rect": [500, 40, 40, 40], "color": [0, 0, 0] }],
-      "expect": [{ "rect": [424, 24, 32, 72], "color": [255, 255, 255], "inset": 0 },
+                { "rect": [500, 40, 40, 40], "color": [0, 0, 0] },
+                { "rect": [424, 24, 32, 72], "color": [255, 255, 255], "inset": 0 },
                  { "rect": [584, 24, 32, 72], "color": [255, 255, 255], "inset": 0 },
-                 { "rect": [424, 104, 192, 30], "color": [255, 255, 255], "inset": 0 }],
-      "alternative": [{ "rect": [424, 24, 32, 72], "color": [0, 255, 255], "inset": 0 },
-                      { "rect": [584, 24, 32, 72], "color": [0, 255, 255], "inset": 0 },
-                      { "rect": [424, 104, 192, 30], "color": [0, 255, 255], "inset": 0 }] }
+                 { "rect": [424, 104, 192, 30], "color": [255, 255, 255], "inset": 0 }] }
   ]
 }
 </script>
