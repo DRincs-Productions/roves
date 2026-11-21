@@ -394,6 +394,26 @@ jobs:
       # actually compiling/linking and build.rs's copy_steam_lib finding and
       # copying the Steamworks redistributable (steam_api64.dll/libsteam_api.*)
       # next to the binary, which the bundle step below then picks up.
+      - name: install Clang 22 for the Windows C++ build
+        if: matrix.os_name == 'windows'
+        shell: pwsh
+        run: |
+          $installer = Join-Path $env:RUNNER_TEMP 'llvm-22.1.0.exe'
+          $llvm = Join-Path $env:RUNNER_TEMP 'llvm-22.1.0'
+          curl.exe --fail --location --retry 3 --output $installer 'https://github.com/llvm/llvm-project/releases/download/llvmorg-22.1.0/LLVM-22.1.0-win64.exe'
+          if ($LASTEXITCODE -ne 0) { throw "LLVM download failed" }
+          if ((Get-FileHash $installer -Algorithm SHA256).Hash -ne 'b31d5f54942e017cb878e594529723dd629cc7b54c9bf7a331e2dc01e8ea5e75') {
+            throw "Unexpected LLVM installer checksum"
+          }
+          $install = Start-Process $installer -ArgumentList '/S', "/D=$llvm" -WindowStyle Hidden -Wait -PassThru
+          if ($install.ExitCode -ne 0) { throw "LLVM installer exited with $($install.ExitCode)" }
+          $clang = Join-Path $llvm 'bin\clang-cl.exe'
+          & $clang --version
+          if ($LASTEXITCODE -ne 0) { throw "clang-cl is unavailable" }
+          (Join-Path $llvm 'bin') >> $env:GITHUB_PATH
+          "CC=$clang" >> $env:GITHUB_ENV
+          "CXX=$clang" >> $env:GITHUB_ENV
+
       - name: mach build (debug)
         shell: bash
         working-directory: servo-src
