@@ -3485,6 +3485,15 @@ e `new-save-restore.log`).
 Il runner Windows DX12/WARP ha fallito entrambi i gate anche in
 release. Dati locali: `D:/roves-ci/44938526736-normal/`.
 
+Per ripetere il gate Windows su una GPU Vulkan, eseguire
+`support/blitz-v8-probe/check-windows-story-gpu.ps1` con `-Probe`
+puntato all'eseguibile release di CI, `-Game` alla dist del template
+e `-OutputDirectory` a una directory nuova. Lo script verifica
+storia, salvataggio rapido, pannello Save/Load, Skip e teardown
+in normale e JITless. Esige invii su una GPU fisica e conserva un
+log e uno storage isolato per prova. Il repository non ha ancora
+un runner Windows GPU registrato per eseguirlo in GitHub Actions.
+
 #### Codifica della miniatura fuori dal thread della finestra
 
 Chromium `f2700724f59f`, in `canvas_async_blob_creator.cc`, può
