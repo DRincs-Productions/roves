@@ -1,3 +1,22 @@
+## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
+
+Changed: `support/cef-window-probe/` (new separate Cargo workspace), `.github/workflows/cef-window-probe.yml`
+(new), `docs/DEPENDENCY_REVIEW.md`, `TODO.md`. Experiment only: the engine, its workspace,
+the other workflows, `roves-action`, Packmaster and releases are unchanged. A Windows CEF
+window built on the official `cef` crate pinned to `=156.7.0` (CEF 156.0.31, Chromium
+156.0.8078.100) following cef-rs' `cefsimple` example: CEF's `bootstrap.exe` keeps the
+Windows sandbox and loads the `roves_cef_probe` cdylib; the browser process refuses to run
+without sandbox information and logs every child launch with its `--no-sandbox` state. The
+unmodified game build is served from `http://127.0.0.1:<port>` (tower-http `ServeDir` under
+axum, per-run port) and CEF uses a private on-disk profile per run (`root_cache_path` ==
+`cache_path`). Popups are refused; the window closes through CEF's standard
+`can_close`/`do_close`/`on_before_close` sequence, then `shutdown()` and a graceful loopback
+stop. The opt-in workflow (probe path pushes or manual dispatch) builds the bundle with
+cef-rs' own bundler, runs it on visual-novel-template with an automatic close and gates on
+the evidence log, exit code, persisted profile and leftover processes; it uploads log,
+screenshot and bundle. Chromium reference f2700724 and dependency rationale are in the
+probe README. No Deno IPC or Netrender stage yet.
+
 ## 2026-11-20 - Blitz probe CI: deterministic DOM/CSS visual matrix gate
 
 Changed: `.github/workflows/blitz-probe.yml`, `support/perf/visual-matrix/README.md`. CI

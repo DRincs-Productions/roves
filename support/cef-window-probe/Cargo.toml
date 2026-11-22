@@ -1,0 +1,46 @@
+# Stage 1 of the Roves CEF experiment: a standalone Windows CEF window that opens the
+# unmodified game build from an isolated loopback origin. Separate Cargo workspace, not part
+# of the engine and not a dependency of any shipped target. See README.md.
+#
+# Dependencies:
+# - cef (tauri-apps/cef-rs, Apache-2.0 OR MIT) pinned exactly: the crate version encodes the
+#   CEF binary distribution it downloads (156.0.31, Chromium 156) and its `sandbox` feature
+#   builds libcef_dll_wrapper with USE_SANDBOX. `build-util` exposes the official Windows
+#   bundler (bootstrap.exe + <name>.dll layout) reused by src/bin/bundle.rs; `dox` is only
+#   for a local type-check without downloading CEF.
+# - axum + tower-http ServeDir (MIT) serve the game directory on 127.0.0.1: path
+#   normalisation, MIME types and Range requests come from the library instead of our code.
+#
+# The package name doubles as the DLL name loaded by bootstrap.exe, so it uses underscores.
+[package]
+name = "roves_cef_probe"
+version = "0.0.0"
+edition = "2024"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "roves_cef_probe"
+path = "src/main.rs"
+
+[[bin]]
+name = "bundle"
+path = "src/bin/bundle.rs"
+
+[features]
+default = ["sandbox"]
+sandbox = ["cef/sandbox"]
+# Local type-check only: `cargo check --no-default-features --features dox`.
+dox = ["cef/dox"]
+
+[dependencies]
+cef = { version = "=156.7.0", default-features = false, features = ["build-util"] }
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync"] }
