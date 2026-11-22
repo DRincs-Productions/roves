@@ -44,3 +44,6 @@ wgpu = { version = "=29.0.4", default-features = false, features = ["std", "dx12
 netrender = { git = "https://github.com/merely-made/netrender", rev = "d2f13ca5ecd20df89d148a7cebef28c0962b90ca" }
 winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
 base64 = "0.22.1"
+# Already in the graph through welding (0.4.35 in Cargo.lock): forwards welding/grafting
+# warn/error records to the probe log in `--roves-sustained` runs.
+log = "0.4"

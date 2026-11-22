@@ -11,10 +11,14 @@ use std::{
     fs::File,
     io::Write as _,
     path::PathBuf,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicU32, Ordering},
+    },
     time::{Duration, Instant},
 };
 
+use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
 use netrender::{
@@ -52,6 +56,12 @@ const NETRENDER_PANEL: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 /// `--roves-sustained`: longest gap between two imported producer frames during warmup or
 /// sample before the run is declared stalled. The fixture repaints every 16 ms.
 const SUSTAINED_STALL: Duration = Duration::from_millis(500);
+/// `--roves-sustained` only: welding/grafting `log` records at warn or error level forwarded
+/// to the evidence log, at most this many (the rest are only counted).
+const UPSTREAM_LOG_CAP: u32 = 64;
+/// Warmup start, shared with the `log` forwarder (CEF's UI thread logs too).
+static WARMUP_ORIGIN: OnceLock<Instant> = OnceLock::new();
+static UPSTREAM_LOG_RECORDS: AtomicU32 = AtomicU32::new(0);
 
 /// Entry of the browser process and of every CEF subprocess (via bootstrap.exe).
 ///
@@ -105,6 +115,9 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         cef_version(),
         options.compose.name()
     ));
+    if options.sustained {
+        UpstreamLog::install(log.clone());
+    }
 
     let mut config = CefRuntimeConfig::new(cef_path, CefSandboxMode::Sandboxed);
     config.cache_path = Some(options.cache_dir.clone());
@@ -132,6 +145,8 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
         last_import: None,
+        last_generation: None,
+        stall: options.sustained.then(Box::<Ring>::default),
         sustained_done: false,
         options,
         log: log.clone(),
@@ -281,6 +296,59 @@ impl Log {
     }
 }
 
+/// `--roves-sustained` only: forwards welding/grafting `log` records at warn or error level
+/// (for example welding's `failed to copy CEF accelerated frame`, which otherwise goes
+/// nowhere) as `upstream-log` lines. Other targets and lower levels are dropped.
+struct UpstreamLog(Log);
+
+impl UpstreamLog {
+    fn install(log: Log) {
+        let logger: &'static UpstreamLog = Box::leak(Box::new(UpstreamLog(log.clone())));
+        match log::set_logger(logger) {
+            Ok(()) => {
+                log::set_max_level(log::LevelFilter::Warn);
+                log.line(format_args!(
+                    "upstream-log forwarding targets=welding,grafting level=warn cap={UPSTREAM_LOG_CAP}"
+                ));
+            },
+            Err(error) => log.line(format_args!("upstream-log not installed: {error}")),
+        }
+    }
+}
+
+impl log::Log for UpstreamLog {
+    fn enabled(&self, metadata: &log::Metadata<'_>) -> bool {
+        let target = metadata.target();
+        metadata.level() <= log::Level::Warn
+            && (target.starts_with("welding") || target.starts_with("grafting"))
+    }
+
+    fn log(&self, record: &log::Record<'_>) {
+        if !self.enabled(record.metadata()) {
+            return;
+        }
+        let n = UPSTREAM_LOG_RECORDS.fetch_add(1, Ordering::Relaxed);
+        if n >= UPSTREAM_LOG_CAP {
+            return;
+        }
+        // Same origin as the ring's `start_us`; `-` before warmup started.
+        let since = WARMUP_ORIGIN.get().map_or_else(
+            || "-".to_owned(),
+            |origin| origin.elapsed().as_micros().to_string(),
+        );
+        let thread = std::thread::current();
+        self.0.line(format_args!(
+            "upstream-log since_warmup_us={since} thread={:?} level={} target={} {}",
+            thread.name().unwrap_or("?"),
+            record.level(),
+            record.target(),
+            record.args()
+        ));
+    }
+
+    fn flush(&self) {}
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
     Initial,
@@ -311,6 +379,10 @@ struct Probe {
     phase_since: Option<Instant>,
     /// Last imported producer frame during warmup/sample (stall detection).
     last_import: Option<Instant>,
+    /// welding paint generation of the last imported frame (any phase).
+    last_generation: Option<u64>,
+    /// `--roves-sustained` only: redraw ring of warmup and sample, printed on rejection.
+    stall: Option<Box<Ring>>,
     /// The sustained sample completed and was healthy.
     sustained_done: bool,
 }
@@ -497,6 +569,10 @@ impl Probe {
             Phase::Warmup | Phase::Closing | Phase::Done => false,
         };
         let mut timings = self.timings.as_mut().filter(|_| record);
+        // Stall ring: warmup and sample redraws, independent of `record`, own clock reads.
+        let sustained_phase = matches!(self.phase, Phase::Warmup | Phase::Sampling);
+        let mut marks =
+            (self.stall.is_some() && sustained_phase).then(|| Marks::new(Instant::now()));
         let frame_start = now_if(&timings);
         let mut events = Vec::new();
         while let Some(event) = s.producer.poll_web_event() {
@@ -532,8 +608,16 @@ impl Probe {
             }
         }
 
+        // Ring only: `events` also covers handling and logging the drained events.
+        mark(&mut marks, Step::Events);
         let acquire_start = now_if(&timings);
         let acquired = s.producer.acquire_frame(&s.host);
+        mark(&mut marks, Step::AcquireFrame);
+        let poll = match &acquired {
+            Ok(Some(frame)) => Poll::Imported(frame.generation),
+            Ok(None) => Poll::Empty,
+            Err(_) => Poll::Error,
+        };
         if let (Some(t), Some(acquire_start)) = (timings.as_deref_mut(), acquire_start) {
             match &acquired {
                 Ok(Some(frame)) => {
@@ -547,6 +631,7 @@ impl Probe {
         match acquired {
             Ok(Some(frame)) => {
                 s.imported += 1;
+                self.last_generation = Some(frame.generation);
                 if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
                     self.last_import = Some(Instant::now());
                 }
@@ -573,16 +658,26 @@ impl Probe {
         }
 
         let composed = compose(s, timings.as_deref_mut());
+        mark(&mut marks, Step::Compose);
+        let sampling = self.phase == Phase::Sampling;
         let Some(composed) = composed else {
+            if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
+                ring.push(marks, poll, false, sampling);
+            }
             s.window.request_redraw();
             return;
         };
-        if present(s, &composed, timings.as_deref_mut()) {
+        let presented = present(s, &composed, timings.as_deref_mut(), marks.as_mut());
+        if presented {
             s.presented += 1;
             if let (Some(t), Some(frame_start)) = (timings, frame_start) {
                 let now = t.lap(Stage::Frame, frame_start);
                 t.presented(now);
             }
+        }
+        // Before `sustained_step`, so the redraw that trips the stall check is in the ring.
+        if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
+            ring.push(marks, poll, presented, sampling);
         }
 
         let ready = s.load_ended && s.imported_at_size >= FRAMES_BEFORE_CHECK;
@@ -704,6 +799,10 @@ impl Probe {
         if let Some(t) = self.timings.as_mut() {
             t.break_intervals();
         }
+        if let Some(ring) = self.stall.as_mut() {
+            ring.start(now);
+        }
+        let _ = WARMUP_ORIGIN.set(now);
         self.log.line(format_args!(
             "sustained warmup start size={}x{} warmup_ms={} sample_ms={} stall_ms={}",
             size.0,
@@ -720,6 +819,7 @@ impl Probe {
         let since = self.phase_since.unwrap_or(now);
         let gap = self.last_import.map_or(Duration::ZERO, |t| now - t);
         if gap > SUSTAINED_STALL {
+            self.repoll_mailbox_at_stall(now);
             self.end_sustained(Some(format!(
                 "imports stalled: no producer frame for {} ms during {:?}",
                 gap.as_millis(),
@@ -742,6 +842,81 @@ impl Probe {
             Phase::Sampling if now - since >= self.options.sample => self.end_sustained(None),
             _ => {},
         }
+    }
+
+    /// Observational only, after the stall check tripped and before the run is rejected:
+    /// takes welding's single-slot mailbox once more with `acquire_native_frame`, which does
+    /// not import (no grafting open, no 1-texel copy, no `device.poll(Wait)`), logs the
+    /// waiting frame's generation and drops it, closing its owned shared handle. The run is
+    /// closing anyway, so consuming the slot changes nothing that is measured.
+    fn repoll_mailbox_at_stall(&mut self, stall_checked: Instant) {
+        let Some(s) = self.state.as_mut() else { return };
+        let start = Instant::now();
+        let frame = s.producer.acquire_native_frame();
+        let took_us = start.elapsed().as_micros();
+        let since_last_poll_us = start.saturating_duration_since(stall_checked).as_micros();
+        match frame {
+            Some(frame) => {
+                let generation = frame.generation();
+                let delta = self
+                    .last_generation
+                    .map_or_else(|| "-".to_owned(), |last| generation.wrapping_sub(last).to_string());
+                self.log.line(format_args!(
+                    "stall-mailbox frame generation={generation} last_imported_generation={} delta={delta} size={}x{} took_us={took_us} after_stall_check_us={since_last_poll_us} (observational, not imported)",
+                    self.last_generation.map_or_else(|| "-".to_owned(), |g| g.to_string()),
+                    frame.size().width,
+                    frame.size().height,
+                ));
+                drop(frame);
+            },
+            None => self.log.line(format_args!(
+                "stall-mailbox empty last_imported_generation={} took_us={took_us} after_stall_check_us={since_last_poll_us} (observational)",
+                self.last_generation.map_or_else(|| "-".to_owned(), |g| g.to_string()),
+            )),
+        }
+    }
+
+    /// Prints the stall ring (rejected sustained runs only): a header, a derived summary of
+    /// the redraws after the last import, then one line per redraw, oldest first.
+    fn dump_stall_trace(&self, problem: &str) {
+        let Some(ring) = self.stall.as_ref() else {
+            return;
+        };
+        let log = &self.log;
+        log.line(format_args!(
+            "stall-trace begin problem={problem:?} redraws={} capacity={} overwritten={} stall_ms={} upstream_log_records={} clock=monotonic-wall-us-winit-thread",
+            ring.len(),
+            crate::stall::CAPACITY,
+            ring.overwritten(),
+            SUSTAINED_STALL.as_millis(),
+            UPSTREAM_LOG_RECORDS.load(Ordering::Relaxed),
+        ));
+        if let Some(g) = ring.gap_summary() {
+            log.line(format_args!(
+                "stall-trace after-last-import import_in_ring={} last_generation={} redraws={} empty_polls={} poll_errors={} presented={} busy_us={} outside_us={} max_redraw_us={} max_redraw_start_us={} max_redraw_step={} max_redraw_step_us={}",
+                g.import_in_ring,
+                g.last_generation.map_or_else(|| "-".to_owned(), |v| v.to_string()),
+                g.redraws,
+                g.empty_polls,
+                g.poll_errors,
+                g.presented,
+                g.busy_us,
+                g.outside_us,
+                g.max_redraw_us,
+                g.max_redraw_start_us,
+                g.max_redraw_step.map_or("-", Step::name),
+                g.max_redraw_step_us,
+            ));
+        }
+        let mut previous_end = None;
+        for (i, r) in ring.iter().enumerate() {
+            log.line(format_args!(
+                "stall-trace {}",
+                crate::stall::format_redraw(i, previous_end, r)
+            ));
+            previous_end = Some(r.start_us + u64::from(r.total_us));
+        }
+        log.line(format_args!("stall-trace end"));
     }
 
     /// Ends warmup/sample, reports the sample (labelled unhealthy on any problem) and closes.
@@ -782,6 +957,9 @@ impl Probe {
             totals.superseded,
             totals.dropped
         ));
+        if let Some(problem) = problem.as_deref() {
+            self.dump_stall_trace(problem);
+        }
         match problem {
             Some(problem) => self.fail(format_args!("sustained sample rejected: {problem}")),
             None => self.sustained_done = true,
@@ -1120,11 +1298,17 @@ fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Tex
 }
 
 /// GPU blit of the composed frame onto the window surface.
-fn present(s: &mut State, composed: &wgpu::Texture, mut timings: Option<&mut Timings>) -> bool {
+fn present(
+    s: &mut State,
+    composed: &wgpu::Texture,
+    mut timings: Option<&mut Timings>,
+    mut marks: Option<&mut Marks>,
+) -> bool {
     let start = now_if(&timings);
     let current = s.surface.get_current_texture();
     // Failed or outdated acquisitions are sampled too: they cost the frame.
     let since = lap(&mut timings, Stage::Acquire, start);
+    mark_ref(&mut marks, Step::SurfaceAcquire);
     let output = match current {
         wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
         wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
@@ -1147,10 +1331,26 @@ fn present(s: &mut State, composed: &wgpu::Texture, mut timings: Option<&mut Tim
     let since = lap(&mut timings, Stage::PresentEncode, since);
     s.host.queue.submit([commands]);
     let since = lap(&mut timings, Stage::Submit, since);
+    mark_ref(&mut marks, Step::Submit);
     s.window.pre_present_notify();
     output.present();
     lap(&mut timings, Stage::Present, since);
+    mark_ref(&mut marks, Step::Present);
     true
+}
+
+/// Stall ring: ends `step` now while the redraw is traced (warmup/sample of
+/// `--roves-sustained`); otherwise does not read the clock.
+fn mark(marks: &mut Option<Marks>, step: Step) {
+    if let Some(m) = marks.as_mut() {
+        m.mark(step, Instant::now());
+    }
+}
+
+fn mark_ref(marks: &mut Option<&mut Marks>, step: Step) {
+    if let Some(m) = marks.as_deref_mut() {
+        m.mark(step, Instant::now());
+    }
 }
 
 /// Reads the clock only while samples are recorded.

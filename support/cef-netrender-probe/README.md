@@ -14,8 +14,9 @@ DX12) both compositions pass all 16 pixel samples, before and after the resize, 
 close and exit 0. On WARP CEF delivers no accelerated frame (exit 2, as the workflow
 expects).** Evidence below. A first sustained ABBA series (8 trials, bundle of CI run
 45042438963) is recorded in "Sustained trials" below: 6 healthy, 2 Netrender trials
-rejected for a 630/650 ms import stall during warmup. The stalls are not attributed yet
-(a diagnostic is proposed in "Attributing the warmup stalls"). Two healthy Netrender
+rejected for a 630/650 ms import stall during warmup. The stalls are not attributed yet:
+the diagnostic in "Attributing the warmup stalls" is implemented (uncommitted, not built or
+run yet) and needs a new bundle and a new series. Two healthy Netrender
 trials are not enough to compare the two compositions.
 
 ## Evidence (2026-11-22, CI run 45038791259)
@@ -130,7 +131,7 @@ What this shows, and only this:
   procedure's rule (a gap smaller than the same-mode spread is not a difference) cannot be
   applied, so **no composition comparison is claimed**.
 
-## Attributing the warmup stalls (proposed diagnostic, not implemented)
+## Attributing the warmup stalls (diagnostic implemented, not yet run)
 
 Goal: tell, for a rejected Netrender trial, whether the 630/650 ms gap happened because
 **the producer did not deliver** (no frame reached welding's mailbox) or because **the host
@@ -166,30 +167,85 @@ Where the two sides meet today:
   bindings), but welding drops both, so the host cannot see Viz-level frame numbers without
   a welding change.
 
-Smallest diagnostic (host-only, no welding fork, sustained mode only):
+Diagnostic as implemented (host-only, no welding fork, `--roves-sustained` only;
+`src/stall.rs` plus hooks in `src/app.rs`). Sample math (`timings.rs`, the `record` rule,
+the stall limit and check point), the default smoke, scheduling (`ControlFlow::Poll`, one
+`acquire_frame` per redraw), GPU work, sandbox and release are unchanged.
 
-1. **Redraw ring during warmup and sample.** A fixed array of the last 128 redraws
-   (allocated once, no allocation per frame), each with: start offset from warmup start,
-   total redraw duration, the durations of `events`, the `acquire_frame` call, `compose`,
-   surface acquire, submit and present, and the poll outcome (`empty` or the imported
-   generation). That is the existing `Instant` laps, kept even when `record` is false. It is
-   printed only when a sample is rejected for a stall, as `stall-trace` lines, so healthy
-   output stays unchanged.
-2. **One mailbox re-poll at the stall.** In `sustained_step()`, before rejecting, call
-   `acquire_frame` once more (not recorded) and log
-   `stall-mailbox frame generation=<g> delta=<g - last imported generation>` or
-   `stall-mailbox empty`.
-3. **Forward `log` warnings/errors to the probe log** (a minimal `log::Log` writing to the
-   existing log; the `log` crate is already in the graph through welding), so a welding
-   copy failure shows up as a line instead of as a missing frame.
+1. **Redraw ring during warmup and sample.** A fixed array of the last 128 redraws inside
+   one `Box` allocated at startup in sustained mode (nothing allocated per redraw). Each
+   warmup/sample redraw adds about 7 `Instant::now()` reads, independent of `record`, and
+   writes one slot: start offset from warmup start, total (redraw start to its last mark),
+   per-step durations `events` (drain plus handling/logging of the drained events), `acquire_frame` (the whole call: mailbox take plus import
+   when a frame was there), `compose` (Netrender with its internal submits, or the wgpu
+   blit encode **plus** its submit), `surface_acquire`, `submit` (present-blit encode plus
+   submit), `present` (`pre_present_notify` + `present`), the poll outcome
+   (`empty`, `generation:<g>` or `error`) and whether it presented. The redraw that trips
+   the stall check is in the ring (recorded before the check). On **any** rejection of a
+   sustained run that had started warmup (stall, resize, ended early) and never otherwise,
+   the log gets:
+   - `stall-trace begin problem=... redraws=<n> capacity=128 overwritten=<k> stall_ms=500
+     upstream_log_records=<n> clock=monotonic-wall-us-winit-thread`;
+   - `stall-trace after-last-import ...`: derived from the ring for the redraws after the
+     last one that imported (`import_in_ring`, `last_generation`, `redraws`, `empty_polls`,
+     `poll_errors`, `presented`, `busy_us` = sum of their totals, `outside_us` = time on the
+     winit thread outside those redraws, and the longest redraw with its longest step);
+   - one `stall-trace i=<n> phase=warmup|sample start_us=... outside_before_us=...
+     total_us=... events_us=... acquire_frame_us=... compose_us=... surface_acquire_us=...
+     submit_us=... present_us=... poll=... presented=...` per redraw, oldest first;
+   - `stall-trace end`.
+2. **One mailbox re-poll at the stall, observational.** In `sustained_step()`, only when
+   the stall limit is exceeded and before the rejection, the probe calls welding's
+   `WindowsCefProducer::acquire_native_frame()`, which takes the single-slot mailbox
+   **without importing** (no grafting open, no 1-texel copy, no `device.poll(Wait)`; just
+   a mutex take), so it adds no blocking texture import. It logs
+   `stall-mailbox frame generation=<g> last_imported_generation=<l> delta=<g-l> size=WxH
+   took_us=... after_stall_check_us=... (observational, not imported)` or
+   `stall-mailbox empty ...`, then drops the frame (closing its owned shared handle). The
+   slot is consumed, but the run is being rejected and closed, so nothing measured depends
+   on it.
+3. **welding/grafting `log` forwarding.** In sustained mode only, a minimal `log::Log`
+   (the `log` crate was already in the graph through welding; `Cargo.lock` gains one
+   dependency edge, no new crate) forwards records with target `welding*` or `grafting*`
+   at warn/error level, from any thread, as `upstream-log since_warmup_us=<n|-> thread=...
+   level=... target=... <message>`, at most 64 lines (all matching records are counted in
+   `upstream_log_records`). It is installed before CEF initialization and announced by one
+   `upstream-log forwarding ...` line. This is the only addition to a healthy sustained
+   log, plus any welding warning/error that actually occurs; the smoke run installs no
+   logger. If `log::set_logger` fails, `upstream-log not installed: ...` is logged.
 
 Reading it:
 
 | Observation in the rejected trial | Attribution |
 | --- | --- |
-| One redraw (or a few) covers most of the gap, with the blocking stage named; `stall-mailbox` has a frame with `delta > 1` | host blocking (paints arrived and were superseded while the thread was busy) |
-| Redraws keep their normal ~17 ms cadence through the gap, about gap/17 consecutive `poll=empty`, `stall-mailbox empty`, no welding error | producer delivery (nothing was published by Chromium/welding's callback) |
-| A welding `failed to copy CEF accelerated frame` line inside the gap | producer side, welding copy failure (not Chromium) |
+| One redraw (or a few) covers most of the gap (`max_redraw_us` near the gap, its step named); `stall-mailbox` has a frame with `delta > 1` | host blocking (paints arrived and were superseded while the thread was busy) |
+| Redraws keep their normal ~17 ms cadence through the gap, about gap/17 consecutive `poll=empty`, `stall-mailbox empty`, no welding `upstream-log` line | producer delivery (nothing was published by Chromium/welding's callback) |
+| A large `outside_us` / `outside_before_us` rather than a long redraw | the winit thread was outside the redraw handler (event loop, OS scheduling); neither side is attributed |
+| A welding `failed to copy CEF accelerated frame` line inside the gap (`since_warmup_us`) | producer side, welding copy failure (not Chromium) |
+
+Interpretation limits of what is implemented:
+
+- All durations are wall-clock µs from the monotonic `Instant` on the winit thread around
+  host calls; they include blocking waits inside those calls and are not CPU or GPU time.
+  `acquire_frame_us` of a redraw that imported includes welding's 1-texel copy wait, which
+  on the shared queue also waits for earlier Netrender/present submissions.
+- The ring holds 128 redraws (about 2.2 s at ~17 ms). A gap longer than the ring at normal
+  cadence leaves `import_in_ring=false`; then the summary covers the ring, not the gap.
+- `delta` counts welding paint generations, assigned **before** welding's D3D11 copy: a
+  generation lost to a failed copy also counts as a gap. A frame in `stall-mailbox` proves
+  only that a paint was published after the last `acquire_frame` call (in the redraw that
+  tripped the check, whose compose and present ran in between), not when; `delta > 1` means intermediate paints were published
+  and overwritten, not when. `stall-mailbox empty` means nothing is waiting at that
+  instant, not that nothing arrived during the gap (a frame taken by an earlier poll in
+  the gap would show as `poll=generation:<g>` in the ring, which would contradict a stall).
+- The stall check runs after a redraw returns, so the reported gap and the re-poll time
+  depend on when the check runs; `after_stall_check_us` is the delay between the check and
+  the re-poll, not the age of the frame.
+- `upstream-log` sees only what welding/grafting log at warn/error through `log`; CEF's
+  own logging (`cef-debug.log`) and Chromium internals are not forwarded. No log line does
+  not prove no failure in code that does not log.
+- The extra clock reads per redraw are not believed to change scheduling, but this is not
+  measured; the diagnostic has not been built or run yet.
 
 Limit: this attributes *which side did not move*, not *which GPU workload caused it*.
 welding's D3D11 copy and its event-query wait run on the same GPU as Netrender's D3D12
@@ -336,7 +392,8 @@ deliberately includes frames that arrive at the old size until CEF catches up, s
 what a resize costs. Samples are kept exactly, up to 65536 per stage and phase (more are
 counted in `dropped_samples`), and summarised with nearest-rank percentiles; std only, no
 new dependency. The aggregation is unit-tested stand-alone:
-`rustc --edition 2024 --test src/timings.rs`.
+`rustc --edition 2024 --test src/timings.rs` (and the stall ring of the sustained mode:
+`rustc --edition 2024 --test src/stall.rs`).
 
 Not covered: welding's D3D11 copy and event-query wait run inside CEF's `OnAcceleratedPaint`
 on CEF's UI thread (welding sets `multi_threaded_message_loop` on Windows), not on the winit
@@ -369,7 +426,9 @@ resize is not sampled: recording stops before it is reported), the sample has no
 or presented frame, any stage overflowed the 65536-sample cap, or the OS closes the window
 first (`FAIL no healthy sustained sample completed`). `--roves-timeout-ms` bounds only the
 load and initial phase; warmup and sample are bounded by their own durations and the stall
-check. The summary header still lists `excluded=loading,verification-readback,closing`;
+check. A rejection after warmup started also prints the `stall-trace` lines (and, for a
+stall, one `stall-mailbox` line) described in "Attributing the warmup stalls"; a healthy
+sample prints neither. The summary header still lists `excluded=loading,verification-readback,closing`;
 in sustained mode warmup and resize are excluded too, as described here.
 
 ### Comparing the compositions with alternating trials
