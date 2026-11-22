@@ -25,6 +25,8 @@ const EXIT_USAGE: i32 = 1;
 const EXIT_NOT_LOADED: i32 = 2;
 const EXIT_NO_SANDBOX: i32 = 3;
 const EXIT_CEF_INIT: i32 = 4;
+/// `--roves-ipc-bench` was requested and did not report checked results (stage 2).
+const EXIT_IPC_BENCH: i32 = 5;
 
 static LOG: OnceLock<Mutex<File>> = OnceLock::new();
 /// Set when the main frame finished loading the game's index from the loopback origin.
@@ -33,7 +35,7 @@ static LOADED: AtomicBool = AtomicBool::new(false);
 static FAILED: AtomicBool = AtomicBool::new(false);
 
 /// One line per event, `roves-cef <event> key=value...`, to the `--roves-log` file and stderr.
-fn log(line: impl AsRef<str>) {
+pub(crate) fn log(line: impl AsRef<str>) {
     let line = format!("roves-cef {}", line.as_ref());
     eprintln!("{line}");
     if let Some(file) = LOG.get()
