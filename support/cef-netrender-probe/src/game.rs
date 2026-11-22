@@ -1,21 +1,21 @@
 //! Opt-in real-game mode (`--roves-game-dir=<built game>`): the probe opens an unmodified
 //! game build from a per-run loopback origin instead of the deterministic fixture, and
-//! forwards winit mouse, wheel and keyboard input to the off-screen browser through
+//! forwards SDL3 mouse, wheel and keyboard input to the off-screen browser through
 //! welding's `CefSurfaceProducer` input API. Rendering, composition (`--roves-compose`),
 //! sandbox and shutdown are the probe's unchanged path; nothing here injects script or
 //! exposes any host API to the page.
 
 use std::path::{Path, PathBuf};
 
+use sdl3::{
+    event::{Event, WindowEvent},
+    keyboard::{Keycode, Mod},
+    mouse::{Cursor, MouseButton as SdlButton, MouseWheelDirection, SystemCursor},
+    video::Window,
+};
 use welding::{
     CefSurfaceProducer as _, CursorShape, EventModifiers, FocusDirection, KeyEvent, KeyEventKind,
     MouseAction, MouseButton, MouseEvent, windows_cef::WindowsCefProducer,
-};
-use winit::{
-    event::{ElementState, MouseButton as WinitMouseButton, MouseScrollDelta, WindowEvent},
-    keyboard::PhysicalKey,
-    platform::scancode::PhysicalKeyExtScancode as _,
-    window::{CursorIcon, Window},
 };
 
 use crate::game_rules::{
@@ -84,7 +84,7 @@ impl Console {
     }
 }
 
-/// winit -> welding input state. Coordinates are physical pixels; welding converts them to
+/// SDL3 -> welding input state. Coordinates are physical pixels; welding converts them to
 /// CEF's DIP with the producer's scale factor.
 #[derive(Default)]
 pub(crate) struct Input {
@@ -96,6 +96,7 @@ pub(crate) struct Input {
     pub(crate) rejected: u32,
     pub(crate) forwarded: u64,
     cursor_hidden: bool,
+    active_cursor: Option<Cursor>,
 }
 
 impl Input {
@@ -106,41 +107,54 @@ impl Input {
         }
     }
 
-    /// Forwards one window event. Returns a log line for the first rejected call.
+    /// Forwards SDL logical mouse coordinates as physical pixels to welding.
     pub(crate) fn window_event(
         &mut self,
         producer: &mut WindowsCefProducer,
-        event: &WindowEvent,
+        window: &Window,
+        event: &Event,
     ) -> Option<String> {
+        let point = |x: f32, y: f32| {
+            let (width, height) = window.size();
+            let (pixels_wide, pixels_high) = window.size_in_pixels();
+            (
+                (x * pixels_wide as f32 / width.max(1) as f32).round() as i32,
+                (y * pixels_high as f32 / height.max(1) as f32).round() as i32,
+            )
+        };
         let result = match event {
-            WindowEvent::Focused(true) => {
-                self.focus_pending = true;
-                return None;
+            Event::Window { win_event, .. } => match win_event {
+                WindowEvent::FocusGained => {
+                    self.focus_pending = true;
+                    return None;
+                },
+                WindowEvent::Occluded | WindowEvent::Minimized | WindowEvent::Hidden => {
+                    producer.set_visible(false)
+                },
+                WindowEvent::Restored | WindowEvent::Exposed | WindowEvent::Shown => {
+                    producer.set_visible(true)
+                },
+                WindowEvent::DisplayChanged(_) => producer.set_scale_factor(window.display_scale()),
+                _ => return None,
             },
-            WindowEvent::Occluded(occluded) => producer.set_visible(!occluded),
-            WindowEvent::ScaleFactorChanged { scale_factor, .. } => {
-                producer.set_scale_factor(*scale_factor as f32)
-            },
-            WindowEvent::ModifiersChanged(m) => {
-                let state = m.state();
-                self.modifiers.shift = state.shift_key();
-                self.modifiers.ctrl = state.control_key();
-                self.modifiers.alt = state.alt_key();
-                self.modifiers.meta = state.super_key();
-                return None;
-            },
-            WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = (position.x as i32, position.y as i32);
+            Event::MouseMotion { x, y, .. } => {
+                self.cursor = point(*x, *y);
                 self.mouse(producer, MouseButton::Left, MouseAction::Moved)
             },
-            WindowEvent::MouseInput { state, button, .. } => {
-                let button = match button {
-                    WinitMouseButton::Left => MouseButton::Left,
-                    WinitMouseButton::Middle => MouseButton::Middle,
-                    WinitMouseButton::Right => MouseButton::Right,
-                    _ => return None, // Back/Forward: no welding equivalent.
+            Event::MouseButtonDown {
+                mouse_btn, x, y, ..
+            }
+            | Event::MouseButtonUp {
+                mouse_btn, x, y, ..
+            } => {
+                self.cursor = point(*x, *y);
+                let button = match mouse_btn {
+                    SdlButton::Left => MouseButton::Left,
+                    SdlButton::Middle => MouseButton::Middle,
+                    SdlButton::Right => MouseButton::Right,
+                    _ => return None,
                 };
-                let pressed = *state == ElementState::Pressed;
+                let pressed = matches!(event, Event::MouseButtonDown { .. });
                 match button {
                     MouseButton::Left => self.modifiers.left_mouse_button = pressed,
                     MouseButton::Middle => self.modifiers.middle_mouse_button = pressed,
@@ -153,21 +167,76 @@ impl Input {
                 };
                 self.mouse(producer, button, action)
             },
-            WindowEvent::MouseWheel { delta, .. } => {
-                let (delta_x, delta_y) = match delta {
-                    MouseScrollDelta::LineDelta(x, y) => (
-                        (x * WHEEL_DELTA_PER_LINE) as i32,
-                        (y * WHEEL_DELTA_PER_LINE) as i32,
-                    ),
-                    MouseScrollDelta::PixelDelta(d) => (d.x as i32, d.y as i32),
+            Event::MouseWheel {
+                x, y, direction, ..
+            } => {
+                let factor = if *direction == MouseWheelDirection::Flipped {
+                    -WHEEL_DELTA_PER_LINE
+                } else {
+                    WHEEL_DELTA_PER_LINE
                 };
                 self.mouse(
                     producer,
                     MouseButton::Left,
-                    MouseAction::WheelScrolled { delta_x, delta_y },
+                    MouseAction::WheelScrolled {
+                        delta_x: (*x * factor).round() as i32,
+                        delta_y: (*y * factor).round() as i32,
+                    },
                 )
             },
-            WindowEvent::KeyboardInput { event, .. } => self.key(producer, event),
+            Event::KeyDown {
+                keycode,
+                keymod,
+                repeat,
+                ..
+            }
+            | Event::KeyUp {
+                keycode,
+                keymod,
+                repeat,
+                ..
+            } => {
+                self.modifiers.shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
+                self.modifiers.ctrl = keymod.intersects(Mod::LCTRLMOD | Mod::RCTRLMOD);
+                self.modifiers.alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
+                self.modifiers.meta = keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD);
+                let vk = keycode.map_or(0, virtual_key);
+                let down = matches!(event, Event::KeyDown { .. });
+                let message = if down {
+                    KeyMessage::Down { repeat: *repeat }
+                } else {
+                    KeyMessage::Up
+                };
+                let kind = if down {
+                    KeyEventKind::RawKeyDown
+                } else {
+                    KeyEventKind::KeyUp
+                };
+                let scan = windows_scancode(vk);
+                producer.send_keyboard_input(KeyEvent {
+                    kind,
+                    windows_key_code: fold_sided_modifier(vk as u32) as i32,
+                    native_key_code: native_key_code(scan, message),
+                    character: None,
+                    modifiers: self.modifiers,
+                })
+            },
+            Event::TextInput { text, .. } => {
+                let mut result = Ok(());
+                for ch in bmp_chars(text) {
+                    result = producer.send_keyboard_input(KeyEvent {
+                        kind: KeyEventKind::Char,
+                        windows_key_code: ch as i32,
+                        native_key_code: 1,
+                        character: Some(ch),
+                        modifiers: self.modifiers,
+                    });
+                    if result.is_err() {
+                        break;
+                    }
+                }
+                result
+            },
             _ => return None,
         };
         self.count(result)
@@ -177,16 +246,19 @@ impl Input {
     pub(crate) fn per_frame(
         &mut self,
         producer: &mut WindowsCefProducer,
-        window: &Window,
+        mouse: &sdl3::mouse::MouseUtil,
         has_frame: bool,
     ) -> Option<String> {
         if let Some(shape) = producer.poll_cursor_shape() {
             let hidden = matches!(&shape, CursorShape::Custom(name) if name == "none");
             if hidden != self.cursor_hidden {
-                window.set_cursor_visible(!hidden);
+                mouse.show_cursor(!hidden);
                 self.cursor_hidden = hidden;
             }
-            window.set_cursor(cursor_icon(&shape));
+            if let Ok(cursor) = Cursor::from_system(cursor_icon(&shape)) {
+                cursor.set();
+                self.active_cursor = Some(cursor);
+            }
         }
         if self.focus_pending && has_frame {
             self.focus_pending = false;
@@ -224,78 +296,70 @@ impl Input {
             modifiers: self.modifiers,
         })
     }
+}
 
-    fn key(
-        &self,
-        producer: &mut WindowsCefProducer,
-        event: &winit::event::KeyEvent,
-    ) -> Result<(), welding::WeldError> {
-        let scancode = event.physical_key.to_scancode();
-        let vk = match event.physical_key {
-            PhysicalKey::Code(_) => scancode.map_or(0, virtual_key),
-            PhysicalKey::Unidentified(_) => 0,
-        };
-        let send = |producer: &mut WindowsCefProducer, kind, code, native, character| {
-            producer.send_keyboard_input(KeyEvent {
-                kind,
-                windows_key_code: code,
-                native_key_code: native,
-                character,
-                modifiers: self.modifiers,
-            })
-        };
-        if event.state == ElementState::Released {
-            let native = native_key_code(scancode, KeyMessage::Up);
-            return send(producer, KeyEventKind::KeyUp, vk, native, None);
-        }
-        let native = native_key_code(
-            scancode,
-            KeyMessage::Down {
-                repeat: event.repeat,
-            },
-        );
-        // Win32 order: WM_KEYDOWN, then one WM_CHAR per produced character (wParam = the
-        // character), which is what CEF's own Windows OSR sample forwards.
-        send(producer, KeyEventKind::RawKeyDown, vk, native, None)?;
-        if let Some(text) = event.text.as_deref() {
-            for ch in bmp_chars(text) {
-                send(producer, KeyEventKind::Char, ch as i32, native, Some(ch))?;
+fn windows_scancode(vk: i32) -> Option<u32> {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC_EX, MapVirtualKeyW};
+    // SAFETY: value-in/value-out Windows keyboard mapping.
+    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
+    (scan != 0).then_some(scan)
+}
+
+fn virtual_key(key: Keycode) -> i32 {
+    use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
+    match key {
+        Keycode::Return | Keycode::KpEnter => 0x0D,
+        Keycode::Escape => 0x1B,
+        Keycode::Backspace => 0x08,
+        Keycode::Tab => 0x09,
+        Keycode::Left => 0x25,
+        Keycode::Up => 0x26,
+        Keycode::Right => 0x27,
+        Keycode::Down => 0x28,
+        Keycode::Insert => 0x2D,
+        Keycode::Delete => 0x2E,
+        Keycode::Home => 0x24,
+        Keycode::End => 0x23,
+        Keycode::PageUp => 0x21,
+        Keycode::PageDown => 0x22,
+        Keycode::LShift => 0xA0,
+        Keycode::RShift => 0xA1,
+        Keycode::LCtrl => 0xA2,
+        Keycode::RCtrl => 0xA3,
+        Keycode::LAlt => 0xA4,
+        Keycode::RAlt => 0xA5,
+        Keycode::LGui => 0x5B,
+        Keycode::RGui => 0x5C,
+        key if (Keycode::F1 as u32..=Keycode::F12 as u32).contains(&(key as u32)) => {
+            0x70 + (key as i32 - Keycode::F1 as i32)
+        },
+        key => {
+            let Ok(unit) = u16::try_from(key as u32) else {
+                return 0;
+            };
+            // SAFETY: value-in/value-out lookup in the current Windows keyboard layout.
+            let mapped = unsafe { VkKeyScanW(unit) };
+            if mapped == -1 {
+                return 0;
             }
-        }
-        Ok(())
+            (mapped & 0xFF) as i32
+        },
     }
 }
 
-/// Layout-aware virtual key for a winit Windows scancode, from the OS's own mapping table.
-fn virtual_key(scancode: u32) -> i32 {
-    use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VSC_TO_VK_EX, MapVirtualKeyW};
-    // SAFETY: plain value-in/value-out Win32 call; extended scancodes carry 0xE0/0xE1 in the
-    // high byte, which MAPVK_VSC_TO_VK_EX accepts since Windows Vista.
-    let vk = unsafe { MapVirtualKeyW(scancode, MAPVK_VSC_TO_VK_EX) };
-    fold_sided_modifier(vk) as i32
-}
-
-fn cursor_icon(shape: &CursorShape) -> CursorIcon {
+fn cursor_icon(shape: &CursorShape) -> SystemCursor {
     match shape {
-        CursorShape::Default | CursorShape::Custom(_) => CursorIcon::Default,
-        CursorShape::Pointer => CursorIcon::Pointer,
-        CursorShape::Text => CursorIcon::Text,
-        CursorShape::Wait => CursorIcon::Wait,
-        CursorShape::Crosshair => CursorIcon::Crosshair,
-        CursorShape::Move => CursorIcon::Move,
-        CursorShape::NotAllowed => CursorIcon::NotAllowed,
-        CursorShape::Help => CursorIcon::Help,
-        CursorShape::Progress => CursorIcon::Progress,
-        CursorShape::ResizeNs => CursorIcon::NsResize,
-        CursorShape::ResizeEw => CursorIcon::EwResize,
-        CursorShape::ResizeNeSw => CursorIcon::NeswResize,
-        CursorShape::ResizeNwSe => CursorIcon::NwseResize,
-        CursorShape::ResizeAll => CursorIcon::AllScroll,
-        CursorShape::Grab => CursorIcon::Grab,
-        CursorShape::Grabbing => CursorIcon::Grabbing,
-        CursorShape::ZoomIn => CursorIcon::ZoomIn,
-        CursorShape::ZoomOut => CursorIcon::ZoomOut,
-        // `#[non_exhaustive]`: shapes added by a later welding fall back to the default.
-        _ => CursorIcon::Default,
+        CursorShape::Pointer | CursorShape::Grab | CursorShape::Grabbing => SystemCursor::Hand,
+        CursorShape::Text => SystemCursor::IBeam,
+        CursorShape::Wait => SystemCursor::Wait,
+        CursorShape::Crosshair => SystemCursor::Crosshair,
+        CursorShape::Move | CursorShape::ResizeAll => SystemCursor::SizeAll,
+        CursorShape::NotAllowed => SystemCursor::No,
+        CursorShape::Progress => SystemCursor::WaitArrow,
+        CursorShape::ResizeNs => SystemCursor::SizeNS,
+        CursorShape::ResizeEw => SystemCursor::SizeWE,
+        CursorShape::ResizeNeSw => SystemCursor::SizeNESW,
+        CursorShape::ResizeNwSe => SystemCursor::SizeNWSE,
+        _ => SystemCursor::Arrow,
     }
 }

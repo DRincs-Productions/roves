@@ -17,18 +17,17 @@ use crate::game_rules::{load_status_ok, on_origin};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
+use dpi::PhysicalSize;
+use sdl3::{
+    VideoSubsystem,
+    event::{Event, WindowEvent},
+    video::Window,
+};
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
     CefSurfaceProducer as _, CefWindowsSandboxContext, HostWgpuContext, ImportedTexture,
     InteropBackend, NavigationEvent,
     windows_cef::{WindowsCefConfig, WindowsCefProducer},
-};
-use winit::{
-    application::ApplicationHandler,
-    dpi::PhysicalSize,
-    event::WindowEvent,
-    event_loop::{ActiveEventLoop, ControlFlow, EventLoop},
-    window::{Window, WindowAttributes, WindowId},
 };
 
 const FIXTURE_HTML: &str = include_str!("fixture.html");
@@ -145,16 +144,20 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         options.cache_dir.display()
     ));
 
-    let event_loop = match EventLoop::new() {
-        Ok(event_loop) => event_loop,
+    let sdl = match sdl3::init().and_then(|sdl| {
+        let video = sdl.video()?;
+        let events = sdl.event_pump()?;
+        Ok((video, events, sdl.mouse()))
+    }) {
+        Ok(parts) => parts,
         Err(error) => {
-            log.line(format_args!("event loop failed: {error}"));
+            log.line(format_args!("SDL3 startup failed: {error}"));
             drop(runtime);
             stop_server(&log, server);
             return 1;
         },
     };
-    event_loop.set_control_flow(ControlFlow::Poll);
+    let (video, mut events, mouse) = sdl;
     let phase = if options.game.is_some() {
         Phase::Game
     } else {
@@ -181,10 +184,24 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         started: Instant::now(),
         closing_since: None,
     };
-    if let Err(error) = event_loop.run_app(&mut probe) {
-        log.line(format_args!("event loop error: {error}"));
-        probe.finish();
-        return 1;
+    match probe.start(&video) {
+        Ok(state) => {
+            probe.state = Some(state);
+            while !probe.is_closed() {
+                for event in events.poll_iter() {
+                    probe.window_event(event);
+                }
+                if probe.phase == Phase::Closing {
+                    std::thread::sleep(Duration::from_millis(2));
+                } else {
+                    probe.redraw(&mouse);
+                }
+            }
+        },
+        Err(error) => {
+            probe.fail(format_args!("startup: {error}"));
+            probe.exit_code = Some(5);
+        },
     }
     let code = probe.finish();
     log.line(format_args!("exit code={code}"));
@@ -449,13 +466,13 @@ struct State {
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
     host: HostWgpuContext,
-    window: Arc<Window>,
+    window: Window,
     runtime: CefRuntime,
     imported: u32,
     imported_at_size: u32,
     presented: u32,
     load_ended: bool,
-    /// Game mode only: winit -> welding input forwarding.
+    /// Game mode only: SDL3 -> welding input forwarding.
     input: Option<Input>,
 }
 
@@ -465,25 +482,32 @@ impl Probe {
         self.log.line(format_args!("FAIL {what}"));
     }
 
-    fn start(&mut self, event_loop: &ActiveEventLoop) -> Result<State, String> {
-        let window = Arc::new(
-            event_loop
-                .create_window(
-                    WindowAttributes::default()
-                        .with_title("Roves CEF -> wgpu-weld -> Netrender probe")
-                        .with_inner_size(INITIAL_SIZE)
-                        // Sustained samples are taken at the fixed initial size.
-                        .with_resizable(!self.options.sustained),
-                )
-                .map_err(|e| format!("window: {e}"))?,
+    fn start(&mut self, video: &VideoSubsystem) -> Result<State, String> {
+        let mut builder = video.window(
+            "Roves CEF + SDL3 probe",
+            INITIAL_SIZE.width,
+            INITIAL_SIZE.height,
         );
+        builder.high_pixel_density();
+        if !self.options.sustained {
+            builder.resizable();
+        }
+        let window = builder.build().map_err(|e| format!("window: {e}"))?;
+        if self.options.game.is_some() {
+            video.text_input().start(&window);
+        }
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
         // Welding's Windows import is DX12 only (D3D12 OpenSharedHandle through grafting).
         instance_desc.backends = wgpu::Backends::DX12;
         let instance = wgpu::Instance::new(instance_desc);
-        let surface = instance
-            .create_surface(window.clone())
-            .map_err(|e| format!("surface: {e}"))?;
+        // SAFETY: SDL owns the HWND. State drops the surface before the window,
+        // and both stay on this thread. Locals also drop in reverse creation order.
+        let surface = unsafe {
+            let target = wgpu::SurfaceTargetUnsafe::from_window(&window)
+                .map_err(|e| format!("SDL3 window handle: {e}"))?;
+            instance.create_surface_unsafe(target)
+        }
+        .map_err(|e| format!("surface: {e}"))?;
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             power_preference: wgpu::PowerPreference::HighPerformance,
             compatible_surface: Some(&surface),
@@ -522,7 +546,7 @@ impl Probe {
                 )
             })
             .ok_or_else(|| format!("no 8-bit unorm surface format in {:?}", caps.formats))?;
-        let size = window.inner_size();
+        let size = pixel_size(&window);
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
@@ -538,7 +562,7 @@ impl Probe {
             "surface format={format:?} size={}x{} scale={}",
             surface_config.width,
             surface_config.height,
-            window.scale_factor()
+            window.display_scale()
         ));
 
         let blit = Blit::new(&host.device, format);
@@ -558,7 +582,7 @@ impl Probe {
                 surface: CefSurfaceConfig {
                     initial_url: url,
                     initial_size: size,
-                    scale_factor: window.scale_factor() as f32,
+                    scale_factor: window.display_scale(),
                     // Fixture: transparent, uncovered page pixels arrive with premultiplied
                     // alpha 0. Game: opaque white where the page paints nothing, as in Chrome.
                     background_color: game.then_some([255, 255, 255]),
@@ -576,7 +600,6 @@ impl Probe {
             "producer created accelerated=true background={}",
             if game { "white" } else { "transparent" }
         ));
-        window.request_redraw();
         Ok(State {
             producer,
             frame: None,
@@ -595,7 +618,7 @@ impl Probe {
         })
     }
 
-    fn redraw(&mut self) {
+    fn redraw(&mut self, mouse: &sdl3::mouse::MouseUtil) {
         let Some(s) = self.state.as_mut() else { return };
         // Steady-state samples only: smoke phases after load-end (the frame that receives
         // load-end is not sampled) with `--roves-timings`, and the sustained sample; never
@@ -679,7 +702,7 @@ impl Probe {
                     },
                     NavigationEvent::TitleChanged { title } if origin.is_some() => {
                         self.log.line(format_args!("title {title}"));
-                        s.window.set_title(title);
+                        let _ = s.window.set_title(title);
                     },
                     NavigationEvent::LoadError {
                         error_code,
@@ -710,7 +733,7 @@ impl Probe {
             return;
         }
         if let Some(input) = s.input.as_mut()
-            && let Some(line) = input.per_frame(&mut s.producer, &s.window, s.imported > 0)
+            && let Some(line) = input.per_frame(&mut s.producer, mouse, s.imported > 0)
         {
             self.log.line(format_args!("{line}"));
         }
@@ -771,7 +794,6 @@ impl Probe {
             if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
                 ring.push(marks, poll, false, sampling);
             }
-            s.window.request_redraw();
             return;
         };
         let presented = present(s, &composed, timings.as_deref_mut(), marks.as_mut());
@@ -809,14 +831,21 @@ impl Probe {
                 } else {
                     let s = self.state.as_mut().expect("state");
                     s.imported_at_size = 0;
-                    let applied = s.window.request_inner_size(RESIZED_SIZE);
+                    let scale = s.window.display_scale().max(1.0);
+                    let width = (RESIZED_SIZE.width as f32 / scale).round() as u32;
+                    let height = (RESIZED_SIZE.height as f32 / scale).round() as u32;
+                    let result = s.window.set_size(width, height);
+                    let applied = pixel_size(&s.window);
                     self.log.line(format_args!(
-                        "resize requested {}x{} applied={applied:?}",
+                        "resize requested {}x{} applied={applied:?} result={result:?}",
                         RESIZED_SIZE.width, RESIZED_SIZE.height
                     ));
-                    if let Some(size) = applied {
-                        self.resized(size);
+                    if let Err(error) = result {
+                        self.fail(format_args!("resize request: {error}"));
+                        self.close();
+                        return;
                     }
+                    self.resized(applied);
                     self.phase = Phase::Resizing;
                 }
             },
@@ -864,9 +893,6 @@ impl Probe {
                 self.close();
             },
             _ => {},
-        }
-        if let Some(s) = self.state.as_ref() {
-            s.window.request_redraw();
         }
     }
 
@@ -1011,7 +1037,7 @@ impl Probe {
         };
         let log = &self.log;
         log.line(format_args!(
-            "stall-trace begin problem={problem:?} redraws={} capacity={} overwritten={} stall_ms={} upstream_log_records={} clock=monotonic-wall-us-winit-thread",
+            "stall-trace begin problem={problem:?} redraws={} capacity={} overwritten={} stall_ms={} upstream_log_records={} clock=monotonic-wall-us-sdl-thread",
             ring.len(),
             crate::stall::CAPACITY,
             ring.overwritten(),
@@ -1294,15 +1320,15 @@ impl Probe {
         i32::from(self.failures > 0)
     }
 
-    /// Exits the event loop once the browser reports closed (or the close timed out).
-    fn exit_if_closed(&mut self, event_loop: &ActiveEventLoop) {
+    fn is_closed(&mut self) -> bool {
         if self.phase != Phase::Closing {
-            return;
+            return false;
         }
         if self.state.as_ref().is_none_or(|s| s.producer.is_closed()) {
             self.log.line(format_args!("browser closed"));
-            event_loop.exit();
-        } else if self
+            return true;
+        }
+        if self
             .closing_since
             .is_some_and(|t| t.elapsed() > CLOSE_TIMEOUT)
         {
@@ -1310,52 +1336,43 @@ impl Probe {
                 "browser did not close within {CLOSE_TIMEOUT:?}"
             ));
             self.exit_code.get_or_insert(2);
-            event_loop.exit();
+            return true;
         }
-    }
-}
-
-impl ApplicationHandler for Probe {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        if self.state.is_some() || self.exit_code.is_some() {
-            return;
-        }
-        match self.start(event_loop) {
-            Ok(state) => self.state = Some(state),
-            Err(error) => {
-                self.log.line(format_args!("FAIL startup: {error}"));
-                self.exit_code = Some(5);
-                event_loop.exit();
-            },
-        }
+        false
     }
 
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+    fn window_event(&mut self, event: Event) {
+        let Some(s) = self.state.as_mut() else { return };
         if self.phase == Phase::Game
-            && let Some(s) = self.state.as_mut()
             && let Some(input) = s.input.as_mut()
-            && let Some(line) = input.window_event(&mut s.producer, &event)
+            && let Some(line) = input.window_event(&mut s.producer, &s.window, &event)
         {
             self.log.line(format_args!("{line}"));
         }
         match event {
-            WindowEvent::CloseRequested => {
+            Event::Quit { .. }
+            | Event::Window {
+                win_event: WindowEvent::CloseRequested,
+                ..
+            } => {
                 self.log.line(format_args!("close requested by the OS"));
                 self.close();
             },
-            WindowEvent::Resized(size) => self.resized(size),
-            WindowEvent::RedrawRequested => self.redraw(),
+            Event::Window {
+                win_event: WindowEvent::PixelSizeChanged(_, _) | WindowEvent::DisplayChanged(_),
+                ..
+            } => {
+                let size = pixel_size(&s.window);
+                self.resized(size);
+            },
             _ => {},
         }
-        self.exit_if_closed(event_loop);
     }
+}
 
-    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
-        self.exit_if_closed(event_loop);
-        if let Some(s) = self.state.as_ref() {
-            s.window.request_redraw();
-        }
-    }
+fn pixel_size(window: &Window) -> PhysicalSize<u32> {
+    let (width, height) = window.size_in_pixels();
+    PhysicalSize::new(width, height)
 }
 
 /// Composes the current frame into a texture of the surface size. Returns `None` while there
@@ -1438,7 +1455,6 @@ fn present(
     s.host.queue.submit([commands]);
     let since = lap(&mut timings, Stage::Submit, since);
     mark_ref(&mut marks, Step::Submit);
-    s.window.pre_present_notify();
     output.present();
     lap(&mut timings, Stage::Present, since);
     mark_ref(&mut marks, Step::Present);

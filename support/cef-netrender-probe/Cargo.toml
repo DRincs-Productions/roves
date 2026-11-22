@@ -42,7 +42,8 @@ welding = { git = "https://github.com/merely-made/wgpu-weld", rev = "e991684bab2
 cef = { version = "=154.5.0", default-features = false, features = ["build-util", "sandbox"] }
 wgpu = { version = "=29.0.4", default-features = false, features = ["std", "dx12", "wgsl"] }
 pollster = "0.4"
-winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+dpi = "0.1"
+sdl3 = { version = "0.20", default-features = false, features = ["build-from-source-static", "raw-window-handle"] }
 base64 = "0.22.1"
 # Already in the graph through welding (0.4.35 in Cargo.lock): forwards welding/grafting
 # warn/error records to the probe log in `--roves-sustained` runs.

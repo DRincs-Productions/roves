@@ -1,11 +1,9 @@
-name: CEF -> wgpu-weld -> wgpu probe
+name: CEF -> wgpu-weld -> wgpu + SDL3 probe
 
 # Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
-# Windows probe (welding e991684, CEF 154, wgpu 29.0.4, Netrender d2f13ca5) and runs it on
-# the runner's only DX12 adapter, WARP. Netrender/Vello 0.9 crashes on WARP
-# (support/netrender-shared-device-proof/README.md), so CI runs the `wgpu` composition (same
-# CEF accelerated OSR -> welding -> grafting import, composed by a premultiplied blit); the
-# Netrender composition runs only on real GPUs, from the uploaded bundle. Separate from
+# Windows probe (welding e991684, CEF 154, wgpu 29.0.4 and SDL3) and runs it on
+# the runner's only DX12 adapter, WARP. Accelerated frame import is also tested on
+# real GPUs using the uploaded bundle. Separate from
 # cef-window-probe.yml (CEF 156 baseline, unchanged). Never gates a release.
 
 on:
