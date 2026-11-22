@@ -144,10 +144,14 @@ registrare l'esito (adottata, scartata con motivo, o rinviata nel TODO).
 
 ### Segnalazione dei bug nelle librerie
 
-Quando individui un bug evidente in una libreria, usa `@github` per aprire
-autonomamente un'issue nel repository upstream, senza chiedere conferma. Se esiste
-gia un'issue per lo stesso bug, usa quella. Aggiungi il link in `TODO.md` e indica
-che va ricontrollato se e in quale versione il bug viene risolto.
+Per ogni fix da proporre upstream, aggiorna il `main` del progetto originale e
+crea nel fork un branch dedicato a partire da quella revisione. Implementa e
+verifica il fix sul branch dedicato. Poi cerca con `@github` un'issue upstream
+per lo stesso bug e, se manca, aprila autonomamente. Infine apri la pull request
+verso il `main` upstream e collegala all'issue nella descrizione. Registra i link
+in `TODO.md` e indica di ricontrollare se e in quale versione il bug viene
+risolto. Se serve combinare più fix per Roves, usa un branch di integrazione
+separato nel fork.
 
 ### Confronto obbligatorio con Chromium
 
