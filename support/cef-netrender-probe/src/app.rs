@@ -503,7 +503,7 @@ impl Probe {
         // SAFETY: SDL owns the HWND. State drops the surface before the window,
         // and both stay on this thread. Locals also drop in reverse creation order.
         let surface = unsafe {
-            let target = wgpu::SurfaceTargetUnsafe::from_window(&window)
+            let target = wgpu::SurfaceTargetUnsafe::from_display_and_window(&window, &window)
                 .map_err(|e| format!("SDL3 window handle: {e}"))?;
             instance.create_surface_unsafe(target)
         }
