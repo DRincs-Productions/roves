@@ -1,9 +1,13 @@
 //! CEF accelerated OSR -> wgpu-weld -> Netrender feasibility probe (Windows only). Entry point
 //! called by CEF's bootstrap.exe, which initializes the Windows sandbox broker before loading
-//! this DLL; see README.md for options, checks and limitations.
+//! this DLL; see README.md for options, checks, the opt-in real-game mode and limitations.
 
 #[cfg(windows)]
 mod app;
+#[cfg(windows)]
+mod game;
+#[cfg(windows)]
+mod game_rules;
 #[cfg(windows)]
 mod stall;
 #[cfg(windows)]

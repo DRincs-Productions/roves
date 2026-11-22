@@ -38,6 +38,24 @@ or overflowed sample caps reject the sample (exit 2). The clock is read only whi
 are recorded. The README documents alternating (ABBA) trials for comparing the two
 compositions. Defaults, the workflow and checks are unchanged.
 
+Update (same day, uncommitted at writing): opt-in real-game mode `--roves-game-dir=<built
+game>` (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`). The unmodified build is
+served by the stage-1 window probe's loopback server (`support/cef-window-probe/src/server.rs`
+compiled through `#[path]`; axum 0.8.9 + tower-http 0.7.1 `ServeDir` on 127.0.0.1, port 0 or
+`--roves-port`), opened in welding's windowless producer with an opaque white background and
+a per-producer on-disk profile at `<--roves-cache-dir>\game-profile` (fresh per run by
+default). winit mouse move/buttons, wheel (`WHEEL_DELTA` per line), keyboard (layout-aware
+virtual key from `MapVirtualKeyW`, Win32 `lParam` as `native_key_code` so `KeyboardEvent.code`
+is filled, Char per BMP character), focus, occlusion, scale factor and the page's cursor shape
+go through welding's maintained `CefSurfaceProducer` API; resize uses the existing path. A
+main frame that commits off the loopback origin fails the run and closes the browser
+(welding has no pre-navigation veto); popups stay refused by welding. No script is injected
+and no host API is exposed; sandbox and close sequence unchanged. `--roves-timings` records a
+`phase=game` summary after load-end; `--roves-auto-close-ms` closes a fixed time after
+load-end for repeatable captures. The fixture smoke, its CI gates and every default are
+unchanged; the workflow also triggers on the reused `server.rs`. `windows-sys` 0.61 (already
+in the graph) gains `Win32_UI_Input_KeyboardAndMouse`.
+
 ## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
 
 Changed: `support/cef-window-probe/` (new separate Cargo workspace), `.github/workflows/cef-window-probe.yml`

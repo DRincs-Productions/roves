@@ -18,6 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::game::{Console, GameOptions, Input, Server};
+use crate::game_rules::{load_status_ok, on_origin};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
@@ -119,12 +121,34 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         UpstreamLog::install(log.clone());
     }
 
+    // Game mode: bind the loopback origin before CEF starts (the window probe's order).
+    let server = match options.game.as_ref() {
+        Some(game) => match crate::game::server::start(&game.dir, game.port) {
+            Ok(server) => {
+                log.line(format_args!(
+                    "game loopback origin={} game-dir={} profile-dir={} browser_pid={}",
+                    server.origin,
+                    game.dir.display(),
+                    crate::game::profile_dir(&options.cache_dir).display(),
+                    std::process::id()
+                ));
+                Some(server)
+            },
+            Err(error) => {
+                log.line(format_args!("FAIL game loopback server: {error}"));
+                return 1;
+            },
+        },
+        None => None,
+    };
+
     let mut config = CefRuntimeConfig::new(cef_path, CefSandboxMode::Sandboxed);
     config.cache_path = Some(options.cache_dir.clone());
     let runtime = match context.initialize(config) {
         Ok(runtime) => runtime,
         Err(error) => {
             log.line(format_args!("cef initialize failed: {error}"));
+            stop_server(&log, server);
             return 4;
         },
     };
@@ -137,10 +161,17 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         Ok(event_loop) => event_loop,
         Err(error) => {
             log.line(format_args!("event loop failed: {error}"));
+            drop(runtime);
+            stop_server(&log, server);
             return 1;
         },
     };
     event_loop.set_control_flow(ControlFlow::Poll);
+    let phase = if options.game.is_some() {
+        Phase::Game
+    } else {
+        Phase::Initial
+    };
     let mut probe = Probe {
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
@@ -152,7 +183,10 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         log: log.clone(),
         runtime: Some(runtime),
         state: None,
-        phase: Phase::Initial,
+        phase,
+        server,
+        game_loaded_at: None,
+        console: Console::default(),
         failures: 0,
         checks: 0,
         exit_code: None,
@@ -161,11 +195,22 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     if let Err(error) = event_loop.run_app(&mut probe) {
         log.line(format_args!("event loop error: {error}"));
+        probe.finish();
         return 1;
     }
     let code = probe.finish();
     log.line(format_args!("exit code={code}"));
     code
+}
+
+/// Stops the game's loopback server, after CEF shut down (in-flight responses finish first).
+fn stop_server(log: &Log, server: Option<Server>) {
+    if let Some(server) = server {
+        match server.stop() {
+            Ok(()) => log.line(format_args!("game loopback stopped")),
+            Err(error) => log.line(format_args!("FAIL game loopback stop: {error}")),
+        }
+    }
 }
 
 /// The CEF build the bindings were generated for (`154.0.34+g14c5a08+chromium-154.0.8037.98`).
@@ -208,6 +253,11 @@ struct Options {
     warmup: Duration,
     /// `--roves-sample-ms` (default 30000).
     sample: Duration,
+    /// `--roves-game-dir`: opt-in real-game mode (README "Real-game mode"); `None` keeps the
+    /// deterministic fixture smoke.
+    game: Option<GameOptions>,
+    /// `--roves-auto-close-ms` (game mode only): close this long after the game's load-end.
+    auto_close: Option<Duration>,
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -237,7 +287,11 @@ impl Options {
             sustained: false,
             warmup: Duration::from_secs(10),
             sample: Duration::from_secs(30),
+            game: None,
+            auto_close: None,
         };
+        let mut game_dir = None;
+        let mut port = None;
         for arg in std::env::args().skip(1) {
             let Some(rest) = arg.strip_prefix("--roves-") else {
                 continue; // CEF/Chromium switches are CEF's business.
@@ -259,6 +313,15 @@ impl Options {
                 "sustained" => options.sustained = true,
                 "warmup-ms" => options.warmup = parse_ms(name, value)?,
                 "sample-ms" => options.sample = parse_ms(name, value)?,
+                "game-dir" => game_dir = Some(value.to_owned()),
+                "port" => {
+                    port = Some(
+                        value
+                            .parse::<u16>()
+                            .map_err(|e| format!("--roves-port={value}: {e}"))?,
+                    )
+                },
+                "auto-close-ms" => options.auto_close = Some(parse_ms(name, value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
         }
@@ -267,6 +330,23 @@ impl Options {
         }
         if options.sample.is_zero() {
             return Err("--roves-sample-ms must be > 0".into());
+        }
+        match game_dir {
+            Some(dir) => {
+                if options.sustained || options.keep_open {
+                    return Err("--roves-game-dir has no fixture checks: \
+                                drop --roves-sustained/--roves-keep-open"
+                        .into());
+                }
+                options.game = Some(GameOptions::new(&dir, port.unwrap_or(0))?);
+                // welding requires an absolute root cache for the per-producer profile.
+                options.cache_dir = std::path::absolute(&options.cache_dir)
+                    .map_err(|e| format!("--roves-cache-dir: {e}"))?;
+            },
+            None if port.is_some() || options.auto_close.is_some() => {
+                return Err("--roves-port/--roves-auto-close-ms need --roves-game-dir".into());
+            },
+            None => {},
         }
         Ok(options)
     }
@@ -357,6 +437,9 @@ enum Phase {
     Warmup,
     /// `--roves-sustained` only: the recorded sample.
     Sampling,
+    /// `--roves-game-dir` only: the game runs until the OS (or `--roves-auto-close-ms`)
+    /// closes the window. Recorded with `--roves-timings` after load-end.
+    Game,
     Closing,
     Done,
 }
@@ -385,6 +468,11 @@ struct Probe {
     stall: Option<Box<Ring>>,
     /// The sustained sample completed and was healthy.
     sustained_done: bool,
+    /// Game mode: the loopback origin, stopped after CEF shutdown.
+    server: Option<Server>,
+    /// Game mode: first accepted main-frame load-end on the loopback origin.
+    game_loaded_at: Option<Instant>,
+    console: Console,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -406,6 +494,8 @@ struct State {
     imported_at_size: u32,
     presented: u32,
     load_ended: bool,
+    /// Game mode only: winit -> welding input forwarding.
+    input: Option<Input>,
 }
 
 enum Composer {
@@ -516,10 +606,15 @@ impl Probe {
         };
 
         let runtime = self.runtime.take().ok_or("CEF runtime already consumed")?;
-        let url = format!(
-            "data:text/html;base64,{}",
-            base64::engine::general_purpose::STANDARD.encode(FIXTURE_HTML)
-        );
+        let game_origin = self.server.as_ref().map(|server| server.origin.clone());
+        let game = game_origin.is_some();
+        let url = match game_origin {
+            Some(origin) => format!("{origin}/"),
+            None => format!(
+                "data:text/html;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(FIXTURE_HTML)
+            ),
+        };
         let producer = WindowsCefProducer::new(
             &runtime,
             WindowsCefConfig {
@@ -527,9 +622,13 @@ impl Probe {
                     initial_url: url,
                     initial_size: size,
                     scale_factor: window.scale_factor() as f32,
-                    // Transparent: uncovered page pixels arrive with premultiplied alpha 0.
-                    background_color: None,
+                    // Fixture: transparent, uncovered page pixels arrive with premultiplied
+                    // alpha 0. Game: opaque white where the page paints nothing, as in Chrome.
+                    background_color: game.then_some([255, 255, 255]),
                     prefer_accelerated: true,
+                    // Game: a per-producer on-disk profile inside the run's root cache. The
+                    // fixture keeps welding's isolated in-memory profile, unchanged.
+                    user_data_dir: game.then(|| crate::game::profile_dir(&self.options.cache_dir)),
                     ..Default::default()
                 },
             },
@@ -537,7 +636,8 @@ impl Probe {
         )
         .map_err(|e| format!("WindowsCefProducer: {e}"))?;
         self.log.line(format_args!(
-            "producer created accelerated=true background=transparent"
+            "producer created accelerated=true background={}",
+            if game { "white" } else { "transparent" }
         ));
         window.request_redraw();
         Ok(State {
@@ -554,6 +654,7 @@ impl Probe {
             imported_at_size: 0,
             presented: 0,
             load_ended: false,
+            input: game.then(Input::new),
         })
     }
 
@@ -564,7 +665,7 @@ impl Probe {
         // warmup or closing. Each check readback runs after `present` and after its phase's
         // report, so it never lands in a sample.
         let record = match self.phase {
-            Phase::Initial | Phase::Resizing => self.options.timings && s.load_ended,
+            Phase::Initial | Phase::Resizing | Phase::Game => self.options.timings && s.load_ended,
             Phase::Sampling => true,
             Phase::Warmup | Phase::Closing | Phase::Done => false,
         };
@@ -579,12 +680,69 @@ impl Probe {
             events.push(event);
         }
         lap(&mut timings, Stage::Events, frame_start);
+        // Game mode only (`None` keeps the fixture's event handling unchanged).
+        let origin = self.server.as_ref().map(|server| server.origin.clone());
+        let mut left_origin = None;
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
                 match &event {
+                    NavigationEvent::LoadEnd { http_status, url } if origin.is_some() => {
+                        let origin = origin.as_deref().unwrap_or_default();
+                        let ok = load_status_ok(*http_status) && on_origin(origin, url);
+                        self.log.line(format_args!(
+                            "load-end status={http_status} url={url} ok={ok}"
+                        ));
+                        if !ok {
+                            self.log
+                                .line(format_args!("FAIL game load-end not accepted"));
+                            self.failures += 1;
+                        } else if self.game_loaded_at.is_none() {
+                            s.load_ended = true;
+                            self.game_loaded_at = Some(Instant::now());
+                            if let Some(delay) = self.options.auto_close {
+                                self.log.line(format_args!(
+                                    "auto-close scheduled delay_ms={}",
+                                    delay.as_millis()
+                                ));
+                            }
+                        }
+                    },
                     NavigationEvent::LoadEnd { http_status, .. } => {
                         s.load_ended = true;
                         self.log.line(format_args!("load-end status={http_status}"));
+                    },
+                    // welding exposes no pre-navigation veto (no OnBeforeBrowse hook), so a
+                    // main frame that commits off the loopback origin fails the run and
+                    // closes the browser. History API and fragment routes stay on origin.
+                    NavigationEvent::AddressChanged { url } if origin.is_some() => {
+                        if on_origin(origin.as_deref().unwrap_or_default(), url) {
+                            self.log.line(format_args!("address {url}"));
+                        } else {
+                            left_origin = Some(url.clone());
+                        }
+                    },
+                    NavigationEvent::LoadStart { url } if origin.is_some() => {
+                        self.log.line(format_args!("load-start url={url}"));
+                    },
+                    // welding already cancelled it: one surface per producer, no popups.
+                    NavigationEvent::NewWindowRequested { url, user_gesture } => {
+                        self.log.line(format_args!(
+                            "popup refused url={url} user_gesture={user_gesture}"
+                        ));
+                    },
+                    NavigationEvent::ConsoleMessage {
+                        level,
+                        message,
+                        source,
+                        line,
+                    } if origin.is_some() => {
+                        if let Some(text) = self.console.line(*level, message, source, *line) {
+                            self.log.line(format_args!("{text}"));
+                        }
+                    },
+                    NavigationEvent::TitleChanged { title } if origin.is_some() => {
+                        self.log.line(format_args!("title {title}"));
+                        s.window.set_title(title);
                     },
                     NavigationEvent::LoadError {
                         error_code,
@@ -606,6 +764,18 @@ impl Probe {
                     _ => {},
                 }
             }
+        }
+        if let Some(url) = left_origin {
+            self.fail(format_args!(
+                "game main frame left the loopback origin: {url}"
+            ));
+            self.close();
+            return;
+        }
+        if let Some(input) = s.input.as_mut()
+            && let Some(line) = input.per_frame(&mut s.producer, &s.window, s.imported > 0)
+        {
+            self.log.line(format_args!("{line}"));
         }
 
         // Ring only: `events` also covers handling and logging the drained events.
@@ -736,6 +906,26 @@ impl Probe {
             },
             // Not bounded by --roves-timeout-ms: bounded by warmup + sample, and stall-checked.
             Phase::Warmup | Phase::Sampling => self.sustained_step(),
+            // Game: --roves-timeout-ms bounds only the load; afterwards the player (or
+            // --roves-auto-close-ms) decides when to close.
+            Phase::Game if self.game_loaded_at.is_none() && timed_out => {
+                self.fail(format_args!(
+                    "timeout: the game did not finish loading in {} ms",
+                    self.options.timeout.as_millis()
+                ));
+                self.exit_code.get_or_insert(2);
+                self.close();
+            },
+            Phase::Game
+                if self
+                    .options
+                    .auto_close
+                    .zip(self.game_loaded_at)
+                    .is_some_and(|(delay, at)| at.elapsed() >= delay) =>
+            {
+                self.log.line(format_args!("auto-close window"));
+                self.close();
+            },
             _ => {},
         }
         if let Some(s) = self.state.as_ref() {
@@ -1094,6 +1284,10 @@ impl Probe {
         if self.phase == Phase::Closing {
             return;
         }
+        if self.phase == Phase::Game {
+            // Emitted before closing starts, so the close sequence is never sampled.
+            self.report_smoke_timings("game");
+        }
         self.phase = Phase::Closing;
         self.closing_since = Some(Instant::now());
         if let Some(s) = self.state.as_mut() {
@@ -1103,6 +1297,12 @@ impl Probe {
                 s.presented,
                 self.started.elapsed().as_millis()
             ));
+            if let Some(input) = s.input.as_ref() {
+                self.log.line(format_args!(
+                    "game input forwarded={} rejected={} console_messages={}",
+                    input.forwarded, input.rejected, self.console.seen
+                ));
+            }
             if let Err(error) = s.producer.close() {
                 self.log.line(format_args!("FAIL producer close: {error}"));
                 self.failures += 1;
@@ -1128,8 +1328,19 @@ impl Probe {
             drop(runtime);
             self.log.line(format_args!("cef shutdown complete"));
         }
+        // A startup failure leaves the runtime here: shut CEF down before the server.
+        drop(self.runtime.take());
+        stop_server(&self.log, self.server.take());
         if let Some(code) = self.exit_code {
             return code;
+        }
+        if self.options.game.is_some() {
+            if self.game_loaded_at.is_none() {
+                self.log
+                    .line(format_args!("FAIL the game never finished loading"));
+                return 2;
+            }
+            return i32::from(self.failures > 0);
         }
         let expected = if self.options.keep_open || self.options.sustained {
             1
@@ -1188,6 +1399,13 @@ impl ApplicationHandler for Probe {
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
+        if self.phase == Phase::Game
+            && let Some(s) = self.state.as_mut()
+            && let Some(input) = s.input.as_mut()
+            && let Some(line) = input.window_event(&mut s.producer, &event)
+        {
+            self.log.line(format_args!("{line}"));
+        }
         match event {
             WindowEvent::CloseRequested => {
                 self.log.line(format_args!("close requested by the OS"));

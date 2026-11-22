@@ -7,7 +7,8 @@ Packmaster, any release or the stage-1 window probe (`support/cef-window-probe`,
 Question: can Chromium (through CEF, its own V8 running the page) paint into a GPU texture
 that a Roves-owned wgpu device composites with Netrender, without a CEF fork, without a CPU
 copy on the presentation path and without giving up the Windows sandbox? Deno host services,
-IPC, input, audio, `game://`, CSP and the single-document policy are out of scope here.
+IPC, audio, `game://`, CSP and the single-document policy are out of scope here. Mouse,
+wheel and keyboard input exist only in the opt-in real-game mode ("Real-game mode" below).
 
 **Status (2026-11-22): built in CI (run 45038791259) and run. On a real GPU (GTX 1050,
 DX12) both compositions pass all 16 pixel samples, before and after the resize, with a clean
@@ -278,6 +279,145 @@ Pass criterion for the diagnostic (not for performance): every rejected trial ha
 no trial is rejected, report that (2/4 Netrender rejects were seen once) and do not infer
 anything about the cause.
 
+## Real-game mode (`--roves-game-dir`, opt-in, implemented, not yet built or run)
+
+Purpose: play an **unmodified built game** through the same CEF accelerated OSR -> welding ->
+Netrender/wgpu path, and capture presentation with PresentMon next to Chrome. Without
+`--roves-game-dir` nothing changes: fixture, checks, timings, sustained mode, defaults and the
+CI gates are the same code paths. The only shared-path additions are a `popup refused` log
+line (the fixture opens none) and, on a winit event-loop error, running the normal cleanup
+before exit 1.
+
+What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
+
+- **Loading.** The stage-1 window probe's loopback server
+  (`support/cef-window-probe/src/server.rs`, compiled here with `#[path]`, unchanged:
+  axum + tower-http `ServeDir`, bound to `127.0.0.1` only, `..` rejected, MIME and Range from
+  the library) serves the directory, bound before CEF starts. Port 0 (default) gives each run
+  its own origin; `--roves-port=<n>` fixes it. The producer opens `http://127.0.0.1:<port>/`
+  with an opaque white background (Chrome's default; the fixture stays transparent) and
+  `--roves-compose` selects Netrender or the wgpu blit as before. The directory must contain
+  `index.html`. The server stops after `cef::shutdown`.
+- **Profile.** CEF's root cache is `--roves-cache-dir` (default: a fresh directory under
+  `%TEMP%` per run, made absolute) and the page gets welding's per-producer on-disk profile at
+  `<cache-dir>\game-profile` (welding requires it inside the root cache). Every default run is
+  therefore isolated and starts empty; reusing the same `--roves-cache-dir` **and**
+  `--roves-port` keeps `localStorage`/IndexedDB saves (storage is keyed by origin).
+- **Origin and security.** No script is injected, no `execute_script`, no host object or
+  message bridge is exposed (welding's renderer handler only answers host-initiated
+  evaluation requests, which game mode never sends); there is no Deno in this process. The
+  sandbox path is the probe's (bootstrap.exe broker, `CefSandboxMode::Sandboxed`, exit 3
+  without it). Popups (`window.open`, `target=_blank`) stay refused by welding and are logged
+  as `popup refused url=...`; external links are not opened anywhere. welding has no
+  pre-navigation veto (`OnBeforeBrowse`), so a main frame that **commits** off
+  `http://127.0.0.1:<port>` (exact origin match, unit-tested) is logged as
+  `FAIL game main frame left the loopback origin: <url>` and the browser is closed (exit 1).
+  The off-origin request itself has already been sent by then. History API and fragment
+  routes stay on the origin and are logged as `address <url>`. A main-frame `load-end` that is
+  not 2xx/304 or not on the origin is a `FAIL`; the first accepted one marks the game loaded.
+- **Input** (welding's maintained `CefSurfaceProducer` API; physical pixels, welding converts
+  to DIP): cursor moves, left/middle/right buttons with held-button modifiers, wheel
+  (`LineDelta` x 120 = `WHEEL_DELTA` per notch, `PixelDelta` as is), Shift/Ctrl/Alt/Meta.
+  Keyboard: `RawKeyDown`, one `Char` per typed BMP character (`wParam` = the character), and
+  `KeyUp`; `windows_key_code` from `MapVirtualKeyW(scancode, MAPVK_VSC_TO_VK_EX)` with
+  left/right modifiers folded to VK_SHIFT/VK_CONTROL/VK_MENU (what a real `WM_KEYDOWN`
+  carries), `native_key_code` = the Win32 `lParam` built from winit's extended scancode, so
+  Chromium fills `KeyboardEvent.code`. Focus is given to the browser after the first imported
+  frame and on every `Focused(true)`; `Occluded` maps to `set_visible`; `ScaleFactorChanged` to
+  `set_scale_factor`; the page's cursor shape is applied to the window (hidden for `none`).
+  Resize is the probe's existing path (surface reconfigure + `producer.resize`). Input sent
+  before the browser exists is refused by welding: the first refusal is logged, the rest are
+  counted (`game input forwarded=<n> rejected=<n> console_messages=<n>` at close).
+- **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
+  accepted load-end). Afterwards the run lasts until the OS closes the window, or
+  `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,
+  no `FAIL`; 1 = a `FAIL` (load error, renderer terminated, off-origin navigation, close
+  failure); 2 = never loaded / close timeout. Console messages are logged as
+  `console level=... source=...:line message=...` (first 500, 512 characters each).
+  `--roves-sustained` and `--roves-keep-open` are refused with `--roves-game-dir` (no fixture
+  checks); `--roves-port`/`--roves-auto-close-ms` are refused without it.
+- **Timings.** With `--roves-timings`, every redraw after the accepted load-end is recorded
+  and a `timings phase=game ...` summary (same stages and format as above) is emitted when the
+  window starts closing, before the close sequence. Resizes break the intervals but are not
+  excluded (their frames are in the sample). Each stage keeps 65536 samples (about 18 min at
+  60 presents/s); more are counted in `dropped_samples`.
+
+Chromium reference consulted (pinned `f2700724f59f`, sparse dirs `ui/events/blink` and
+`ui/events/win` added to the main checkout for this): `ui/events/win/events_win_utils.cc`
+`GetScanCodeFromLParam`/`GetLParamFromScanCode` (~486-504: scan code in `lParam` bits 16-23,
+extended flag bit 24 <-> `0xE0xx`), from which Chromium derives the DOM `code`; hence the
+`lParam` layout of `native_key_code`. `ui/events/blink/web_input_event_builders_win.cc`
+(~297-345): native Chrome scrolls `WHEEL_DELTA` notches x lines-per-notch (default 3) x
+`kScrollbarPixelsPerLine = 100/3` px, i.e. 100 px per notch; `ui/events/blink/web_input_event.cc`
+(~122) derives `wheel_ticks = offset / kWheelDelta` from a `ui::MouseWheelEvent` offset. CEF's
+own OSR glue that turns `SendMouseWheelEvent` deltas into that offset is not in the checkout,
+so how far one notch scrolls under CEF versus Chrome is **not verified**: the tick count and
+direction are expected to match, DOM `deltaY` magnitudes may not.
+
+### Running a real game
+
+```pwsh
+# 1. Build the game once, unmodified (example: a Vite template; any directory with index.html).
+cd D:\games\pixi-vn-react-template; npm ci; npm run build   # -> dist\index.html
+
+# 2. Run it from the probe bundle (artifact cef-netrender-probe-windows-x64 of a CI run
+#    that includes this mode). Netrender composition needs a real GPU (not WARP).
+$dir = 'D:\roves-ci\<run id>-cef-nr'
+$exe = "$dir\bundle\roves_cef_netrender_probe.exe"
+& $exe --roves-game-dir=D:\games\pixi-vn-react-template\dist --roves-compose=netrender `
+  "--roves-log=$dir\game-netrender.log" --roves-timings
+# Same with --roves-compose=wgpu. Play normally (click, type, scroll, resize), close the window.
+# Keep saves across runs: add "--roves-cache-dir=$dir\game-cache" --roves-port=47810 to both.
+```
+
+Read the log for `game loopback origin=... browser_pid=<pid>`, `load-end ... ok=true`,
+`console ...`, `popup refused ...`, `FAIL ...` and, with `--roves-timings`, `timings
+phase=game`. A manual test is valid only on the real window (screenshot it): a clean log does
+not prove the page rendered or reacted.
+
+### PresentMon comparison with Chrome
+
+Same machine, monitor, refresh rate (record it), window size (1280x720 client area at
+scale 1, or record what was used), game build, scene and input script; plugged in, nothing
+else running, window visible and unobstructed; alternate the three targets (e.g. probe
+Netrender, probe wgpu, Chrome, then reverse) at least twice. Use one PresentMon release for
+everything and confirm its flags with `PresentMon.exe --help` (the names below are those of
+the PresentMon 2.x console tool):
+
+```pwsh
+$pm = 'C:\tools\PresentMon.exe'   # PresentMon 2.x console build; record its version
+$game = 'D:\games\pixi-vn-react-template\dist'
+$out = 'D:\roves-ci\presentmon'
+
+# Probe: fixed port so the scene URL is identical; close 70 s after load-end.
+Start-Process $exe -ArgumentList "--roves-game-dir=$game","--roves-port=47810",
+  "--roves-compose=netrender","--roves-auto-close-ms=70000","--roves-log=$out\probe-nr.log"
+& $pm --process_name roves_cef_netrender_probe.exe --delay 10 --timed 60 `
+  --terminate_after_timed --output_file "$out\probe-nr.csv"
+
+# Chrome on the same build and the same kind of loopback origin, fresh profile, app window.
+# (Any 127.0.0.1-only static server works, e.g. Python's: python -m http.server 47811
+#  --bind 127.0.0.1 --directory $game.)
+Start-Process chrome.exe -ArgumentList "--user-data-dir=$out\chrome-profile-1",
+  "--app=http://127.0.0.1:47811/","--window-size=1280,720"
+& $pm --process_name chrome.exe --delay 10 --timed 60 --terminate_after_timed `
+  --output_file "$out\chrome.csv"
+```
+
+Reading the CSVs: the probe's own swap chain lives in the **browser process** (filter rows
+to the `browser_pid` from the log; CEF subprocesses share the executable name). Chrome
+presents from its GPU process (DirectComposition): keep the rows of the process whose
+`PresentMode`/swap chain belongs to the game window and note it. Compare the distribution of
+the displayed-frame interval (`MsBetweenDisplayChange`, or the equivalent column of the
+installed version) P50/P95/P99/max and dropped/not-displayed frames, plus `MsBetweenPresents`
+and `PresentMode`; record per-process CPU and GPU (Task Manager or PresentMon's GPU/CPU
+telemetry if the version provides it). The probe's `timings phase=game` adds host-thread
+stages for the probe only; Chrome has no equivalent here. Not covered by this procedure:
+input-to-photon latency (no instrumented input here), and the probe always pays the capture
+copy, welding's copy and two CPU waits per frame that Chrome does not (see "Differences from
+Chromium's own model"). Same-target spread across trials must be smaller than the gap before
+calling a difference real; no result is claimed until such runs exist.
+
 ## Pipeline
 
 1. CEF's `bootstrap.exe` (shipped as `roves_cef_netrender_probe.exe`) initializes the
@@ -346,7 +486,9 @@ Options: `--roves-log=<file>`, `--roves-compose=netrender|wgpu`,
 window stays until the OS closes it), `--roves-timings` (below; off by default, CI does not
 pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
-exclusive with `--roves-keep-open`). CEF switches such as `--log-file` pass through.
+exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
+`--roves-auto-close-ms=<ms>` (opt-in real-game mode, above; no fixture checks). CEF
+switches such as `--log-file` pass through.
 
 ## Optional timings (`--roves-timings`)
 
@@ -585,8 +727,17 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   1-texel D3D12 submission in `acquire_frame` on the host thread). GPU-only data movement,
   but synchronous. `--roves-timings` measures the host-thread part; real-scene frame pacing
   remains with the performance flow.
-- Input, IME, focus, cursor, audio, popups (`<select>`), HiDPI beyond logging the page's
-  `devicePixelRatio`, DevTools and navigation policy are not exercised.
+- The fixture smoke exercises no input. Real-game mode forwards mouse, wheel, keyboard,
+  focus, visibility, scale factor and cursor shape, but **not yet built or run**, and with
+  these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),
+  no `mouseleave` (welding always sends `mouse_leave = 0`, hover can stick when the cursor
+  leaves the window), no blur (welding's Windows focus call is `SetFocus(true)` only), no
+  `is_system_key` for Alt combinations, Back/Forward mouse buttons dropped, non-BMP
+  characters (emoji) dropped, numpad keys with NumLock off may map to their NumLock-on VK,
+  horizontal wheel sign not verified, no touch/pen/drag-and-drop, `<select>` popups not
+  drawn (welding's `acquire_popup` is not composed), no gamepad, no audio verification, no
+  DevTools. Off-origin navigation is detected after commit, not vetoed. External links are
+  never opened (the engine opens them in the system browser after a real click; not here).
 - A `GPUDevice`/context loss inside CEF, or `device.destroy()` on the host, is not handled
   beyond logging uncaptured wgpu errors as `FAIL`.
 - Netrender composition only runs on real GPUs (Vello 0.9 crashes on WARP, see the

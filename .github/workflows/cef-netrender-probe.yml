@@ -12,6 +12,8 @@ on:
   push:
     paths:
       - 'support/cef-netrender-probe/**'
+      # Compiled into the probe's opt-in game mode through `#[path]`.
+      - 'support/cef-window-probe/src/server.rs'
       - '.github/workflows/cef-netrender-probe.yml'
   workflow_dispatch:
 

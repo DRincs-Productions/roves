@@ -47,3 +47,15 @@ base64 = "0.22.1"
 # Already in the graph through welding (0.4.35 in Cargo.lock): forwards welding/grafting
 # warn/error records to the probe log in `--roves-sustained` runs.
 log = "0.4"
+# `--roves-game-dir` only: the stage-1 window probe's loopback server
+# (support/cef-window-probe/src/server.rs, compiled here through `#[path]`) with the same
+# requirements as there: axum + tower-http ServeDir (MIT) own path normalisation, MIME types
+# and Range requests on 127.0.0.1; tokio was already in the graph.
+axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
+tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
+tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync"] }
+
+[target.'cfg(windows)'.dependencies]
+# Already in the graph (0.61.2): `MapVirtualKeyW` gives the layout-aware virtual key of a
+# winit scancode for CEF's `windows_key_code` (game-mode keyboard input).
+windows-sys = { version = "0.61", features = ["Win32_UI_Input_KeyboardAndMouse"] }
