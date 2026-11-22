@@ -3506,3 +3506,37 @@ presente verifica che una modifica subito dopo toBlob non cambi il
 PNG consegnato e che il callback riceva null per una bitmap vuota.
 La compilazione e il confronto del primo salvataggio sono ancora
 da eseguire sulla build CI.
+
+#### Icone nella finestra del template
+
+Con `359d0cc7bec`, il template originale `e88e9ac29e73` in finestra
+640 × 360 mostra etichette ma nessuna icona nei pulsanti del menu
+principale e nelle impostazioni. Chrome DevTools a 640 × 360, con tema
+chiaro esplicito, mostra le icone Start, Load, Settings e i controlli
+nelle impostazioni. Chrome mostra anche la sfocatura dietro il
+pannello principale. La disponibilità del fullscreen differisce
+tra finestra nativa e scheda browser.
+
+Un bundle isolato con React, Lucide Save e Play, compresa un'icona
+in un pulsante flex, dipinge invece pixel su entrambe le icone
+nello screenshot offscreen dello stesso eseguibile Roves. Quindi
+il test SVG precedente dimostra il supporto nella fixture, ma non
+chiude il caso reale. Il controllo successivo è confrontare lo stesso
+bundle Lucide in finestra GPU e offscreen, quindi isolare le regole
+effettive del menu se il difetto si riproduce solo nel template.
+Dati: `D:/roves-ci/44938526736-normal/lucide-real/`.
+
+Causa isolata: la fixture usava `color: #d02020`, il template ha tutti i
+colori del tema in `oklch()` (Tailwind v4/shadcn). Blitz serializza l'SVG
+inline per usvg sostituendo `currentColor` con il `color` calcolato scritto
+da Stylo, quindi `oklch(...)`; svgtypes 0.16.2 non lo interpreta e usvg
+scarta il tratto. Con lo stesso eseguibile release e lo stesso SVG Lucide,
+offscreen, `oklch(14.5% 0 0)` non dipinge nulla e `rgb(37, 37, 37)` dipinge
+l'icona; anche lo screenshot offscreen del template riserva lo spazio
+delle icone senza disegnarle, quindi il difetto non dipende dalla
+finestra GPU. Correzione nel fork `vendor/blitz-dom` (0006): conversione con
+`AbsoluteColor::into_srgb_legacy()` in `rgb()`/`rgba()` prima della
+sostituzione; il formato `rgba(r, g, b, a)` è stato verificato con lo stesso
+eseguibile. Regressione `src/svg_current_color.rs` nel job della probe. Da
+verificare sulla build CI: menu e impostazioni del template in finestra.
+Dati: `D:/roves-ci/44938526736-normal/oklch-repro/`.
