@@ -1,3 +1,18 @@
+## 2026-11-22 - Blitz probe: hidden children keep the anonymous text block (blitz-dom 0008)
+
+Changed: `support/blitz-v8-probe/vendor/blitz-dom/src/layout/construct.rs` (+ its
+`ROVES_PATCHES.md`), new test module `support/blitz-v8-probe/src/inline_wrap.rs`
+(registered in `main.rs`), `.github/workflows/blitz-probe.yml` (`inline_wrap::`).
+Port of the open upstream Blitz PR #1697: on the anonymous-block path a `display: none`
+child closed the open anonymous block, so the text around it broke onto separate lines.
+markdown-typewriter 2.2.0 inserts such pause spans after each comma while typing, next
+to a trailing `display:block` span, and the visual-novel-template's typed line jumped
+from 2 to 4 lines. Hidden children are now kept as layout children without closing the
+block. Still open: a block inside an inline turns the whole inline into a block (Blitz
+#1434), so the typed text still starts a new line after the static text; Chromium's
+block-in-inline model needs forced breaks around an inline box that parley 0.12 lacks
+(ignored test in `inline_wrap.rs`, TODO entry). Production engine unchanged.
+
 ## 2026-11-22 - Blitz probe: settle CSS animations before the paint flush (dialog closing flash)
 
 Changed: `support/blitz-v8-probe/src/{dom.js,main.rs,window.rs,animation_clock.rs,frame_timings.rs,animations_test.js}`,

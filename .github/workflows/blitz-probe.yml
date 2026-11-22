@@ -129,6 +129,11 @@ jobs:
           # opacity applied once, CSS-animated stagger; partial opacity on
           # non-atomic inlines is printed as INLINE_OPACITY_PARTIAL_DIAGNOSTIC.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml inline_opacity::
+          # Typewriter line jump (vendor/blitz-dom 0008, upstream Blitz #1697):
+          # display:none pause spans must not split the anonymous text block
+          # (block flow, flex, display:contents, beside a block-in-inline).
+          # The ignored test tracks the open block-in-inline gap (Blitz #1434).
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml inline_wrap::
           # Inline SVG currentColor (vendor/blitz-dom 0006): a computed oklch()
           # color must reach usvg as legacy rgb()/rgba(), or Lucide icons in
           # oklch-themed (Tailwind v4/shadcn) games paint nothing.

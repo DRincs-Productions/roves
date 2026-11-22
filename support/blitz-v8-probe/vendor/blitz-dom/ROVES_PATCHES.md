@@ -155,6 +155,33 @@ argument keeps painting the held frame) plus the `css_get_animations_stylo_state
 paint-flush watch. The proper upstream shape is a blitz-shell hook letting the
 `Document` supply the animation time; issue still to be opened.
 
+0008 (`hidden-children-keep-anonymous-block`) (`src/layout/construct.rs`,
+`collect_complex_layout_children` and `push_hoisted_child`): port of the open upstream
+PR [DioxusLabs/blitz#1697](https://github.com/DioxusLabs/blitz/pull/1697) ("Keep
+anonymous flex text together across hidden children", head `6636442d30eb`, not merged
+on 22 November 2026). A `display: none` child reached on the anonymous-block path was
+pushed with `LayoutChildren::push`, which closes the open anonymous block, so the text
+around it was split into separate anonymous blocks, one line each. markdown-typewriter
+2.2.0, while typing a line with HTML children, inserts `display:none` pause spans after
+each `,` plus a trailing `display:block;height:0;width:0` span; the block sends the
+inline ancestors down this path, and the visual-novel-template's typed line grew from 2
+to 4 lines (diagnosis and fixture `D:/roves-ci/typewriter-phantom-ab`, 22 November
+2026). The hidden child is now appended to the layout children directly (Taffy still
+lays it out at zero size) without closing the anonymous block. Same logic as the PR,
+adapted to this version's `hide_whitespace` flag (upstream renamed it `ChildFlow`), and
+written as an `else if` on the existing comment/whitespace branch instead of the PR's
+`return`. Regression: `support/blitz-v8-probe/src/inline_wrap.rs` (block flow, flex,
+`display: contents` hoisting, the combined typewriter markup, and controls without the
+block). Not covered and left open: a block inside an inline still turns the whole
+inline into a block ([DioxusLabs/blitz#1434](https://github.com/DioxusLabs/blitz/issues/1434)),
+so the typed text after the static text still starts a new line (the ignored test in
+`inline_wrap.rs` records Chrome's `[48, 0]`). Chromium (rev. f2700724f5,
+`core/layout/inline/inline_items_builder.cc` `AppendBlockInInline`,
+`line_breaker.cc` `HandleBlockInInline`) keeps the block in the inline formatting
+context with forced breaks around it; parley 0.12 has no forced break around an inline
+box and gives in-flow boxes the strut, so that part needs parley support and was not
+attempted here.
+
 Nothing else differs from the published crate (`ROVES_PATCHES.md` is the only added
 file).
 
@@ -167,7 +194,8 @@ Text state, passes `src/paint_order.rs` without patch 0004 (drop
 `vendor/blitz-paint` at the same time), `src/box_tree.rs` without patch 0005 and
 `src/svg_current_color.rs` without patch 0006, and lets the embedder supply the
 animation time of blitz-shell's resolve (or the probe stops using blitz-shell's
-redraw; patch 0007),
+redraw; patch 0007), and passes `src/inline_wrap.rs` without patch 0008 (upstream
+#1697 merged and released),
 bumping every blitz crate and Stylo together.
 Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`, Blitz #1493); an
 upstream issue/PR proposing the accessor is still to be opened.

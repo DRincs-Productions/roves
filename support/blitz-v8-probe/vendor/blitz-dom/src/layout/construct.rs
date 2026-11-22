@@ -230,6 +230,13 @@ fn push_hoisted_child(
 ) {
     let child = &doc.nodes[child_id];
     let child_display = child.display_style().unwrap_or(Display::inline());
+    // Roves patch 0008, port of upstream DioxusLabs/blitz#1697: keep the hidden
+    // node as a layout child without closing the open anonymous block, so it
+    // does not split the surrounding text run.
+    if child_display.inside() == DisplayInside::None {
+        out.children.push(child_id);
+        return;
+    }
     if matches!(child_display.inside(), DisplayInside::Contents) {
         collect_layout_children_with_wrap(doc, child_id, out, wrap);
         return;
@@ -828,12 +835,16 @@ fn collect_complex_layout_children(
 
         let is_whitespace_node = doc.nodes[child_id].is_whitespace_node();
 
-        // Skip comment nodes. Note that we do *not* skip `Display::None` nodes as they may need to be hidden.
-        // Taffy knows how to deal with `Display::None` children.
-        //
-        // Also hide all-whitespace flexbox children as these should be ignored
+        // Ignore comments and whitespace-only text in flex/grid containers.
         if child_node_kind == NodeKind::Comment || (hide_whitespace && is_whitespace_node) {
             // return;
+        }
+        // Roves patch 0008, port of upstream DioxusLabs/blitz#1697: Taffy still
+        // lays out hidden nodes, but they generate no box and must not close the
+        // open anonymous block (which split the text around them into separate
+        // lines, e.g. markdown-typewriter's `display:none` pause spans).
+        else if display_inside == DisplayInside::None {
+            out.children.push(child_id);
         }
         // Recurse into `Display::Contents` nodes, wrapping hoisted text and
         // inline children as if they were direct children of this container
