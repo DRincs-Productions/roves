@@ -31,13 +31,14 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 75
-    env:
-      CARGO_TARGET_DIR: ${{ runner.temp }}\cef-probe-target
-      # Shared CEF distribution (downloaded and SHA-1 checked by cef-dll-sys' build script).
-      CEF_PATH: ${{ runner.temp }}\cef
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.95.0
+      - name: set CEF build directories
+        shell: pwsh
+        run: |
+          "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'cef-probe-target')" >> $env:GITHUB_ENV
+          "CEF_PATH=$(Join-Path $env:RUNNER_TEMP 'cef')" >> $env:GITHUB_ENV
       - name: restore cargo and CEF cache
         id: cache
         uses: actions/cache/restore@v4
