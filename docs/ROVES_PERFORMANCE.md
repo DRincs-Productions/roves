@@ -3458,3 +3458,34 @@ scesa da circa 2–3 ms a 0,13–0,27 ms. Il codice IndexedDB e il data
 URL PNG usano ora le API native V8 mantenendo formato dei file e delle
 miniature. Da verificare in CI il caricamento di un salvataggio creato
 con la build precedente. Dati: `D:/roves-ci/save-idb-baseline/`.
+
+### CEF off-screen — seconda serie GTX 1050, 22 novembre 2026
+
+Con il bundle Windows del commit `f0ff3da44d9`, otto prove alternate
+`N W W N N W W N` a 1280×720, 60 Hz, driver `32.0.15.8163`, con 10 s
+di riscaldamento e 30 s di campionamento. `N` usa Netrender e `W` wgpu
+diretto. Entrambi ricevono il frame da wgpu-weld. La prova usa la fixture
+sintetica con CEF in sandbox e un profilo distinto per esecuzione.
+[Build Windows](https://github.com/DRincs-Productions/roves/actions/runs/45047087225)
+
+| Prova | Percorso | Esito e P99 tra chiamate `present()` |
+| --- | --- | --- |
+| 1 | Netrender | Warmup interrotto. Attesa di 737 ms in `surface_acquire`, generazione CEF in attesa +42. |
+| 2 | wgpu | 17,80 ms |
+| 3 | wgpu | Warmup interrotto. Attesa di 659 ms in `present`, generazione in attesa +40. |
+| 4 | Netrender | Warmup interrotto. Attesa di 590 ms in `submit`, generazione in attesa +35. Un submit precedente aveva impiegato 383 ms. |
+| 5 | Netrender | 17,70 ms |
+| 6 | wgpu | 17,87 ms |
+| 7 | wgpu | 17,82 ms |
+| 8 | Netrender | 17,76 ms |
+
+Le attese si manifestano nel percorso host in entrambi i modi. Durante
+ogni stallo, la mailbox è avanzata e conteneva già una texture nuova.
+Questa traccia localizza l'attesa nelle chiamate host. Per distinguere
+backpressure della swap chain, coda GPU e DWM occorre una traccia di
+presentazione. PresentMon 2.6.0 ha restituito `access denied` avviando
+ETW (exit 6). I percentili in tabella misurano chiamate host, mentre
+gli intervalli dei frame mostrati rimangono da acquisire.
+
+Dati locali in `D:/roves-ci/45047087225-cef-nr/`, inclusi `commands.txt`,
+`display.txt` e gli otto log `trial-*.log`.
