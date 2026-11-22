@@ -1,5 +1,5 @@
 //! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
-//! minimized/hidden suspension predicate and the test-only minimize, click and key sequences (std only,
+//! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click and key sequences (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF on Windows rebuilds a Win32 key message from `cef_key_event_t`: `windows_key_code` is
@@ -80,6 +80,24 @@ pub(crate) fn bmp_chars(text: &str) -> impl Iterator<Item = char> + '_ {
 /// per notch (`web_input_event_builders_win.cc`), i.e. 100 px, so DOM `deltaY` magnitudes
 /// differ from Chrome; only the direction and tick count are expected to match.
 pub(crate) const WHEEL_DELTA_PER_LINE: f32 = 120.0;
+
+/// What an SDL event is for the game-mode input path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InputEventKind {
+    /// Mouse motion, buttons and wheel, key down/up and text input: input aimed at the page.
+    User,
+    /// Window lifecycle, visibility, focus, scale, resize, close: producer and window state.
+    Window,
+}
+
+/// Whether the game-mode input path handles an event now. User input is discarded until the
+/// accepted game load-end has been handled: before it welding has no CEF browser host yet and
+/// refuses page input, and the page the input was aimed at does not exist. Window events always
+/// go through (welding stores visibility and scale for the browser it is still creating).
+/// After load-end nothing is discarded, so later welding refusals still surface.
+pub(crate) fn forward_input(kind: InputEventKind, game_loaded: bool) -> bool {
+    game_loaded || kind == InputEventKind::Window
+}
 
 /// A frame-work suspension change decided from the SDL window flags (every mode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -573,6 +591,16 @@ mod tests {
         assert!(load_status_ok(304));
         assert!(!load_status_ok(404));
         assert!(!load_status_ok(0));
+    }
+
+    #[test]
+    fn user_input_waits_for_the_game_load_end() {
+        // Before load-end (welding has no browser host): only window events go through.
+        assert!(!forward_input(InputEventKind::User, false));
+        assert!(forward_input(InputEventKind::Window, false));
+        // After load-end everything is handled, so welding refusals are not hidden.
+        assert!(forward_input(InputEventKind::User, true));
+        assert!(forward_input(InputEventKind::Window, true));
     }
 
     #[test]

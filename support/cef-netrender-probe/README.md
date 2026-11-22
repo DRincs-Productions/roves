@@ -333,9 +333,21 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   Chromium fills `KeyboardEvent.code`. Focus is given to the browser after the first imported
   frame and on every `Focused(true)`; `Occluded` maps to `set_visible`; `ScaleFactorChanged` to
   `set_scale_factor`; the page's cursor shape is applied to the window (hidden for `none`).
-  Resize is the probe's existing path (surface reconfigure + `producer.resize`). Input sent
-  before the browser exists is refused by welding: the first refusal is logged, the rest are
-  counted (`game input forwarded=<n> rejected=<n> console_messages=<n>` at close).
+  Resize is the probe's existing path (surface reconfigure + `producer.resize`). User input
+  (mouse motion, buttons, wheel, key down/up, text input) is **discarded until the accepted
+  game load-end has been handled**: before CEF's `on_after_created` welding has no browser
+  host and refuses page input, and there is no page to receive it. Evidence: CI run
+  45073519738 logged `input rejected` for a welding mouse-input operation before
+  `load-start`; that log does not say which SDL mouse event produced it. The exact event is
+  unknown — most likely the initial cursor motion SDL queues for the window under the cursor —
+  and the new `event=<kind>` log below will confirm it on the next rerun. Window lifecycle, visibility, focus, scale, resize
+  and close events are always handled (welding stores visibility/scale for the browser it is
+  creating); the test hooks push their events only after load-end. The rule is unit-tested in
+  `src/game_rules.rs` (`forward_input`). The first discarded event is logged as `input
+  discarded before the game load-end ... event=<kind>`; after load-end nothing is discarded
+  and any welding refusal is logged once as `input rejected` (a CI failure). Both are counted
+  at close: `game input forwarded=<n> rejected=<n> discarded_before_load_end=<n>
+  console_messages=<n>`.
 - **Minimized/hidden window (every mode).** While SDL reports the window minimized or
   hidden the host does no wgpu frame work (no import, compose, acquire or present); the loop
   waits on SDL events for at most 16 ms per turn and still handles CEF events, the load

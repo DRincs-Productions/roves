@@ -19,7 +19,8 @@ use welding::{
 };
 
 use crate::game_rules::{
-    KeyMessage, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier, native_key_code,
+    InputEventKind, KeyMessage, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier,
+    forward_input, native_key_code,
 };
 
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
@@ -92,8 +93,12 @@ pub(crate) struct Input {
     cursor: (i32, i32),
     /// Set by `Focused(true)` and at startup; applied once a frame proved the browser exists.
     focus_pending: bool,
-    /// Input calls welding refused (no browser yet, or closed). Only the first is logged.
+    /// Input calls welding refused after the game load-end (browser closed or failing). Only
+    /// the first is logged.
     pub(crate) rejected: u32,
+    /// User input dropped before the accepted game load-end (welding has no browser host
+    /// yet). Only the first is logged.
+    pub(crate) discarded: u32,
     pub(crate) forwarded: u64,
     cursor_hidden: bool,
     active_cursor: Option<Cursor>,
@@ -107,13 +112,31 @@ impl Input {
         }
     }
 
-    /// Forwards SDL logical mouse coordinates as physical pixels to welding.
+    /// Forwards SDL logical mouse coordinates as physical pixels to welding. `game_loaded`:
+    /// the accepted game load-end has been handled; until then user input is discarded and
+    /// only window events reach the producer.
     pub(crate) fn window_event(
         &mut self,
         producer: &mut WindowsCefProducer,
         window: &Window,
         event: &Event,
+        game_loaded: bool,
     ) -> Option<String> {
+        let user_input = user_input_name(event);
+        let kind = if user_input.is_some() {
+            InputEventKind::User
+        } else {
+            InputEventKind::Window
+        };
+        if !forward_input(kind, game_loaded) {
+            self.discarded += 1;
+            return (self.discarded == 1).then(|| {
+                format!(
+                    "input discarded before the game load-end (first; later ones only counted): event={}",
+                    user_input.unwrap_or_default()
+                )
+            });
+        }
         let point = |x: f32, y: f32| {
             let (width, height) = window.size();
             let (pixels_wide, pixels_high) = window.size_in_pixels();
@@ -298,6 +321,21 @@ impl Input {
             modifiers: self.modifiers,
         })
     }
+}
+
+/// The user-input SDL events `Input` forwards as page input (named for the log); `None` for
+/// window and every other event.
+fn user_input_name(event: &Event) -> Option<&'static str> {
+    Some(match event {
+        Event::MouseMotion { .. } => "mouse-motion",
+        Event::MouseButtonDown { .. } => "mouse-button-down",
+        Event::MouseButtonUp { .. } => "mouse-button-up",
+        Event::MouseWheel { .. } => "mouse-wheel",
+        Event::KeyDown { .. } => "key-down",
+        Event::KeyUp { .. } => "key-up",
+        Event::TextInput { .. } => "text-input",
+        _ => return None,
+    })
 }
 
 fn windows_scancode(vk: i32) -> Option<u32> {

@@ -1760,8 +1760,8 @@ impl Probe {
             ));
             if let Some(input) = s.input.as_ref() {
                 self.log.line(format_args!(
-                    "game input forwarded={} rejected={} console_messages={}",
-                    input.forwarded, input.rejected, self.console.seen
+                    "game input forwarded={} rejected={} discarded_before_load_end={} console_messages={}",
+                    input.forwarded, input.rejected, input.discarded, self.console.seen
                 ));
             }
             if let Err(error) = s.producer.close() {
@@ -1890,11 +1890,14 @@ impl Probe {
         };
         let mut click_forwarded = None;
         let mut key_forwarded = None;
+        // Set when the accepted game load-end was handled; the test hooks only push after it.
+        let game_loaded = self.game_loaded_at.is_some();
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
         {
             let forwarded = input.forwarded;
-            if let Some(line) = input.window_event(&mut s.producer, &s.window, &event) {
+            if let Some(line) = input.window_event(&mut s.producer, &s.window, &event, game_loaded)
+            {
                 self.log.line(format_args!("{line}"));
             }
             click_forwarded = synthetic.map(|down| (down, input.forwarded > forwarded));
