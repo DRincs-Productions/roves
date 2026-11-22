@@ -1,5 +1,12 @@
 # CEF accelerated OSR -> wgpu-weld -> Netrender probe (Windows feasibility)
 
+On `codex/cef-sdl3-wgpu-probe`, this workspace is the desktop JS-game candidate.
+Its first checkpoint preserves the same window host and smoke as the reference
+but removes Netrender and Vello from the Cargo graph. The wgpu device is requested
+directly and the existing premultiplied wgpu composition and pixel checks are used.
+The SDL3 window and event adapter is the next checkpoint. Netrender remains on
+`codex/cef-netrender-probe`, and the comparison receipts below refer to that branch.
+
 Isolated experiment, separate Cargo workspace. Nothing in the engine, `roves-action`,
 Packmaster, any release or the stage-1 window probe (`support/cef-window-probe`, CEF 156,
 `.github/workflows/cef-window-probe.yml`, both unchanged) depends on it.

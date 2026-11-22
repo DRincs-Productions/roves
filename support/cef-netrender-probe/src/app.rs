@@ -1,11 +1,5 @@
-//! Browser process of the probe: one wgpu 29 DX12 device booted by Netrender for the window
-//! surface, shared with welding's Windows CEF producer. Each frame CEF paints the fixture
-//! through accelerated OSR, welding copies the callback-scoped shared texture on the GPU and
-//! grafting imports it on the same device; Netrender renders its own scene (the "wgpu
-//! background") and composites the imported texture over it as a premultiplied external
-//! texture; the master is drawn onto the surface by a GPU blit. No CPU copy of the page or of
-//! the frame is made to present it: the only CPU readbacks are the verification samples taken
-//! at the two check points, after the frame was presented.
+//! Browser process: welding imports the accelerated CEF frame on the host DX12 device.
+//! The existing wgpu blits compose and present it. CPU readback is verification-only.
 
 use std::{
     fs::File,
@@ -23,10 +17,6 @@ use crate::game_rules::{load_status_ok, on_origin};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
-use netrender::{
-    Compositor, ExternalTextureComposite, ExternalTexturePlacement, NetrenderOptions,
-    PresentedFrame, Renderer, Scene, SourceAlpha, TenantNeeds,
-};
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
     CefSurfaceProducer as _, CefWindowsSandboxContext, HostWgpuContext, ImportedTexture,
@@ -54,7 +44,6 @@ const FRAMES_BEFORE_CHECK: u32 = 20;
 /// Per-channel tolerance for 8-bit rounding of the 50% layer.
 const TOLERANCE: u8 = 3;
 const BACKGROUND: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
-const NETRENDER_PANEL: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
 /// `--roves-sustained`: longest gap between two imported producer frames during warmup or
 /// sample before the run is declared stalled. The fixture repaints every 16 ms.
 const SUSTAINED_STALL: Duration = Duration::from_millis(500);
@@ -113,9 +102,8 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     log.line(format_args!("sandbox-info present=true mode=sandboxed"));
     log.line(format_args!(
-        "versions welding=0.15.0@e991684 cef={} netrender=d2f13ca5 wgpu=29.0.4 compose={}",
-        cef_version(),
-        options.compose.name()
+        "versions welding=0.15.0@e991684 cef={} wgpu=29.0.4 compose=wgpu",
+        cef_version()
     ));
     if options.sustained {
         UpstreamLog::install(log.clone());
@@ -219,29 +207,9 @@ fn cef_version() -> String {
         .map_or_else(|_| "unknown".into(), |v| v.to_string_lossy().into_owned())
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Compose {
-    /// Netrender d2f13ca5 renders the background scene and composites the CEF texture.
-    Netrender,
-    /// Same import, composed by one premultiplied blit over a cleared target. Exists because
-    /// Netrender/Vello 0.9 crashes on WARP (support/netrender-shared-device-proof/README.md),
-    /// the only adapter of GPU-less CI runners.
-    Wgpu,
-}
-
-impl Compose {
-    fn name(self) -> &'static str {
-        match self {
-            Compose::Netrender => "netrender",
-            Compose::Wgpu => "wgpu",
-        }
-    }
-}
-
 struct Options {
     log: Option<PathBuf>,
     cache_dir: PathBuf,
-    compose: Compose,
     timeout: Duration,
     keep_open: bool,
     /// `--roves-timings`: aggregated host-thread stage timings per phase (off by default).
@@ -280,7 +248,6 @@ impl Options {
                         .map_or(0, |elapsed| elapsed.as_millis()),
                     std::process::id()
                 )),
-            compose: Compose::Netrender,
             timeout: Duration::from_secs(120),
             keep_open: false,
             timings: false,
@@ -300,13 +267,7 @@ impl Options {
             match name {
                 "log" => options.log = Some(value.into()),
                 "cache-dir" => options.cache_dir = value.into(),
-                "compose" => {
-                    options.compose = match value {
-                        "netrender" => Compose::Netrender,
-                        "wgpu" => Compose::Wgpu,
-                        _ => return Err(format!("--roves-compose={value}: netrender|wgpu")),
-                    }
-                },
+                "compose" if value == "wgpu" => {},
                 "timeout-ms" => options.timeout = parse_ms(name, value)?,
                 "keep-open" => options.keep_open = true,
                 "timings" => options.timings = true,
@@ -483,7 +444,7 @@ const CLOSE_TIMEOUT: Duration = Duration::from_secs(30);
 struct State {
     producer: WindowsCefProducer,
     frame: Option<ImportedTexture>,
-    composer: Composer,
+    composed_target: Option<wgpu::Texture>,
     blit: Blit,
     surface: wgpu::Surface<'static>,
     surface_config: wgpu::SurfaceConfiguration,
@@ -496,11 +457,6 @@ struct State {
     load_ended: bool,
     /// Game mode only: winit -> welding input forwarding.
     input: Option<Input>,
-}
-
-enum Composer {
-    Netrender(Box<Renderer>),
-    Wgpu(Option<wgpu::Texture>),
 }
 
 impl Probe {
@@ -528,23 +484,23 @@ impl Probe {
         let surface = instance
             .create_surface(window.clone())
             .map_err(|e| format!("surface: {e}"))?;
-        // One device for Netrender and the CEF import, booted through Netrender's tenancy
-        // contract (its limits raised over wgpu's defaults, no extra features).
-        let handles = netrender::boot_on(
-            instance,
-            Some(&surface),
-            &TenantNeeds {
-                label: Some("roves-cef-netrender-probe"),
-                ..Default::default()
-            },
-        )
-        .map_err(|e| format!("netrender boot_on: {e:?}"))?;
-        let info = handles.adapter.get_info();
+        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        }))
+        .map_err(|e| format!("DX12 adapter: {e}"))?;
+        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+            label: Some("Roves CEF host device"),
+            ..Default::default()
+        }))
+        .map_err(|e| format!("DX12 device: {e}"))?;
+        let info = adapter.get_info();
         self.log.line(format_args!(
             "adapter name={:?} backend={:?} type={:?} driver={:?} {:?}",
             info.name, info.backend, info.device_type, info.driver, info.driver_info
         ));
-        let host = HostWgpuContext::new(handles.device.clone(), handles.queue.clone());
+        let host = HostWgpuContext::new(device, queue);
         if host.backend != InteropBackend::Dx12 {
             return Err(format!("interop backend {:?}, expected Dx12", host.backend));
         }
@@ -553,7 +509,7 @@ impl Probe {
             move |error| log.line(format_args!("FAIL wgpu uncaptured error: {error}"))
         }));
 
-        let caps = surface.get_capabilities(&handles.adapter);
+        let caps = surface.get_capabilities(&adapter);
         // A non-sRGB surface keeps the composed bytes unchanged (no second encode).
         let format = caps
             .formats
@@ -586,25 +542,6 @@ impl Probe {
         ));
 
         let blit = Blit::new(&host.device, format);
-        let composer = match self.options.compose {
-            Compose::Netrender => {
-                let renderer = netrender::create_netrender_instance(
-                    handles,
-                    NetrenderOptions {
-                        tile_cache_size: Some(64),
-                        enable_vello: true,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| format!("create_netrender_instance: {e:?}"))?;
-                self.log.line(format_args!(
-                    "netrender renderer created on the shared device"
-                ));
-                Composer::Netrender(Box::new(renderer))
-            },
-            Compose::Wgpu => Composer::Wgpu(None),
-        };
-
         let runtime = self.runtime.take().ok_or("CEF runtime already consumed")?;
         let game_origin = self.server.as_ref().map(|server| server.origin.clone());
         let game = game_origin.is_some();
@@ -643,7 +580,7 @@ impl Probe {
         Ok(State {
             producer,
             frame: None,
-            composer,
+            composed_target: None,
             blit,
             surface,
             surface_config,
@@ -1161,7 +1098,7 @@ impl Probe {
     fn report_timings(&mut self, phase: &str) {
         if let Some(t) = self.timings.as_mut() {
             let log = &self.log;
-            t.report(phase, self.options.compose.name(), |line| {
+            t.report(phase, "wgpu", |line| {
                 log.line(format_args!("{line}"));
             });
         }
@@ -1183,12 +1120,7 @@ impl Probe {
             ));
             return;
         }
-        let netrender = matches!(s.composer, Composer::Netrender(_));
-        let panel: [u8; 4] = if netrender {
-            [255, 255, 0, 255]
-        } else {
-            [255, 0, 0, 255]
-        };
+        let panel = BACKGROUND.map(|channel| (channel * 255.0) as u8);
         // (name, fx, fy, expected composed RGBA, expected CEF texel RGBA premultiplied)
         type Sample = (&'static str, f32, f32, [u8; 4], [u8; 4]);
         let samples: [Sample; 4] = [
@@ -1317,13 +1249,13 @@ impl Probe {
             let State {
                 producer,
                 frame,
-                composer,
+                composed_target,
                 runtime,
                 ..
             } = s;
             drop(frame);
             drop(producer);
-            drop(composer);
+            drop(composed_target);
             self.log.line(format_args!("producer and renderer dropped"));
             drop(runtime);
             self.log.line(format_args!("cef shutdown complete"));
@@ -1431,88 +1363,44 @@ impl ApplicationHandler for Probe {
 fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Texture> {
     let start = now_if(&timings);
     let (w, h) = (s.surface_config.width, s.surface_config.height);
-    match &mut s.composer {
-        Composer::Netrender(renderer) => {
-            let mut scene = Scene::new(w, h);
-            scene.push_rect(0.0, 0.0, w as f32, h as f32, BACKGROUND);
-            scene.push_rect(
-                w as f32 * 0.5,
-                h as f32 * 0.5,
-                w as f32,
-                h as f32,
-                NETRENDER_PANEL,
-            );
-            let view = s.frame.as_ref().map(|f| (&f.view, f.size));
-            // Placed 1:1 at the frame's own size (never stretched while a resize is pending)
-            // after every scene op, so Netrender's tail re-render (the d2f13ca5 ordering
-            // issue in the shared-device proof) is never involved.
-            let composites: Vec<ExternalTextureComposite<'_>> = view
-                .map(|(view, size)| {
-                    ExternalTextureComposite::new(
-                        view,
-                        ExternalTexturePlacement::new([
-                            0.0,
-                            0.0,
-                            size.width as f32,
-                            size.height as f32,
-                        ])
-                        .with_alpha(SourceAlpha::Premultiplied),
-                    )
-                })
-                .into_iter()
-                .collect();
-            let mut capture = CaptureMaster(None);
-            renderer.render_with_compositor_and_external_textures(
-                &scene,
-                COMPOSED_FORMAT,
-                &mut capture,
-                netrender::peniko::Color::new([0.0, 0.0, 0.0, 0.0]),
-                &composites,
-            );
-            // Netrender submits internally: its submit cannot be timed separately here.
-            lap(&mut timings, Stage::Compose, start);
-            capture.0
-        },
-        Composer::Wgpu(target) => {
-            let target = match target {
-                Some(t) if t.width() == w && t.height() == h => t.clone(),
-                _ => {
-                    let texture = s.host.device.create_texture(&wgpu::TextureDescriptor {
-                        label: Some("roves composed frame (wgpu mode)"),
-                        size: wgpu::Extent3d {
-                            width: w,
-                            height: h,
-                            depth_or_array_layers: 1,
-                        },
-                        mip_level_count: 1,
-                        sample_count: 1,
-                        dimension: wgpu::TextureDimension::D2,
-                        format: COMPOSED_FORMAT,
-                        usage: wgpu::TextureUsages::RENDER_ATTACHMENT
-                            | wgpu::TextureUsages::TEXTURE_BINDING
-                            | wgpu::TextureUsages::COPY_SRC,
-                        view_formats: &[],
-                    });
-                    *target = Some(texture.clone());
-                    texture
+    let target = &mut s.composed_target;
+    let target = match target {
+        Some(t) if t.width() == w && t.height() == h => t.clone(),
+        _ => {
+            let texture = s.host.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("roves composed frame (wgpu mode)"),
+                size: wgpu::Extent3d {
+                    width: w,
+                    height: h,
+                    depth_or_array_layers: 1,
                 },
-            };
-            let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-            let [r, g, b, a] = BACKGROUND.map(f64::from);
-            let source = s.frame.as_ref().map(|f| (&f.view, f.size));
-            let commands = s.blit.encode(
-                &s.host,
-                &view,
-                wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
-                source.map(|(view, size)| (view, size.width, size.height)),
-                true,
-            );
-            let submit = lap(&mut timings, Stage::Compose, start);
-            s.host.queue.submit([commands]);
-            lap(&mut timings, Stage::ComposeSubmit, submit);
-            Some(target)
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: COMPOSED_FORMAT,
+                usage: wgpu::TextureUsages::RENDER_ATTACHMENT
+                    | wgpu::TextureUsages::TEXTURE_BINDING
+                    | wgpu::TextureUsages::COPY_SRC,
+                view_formats: &[],
+            });
+            *target = Some(texture.clone());
+            texture
         },
-    }
+    };
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let [r, g, b, a] = BACKGROUND.map(f64::from);
+    let source = s.frame.as_ref().map(|f| (&f.view, f.size));
+    let commands = s.blit.encode(
+        &s.host,
+        &view,
+        wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
+        source.map(|(view, size)| (view, size.width, size.height)),
+        true,
+    );
+    let submit = lap(&mut timings, Stage::Compose, start);
+    s.host.queue.submit([commands]);
+    lap(&mut timings, Stage::ComposeSubmit, submit);
+    Some(target)
 }
 
 /// GPU blit of the composed frame onto the window surface.
@@ -1585,16 +1473,6 @@ fn lap(
     match (timings.as_deref_mut(), since) {
         (Some(t), Some(since)) => Some(t.lap(stage, since)),
         _ => None,
-    }
-}
-
-struct CaptureMaster(Option<wgpu::Texture>);
-
-impl Compositor for CaptureMaster {
-    fn declare_surface(&mut self, _key: netrender::SurfaceKey, _world_bounds: [f32; 4]) {}
-    fn destroy_surface(&mut self, _key: netrender::SurfaceKey) {}
-    fn present_frame(&mut self, frame: PresentedFrame<'_>) {
-        self.0 = Some(frame.master.clone());
     }
 }
 

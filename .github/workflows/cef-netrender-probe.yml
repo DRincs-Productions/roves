@@ -1,4 +1,4 @@
-name: CEF -> wgpu-weld -> Netrender probe
+name: CEF -> wgpu-weld -> wgpu probe
 
 # Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
 # Windows probe (welding e991684, CEF 154, wgpu 29.0.4, Netrender d2f13ca5) and runs it on
@@ -75,12 +75,12 @@ jobs:
         run: |
           cargo tree --locked --target x86_64-pc-windows-msvc -e normal -d \
             | tee "$RUNNER_TEMP/cef-nr-duplicates.txt"
-          # One wgpu 29 for welding, grafting, Netrender and Vello; wgpu 30 may appear only
+          # One wgpu 29 for the host, welding and grafting; wgpu 30 may appear only
           # under cef (accelerated_osr importer, never called).
           tree() { cargo tree --locked --target x86_64-pc-windows-msvc -e normal --prefix depth --depth 1 "$@"; }
           users29="$(tree -i wgpu@29.0.4 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
           echo "::notice::wgpu 29.0.4 used by: $users29"
-          for crate in grafting netrender roves_cef_netrender_probe vello welding; do
+          for crate in grafting roves_cef_netrender_probe welding; do
             echo " $users29" | grep -q " $crate " || { echo "::error::$crate is not on wgpu 29.0.4"; exit 1; }
           done
           users30="$(tree -i wgpu@30.0.2 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
