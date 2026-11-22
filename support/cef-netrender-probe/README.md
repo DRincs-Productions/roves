@@ -355,6 +355,20 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   `ui/views/win/hwnd_message_handler.cc` `OnSize(SIZE_MINIMIZED)` drives it on Windows;
   native occlusion throttling (`ui/aura/window_tree_host.cc`) is a separate, feature-gated
   path not reproduced here.
+- **Scripted minimize/restore (`--roves-test-minimize-ms=<ms>`, tests only).** Game mode
+  only. `<ms>` after the accepted load-end the probe calls `SDL_MinimizeWindow`, waits until
+  frame work is suspended, holds it suspended for 1500 ms, then calls `SDL_RestoreWindow`
+  and waits for the resume; the window manager reports both transitions through ordinary
+  SDL window events, so suspension and resume go through the same path as a user's
+  minimize. The cycle is advanced from the loop's deadline handling, which also runs on
+  suspended turns: the restore request is itself evidence that deadlines are serviced while
+  suspended. It fails (`FAIL test minimize ...`, then close) if frame work is suspended
+  before the scripted minimize, is not suspended within 10 s of the request, resumes during
+  the hold, is not resumed within 10 s of the restore request, or if either SDL call fails;
+  an unfinished cycle at exit is also a `FAIL`. `--roves-auto-close-ms` waits for the cycle
+  to finish. Log lines: `test minimize requested ok=<bool> hold_ms=1500`,
+  `test restore requested ok=<bool> idle_ticks=<n>`, `test minimize cycle complete`. Not
+  meant for players; the flag only exists to make the suspension path testable in CI.
 - **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
   accepted load-end). Afterwards the run lasts until the OS closes the window, or
   `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,
@@ -362,7 +376,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   failure); 2 = never loaded / close timeout. Console messages are logged as
   `console level=... source=...:line message=...` (first 500, 512 characters each).
   `--roves-sustained` and `--roves-keep-open` are refused with `--roves-game-dir` (no fixture
-  checks); `--roves-port`/`--roves-auto-close-ms` are refused without it.
+  checks); `--roves-port`, `--roves-auto-close-ms` and `--roves-test-minimize-ms` are refused
+  without it.
 - **Timings.** With `--roves-timings`, every redraw after the accepted load-end is recorded
   and a `timings phase=game ...` summary (same stages and format as above) is emitted when the
   window starts closing, before the close sequence. Resizes break the intervals but are not
@@ -514,7 +529,8 @@ window stays until the OS closes it), `--roves-timings` (below; off by default, 
 pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
 exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
-`--roves-auto-close-ms=<ms>` (opt-in real-game mode, above; no fixture checks). CEF
+`--roves-auto-close-ms=<ms>` and the test-only `--roves-test-minimize-ms=<ms>` (opt-in
+real-game mode, above; no fixture checks). CEF
 switches such as `--log-file` pass through.
 
 ## Optional timings (`--roves-timings`)
@@ -664,7 +680,30 @@ stopped`, `exit code=0`; plus process exit 0, no `FAIL`/`close requested by the 
 refused` line, a sandboxed renderer child and no leftover process. Imported frames are only
 reported (WARP delivers none), so this step proves serving, navigation, script execution
 and lifecycle, **not** accelerated frames, presentation, input or gameplay; there is no
-window automation in CI.
+window automation in CI. This step also fails on any `test minimize` line: without the
+flag the scripted cycle must stay off.
+
+A third step reuses the same bundle for the **minimized-window suspension gate**: a fixture
+whose `game.js` logs `roves-ci-lifecycle-fixture visibility=<state>` at start and on every
+`visibilitychange`, run with `--roves-compose=wgpu --roves-test-minimize-ms=1000
+--roves-auto-close-ms=8000` on WARP. Gated, each line after the previous one: `producer
+created accelerated=true background=white`, `load-end status=200` on the loopback root,
+`auto-close scheduled delay_ms=8000`, `test minimize requested ok=true hold_ms=1500`,
+`frame work suspended reason=minimized phase=Game`, the fixture's `visibility=hidden`
+console marker (CEF events still drained while suspended), `test restore requested ok=true`,
+`frame work resumed` with `suspended_ms >= 1500` and `idle_ticks >= 20`, `test minimize
+cycle complete`, the `visibility=visible` marker, `auto-close window`, close, `browser
+closed`, `producer and renderer dropped`, `cef shutdown complete`, `game loopback stopped`,
+`exit code=0`; plus exactly one `frame work suspended` line, process exit 0, no
+`FAIL`/`close requested by the OS`/`popup refused` line and no leftover process. The
+`resume first-present`/`first-import` lines are only reported. This proves, on the runner's
+window manager, that an SDL minimize suspends frame work while the loop keeps servicing
+CEF events and deadlines, that CEF/the page see the window hidden and visible again, that
+restore resumes from the window flags after the hold, and that close and shutdown stay
+clean afterwards. It does **not** prove accelerated frames, GPU presentation or the
+re-present on resume (WARP delivers no accelerated frame), input, visual correctness,
+user-driven minimize/hide from the taskbar or other window managers, or the absence of GPU
+work on real hardware while suspended.
 
 ## Versions evaluated (2026-11-22)
 

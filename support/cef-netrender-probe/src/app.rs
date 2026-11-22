@@ -13,7 +13,10 @@ use std::{
 };
 
 use crate::game::{Console, GameOptions, Input, Server};
-use crate::game_rules::{load_status_ok, on_origin};
+use crate::game_rules::{
+    CycleAction, MinimizeCycle, Suspension, TEST_MINIMIZE_HOLD, load_status_ok, on_origin,
+    suspension_change,
+};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
@@ -167,6 +170,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     } else {
         Phase::Initial
     };
+    let minimize_cycle = options.test_minimize.map(|_| MinimizeCycle::Waiting);
     let mut probe = Probe {
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
@@ -182,6 +186,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         server,
         game_loaded_at: None,
         console: Console::default(),
+        minimize_cycle,
         failures: 0,
         checks: 0,
         exit_code: None,
@@ -257,6 +262,9 @@ struct Options {
     game: Option<GameOptions>,
     /// `--roves-auto-close-ms` (game mode only): close this long after the game's load-end.
     auto_close: Option<Duration>,
+    /// `--roves-test-minimize-ms` (game mode, tests only): this long after load-end, minimize
+    /// the window through SDL, hold it suspended, restore it (README "Real-game mode").
+    test_minimize: Option<Duration>,
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -287,6 +295,7 @@ impl Options {
             sample: Duration::from_secs(30),
             game: None,
             auto_close: None,
+            test_minimize: None,
         };
         let mut game_dir = None;
         let mut port = None;
@@ -314,6 +323,7 @@ impl Options {
                     )
                 },
                 "auto-close-ms" => options.auto_close = Some(parse_ms(name, value)?),
+                "test-minimize-ms" => options.test_minimize = Some(parse_ms(name, value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
         }
@@ -335,8 +345,13 @@ impl Options {
                 options.cache_dir = std::path::absolute(&options.cache_dir)
                     .map_err(|e| format!("--roves-cache-dir: {e}"))?;
             },
-            None if port.is_some() || options.auto_close.is_some() => {
-                return Err("--roves-port/--roves-auto-close-ms need --roves-game-dir".into());
+            None if port.is_some()
+                || options.auto_close.is_some()
+                || options.test_minimize.is_some() =>
+            {
+                return Err("--roves-port, --roves-auto-close-ms and \
+                            --roves-test-minimize-ms need --roves-game-dir"
+                    .into());
             },
             None => {},
         }
@@ -465,6 +480,8 @@ struct Probe {
     /// Game mode: first accepted main-frame load-end on the loopback origin.
     game_loaded_at: Option<Instant>,
     console: Console,
+    /// `--roves-test-minimize-ms` only: the scripted minimize/restore cycle.
+    minimize_cycle: Option<MinimizeCycle>,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -849,6 +866,10 @@ impl Probe {
                 self.exit_code.get_or_insert(2);
                 self.close();
             },
+            Phase::Game if self.minimize_cycle.is_some_and(|c| !c.finished()) => {
+                self.step_minimize_cycle();
+            },
+            // With --roves-test-minimize-ms, only once the scripted cycle has finished.
             Phase::Game
                 if self
                     .options
@@ -863,15 +884,70 @@ impl Probe {
         }
     }
 
+    /// `--roves-test-minimize-ms` only: advances the scripted minimize -> hold -> restore
+    /// cycle. Runs from `deadlines`, so also on suspended turns: the restore request is
+    /// itself evidence that deadlines kept running while frame work was suspended.
+    fn step_minimize_cycle(&mut self) {
+        let (Some(mut cycle), Some(delay), Some(loaded)) = (
+            self.minimize_cycle,
+            self.options.test_minimize,
+            self.game_loaded_at,
+        ) else {
+            return;
+        };
+        let suspended = self.suspended();
+        let action = cycle.step(Instant::now(), loaded.elapsed() >= delay, suspended);
+        self.minimize_cycle = Some(cycle);
+        let s = self.state.as_mut().expect("state");
+        match action {
+            CycleAction::None => {},
+            CycleAction::Minimize => {
+                let ok = s.window.minimize();
+                self.log.line(format_args!(
+                    "test minimize requested ok={ok} hold_ms={}",
+                    TEST_MINIMIZE_HOLD.as_millis()
+                ));
+                if !ok {
+                    self.minimize_cycle = Some(MinimizeCycle::Failed);
+                    self.fail(format_args!("test minimize: SDL_MinimizeWindow failed"));
+                    self.close();
+                }
+            },
+            CycleAction::Restore => {
+                let ok = s.window.restore();
+                self.log.line(format_args!(
+                    "test restore requested ok={ok} idle_ticks={}",
+                    s.suspended_ticks
+                ));
+                if !ok {
+                    self.minimize_cycle = Some(MinimizeCycle::Failed);
+                    self.fail(format_args!("test restore: SDL_RestoreWindow failed"));
+                    self.close();
+                }
+            },
+            CycleAction::Complete => {
+                self.log.line(format_args!("test minimize cycle complete"));
+            },
+            CycleAction::Fail(what) => {
+                self.fail(format_args!("test minimize cycle: {what}"));
+                self.close();
+            },
+        }
+    }
+
     /// Suspends frame work while the window is minimized or hidden and resumes it once it is
     /// neither. Decided from the window flags, so a `Shown` that arrives while the window is
     /// still minimized does not resume. Occlusion alone does not suspend.
     fn update_suspension(&mut self, reason: &str) {
         let Some(s) = self.state.as_mut() else { return };
         let flags = WindowFlags::from(s.window.window_flags());
-        let hide = flags.intersects(WindowFlags::MINIMIZED | WindowFlags::HIDDEN);
-        match (s.suspended_since, hide) {
-            (None, true) => {
+        let change = suspension_change(
+            s.suspended_since.is_some(),
+            flags.contains(WindowFlags::MINIMIZED),
+            flags.contains(WindowFlags::HIDDEN),
+        );
+        match (change, s.suspended_since) {
+            (Some(Suspension::Suspend), _) => {
                 s.suspended_since = Some(Instant::now());
                 s.suspended_ticks = 0;
                 s.resumed_at = None;
@@ -884,7 +960,7 @@ impl Probe {
                     self.end_sustained(Some(format!("window {reason} during {:?}", self.phase)));
                 }
             },
-            (Some(since), false) => {
+            (Some(Suspension::Resume), Some(since)) => {
                 let now = Instant::now();
                 s.suspended_since = None;
                 s.resumed_at = Some(now);
@@ -1423,6 +1499,14 @@ impl Probe {
             return code;
         }
         if self.options.game.is_some() {
+            if let Some(cycle) = self.minimize_cycle
+                && !cycle.finished()
+            {
+                self.log.line(format_args!(
+                    "FAIL test minimize cycle incomplete state={cycle:?}"
+                ));
+                self.failures += 1;
+            }
             if self.game_loaded_at.is_none() {
                 self.log
                     .line(format_args!("FAIL the game never finished loading"));

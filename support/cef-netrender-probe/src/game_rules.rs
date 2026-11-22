@@ -1,5 +1,6 @@
-//! Pure helpers of the `--roves-game-dir` mode: origin policy and keyboard translation (std
-//! only, unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
+//! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
+//! minimized/hidden suspension predicate and the test-only minimize cycle (std only,
+//! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF on Windows rebuilds a Win32 key message from `cef_key_event_t`: `windows_key_code` is
 //! the message's virtual key and `native_key_code` its `lParam`, from which Chromium takes the
@@ -80,6 +81,110 @@ pub(crate) fn bmp_chars(text: &str) -> impl Iterator<Item = char> + '_ {
 /// differ from Chrome; only the direction and tick count are expected to match.
 pub(crate) const WHEEL_DELTA_PER_LINE: f32 = 120.0;
 
+/// A frame-work suspension change decided from the SDL window flags (every mode).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Suspension {
+    Suspend,
+    Resume,
+}
+
+/// Frame work is suspended while the window is minimized or hidden and resumes only once it
+/// is neither, so a `Shown` that arrives while still minimized changes nothing. Occlusion is
+/// not an input: it never suspends.
+pub(crate) fn suspension_change(
+    suspended: bool,
+    minimized: bool,
+    hidden: bool,
+) -> Option<Suspension> {
+    match (suspended, minimized || hidden) {
+        (false, true) => Some(Suspension::Suspend),
+        (true, false) => Some(Suspension::Resume),
+        _ => None,
+    }
+}
+
+/// `--roves-test-minimize-ms` only: how long the scripted minimize keeps frame work suspended
+/// before the restore is requested (about 90 suspended loop turns at the 16 ms tick).
+pub(crate) const TEST_MINIMIZE_HOLD: std::time::Duration = std::time::Duration::from_millis(1500);
+/// `--roves-test-minimize-ms` only: longest wait for the window to report the requested
+/// minimize or restore before the run fails.
+pub(crate) const TEST_TRANSITION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// `--roves-test-minimize-ms` (test only, game mode): one scripted minimize -> hold ->
+/// restore cycle after the game's load-end. Driven from the loop's deadline handling, which
+/// also runs on every suspended turn, so the restore request itself proves that deadlines
+/// are serviced while frame work is suspended. The window manager decides the transitions;
+/// the cycle only observes the probe's suspension state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum MinimizeCycle {
+    /// Waiting for load-end + the requested delay.
+    Waiting,
+    Minimizing(std::time::Instant),
+    /// Suspended since this instant.
+    Holding(std::time::Instant),
+    Restoring(std::time::Instant),
+    Done,
+    Failed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CycleAction {
+    None,
+    Minimize,
+    Restore,
+    Complete,
+    Fail(&'static str),
+}
+
+impl MinimizeCycle {
+    /// `due`: load-end + delay has passed. `suspended`: the probe's frame-work state.
+    pub(crate) fn step(
+        &mut self,
+        now: std::time::Instant,
+        due: bool,
+        suspended: bool,
+    ) -> CycleAction {
+        let (next, action) = match *self {
+            MinimizeCycle::Waiting if suspended => (
+                MinimizeCycle::Failed,
+                CycleAction::Fail("frame work suspended before the scripted minimize"),
+            ),
+            MinimizeCycle::Waiting if due => {
+                (MinimizeCycle::Minimizing(now), CycleAction::Minimize)
+            },
+            MinimizeCycle::Minimizing(_) if suspended => {
+                (MinimizeCycle::Holding(now), CycleAction::None)
+            },
+            MinimizeCycle::Minimizing(at) if now - at > TEST_TRANSITION_TIMEOUT => (
+                MinimizeCycle::Failed,
+                CycleAction::Fail("frame work not suspended after the minimize request"),
+            ),
+            MinimizeCycle::Holding(_) if !suspended => (
+                MinimizeCycle::Failed,
+                CycleAction::Fail("frame work resumed before the scripted restore"),
+            ),
+            MinimizeCycle::Holding(since) if now - since >= TEST_MINIMIZE_HOLD => {
+                (MinimizeCycle::Restoring(now), CycleAction::Restore)
+            },
+            MinimizeCycle::Restoring(_) if !suspended => {
+                (MinimizeCycle::Done, CycleAction::Complete)
+            },
+            MinimizeCycle::Restoring(at) if now - at > TEST_TRANSITION_TIMEOUT => (
+                MinimizeCycle::Failed,
+                CycleAction::Fail("frame work not resumed after the restore request"),
+            ),
+            state => (state, CycleAction::None),
+        };
+        *self = next;
+        action
+    }
+
+    /// Done or failed: `--roves-auto-close-ms` may close the window.
+    pub(crate) fn finished(self) -> bool {
+        matches!(self, MinimizeCycle::Done | MinimizeCycle::Failed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +261,92 @@ mod tests {
     #[test]
     fn non_bmp_characters_are_skipped() {
         assert_eq!(bmp_chars("a\u{1F600}é").collect::<String>(), "aé");
+    }
+
+    #[test]
+    fn suspension_follows_minimized_or_hidden_flags() {
+        use Suspension::*;
+        assert_eq!(suspension_change(false, true, false), Some(Suspend));
+        assert_eq!(suspension_change(false, false, true), Some(Suspend));
+        assert_eq!(suspension_change(false, false, false), None);
+        // Already suspended: a second minimize/hide is no new transition.
+        assert_eq!(suspension_change(true, true, true), None);
+        // `Shown` while still minimized (or restored while still hidden) does not resume.
+        assert_eq!(suspension_change(true, true, false), None);
+        assert_eq!(suspension_change(true, false, true), None);
+        assert_eq!(suspension_change(true, false, false), Some(Resume));
+    }
+
+    fn ms(n: u64) -> std::time::Duration {
+        std::time::Duration::from_millis(n)
+    }
+
+    #[test]
+    fn minimize_cycle_runs_in_order() {
+        let t0 = std::time::Instant::now();
+        let mut cycle = MinimizeCycle::Waiting;
+        assert_eq!(cycle.step(t0, false, false), CycleAction::None);
+        assert_eq!(cycle.step(t0, true, false), CycleAction::Minimize);
+        // The window manager has not applied it yet.
+        assert_eq!(cycle.step(t0 + ms(5), true, false), CycleAction::None);
+        assert_eq!(cycle.step(t0 + ms(20), true, true), CycleAction::None);
+        assert!(!cycle.finished());
+        // Held suspended until TEST_MINIMIZE_HOLD, then the restore is requested once.
+        let hold_end = t0 + ms(20) + TEST_MINIMIZE_HOLD;
+        assert_eq!(cycle.step(hold_end - ms(1), true, true), CycleAction::None);
+        assert_eq!(cycle.step(hold_end, true, true), CycleAction::Restore);
+        assert_eq!(cycle.step(hold_end + ms(5), true, true), CycleAction::None);
+        assert_eq!(
+            cycle.step(hold_end + ms(30), true, false),
+            CycleAction::Complete
+        );
+        assert!(cycle.finished());
+        assert_eq!(cycle.step(hold_end + ms(40), true, true), CycleAction::None);
+        assert_eq!(cycle, MinimizeCycle::Done);
+    }
+
+    #[test]
+    fn minimize_cycle_fails_on_missing_or_out_of_order_transitions() {
+        let t0 = std::time::Instant::now();
+        let late = TEST_TRANSITION_TIMEOUT + ms(1);
+
+        // Suspended before the scripted minimize: not attributable to the test.
+        let mut cycle = MinimizeCycle::Waiting;
+        assert!(matches!(cycle.step(t0, false, true), CycleAction::Fail(_)));
+        assert!(cycle.finished());
+
+        // The minimize never suspends frame work.
+        let mut cycle = MinimizeCycle::Waiting;
+        assert_eq!(cycle.step(t0, true, false), CycleAction::Minimize);
+        assert_eq!(
+            cycle.step(t0 + TEST_TRANSITION_TIMEOUT, true, false),
+            CycleAction::None
+        );
+        assert!(matches!(
+            cycle.step(t0 + late, true, false),
+            CycleAction::Fail(_)
+        ));
+        assert_eq!(cycle, MinimizeCycle::Failed);
+
+        // Frame work resumes on its own during the hold.
+        let mut cycle = MinimizeCycle::Waiting;
+        cycle.step(t0, true, false);
+        cycle.step(t0 + ms(10), true, true);
+        assert!(matches!(
+            cycle.step(t0 + ms(20), true, false),
+            CycleAction::Fail(_)
+        ));
+
+        // The restore never resumes frame work.
+        let mut cycle = MinimizeCycle::Waiting;
+        cycle.step(t0, true, false);
+        cycle.step(t0, true, true);
+        let restore_at = t0 + TEST_MINIMIZE_HOLD;
+        assert_eq!(cycle.step(restore_at, true, true), CycleAction::Restore);
+        assert!(matches!(
+            cycle.step(restore_at + late, true, true),
+            CycleAction::Fail(_)
+        ));
+        assert!(cycle.finished());
     }
 }

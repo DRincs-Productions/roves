@@ -256,7 +256,8 @@ jobs:
             $failed = $true
           }
           if ($code -ne 0) { Write-Output "::error::game mode exit code $code (expected 0)"; $failed = $true }
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused')) {
+          # The test-only minimize hook must stay off without --roves-test-minimize-ms.
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'test minimize')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -273,6 +274,107 @@ jobs:
             Write-Output '::error::probe processes left running after the game-mode exit'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Minimized-window suspension regression (same bundle). The test-only flag
+      # --roves-test-minimize-ms=1000 makes the probe itself call SDL_MinimizeWindow 1 s after
+      # load-end, hold 1.5 s and call SDL_RestoreWindow; the window manager reports both
+      # transitions through ordinary SDL window events. Required, in log order: minimize
+      # request, `frame work suspended reason=minimized`, the fixture's visibilitychange
+      # marker `visibility=hidden` drained while suspended (CEF events kept flowing), the
+      # restore request (issued from the deadline path on a suspended turn), `frame work
+      # resumed` with suspended_ms >= 1500 and idle_ticks >= 20, cycle complete,
+      # `visibility=visible`, auto-close and the clean close/shutdown lines; exit 0, no FAIL
+      # line, no leftover process. Frames, presents, input and visuals are not required
+      # (WARP); the `resume first-present` line is only reported.
+      - name: run the probe in game mode (scripted minimize/restore, WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-suspend-run'
+          $game = Join-Path $out 'game'
+          New-Item -ItemType Directory -Force $game | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $game 'index.html') @'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>roves ci lifecycle fixture</title>
+          <script type="module" src="./game.js"></script>
+          '@
+          Set-Content -Encoding utf8 (Join-Path $game 'game.js') @'
+          console.log(`roves-ci-lifecycle-fixture module-ok visibility=${document.visibilityState}`);
+          document.addEventListener('visibilitychange', () => {
+            console.log(`roves-ci-lifecycle-fixture visibility=${document.visibilityState}`);
+          });
+          '@
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping processes left by the previous step before the suspension run'
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $log = Join-Path $out 'roves-cef-nr-suspend.log'
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-test-minimize-ms=1000',
+            '--roves-auto-close-ms=8000', '--roves-timeout-ms=90000', "--roves-log=$log",
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          if (-not $proc.WaitForExit(150000)) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Test-Path $log) { Get-Content $log }
+            Write-Output '::error::the probe did not exit in time in the suspension run'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $failed = $false
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          $marker = "console level=\d+ source=$o/game\.js:\d+ message=`"roves-ci-lifecycle-fixture"
+          # Each pattern must match a line after the previous match (earlier occlusion-driven
+          # visibility changes, if any, are skipped rather than taken as evidence).
+          $last = -1
+          $found = @{}
+          foreach ($pattern in @(
+              'producer created accelerated=true background=white',
+              "load-end status=200 url=$o/ ok=true", 'auto-close scheduled delay_ms=8000',
+              'test minimize requested ok=true hold_ms=1500',
+              'frame work suspended reason=minimized phase=Game ',
+              "$marker visibility=hidden`"",
+              'test restore requested ok=true ',
+              'frame work resumed reason=\w+ suspended_ms=(\d+) idle_ticks=(\d+) ',
+              'test minimize cycle complete', "$marker visibility=visible`"",
+              'auto-close window', 'closing imported=', 'browser closed',
+              'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
+              'exit code=0$')) {
+            $at = -1
+            for ($i = $last + 1; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $at = $i; break } }
+            if ($at -lt 0) { Write-Output "::error::missing or out of order: $pattern"; $failed = $true }
+            else { $last = $at; $found[$pattern] = $lines[$at] }
+          }
+          $resumed = $found['frame work resumed reason=\w+ suspended_ms=(\d+) idle_ticks=(\d+) ']
+          if ($resumed -match 'suspended_ms=(\d+) idle_ticks=(\d+)') {
+            if ([int64]$Matches[1] -lt 1500) { Write-Output "::error::suspended for less than the 1500 ms hold: $resumed"; $failed = $true }
+            if ([int64]$Matches[2] -lt 20) { Write-Output "::error::too few suspended loop turns: $resumed"; $failed = $true }
+          }
+          if (@($lines | Select-String -Pattern 'frame work suspended').Count -ne 1) {
+            Write-Output '::error::expected exactly one suspension (the scripted one)'; $failed = $true
+          }
+          if ($code -ne 0) { Write-Output "::error::suspension run exit code $code (expected 0)"; $failed = $true }
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          Select-String -Path $log -Pattern 'frame work (suspended|resumed)|resume first-(present|import)|closing imported=' |
+            ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Write-Output '::notice::suspension gate: SDL minimize/restore lifecycle only (no GPU frame, present, input or visual verification)'
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the suspension run'; $failed = $true
+          }
+          if ($failed) { exit 1 }
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -285,6 +387,8 @@ jobs:
             ${{ runner.temp }}/cef-nr-game-run/roves-cef-nr-game.log
             ${{ runner.temp }}/cef-nr-game-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-game-run/process-command-lines.txt
+            ${{ runner.temp }}/cef-nr-suspend-run/roves-cef-nr-suspend.log
+            ${{ runner.temp }}/cef-nr-suspend-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-build.log
             ${{ runner.temp }}/cef-nr-duplicates.txt
           retention-days: 14
