@@ -40,6 +40,8 @@ mod netrender_window;
 #[cfg(test)]
 mod paint_order;
 mod presentation;
+#[cfg(test)]
+mod svg_current_color;
 mod window;
 
 use net_policy::op_blitz_fetch_check;

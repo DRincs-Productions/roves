@@ -122,7 +122,10 @@ impl Node {
             .then(|| self.primary_styles())
             .flatten()
             .map(|style| style.clone_color())
-            .map(|color| color.to_css_string());
+            // usvg's color parser (svgtypes) only reads legacy sRGB syntax, so a
+            // computed `oklch()`/`lab()`/`color()` value would invalidate the paint
+            // and drop the stroke/fill. Convert to legacy `rgb()`/`rgba()` first.
+            .map(|color| color.into_srgb_legacy().to_css_string());
 
         match &self.data {
             NodeData::Document(_) => {}

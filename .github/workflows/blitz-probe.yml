@@ -129,6 +129,10 @@ jobs:
           # opacity applied once, CSS-animated stagger; partial opacity on
           # non-atomic inlines is printed as INLINE_OPACITY_PARTIAL_DIAGNOSTIC.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml inline_opacity::
+          # Inline SVG currentColor (vendor/blitz-dom 0006): a computed oklch()
+          # color must reach usvg as legacy rgb()/rgba(), or Lucide icons in
+          # oklch-themed (Tailwind v4/shadcn) games paint nothing.
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml svg_current_color::
           # Opt-in per-frame trace (ROVES_PROBE_FRAME_TRACE): bounded ring,
           # null-not-zero serialization, QPC units/errors. No PresentMon needed.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::

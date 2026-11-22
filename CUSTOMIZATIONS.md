@@ -1,3 +1,16 @@
+## 2026-11-22 - Blitz probe: inline SVG `currentColor` with modern color syntax (blitz-dom 0006)
+
+Changed: `support/blitz-v8-probe/vendor/blitz-dom/src/node/serialize.rs` (+ its
+`ROVES_PATCHES.md`), new test module `support/blitz-v8-probe/src/svg_current_color.rs`,
+`.github/workflows/blitz-probe.yml`. Inline `<svg>` reaches usvg as serialized source with
+`currentColor` replaced by the computed `color`; Stylo wrote `oklch(...)`, which svgtypes
+0.16.2 cannot parse, so usvg dropped the stroke and every Lucide icon in the
+visual-novel-template (Tailwind v4/shadcn `oklch` theme) painted nothing in menu and
+Settings (window and offscreen). The color is now converted with
+`AbsoluteColor::into_srgb_legacy()` to `rgb()`/`rgba()` first. The probe job runs
+`cargo test ... svg_current_color::` (rgb control, opaque and translucent oklch).
+Production engine unchanged.
+
 ## 2026-11-20 - Blitz probe CI: deterministic DOM/CSS visual matrix gate
 
 Changed: `.github/workflows/blitz-probe.yml`, `support/perf/visual-matrix/README.md`. CI

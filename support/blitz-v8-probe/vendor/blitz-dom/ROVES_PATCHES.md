@@ -118,6 +118,19 @@ being discarded are allowed to be gone already. Regressions:
 with the unpatched crate; the detached/reinsert control passes in both) and the
 `--story-skip` template gate.
 
+0006 (`svg-current-color-legacy-srgb`) (`src/node/serialize.rs`): inline `<svg>` is
+serialized for usvg with `currentColor` replaced by the element's computed `color`,
+written with Stylo's `to_css_string()`. A computed `oklch()` (or `lab()`, `color()`,
+...) is serialized in that syntax, which svgtypes 0.16.2 (usvg 0.48.1) does not parse,
+so usvg dropped the paint. The visual-novel-template (Tailwind v4/shadcn, every theme
+color in `oklch`) showed no Lucide icon in the main menu and Settings, while fixtures
+with `rgb`/hex colors painted them. The patch converts the color with Stylo's
+`AbsoluteColor::into_srgb_legacy()` (gamut-clamped `rgb()`/`rgba()`, alpha kept) before
+serializing. Regression: `support/blitz-v8-probe/src/svg_current_color.rs` (`rgb`
+control; the same Lucide icon under `oklch(14.5% 0 0)` painted nothing with the
+unpatched CI release build of `359d0cc7bec`; a translucent `oklch` case checks that
+`rgba()` keeps the stroke). Upstream issue/PR still to be opened.
+
 Nothing else differs from the published crate (`ROVES_PATCHES.md` is the only added
 file).
 
@@ -127,7 +140,8 @@ Drop this directory and the `[patch.crates-io]` entry as soon as a maintained bl
 release exposes the animation set (or an equivalent snapshot) and the entries it
 finishes (or animation events), creates the text editor for every input in the
 Text state, passes `src/paint_order.rs` without patch 0004 (drop
-`vendor/blitz-paint` at the same time) and `src/box_tree.rs` without patch 0005,
+`vendor/blitz-paint` at the same time), `src/box_tree.rs` without patch 0005 and
+`src/svg_current_color.rs` without patch 0006,
 bumping every blitz crate and Stylo together.
 Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`, Blitz #1493); an
 upstream issue/PR proposing the accessor is still to be opened.
