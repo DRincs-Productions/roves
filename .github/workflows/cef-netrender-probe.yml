@@ -27,12 +27,30 @@ jobs:
   windows:
     runs-on: windows-latest
     timeout-minutes: 90
+    # The repository root rust-toolchain.toml pins the engine toolchain (1.95.0), below the
+    # probe's MSRV; rustup gives RUSTUP_TOOLCHAIN precedence over that file, so every cargo,
+    # rustc and nested cargo spawned by the bundle binary (cef::build_util) uses 1.99.1.
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
     steps:
       - uses: actions/checkout@v4
       # welding 0.15.0 requires Rust 1.97.1; wgpu-weld e991684 pins 1.99.1 for its own CI.
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.99.1
+      - name: toolchain versions
+        shell: bash
+        working-directory: support/cef-netrender-probe
+        run: |
+          echo "RUSTUP_TOOLCHAIN=$RUSTUP_TOOLCHAIN"
+          rustup show active-toolchain
+          cargo --version --verbose
+          rustc --version --verbose
+          case "$(rustc --version)" in
+            "rustc 1.99.1 "*) ;;
+            *) echo "::error::expected rustc 1.99.1, got $(rustc --version)"; exit 1 ;;
+          esac
+          echo "::notice::$(cargo --version) / $(rustc --version)"
       - name: set build directories
         shell: pwsh
         run: |
