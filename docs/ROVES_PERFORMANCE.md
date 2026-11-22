@@ -3494,6 +3494,51 @@ in normale e JITless. Esige invii su una GPU fisica e conserva un
 log e uno storage isolato per prova. Il repository non ha ancora
 un runner Windows GPU registrato per eseguirlo in GitHub Actions.
 
+#### Alternative al gate Windows su WARP (22 novembre, solo diagnosi)
+
+Binario release `359d0cc7bec` della CI 44938526736, template originale
+`e88e9ac29e73`, processi headless con storage isolati, nessun input.
+
+- **WARP.** Nella run i batch da 8 submit arrivano a 18,05 s (Story) e
+  17,07 s (Skip). La matrice `warp-cost` della CI 44378941279 misura
+  538 ms per frame con due draw texturizzati 1920 × 1080 e 158 ms a
+  960 × 540. Una fixture WARP più stretta richiederebbe di ridurre il
+  canvas del template o di sostituirlo. Entrambe le opzioni sono escluse.
+  WARP non può soddisfare il gate sul template originale.
+- **Lavapipe Windows (mesa-dist-win 26.3.0).** Con la mappatura di
+  `OperationError` il vero errore di `requestDevice()` è
+  `OperationError: Not enough memory left.` anche con descrittore vuoto.
+  `vulkaninfo` riporta per l'heap 0 `usage` 10,72 GiB e `budget`
+  1,15 GiB su 11,87 GiB. Sono valori di memoria del sistema intero,
+  non del processo. deno_webgpu 0.227.0 crea l'istanza con
+  `for_resource_creation: Some(97)`, e wgpu-hal 29.0.4
+  (`error_if_would_oom_on_resource_allocation`) rifiuta ogni
+  allocazione, a partire da quella della creazione del device. Il
+  risultato dipende quindi dalla RAM libera dell'host. Con il device
+  rifiutato Pixi passa al renderer Canvas (`i.setTransform is not a
+  function`) e `game_story_skip` risulta comunque `passed`, senza
+  nessuna riga `gpu_adapter`. Log in `D:/roves-ci/win-lavapipe-359d0cc-*`
+  e `D:/roves-ci/win-lavapipe-requestdevice-fixture/`.
+- **GTX 1050/Vulkan.** Lo script rigoroso del 21 novembre ha registrato
+  in JITless Skip `OperationError: Buffer with '' label is invalid` in
+  `createGPUBuffer` di Pixi al primo render, con zero submit e Skip
+  `passed`. Delle tre ripetizioni JITless Skip del 22 novembre, due
+  passano con 1.438 submit e zero errori. La terza fallisce prima di
+  Skip: dopo Start non compare testo entro 1.800 frame e
+  l'intervallo massimo fra tick è 8.601 ms, senza errori di pagina.
+  Log in `D:/roves-ci/gtx1050-jitless-skip-repeat-20261122-110136/`.
+  Il driver NVIDIA espone il tipo 10 nell'heap 2 (214 MiB,
+  DEVICE_LOCAL|HOST_VISIBLE). Il controllo di wgpu-hal valuta ogni heap
+  candidato, quindi un heap 2 vicino al 97% basta a rifiutare buffer
+  mappabili e device-local. È un'ipotesi per l'errore del buffer e per il
+  bug noto del secondo device: non è misurata, perché manca una lettura
+  del budget dal processo.
+
+Conclusione: nessuna correzione di codice ristretta rende verde il gate
+Windows senza cambiare template, soglie o ambiente. Il passo successivo
+è un runner Windows con GPU fisica, che richiede un intervento
+dell'amministratore. Prima va chiarita l'instabilità JITless sulla GTX.
+
 #### Codifica della miniatura fuori dal thread della finestra
 
 Chromium `f2700724f59f`, in `canvas_async_blob_creator.cc`, può
