@@ -4,6 +4,8 @@
 
 #[cfg(windows)]
 mod app;
+#[cfg(windows)]
+mod timings;
 
 /// Called by bootstrap.exe for the browser process and every CEF subprocess. The browser
 /// process refuses to run without sandbox information (exit 3).

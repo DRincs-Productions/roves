@@ -15,6 +15,7 @@ use std::{
     time::{Duration, Instant},
 };
 
+use crate::timings::{Stage, Timings};
 use base64::Engine as _;
 use netrender::{
     Compositor, ExternalTextureComposite, ExternalTexturePlacement, NetrenderOptions,
@@ -48,6 +49,9 @@ const FRAMES_BEFORE_CHECK: u32 = 20;
 const TOLERANCE: u8 = 3;
 const BACKGROUND: [f32; 4] = [1.0, 0.0, 0.0, 1.0];
 const NETRENDER_PANEL: [f32; 4] = [1.0, 1.0, 0.0, 1.0];
+/// `--roves-sustained`: longest gap between two imported producer frames during warmup or
+/// sample before the run is declared stalled. The fixture repaints every 16 ms.
+const SUSTAINED_STALL: Duration = Duration::from_millis(500);
 
 /// Entry of the browser process and of every CEF subprocess (via bootstrap.exe).
 ///
@@ -125,6 +129,10 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     event_loop.set_control_flow(ControlFlow::Poll);
     let mut probe = Probe {
+        timings: (options.timings || options.sustained).then(Timings::default),
+        phase_since: None,
+        last_import: None,
+        sustained_done: false,
         options,
         log: log.clone(),
         runtime: Some(runtime),
@@ -176,6 +184,22 @@ struct Options {
     compose: Compose,
     timeout: Duration,
     keep_open: bool,
+    /// `--roves-timings`: aggregated host-thread stage timings per phase (off by default).
+    timings: bool,
+    /// `--roves-sustained`: after the initial check, warmup then one timed sample at the
+    /// fixed initial size, no resize phase (off by default).
+    sustained: bool,
+    /// `--roves-warmup-ms` (default 10000).
+    warmup: Duration,
+    /// `--roves-sample-ms` (default 30000).
+    sample: Duration,
+}
+
+fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
+    value
+        .parse::<u64>()
+        .map(Duration::from_millis)
+        .map_err(|e| format!("--roves-{name}: {e}"))
 }
 
 impl Options {
@@ -194,6 +218,10 @@ impl Options {
             compose: Compose::Netrender,
             timeout: Duration::from_secs(120),
             keep_open: false,
+            timings: false,
+            sustained: false,
+            warmup: Duration::from_secs(10),
+            sample: Duration::from_secs(30),
         };
         for arg in std::env::args().skip(1) {
             let Some(rest) = arg.strip_prefix("--roves-") else {
@@ -210,15 +238,20 @@ impl Options {
                         _ => return Err(format!("--roves-compose={value}: netrender|wgpu")),
                     }
                 },
-                "timeout-ms" => {
-                    let ms = value
-                        .parse::<u64>()
-                        .map_err(|e| format!("--roves-timeout-ms: {e}"))?;
-                    options.timeout = Duration::from_millis(ms);
-                },
+                "timeout-ms" => options.timeout = parse_ms(name, value)?,
                 "keep-open" => options.keep_open = true,
+                "timings" => options.timings = true,
+                "sustained" => options.sustained = true,
+                "warmup-ms" => options.warmup = parse_ms(name, value)?,
+                "sample-ms" => options.sample = parse_ms(name, value)?,
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
+        }
+        if options.sustained && options.keep_open {
+            return Err("--roves-sustained closes after its sample: drop --roves-keep-open".into());
+        }
+        if options.sample.is_zero() {
+            return Err("--roves-sample-ms must be > 0".into());
         }
         Ok(options)
     }
@@ -252,6 +285,10 @@ impl Log {
 enum Phase {
     Initial,
     Resizing,
+    /// `--roves-sustained` only: unrecorded frames after the passed initial check.
+    Warmup,
+    /// `--roves-sustained` only: the recorded sample.
+    Sampling,
     Closing,
     Done,
 }
@@ -268,6 +305,14 @@ struct Probe {
     exit_code: Option<i32>,
     started: Instant,
     closing_since: Option<Instant>,
+    /// Present only with `--roves-timings` or `--roves-sustained`.
+    timings: Option<Timings>,
+    /// Start of the current warmup or sample.
+    phase_since: Option<Instant>,
+    /// Last imported producer frame during warmup/sample (stall detection).
+    last_import: Option<Instant>,
+    /// The sustained sample completed and was healthy.
+    sustained_done: bool,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -309,7 +354,8 @@ impl Probe {
                     WindowAttributes::default()
                         .with_title("Roves CEF -> wgpu-weld -> Netrender probe")
                         .with_inner_size(INITIAL_SIZE)
-                        .with_resizable(true),
+                        // Sustained samples are taken at the fixed initial size.
+                        .with_resizable(!self.options.sustained),
                 )
                 .map_err(|e| format!("window: {e}"))?,
         );
@@ -441,10 +487,22 @@ impl Probe {
 
     fn redraw(&mut self) {
         let Some(s) = self.state.as_mut() else { return };
+        // Steady-state samples only: smoke phases after load-end (the frame that receives
+        // load-end is not sampled) with `--roves-timings`, and the sustained sample; never
+        // warmup or closing. Each check readback runs after `present` and after its phase's
+        // report, so it never lands in a sample.
+        let record = match self.phase {
+            Phase::Initial | Phase::Resizing => self.options.timings && s.load_ended,
+            Phase::Sampling => true,
+            Phase::Warmup | Phase::Closing | Phase::Done => false,
+        };
+        let mut timings = self.timings.as_mut().filter(|_| record);
+        let frame_start = now_if(&timings);
         let mut events = Vec::new();
         while let Some(event) = s.producer.poll_web_event() {
             events.push(event);
         }
+        lap(&mut timings, Stage::Events, frame_start);
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
                 match &event {
@@ -474,9 +532,24 @@ impl Probe {
             }
         }
 
-        match s.producer.acquire_frame(&s.host) {
+        let acquire_start = now_if(&timings);
+        let acquired = s.producer.acquire_frame(&s.host);
+        if let (Some(t), Some(acquire_start)) = (timings.as_deref_mut(), acquire_start) {
+            match &acquired {
+                Ok(Some(frame)) => {
+                    let now = t.lap(Stage::Import, acquire_start);
+                    t.imported(now, frame.generation);
+                },
+                Ok(None) => t.empty_poll(),
+                Err(_) => {},
+            }
+        }
+        match acquired {
             Ok(Some(frame)) => {
                 s.imported += 1;
+                if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
+                    self.last_import = Some(Instant::now());
+                }
                 let expected = (s.surface_config.width, s.surface_config.height);
                 let size = (frame.size.width, frame.size.height);
                 if size == expected {
@@ -499,21 +572,37 @@ impl Probe {
             Err(error) => self.log.line(format_args!("acquire_frame error: {error}")),
         }
 
-        let composed = compose(s);
+        let composed = compose(s, timings.as_deref_mut());
         let Some(composed) = composed else {
             s.window.request_redraw();
             return;
         };
-        if present(s, &composed) {
+        if present(s, &composed, timings.as_deref_mut()) {
             s.presented += 1;
+            if let (Some(t), Some(frame_start)) = (timings, frame_start) {
+                let now = t.lap(Stage::Frame, frame_start);
+                t.presented(now);
+            }
         }
 
         let ready = s.load_ended && s.imported_at_size >= FRAMES_BEFORE_CHECK;
         let timed_out = self.started.elapsed() > self.options.timeout;
         match self.phase {
             Phase::Initial if ready => {
+                self.report_smoke_timings("initial");
+                let (checks, failures) = (self.checks, self.failures);
                 self.check("initial", &composed);
-                if self.options.keep_open {
+                let passed = self.checks > checks && self.failures == failures;
+                if self.options.sustained {
+                    if passed {
+                        self.start_warmup();
+                    } else {
+                        self.fail(format_args!(
+                            "sustained not started: the initial check did not pass"
+                        ));
+                        self.close();
+                    }
+                } else if self.options.keep_open {
                     self.phase = Phase::Done;
                 } else {
                     let s = self.state.as_mut().expect("state");
@@ -530,6 +619,7 @@ impl Probe {
                 }
             },
             Phase::Resizing if ready => {
+                self.report_smoke_timings("resized");
                 self.check("resized", &composed);
                 self.close();
             },
@@ -538,12 +628,19 @@ impl Probe {
                 let (load_ended, imported, at_size) =
                     (s.load_ended, s.imported, s.imported_at_size);
                 let phase = self.phase;
+                self.report_smoke_timings(if phase == Phase::Initial {
+                    "initial-timeout"
+                } else {
+                    "resized-timeout"
+                });
                 self.fail(format_args!(
                     "timeout in phase {phase:?}: load_ended={load_ended} imported={imported} at_size={at_size}"
                 ));
                 self.exit_code.get_or_insert(2);
                 self.close();
             },
+            // Not bounded by --roves-timeout-ms: bounded by warmup + sample, and stall-checked.
+            Phase::Warmup | Phase::Sampling => self.sustained_step(),
             _ => {},
         }
         if let Some(s) = self.state.as_ref() {
@@ -561,12 +658,145 @@ impl Probe {
         s.surface_config.height = height;
         s.surface.configure(&s.host.device, &s.surface_config);
         s.imported_at_size = 0;
+        // The reconfiguration is not steady-state presentation work.
+        if let Some(t) = self.timings.as_mut() {
+            t.break_intervals();
+        }
         if let Err(error) = s.producer.resize(size) {
             self.log.line(format_args!("FAIL producer resize: {error}"));
             self.failures += 1;
         }
         self.log
             .line(format_args!("resized surface={width}x{height}"));
+        if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
+            self.end_sustained(Some(format!(
+                "window resized to {width}x{height} during {:?}",
+                self.phase
+            )));
+        }
+    }
+
+    /// Emits and clears the smoke-phase summary when `--roves-timings` is set. Called before
+    /// the verification readback, so readback time is never part of a sample.
+    fn report_smoke_timings(&mut self, phase: &str) {
+        if self.options.timings {
+            self.report_timings(phase);
+        }
+    }
+
+    /// `--roves-sustained`: entered after the initial check passed (its readback is over and
+    /// its frames were reported or not recorded). Warmup frames are not recorded.
+    fn start_warmup(&mut self) {
+        let s = self.state.as_ref().expect("state");
+        let size = (s.surface_config.width, s.surface_config.height);
+        if size != (INITIAL_SIZE.width, INITIAL_SIZE.height) {
+            self.fail(format_args!(
+                "sustained not started: surface {}x{} != fixed {}x{}",
+                size.0, size.1, INITIAL_SIZE.width, INITIAL_SIZE.height
+            ));
+            self.close();
+            return;
+        }
+        let now = Instant::now();
+        self.phase = Phase::Warmup;
+        self.phase_since = Some(now);
+        self.last_import = Some(now);
+        if let Some(t) = self.timings.as_mut() {
+            t.break_intervals();
+        }
+        self.log.line(format_args!(
+            "sustained warmup start size={}x{} warmup_ms={} sample_ms={} stall_ms={}",
+            size.0,
+            size.1,
+            self.options.warmup.as_millis(),
+            self.options.sample.as_millis(),
+            SUSTAINED_STALL.as_millis()
+        ));
+    }
+
+    /// End of each warmup/sample redraw: stall check, warmup -> sample, sample end.
+    fn sustained_step(&mut self) {
+        let now = Instant::now();
+        let since = self.phase_since.unwrap_or(now);
+        let gap = self.last_import.map_or(Duration::ZERO, |t| now - t);
+        if gap > SUSTAINED_STALL {
+            self.end_sustained(Some(format!(
+                "imports stalled: no producer frame for {} ms during {:?}",
+                gap.as_millis(),
+                self.phase
+            )));
+            return;
+        }
+        match self.phase {
+            Phase::Warmup if now - since >= self.options.warmup => {
+                self.phase = Phase::Sampling;
+                self.phase_since = Some(now);
+                if let Some(t) = self.timings.as_mut() {
+                    t.break_intervals();
+                }
+                self.log.line(format_args!(
+                    "sustained sample start warmup_span_ms={}",
+                    (now - since).as_millis()
+                ));
+            },
+            Phase::Sampling if now - since >= self.options.sample => self.end_sustained(None),
+            _ => {},
+        }
+    }
+
+    /// Ends warmup/sample, reports the sample (labelled unhealthy on any problem) and closes.
+    fn end_sustained(&mut self, mut problem: Option<String>) {
+        let phase = self.phase;
+        let span_ms = self.phase_since.map_or(0, |t| t.elapsed().as_millis());
+        let totals = self
+            .timings
+            .as_ref()
+            .map(Timings::totals)
+            .unwrap_or_default();
+        if problem.is_none() {
+            problem = if phase != Phase::Sampling {
+                Some(format!("ended in {phase:?}"))
+            } else if totals.imported == 0 || totals.presented == 0 {
+                Some("no imported or presented frame in the sample".into())
+            } else if totals.dropped > 0 {
+                Some(format!("{} samples dropped over the cap", totals.dropped))
+            } else {
+                None
+            };
+        }
+        let healthy = problem.is_none();
+        if phase == Phase::Sampling {
+            self.report_timings(if healthy {
+                "sustained"
+            } else {
+                "sustained-unhealthy"
+            });
+        }
+        self.log.line(format_args!(
+            "sustained result={} phase={phase:?} span_ms={span_ms} target_sample_ms={} warmup_ms={} presented={} imported={} superseded_producer_frames={} dropped_samples={}",
+            if healthy { "healthy" } else { "unhealthy" },
+            self.options.sample.as_millis(),
+            self.options.warmup.as_millis(),
+            totals.presented,
+            totals.imported,
+            totals.superseded,
+            totals.dropped
+        ));
+        match problem {
+            Some(problem) => self.fail(format_args!("sustained sample rejected: {problem}")),
+            None => self.sustained_done = true,
+        }
+        self.close();
+    }
+
+    /// Emits and clears the timings summary of the phase that just ended.
+    fn report_timings(&mut self, phase: &str) {
+        if let Some(t) = self.timings.as_mut() {
+            let log = &self.log;
+            t.report(phase, self.options.compose.name(), |line| {
+                log.line(format_args!("{line}"));
+            });
+        }
     }
 
     /// Verification only, after the frame was presented: samples the composed frame and the
@@ -723,12 +953,21 @@ impl Probe {
         if let Some(code) = self.exit_code {
             return code;
         }
-        let expected = if self.options.keep_open { 1 } else { 2 };
+        let expected = if self.options.keep_open || self.options.sustained {
+            1
+        } else {
+            2
+        };
         if self.checks < expected {
             self.log.line(format_args!(
                 "FAIL only {} of {expected} checks ran",
                 self.checks
             ));
+            return 2;
+        }
+        if self.options.sustained && !self.sustained_done {
+            self.log
+                .line(format_args!("FAIL no healthy sustained sample completed"));
             return 2;
         }
         i32::from(self.failures > 0)
@@ -793,7 +1032,8 @@ impl ApplicationHandler for Probe {
 
 /// Composes the current frame into a texture of the surface size. Returns `None` while there
 /// is nothing to present yet.
-fn compose(s: &mut State) -> Option<wgpu::Texture> {
+fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Texture> {
+    let start = now_if(&timings);
     let (w, h) = (s.surface_config.width, s.surface_config.height);
     match &mut s.composer {
         Composer::Netrender(renderer) => {
@@ -833,6 +1073,8 @@ fn compose(s: &mut State) -> Option<wgpu::Texture> {
                 netrender::peniko::Color::new([0.0, 0.0, 0.0, 0.0]),
                 &composites,
             );
+            // Netrender submits internally: its submit cannot be timed separately here.
+            lap(&mut timings, Stage::Compose, start);
             capture.0
         },
         Composer::Wgpu(target) => {
@@ -862,21 +1104,28 @@ fn compose(s: &mut State) -> Option<wgpu::Texture> {
             let view = target.create_view(&wgpu::TextureViewDescriptor::default());
             let [r, g, b, a] = BACKGROUND.map(f64::from);
             let source = s.frame.as_ref().map(|f| (&f.view, f.size));
-            s.blit.draw(
+            let commands = s.blit.encode(
                 &s.host,
                 &view,
                 wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
                 source.map(|(view, size)| (view, size.width, size.height)),
                 true,
             );
+            let submit = lap(&mut timings, Stage::Compose, start);
+            s.host.queue.submit([commands]);
+            lap(&mut timings, Stage::ComposeSubmit, submit);
             Some(target)
         },
     }
 }
 
 /// GPU blit of the composed frame onto the window surface.
-fn present(s: &mut State, composed: &wgpu::Texture) -> bool {
-    let output = match s.surface.get_current_texture() {
+fn present(s: &mut State, composed: &wgpu::Texture, mut timings: Option<&mut Timings>) -> bool {
+    let start = now_if(&timings);
+    let current = s.surface.get_current_texture();
+    // Failed or outdated acquisitions are sampled too: they cost the frame.
+    let since = lap(&mut timings, Stage::Acquire, start);
+    let output = match current {
         wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
         wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
             s.surface.configure(&s.host.device, &s.surface_config);
@@ -888,16 +1137,37 @@ fn present(s: &mut State, composed: &wgpu::Texture) -> bool {
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
     let source = composed.create_view(&wgpu::TextureViewDescriptor::default());
-    s.blit.draw(
+    let commands = s.blit.encode(
         &s.host,
         &target,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
         Some((&source, composed.width(), composed.height())),
         false,
     );
+    let since = lap(&mut timings, Stage::PresentEncode, since);
+    s.host.queue.submit([commands]);
+    let since = lap(&mut timings, Stage::Submit, since);
     s.window.pre_present_notify();
     output.present();
+    lap(&mut timings, Stage::Present, since);
     true
+}
+
+/// Reads the clock only while samples are recorded.
+fn now_if(timings: &Option<&mut Timings>) -> Option<Instant> {
+    timings.is_some().then(Instant::now)
+}
+
+/// Records `stage` since `since` while recording and returns the next lap start.
+fn lap(
+    timings: &mut Option<&mut Timings>,
+    stage: Stage,
+    since: Option<Instant>,
+) -> Option<Instant> {
+    match (timings.as_deref_mut(), since) {
+        (Some(t), Some(since)) => Some(t.lap(stage, since)),
+        _ => None,
+    }
 }
 
 struct CaptureMaster(Option<wgpu::Texture>);
@@ -962,16 +1232,16 @@ impl Blit {
         }
     }
 
-    /// One render pass on `target`: `load`, then `source` drawn 1:1 from the top-left corner
-    /// (with premultiplied blending when `over`).
-    fn draw(
+    /// Encodes one render pass on `target`: `load`, then `source` drawn 1:1 from the top-left
+    /// corner (with premultiplied blending when `over`). The caller submits it.
+    fn encode(
         &self,
         host: &HostWgpuContext,
         target: &wgpu::TextureView,
         load: wgpu::LoadOp<wgpu::Color>,
         source: Option<(&wgpu::TextureView, u32, u32)>,
         over: bool,
-    ) {
+    ) -> wgpu::CommandBuffer {
         let pipeline = if over { &self.over } else { &self.present };
         let bind_group = source.map(|(view, _, _)| {
             host.device.create_bind_group(&wgpu::BindGroupDescriptor {
@@ -1019,7 +1289,7 @@ impl Blit {
                 pass.draw(0..3, 0..1);
             }
         }
-        host.queue.submit([encoder.finish()]);
+        encoder.finish()
     }
 }
 

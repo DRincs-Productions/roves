@@ -19,8 +19,24 @@ resize, then a clean close and `cef::shutdown`. welding requires `cef =154.5.0` 
 "cef_dll_wrapper"`); welding's `accelerated_osr` use of `cef` adds an unused wgpu 30 to the
 graph (gated in CI as cef-only). The workflow builds with Rust 1.99.1 and runs the `wgpu`
 composition on WARP only (Vello 0.9 crashes on WARP); the Netrender composition needs a real
-GPU. Type-checked locally with `dox`; not built with CEF nor run yet. Chromium f2700724 Viz
-references, versions and limits are in the probe README.
+GPU. Chromium f2700724 Viz references, versions and limits are in the probe README.
+
+Update (same day): CI run 45038791259 built the bundle; on a GTX 1050 both compositions
+passed 16/16 pixel samples at both sizes with a clean shutdown, while on WARP Chromium
+launches its renderers with `--disable-gpu-compositing` and delivers no accelerated frame
+(exit 2, accepted by the workflow). Added the opt-in `--roves-timings` option
+(`src/timings.rs`, std only): per-phase aggregated wall-clock host-thread timings of event
+draining, frame import, composition, acquire, submit and present, plus present/import
+intervals and superseded producer frames, excluding loading, verification readback and
+closing. `Blit::draw` became `Blit::encode` so submits can be timed. Those summaries cover
+only the ~20-frame smoke phases, so the opt-in `--roves-sustained` mode (`--roves-warmup-ms`
+default 10000, `--roves-sample-ms` default 30000) adds a steady-state sample: after a passed
+initial pixel check at the fixed 1280x720 size (non-resizable window, no resize phase), an
+unrecorded warmup, then a recorded sample without readbacks, logged with its span and sample
+counts, then the usual clean close. Import stalls over 500 ms, a size change, an empty sample
+or overflowed sample caps reject the sample (exit 2). The clock is read only while samples
+are recorded. The README documents alternating (ABBA) trials for comparing the two
+compositions. Defaults, the workflow and checks are unchanged.
 
 ## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
 
