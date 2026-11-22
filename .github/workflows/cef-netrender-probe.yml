@@ -256,8 +256,8 @@ jobs:
             $failed = $true
           }
           if ($code -ne 0) { Write-Output "::error::game mode exit code $code (expected 0)"; $failed = $true }
-          # The test-only minimize hook must stay off without --roves-test-minimize-ms.
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'test minimize')) {
+          # The test-only minimize and click hooks must stay off without their flags.
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'test minimize', 'test click')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -375,6 +375,146 @@ jobs:
             Write-Output '::error::probe processes left running after the suspension run'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Synthetic mouse-click delivery regression (same bundle). The test-only flag
+      # --roves-test-click-ms=1000 makes the probe push one left button down + up (SDL window
+      # point 100,60, a sentinel mouse id) into the SDL queue with SDL_PushEvent 1 s after
+      # load-end; the events come back through the loop's ordinary SDL poll -> Input ->
+      # welding send_mouse_input path. The fixture's fixed 200x120 px button at the top-left
+      # logs `roves-test-click-received ...` from its click handler. Required, in log order:
+      # the module marker (listener installed) before the request, the request with
+      # pushed=true, down and up forwarded ok=true, the click marker from <origin>/game.js
+      # with trusted=true button=0 detail=1, marker received, click complete, auto-close and
+      # the clean close/shutdown lines; exit 0, exactly one click marker, no FAIL line, no
+      # leftover process. Fresh cache. Frames/presents are only reported (WARP). This is a
+      # synthetic SDL event, not a physical mouse, and no gameplay or visual proof. Negative
+      # checks first: the flag is refused without --roves-game-dir and together with
+      # --roves-test-minimize-ms (usage error before the log opens, exit 1).
+      - name: run the probe in game mode (synthetic click, WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-click-run'
+          if (Test-Path -LiteralPath $out) {
+            Write-Output "::error::synthetic-click output directory already exists: $out"
+            exit 1
+          }
+          $game = Join-Path $out 'game'
+          New-Item -ItemType Directory -Force $game | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $game 'index.html') @'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>roves ci click fixture</title>
+          <style>
+            html, body { margin: 0; }
+            #click-target { position: fixed; left: 0; top: 0; width: 200px; height: 120px;
+                            margin: 0; border: 0; padding: 0; }
+          </style>
+          <button id="click-target" type="button">click target</button>
+          <script type="module" src="./game.js"></script>
+          '@
+          Set-Content -Encoding utf8 (Join-Path $game 'game.js') @'
+          document.getElementById('click-target').addEventListener('click', (e) => {
+            console.log(`roves-test-click-received target=${e.target.id} trusted=${e.isTrusted} button=${e.button} detail=${e.detail} x=${e.clientX} y=${e.clientY}`);
+          });
+          console.log('roves-ci-click-fixture module-ok');
+          '@
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping processes left by the previous step before the click run'
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $failed = $false
+          # Negative: refused usage (exit 1 before the evidence log is opened).
+          $refused = @(
+            @{ name = 'without game mode'; args = @('--roves-test-click-ms=1000') },
+            @{ name = 'with the minimize hook'; args = @("--roves-game-dir=$game", '--roves-test-click-ms=1000', '--roves-test-minimize-ms=1000') }
+          )
+          $i = 0
+          foreach ($case in $refused) {
+            $i++
+            $negLog = Join-Path $out "refused-$i.log"
+            $negErr = Join-Path $out "refused-$i.stderr.txt"
+            $p = Start-Process -FilePath $exe -ArgumentList ($case.args + @("--roves-log=$negLog", "--roves-cache-dir=$(Join-Path $out "refused-cache-$i")")) `
+              -PassThru -RedirectStandardError $negErr
+            $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) {
+              $p | Stop-Process -Force
+              Write-Output "::error::refused click flag ($($case.name)): the probe did not exit"; $failed = $true; continue
+            }
+            $stderr = if (Test-Path $negErr) { (Get-Content -Raw $negErr) } else { '' }
+            Write-Output "::notice::refused click flag ($($case.name)): exit=$($p.ExitCode) stderr=$($stderr.Trim())"
+            if ($p.ExitCode -ne 1) { Write-Output "::error::refused click flag ($($case.name)): exit $($p.ExitCode) (expected 1)"; $failed = $true }
+            if (Test-Path $negLog) { Write-Output "::error::refused click flag ($($case.name)): the run started (log written)"; $failed = $true }
+            if ($stderr -and $stderr -notmatch 'usage error') { Write-Output "::error::refused click flag ($($case.name)): no usage error on stderr"; $failed = $true }
+          }
+          $log = Join-Path $out 'roves-cef-nr-click.log'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-test-click-ms=1000',
+            '--roves-auto-close-ms=5000', '--roves-timeout-ms=90000', "--roves-log=$log",
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          if (-not $proc.WaitForExit(150000)) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Test-Path $log) { Get-Content $log }
+            Write-Output '::error::the probe did not exit in time in the click run'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          $source = "console level=\d+ source=$o/game\.js:\d+ message="
+          $clickMarker = "$source`"roves-test-click-received target=click-target trusted=true button=0 detail=1 "
+          # Each pattern must match a line after the previous match.
+          $last = -1
+          foreach ($pattern in @(
+              'producer created accelerated=true background=white',
+              "$source`"roves-ci-click-fixture module-ok`"",
+              'test click requested x=100 y=60 window_id=\d+ pushed=true$',
+              'test click forwarded event=down ok=true$',
+              'test click forwarded event=up ok=true$',
+              $clickMarker, 'test click marker received$', 'test click complete$',
+              'auto-close window', 'closing imported=', 'game input forwarded=', 'browser closed',
+              'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
+              'exit code=0$')) {
+            $at = -1
+            for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+            if ($at -lt 0) { Write-Output "::error::missing or out of order: $pattern"; $failed = $true }
+            else { $last = $at }
+          }
+          # Load-end and the module marker may come in either order; both precede the request.
+          $loadEnd = $lines | Select-String -Pattern "load-end status=200 url=$o/ ok=true" | Select-Object -First 1
+          $request = $lines | Select-String -Pattern 'test click requested ' | Select-Object -First 1
+          if (!$loadEnd -or !$request -or $loadEnd.LineNumber -ge $request.LineNumber) {
+            Write-Output '::error::accepted load-end missing or not before the click request'; $failed = $true
+          }
+          foreach ($count in @(
+              @{ pattern = 'roves-test-click-received'; want = 1 },
+              @{ pattern = 'test click requested '; want = 1 },
+              @{ pattern = 'test click forwarded event=down'; want = 1 },
+              @{ pattern = 'test click forwarded event=up'; want = 1 })) {
+            $n = @($lines | Select-String -SimpleMatch $count.pattern).Count
+            if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
+          }
+          if ($code -ne 0) { Write-Output "::error::click run exit code $code (expected 0)"; $failed = $true }
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          Select-String -Path $log -Pattern 'test click|roves-test-click-received|closing imported=|game input forwarded=' |
+            ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Write-Output '::notice::click gate: one synthetic SDL left click forwarded through welding to a DOM click handler (no physical mouse, keyboard, wheel, focus, GPU frame or visual verification)'
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the click run'; $failed = $true
+          }
+          if ($failed) { exit 1 }
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -389,6 +529,9 @@ jobs:
             ${{ runner.temp }}/cef-nr-game-run/process-command-lines.txt
             ${{ runner.temp }}/cef-nr-suspend-run/roves-cef-nr-suspend.log
             ${{ runner.temp }}/cef-nr-suspend-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-click-run/roves-cef-nr-click.log
+            ${{ runner.temp }}/cef-nr-click-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-click-run/refused-*.stderr.txt
             ${{ runner.temp }}/cef-nr-build.log
             ${{ runner.temp }}/cef-nr-duplicates.txt
           retention-days: 14

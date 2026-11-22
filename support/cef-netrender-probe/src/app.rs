@@ -14,16 +14,18 @@ use std::{
 
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
-    CycleAction, MinimizeCycle, Suspension, TEST_MINIMIZE_HOLD, load_status_ok, on_origin,
-    suspension_change,
+    ClickAction, ClickInput, ClickTest, CycleAction, MinimizeCycle, Suspension,
+    TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT, TEST_MINIMIZE_HOLD, is_click_marker, load_status_ok,
+    on_origin, suspension_change,
 };
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
 use dpi::PhysicalSize;
 use sdl3::{
-    VideoSubsystem,
+    EventSubsystem, VideoSubsystem,
     event::{Event, WindowEvent},
+    mouse::MouseButton as SdlButton,
     video::{Window, WindowFlags},
 };
 use welding::{
@@ -151,10 +153,13 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         options.cache_dir.display()
     ));
 
+    let test_click = options.test_click.is_some();
     let sdl = match sdl3::init().and_then(|sdl| {
         let video = sdl.video()?;
         let events = sdl.event_pump()?;
-        Ok((video, events, sdl.mouse()))
+        // `--roves-test-click-ms` only: pushes the synthetic click into the SDL queue.
+        let sender = test_click.then(|| sdl.event()).transpose()?;
+        Ok((video, events, sdl.mouse(), sender))
     }) {
         Ok(parts) => parts,
         Err(error) => {
@@ -164,13 +169,14 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
             return 1;
         },
     };
-    let (video, mut events, mouse) = sdl;
+    let (video, mut events, mouse, event_sender) = sdl;
     let phase = if options.game.is_some() {
         Phase::Game
     } else {
         Phase::Initial
     };
     let minimize_cycle = options.test_minimize.map(|_| MinimizeCycle::Waiting);
+    let click_test = options.test_click.map(|_| ClickTest::Waiting);
     let mut probe = Probe {
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
@@ -187,6 +193,8 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         game_loaded_at: None,
         console: Console::default(),
         minimize_cycle,
+        click_test,
+        event_sender,
         failures: 0,
         checks: 0,
         exit_code: None,
@@ -265,6 +273,10 @@ struct Options {
     /// `--roves-test-minimize-ms` (game mode, tests only): this long after load-end, minimize
     /// the window through SDL, hold it suspended, restore it (README "Real-game mode").
     test_minimize: Option<Duration>,
+    /// `--roves-test-click-ms` (game mode, tests only): this long after load-end, push one
+    /// synthetic left click into the SDL queue and require it to be forwarded through welding
+    /// and the page's click marker (README "Real-game mode").
+    test_click: Option<Duration>,
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -296,6 +308,7 @@ impl Options {
             game: None,
             auto_close: None,
             test_minimize: None,
+            test_click: None,
         };
         let mut game_dir = None;
         let mut port = None;
@@ -324,11 +337,17 @@ impl Options {
                 },
                 "auto-close-ms" => options.auto_close = Some(parse_ms(name, value)?),
                 "test-minimize-ms" => options.test_minimize = Some(parse_ms(name, value)?),
+                "test-click-ms" => options.test_click = Some(parse_ms(name, value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
         }
         if options.sustained && options.keep_open {
             return Err("--roves-sustained closes after its sample: drop --roves-keep-open".into());
+        }
+        if options.test_minimize.is_some() && options.test_click.is_some() {
+            return Err("one test hook per run: drop --roves-test-minimize-ms or \
+                        --roves-test-click-ms"
+                .into());
         }
         if options.sample.is_zero() {
             return Err("--roves-sample-ms must be > 0".into());
@@ -347,11 +366,14 @@ impl Options {
             },
             None if port.is_some()
                 || options.auto_close.is_some()
-                || options.test_minimize.is_some() =>
+                || options.test_minimize.is_some()
+                || options.test_click.is_some() =>
             {
-                return Err("--roves-port, --roves-auto-close-ms and \
-                            --roves-test-minimize-ms need --roves-game-dir"
-                    .into());
+                return Err(
+                    "--roves-port, --roves-auto-close-ms, --roves-test-minimize-ms \
+                            and --roves-test-click-ms need --roves-game-dir"
+                        .into(),
+                );
             },
             None => {},
         }
@@ -482,6 +504,10 @@ struct Probe {
     console: Console,
     /// `--roves-test-minimize-ms` only: the scripted minimize/restore cycle.
     minimize_cycle: Option<MinimizeCycle>,
+    /// `--roves-test-click-ms` only: the synthetic click sequence and the SDL event subsystem
+    /// it is pushed through.
+    click_test: Option<ClickTest>,
+    event_sender: Option<EventSubsystem>,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -869,7 +895,11 @@ impl Probe {
             Phase::Game if self.minimize_cycle.is_some_and(|c| !c.finished()) => {
                 self.step_minimize_cycle();
             },
-            // With --roves-test-minimize-ms, only once the scripted cycle has finished.
+            Phase::Game if self.click_test.is_some_and(|c| !c.finished()) => {
+                self.step_click_test();
+            },
+            // With --roves-test-minimize-ms or --roves-test-click-ms, only once the test
+            // sequence has finished.
             Phase::Game
                 if self
                     .options
@@ -932,6 +962,88 @@ impl Probe {
                 self.fail(format_args!("test minimize cycle: {what}"));
                 self.close();
             },
+        }
+    }
+
+    /// `--roves-test-click-ms` only: requests the synthetic click once due and times out the
+    /// pending steps. The button events are pushed into the SDL queue (stamped with
+    /// `TEST_CLICK_MOUSE_ID`) and come back through the loop's ordinary `poll_iter` ->
+    /// `window_event` -> `Input` -> welding path on a later turn.
+    fn step_click_test(&mut self) {
+        let (Some(mut click), Some(delay), Some(loaded)) = (
+            self.click_test,
+            self.options.test_click,
+            self.game_loaded_at,
+        ) else {
+            return;
+        };
+        let action = click.tick(Instant::now(), loaded.elapsed() >= delay);
+        self.click_test = Some(click);
+        match action {
+            ClickAction::Push => {
+                let s = self.state.as_ref().expect("state");
+                let window_id = s.window.id();
+                let (x, y) = TEST_CLICK_POINT;
+                let button = |down: bool| {
+                    let (timestamp, which, mouse_btn, clicks) =
+                        (0, TEST_CLICK_MOUSE_ID, SdlButton::Left, 1);
+                    if down {
+                        Event::MouseButtonDown {
+                            timestamp,
+                            window_id,
+                            which,
+                            mouse_btn,
+                            clicks,
+                            x,
+                            y,
+                        }
+                    } else {
+                        Event::MouseButtonUp {
+                            timestamp,
+                            window_id,
+                            which,
+                            mouse_btn,
+                            clicks,
+                            x,
+                            y,
+                        }
+                    }
+                };
+                let pushed = match self.event_sender.as_ref() {
+                    Some(events) => events
+                        .push_event(button(true))
+                        .and_then(|()| events.push_event(button(false)))
+                        .map_err(|e| e.to_string()),
+                    None => Err("no SDL event subsystem".into()),
+                };
+                self.log.line(format_args!(
+                    "test click requested x={x} y={y} window_id={window_id} pushed={}",
+                    pushed.is_ok()
+                ));
+                if let Err(error) = pushed {
+                    self.click_test = Some(ClickTest::Failed);
+                    self.fail(format_args!("test click: SDL_PushEvent failed: {error}"));
+                    self.close();
+                }
+            },
+            ClickAction::Fail(what) => {
+                self.fail(format_args!("test click: {what}"));
+                self.close();
+            },
+            ClickAction::None | ClickAction::Complete => {},
+        }
+    }
+
+    /// `--roves-test-click-ms` only: applies a test click action that came from an input or
+    /// console event.
+    fn click_test_action(&mut self, action: ClickAction) {
+        match action {
+            ClickAction::Complete => self.log.line(format_args!("test click complete")),
+            ClickAction::Fail(what) => {
+                self.fail(format_args!("test click: {what}"));
+                self.close();
+            },
+            ClickAction::None | ClickAction::Push => {},
         }
     }
 
@@ -1005,6 +1117,7 @@ impl Probe {
         // Game mode only (`None` keeps the fixture's event handling unchanged).
         let origin = self.server.as_ref().map(|server| server.origin.clone());
         let mut left_origin = None;
+        let mut click_actions = Vec::new();
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
                 match &event {
@@ -1061,6 +1174,14 @@ impl Probe {
                         if let Some(text) = self.console.line(*level, message, source, *line) {
                             self.log.line(format_args!("{text}"));
                         }
+                        // `--roves-test-click-ms` only: the fixture's click marker.
+                        if let Some(click) = self.click_test.as_mut()
+                            && is_click_marker(message)
+                            && on_origin(origin.as_deref().unwrap_or_default(), source)
+                        {
+                            self.log.line(format_args!("test click marker received"));
+                            click_actions.push(click.marker());
+                        }
                     },
                     NavigationEvent::TitleChanged { title } if origin.is_some() => {
                         self.log.line(format_args!("title {title}"));
@@ -1087,6 +1208,9 @@ impl Probe {
                 }
             }
         }
+        for action in click_actions {
+            self.click_test_action(action);
+        }
         if let Some(url) = left_origin {
             self.fail(format_args!(
                 "game main frame left the loopback origin: {url}"
@@ -1094,6 +1218,9 @@ impl Probe {
             self.close();
             return false;
         }
+        let Some(s) = self.state.as_mut() else {
+            return false;
+        };
         if let Some(input) = s.input.as_mut()
             && let Some(line) = input.per_frame(&mut s.producer, mouse, s.imported > 0)
         {
@@ -1507,6 +1634,13 @@ impl Probe {
                 ));
                 self.failures += 1;
             }
+            if let Some(click) = self.click_test
+                && !click.finished()
+            {
+                self.log
+                    .line(format_args!("FAIL test click incomplete state={click:?}"));
+                self.failures += 1;
+            }
             if self.game_loaded_at.is_none() {
                 self.log
                     .line(format_args!("FAIL the game never finished loading"));
@@ -1557,12 +1691,42 @@ impl Probe {
 
     fn window_event(&mut self, event: Event) {
         let Some(s) = self.state.as_mut() else { return };
+        // `--roves-test-click-ms` only: the pushed button events, recognized by their mouse id.
+        let synthetic = match &event {
+            Event::MouseButtonDown { which, .. } if self.click_test.is_some() => {
+                (*which == TEST_CLICK_MOUSE_ID).then_some(true)
+            },
+            Event::MouseButtonUp { which, .. } if self.click_test.is_some() => {
+                (*which == TEST_CLICK_MOUSE_ID).then_some(false)
+            },
+            _ => None,
+        };
+        let mut click_forwarded = None;
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
-            && let Some(line) = input.window_event(&mut s.producer, &s.window, &event)
         {
-            self.log.line(format_args!("{line}"));
+            let forwarded = input.forwarded;
+            if let Some(line) = input.window_event(&mut s.producer, &s.window, &event) {
+                self.log.line(format_args!("{line}"));
+            }
+            click_forwarded = synthetic.map(|down| (down, input.forwarded > forwarded));
         }
+        if let Some((down, ok)) = click_forwarded {
+            self.log.line(format_args!(
+                "test click forwarded event={} ok={ok}",
+                if down { "down" } else { "up" }
+            ));
+            let input = if down {
+                ClickInput::Down { ok }
+            } else {
+                ClickInput::Up { ok }
+            };
+            if let Some(click) = self.click_test.as_mut() {
+                let action = click.input(input);
+                self.click_test_action(action);
+            }
+        }
+        let Some(s) = self.state.as_mut() else { return };
         match event {
             Event::Quit { .. }
             | Event::Window {

@@ -1,5 +1,5 @@
 //! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
-//! minimized/hidden suspension predicate and the test-only minimize cycle (std only,
+//! minimized/hidden suspension predicate and the test-only minimize and click sequences (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF on Windows rebuilds a Win32 key message from `cef_key_event_t`: `windows_key_code` is
@@ -185,6 +185,132 @@ impl MinimizeCycle {
     }
 }
 
+/// `--roves-test-click-ms` only: SDL window point (logical coordinates) of the synthetic
+/// left click. The CI fixture puts its target button over this point (a fixed 200x120 CSS px
+/// box at the top-left corner), so a display scale of up to about 1.6 still lands inside it.
+pub(crate) const TEST_CLICK_POINT: (f32, f32) = (100.0, 60.0);
+/// `--roves-test-click-ms` only: SDL mouse id stamped on the pushed button events, so the
+/// probe attributes exactly those events to the test (never a physical mouse).
+pub(crate) const TEST_CLICK_MOUSE_ID: u32 = 0x524F_5645;
+/// `--roves-test-click-ms` only: the console message (or its first word) the fixture's click
+/// handler logs. Accepted only from a source on the game's loopback origin.
+pub(crate) const TEST_CLICK_MARKER: &str = "roves-test-click-received";
+
+/// Whether a console message is the fixture's click marker (`TEST_CLICK_MARKER`, alone or
+/// followed by a space and details).
+pub(crate) fn is_click_marker(message: &str) -> bool {
+    message
+        .strip_prefix(TEST_CLICK_MARKER)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with(' '))
+}
+
+/// A synthetic button event of the test click after it went through the input path; `ok` is
+/// whether welding accepted it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClickInput {
+    Down { ok: bool },
+    Up { ok: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClickAction {
+    None,
+    /// Push the synthetic button down + up into the SDL queue.
+    Push,
+    Complete,
+    Fail(&'static str),
+}
+
+/// `--roves-test-click-ms` (test only, game mode): one synthetic left click after the game's
+/// load-end, observed in order: requested (pushed into the SDL queue), button down and up
+/// forwarded through welding, then the page's click marker. Each pending state carries the
+/// request instant; everything must happen within `TEST_TRANSITION_TIMEOUT` of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ClickTest {
+    /// Waiting for load-end + the requested delay.
+    Waiting,
+    Requested(std::time::Instant),
+    Pressed(std::time::Instant),
+    Forwarded(std::time::Instant),
+    Done,
+    Failed,
+}
+
+impl ClickTest {
+    /// Per deadline turn. `due`: load-end + delay has passed.
+    pub(crate) fn tick(&mut self, now: std::time::Instant, due: bool) -> ClickAction {
+        let (next, action) = match *self {
+            ClickTest::Waiting if due => (ClickTest::Requested(now), ClickAction::Push),
+            ClickTest::Requested(at) | ClickTest::Pressed(at) | ClickTest::Forwarded(at)
+                if now - at > TEST_TRANSITION_TIMEOUT =>
+            {
+                (
+                    ClickTest::Failed,
+                    ClickAction::Fail(match *self {
+                        ClickTest::Requested(_) => "synthetic button down never forwarded",
+                        ClickTest::Pressed(_) => "synthetic button up never forwarded",
+                        _ => "click marker never received",
+                    }),
+                )
+            },
+            state => (state, ClickAction::None),
+        };
+        *self = next;
+        action
+    }
+
+    /// A synthetic button event came back from the SDL queue through the input path.
+    pub(crate) fn input(&mut self, input: ClickInput) -> ClickAction {
+        let (next, action) = match (*self, input) {
+            (ClickTest::Failed, _) => (ClickTest::Failed, ClickAction::None),
+            (ClickTest::Requested(_) | ClickTest::Pressed(_), ClickInput::Down { ok: false })
+            | (ClickTest::Requested(_) | ClickTest::Pressed(_), ClickInput::Up { ok: false }) => (
+                ClickTest::Failed,
+                ClickAction::Fail("welding refused a synthetic button event"),
+            ),
+            (ClickTest::Requested(at), ClickInput::Down { ok: true }) => {
+                (ClickTest::Pressed(at), ClickAction::None)
+            },
+            (ClickTest::Pressed(at), ClickInput::Up { ok: true }) => {
+                (ClickTest::Forwarded(at), ClickAction::None)
+            },
+            (ClickTest::Requested(_), ClickInput::Up { .. }) => (
+                ClickTest::Failed,
+                ClickAction::Fail("synthetic button up before button down"),
+            ),
+            _ => (
+                ClickTest::Failed,
+                ClickAction::Fail("unexpected synthetic button event"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// The page logged the click marker.
+    pub(crate) fn marker(&mut self) -> ClickAction {
+        let (next, action) = match *self {
+            ClickTest::Failed => (ClickTest::Failed, ClickAction::None),
+            ClickTest::Forwarded(_) => (ClickTest::Done, ClickAction::Complete),
+            ClickTest::Done => (
+                ClickTest::Failed,
+                ClickAction::Fail("click marker received more than once"),
+            ),
+            _ => (
+                ClickTest::Failed,
+                ClickAction::Fail("click marker before the click was forwarded"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// Done or failed: `--roves-auto-close-ms` may close the window.
+    pub(crate) fn finished(self) -> bool {
+        matches!(self, ClickTest::Done | ClickTest::Failed)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +474,120 @@ mod tests {
             CycleAction::Fail(_)
         ));
         assert!(cycle.finished());
+    }
+
+    #[test]
+    fn click_marker_is_exact_word() {
+        assert!(is_click_marker("roves-test-click-received"));
+        assert!(is_click_marker(
+            "roves-test-click-received target=click-target trusted=true"
+        ));
+        assert!(!is_click_marker("roves-test-click-receivedx"));
+        assert!(!is_click_marker("x roves-test-click-received"));
+        assert!(!is_click_marker(""));
+    }
+
+    #[test]
+    fn click_test_runs_in_order() {
+        let t0 = std::time::Instant::now();
+        let mut click = ClickTest::Waiting;
+        assert_eq!(click.tick(t0, false), ClickAction::None);
+        assert_eq!(click.tick(t0, true), ClickAction::Push);
+        // Pushed once only.
+        assert_eq!(click.tick(t0 + ms(1), true), ClickAction::None);
+        assert_eq!(
+            click.input(ClickInput::Down { ok: true }),
+            ClickAction::None
+        );
+        assert_eq!(click.input(ClickInput::Up { ok: true }), ClickAction::None);
+        assert!(!click.finished());
+        assert_eq!(click.tick(t0 + ms(50), true), ClickAction::None);
+        assert_eq!(click.marker(), ClickAction::Complete);
+        assert!(click.finished());
+        // Done is terminal for ticks (no timeout).
+        assert_eq!(
+            click.tick(t0 + TEST_TRANSITION_TIMEOUT * 2, true),
+            ClickAction::None
+        );
+        assert_eq!(click, ClickTest::Done);
+    }
+
+    #[test]
+    fn click_test_fails_on_refusal_order_or_timeout() {
+        let t0 = std::time::Instant::now();
+        let late = t0 + TEST_TRANSITION_TIMEOUT + ms(1);
+        let requested = || {
+            let mut click = ClickTest::Waiting;
+            click.tick(t0, true);
+            click
+        };
+
+        // welding refuses the button down or the button up.
+        let mut click = requested();
+        assert!(matches!(
+            click.input(ClickInput::Down { ok: false }),
+            ClickAction::Fail(_)
+        ));
+        assert!(click.finished());
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        assert!(matches!(
+            click.input(ClickInput::Up { ok: false }),
+            ClickAction::Fail(_)
+        ));
+
+        // Out of order: up before down, a second down, an event before the request.
+        let mut click = requested();
+        assert!(matches!(
+            click.input(ClickInput::Up { ok: true }),
+            ClickAction::Fail(_)
+        ));
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        assert!(matches!(
+            click.input(ClickInput::Down { ok: true }),
+            ClickAction::Fail(_)
+        ));
+        let mut click = ClickTest::Waiting;
+        assert!(matches!(
+            click.input(ClickInput::Down { ok: true }),
+            ClickAction::Fail(_)
+        ));
+
+        // The marker before the click was forwarded, or twice.
+        let mut click = ClickTest::Waiting;
+        assert!(matches!(click.marker(), ClickAction::Fail(_)));
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        assert!(matches!(click.marker(), ClickAction::Fail(_)));
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        click.input(ClickInput::Up { ok: true });
+        assert_eq!(click.marker(), ClickAction::Complete);
+        assert!(matches!(click.marker(), ClickAction::Fail(_)));
+
+        // Each pending state times out relative to the request.
+        let mut click = requested();
+        assert_eq!(
+            click.tick(t0 + TEST_TRANSITION_TIMEOUT, true),
+            ClickAction::None
+        );
+        assert!(matches!(click.tick(late, true), ClickAction::Fail(_)));
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        assert!(matches!(click.tick(late, true), ClickAction::Fail(_)));
+        let mut click = requested();
+        click.input(ClickInput::Down { ok: true });
+        click.input(ClickInput::Up { ok: true });
+        assert!(matches!(click.tick(late, true), ClickAction::Fail(_)));
+        assert_eq!(click, ClickTest::Failed);
+
+        // Failed is terminal and silent.
+        assert_eq!(
+            click.input(ClickInput::Down { ok: true }),
+            ClickAction::None
+        );
+        assert_eq!(click.marker(), ClickAction::None);
+        assert_eq!(click.tick(late, true), ClickAction::None);
     }
 }

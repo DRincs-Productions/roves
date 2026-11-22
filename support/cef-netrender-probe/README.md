@@ -369,6 +369,29 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   to finish. Log lines: `test minimize requested ok=<bool> hold_ms=1500`,
   `test restore requested ok=<bool> idle_ticks=<n>`, `test minimize cycle complete`. Not
   meant for players; the flag only exists to make the suspension path testable in CI.
+- **Synthetic click (`--roves-test-click-ms=<ms>`, tests only).** Game mode only, and not
+  together with `--roves-test-minimize-ms` (one test hook per run). `<ms>` after the accepted
+  load-end the probe pushes one left `MouseButtonDown` + `MouseButtonUp` at SDL window point
+  (100, 60) (logical coordinates) into the SDL event queue with `SDL_PushEvent` (sdl3 0.20
+  `EventSubsystem::push_event`), stamped with a sentinel mouse id (`0x524F5645`). They come
+  back through the loop's ordinary `poll_iter` -> `window_event` -> `Input` -> welding
+  `send_mouse_input` path (CEF `SendMouseClickEvent`, click count 1); only events carrying
+  the sentinel id count for the test. The page must log `roves-test-click-received` (alone or
+  followed by a space) from a click handler on the loopback origin. Required, in order:
+  request pushed, button down forwarded, button up forwarded (welding accepted each call),
+  then the marker; anything else fails (`FAIL test click ...`, then close): a push error, a
+  welding refusal, up before down, extra synthetic events, the marker before the click was
+  forwarded or more than once, or any step not done within 10 s of the request; an
+  unfinished sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it. Log
+  lines: `test click requested x=100 y=60 window_id=<n> pushed=<bool>`,
+  `test click forwarded event=down|up ok=<bool>`, `test click marker received`,
+  `test click complete`. **Coverage and limits:** this exercises the SDL queue, the probe's
+  SDL -> welding mouse translation and CEF/Blink delivery of a trusted DOM `click` to the
+  element under the point. It is a synthetic SDL event, not a physical mouse or the Win32
+  message path SDL builds events from; it proves no gameplay, no visual result and no
+  presented frame. The point maps to CSS pixels only through the window/display scale (the
+  CI fixture's 200x120 px target tolerates scales up to about 1.6). Mouse motion, the other
+  buttons, keyboard, text input, wheel and browser focus are **not** covered by this hook.
 - **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
   accepted load-end). Afterwards the run lasts until the OS closes the window, or
   `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,
@@ -376,8 +399,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   failure); 2 = never loaded / close timeout. Console messages are logged as
   `console level=... source=...:line message=...` (first 500, 512 characters each).
   `--roves-sustained` and `--roves-keep-open` are refused with `--roves-game-dir` (no fixture
-  checks); `--roves-port`, `--roves-auto-close-ms` and `--roves-test-minimize-ms` are refused
-  without it.
+  checks); `--roves-port`, `--roves-auto-close-ms`, `--roves-test-minimize-ms` and
+  `--roves-test-click-ms` are refused without it (usage error, exit 1, before the log opens).
 - **Timings.** With `--roves-timings`, every redraw after the accepted load-end is recorded
   and a `timings phase=game ...` summary (same stages and format as above) is emitted when the
   window starts closing, before the close sequence. Resizes break the intervals but are not
@@ -394,7 +417,12 @@ extended flag bit 24 <-> `0xE0xx`), from which Chromium derives the DOM `code`; 
 (~122) derives `wheel_ticks = offset / kWheelDelta` from a `ui::MouseWheelEvent` offset. CEF's
 own OSR glue that turns `SendMouseWheelEvent` deltas into that offset is not in the checkout,
 so how far one notch scrolls under CEF versus Chrome is **not verified**: the tick count and
-direction are expected to match, DOM `deltaY` magnitudes may not.
+direction are expected to match, DOM `deltaY` magnitudes may not. For the synthetic click
+gate no new Chromium source was checked out (the same pinned `f2700724` sparse dirs only):
+`ui/events/blink`/`ui/events/win` build `WebMouseEvent`s from native Win32 messages in
+Chrome, a path the probe never takes, because CEF's `SendMouseClickEvent` constructs the
+Blink event itself; the gate therefore says nothing about parity with Chrome's native mouse
+construction.
 
 ### Running a real game
 
@@ -529,7 +557,8 @@ window stays until the OS closes it), `--roves-timings` (below; off by default, 
 pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
 exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
-`--roves-auto-close-ms=<ms>` and the test-only `--roves-test-minimize-ms=<ms>` (opt-in
+`--roves-auto-close-ms=<ms>` and the test-only `--roves-test-minimize-ms=<ms>` or
+`--roves-test-click-ms=<ms>` (opt-in
 real-game mode, above; no fixture checks). CEF
 switches such as `--log-file` pass through.
 
@@ -680,8 +709,8 @@ stopped`, `exit code=0`; plus process exit 0, no `FAIL`/`close requested by the 
 refused` line, a sandboxed renderer child and no leftover process. Imported frames are only
 reported (WARP delivers none), so this step proves serving, navigation, script execution
 and lifecycle, **not** accelerated frames, presentation, input or gameplay; there is no
-window automation in CI. This step also fails on any `test minimize` line: without the
-flag the scripted cycle must stay off.
+window automation in CI. This step also fails on any `test minimize` or `test click` line:
+without their flags the test hooks must stay off.
 
 A third step reuses the same bundle for the **minimized-window suspension gate**: a fixture
 whose `game.js` logs `roves-ci-lifecycle-fixture visibility=<state>` at start and on every
@@ -704,6 +733,29 @@ clean afterwards. It does **not** prove accelerated frames, GPU presentation or 
 re-present on resume (WARP delivers no accelerated frame), input, visual correctness,
 user-driven minimize/hide from the taskbar or other window managers, or the absence of GPU
 work on real hardware while suspended.
+
+A fourth step reuses the same bundle for the **synthetic click gate**. It first checks that
+`--roves-test-click-ms` is refused without `--roves-game-dir` and together with
+`--roves-test-minimize-ms` (exit 1, no evidence log written, a `usage error` on stderr if
+any was captured). Then a fresh-cache run on a fixture with a fixed 200x120 px button at the
+top-left, whose click handler logs `roves-test-click-received target=<id> trusted=<bool>
+button=<n> detail=<n> x=<n> y=<n>`, with `--roves-compose=wgpu --roves-test-click-ms=1000
+--roves-auto-close-ms=5000` on WARP. Gated, each line after the previous one: `producer
+created accelerated=true background=white`, the fixture's `module-ok` marker (listener
+installed), `test click requested x=100 y=60 ... pushed=true`, `test click forwarded
+event=down ok=true`, `test click forwarded event=up ok=true`, the click marker from
+`<origin>/game.js` with `target=click-target trusted=true button=0 detail=1`, `test click
+marker received`, `test click complete`, `auto-close window`, close, `game input
+forwarded=`, `browser closed`, `producer and renderer dropped`, `cef shutdown complete`,
+`game loopback stopped`, `exit code=0`; plus the accepted `load-end` before the request,
+exactly one request, one forwarded down, one forwarded up and one click marker, process exit
+0, no `FAIL`/`input rejected`/`close requested by the OS`/`popup refused`/`test minimize`
+line and no leftover process. Imported frames and presents are only reported. This proves
+that an SDL-queued left click reaches welding and arrives in the page as one trusted DOM
+click on the expected element; it does **not** prove physical mouse input, the Win32 ->
+SDL translation, hover/motion, keyboard, wheel or focus delivery, gameplay, accelerated
+frames or any visual result. If Blink were to drop input before a first paint on WARP, this
+gate would fail at the marker rather than pass falsely.
 
 ## Versions evaluated (2026-11-22)
 
@@ -807,8 +859,11 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   but synchronous. `--roves-timings` measures the host-thread part; real-scene frame pacing
   remains with the performance flow.
 - The fixture smoke exercises no input. Real-game mode forwards mouse, wheel, keyboard,
-  focus, visibility, scale factor and cursor shape, but input has **not yet been run** (the CI
-  game step only gates loading and lifecycle on WARP, without input or frames), and with
+  focus, visibility, scale factor and cursor shape. The ordinary CI game smoke covers only
+  loading and lifecycle on WARP. A synthetic SDL click gate is present in CI but **has not
+  run yet** (awaiting CI); it covers only the SDL event queue -> welding -> CEF/Blink DOM
+  click path. Physical mouse input, keyboard, wheel, focus, gameplay and visuals remain
+  **unverified**, and input has
   these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),
   no `mouseleave` (welding always sends `mouse_leave = 0`, hover can stick when the cursor
   leaves the window), no blur (welding's Windows focus call is `SetFocus(true)` only), no
