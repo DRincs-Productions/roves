@@ -688,13 +688,34 @@ timeout changed.
 | `load-start` | first `NavigationEvent::LoadStart` drained by the host loop |
 | `load-end` | first **accepted** load-end (game: status OK on the loopback origin; fixture: any load-end) as processed by the host loop |
 | `first-import` | first accelerated producer frame imported by `acquire_frame` |
-| `first-present` | first frame presented on the surface |
+| `first-present` | first surface presentation by the host, of any frame: it may be the host's background/blank frame and does **not** prove that a CEF frame or game content was imported or visually rendered |
 
 Navigation milestones are stamped when the host loop drains the event, so they can trail
-CEF's own callback by up to one loop turn. On WARP (CI) no accelerated frame arrives: the
-earlier milestones are still logged and `first-import`/`first-present` are simply absent;
-nothing claims a present that did not happen. A failure before a milestone (for example
-window or producer creation) leaves it and every later one absent.
+CEF's own callback by up to one loop turn. On WARP (CI) no accelerated frame arrives:
+`first-import` is absent, but `first-present` is still logged, because the host presents its
+background/blank frame without any import. Evidence: run 45073519738 (commit `ed4f4c374fc`)
+logs `startup milestone=first-present` at roughly 299–475 ms on WARP, never logs
+`first-import`, and its closing lines report `imported=0` (for example after 362, 366 and
+5742 presents). Only `first-import` marks the first CEF frame reaching the host; neither
+milestone proves visual correctness. A failure before a milestone (for example window or
+producer creation) leaves it and every later one absent.
+
+First recorded timeline, same run 45073519738 (commit `ed4f4c374fc`). That run has three
+WARP game-mode runs; two are summarized here: the ordinary loading fixture and the
+minimized-window fixture. The click-gate run is excluded (it was failing on the unrelated
+pre-load input rejection described above), as is the blank initial fixture. Common to both:
+`loopback-ready` 1 ms, `cef-initialized` 113–120 ms, `sdl-ready` 147–176 ms,
+`first-present` 299–360 ms, `imported=0`. Per-run navigation pairs:
+
+- ordinary loading fixture: `window-surface-producer-ready` 355 ms, `load-start` 1073 ms,
+  `load-end` 1130 ms (producer-ready to `load-start` 718 ms; `load-start` to `load-end` 57 ms);
+- minimized-window fixture: `window-surface-producer-ready` 295 ms, `load-start` 990 ms,
+  `load-end` 1060 ms (producer-ready to `load-start` 695 ms; `load-start` to `load-end` 70 ms).
+
+The largest observed gap is producer-ready (initial navigation requested) to `load-start`,
+695–718 ms; `load-start` to `load-end` took 57–70 ms. These are two single CI fixtures on
+WARP, not averages, not a game startup benchmark and not a user-hardware result.
+The trace locates that delay; it does not identify its cause.
 
 The timeline only locates **where** startup wall-clock time goes. It is not CPU time, not GPU
 time, not a launch-click-to-ready figure and not an optimization result; one run proves
