@@ -1,0 +1,46 @@
+# CEF accelerated off-screen rendering -> wgpu-weld -> Netrender feasibility probe (Windows).
+# Separate Cargo workspace: not part of the engine, of the stage-1 CEF window probe
+# (support/cef-window-probe, CEF 156) or of any shipped target. See README.md.
+#
+# Pins (rationale and evidence in README.md):
+# - welding: merely-made/wgpu-weld main at e991684 (2026-11-20), `wgpu-29` row plus
+#   `cef-runtime`. Welding owns the CEF OSR callback lifetime, the D3D11 copy and the
+#   Windows sandbox bootstrap entry; its `grafting` dependency (merely-made/wgpu-graft, git
+#   branch main) owns the D3D12 shared-handle -> wgpu import. The lock pins grafting to
+#   d903cfa, the revision wgpu-weld's own Cargo.lock reviewed at e991684.
+# - cef =154.5.0 (CEF 154.0.34, Chromium 154.0.8037.98): the release welding requires.
+#   The stage-1 window probe stays on 156.7.0; both CEF distributions are independent.
+# - wgpu =29.0.4 and Netrender d2f13ca5: the Netrender revision Roves already pins (last on
+#   wgpu 29 / Vello 0.9). One wgpu 29 device is shared by Netrender and welding.
+#   Known graph cost: welding enables cef's `accelerated_osr` feature, which pulls wgpu 30
+#   for cef's own importer (`cef::osr_texture_import`); welding and this probe never call it.
+[package]
+name = "roves_cef_netrender_probe"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+license = "MPL-2.0"
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+[[bin]]
+name = "bundle"
+path = "src/bin/bundle.rs"
+
+[features]
+# Local type-check only (`cargo check --features dox --all-targets`): cef-dll-sys skips the
+# CEF download and the libcef_dll_wrapper build. Never used for a runnable bundle.
+dox = ["cef/dox"]
+
+[dependencies]
+welding = { git = "https://github.com/merely-made/wgpu-weld", rev = "e991684bab23d0eaea42d418e216317173ace2a9", default-features = false, features = ["wgpu-29", "cef-runtime"] }
+cef = { version = "=154.5.0", default-features = false, features = ["build-util", "sandbox"] }
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "dx12", "wgsl"] }
+netrender = { git = "https://github.com/merely-made/netrender", rev = "d2f13ca5ecd20df89d148a7cebef28c0962b90ca" }
+winit = { version = "=0.30.13", default-features = false, features = ["rwh_06"] }
+base64 = "0.22.1"

@@ -1,3 +1,27 @@
+## 2026-11-22 - CEF accelerated OSR -> wgpu-weld -> Netrender probe (Windows, experiment only)
+
+Changed: `support/cef-netrender-probe/` (new separate Cargo workspace),
+`.github/workflows/cef-netrender-probe.yml` (new), `docs/DEPENDENCY_REVIEW.md`, `TODO.md`.
+Experiment only: the engine, the stage-1 window probe and its workflow (CEF 156), the other
+workflows, `roves-action`, Packmaster and releases are unchanged. Feasibility probe for the
+direction "Chromium's V8 owns game JS, Deno only host services": CEF renders a fixed
+transparent fixture page with accelerated off-screen rendering; merely-made/wgpu-weld
+(`welding` git e991684, `wgpu-29` row) copies each callback-scoped D3D11 shared texture on the
+GPU and its `grafting` dependency (pinned to d903cfa) imports it on a single wgpu 29.0.4 DX12
+device booted through Netrender's `boot_on`; Netrender d2f13ca5 composites it as a
+premultiplied external texture over its own scene and a GPU blit presents the master. Windows
+sandbox kept through CEF's bootstrap.exe and welding's `CefWindowsSandboxContext`; no CEF
+fork, no wgpu patch, no CPU readback on the presentation path (verification samples only).
+Checks: four sample points on the composed frame and on the imported CEF texture (premultiplied
+alpha, transparency, Netrender scene showing through), before and after a 1280x720 -> 960x540
+resize, then a clean close and `cef::shutdown`. welding requires `cef =154.5.0` (Chromium
+154.0.8037.98), which cannot share a Cargo graph with the baseline's CEF 156 (`links =
+"cef_dll_wrapper"`); welding's `accelerated_osr` use of `cef` adds an unused wgpu 30 to the
+graph (gated in CI as cef-only). The workflow builds with Rust 1.99.1 and runs the `wgpu`
+composition on WARP only (Vello 0.9 crashes on WARP); the Netrender composition needs a real
+GPU. Type-checked locally with `dox`; not built with CEF nor run yet. Chromium f2700724 Viz
+references, versions and limits are in the probe README.
+
 ## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
 
 Changed: `support/cef-window-probe/` (new separate Cargo workspace), `.github/workflows/cef-window-probe.yml`

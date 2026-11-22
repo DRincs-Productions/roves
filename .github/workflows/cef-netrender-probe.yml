@@ -1,0 +1,173 @@
+name: CEF -> wgpu-weld -> Netrender probe
+
+# Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
+# Windows probe (welding e991684, CEF 154, wgpu 29.0.4, Netrender d2f13ca5) and runs it on
+# the runner's only DX12 adapter, WARP. Netrender/Vello 0.9 crashes on WARP
+# (support/netrender-shared-device-proof/README.md), so CI runs the `wgpu` composition (same
+# CEF accelerated OSR -> welding -> grafting import, composed by a premultiplied blit); the
+# Netrender composition runs only on real GPUs, from the uploaded bundle. Separate from
+# cef-window-probe.yml (CEF 156 baseline, unchanged). Never gates a release.
+
+on:
+  push:
+    paths:
+      - 'support/cef-netrender-probe/**'
+      - '.github/workflows/cef-netrender-probe.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cef-netrender-probe-${{ github.ref }}
+  # A cancelled run is not a verified one (AGENTS.md CI rules): queue instead of cancelling.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+      # welding 0.15.0 requires Rust 1.97.1; wgpu-weld e991684 pins 1.99.1 for its own CI.
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: set build directories
+        shell: pwsh
+        run: |
+          "CARGO_TARGET_DIR=$(Join-Path $env:RUNNER_TEMP 'cef-nr-target')" >> $env:GITHUB_ENV
+          # CEF 154 distribution, kept apart from the stage-1 probe's CEF 156.
+          "CEF_PATH=$(Join-Path $env:RUNNER_TEMP 'cef154')" >> $env:GITHUB_ENV
+      - name: restore cargo and CEF cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}\cef154
+          key: cef-netrender-probe-${{ runner.os }}-rust-1.99.1-${{ hashFiles('support/cef-netrender-probe/Cargo.lock') }}
+      - name: dependency graph evidence
+        shell: bash
+        working-directory: support/cef-netrender-probe
+        run: |
+          cargo tree --locked --target x86_64-pc-windows-msvc -e normal -d \
+            | tee "$RUNNER_TEMP/cef-nr-duplicates.txt"
+          # One wgpu 29 for welding, grafting, Netrender and Vello; wgpu 30 may appear only
+          # under cef (accelerated_osr importer, never called).
+          tree() { cargo tree --locked --target x86_64-pc-windows-msvc -e normal --prefix depth --depth 1 "$@"; }
+          users29="$(tree -i wgpu@29.0.4 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 29.0.4 used by: $users29"
+          for crate in grafting netrender roves_cef_netrender_probe vello welding; do
+            echo " $users29" | grep -q " $crate " || { echo "::error::$crate is not on wgpu 29.0.4"; exit 1; }
+          done
+          users30="$(tree -i wgpu@30.0.2 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 30.0.2 used by: $users30"
+          test "$users30" = "cef " || { echo "::error::wgpu 30 reached by something other than cef"; exit 1; }
+      - name: build and bundle (release, sandbox)
+        shell: bash
+        working-directory: support/cef-netrender-probe
+        run: |
+          cargo run --locked --release --bin bundle -- "$RUNNER_TEMP/cef-nr-bundle" --release \
+            2>&1 | tee "$RUNNER_TEMP/cef-nr-build.log"
+          test -f "$RUNNER_TEMP/cef-nr-bundle/roves_cef_netrender_probe.exe"
+          test -f "$RUNNER_TEMP/cef-nr-bundle/roves_cef_netrender_probe.dll"
+          test -f "$RUNNER_TEMP/cef-nr-bundle/libcef.dll"
+      - name: save cargo and CEF cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}\cef154
+          key: cef-netrender-probe-${{ runner.os }}-rust-1.99.1-${{ hashFiles('support/cef-netrender-probe/Cargo.lock') }}
+      # Gated on WARP: sandbox information present, DX12 adapter, producer created, every CEF
+      # child launched without --no-sandbox (command lines sampled while it runs), clean exit
+      # and no leftover process. If CEF imports frames, the pixel/alpha/resize checks are
+      # gated too; if accelerated OSR delivers nothing on WARP, that is reported as a notice
+      # (the GPU path is then verified only on real hardware) and the process must still
+      # close cleanly.
+      - name: run the probe (wgpu composition, WARP)
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-run'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $log = Join-Path $out 'roves-cef-nr.log'
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $arguments = @(
+            '--roves-compose=wgpu', "--roves-log=$log", '--roves-timeout-ms=90000',
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          $children = @{}
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+            Get-CimInstance Win32_Process -Filter "Name='roves_cef_netrender_probe.exe'" -ErrorAction SilentlyContinue |
+              ForEach-Object { if ($_.CommandLine) { $children[$_.ProcessId] = $_.CommandLine } }
+            Start-Sleep -Milliseconds 300
+          }
+          if (-not $proc.HasExited) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Output '::error::the probe did not exit in time'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          $children.Values | Set-Content (Join-Path $out 'process-command-lines.txt')
+          Get-Content $log
+          $failed = $false
+          foreach ($pattern in @(
+              'sandbox-info present=true', 'adapter name=.* backend=Dx12', 'surface format=',
+              'producer created accelerated=true background=transparent', 'closing imported=',
+              'browser closed', 'cef shutdown complete', "exit code=$code")) {
+            if (-not (Select-String -Path $log -Pattern $pattern -Quiet)) {
+              Write-Output "::error::missing evidence: $pattern"; $failed = $true
+            }
+          }
+          $types = $children.Values | ForEach-Object { if ($_ -match '--type=([\w-]+)') { $Matches[1] } } | Sort-Object -Unique
+          Write-Output "::notice::CEF child types seen: $($types -join ', ')"
+          if (-not ($types -contains 'renderer')) { Write-Output '::error::no renderer child observed'; $failed = $true }
+          if ($children.Values | Where-Object { $_ -match '--no-sandbox' }) {
+            Write-Output '::error::a CEF child process was launched with --no-sandbox'; $failed = $true
+          }
+          $imported = Select-String -Path $log -Pattern 'import frame=' -Quiet
+          if ($imported) {
+            if ($code -ne 0) { Write-Output "::error::frames were imported but the checks failed (exit $code)"; $failed = $true }
+            if (@(Select-String -Path $log -Pattern '^roves-cef-nr PASS pixel').Count -ne 16) {
+              Write-Output '::error::expected 16 PASS pixel lines (2 checks x 4 points x composed/cef-texture)'; $failed = $true
+            }
+          } else {
+            Write-Output "::notice::accelerated OSR imported no frame on WARP (exit $code): GPU import not verifiable on this runner"
+            if ($code -ne 2) { Write-Output "::error::unexpected exit code $code without frames"; $failed = $true }
+          }
+          Select-String -Path $log -Pattern 'FAIL|adapter name|import frame=|title ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after exit'; $failed = $true
+          }
+          if ($failed) { exit 1 }
+      - name: upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-netrender-probe-evidence
+          path: |
+            ${{ runner.temp }}/cef-nr-run/roves-cef-nr.log
+            ${{ runner.temp }}/cef-nr-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-run/process-command-lines.txt
+            ${{ runner.temp }}/cef-nr-build.log
+            ${{ runner.temp }}/cef-nr-duplicates.txt
+          retention-days: 14
+          if-no-files-found: warn
+      - name: upload bundle
+        if: success() || failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-netrender-probe-windows-x64
+          path: ${{ runner.temp }}/cef-nr-bundle
+          retention-days: 7
+          if-no-files-found: warn

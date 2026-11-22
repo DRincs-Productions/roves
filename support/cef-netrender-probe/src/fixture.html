@@ -1,0 +1,26 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>roves cef netrender fixture</title>
+<style>
+  /* No page background: CEF is created with a transparent background colour, so every
+     pixel not covered below reaches the host with premultiplied alpha 0. Regions are in
+     viewport units so the same fractions are sampled after a resize. */
+  html, body { margin: 0; width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  #opaque { position: fixed; left: 0; top: 0; width: 50vw; height: 50vh; background: rgb(0, 255, 0); }
+  #half { position: fixed; left: 50vw; top: 0; width: 50vw; height: 50vh; background: rgba(0, 0, 255, 0.5); }
+  /* Keeps CEF painting (frames are change-driven); never sampled. */
+  #tick { position: fixed; left: 0; bottom: 0; width: 2px; height: 2px; }
+</style>
+<div id="opaque"></div>
+<div id="half"></div>
+<i id="tick"></i>
+<script>
+  const tick = document.getElementById('tick');
+  let n = 0;
+  setInterval(() => { tick.style.background = (n++ % 2) ? '#000' : '#fff'; }, 16);
+  const report = () => {
+    document.title = `fixture css=${innerWidth}x${innerHeight} dpr=${devicePixelRatio}`;
+  };
+  addEventListener('resize', report);
+  report();
+</script>
