@@ -2006,9 +2006,10 @@
   // normally drops them inside the same flush) counts as gone, so its object
   // is canceled. Settles finished records first: the read flushes styles for a
   // target, and a fill added by the settlement needs a second read (no flush
-  // for the sweep) to be validated and claimed.
-  function animationEntries(handle, subtree) {
-    const read = () => JSON.parse(op_blitz_get_animations(handle, subtree, completedFills()));
+  // for the sweep unless `flushDocument`, at the held frame time the paint
+  // flush then reuses) to be validated and claimed.
+  function animationEntries(handle, subtree, flushDocument = false) {
+    const read = () => JSON.parse(op_blitz_get_animations(handle, subtree, completedFills(), flushDocument));
     let snapshot = read();
     if (settleFinishedAnimations(snapshot.now) > 0) snapshot = read();
     return { now: snapshot.now, entries: snapshot.entries.filter((entry) => entry.state !== "canceled") };
@@ -2044,13 +2045,14 @@
   }
   // Once per frame, after the previous frame's style flush: settle what Stylo
   // finished, mirror every live object's entry, and cancel objects whose entry
-  // (or completed fill) is gone without finishing.
-  function updateCssAnimations() {
+  // (or completed fill) is gone without finishing. `flushDocument`: flush
+  // styles at the current timeline time first (before-paint settlement).
+  function updateCssAnimations(flushDocument = false) {
     if (liveAnimations.size === 0) {
       op_blitz_take_finished_animations(); // nothing to settle: just drain
       return;
     }
-    const { now, entries } = animationEntries(-1, false);
+    const { now, entries } = animationEntries(-1, false, flushDocument);
     const claimed = new Set();
     for (const entry of entries) claimCssAnimation(entry, claimed, now);
     for (const [key, list] of liveAnimations) {
@@ -2073,6 +2075,39 @@
       });
       if (remaining.length === 0) liveAnimations.delete(key);
       else liveAnimations.set(key, remaining);
+    }
+  }
+  // A handed-out finite animation whose `finished` is still unsettled, i.e. one
+  // that a style flush may finish (paused and infinite ones never do).
+  function hasUnsettledFiniteAnimation() {
+    for (const list of liveAnimations.values()) {
+      for (const animation of list) {
+        const internal = animationInternals.get(animation);
+        if (internal.finishedState !== "pending" || internal.playState === "paused") continue;
+        if (Number.isFinite(internal.entry.iterations ?? Infinity)) return true;
+      }
+    }
+    return false;
+  }
+  // Called by the embedder at the end of each tick, after its microtask
+  // checkpoint and event loop poll and right before the paint flush, followed by
+  // another microtask checkpoint. Browsers observe a finish at the frame's
+  // "update animations" step, before style and paint, so `finished` reactions
+  // commit first: Base UI's useAnimationsFinished unmounts a closed dialog with
+  // ReactDOM.flushSync for exactly this reason (mui/base-ui#979). Without this
+  // step the paint flush itself finished the template's `animate-out` (tw-animate-css,
+  // `animation-fill-mode: none`) and painted the closed popup and backdrop at
+  // their unanimated opacity 1 for one frame before the next tick's sweep
+  // settled `finished`. Flushes styles at the current timeline time only while
+  // such an animation exists. The embedder holds the timeline from this call to
+  // the paint flush (headless and blitz-shell's, see animation_clock.rs), so the
+  // paint cannot finish an animation this settlement saw running.
+  function settleCssAnimationsBeforePaint() {
+    if (!hasUnsettledFiniteAnimation()) return;
+    try {
+      updateCssAnimations(true);
+    } catch (error) {
+      reportException(error);
     }
   }
 
@@ -3088,7 +3123,14 @@
   // microtask checkpoint, timers and input are unaffected. Returns whether this
   // tick ran the rAF queue (a page frame), so harness waits can count frames
   // the page actually received instead of embedder ticks.
-  function runAnimationFrame() {
+  // With "before-paint" (the embedder's second call of the tick, see
+  // settleCssAnimationsBeforePaint) it only settles CSS animations and returns
+  // false.
+  function runAnimationFrame(phase) {
+    if (phase === "before-paint") {
+      settleCssAnimationsBeforePaint();
+      return false;
+    }
     gpuPacingTick();
     webAudio.dispatchPendingEvents();
     // "Update animations" precedes the rAF callbacks; the state is the previous
@@ -3759,7 +3801,7 @@
           live.push({ key, start: internal.entry.start, state: internal.entry.state, playState: internal.playState, finished: internal.finishedState, completedFill: internal.completedFill !== undefined });
         }
       }
-      return JSON.stringify({ log: animationDebugLog, live, native: JSON.parse(op_blitz_get_animations(-1, false, completedFills())) });
+      return JSON.stringify({ log: animationDebugLog, live, native: JSON.parse(op_blitz_get_animations(-1, false, completedFills(), false)) });
     },
     // After the page's scripts: readyState interactive -> DOMContentLoaded ->
     // complete -> load (on the window), as a browser does.

@@ -1,3 +1,31 @@
+## 2026-11-22 - Blitz probe: settle CSS animations before the paint flush (dialog closing flash)
+
+Changed: `support/blitz-v8-probe/src/{dom.js,main.rs,window.rs,animation_clock.rs,frame_timings.rs,animations_test.js}`,
+`support/blitz-v8-probe/vendor/blitz-dom/{src/document.rs,src/resolve.rs,ROVES_PATCHES.md}` (patch 0007),
+`.github/workflows/blitz-probe.yml` (`animation_clock::` unit tests).
+Closing Settings or the name prompt of the visual-novel-template (e88e9ac) flashed the
+popup and backdrop at full opacity for one frame. Their exit is tw-animate-css
+`animate-out` (`animation-fill-mode: none`) and Base UI unmounts on `finished` with
+`flushSync` precisely so that frame is never painted; the probe, however, only settled
+`finished` in the next tick's sweep, after the paint flush had already finished the
+animation and painted the unanimated style (reproduced with release `44938526736`:
+`currentTime` 105.4 ms still `running` at a rAF, removed only a tick later). Each tick now
+ends with a before-paint step (`runAnimationFrame("before-paint")` + microtask checkpoint,
+after the event-loop poll): when a handed-out finite animation is unsettled, the document
+sweep flushes styles at the current time (`op_blitz_get_animations` `flush_document`) and
+settles what finished. The page clock is held from that step to the paint flush and
+released after it (headless `resolve_layout`, the window's `RedrawRequested`, or the next
+tick), as Chromium (f2700724, `PageAnimator::ServiceScriptedAnimations`, `AnimationClock`)
+holds one frame time for the whole rendering update. blitz-shell computes its paint time
+from a private `Instant` with no hook, so vendor/blitz-dom patch 0007
+(`set_animation_time_source`) makes every `resolve` of the page document, the shell's
+included, read the page timeline: settlement and visible-window paint use the same time.
+The window no longer restarts the clock at the shell's first access (its origin stays
+aligned with `performance.now()`). Regressions: `animation_clock::` unit tests (resolve with
+a far-future shell time paints the held frame) and `css_get_animations_stylo_state`, which
+watches every headless paint flush of a `fill-mode: none` exit removed on `finished`.
+Template unchanged. Production engine unchanged.
+
 ## 2026-11-22 - Blitz probe: inline SVG `currentColor` with modern color syntax (blitz-dom 0006)
 
 Changed: `support/blitz-v8-probe/vendor/blitz-dom/src/node/serialize.rs` (+ its

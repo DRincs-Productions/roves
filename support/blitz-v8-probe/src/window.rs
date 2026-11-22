@@ -471,11 +471,18 @@ impl<R: WindowRenderer> ApplicationHandler for ScenarioApplication<R> {
         }
         // ROVES_PROBE_FRAME_TIMINGS only: the shell's whole redraw (Blitz
         // resolve + render), see `frame_timings::FrameTimings::cpu_shell_redraw`.
-        let redraw = matches!(event, WindowEvent::RedrawRequested)
+        let is_redraw = matches!(event, WindowEvent::RedrawRequested);
+        let redraw = is_redraw
             .then_some(self.timings.as_ref())
             .flatten()
             .map(|_| Instant::now());
         self.shell.window_event(event_loop, window_id, event);
+        if is_redraw {
+            // The shell's paint resolve read the frame time held for the
+            // tick's before-paint settlement: the frame ends here (see
+            // `animation_clock`).
+            crate::animation_clock::page_clock().release();
+        }
         if let (Some(start), Some(timings)) = (redraw, &self.timings) {
             timings.borrow_mut().cpu_shell_redraw.push(start.elapsed());
         }
@@ -538,7 +545,6 @@ pub struct RovesDocument {
     frames: u32,
     last_frame: Option<Instant>,
     ticker_started: bool,
-    timeline_started: bool,
     mode: WindowMode,
     /// GPU presentation counters, when the GPU window renderer is used.
     stats: Option<Rc<RefCell<crate::presentation::PresentStats>>>,
@@ -569,7 +575,6 @@ impl RovesDocument {
             frames: 0,
             last_frame: None,
             ticker_started: false,
-            timeline_started: false,
             mode: WindowMode::FixtureTest,
             stats: None,
             stats_printed: false,
@@ -753,17 +758,6 @@ impl RovesDocument {
         flush();
     }
 
-    /// blitz-shell resolves with its own animation time (seconds since its first
-    /// redraw, a private `Instant`). On the shell's first call into the document,
-    /// restart the page clock so flushes from JS ops use the shell's origin
-    /// instead of the headless one (see `animation_clock`).
-    fn start_shell_timeline(&mut self) {
-        if !self.timeline_started {
-            self.timeline_started = true;
-            crate::animation_clock::page_clock().restart();
-        }
-    }
-
     fn runtime(&mut self) -> &mut JsRuntime {
         self.runtime
             .as_mut()
@@ -861,14 +855,12 @@ impl Document for RovesDocument {
     }
 
     fn inner_mut(&mut self) -> DocGuardMut<'_> {
-        self.start_shell_timeline();
         DocGuardMut::RefCell(RefMut::map(self.document.borrow_mut(), |document| {
             &mut **document
         }))
     }
 
     fn handle_ui_event(&mut self, event: UiEvent) {
-        self.start_shell_timeline();
         // ROVES_PROBE_FRAME_TRACE only: a content-free marker (kind, QPC,
         // dispatch time) for discrete input; pointer moves are not traced.
         let marker = self.trace_marker_start(&event);
@@ -885,7 +877,6 @@ impl Document for RovesDocument {
     }
 
     fn poll(&mut self, task_context: Option<Context<'_>>) -> bool {
-        self.start_shell_timeline();
         if !self.ticker_started {
             if let Some(context) = &task_context {
                 // The shell polls when its waker fires; tick it every frame.

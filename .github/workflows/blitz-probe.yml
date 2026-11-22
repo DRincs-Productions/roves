@@ -133,6 +133,10 @@ jobs:
           # color must reach usvg as legacy rgb()/rgba(), or Lucide icons in
           # oklch-themed (Tailwind v4/shadcn) games paint nothing.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml svg_current_color::
+          # Page animation timeline (vendor/blitz-dom 0007): every resolve of
+          # the page document, blitz-shell's paint included, reads the frame
+          # time held for the before-paint settlement (dialog closing flash).
+          cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml animation_clock::
           # Opt-in per-frame trace (ROVES_PROBE_FRAME_TRACE): bounded ring,
           # null-not-zero serialization, QPC units/errors. No PresentMon needed.
           cargo test --locked --manifest-path support/blitz-v8-probe/Cargo.toml frame_trace::

@@ -37,6 +37,11 @@ use crate::{
 impl BaseDocument {
     /// Restyle the tree and then relayout it
     pub fn resolve(&mut self, current_time_for_animations: f64) {
+        // Roves patch 0007: the embedder's timeline, if any, wins over the
+        // caller's time (see `set_animation_time_source`).
+        let current_time_for_animations = self
+            .animation_time_source
+            .map_or(current_time_for_animations, |source| source());
         if TDocument::as_node(&self.root_node())
             .first_element_child()
             .is_none()

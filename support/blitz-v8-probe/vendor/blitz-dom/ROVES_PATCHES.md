@@ -131,6 +131,30 @@ control; the same Lucide icon under `oklch(14.5% 0 0)` painted nothing with the
 unpatched CI release build of `359d0cc7bec`; a translucent `oklch` case checks that
 `rgba()` keeps the stroke). Upstream issue/PR still to be opened.
 
+0007 (`embedder-animation-time-source`) (`src/document.rs`, `src/resolve.rs`): adds
+`BaseDocument::set_animation_time_source(Option<fn() -> f64>)`; while set, `resolve`
+reads the animation time from it instead of its argument (sub-documents receive the
+resolved time). blitz-shell 0.3.0-beta.4 computes the time inside `View::redraw` from
+a private `Instant` (`current_animation_time`) and offers no hook, so script run
+before the paint (the probe's before-paint settlement of `finished`, through which
+Base UI 1.9.0 unmounts a closed dialog with `flushSync`) and the paint itself saw
+different times: an exit animation with `animation-fill-mode: none` (tw-animate-css
+`animate-out`) that ended in between was painted at its unanimated style, the
+visual-novel-template's Settings/name-prompt closing flash. The probe installs its
+page timeline (`src/animation_clock.rs`, held for the frame from the settlement to
+the paint, as Chromium's `AnimationClock` holds the frame time) on the page document
+only. Alternatives without the patch were rejected: nudging the pub
+`View::animation_timer` before each redraw still leaves the gap between two
+`Instant::now()` reads; settling inside `Document::inner_mut` (after the shell read
+its time) makes the paint time precede the settlement flush, and Stylo 0.22
+(`servo/animation.rs`, `get_property_declaration_at_time`) paints an animation
+started by that flush in its before phase, i.e. unanimated for a `fill-mode: none`
+entry animation; reimplementing `View::redraw` would duplicate the shell. Regression:
+`support/blitz-v8-probe/src/animation_clock.rs` tests (`resolve` with a far-future
+argument keeps painting the held frame) plus the `css_get_animations_stylo_state`
+paint-flush watch. The proper upstream shape is a blitz-shell hook letting the
+`Document` supply the animation time; issue still to be opened.
+
 Nothing else differs from the published crate (`ROVES_PATCHES.md` is the only added
 file).
 
@@ -141,7 +165,9 @@ release exposes the animation set (or an equivalent snapshot) and the entries it
 finishes (or animation events), creates the text editor for every input in the
 Text state, passes `src/paint_order.rs` without patch 0004 (drop
 `vendor/blitz-paint` at the same time), `src/box_tree.rs` without patch 0005 and
-`src/svg_current_color.rs` without patch 0006,
+`src/svg_current_color.rs` without patch 0006, and lets the embedder supply the
+animation time of blitz-shell's resolve (or the probe stops using blitz-shell's
+redraw; patch 0007),
 bumping every blitz crate and Stylo together.
 Tracked in `TODO.md` (Blitz probe, `Element.getAnimations`, Blitz #1493); an
 upstream issue/PR proposing the accessor is still to be opened.

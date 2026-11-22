@@ -8,7 +8,9 @@
 // retired by removing the name, restart = new object), a `both`-filled one that
 // survives an unrelated class change and retires (idle, still resolved) when its
 // element is removed, cancellation by removing the class and by removing the
-// element (AbortError), and the visual-novel-template's Base UI callers
+// element (AbortError), a `fill-mode: none` exit animation whose element is
+// removed on `finished` (the embedder checks every paint flush: no frame shows
+// it attached at its unanimated style), and the visual-novel-template's Base UI callers
 // (getFiniteAnimations, ScrollAreaViewport, useAnimationsFinished) de-minified
 // from @base-ui/react 1.9.0. Removes its elements in the last phase.
 (() => {
@@ -71,6 +73,9 @@
     #anim-cancel.run { animation: roves-hold 10s linear; }
     #anim-popup { opacity: 0; transition: opacity 120ms linear; }
     #anim-popup.open { opacity: 1; }
+    @keyframes roves-exit { from { opacity: 0.5 } to { opacity: 0 } }
+    #anim-exit { height: 5px; opacity: 1; }
+    #anim-exit.closing { animation: roves-exit 100ms linear; }
   `;
   document.head.appendChild(style);
   const box = (id, parent = document.body) => {
@@ -85,6 +90,7 @@
   const cancel = box("anim-cancel");
   const popup = box("anim-popup");
   const hold = box("anim-hold");
+  const exit = box("anim-exit");
   const state = {};
 
   globalThis.animationsPhase = (phase) => {
@@ -170,6 +176,15 @@
 
       animationsFinished(popup, (how) => { state.popup = how; });
 
+      // A closing dialog: tw-animate-css `animate-out` has `fill-mode: none`
+      // and Base UI unmounts on `finished` (flushSync). The embedder checks
+      // that no paint flush shows it attached at its unanimated opacity.
+      exit.classList.add("closing");
+      animationsFinished(exit, (how) => {
+        state.exit = how;
+        exit.remove();
+      });
+
       check(throwsTypeError(() => Element.prototype.getAnimations.call({})), "getAnimations on a non-element throws");
       check(throwsTypeError(() => parent.getAnimations(5)), "non-dictionary options throw");
       check(throwsTypeError(() => new transition.constructor()), "CSSTransition is not constructible");
@@ -182,6 +197,7 @@
       check(state.transitionResolved === true, "transition finished resolved with the animation");
       check(state.scrollAreaSettled === true, "ScrollArea allSettled ran");
       check(state.popup === "finished", `useAnimationsFinished completed: ${state.popup}`);
+      check(state.exit === "finished" && !exit.isConnected, `fill-mode none exit unmounted on finished: ${state.exit} ${exit.isConnected}`);
       check(state.finiteResolved === true, "finite animation finished resolved with the animation");
       check(parent.getAnimations().length === 0, "a finished transition is no longer relevant (real empty list)");
       const finiteNow = finite.getAnimations();

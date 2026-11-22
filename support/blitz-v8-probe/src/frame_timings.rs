@@ -293,9 +293,11 @@ pub enum StepPhase {
     /// `evaluate_script` request runs its JS here.
     McpPoll,
     /// The V8 call of the page's animation frame function (rAF callbacks;
-    /// microtasks run in the next phase, deno_core uses an explicit policy).
+    /// microtasks run in the next phase, deno_core uses an explicit policy),
+    /// plus its before-paint CSS animation settlement after the event loop.
     AnimationFrame,
-    /// The explicit `perform_microtask_checkpoint` after the rAF call.
+    /// The explicit `perform_microtask_checkpoint` after the rAF call and after
+    /// the before-paint settlement.
     Microtasks,
     /// One non-blocking deno_core `poll_event_loop` (op completions, timers
     /// and the microtask checkpoints deno_core runs itself).

@@ -273,6 +273,9 @@ pub struct BaseDocument {
     pub(crate) animations: DocumentAnimationSet,
     /// Entries `resolve_stylist` moved to `Finished`, oldest first (Roves patch).
     pub(crate) finished_animations: Vec<FinishedAnimation>,
+    /// Embedder animation timeline that `resolve` reads instead of its argument
+    /// (Roves patch 0007, see `set_animation_time_source`).
+    pub(crate) animation_time_source: Option<fn() -> f64>,
     /// Stylo shared lock
     pub(crate) guard: SharedRwLock,
     /// Stylo invalidation map. We insert into this map prior to mutating nodes.
@@ -481,6 +484,7 @@ impl BaseDocument {
             stylist,
             animations: DocumentAnimationSet::default(),
             finished_animations: Vec::new(),
+            animation_time_source: None,
             snapshots,
             nodes_to_id,
             viewport,
@@ -2078,6 +2082,17 @@ impl BaseDocument {
     /// dropped) when nobody takes them. Roves patch.
     pub fn take_finished_animations(&mut self) -> Vec<FinishedAnimation> {
         std::mem::take(&mut self.finished_animations)
+    }
+
+    /// Makes `resolve` read the animation time from `source` instead of its
+    /// argument (`None` restores the argument). blitz-shell passes the seconds
+    /// of a private `Instant` read inside `View::redraw`; an embedder that runs
+    /// script against the same document (a frame's `finished` reactions) needs
+    /// that paint to use the very time its script observed, the single frame
+    /// time of a browser's rendering update. Sub-documents keep receiving the
+    /// resolved time. Roves patch 0007.
+    pub fn set_animation_time_source(&mut self, source: Option<fn() -> f64>) {
+        self.animation_time_source = source;
     }
 
     pub fn is_animating(&self) -> bool {

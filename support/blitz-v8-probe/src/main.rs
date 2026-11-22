@@ -763,6 +763,11 @@ fn op_blitz_take_finished_animations(state: Rc<RefCell<OpState>>) -> String {
 /// `animation_declaration` equals the one it finished under and lists the name,
 /// and Stylo has no live animation of that name on the target (a restart). An
 /// invalid one is simply omitted, so `dom.js` cancels it like any vanished entry.
+///
+/// `flush_document` (document sweep only) first flushes styles at the current
+/// timeline time, so Stylo finishes what is due now: `dom.js`'s before-paint
+/// settlement, which runs with the clock held at the frame time the paint
+/// flush then reuses (`animation_clock` module docs).
 #[op2]
 #[string]
 fn op_blitz_get_animations(
@@ -770,6 +775,7 @@ fn op_blitz_get_animations(
     handle: f64,
     subtree: bool,
     #[string] retained: &str,
+    flush_document: bool,
 ) -> Result<String, JsErrorBox> {
     let document = probe_document(&state);
     let mut document = document.borrow_mut();
@@ -782,6 +788,9 @@ fn op_blitz_get_animations(
         document.resolve_stylist(animation_clock::page_time());
         Some(node_id)
     } else {
+        if flush_document {
+            document.resolve_stylist(animation_clock::page_time());
+        }
         None
     };
     let now = animation_clock::page_time();
@@ -2374,7 +2383,11 @@ fn resolve_layout(document: &Rc<RefCell<HtmlDocument>>) {
         1.0,
         ColorScheme::Light,
     ));
+    // The page document reads the page timeline itself (vendor/blitz-dom 0007):
+    // the frame time held for the tick's settlement, if any. This flush is the
+    // headless paint, so the frame ends here.
     document.resolve(animation_clock::page_time());
+    animation_clock::page_clock().release();
 }
 
 /// A finite CSS animation must progress with the document timeline: a separate
@@ -2559,6 +2572,8 @@ fn page_frame_step(
     clock: &mut frame_timings::StepClock<'_>,
 ) -> bool {
     use frame_timings::StepPhase;
+    // A frame whose paint flush never ran (window renderer inactive) ends here.
+    animation_clock::page_clock().release();
     let ran = {
         deno_core::scope!(scope, runtime);
         let function = v8::Local::new(scope, run_animation_frame);
@@ -2578,6 +2593,28 @@ fn page_frame_step(
     clock.lap(StepPhase::EventLoop);
     if let std::task::Poll::Ready(Err(error)) = polled {
         panic!("event loop error: {error}");
+    }
+    // Last JS of the tick, right before the caller's (or the shell's) paint
+    // flush: settle CSS animations that are finished by now and run their
+    // `finished` reactions (Base UI unmounting a closed dialog), so the frame
+    // never paints a `fill-mode: none` exit animation already removed (see
+    // `settleCssAnimationsBeforePaint` in dom.js). Timed with the rAF call and
+    // its checkpoint. The clock is held from here to the paint flush (released
+    // by `resolve_layout`, the window's `RedrawRequested` or the next tick), so
+    // the settlement and the paint share one frame time: nothing can finish in
+    // between (`animation_clock` module docs).
+    animation_clock::page_clock().hold();
+    {
+        deno_core::scope!(scope, runtime);
+        let function = v8::Local::new(scope, run_animation_frame);
+        let receiver = v8::undefined(scope).into();
+        let phase = v8::String::new(scope, "before-paint").unwrap().into();
+        function
+            .call(scope, receiver, &[phase])
+            .expect("before-paint settlement should not throw past reportException");
+        clock.lap(StepPhase::AnimationFrame);
+        scope.perform_microtask_checkpoint();
+        clock.lap(StepPhase::Microtasks);
     }
     ran
 }
@@ -2651,6 +2688,62 @@ async fn drive_frames(
         );
         resolve_layout(document);
     }
+}
+
+/// What the paint flushes of `drive_frames_watching_exit` saw of `#anim-exit`.
+#[derive(Default)]
+struct ExitPaintWatch {
+    /// Flushes with the element attached at an animated opacity (<= 0.5).
+    animated: u32,
+    /// Flushes with the element still attached at its unanimated opacity (1)
+    /// after it had been seen animating: the dialog closing flash.
+    flashes: u32,
+    /// The element was detached (removed on `finished`) by the last flush.
+    removed: bool,
+}
+
+/// `drive_frames`, inspecting `#anim-exit` (animations_test.js: `fill-mode:
+/// none` exit from 0.5 to 0 opacity over an unanimated 1, removed when its
+/// `finished` settles) after each tick's layout flush, the flush a window
+/// paints. Browsers settle `finished` before painting the frame that ends the
+/// animation, so the element is never painted back at opacity 1.
+async fn drive_frames_watching_exit(
+    runtime: &mut JsRuntime,
+    document: &Rc<RefCell<HtmlDocument>>,
+    run_animation_frame: &v8::Global<v8::Function>,
+    frames: u32,
+) -> ExitPaintWatch {
+    let frame_interval = std::time::Duration::from_micros(16_667);
+    let start = std::time::Instant::now();
+    let mut watch = ExitPaintWatch::default();
+    for frame in 0..frames {
+        let deadline = start + frame_interval * frame;
+        if let Some(wait) = deadline.checked_duration_since(std::time::Instant::now()) {
+            tokio::time::sleep(wait).await;
+        }
+        frame_step(
+            runtime,
+            run_animation_frame,
+            &mut frame_timings::StepClock::disabled(),
+        );
+        resolve_layout(document);
+        let document = document.borrow();
+        let Some(node_id) = find_element_by_id(&document, "anim-exit") else {
+            watch.removed = true;
+            continue;
+        };
+        watch.removed = false;
+        let opacity = document
+            .get_node(node_id)
+            .and_then(|node| node.primary_styles())
+            .map(|styles| styles.get_effects().opacity);
+        match opacity {
+            Some(opacity) if opacity <= 0.5 => watch.animated += 1,
+            Some(_) if watch.animated > 0 => watch.flashes += 1,
+            _ => {},
+        }
+    }
+    watch
 }
 
 /// Dispatches a trusted UI event of `kind` with a JSON init dictionary to `target`
@@ -3081,6 +3174,11 @@ fn main() {
                 },
             ),
         }));
+        // Every resolve of the page document, blitz-shell's included, reads the
+        // page timeline (vendor/blitz-dom 0007, `animation_clock` module docs).
+        document
+            .borrow_mut()
+            .set_animation_time_source(Some(animation_clock::page_time));
         stage("create_js_runtime");
         let mut runtime = JsRuntime::new(RuntimeOptions {
             #[cfg(feature = "dev-mcp")]
@@ -3528,7 +3626,28 @@ fn main() {
             .execute_script("roves-blitz-animations-test.js", ANIMATIONS_TEST)
             .expect("getAnimations test setup should run");
         for (phase, frames_before) in [(1, 0), (2, 22), (3, 4), (4, 4)] {
-            if frames_before > 0 {
+            if phase == 2 {
+                let exit = drive_frames_watching_exit(
+                    &mut runtime,
+                    &document,
+                    &run_animation_frame,
+                    frames_before,
+                )
+                .await;
+                let ok = exit.animated > 0 && exit.flashes == 0 && exit.removed;
+                let message = window::json_string(&format!(
+                    "phase 2: closing flash: paint flushes animated={} unanimated-while-attached={} removed={}",
+                    exit.animated, exit.flashes, exit.removed
+                ));
+                runtime
+                    .execute_script(
+                        "roves-blitz-animations-exit.js",
+                        format!(
+                            "animationsResult.checks++; if (!{ok}) animationsResult.failures.push({message});"
+                        ),
+                    )
+                    .expect("exit paint check should record");
+            } else if frames_before > 0 {
                 drive_frames(&mut runtime, &document, &run_animation_frame, frames_before)
                     .await;
             }
