@@ -3,7 +3,8 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 probe
 # Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
 # Windows probe (welding e991684, CEF 154, wgpu 29.0.4 and SDL3) and runs it on
 # the runner's only DX12 adapter, WARP. Accelerated frame import is also tested on
-# real GPUs using the uploaded bundle. Separate from
+# real GPUs using the uploaded bundle. The same bundle then runs a --roves-game-dir loading
+# gate on a minimal loopback JS fixture (no GPU frame or gameplay claim). Separate from
 # cef-window-probe.yml (CEF 156 baseline, unchanged). Never gates a release.
 
 on:
@@ -85,6 +86,7 @@ jobs:
           echo "::notice::wgpu 30.0.2 used by: $users30"
           test "$users30" = "cef " || { echo "::error::wgpu 30 reached by something other than cef"; exit 1; }
       - name: build and bundle (release, sandbox)
+        id: bundle
         shell: bash
         working-directory: support/cef-netrender-probe
         run: |
@@ -168,6 +170,109 @@ jobs:
             Write-Output '::error::probe processes left running after exit'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Opt-in --roves-game-dir LOADING gate only, on the same bundle (no second build). A
+      # two-file fixture written here (index.html + an ES module) is served by the probe's own
+      # loopback server; required: navigation to the loopback root accepted, the module's
+      # console marker from <origin>/game.js, auto-close, clean CEF shutdown, server stop,
+      # exit 0, sandboxed children and no leftover process. WARP delivers no accelerated frame,
+      # so imported frames are reported, never required: this proves neither GPU frames nor
+      # gameplay/input (real hardware only, README "Real-game mode"). No window automation.
+      - name: run the probe in game mode (loopback JS fixture, WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-game-run'
+          $game = Join-Path $out 'game'
+          New-Item -ItemType Directory -Force $game | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $game 'index.html') @'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>roves ci game fixture</title>
+          <script type="module" src="./game.js"></script>
+          '@
+          # A module script also proves the server's JavaScript MIME type (Chromium refuses
+          # module scripts served with a non-JavaScript type).
+          Set-Content -Encoding utf8 (Join-Path $game 'game.js') @'
+          const same = new URL(import.meta.url).origin === location.origin;
+          console.log(`roves-ci-game-fixture module-ok same-origin=${same}`);
+          document.title = 'roves ci game fixture ready';
+          '@
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping processes left by the previous step before the game run'
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $log = Join-Path $out 'roves-cef-nr-game.log'
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-auto-close-ms=5000',
+            '--roves-timeout-ms=90000', "--roves-log=$log",
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          $children = @{}
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+            Get-CimInstance Win32_Process -Filter "Name='roves_cef_netrender_probe.exe'" -ErrorAction SilentlyContinue |
+              ForEach-Object { if ($_.CommandLine) { $children[$_.ProcessId] = $_.CommandLine } }
+            Start-Sleep -Milliseconds 300
+          }
+          if (-not $proc.HasExited) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Output '::error::the probe did not exit in time in game mode'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          $children.Values | Set-Content (Join-Path $out 'process-command-lines.txt')
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $failed = $false
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          # Required lines, in this order (index of the first match of each).
+          $last = -1
+          foreach ($pattern in @(
+              'sandbox-info present=true', 'adapter name=.* backend=Dx12',
+              'producer created accelerated=true background=white',
+              "load-end status=200 url=$o/ ok=true", 'auto-close scheduled delay_ms=5000',
+              'auto-close window', 'closing imported=', 'game input forwarded=', 'browser closed',
+              'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
+              'exit code=0$')) {
+            $at = -1
+            for ($i = 0; $i -lt $lines.Count; $i++) { if ($lines[$i] -match $pattern) { $at = $i; break } }
+            if ($at -lt 0) { Write-Output "::error::missing evidence: $pattern"; $failed = $true }
+            elseif ($at -le $last) { Write-Output "::error::out of order: $pattern"; $failed = $true }
+            else { $last = $at }
+          }
+          # Module execution and CEF load notifications can be observed in either order.
+          $marker = "console level=\d+ source=$o/game\.js:\d+ message=`"roves-ci-game-fixture module-ok same-origin=true`""
+          $markerLine = $lines | Select-String -Pattern $marker | Select-Object -First 1
+          $closeLine = $lines | Select-String -Pattern 'auto-close window' | Select-Object -First 1
+          if (!$markerLine -or !$closeLine -or $markerLine.LineNumber -ge $closeLine.LineNumber) {
+            Write-Output '::error::missing game module marker before auto-close'
+            $failed = $true
+          }
+          if ($code -ne 0) { Write-Output "::error::game mode exit code $code (expected 0)"; $failed = $true }
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          $types = $children.Values | ForEach-Object { if ($_ -match '--type=([\w-]+)') { $Matches[1] } } | Sort-Object -Unique
+          Write-Output "::notice::game mode CEF child types seen: $($types -join ', ')"
+          if (-not ($types -contains 'renderer')) { Write-Output '::error::no renderer child observed'; $failed = $true }
+          if ($children.Values | Where-Object { $_ -match '--no-sandbox' }) {
+            Write-Output '::error::a CEF child process was launched with --no-sandbox'; $failed = $true
+          }
+          $closing = $lines | Select-String -Pattern 'closing imported=\d+ presented=\d+' | Select-Object -First 1
+          Write-Output "::notice::game-mode loading gate only (no GPU frame or gameplay verification): $($closing.Line)"
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the game-mode exit'; $failed = $true
+          }
+          if ($failed) { exit 1 }
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -177,6 +282,9 @@ jobs:
             ${{ runner.temp }}/cef-nr-run/roves-cef-nr.log
             ${{ runner.temp }}/cef-nr-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-run/process-command-lines.txt
+            ${{ runner.temp }}/cef-nr-game-run/roves-cef-nr-game.log
+            ${{ runner.temp }}/cef-nr-game-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-game-run/process-command-lines.txt
             ${{ runner.temp }}/cef-nr-build.log
             ${{ runner.temp }}/cef-nr-duplicates.txt
           retention-days: 14

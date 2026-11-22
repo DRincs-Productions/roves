@@ -287,7 +287,7 @@ Pass criterion for the diagnostic (not for performance): every rejected trial ha
 no trial is rejected, report that (2/4 Netrender rejects were seen once) and do not infer
 anything about the cause.
 
-## Real-game mode (`--roves-game-dir`, opt-in, implemented, not yet built or run)
+## Real-game mode (`--roves-game-dir`, opt-in, implemented; CI loading gate only, no real game run yet)
 
 Purpose: play an **unmodified built game** through the same CEF accelerated OSR -> welding ->
 Netrender/wgpu path, and capture presentation with PresentMon next to Chrome. Without
@@ -634,6 +634,19 @@ left. If frames were imported, exit 0 and 16 `PASS pixel` lines are required; if
 delivers no accelerated frame, a notice says so and exit 2 is required (the GPU path is
 then verified only on real hardware). Netrender composition does not run in CI.
 
+A second step reuses the same bundle (no second build) for an opt-in `--roves-game-dir`
+**loading gate**: the step writes a two-file fixture (`index.html` loading the ES module
+`game.js`, which logs `roves-ci-game-fixture module-ok same-origin=true`) and runs
+`--roves-compose=wgpu --roves-auto-close-ms=5000` on WARP. Gated, in log order: sandbox
+information, DX12 adapter, `producer created ... background=white`, `load-end status=200` on
+the logged loopback root with `ok=true`, the console marker with source `<origin>/game.js`,
+`auto-close window`, close, `browser closed`, `cef shutdown complete`, `game loopback
+stopped`, `exit code=0`; plus process exit 0, no `FAIL`/`close requested by the OS`/`popup
+refused` line, a sandboxed renderer child and no leftover process. Imported frames are only
+reported (WARP delivers none), so this step proves serving, navigation, script execution
+and lifecycle, **not** accelerated frames, presentation, input or gameplay; there is no
+window automation in CI.
+
 ## Versions evaluated (2026-11-22)
 
 | Component | Pin | Notes |
@@ -736,7 +749,8 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   but synchronous. `--roves-timings` measures the host-thread part; real-scene frame pacing
   remains with the performance flow.
 - The fixture smoke exercises no input. Real-game mode forwards mouse, wheel, keyboard,
-  focus, visibility, scale factor and cursor shape, but **not yet built or run**, and with
+  focus, visibility, scale factor and cursor shape, but input has **not yet been run** (the CI
+  game step only gates loading and lifecycle on WARP, without input or frames), and with
   these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),
   no `mouseleave` (welding always sends `mouse_leave = 0`, hover can stick when the cursor
   leaves the window), no blur (welding's Windows focus call is `SetFocus(true)` only), no

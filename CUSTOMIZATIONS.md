@@ -56,6 +56,18 @@ load-end for repeatable captures. The fixture smoke, its CI gates and every defa
 unchanged; the workflow also triggers on the reused `server.rs`. `windows-sys` 0.61 (already
 in the graph) gains `Win32_UI_Input_KeyboardAndMouse`.
 
+Update (same day, branch `codex/cef-sdl3-wgpu-probe`): `cef-netrender-probe.yml` gains a
+Windows game-mode loading gate on the already-built bundle (no second build, no new
+dependency or repository file). The step writes a two-file fixture (`index.html` + ES module
+`game.js` logging a console marker) into the runner's temp directory, runs
+`--roves-game-dir` with `--roves-compose=wgpu --roves-auto-close-ms=5000` on WARP, and
+requires, in log order, the accepted `load-end status=200` on the logged loopback root, the
+marker from `<origin>/game.js`, auto-close, `browser closed`, `cef shutdown complete`,
+`game loopback stopped` and `exit code=0`, plus no `FAIL` line, sandboxed children and no
+leftover process. Frames are not required (WARP imports none): it verifies loading and
+lifecycle only, not GPU frames, input or gameplay. The probe code and the fixture smoke
+gates are unchanged; README "CI" documents the step.
+
 ## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
 
 Changed: `support/cef-window-probe/` (new separate Cargo workspace), `.github/workflows/cef-window-probe.yml`
