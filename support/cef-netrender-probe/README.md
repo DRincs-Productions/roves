@@ -12,9 +12,11 @@ IPC, input, audio, `game://`, CSP and the single-document policy are out of scop
 **Status (2026-11-22): built in CI (run 45038791259) and run. On a real GPU (GTX 1050,
 DX12) both compositions pass all 16 pixel samples, before and after the resize, with a clean
 close and exit 0. On WARP CEF delivers no accelerated frame (exit 2, as the workflow
-expects).** Evidence below. Frame cost and pacing are not measured yet: the optional
-`--roves-timings` summaries (below) exist for that comparison and have not been run on
-hardware yet.
+expects).** Evidence below. A first sustained ABBA series (8 trials, bundle of CI run
+45042438963) is recorded in "Sustained trials" below: 6 healthy, 2 Netrender trials
+rejected for a 630/650 ms import stall during warmup. The stalls are not attributed yet
+(a diagnostic is proposed in "Attributing the warmup stalls"). Two healthy Netrender
+trials are not enough to compare the two compositions.
 
 ## Evidence (2026-11-22, CI run 45038791259)
 
@@ -48,6 +50,177 @@ The accelerated path is therefore verified only on real hardware; WARP keeps pro
 sandbox, process topology and clean shutdown. No renderer command line contained
 `--no-sandbox`. The first winit size on the runner was 752x480 before the requested
 1280x720 applied.
+
+## Sustained trials (2026-11-22, bundle of CI run 45042438963)
+
+Bundle: artifact `cef-netrender-probe-windows-x64` of
+[run 45042438963](https://github.com/DRincs-Productions/roves/actions/runs/45042438963)
+(workflow "CEF -> wgpu-weld -> Netrender probe", branch `codex/cef-netrender-probe`, head
+`a487b763205`, conclusion success). Same versions as above (CEF 154.0.34 / Chromium
+154.0.8037.98, welding 0.15.0@e991684, Netrender d2f13ca5, wgpu 29.0.4). Run locally on
+NVIDIA GeForce GTX 1050, Dx12, DiscreteGpu, driver 32.0.15.8163, surface `Bgra8Unorm`
+1280x720, scale 1, sandboxed. Order `N W W N N W W N` (ABBA), default warmup 10 s,
+sample 30 s, stall limit 500 ms. Each trial had a fresh CEF cache directory
+(`D:\roves-ci\45042438963-cef-nr\cache-<i>`, logged on the `cef initialized` line), so
+Chromium's on-disk caches start cold every time. The logs carry no smoke-phase
+`timings phase=initial` lines, so `--roves-timings` was not passed (sustained mode records
+the sample anyway). **Not recorded:** the exact command lines and the monitor refresh rate,
+both required by the procedure above. Logs (local, not committed):
+`D:\roves-ci\45042438963-cef-nr\trial-<i>-<mode>.log`.
+
+Every trial passed the initial check (8/8 `PASS pixel`, no `FAIL pixel`), closed cleanly
+(`browser closed`, `cef shutdown complete`).
+
+| # | Mode | Exit | Result | `presented` / `imported` / superseded / empty polls over `span_ms` |
+| --- | --- | --- | --- | --- |
+| 1 | netrender | 2 | **rejected**: `imports stalled: no producer frame for 630 ms during Warmup`, 7863 ms after warmup start | no sample (whole run: `closing imported=376 presented=438 elapsed_ms=10871`) |
+| 2 | wgpu | 0 | healthy | 1724 / 1489 / 237 / 235 over 30005 |
+| 3 | wgpu | 0 | healthy | 1724 / 1494 / 232 / 230 over 30005 |
+| 4 | netrender | 2 | **rejected**: `imports stalled: no producer frame for 650 ms during Warmup`, 7418 ms after warmup start | no sample (whole run: `closing imported=312 presented=377 elapsed_ms=8802`) |
+| 5 | netrender | 0 | healthy | 1724 / 1480 / 246 / 244 over 30005 |
+| 6 | wgpu | 0 | healthy | 1724 / 1487 / 239 / 237 over 30004 |
+| 7 | wgpu | 0 | healthy | 1724 / 1482 / 242 / 242 over 30005 |
+| 8 | netrender | 0 | healthy | 1719 / 1435 / 281 / 284 over 30005 |
+
+Rejects: 2 of 8, both Netrender (2 of 4 Netrender trials, 0 of 4 wgpu). In both, the
+`sustained result=unhealthy` line reports `presented=0 imported=0` because those counters
+are the sample's and sampling never started; warmup redraws are not recorded, so the
+rejected trials have **no stage data at all**. The reported 630/650 ms is the gap since the
+last import *when the check ran* (after a redraw returned), not the measured length of a
+stall that started at a known time.
+
+Healthy trials, wall-clock µs on the winit thread (nearest-rank):
+
+| # | Mode | `frame` p50/p95/p99/max | `present-interval` p50/p95/p99/max | `import-interval` p95/p99/max | `import` p50/p95/p99/max | `compose` p50/p95/p99/max | `acquire` p50/p95/max |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 2 | wgpu | 17287/17401/17532/18106 | 17404/17520/17664/18211 | 34944/37585/53821 | 1445/4025/4706/5346 | 93/173/244/416 (+submit 56/93/122/265) | 14993/16747/16869 |
+| 3 | wgpu | 17291/17394/17520/33807 | 17405/17510/17650/34010 | 34893/37746/53787 | 1452/4040/4635/5623 | 90/175/312/726 (+submit 55/94/140/277) | 14999/16761/16862 |
+| 6 | wgpu | 17286/17405/17560/33195 | 17403/17522/17674/33300 | 34931/38199/54963 | 1425/4016/4863/5347 | 91/162/241/433 (+submit 54/90/135/271) | 15032/16750/31660 |
+| 7 | wgpu | 17285/17418/17581/22640 | 17403/17535/17728/22893 | 34975/37576/56180 | 1447/4033/4973/8176 | 93/216/417/1009 (+submit 56/111/224/800) | 14978/16741/16847 |
+| 5 | netrender | 17285/17418/17697/19331 | 17404/17544/17822/19582 | 34894/35960/52647 | 1341/2354/2773/4187 | 1006/1788/2696/10082 | 14183/15843/15959 |
+| 8 | netrender | 17285/17525/20784/129297 | 17402/17670/21302/132737 | 34982/37723/367779 | 1339/2723/11815/125501 | 1023/2594/7088/18163 | 14160/15841/30476 |
+
+What this shows, and only this:
+
+- **Presents are not displayed frames.** `present-interval` is the time between successful
+  `present()` calls on the host thread; there is no DXGI frame statistics or presentation
+  feedback, so whether and when each present reached the screen is not measured. The p50 of
+  about 17.40 ms (about 57.5 presents/s) is the same in every trial; without the recorded
+  refresh rate it cannot be read as "every vblank" or as a missed-frame rate.
+- **Presents are not new page frames either.** 83–87% of presents carried a newly imported
+  CEF frame (1489/1724 in trial 2, 1435/1719 in trial 8); the rest re-presented the previous
+  one. `import-interval` p50 (about 17.43 ms) is quantised by the host's own redraw cadence
+  (one mailbox poll per redraw), and its p95 of about 35 ms is two redraws: the
+  superseded-paint count closely tracks the empty-poll count (e.g. 237/235), i.e. two paints
+  landing in one redraw interval are followed by an interval with none. imported + superseded
+  (paints that reached welding's callback) is 1716–1726 per 30 s in every trial, close to
+  the present count; why the paint rate sits there rather than at `windowless_frame_rate =
+  60` is not explained by these logs.
+- Both modes are swap-chain bound at the median (`acquire` p50 14–15 ms of a 17.3 ms
+  `frame`). Netrender's `compose` (which includes its own submits) is about 1.0 ms p50 against
+  about 0.15 ms for wgpu's blit plus its submit: host CPU wall time, not GPU time.
+- Tails: trial 8 has a 125.5 ms `import` call, a 129 ms `frame`, a 132.7 ms present interval
+  and a 368 ms import interval (under the 500 ms limit, so the sample is healthy). Trial 5
+  has none of that. The `import` stage cannot be read as producer cost: welding's
+  `import_owned_dx12_callback_frame` submits a 1-texel copy and waits for it with
+  `device.poll(Wait)`, and on the single shared queue that waits for every earlier
+  submission too, including the previous Netrender composition and present blit.
+- Same-mode spread versus mode gap: wgpu `frame` p99 spans 17520–17581 µs over four
+  trials; Netrender has two healthy trials (17697 and 20784). With two trials the
+  procedure's rule (a gap smaller than the same-mode spread is not a difference) cannot be
+  applied, so **no composition comparison is claimed**.
+
+## Attributing the warmup stalls (proposed diagnostic, not implemented)
+
+Goal: tell, for a rejected Netrender trial, whether the 630/650 ms gap happened because
+**the producer did not deliver** (no frame reached welding's mailbox) or because **the host
+thread was blocked** (frames were waiting, nobody polled). Not an optimization; nothing on
+the presentation path changes.
+
+Where the two sides meet today:
+
+- Producer: welding e991684 `welding/src/windows_cef/cef_backed.rs:60-135`
+  (`on_accelerated_paint`, on CEF's UI thread): `DuplicateHandle`, generation assigned at
+  line 110 *before* the copy, `copy_dx12_callback_frame_to_owned` (D3D11 `CopyResource` +
+  event-query wait), then the single slot `frame_slot` (line 131) is overwritten. A failed
+  copy only calls `log::error!`, and the probe installs no `log` logger, so it is invisible
+  and would look exactly like "no paint".
+- Hand-off: `welding/src/windows_cef/mod.rs:468-478` (`acquire_frame`: take the slot, then
+  import); `welding/src/native_frame/dx12.rs:241-290` (grafting open, 1-texel copy,
+  `device.poll(Wait)` on the shared queue).
+- Host: `support/cef-netrender-probe/src/app.rs` `redraw()` (lines 488-649: events, one
+  `acquire_frame` per redraw, compose, surface acquire, submit, present),
+  `sustained_step()` (718-745: the stall check, run once after each redraw returns),
+  `start_warmup()` (689-715), and the `record` match at 494-498, which records nothing
+  during warmup. That is why both rejected logs hold no stage data.
+- Chromium (pinned `f2700724f59f`,
+  `components/viz/service/frame_sinks/video_capture/frame_sink_video_capturer_impl.cc`):
+  capture is damage-driven (`OnFrameDamaged`, ~721). A frame is not captured when the
+  oracle rate-limits (`FpsRateLimited`, ~842-853, then `MaybeScheduleRefreshFrame`, refresh
+  timer ~630) or when the 11-frame pool is exhausted (`PipelineLimited`, ~943-958; pool
+  slots come back only when the consumer releases the frame, i.e. after welding's callback
+  returns). Each capture is a `Capture`/`FrameInUse` trace span (~1003/~1031, ended in
+  `MaybeDeliverFrame` ~1548-1595), all in trace category `gpu.capture`. CEF's own OSR glue
+  (`CefVideoConsumerOSR`) is not in the checkout. CEF 154 also passes `timestamp` and
+  `capture_counter` in `cef_accelerated_paint_info_common_t` (cef-dll-sys 154.5.0
+  bindings), but welding drops both, so the host cannot see Viz-level frame numbers without
+  a welding change.
+
+Smallest diagnostic (host-only, no welding fork, sustained mode only):
+
+1. **Redraw ring during warmup and sample.** A fixed array of the last 128 redraws
+   (allocated once, no allocation per frame), each with: start offset from warmup start,
+   total redraw duration, the durations of `events`, the `acquire_frame` call, `compose`,
+   surface acquire, submit and present, and the poll outcome (`empty` or the imported
+   generation). That is the existing `Instant` laps, kept even when `record` is false. It is
+   printed only when a sample is rejected for a stall, as `stall-trace` lines, so healthy
+   output stays unchanged.
+2. **One mailbox re-poll at the stall.** In `sustained_step()`, before rejecting, call
+   `acquire_frame` once more (not recorded) and log
+   `stall-mailbox frame generation=<g> delta=<g - last imported generation>` or
+   `stall-mailbox empty`.
+3. **Forward `log` warnings/errors to the probe log** (a minimal `log::Log` writing to the
+   existing log; the `log` crate is already in the graph through welding), so a welding
+   copy failure shows up as a line instead of as a missing frame.
+
+Reading it:
+
+| Observation in the rejected trial | Attribution |
+| --- | --- |
+| One redraw (or a few) covers most of the gap, with the blocking stage named; `stall-mailbox` has a frame with `delta > 1` | host blocking (paints arrived and were superseded while the thread was busy) |
+| Redraws keep their normal ~17 ms cadence through the gap, about gap/17 consecutive `poll=empty`, `stall-mailbox empty`, no welding error | producer delivery (nothing was published by Chromium/welding's callback) |
+| A welding `failed to copy CEF accelerated frame` line inside the gap | producer side, welding copy failure (not Chromium) |
+
+Limit: this attributes *which side did not move*, not *which GPU workload caused it*.
+welding's D3D11 copy and its event-query wait run on the same GPU as Netrender's D3D12
+work, so a producer-side gap can still be caused by host GPU load. If the producer side is
+indicated, the next discriminator is Chromium's `gpu.capture` trace (`FpsRateLimited`,
+`PipelineLimited`, `Capture` spans) via CEF startup-tracing switches (not yet verified to
+work in this CEF build), or welding exposing callback timing and `capture_counter` (an
+upstream request, not filed).
+
+Reproducible next test (after the diagnostic is built by `cef-netrender-probe.yml`): same
+GTX 1050, monitor and refresh rate (record it), the same ABBA order with a fresh cache
+directory per trial, and the exact command lines saved next to the logs:
+
+```pwsh
+$dir = 'D:\roves-ci\<new run id>-cef-nr'
+$exe = "$dir\bundle\roves_cef_netrender_probe.exe"
+$modes = 'netrender','wgpu','wgpu','netrender','netrender','wgpu','wgpu','netrender'
+$i = 0
+foreach ($m in $modes) {
+  $i++
+  $cmd = "--roves-sustained --roves-compose=$m --roves-cache-dir=$dir\cache-$i --roves-log=$dir\trial-$i-$m.log"
+  Add-Content "$dir\commands.txt" "$i $exe $cmd"
+  & $exe --roves-sustained --roves-compose=$m "--roves-cache-dir=$dir\cache-$i" "--roves-log=$dir\trial-$i-$m.log"
+  Add-Content "$dir\commands.txt" "$i $m exit=$LASTEXITCODE"
+}
+```
+
+Pass criterion for the diagnostic (not for performance): every rejected trial has
+`stall-trace` and `stall-mailbox` lines and falls into one row of the table above. If
+no trial is rejected, report that (2/4 Netrender rejects were seen once) and do not infer
+anything about the cause.
 
 ## Pipeline
 
