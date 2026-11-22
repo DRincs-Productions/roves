@@ -21,7 +21,7 @@ use dpi::PhysicalSize;
 use sdl3::{
     VideoSubsystem,
     event::{Event, WindowEvent},
-    video::Window,
+    video::{Window, WindowFlags},
 };
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
@@ -52,6 +52,10 @@ const UPSTREAM_LOG_CAP: u32 = 64;
 /// Warmup start, shared with the `log` forwarder (CEF's UI thread logs too).
 static WARMUP_ORIGIN: OnceLock<Instant> = OnceLock::new();
 static UPSTREAM_LOG_RECORDS: AtomicU32 = AtomicU32::new(0);
+/// Longest SDL wait per loop turn while frame work is suspended (window minimized/hidden):
+/// bounds how late CEF navigation events, the load timeout and `--roves-auto-close-ms` are
+/// handled. OS events (restore, show, close) end the wait immediately.
+const SUSPENDED_TICK: Duration = Duration::from_millis(16);
 
 /// Entry of the browser process and of every CEF subprocess (via bootstrap.exe).
 ///
@@ -188,11 +192,21 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         Ok(state) => {
             probe.state = Some(state);
             while !probe.is_closed() {
+                // Minimized/hidden: no wgpu frame work, so nothing blocks on the swap chain.
+                // Block on SDL instead; any OS event (restore, close) wakes the loop at once.
+                if probe.phase != Phase::Closing
+                    && probe.suspended()
+                    && let Some(event) = events.wait_event_timeout(SUSPENDED_TICK)
+                {
+                    probe.window_event(event);
+                }
                 for event in events.poll_iter() {
                     probe.window_event(event);
                 }
                 if probe.phase == Phase::Closing {
                     std::thread::sleep(Duration::from_millis(2));
+                } else if probe.suspended() {
+                    probe.idle(&mouse);
                 } else {
                     probe.redraw(&mouse);
                 }
@@ -474,6 +488,14 @@ struct State {
     load_ended: bool,
     /// Game mode only: SDL3 -> welding input forwarding.
     input: Option<Input>,
+    /// Set while the window is minimized or hidden: no frame import, compose or present.
+    suspended_since: Option<Instant>,
+    /// Loop turns spent suspended (event handling and deadlines only).
+    suspended_ticks: u64,
+    /// Resume instant until the first frame is presented after it.
+    resumed_at: Option<Instant>,
+    /// Resume instant until the first producer frame is imported after it.
+    resumed_import_at: Option<Instant>,
 }
 
 impl Probe {
@@ -615,6 +637,10 @@ impl Probe {
             presented: 0,
             load_ended: false,
             input: game.then(Input::new),
+            suspended_since: None,
+            suspended_ticks: 0,
+            resumed_at: None,
+            resumed_import_at: None,
         })
     }
 
@@ -629,17 +655,277 @@ impl Probe {
             Phase::Sampling => true,
             Phase::Warmup | Phase::Closing | Phase::Done => false,
         };
-        let mut timings = self.timings.as_mut().filter(|_| record);
         // Stall ring: warmup and sample redraws, independent of `record`, own clock reads.
         let sustained_phase = matches!(self.phase, Phase::Warmup | Phase::Sampling);
         let mut marks =
             (self.stall.is_some() && sustained_phase).then(|| Marks::new(Instant::now()));
-        let frame_start = now_if(&timings);
-        let mut events = Vec::new();
-        while let Some(event) = s.producer.poll_web_event() {
-            events.push(event);
+        let frame_start = (record && self.timings.is_some()).then(Instant::now);
+        let events = drain_web_events(s);
+        if let (Some(t), Some(start)) = (self.timings.as_mut(), frame_start) {
+            t.lap(Stage::Events, start);
         }
-        lap(&mut timings, Stage::Events, frame_start);
+        if !self.handle_web_events(events, mouse) {
+            return;
+        }
+        let Some(s) = self.state.as_mut() else { return };
+        let mut timings = self.timings.as_mut().filter(|_| record);
+
+        // Ring only: `events` also covers handling and logging the drained events.
+        mark(&mut marks, Step::Events);
+        let acquire_start = now_if(&timings);
+        let acquired = s.producer.acquire_frame(&s.host);
+        mark(&mut marks, Step::AcquireFrame);
+        let poll = match &acquired {
+            Ok(Some(frame)) => Poll::Imported(frame.generation),
+            Ok(None) => Poll::Empty,
+            Err(_) => Poll::Error,
+        };
+        if let (Some(t), Some(acquire_start)) = (timings.as_deref_mut(), acquire_start) {
+            match &acquired {
+                Ok(Some(frame)) => {
+                    let now = t.lap(Stage::Import, acquire_start);
+                    t.imported(now, frame.generation);
+                },
+                Ok(None) => t.empty_poll(),
+                Err(_) => {},
+            }
+        }
+        let fresh = matches!(acquired, Ok(Some(_)));
+        match acquired {
+            Ok(Some(frame)) => {
+                s.imported += 1;
+                self.last_generation = Some(frame.generation);
+                if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
+                    self.last_import = Some(Instant::now());
+                }
+                if let Some(at) = s.resumed_import_at.take() {
+                    self.log.line(format_args!(
+                        "resume first-import after_ms={} generation={}",
+                        at.elapsed().as_millis(),
+                        frame.generation
+                    ));
+                }
+                let expected = (s.surface_config.width, s.surface_config.height);
+                let size = (frame.size.width, frame.size.height);
+                if size == expected {
+                    s.imported_at_size += 1;
+                }
+                if s.imported == 1 || s.imported_at_size == 1 {
+                    self.log.line(format_args!(
+                        "import frame={} size={}x{} format={:?} generation={} usage={:?} path=dx12-shared-handle",
+                        s.imported,
+                        size.0,
+                        size.1,
+                        frame.format,
+                        frame.generation,
+                        frame.texture.usage()
+                    ));
+                }
+                s.frame = Some(frame);
+            },
+            Ok(None) => {},
+            Err(error) => self.log.line(format_args!("acquire_frame error: {error}")),
+        }
+
+        let composed = compose(s, timings.as_deref_mut());
+        mark(&mut marks, Step::Compose);
+        let sampling = self.phase == Phase::Sampling;
+        let Some(composed) = composed else {
+            if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
+                ring.push(marks, poll, false, sampling);
+            }
+            return;
+        };
+        let presented = present(s, &composed, timings.as_deref_mut(), marks.as_mut());
+        if presented {
+            s.presented += 1;
+            if let (Some(t), Some(frame_start)) = (timings, frame_start) {
+                let now = t.lap(Stage::Frame, frame_start);
+                t.presented(now);
+            }
+            // Before any new producer frame (`fresh=false`) this is the last frame imported
+            // before the suspension, re-presented on the reconfigured surface.
+            if let Some(at) = s.resumed_at.take() {
+                self.log.line(format_args!(
+                    "resume first-present after_ms={} fresh_import={fresh} generation={:?}",
+                    at.elapsed().as_millis(),
+                    self.last_generation
+                ));
+            }
+        }
+        // Before `sustained_step`, so the redraw that trips the stall check is in the ring.
+        if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
+            ring.push(marks, poll, presented, sampling);
+        }
+
+        let ready = s.load_ended && s.imported_at_size >= FRAMES_BEFORE_CHECK;
+        match self.phase {
+            Phase::Initial if ready => {
+                self.report_smoke_timings("initial");
+                let (checks, failures) = (self.checks, self.failures);
+                self.check("initial", &composed);
+                let passed = self.checks > checks && self.failures == failures;
+                if self.options.sustained {
+                    if passed {
+                        self.start_warmup();
+                    } else {
+                        self.fail(format_args!(
+                            "sustained not started: the initial check did not pass"
+                        ));
+                        self.close();
+                    }
+                } else if self.options.keep_open {
+                    self.phase = Phase::Done;
+                } else {
+                    let s = self.state.as_mut().expect("state");
+                    s.imported_at_size = 0;
+                    let scale = s.window.display_scale().max(1.0);
+                    let width = (RESIZED_SIZE.width as f32 / scale).round() as u32;
+                    let height = (RESIZED_SIZE.height as f32 / scale).round() as u32;
+                    let result = s.window.set_size(width, height);
+                    let applied = pixel_size(&s.window);
+                    self.log.line(format_args!(
+                        "resize requested {}x{} applied={applied:?} result={result:?}",
+                        RESIZED_SIZE.width, RESIZED_SIZE.height
+                    ));
+                    if let Err(error) = result {
+                        self.fail(format_args!("resize request: {error}"));
+                        self.close();
+                        return;
+                    }
+                    self.resized(applied);
+                    self.phase = Phase::Resizing;
+                }
+            },
+            Phase::Resizing if ready => {
+                self.report_smoke_timings("resized");
+                self.check("resized", &composed);
+                self.close();
+            },
+            // Not bounded by --roves-timeout-ms: bounded by warmup + sample, and stall-checked.
+            Phase::Warmup | Phase::Sampling => self.sustained_step(),
+            _ => self.deadlines(),
+        }
+    }
+
+    /// One loop turn while frame work is suspended: CEF events and deadlines, no wgpu work.
+    /// The producer's latest-frame slot keeps only the newest paint for the resume.
+    fn idle(&mut self, mouse: &sdl3::mouse::MouseUtil) {
+        let Some(s) = self.state.as_mut() else { return };
+        s.suspended_ticks += 1;
+        let events = drain_web_events(s);
+        if self.handle_web_events(events, mouse) {
+            self.deadlines();
+        }
+    }
+
+    /// Timeouts and auto-close that do not depend on a presented frame.
+    fn deadlines(&mut self) {
+        let timed_out = self.started.elapsed() > self.options.timeout;
+        match self.phase {
+            Phase::Initial | Phase::Resizing if timed_out => {
+                let s = self.state.as_ref().expect("state");
+                let (load_ended, imported, at_size) =
+                    (s.load_ended, s.imported, s.imported_at_size);
+                let phase = self.phase;
+                self.report_smoke_timings(if phase == Phase::Initial {
+                    "initial-timeout"
+                } else {
+                    "resized-timeout"
+                });
+                self.fail(format_args!(
+                    "timeout in phase {phase:?}: load_ended={load_ended} imported={imported} at_size={at_size}"
+                ));
+                self.exit_code.get_or_insert(2);
+                self.close();
+            },
+            // Game: --roves-timeout-ms bounds only the load; afterwards the player (or
+            // --roves-auto-close-ms) decides when to close.
+            Phase::Game if self.game_loaded_at.is_none() && timed_out => {
+                self.fail(format_args!(
+                    "timeout: the game did not finish loading in {} ms",
+                    self.options.timeout.as_millis()
+                ));
+                self.exit_code.get_or_insert(2);
+                self.close();
+            },
+            Phase::Game
+                if self
+                    .options
+                    .auto_close
+                    .zip(self.game_loaded_at)
+                    .is_some_and(|(delay, at)| at.elapsed() >= delay) =>
+            {
+                self.log.line(format_args!("auto-close window"));
+                self.close();
+            },
+            _ => {},
+        }
+    }
+
+    /// Suspends frame work while the window is minimized or hidden and resumes it once it is
+    /// neither. Decided from the window flags, so a `Shown` that arrives while the window is
+    /// still minimized does not resume. Occlusion alone does not suspend.
+    fn update_suspension(&mut self, reason: &str) {
+        let Some(s) = self.state.as_mut() else { return };
+        let flags = WindowFlags::from(s.window.window_flags());
+        let hide = flags.intersects(WindowFlags::MINIMIZED | WindowFlags::HIDDEN);
+        match (s.suspended_since, hide) {
+            (None, true) => {
+                s.suspended_since = Some(Instant::now());
+                s.suspended_ticks = 0;
+                s.resumed_at = None;
+                s.resumed_import_at = None;
+                self.log.line(format_args!(
+                    "frame work suspended reason={reason} phase={:?} imported={} presented={}",
+                    self.phase, s.imported, s.presented
+                ));
+                if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
+                    self.end_sustained(Some(format!("window {reason} during {:?}", self.phase)));
+                }
+            },
+            (Some(since), false) => {
+                let now = Instant::now();
+                s.suspended_since = None;
+                s.resumed_at = Some(now);
+                s.resumed_import_at = Some(now);
+                self.log.line(format_args!(
+                    "frame work resumed reason={reason} suspended_ms={} idle_ticks={} imported={} presented={}",
+                    (now - since).as_millis(),
+                    s.suspended_ticks,
+                    s.imported,
+                    s.presented
+                ));
+                // The suspended span is not a steady-state frame interval.
+                if let Some(t) = self.timings.as_mut() {
+                    t.break_intervals();
+                }
+                // Size changes while suspended were deferred.
+                if self.phase != Phase::Closing {
+                    let size = pixel_size(&s.window);
+                    self.resized(size);
+                }
+            },
+            _ => {},
+        }
+    }
+
+    fn suspended(&self) -> bool {
+        self.state
+            .as_ref()
+            .is_some_and(|s| s.suspended_since.is_some())
+    }
+
+    /// Handles drained CEF events. Returns false when the run was closed because the game's
+    /// main frame left the loopback origin.
+    fn handle_web_events(
+        &mut self,
+        events: Vec<CefSurfaceEvent>,
+        mouse: &sdl3::mouse::MouseUtil,
+    ) -> bool {
+        let Some(s) = self.state.as_mut() else {
+            return false;
+        };
         // Game mode only (`None` keeps the fixture's event handling unchanged).
         let origin = self.server.as_ref().map(|server| server.origin.clone());
         let mut left_origin = None;
@@ -730,170 +1016,14 @@ impl Probe {
                 "game main frame left the loopback origin: {url}"
             ));
             self.close();
-            return;
+            return false;
         }
         if let Some(input) = s.input.as_mut()
             && let Some(line) = input.per_frame(&mut s.producer, mouse, s.imported > 0)
         {
             self.log.line(format_args!("{line}"));
         }
-
-        // Ring only: `events` also covers handling and logging the drained events.
-        mark(&mut marks, Step::Events);
-        let acquire_start = now_if(&timings);
-        let acquired = s.producer.acquire_frame(&s.host);
-        mark(&mut marks, Step::AcquireFrame);
-        let poll = match &acquired {
-            Ok(Some(frame)) => Poll::Imported(frame.generation),
-            Ok(None) => Poll::Empty,
-            Err(_) => Poll::Error,
-        };
-        if let (Some(t), Some(acquire_start)) = (timings.as_deref_mut(), acquire_start) {
-            match &acquired {
-                Ok(Some(frame)) => {
-                    let now = t.lap(Stage::Import, acquire_start);
-                    t.imported(now, frame.generation);
-                },
-                Ok(None) => t.empty_poll(),
-                Err(_) => {},
-            }
-        }
-        match acquired {
-            Ok(Some(frame)) => {
-                s.imported += 1;
-                self.last_generation = Some(frame.generation);
-                if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
-                    self.last_import = Some(Instant::now());
-                }
-                let expected = (s.surface_config.width, s.surface_config.height);
-                let size = (frame.size.width, frame.size.height);
-                if size == expected {
-                    s.imported_at_size += 1;
-                }
-                if s.imported == 1 || s.imported_at_size == 1 {
-                    self.log.line(format_args!(
-                        "import frame={} size={}x{} format={:?} generation={} usage={:?} path=dx12-shared-handle",
-                        s.imported,
-                        size.0,
-                        size.1,
-                        frame.format,
-                        frame.generation,
-                        frame.texture.usage()
-                    ));
-                }
-                s.frame = Some(frame);
-            },
-            Ok(None) => {},
-            Err(error) => self.log.line(format_args!("acquire_frame error: {error}")),
-        }
-
-        let composed = compose(s, timings.as_deref_mut());
-        mark(&mut marks, Step::Compose);
-        let sampling = self.phase == Phase::Sampling;
-        let Some(composed) = composed else {
-            if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
-                ring.push(marks, poll, false, sampling);
-            }
-            return;
-        };
-        let presented = present(s, &composed, timings.as_deref_mut(), marks.as_mut());
-        if presented {
-            s.presented += 1;
-            if let (Some(t), Some(frame_start)) = (timings, frame_start) {
-                let now = t.lap(Stage::Frame, frame_start);
-                t.presented(now);
-            }
-        }
-        // Before `sustained_step`, so the redraw that trips the stall check is in the ring.
-        if let (Some(ring), Some(marks)) = (self.stall.as_mut(), marks.as_ref()) {
-            ring.push(marks, poll, presented, sampling);
-        }
-
-        let ready = s.load_ended && s.imported_at_size >= FRAMES_BEFORE_CHECK;
-        let timed_out = self.started.elapsed() > self.options.timeout;
-        match self.phase {
-            Phase::Initial if ready => {
-                self.report_smoke_timings("initial");
-                let (checks, failures) = (self.checks, self.failures);
-                self.check("initial", &composed);
-                let passed = self.checks > checks && self.failures == failures;
-                if self.options.sustained {
-                    if passed {
-                        self.start_warmup();
-                    } else {
-                        self.fail(format_args!(
-                            "sustained not started: the initial check did not pass"
-                        ));
-                        self.close();
-                    }
-                } else if self.options.keep_open {
-                    self.phase = Phase::Done;
-                } else {
-                    let s = self.state.as_mut().expect("state");
-                    s.imported_at_size = 0;
-                    let scale = s.window.display_scale().max(1.0);
-                    let width = (RESIZED_SIZE.width as f32 / scale).round() as u32;
-                    let height = (RESIZED_SIZE.height as f32 / scale).round() as u32;
-                    let result = s.window.set_size(width, height);
-                    let applied = pixel_size(&s.window);
-                    self.log.line(format_args!(
-                        "resize requested {}x{} applied={applied:?} result={result:?}",
-                        RESIZED_SIZE.width, RESIZED_SIZE.height
-                    ));
-                    if let Err(error) = result {
-                        self.fail(format_args!("resize request: {error}"));
-                        self.close();
-                        return;
-                    }
-                    self.resized(applied);
-                    self.phase = Phase::Resizing;
-                }
-            },
-            Phase::Resizing if ready => {
-                self.report_smoke_timings("resized");
-                self.check("resized", &composed);
-                self.close();
-            },
-            Phase::Initial | Phase::Resizing if timed_out => {
-                let s = self.state.as_ref().expect("state");
-                let (load_ended, imported, at_size) =
-                    (s.load_ended, s.imported, s.imported_at_size);
-                let phase = self.phase;
-                self.report_smoke_timings(if phase == Phase::Initial {
-                    "initial-timeout"
-                } else {
-                    "resized-timeout"
-                });
-                self.fail(format_args!(
-                    "timeout in phase {phase:?}: load_ended={load_ended} imported={imported} at_size={at_size}"
-                ));
-                self.exit_code.get_or_insert(2);
-                self.close();
-            },
-            // Not bounded by --roves-timeout-ms: bounded by warmup + sample, and stall-checked.
-            Phase::Warmup | Phase::Sampling => self.sustained_step(),
-            // Game: --roves-timeout-ms bounds only the load; afterwards the player (or
-            // --roves-auto-close-ms) decides when to close.
-            Phase::Game if self.game_loaded_at.is_none() && timed_out => {
-                self.fail(format_args!(
-                    "timeout: the game did not finish loading in {} ms",
-                    self.options.timeout.as_millis()
-                ));
-                self.exit_code.get_or_insert(2);
-                self.close();
-            },
-            Phase::Game
-                if self
-                    .options
-                    .auto_close
-                    .zip(self.game_loaded_at)
-                    .is_some_and(|(delay, at)| at.elapsed() >= delay) =>
-            {
-                self.log.line(format_args!("auto-close window"));
-                self.close();
-            },
-            _ => {},
-        }
+        true
     }
 
     fn resized(&mut self, size: PhysicalSize<u32>) {
@@ -1358,16 +1488,45 @@ impl Probe {
                 self.log.line(format_args!("close requested by the OS"));
                 self.close();
             },
+            // Deferred while suspended: the resume re-reads the size.
             Event::Window {
                 win_event: WindowEvent::PixelSizeChanged(_, _) | WindowEvent::DisplayChanged(_),
                 ..
-            } => {
+            } if s.suspended_since.is_none() => {
                 let size = pixel_size(&s.window);
                 self.resized(size);
             },
+            Event::Window {
+                win_event: WindowEvent::Minimized,
+                ..
+            } => self.update_suspension("minimized"),
+            Event::Window {
+                win_event: WindowEvent::Hidden,
+                ..
+            } => self.update_suspension("hidden"),
+            Event::Window {
+                win_event: WindowEvent::Restored,
+                ..
+            } => self.update_suspension("restored"),
+            Event::Window {
+                win_event: WindowEvent::Maximized,
+                ..
+            } => self.update_suspension("maximized"),
+            Event::Window {
+                win_event: WindowEvent::Shown,
+                ..
+            } => self.update_suspension("shown"),
             _ => {},
         }
     }
+}
+
+fn drain_web_events(s: &mut State) -> Vec<CefSurfaceEvent> {
+    let mut events = Vec::new();
+    while let Some(event) = s.producer.poll_web_event() {
+        events.push(event);
+    }
+    events
 }
 
 fn pixel_size(window: &Window) -> PhysicalSize<u32> {

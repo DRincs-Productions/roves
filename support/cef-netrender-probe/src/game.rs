@@ -131,9 +131,11 @@ impl Input {
                 WindowEvent::Occluded | WindowEvent::Minimized | WindowEvent::Hidden => {
                     producer.set_visible(false)
                 },
-                WindowEvent::Restored | WindowEvent::Exposed | WindowEvent::Shown => {
-                    producer.set_visible(true)
-                },
+                // Maximized: a restore from minimized straight to maximized.
+                WindowEvent::Restored
+                | WindowEvent::Maximized
+                | WindowEvent::Exposed
+                | WindowEvent::Shown => producer.set_visible(true),
                 WindowEvent::DisplayChanged(_) => producer.set_scale_factor(window.display_scale()),
                 _ => return None,
             },

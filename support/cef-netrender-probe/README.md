@@ -336,6 +336,25 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   Resize is the probe's existing path (surface reconfigure + `producer.resize`). Input sent
   before the browser exists is refused by welding: the first refusal is logged, the rest are
   counted (`game input forwarded=<n> rejected=<n> console_messages=<n>` at close).
+- **Minimized/hidden window (every mode).** While SDL reports the window minimized or
+  hidden the host does no wgpu frame work (no import, compose, acquire or present); the loop
+  waits on SDL events for at most 16 ms per turn and still handles CEF events, the load
+  timeout, auto-close and OS close. In game mode `Minimized`/`Hidden`/`Occluded` also call
+  `set_visible(false)` (CEF `WasHidden`), and `Restored`/`Maximized`/`Shown`/`Exposed`
+  `set_visible(true)`. Resume is decided from the window flags, re-reads the pixel size
+  (changes while suspended are deferred) and re-presents the last imported frame at once;
+  welding's latest-frame slot then delivers the newest paint. Log lines:
+  `frame work suspended reason=... phase=... imported=<n> presented=<n>`,
+  `frame work resumed reason=... suspended_ms=<n> idle_ticks=<n> ...`,
+  `resume first-present after_ms=<n> fresh_import=<bool> generation=...` and
+  `resume first-import after_ms=<n> generation=<n>`. Occlusion alone keeps presenting.
+  A suspension during the `--roves-sustained` warmup/sample rejects it (as a resize does).
+  Chromium f2700724 reference: `ui/compositor/compositor.cc` `Compositor::SetVisible` and
+  `components/viz/service/display/display_scheduler.cc` `SetVisible`/`ShouldDraw` stop
+  drawing while the display is invisible but keep the message loop running;
+  `ui/views/win/hwnd_message_handler.cc` `OnSize(SIZE_MINIMIZED)` drives it on Windows;
+  native occlusion throttling (`ui/aura/window_tree_host.cc`) is a separate, feature-gated
+  path not reproduced here.
 - **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
   accepted load-end). Afterwards the run lasts until the OS closes the window, or
   `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,

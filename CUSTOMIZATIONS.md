@@ -68,6 +68,19 @@ leftover process. Frames are not required (WARP imports none): it verifies loadi
 lifecycle only, not GPU frames, input or gameplay. The probe code and the fixture smoke
 gates are unchanged; README "CI" documents the step.
 
+Update (same day, branch `codex/cef-sdl3-wgpu-probe`): the probe suspends wgpu frame work
+while the SDL3 window is minimized or hidden (`src/app.rs`): no frame import, composition,
+surface acquire or present, and the loop blocks in `SDL_WaitEventTimeout` (16 ms) instead of
+on the swap chain. CEF event handling (navigation, origin policy, console, title), the load
+timeout, `--roves-auto-close-ms` and OS close keep running every turn. Restore/show/maximize
+resumes from the window flags (a `Shown` while still minimized does not), re-reads the
+deferred pixel size, breaks timing intervals and logs `frame work suspended/resumed` plus
+`resume first-present` and `resume first-import` latencies. A suspension during the sustained
+warmup/sample rejects it like a resize. Occlusion does not suspend. Modelled on Chromium
+f2700724 `Compositor::SetVisible` / `viz::DisplayScheduler::ShouldDraw` (no draw while the
+display is invisible, message loop still running). Game mode also maps SDL `Maximized` to
+`set_visible(true)`. Visible pacing, fixture checks, diagnostics and workflows are unchanged.
+
 ## 2026-11-22 - CEF window probe, stage 1 (Windows baseline, experiment only)
 
 Changed: `support/cef-window-probe/` (new separate Cargo workspace), `.github/workflows/cef-window-probe.yml`
