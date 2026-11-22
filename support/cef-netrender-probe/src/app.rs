@@ -14,7 +14,7 @@ use std::{
 
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
-    ClickAction, ClickInput, ClickTest, CycleAction, MinimizeCycle, Suspension,
+    ClickAction, ClickInput, ClickTest, CycleAction, Milestone, MinimizeCycle, Startup, Suspension,
     TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT, TEST_MINIMIZE_HOLD, is_click_marker, load_status_ok,
     on_origin, suspension_change,
 };
@@ -93,6 +93,9 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
             return 3;
         },
     }
+    // Browser process only (CEF subprocesses returned above): origin of the `startup`
+    // timeline. Excludes OS process creation and CEF child-process startup.
+    let mut startup = Startup::new(Instant::now());
 
     let options = match Options::parse() {
         Ok(options) => options,
@@ -116,6 +119,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     if options.sustained {
         UpstreamLog::install(log.clone());
     }
+    startup_line(&log, &mut startup, Milestone::OptionsLogReady);
 
     // Game mode: bind the loopback origin before CEF starts (the window probe's order).
     let server = match options.game.as_ref() {
@@ -128,6 +132,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                     crate::game::profile_dir(&options.cache_dir).display(),
                     std::process::id()
                 ));
+                startup_line(&log, &mut startup, Milestone::LoopbackReady);
                 Some(server)
             },
             Err(error) => {
@@ -152,6 +157,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         "cef initialized cache={}",
         options.cache_dir.display()
     ));
+    startup_line(&log, &mut startup, Milestone::CefInitialized);
 
     let test_click = options.test_click.is_some();
     let sdl = match sdl3::init().and_then(|sdl| {
@@ -170,6 +176,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         },
     };
     let (video, mut events, mouse, event_sender) = sdl;
+    startup_line(&log, &mut startup, Milestone::SdlReady);
     let phase = if options.game.is_some() {
         Phase::Game
     } else {
@@ -200,10 +207,16 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         exit_code: None,
         started: Instant::now(),
         closing_since: None,
+        startup,
     };
     match probe.start(&video) {
         Ok(state) => {
             probe.state = Some(state);
+            startup_line(
+                &probe.log,
+                &mut probe.startup,
+                Milestone::WindowSurfaceProducerReady,
+            );
             while !probe.is_closed() {
                 // Minimized/hidden: no wgpu frame work, so nothing blocks on the swap chain.
                 // Block on SDL instead; any OS event (restore, close) wakes the loop at once.
@@ -233,6 +246,17 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     let code = probe.finish();
     log.line(format_args!("exit code={code}"));
     code
+}
+
+/// Logs `startup milestone=<name> elapsed_ms=<n>` the first time `milestone` is reached
+/// (README "Startup timeline"). Wall-clock since the main probe run's entry, not CPU time.
+fn startup_line(log: &Log, startup: &mut Startup, milestone: Milestone) {
+    if let Some(elapsed_ms) = startup.reach(milestone, Instant::now()) {
+        log.line(format_args!(
+            "startup milestone={} elapsed_ms={elapsed_ms}",
+            milestone.name()
+        ));
+    }
 }
 
 /// Stops the game's loopback server, after CEF shut down (in-flight responses finish first).
@@ -483,8 +507,12 @@ struct Probe {
     /// Completed pixel checks (2 in automatic mode, 1 with `--roves-keep-open`).
     checks: u32,
     exit_code: Option<i32>,
+    /// Load timeout origin (`--roves-timeout-ms`, smoke phases and game load), set after CEF
+    /// and SDL initialization. Not the `startup` timeline origin.
     started: Instant,
     closing_since: Option<Instant>,
+    /// `startup milestone=...` timeline since the main probe run's entry.
+    startup: Startup,
     /// Present only with `--roves-timings` or `--roves-sustained`.
     timings: Option<Timings>,
     /// Start of the current warmup or sample.
@@ -737,6 +765,9 @@ impl Probe {
         match acquired {
             Ok(Some(frame)) => {
                 s.imported += 1;
+                if s.imported == 1 {
+                    startup_line(&self.log, &mut self.startup, Milestone::FirstImport);
+                }
                 self.last_generation = Some(frame.generation);
                 if matches!(self.phase, Phase::Warmup | Phase::Sampling) {
                     self.last_import = Some(Instant::now());
@@ -782,6 +813,9 @@ impl Probe {
         let presented = present(s, &composed, timings.as_deref_mut(), marks.as_mut());
         if presented {
             s.presented += 1;
+            if s.presented == 1 {
+                startup_line(&self.log, &mut self.startup, Milestone::FirstPresent);
+            }
             if let (Some(t), Some(frame_start)) = (timings, frame_start) {
                 let now = t.lap(Stage::Frame, frame_start);
                 t.presented(now);
@@ -1134,6 +1168,7 @@ impl Probe {
                         } else if self.game_loaded_at.is_none() {
                             s.load_ended = true;
                             self.game_loaded_at = Some(Instant::now());
+                            startup_line(&self.log, &mut self.startup, Milestone::LoadEnd);
                             if let Some(delay) = self.options.auto_close {
                                 self.log.line(format_args!(
                                     "auto-close scheduled delay_ms={}",
@@ -1145,6 +1180,7 @@ impl Probe {
                     NavigationEvent::LoadEnd { http_status, .. } => {
                         s.load_ended = true;
                         self.log.line(format_args!("load-end status={http_status}"));
+                        startup_line(&self.log, &mut self.startup, Milestone::LoadEnd);
                     },
                     // welding exposes no pre-navigation veto (no OnBeforeBrowse hook), so a
                     // main frame that commits off the loopback origin fails the run and
@@ -1158,6 +1194,11 @@ impl Probe {
                     },
                     NavigationEvent::LoadStart { url } if origin.is_some() => {
                         self.log.line(format_args!("load-start url={url}"));
+                        startup_line(&self.log, &mut self.startup, Milestone::LoadStart);
+                    },
+                    // Fixture: no per-event line, only the first startup milestone.
+                    NavigationEvent::LoadStart { .. } => {
+                        startup_line(&self.log, &mut self.startup, Milestone::LoadStart);
                     },
                     // welding already cancelled it: one surface per producer, no popups.
                     NavigationEvent::NewWindowRequested { url, user_gesture } => {

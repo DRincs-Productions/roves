@@ -311,6 +311,64 @@ impl ClickTest {
     }
 }
 
+/// One startup milestone of the browser process (every mode; `LoopbackReady` in game mode
+/// only). Logged as `startup milestone=<name> elapsed_ms=<n>`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Milestone {
+    OptionsLogReady,
+    LoopbackReady,
+    CefInitialized,
+    SdlReady,
+    WindowSurfaceProducerReady,
+    LoadStart,
+    LoadEnd,
+    FirstImport,
+    FirstPresent,
+}
+
+impl Milestone {
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Milestone::OptionsLogReady => "options-log-ready",
+            Milestone::LoopbackReady => "loopback-ready",
+            Milestone::CefInitialized => "cef-initialized",
+            Milestone::SdlReady => "sdl-ready",
+            Milestone::WindowSurfaceProducerReady => "window-surface-producer-ready",
+            Milestone::LoadStart => "load-start",
+            Milestone::LoadEnd => "load-end",
+            Milestone::FirstImport => "first-import",
+            Milestone::FirstPresent => "first-present",
+        }
+    }
+}
+
+/// Startup timeline: milliseconds since entry to the main probe run (after CEF subprocess
+/// dispatch), each milestone reported at most once.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Startup {
+    entered: std::time::Instant,
+    reported: u16,
+}
+
+impl Startup {
+    pub(crate) fn new(entered: std::time::Instant) -> Self {
+        Startup {
+            entered,
+            reported: 0,
+        }
+    }
+
+    /// `Some(elapsed_ms)` the first time `milestone` is reached, `None` afterwards.
+    pub(crate) fn reach(&mut self, milestone: Milestone, now: std::time::Instant) -> Option<u128> {
+        let bit = 1u16 << milestone as u16;
+        if self.reported & bit != 0 {
+            return None;
+        }
+        self.reported |= bit;
+        Some(now.saturating_duration_since(self.entered).as_millis())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -589,5 +647,47 @@ mod tests {
         );
         assert_eq!(click.marker(), ClickAction::None);
         assert_eq!(click.tick(late, true), ClickAction::None);
+    }
+
+    #[test]
+    fn startup_milestones_report_once_relative_to_entry() {
+        let t0 = std::time::Instant::now();
+        let mut startup = Startup::new(t0);
+        assert_eq!(
+            startup.reach(Milestone::OptionsLogReady, t0 + ms(3)),
+            Some(3)
+        );
+        assert_eq!(
+            startup.reach(Milestone::FirstImport, t0 + ms(900)),
+            Some(900)
+        );
+        // Every later frame: no second report.
+        assert_eq!(startup.reach(Milestone::FirstImport, t0 + ms(916)), None);
+        assert_eq!(
+            startup.reach(Milestone::FirstPresent, t0 + ms(901)),
+            Some(901)
+        );
+        assert_eq!(startup.reach(Milestone::FirstPresent, t0 + ms(917)), None);
+        // Milestones are independent; an instant before entry saturates to 0.
+        assert_eq!(startup.reach(Milestone::LoadStart, t0), Some(0));
+        let mut early = Startup::new(t0 + ms(10));
+        assert_eq!(early.reach(Milestone::SdlReady, t0), Some(0));
+        let all = [
+            Milestone::OptionsLogReady,
+            Milestone::LoopbackReady,
+            Milestone::CefInitialized,
+            Milestone::SdlReady,
+            Milestone::WindowSurfaceProducerReady,
+            Milestone::LoadStart,
+            Milestone::LoadEnd,
+            Milestone::FirstImport,
+            Milestone::FirstPresent,
+        ];
+        let mut fresh = Startup::new(t0);
+        for (i, m) in all.iter().enumerate() {
+            assert_eq!(fresh.reach(*m, t0 + ms(i as u64)), Some(i as u128));
+            assert!(all[..i].iter().all(|other| other.name() != m.name()));
+        }
+        assert_eq!(Milestone::FirstPresent.name(), "first-present");
     }
 }

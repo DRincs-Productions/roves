@@ -614,6 +614,47 @@ on CEF's UI thread (welding sets `multi_threaded_message_loop` on Windows), not 
 thread, so they are not in `import`; Chromium's own raster/capture cost is not visible.
 Numbers are to be recorded only from real runs; none are claimed here.
 
+## Startup timeline (always on)
+
+Every run (fixture and game mode) logs one line per startup milestone, each at most once:
+
+```text
+roves-cef-nr startup milestone=<name> elapsed_ms=<n>
+```
+
+`elapsed_ms` is wall-clock time (`std::time::Instant`, monotonic, whole milliseconds) since
+**entry to the main probe run**: the instant in `app::run` right after CEF's subprocess
+dispatch (`execute_process`) returned to the browser process. It therefore **excludes** OS
+process creation, bootstrap.exe/DLL loading and the startup of CEF's child processes before
+that point (child processes return earlier and never log milestones). It is **not**
+`Probe.started`: that older instant is set later, after CEF and SDL initialization and just
+before window/surface/producer creation, and remains the origin of `--roves-timeout-ms` (fixture
+phases and game load) and of the `closing ... elapsed_ms=` value. Neither origin nor any
+timeout changed.
+
+| Milestone | Reached when |
+| --- | --- |
+| `options-log-ready` | options parsed, evidence log open, version lines written |
+| `loopback-ready` | game mode only: loopback server bound and serving |
+| `cef-initialized` | `CefRuntime` initialized (`cef initialized` line) |
+| `sdl-ready` | SDL3 video subsystem and event pump created |
+| `window-surface-producer-ready` | SDL window, DX12 adapter/device, surface and `WindowsCefProducer` (initial navigation requested) created |
+| `load-start` | first `NavigationEvent::LoadStart` drained by the host loop |
+| `load-end` | first **accepted** load-end (game: status OK on the loopback origin; fixture: any load-end) as processed by the host loop |
+| `first-import` | first accelerated producer frame imported by `acquire_frame` |
+| `first-present` | first frame presented on the surface |
+
+Navigation milestones are stamped when the host loop drains the event, so they can trail
+CEF's own callback by up to one loop turn. On WARP (CI) no accelerated frame arrives: the
+earlier milestones are still logged and `first-import`/`first-present` are simply absent;
+nothing claims a present that did not happen. A failure before a milestone (for example
+window or producer creation) leaves it and every later one absent.
+
+The timeline only locates **where** startup wall-clock time goes. It is not CPU time, not GPU
+time, not a launch-click-to-ready figure and not an optimization result; one run proves
+nothing about averages. The once-only rule is unit-tested in `src/game_rules.rs`
+(`rustc --edition 2024 --test src/game_rules.rs`).
+
 ## Optional sustained sample (`--roves-sustained`)
 
 Same stages, clock and summary format as above, over a steady-state window instead of the
@@ -888,12 +929,14 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   surface and CEF producer, so the interval includes window/surface creation and CEF
   navigation startup, and excludes process launch and CEF/SDL initialization. It is a
   single local Windows GTX 1050 run, not an average or a benchmark, with no Chrome
-  comparator, and it does not identify which stage takes the time. Not done: Chrome
-  comparison, audible-output check, gameplay verification. Follow-up: compare the same
-  warnings in Chrome and check audio after a real gesture; log timestamps for the separate
-  startup stages (runtime/SDL init, window/surface/producer creation, navigation start,
-  main response, load-end) and compare load time of the same template SHA in Chrome on the
-  same machine.
+  comparator, and it does not identify which stage takes the time. The derived ~33.987 s
+  is only probe-relative (from `Probe.started`); that run predates the startup timeline
+  ("Startup timeline" above), which future runs log with its own origin (main probe run
+  entry) to break the interval down by phase (runtime/SDL init, window/surface/producer,
+  load-start, load-end, first import/present). Not done: Chrome comparison, audible-output
+  check, gameplay verification. Follow-up: compare the same warnings in Chrome and check
+  audio after a real gesture; record the startup timeline on a real-GPU run and compare
+  load time of the same template SHA in Chrome on the same machine.
 - A `GPUDevice`/context loss inside CEF, or `device.destroy()` on the host, is not handled
   beyond logging uncaptured wgpu errors as `FAIL`.
 - Netrender composition only runs on real GPUs (Vello 0.9 crashes on WARP, see the
