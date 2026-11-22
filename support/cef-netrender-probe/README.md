@@ -878,8 +878,22 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   returned 200, CEF imported frame 1, clean exit (code 0) after 581 imports and 2452
   presents. Console: two PixiJS Assets "don't know how to parse it" warnings for the remote
   `sfx_whoosh.wav` and `bgm_cheerful.wav`, and Tone.js WebAudio autoplay blocked before a user
-  gesture. Not done: Chrome comparison, audible-output check, gameplay verification.
-  Follow-up: compare the same warnings in Chrome and check audio after a real gesture.
+  gesture. Startup observation (derived from the log, not measured directly): the log
+  records `auto-close scheduled delay_ms=15000` at the accepted main-frame load-end and
+  later `closing ... elapsed_ms=48987`; the close was caused by auto-close, so the host
+  processed load-end about 33,987 ms after `Probe.started` (48,987 - 15,000; the real
+  value can be lower by at most one event-loop turn of auto-close overshoot). This is a
+  probe-relative interval, **not** launch-click-to-ready: `Probe.started` is set after the
+  CEF runtime and SDL are initialized and before `probe.start()` creates the window,
+  surface and CEF producer, so the interval includes window/surface creation and CEF
+  navigation startup, and excludes process launch and CEF/SDL initialization. It is a
+  single local Windows GTX 1050 run, not an average or a benchmark, with no Chrome
+  comparator, and it does not identify which stage takes the time. Not done: Chrome
+  comparison, audible-output check, gameplay verification. Follow-up: compare the same
+  warnings in Chrome and check audio after a real gesture; log timestamps for the separate
+  startup stages (runtime/SDL init, window/surface/producer creation, navigation start,
+  main response, load-end) and compare load time of the same template SHA in Chrome on the
+  same machine.
 - A `GPUDevice`/context loss inside CEF, or `device.destroy()` on the host, is not handled
   beyond logging uncaptured wgpu errors as `FAIL`.
 - Netrender composition only runs on real GPUs (Vello 0.9 crashes on WARP, see the
