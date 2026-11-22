@@ -14,9 +14,10 @@ use std::{
 
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
-    ClickAction, ClickInput, ClickTest, CycleAction, Milestone, MinimizeCycle, Startup, Suspension,
-    TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT, TEST_MINIMIZE_HOLD, is_click_marker, load_status_ok,
-    on_origin, suspension_change,
+    ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
+    MinimizeCycle, Startup, Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT,
+    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, is_click_marker, key_marker, load_status_ok,
+    on_origin, parse_test_key_delay, suspension_change,
 };
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
@@ -25,6 +26,7 @@ use dpi::PhysicalSize;
 use sdl3::{
     EventSubsystem, VideoSubsystem,
     event::{Event, WindowEvent},
+    keyboard::{Keycode, Mod, Scancode},
     mouse::MouseButton as SdlButton,
     video::{Window, WindowFlags},
 };
@@ -159,12 +161,13 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     ));
     startup_line(&log, &mut startup, Milestone::CefInitialized);
 
-    let test_click = options.test_click.is_some();
+    let pushes_events = options.test_click.is_some() || options.test_key.is_some();
     let sdl = match sdl3::init().and_then(|sdl| {
         let video = sdl.video()?;
         let events = sdl.event_pump()?;
-        // `--roves-test-click-ms` only: pushes the synthetic click into the SDL queue.
-        let sender = test_click.then(|| sdl.event()).transpose()?;
+        // `--roves-test-click-ms`/`--roves-test-key-ms` only: pushes the synthetic events
+        // into the SDL queue.
+        let sender = pushes_events.then(|| sdl.event()).transpose()?;
         Ok((video, events, sdl.mouse(), sender))
     }) {
         Ok(parts) => parts,
@@ -184,6 +187,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     };
     let minimize_cycle = options.test_minimize.map(|_| MinimizeCycle::Waiting);
     let click_test = options.test_click.map(|_| ClickTest::Waiting);
+    let key_test = options.test_key.map(|_| KeyTest::Waiting);
     let mut probe = Probe {
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
@@ -201,6 +205,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         console: Console::default(),
         minimize_cycle,
         click_test,
+        key_test,
         event_sender,
         failures: 0,
         checks: 0,
@@ -301,6 +306,11 @@ struct Options {
     /// synthetic left click into the SDL queue and require it to be forwarded through welding
     /// and the page's click marker (README "Real-game mode").
     test_click: Option<Duration>,
+    /// `--roves-test-key-ms` (game mode, tests only, at most 600000): this long after
+    /// load-end, push one synthetic ArrowRight key down + up into the SDL queue and require it
+    /// to be forwarded through welding and the page's keydown then keyup markers (README
+    /// "Real-game mode").
+    test_key: Option<Duration>,
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -333,6 +343,7 @@ impl Options {
             auto_close: None,
             test_minimize: None,
             test_click: None,
+            test_key: None,
         };
         let mut game_dir = None;
         let mut port = None;
@@ -362,16 +373,24 @@ impl Options {
                 "auto-close-ms" => options.auto_close = Some(parse_ms(name, value)?),
                 "test-minimize-ms" => options.test_minimize = Some(parse_ms(name, value)?),
                 "test-click-ms" => options.test_click = Some(parse_ms(name, value)?),
+                "test-key-ms" => options.test_key = Some(parse_test_key_delay(value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
         }
         if options.sustained && options.keep_open {
             return Err("--roves-sustained closes after its sample: drop --roves-keep-open".into());
         }
-        if options.test_minimize.is_some() && options.test_click.is_some() {
-            return Err("one test hook per run: drop --roves-test-minimize-ms or \
-                        --roves-test-click-ms"
-                .into());
+        let hooks = [
+            options.test_minimize.is_some(),
+            options.test_click.is_some(),
+            options.test_key.is_some(),
+        ];
+        if hooks.into_iter().filter(|on| *on).count() > 1 {
+            return Err(
+                "one test hook per run: keep only one of --roves-test-minimize-ms, \
+                        --roves-test-click-ms and --roves-test-key-ms"
+                    .into(),
+            );
         }
         if options.sample.is_zero() {
             return Err("--roves-sample-ms must be > 0".into());
@@ -391,11 +410,12 @@ impl Options {
             None if port.is_some()
                 || options.auto_close.is_some()
                 || options.test_minimize.is_some()
-                || options.test_click.is_some() =>
+                || options.test_click.is_some()
+                || options.test_key.is_some() =>
             {
                 return Err(
-                    "--roves-port, --roves-auto-close-ms, --roves-test-minimize-ms \
-                            and --roves-test-click-ms need --roves-game-dir"
+                    "--roves-port, --roves-auto-close-ms, --roves-test-minimize-ms, \
+                            --roves-test-click-ms and --roves-test-key-ms need --roves-game-dir"
                         .into(),
                 );
             },
@@ -535,6 +555,10 @@ struct Probe {
     /// `--roves-test-click-ms` only: the synthetic click sequence and the SDL event subsystem
     /// it is pushed through.
     click_test: Option<ClickTest>,
+    /// `--roves-test-key-ms` only: the synthetic key sequence.
+    key_test: Option<KeyTest>,
+    /// `--roves-test-click-ms`/`--roves-test-key-ms` only: the SDL event subsystem the
+    /// synthetic events are pushed through.
     event_sender: Option<EventSubsystem>,
 }
 
@@ -932,8 +956,10 @@ impl Probe {
             Phase::Game if self.click_test.is_some_and(|c| !c.finished()) => {
                 self.step_click_test();
             },
-            // With --roves-test-minimize-ms or --roves-test-click-ms, only once the test
-            // sequence has finished.
+            Phase::Game if self.key_test.is_some_and(|k| !k.finished()) => {
+                self.step_key_test();
+            },
+            // With a --roves-test-*-ms hook, only once the test sequence has finished.
             Phase::Game
                 if self
                     .options
@@ -1081,6 +1107,96 @@ impl Probe {
         }
     }
 
+    /// `--roves-test-key-ms` only: requests the synthetic ArrowRight press once due and times
+    /// out the pending steps. The key events are pushed into the SDL queue (stamped with
+    /// `TEST_KEY_KEYBOARD_ID`, no modifiers, not a repeat) and come back through the loop's
+    /// ordinary `poll_iter` -> `window_event` -> `Input` -> welding `send_keyboard_input` path
+    /// on a later turn. SDL produces no `TextInput` for a pushed key event; ArrowRight has no
+    /// character anyway.
+    fn step_key_test(&mut self) {
+        let (Some(mut key), Some(delay), Some(loaded)) =
+            (self.key_test, self.options.test_key, self.game_loaded_at)
+        else {
+            return;
+        };
+        let action = key.tick(Instant::now(), loaded.elapsed() >= delay);
+        self.key_test = Some(key);
+        match action {
+            KeyAction::Push => {
+                let s = self.state.as_ref().expect("state");
+                let window_id = s.window.id();
+                let event = |down: bool| {
+                    let (timestamp, keycode, scancode, keymod, repeat, which, raw) = (
+                        0,
+                        Some(Keycode::Right),
+                        Some(Scancode::Right),
+                        Mod::empty(),
+                        false,
+                        TEST_KEY_KEYBOARD_ID,
+                        0,
+                    );
+                    if down {
+                        Event::KeyDown {
+                            timestamp,
+                            window_id,
+                            keycode,
+                            scancode,
+                            keymod,
+                            repeat,
+                            which,
+                            raw,
+                        }
+                    } else {
+                        Event::KeyUp {
+                            timestamp,
+                            window_id,
+                            keycode,
+                            scancode,
+                            keymod,
+                            repeat,
+                            which,
+                            raw,
+                        }
+                    }
+                };
+                let pushed = match self.event_sender.as_ref() {
+                    Some(events) => events
+                        .push_event(event(true))
+                        .and_then(|()| events.push_event(event(false)))
+                        .map_err(|e| e.to_string()),
+                    None => Err("no SDL event subsystem".into()),
+                };
+                self.log.line(format_args!(
+                    "test key requested key=Right window_id={window_id} pushed={}",
+                    pushed.is_ok()
+                ));
+                if let Err(error) = pushed {
+                    self.key_test = Some(KeyTest::Failed);
+                    self.fail(format_args!("test key: SDL_PushEvent failed: {error}"));
+                    self.close();
+                }
+            },
+            KeyAction::Fail(what) => {
+                self.fail(format_args!("test key: {what}"));
+                self.close();
+            },
+            KeyAction::None | KeyAction::Complete => {},
+        }
+    }
+
+    /// `--roves-test-key-ms` only: applies a test key action that came from an input or
+    /// console event.
+    fn key_test_action(&mut self, action: KeyAction) {
+        match action {
+            KeyAction::Complete => self.log.line(format_args!("test key complete")),
+            KeyAction::Fail(what) => {
+                self.fail(format_args!("test key: {what}"));
+                self.close();
+            },
+            KeyAction::None | KeyAction::Push => {},
+        }
+    }
+
     /// Suspends frame work while the window is minimized or hidden and resumes it once it is
     /// neither. Decided from the window flags, so a `Shown` that arrives while the window is
     /// still minimized does not resume. Occlusion alone does not suspend.
@@ -1152,6 +1268,7 @@ impl Probe {
         let origin = self.server.as_ref().map(|server| server.origin.clone());
         let mut left_origin = None;
         let mut click_actions = Vec::new();
+        let mut key_actions = Vec::new();
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
                 match &event {
@@ -1223,6 +1340,15 @@ impl Probe {
                             self.log.line(format_args!("test click marker received"));
                             click_actions.push(click.marker());
                         }
+                        // `--roves-test-key-ms` only: the fixture's keydown/keyup markers.
+                        if let Some(key) = self.key_test.as_mut()
+                            && let Some(marker) = key_marker(message)
+                            && on_origin(origin.as_deref().unwrap_or_default(), source)
+                        {
+                            self.log
+                                .line(format_args!("test key marker received kind={marker:?}"));
+                            key_actions.push(key.marker(marker));
+                        }
                     },
                     NavigationEvent::TitleChanged { title } if origin.is_some() => {
                         self.log.line(format_args!("title {title}"));
@@ -1251,6 +1377,9 @@ impl Probe {
         }
         for action in click_actions {
             self.click_test_action(action);
+        }
+        for action in key_actions {
+            self.key_test_action(action);
         }
         if let Some(url) = left_origin {
             self.fail(format_args!(
@@ -1682,6 +1811,13 @@ impl Probe {
                     .line(format_args!("FAIL test click incomplete state={click:?}"));
                 self.failures += 1;
             }
+            if let Some(key) = self.key_test
+                && !key.finished()
+            {
+                self.log
+                    .line(format_args!("FAIL test key incomplete state={key:?}"));
+                self.failures += 1;
+            }
             if self.game_loaded_at.is_none() {
                 self.log
                     .line(format_args!("FAIL the game never finished loading"));
@@ -1742,7 +1878,18 @@ impl Probe {
             },
             _ => None,
         };
+        // `--roves-test-key-ms` only: the pushed key events, recognized by their keyboard id.
+        let synthetic_key = match &event {
+            Event::KeyDown { which, .. } if self.key_test.is_some() => {
+                (*which == TEST_KEY_KEYBOARD_ID).then_some(true)
+            },
+            Event::KeyUp { which, .. } if self.key_test.is_some() => {
+                (*which == TEST_KEY_KEYBOARD_ID).then_some(false)
+            },
+            _ => None,
+        };
         let mut click_forwarded = None;
+        let mut key_forwarded = None;
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
         {
@@ -1751,6 +1898,22 @@ impl Probe {
                 self.log.line(format_args!("{line}"));
             }
             click_forwarded = synthetic.map(|down| (down, input.forwarded > forwarded));
+            key_forwarded = synthetic_key.map(|down| (down, input.forwarded > forwarded));
+        }
+        if let Some((down, ok)) = key_forwarded {
+            self.log.line(format_args!(
+                "test key forwarded event={} ok={ok}",
+                if down { "down" } else { "up" }
+            ));
+            let input = if down {
+                KeyInput::Down { ok }
+            } else {
+                KeyInput::Up { ok }
+            };
+            if let Some(key) = self.key_test.as_mut() {
+                let action = key.input(input);
+                self.key_test_action(action);
+            }
         }
         if let Some((down, ok)) = click_forwarded {
             self.log.line(format_args!(

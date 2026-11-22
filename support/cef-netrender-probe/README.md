@@ -370,7 +370,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   `test restore requested ok=<bool> idle_ticks=<n>`, `test minimize cycle complete`. Not
   meant for players; the flag only exists to make the suspension path testable in CI.
 - **Synthetic click (`--roves-test-click-ms=<ms>`, tests only).** Game mode only, and not
-  together with `--roves-test-minimize-ms` (one test hook per run). `<ms>` after the accepted
+  together with `--roves-test-minimize-ms` or `--roves-test-key-ms` (one test hook per run).
+  `<ms>` after the accepted
   load-end the probe pushes one left `MouseButtonDown` + `MouseButtonUp` at SDL window point
   (100, 60) (logical coordinates) into the SDL event queue with `SDL_PushEvent` (sdl3 0.20
   `EventSubsystem::push_event`), stamped with a sentinel mouse id (`0x524F5645`). They come
@@ -392,6 +393,38 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   presented frame. The point maps to CSS pixels only through the window/display scale (the
   CI fixture's 200x120 px target tolerates scales up to about 1.6). Mouse motion, the other
   buttons, keyboard, text input, wheel and browser focus are **not** covered by this hook.
+- **Synthetic key (`--roves-test-key-ms=<ms>`, tests only).** Game mode only, and not
+  together with `--roves-test-minimize-ms` or `--roves-test-click-ms` (one test hook per run,
+  so a result is attributable to one hook). `<ms>` must be a whole number from 0 to 600000
+  (anything else is a usage error). `<ms>` after the accepted load-end the probe pushes one
+  `KeyDown` + `KeyUp` with SDL keycode and scancode `Right` (ArrowRight: layout-independent,
+  no character), no modifiers, `repeat=false` and a sentinel keyboard id (`0x524F5645`) into
+  the SDL event queue with `SDL_PushEvent` (sdl3 0.20 `EventSubsystem::push_event`, whose
+  `to_ll`/`from_ll` round-trip key events). They come back through the loop's ordinary
+  `poll_iter` -> `window_event` -> `Input` -> welding `send_keyboard_input` path, the same
+  translation as a real key (`RawKeyDown`/`KeyUp`, VK_RIGHT, `native_key_code` from
+  `MapVirtualKeyW` = extended scan code `E0 4D`); only events carrying the sentinel id count
+  for the test. The page must log `roves-test-key-received type=keydown ...` and then
+  `roves-test-key-received type=keyup ...` from the loopback origin. Required, in order:
+  request pushed, key down forwarded, key up forwarded (welding accepted each call), the
+  keydown marker, the keyup marker; anything else fails (`FAIL test key ...`, then close): a
+  push error, a welding refusal, up before down, extra synthetic events, a marker before the
+  key was forwarded, keyup before keydown, a repeated marker, a marker with any other `type=`
+  (for example `keypress`), or any step not done within 10 s of the request; an unfinished
+  sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it. Log lines:
+  `test key requested key=Right window_id=<n> pushed=<bool>`,
+  `test key forwarded event=down|up ok=<bool>`, `test key marker received kind=Down|Up`,
+  `test key complete`. The DOM fields (`key`, `code`, `keyCode`, `repeat`, `isTrusted`) are
+  asserted by the CI fixture, not by the probe. **Coverage and limits:** this exercises the
+  SDL queue, the probe's SDL -> welding key translation and CEF/Blink delivery of one trusted
+  `keydown`/`keyup` pair. It is a synthetic SDL event, not a physical keyboard or the Win32
+  message path SDL builds key events from. It proves no text input, `Char`/`keypress`, IME,
+  modifier, auto-repeat or other-layout behaviour. Nor does it prove browser focus: Chromium
+  f2700724 forwards key events without a focus check
+  (`RenderWidgetHostImpl::ForwardKeyboardEventWithCommands`) and Blink falls back to the main
+  frame when no frame is focused (`WebFrameWidgetImpl::HandleKeyEvent` ->
+  `FocusController::FocusedOrMainFrame`), and on WARP the probe never gives focus (no
+  imported frame). No gameplay, visual result or presented frame is proved.
 - **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
   accepted load-end). Afterwards the run lasts until the OS closes the window, or
   `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,
@@ -399,8 +432,9 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   failure); 2 = never loaded / close timeout. Console messages are logged as
   `console level=... source=...:line message=...` (first 500, 512 characters each).
   `--roves-sustained` and `--roves-keep-open` are refused with `--roves-game-dir` (no fixture
-  checks); `--roves-port`, `--roves-auto-close-ms`, `--roves-test-minimize-ms` and
-  `--roves-test-click-ms` are refused without it (usage error, exit 1, before the log opens).
+  checks); `--roves-port`, `--roves-auto-close-ms`, `--roves-test-minimize-ms`,
+  `--roves-test-click-ms` and `--roves-test-key-ms` are refused without it (usage error,
+  exit 1, before the log opens).
 - **Timings.** With `--roves-timings`, every redraw after the accepted load-end is recorded
   and a `timings phase=game ...` summary (same stages and format as above) is emitted when the
   window starts closing, before the close sequence. Resizes break the intervals but are not
@@ -557,8 +591,8 @@ window stays until the OS closes it), `--roves-timings` (below; off by default, 
 pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
 exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
-`--roves-auto-close-ms=<ms>` and the test-only `--roves-test-minimize-ms=<ms>` or
-`--roves-test-click-ms=<ms>` (opt-in
+`--roves-auto-close-ms=<ms>` and one of the test-only `--roves-test-minimize-ms=<ms>`,
+`--roves-test-click-ms=<ms>` or `--roves-test-key-ms=<ms>` (opt-in
 real-game mode, above; no fixture checks). CEF
 switches such as `--log-file` pass through.
 
@@ -750,7 +784,8 @@ stopped`, `exit code=0`; plus process exit 0, no `FAIL`/`close requested by the 
 refused` line, a sandboxed renderer child and no leftover process. Imported frames are only
 reported (WARP delivers none), so this step proves serving, navigation, script execution
 and lifecycle, **not** accelerated frames, presentation, input or gameplay; there is no
-window automation in CI. This step also fails on any `test minimize` or `test click` line:
+window automation in CI. This step also fails on any `test minimize`, `test click` or
+`test key` line:
 without their flags the test hooks must stay off.
 
 A third step reuses the same bundle for the **minimized-window suspension gate**: a fixture
@@ -790,13 +825,41 @@ marker received`, `test click complete`, `auto-close window`, close, `game input
 forwarded=`, `browser closed`, `producer and renderer dropped`, `cef shutdown complete`,
 `game loopback stopped`, `exit code=0`; plus the accepted `load-end` before the request,
 exactly one request, one forwarded down, one forwarded up and one click marker, process exit
-0, no `FAIL`/`input rejected`/`close requested by the OS`/`popup refused`/`test minimize`
-line and no leftover process. Imported frames and presents are only reported. This proves
+0, no `FAIL`/`input rejected`/`close requested by the OS`/`popup refused`/`test minimize`/
+`test key` line and no leftover process. Imported frames and presents are only reported. This proves
 that an SDL-queued left click reaches welding and arrives in the page as one trusted DOM
 click on the expected element; it does **not** prove physical mouse input, the Win32 ->
 SDL translation, hover/motion, keyboard, wheel or focus delivery, gameplay, accelerated
 frames or any visual result. If Blink were to drop input before a first paint on WARP, this
 gate would fail at the marker rather than pass falsely.
+
+A fifth step reuses the same bundle for the **synthetic key gate**. It first checks that
+`--roves-test-key-ms` is refused without `--roves-game-dir`, together with
+`--roves-test-click-ms`, together with `--roves-test-minimize-ms`, above 600000 ms and when
+not a whole number (`1s`) (exit 1, no evidence log written, a `usage error` on stderr if any
+was captured). Then a fresh-cache run on a fixture whose capture listeners on `window` log
+`roves-test-key-received type=<type> key=<key> code=<code> keyCode=<n> repeat=<bool>
+trusted=<bool> target=<node>` for `keydown`, `keypress` and `keyup`, with
+`--roves-compose=wgpu --roves-test-key-ms=1000 --roves-auto-close-ms=5000` on WARP. Gated,
+each line after the previous one: `producer created accelerated=true background=white`, the
+fixture's `module-ok` marker (listeners installed), `test key requested key=Right ...
+pushed=true`, `test key forwarded event=down ok=true`, `test key forwarded event=up ok=true`,
+the `type=keydown` marker from `<origin>/game.js` with `key=ArrowRight code=ArrowRight
+keyCode=39 repeat=false trusted=true`, `test key marker received kind=Down`, the `type=keyup`
+marker with the same fields, `test key marker received kind=Up`, `test key complete`,
+`auto-close window`, close, `game input forwarded=`, `browser closed`, `producer and renderer
+dropped`, `cef shutdown complete`, `game loopback stopped`, `exit code=0`; plus the accepted
+`load-end` before the request, exactly one request, one forwarded down, one forwarded up, one
+keydown and one keyup marker (two markers in total, so no `keypress`), process exit 0, no
+`FAIL`/`input rejected`/`close requested by the OS`/`popup refused`/`test minimize`/
+`test click` line and no leftover process. The click step likewise fails on any `test key`
+line. Imported frames and presents are only reported; the `target` is logged, not gated.
+This proves that one SDL-queued ArrowRight press reaches welding and arrives in the page as
+one trusted `keydown` followed by one trusted `keyup` with the expected `key`, `code` and
+`keyCode`. It does **not** prove a physical keyboard, the Win32 -> SDL translation, text
+input/`Char` events, IME, modifiers, auto-repeat, other keyboard layouts, browser focus (the
+probe never sets it on WARP; see the flag's limits above), gameplay, accelerated frames or any
+visual result.
 
 ## Versions evaluated (2026-11-22)
 
@@ -903,7 +966,9 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   focus, visibility, scale factor and cursor shape. The ordinary CI game smoke covers only
   loading and lifecycle on WARP. A synthetic SDL click gate is present in CI but **has not
   run yet** (awaiting CI); it covers only the SDL event queue -> welding -> CEF/Blink DOM
-  click path. Physical mouse input, keyboard, wheel, focus, gameplay and visuals remain
+  click path. A synthetic SDL key gate (one ArrowRight down/up -> trusted DOM
+  `keydown`/`keyup`) is also present in CI and **has not run yet**. Physical mouse input,
+  physical keyboard, text input, wheel, focus, gameplay and visuals remain
   **unverified**, and input has
   these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),
   no `mouseleave` (welding always sends `mouse_leave = 0`, hover can stick when the cursor

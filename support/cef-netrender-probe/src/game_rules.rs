@@ -1,5 +1,5 @@
 //! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
-//! minimized/hidden suspension predicate and the test-only minimize and click sequences (std only,
+//! minimized/hidden suspension predicate and the test-only minimize, click and key sequences (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF on Windows rebuilds a Win32 key message from `cef_key_event_t`: `windows_key_code` is
@@ -308,6 +308,183 @@ impl ClickTest {
     /// Done or failed: `--roves-auto-close-ms` may close the window.
     pub(crate) fn finished(self) -> bool {
         matches!(self, ClickTest::Done | ClickTest::Failed)
+    }
+}
+
+/// `--roves-test-key-ms` only: longest accepted delay after load-end (10 minutes), so a
+/// mistyped value fails at parse time instead of leaving the run waiting indefinitely.
+pub(crate) const TEST_KEY_MAX_DELAY_MS: u64 = 600_000;
+/// `--roves-test-key-ms` only: SDL keyboard id stamped on the pushed key events, so the probe
+/// attributes exactly those events to the test (never a physical keyboard).
+pub(crate) const TEST_KEY_KEYBOARD_ID: u32 = 0x524F_5645;
+/// `--roves-test-key-ms` only: the console message prefix the fixture's keydown/keyup
+/// handlers log, followed by ` type=keydown` or ` type=keyup` and optional details. Accepted
+/// only from a source on the game's loopback origin.
+pub(crate) const TEST_KEY_MARKER: &str = "roves-test-key-received";
+
+/// Parses the `--roves-test-key-ms` delay: a whole number of milliseconds, at most
+/// `TEST_KEY_MAX_DELAY_MS`.
+pub(crate) fn parse_test_key_delay(value: &str) -> Result<std::time::Duration, String> {
+    let ms = value
+        .parse::<u64>()
+        .map_err(|e| format!("--roves-test-key-ms={value}: {e}"))?;
+    if ms > TEST_KEY_MAX_DELAY_MS {
+        return Err(format!(
+            "--roves-test-key-ms={value}: must be <= {TEST_KEY_MAX_DELAY_MS}"
+        ));
+    }
+    Ok(std::time::Duration::from_millis(ms))
+}
+
+/// A fixture key marker: which DOM event type it reports.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyMarker {
+    Down,
+    Up,
+    /// The marker word with any other or no `type=` (always a failure).
+    Other,
+}
+
+/// Classifies a console message as a key marker (`None`: not one).
+pub(crate) fn key_marker(message: &str) -> Option<KeyMarker> {
+    let rest = message.strip_prefix(TEST_KEY_MARKER)?;
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    let kind = |word: &str| {
+        rest.strip_prefix(word)
+            .is_some_and(|tail| tail.is_empty() || tail.starts_with(' '))
+    };
+    Some(if kind(" type=keydown") {
+        KeyMarker::Down
+    } else if kind(" type=keyup") {
+        KeyMarker::Up
+    } else {
+        KeyMarker::Other
+    })
+}
+
+/// A synthetic key event of the test after it went through the input path; `ok` is whether
+/// welding accepted it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyInput {
+    Down { ok: bool },
+    Up { ok: bool },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyAction {
+    None,
+    /// Push the synthetic key down + up into the SDL queue.
+    Push,
+    Complete,
+    Fail(&'static str),
+}
+
+/// `--roves-test-key-ms` (test only, game mode): one synthetic key press after the game's
+/// load-end, observed in order: requested (pushed into the SDL queue), key down and up
+/// forwarded through welding, then the page's keydown marker and keyup marker. Each pending
+/// state carries the request instant; everything must happen within
+/// `TEST_TRANSITION_TIMEOUT` of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyTest {
+    /// Waiting for load-end + the requested delay.
+    Waiting,
+    Requested(std::time::Instant),
+    Pressed(std::time::Instant),
+    Forwarded(std::time::Instant),
+    /// The page reported keydown; keyup pending.
+    DomDown(std::time::Instant),
+    Done,
+    Failed,
+}
+
+impl KeyTest {
+    /// Per deadline turn. `due`: load-end + delay has passed.
+    pub(crate) fn tick(&mut self, now: std::time::Instant, due: bool) -> KeyAction {
+        let (next, action) = match *self {
+            KeyTest::Waiting if due => (KeyTest::Requested(now), KeyAction::Push),
+            KeyTest::Requested(at)
+            | KeyTest::Pressed(at)
+            | KeyTest::Forwarded(at)
+            | KeyTest::DomDown(at)
+                if now - at > TEST_TRANSITION_TIMEOUT =>
+            {
+                (
+                    KeyTest::Failed,
+                    KeyAction::Fail(match *self {
+                        KeyTest::Requested(_) => "synthetic key down never forwarded",
+                        KeyTest::Pressed(_) => "synthetic key up never forwarded",
+                        KeyTest::Forwarded(_) => "keydown marker never received",
+                        _ => "keyup marker never received",
+                    }),
+                )
+            },
+            state => (state, KeyAction::None),
+        };
+        *self = next;
+        action
+    }
+
+    /// A synthetic key event came back from the SDL queue through the input path.
+    pub(crate) fn input(&mut self, input: KeyInput) -> KeyAction {
+        let (next, action) = match (*self, input) {
+            (KeyTest::Failed, _) => (KeyTest::Failed, KeyAction::None),
+            (KeyTest::Requested(_) | KeyTest::Pressed(_), KeyInput::Down { ok: false })
+            | (KeyTest::Requested(_) | KeyTest::Pressed(_), KeyInput::Up { ok: false }) => (
+                KeyTest::Failed,
+                KeyAction::Fail("welding refused a synthetic key event"),
+            ),
+            (KeyTest::Requested(at), KeyInput::Down { ok: true }) => {
+                (KeyTest::Pressed(at), KeyAction::None)
+            },
+            (KeyTest::Pressed(at), KeyInput::Up { ok: true }) => {
+                (KeyTest::Forwarded(at), KeyAction::None)
+            },
+            (KeyTest::Requested(_), KeyInput::Up { .. }) => (
+                KeyTest::Failed,
+                KeyAction::Fail("synthetic key up before key down"),
+            ),
+            _ => (
+                KeyTest::Failed,
+                KeyAction::Fail("unexpected synthetic key event"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// The page logged a key marker.
+    pub(crate) fn marker(&mut self, marker: KeyMarker) -> KeyAction {
+        let (next, action) = match (*self, marker) {
+            (KeyTest::Failed, _) => (KeyTest::Failed, KeyAction::None),
+            (KeyTest::Forwarded(at), KeyMarker::Down) => (KeyTest::DomDown(at), KeyAction::None),
+            (KeyTest::DomDown(_), KeyMarker::Up) => (KeyTest::Done, KeyAction::Complete),
+            (_, KeyMarker::Other) => (
+                KeyTest::Failed,
+                KeyAction::Fail("key marker with an unexpected event type"),
+            ),
+            (KeyTest::DomDown(_) | KeyTest::Done, KeyMarker::Down)
+            | (KeyTest::Done, KeyMarker::Up) => (
+                KeyTest::Failed,
+                KeyAction::Fail("key marker received more than once"),
+            ),
+            (KeyTest::Forwarded(_), KeyMarker::Up) => (
+                KeyTest::Failed,
+                KeyAction::Fail("keyup marker before the keydown marker"),
+            ),
+            _ => (
+                KeyTest::Failed,
+                KeyAction::Fail("key marker before the key was forwarded"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// Done or failed: `--roves-auto-close-ms` may close the window.
+    pub(crate) fn finished(self) -> bool {
+        matches!(self, KeyTest::Done | KeyTest::Failed)
     }
 }
 
@@ -647,6 +824,146 @@ mod tests {
         );
         assert_eq!(click.marker(), ClickAction::None);
         assert_eq!(click.tick(late, true), ClickAction::None);
+    }
+
+    #[test]
+    fn test_key_delay_is_bounded() {
+        assert_eq!(parse_test_key_delay("0"), Ok(ms(0)));
+        assert_eq!(parse_test_key_delay("1000"), Ok(ms(1000)));
+        assert_eq!(
+            parse_test_key_delay("600000"),
+            Ok(ms(TEST_KEY_MAX_DELAY_MS))
+        );
+        for bad in ["600001", "18446744073709551615", "", "-1", "1.5", "1000ms"] {
+            assert!(parse_test_key_delay(bad).is_err(), "{bad:?} accepted");
+        }
+    }
+
+    #[test]
+    fn key_markers_are_classified() {
+        let m = "roves-test-key-received type=keydown key=ArrowRight code=ArrowRight trusted=true";
+        assert_eq!(key_marker(m), Some(KeyMarker::Down));
+        assert_eq!(
+            key_marker("roves-test-key-received type=keyup"),
+            Some(KeyMarker::Up)
+        );
+        assert_eq!(
+            key_marker("roves-test-key-received type=keypress key=x"),
+            Some(KeyMarker::Other)
+        );
+        assert_eq!(
+            key_marker("roves-test-key-received type=keydownx"),
+            Some(KeyMarker::Other)
+        );
+        assert_eq!(
+            key_marker("roves-test-key-received"),
+            Some(KeyMarker::Other)
+        );
+        assert_eq!(key_marker("roves-test-key-receivedx type=keydown"), None);
+        assert_eq!(key_marker("x roves-test-key-received type=keydown"), None);
+        assert_eq!(key_marker(""), None);
+    }
+
+    #[test]
+    fn key_test_runs_in_order() {
+        let t0 = std::time::Instant::now();
+        let mut key = KeyTest::Waiting;
+        assert_eq!(key.tick(t0, false), KeyAction::None);
+        assert_eq!(key.tick(t0, true), KeyAction::Push);
+        // Pushed once only.
+        assert_eq!(key.tick(t0 + ms(1), true), KeyAction::None);
+        assert_eq!(key.input(KeyInput::Down { ok: true }), KeyAction::None);
+        assert_eq!(key.input(KeyInput::Up { ok: true }), KeyAction::None);
+        assert_eq!(key.marker(KeyMarker::Down), KeyAction::None);
+        assert!(!key.finished());
+        assert_eq!(key.tick(t0 + ms(50), true), KeyAction::None);
+        assert_eq!(key.marker(KeyMarker::Up), KeyAction::Complete);
+        assert!(key.finished());
+        // Done is terminal for ticks (no timeout).
+        assert_eq!(
+            key.tick(t0 + TEST_TRANSITION_TIMEOUT * 2, true),
+            KeyAction::None
+        );
+        assert_eq!(key, KeyTest::Done);
+    }
+
+    #[test]
+    fn key_test_fails_on_refusal_order_or_timeout() {
+        let t0 = std::time::Instant::now();
+        let late = t0 + TEST_TRANSITION_TIMEOUT + ms(1);
+        let requested = || {
+            let mut key = KeyTest::Waiting;
+            key.tick(t0, true);
+            key
+        };
+        let forwarded = || {
+            let mut key = requested();
+            key.input(KeyInput::Down { ok: true });
+            key.input(KeyInput::Up { ok: true });
+            key
+        };
+        let fails = |action: KeyAction| matches!(action, KeyAction::Fail(_));
+
+        // welding refuses the key down or the key up.
+        let mut key = requested();
+        assert!(fails(key.input(KeyInput::Down { ok: false })));
+        assert!(key.finished());
+        let mut key = requested();
+        key.input(KeyInput::Down { ok: true });
+        assert!(fails(key.input(KeyInput::Up { ok: false })));
+
+        // Out of order SDL events: up before down, a second down, an event before the
+        // request, an extra event after both were forwarded.
+        assert!(fails(requested().input(KeyInput::Up { ok: true })));
+        let mut key = requested();
+        key.input(KeyInput::Down { ok: true });
+        assert!(fails(key.input(KeyInput::Down { ok: true })));
+        assert!(fails(KeyTest::Waiting.input(KeyInput::Down { ok: true })));
+        assert!(fails(forwarded().input(KeyInput::Down { ok: true })));
+
+        // DOM markers: before forwarding, keyup first, keydown twice, keyup twice, an
+        // unexpected type, anything after done.
+        assert!(fails(KeyTest::Waiting.marker(KeyMarker::Down)));
+        let mut key = requested();
+        key.input(KeyInput::Down { ok: true });
+        assert!(fails(key.marker(KeyMarker::Down)));
+        assert!(fails(forwarded().marker(KeyMarker::Up)));
+        let mut key = forwarded();
+        key.marker(KeyMarker::Down);
+        assert!(fails(key.marker(KeyMarker::Down)));
+        assert!(fails(forwarded().marker(KeyMarker::Other)));
+        let mut key = forwarded();
+        key.marker(KeyMarker::Down);
+        assert!(fails(key.marker(KeyMarker::Other)));
+        let mut key = forwarded();
+        key.marker(KeyMarker::Down);
+        assert_eq!(key.marker(KeyMarker::Up), KeyAction::Complete);
+        assert!(fails(key.marker(KeyMarker::Up)));
+        let mut key = forwarded();
+        key.marker(KeyMarker::Down);
+        key.marker(KeyMarker::Up);
+        assert!(fails(key.marker(KeyMarker::Down)));
+
+        // Each pending state times out relative to the request.
+        let mut key = requested();
+        assert_eq!(
+            key.tick(t0 + TEST_TRANSITION_TIMEOUT, true),
+            KeyAction::None
+        );
+        assert!(fails(key.tick(late, true)));
+        let mut key = requested();
+        key.input(KeyInput::Down { ok: true });
+        assert!(fails(key.tick(late, true)));
+        assert!(fails(forwarded().tick(late, true)));
+        let mut key = forwarded();
+        key.marker(KeyMarker::Down);
+        assert!(fails(key.tick(late, true)));
+        assert_eq!(key, KeyTest::Failed);
+
+        // Failed is terminal and silent.
+        assert_eq!(key.input(KeyInput::Down { ok: true }), KeyAction::None);
+        assert_eq!(key.marker(KeyMarker::Up), KeyAction::None);
+        assert_eq!(key.tick(late, true), KeyAction::None);
     }
 
     #[test]
