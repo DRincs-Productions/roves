@@ -818,6 +818,13 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   drawn (welding's `acquire_popup` is not composed), no gamepad, no audio verification, no
   DevTools. Off-origin navigation is detected after commit, not vetoed. External links are
   never opened (the engine opens them in the system browser after a real click; not here).
+- Local real-game smoke (CI artifact of commit `1565935d74a`, run 45066625026; template SHA
+  `e88e9ac29e7`; Windows, GTX 1050 / DX12, 1280x720, `--roves-compose=wgpu`): main route
+  returned 200, CEF imported frame 1, clean exit (code 0) after 581 imports and 2452
+  presents. Console: two PixiJS Assets "don't know how to parse it" warnings for the remote
+  `sfx_whoosh.wav` and `bgm_cheerful.wav`, and Tone.js WebAudio autoplay blocked before a user
+  gesture. Not done: Chrome comparison, audible-output check, gameplay verification.
+  Follow-up: compare the same warnings in Chrome and check audio after a real gesture.
 - A `GPUDevice`/context loss inside CEF, or `device.destroy()` on the host, is not handled
   beyond logging uncaptured wgpu errors as `FAIL`.
 - Netrender composition only runs on real GPUs (Vello 0.9 crashes on WARP, see the
