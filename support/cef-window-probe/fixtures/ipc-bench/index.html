@@ -1,0 +1,95 @@
+<!doctype html>
+<!--
+  Blink side of the opt-in Deno -> Blink IPC benchmark (support/cef-window-probe/README.md,
+  "Stage 2"). Served from the probe's loopback origin like a game build. It receives no native
+  binding: the renderer process calls rovesIpcBenchFixture.handle(json) with the payload of a
+  CEF process message and sends the returned JSON back. Only this page defines that object.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Roves CEF IPC bench fixture</title>
+    <style>
+      body { margin: 0; font: 10px/10px monospace; }
+      .item, #probe { display: block; box-sizing: border-box; height: 10px; overflow: hidden; }
+      #probe { background: #36c; }
+    </style>
+  </head>
+  <body>
+    <div id="probe"></div>
+    <div id="list"></div>
+    <script>
+      "use strict";
+      const ITEMS = 256;
+      const list = document.getElementById("list");
+      const probe = document.getElementById("probe");
+      const items = [];
+      for (let i = 0; i < ITEMS; i++) {
+        const item = document.createElement("div");
+        item.className = "item";
+        list.append(item);
+        items.push(item);
+      }
+      // Names a host could inject into a page; the benchmark requires none of them to exist.
+      const NATIVE_NAMES = ["cefQuery", "cefQueryCancel", "Deno", "__TAURI__", "chrome.webview"];
+      const exposed = () =>
+        NATIVE_NAMES.filter((name) =>
+          name.split(".").reduce((value, key) => value?.[key], globalThis) !== undefined,
+        );
+
+      function reset() {
+        probe.style.width = "10px";
+        for (const item of items) {
+          item.style.width = "10px";
+          item.textContent = "";
+        }
+        return { ok: true, items: ITEMS, exposed: exposed() };
+      }
+
+      // All writes first, then reads: Blink runs one style/layout update for the whole batch
+      // (Element::OffsetWidth -> Document::UpdateStyleAndLayoutForNode on the first read only).
+      function batch(updates) {
+        for (const [index, width, text] of updates) {
+          const item = items[index];
+          item.style.width = `${width}px`;
+          item.textContent = text;
+        }
+        let widthSum = 0;
+        let textLen = 0;
+        for (const [index] of updates) {
+          widthSum += items[index].offsetWidth;
+          textLen += items[index].textContent.length;
+        }
+        return { ok: true, applied: updates.length, widthSum, textLen };
+      }
+
+      // One write followed by a dependent geometry read: forces a layout on every call.
+      function step(width) {
+        probe.style.width = `${width}px`;
+        return { ok: true, width: probe.getBoundingClientRect().width };
+      }
+
+      Object.defineProperty(globalThis, "rovesIpcBenchFixture", {
+        value: Object.freeze({
+          handle(json) {
+            const start = performance.now();
+            let reply;
+            try {
+              const message = JSON.parse(json);
+              if (message.op === "reset") reply = reset();
+              else if (message.op === "batch") reply = batch(message.updates);
+              else if (message.op === "step") reply = step(message.width);
+              else reply = { ok: false, error: `unknown op ${message.op}` };
+            } catch (error) {
+              reply = { ok: false, error: String(error) };
+            }
+            // Clamped by Blink to 100 us outside cross-origin isolation (TimeClamper).
+            reply.blinkMs = performance.now() - start;
+            return JSON.stringify(reply);
+          },
+        }),
+      });
+      document.title = "Roves CEF IPC bench fixture ready";
+    </script>
+  </body>
+</html>
