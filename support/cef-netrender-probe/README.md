@@ -378,7 +378,11 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   from the table reaches the page as `key="Unidentified"`, `keyCode` 0; the table covers the
   keys SDL 3.4.16's Windows scan-code table produces that have a fixed Win32 virtual key
   (navigation, arrows, keypad, F1-F24, CapsLock, ScrollLock, Pause, PrintScreen,
-  ContextMenu, modifiers, volume/media/browser keys). Not reproduced (unverified on hardware):
+  ContextMenu, modifiers, volume/media/browser keys, the Japanese Convert/NonConvert keys:
+  scan `0079`/`007B`, VK_CONVERT/VK_NONCONVERT, `key` `Convert`/`NonConvert` on every
+  layout in Chromium's `platform_key_map_win.cc`). Left unmapped because Chromium's `key`
+  for them is layout-dependent or printable: KanaMode, Lang1/Lang2, IntlRo, IntlYen,
+  NumpadComma, NumpadEqual; Help stays unmapped too. Not reproduced (unverified on hardware):
   the keypad's NumLock-off virtual keys (SDL reports `SDLK_KP_*` either way, so Numpad6 stays
   VK_NUMPAD6), Ctrl+Pause as anything but Pause (SDL's table maps both scan codes `E046` to
   `SDL_SCANCODE_PAUSE`), and AltGr as `AltGraph` (welding's `EventModifiers` has no CEF

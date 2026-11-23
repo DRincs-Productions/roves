@@ -108,6 +108,8 @@ pub(crate) fn non_character_virtual_key(keycode: u32) -> u32 {
         0x7F => 0xAD,                               // AudioVolumeMute
         0x80 => 0xAF,                               // AudioVolumeUp
         0x81 => 0xAE,                               // AudioVolumeDown
+        0x8A => 0x1C,                               // Convert (INTERNATIONAL4) -> VK_CONVERT
+        0x8B => 0x1D,                               // NonConvert (INTERNATIONAL5) -> VK_NONCONVERT
         0xE0 => 0xA2,                               // ControlLeft -> VK_LCONTROL
         0xE1 => 0xA0,                               // ShiftLeft -> VK_LSHIFT
         0xE2 => 0xA4,                               // AltLeft -> VK_LMENU
@@ -812,6 +814,23 @@ mod tests {
         assert_eq!(key(0x00), 0);
         assert_eq!(non_character_virtual_key(0x61), 0);
         assert_eq!(non_character_virtual_key(0x0D), 0);
+    }
+
+    #[test]
+    fn japanese_conversion_keys_get_their_virtual_key() {
+        // SDL 3.4.16 `scancodes_windows.h`: scan 0x79/0x7B -> SDL_SCANCODE_INTERNATIONAL4/5.
+        // Chromium f2700724f59f: the same Windows scan codes are Convert/NonConvert
+        // (`dom_code_data.inc`), mapped to VKEY_CONVERT/VKEY_NONCONVERT
+        // (`dom_us_layout_data.h`), which `platform_key_map_win.cc` turns into
+        // DomKey::CONVERT/NON_CONVERT for every layout.
+        let key = |usage: u32| non_character_virtual_key(SDLK_SCANCODE_MASK | usage);
+        assert_eq!(key(0x8A), 0x1C); // Convert -> VK_CONVERT
+        assert_eq!(key(0x8B), 0x1D); // NonConvert -> VK_NONCONVERT
+        // Layout-dependent neighbours stay unmapped: KanaMode/Lang1/Lang2 (DomKey depends on
+        // the Korean/Japanese layout), IntlRo/IntlYen/NumpadComma (printable VKs).
+        for usage in [0x85, 0x87, 0x88, 0x89, 0x90, 0x91] {
+            assert_eq!(key(usage), 0, "usage {usage:#x}");
+        }
     }
 
     #[test]
