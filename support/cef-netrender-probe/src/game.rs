@@ -19,8 +19,8 @@ use welding::{
 };
 
 use crate::game_rules::{
-    InputEventKind, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier, forward_input,
-    native_key_code,
+    InputEventKind, SDLK_SCANCODE_MASK, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier,
+    forward_input, native_key_code, non_character_virtual_key,
 };
 
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
@@ -383,48 +383,14 @@ fn mapped_scan_code(vk: i32) -> u32 {
 fn virtual_key(key: Keycode) -> i32 {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
     match key {
-        Keycode::Return | Keycode::KpEnter => 0x0D,
-        // SDL keypad keycodes (0x4000_00xx) are no UTF-16 unit for `VkKeyScanW`.
-        Keycode::Kp0 => 0x60,
-        Keycode::Kp1 => 0x61,
-        Keycode::Kp2 => 0x62,
-        Keycode::Kp3 => 0x63,
-        Keycode::Kp4 => 0x64,
-        Keycode::Kp5 => 0x65,
-        Keycode::Kp6 => 0x66,
-        Keycode::Kp7 => 0x67,
-        Keycode::Kp8 => 0x68,
-        Keycode::Kp9 => 0x69,
-        Keycode::KpMultiply => 0x6A,
-        Keycode::KpPlus => 0x6B,
-        Keycode::KpMinus => 0x6D,
-        Keycode::KpPeriod => 0x6E,
-        Keycode::KpDivide => 0x6F,
-        Keycode::NumLockClear => 0x90,
+        Keycode::Return => 0x0D,
         Keycode::Escape => 0x1B,
         Keycode::Backspace => 0x08,
         Keycode::Tab => 0x09,
-        Keycode::Left => 0x25,
-        Keycode::Up => 0x26,
-        Keycode::Right => 0x27,
-        Keycode::Down => 0x28,
-        Keycode::Insert => 0x2D,
         Keycode::Delete => 0x2E,
-        Keycode::Home => 0x24,
-        Keycode::End => 0x23,
-        Keycode::PageUp => 0x21,
-        Keycode::PageDown => 0x22,
-        Keycode::LShift => 0xA0,
-        Keycode::RShift => 0xA1,
-        Keycode::LCtrl => 0xA2,
-        Keycode::RCtrl => 0xA3,
-        Keycode::LAlt => 0xA4,
-        Keycode::RAlt => 0xA5,
-        Keycode::LGui => 0x5B,
-        Keycode::RGui => 0x5C,
-        key if (Keycode::F1 as u32..=Keycode::F12 as u32).contains(&(key as u32)) => {
-            0x70 + (key as i32 - Keycode::F1 as i32)
-        },
+        // Keys without a character (`SDLK_SCANCODE_MASK | scancode`) are no UTF-16 unit for
+        // `VkKeyScanW`: fixed table, unit-tested in `game_rules`.
+        key if key as u32 & SDLK_SCANCODE_MASK != 0 => non_character_virtual_key(key as u32) as i32,
         key => {
             let Ok(unit) = u16::try_from(key as u32) else {
                 return 0;

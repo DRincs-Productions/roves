@@ -370,9 +370,20 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   to DIP): cursor moves, left/middle/right buttons with held-button modifiers, wheel
   (`LineDelta` x 120 = `WHEEL_DELTA` per notch, `PixelDelta` as is), Shift/Ctrl/Alt/Meta.
   Keyboard: `RawKeyDown`, one `Char` per typed BMP character (`wParam` = the character), and
-  `KeyUp`; `windows_key_code` is the virtual key of the SDL keycode (an explicit table for
-  non-character and keypad keys, `VkKeyScanW` for characters) with left/right modifiers
-  folded to VK_SHIFT/VK_CONTROL/VK_MENU (what a real `WM_KEYDOWN` carries). `native_key_code`
+  `KeyUp`; `windows_key_code` is the virtual key of the SDL keycode (`VkKeyScanW` for
+  characters; for keycodes without a character, `SDLK_SCANCODE_MASK | scancode`, a fixed
+  table unit-tested in `src/game_rules.rs`) with left/right modifiers folded to
+  VK_SHIFT/VK_CONTROL/VK_MENU (what a real `WM_KEYDOWN` carries). CEF 154 derives the DOM
+  `key` only from this value (`PlatformKeyMap::DomKeyFromKeyboardCode`), so a key missing
+  from the table reaches the page as `key="Unidentified"`, `keyCode` 0; the table covers the
+  keys SDL 3.4.16's Windows scan-code table produces that have a fixed Win32 virtual key
+  (navigation, arrows, keypad, F1-F24, CapsLock, ScrollLock, Pause, PrintScreen,
+  ContextMenu, modifiers, volume/media/browser keys). Not reproduced (unverified on hardware):
+  the keypad's NumLock-off virtual keys (SDL reports `SDLK_KP_*` either way, so Numpad6 stays
+  VK_NUMPAD6), Ctrl+Pause as anything but Pause (SDL's table maps both scan codes `E046` to
+  `SDL_SCANCODE_PAUSE`), and AltGr as `AltGraph` (welding's `EventModifiers` has no CEF
+  extended-key flag).
+  `native_key_code`
   is a **Windows scan code**, not an `lParam`: CEF 154
   (`CefBrowserPlatformDelegateNativeWin::TranslateUiKeyEvent`, CEF commit 14c5a089e845,
   `libcef/browser/native/browser_platform_delegate_native_win.cc`) passes it unchanged to

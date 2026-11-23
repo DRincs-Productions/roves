@@ -64,6 +64,75 @@ pub(crate) fn native_key_code(raw: u16, usage: Option<u32>, mapped: u32) -> i32 
     scan as i32
 }
 
+/// SDL's keycode for a key without a character: `SDLK_SCANCODE_MASK | scancode`
+/// (`SDL_keycode.h`). SDL 3.4.16's Windows keymap keeps that default for every such key.
+pub(crate) const SDLK_SCANCODE_MASK: u32 = 1 << 30;
+
+/// `cef_key_event_t.windows_key_code` for an SDL keycode that names a key without a character
+/// (`SDLK_SCANCODE_MASK | usage`): the Win32 virtual key a real `WM_KEYDOWN` carries, 0 when
+/// the key is unknown or `keycode` is a character (those go through `VkKeyScanW`). CEF 154
+/// derives the DOM `key` only from this value (`PlatformKeyMap::DomKeyFromKeyboardCode`), so a
+/// missing entry turns e.g. CapsLock or Pause into `key="Unidentified"`, `keyCode` 0. VK values:
+/// Chromium's `ui/events/keycodes/keyboard_codes_win.h`. Keypad keys map to the NumLock-on
+/// virtual keys; the virtual keys Windows reports with NumLock off are not reproduced.
+pub(crate) fn non_character_virtual_key(keycode: u32) -> u32 {
+    if keycode & SDLK_SCANCODE_MASK == 0 {
+        return 0;
+    }
+    match keycode & !SDLK_SCANCODE_MASK {
+        0x39 => 0x14,                               // CapsLock -> VK_CAPITAL
+        usage @ 0x3A..=0x45 => 0x70 + usage - 0x3A, // F1..F12 -> VK_F1..VK_F12
+        0x46 => 0x2C,                               // PrintScreen -> VK_SNAPSHOT
+        0x47 => 0x91,                               // ScrollLock -> VK_SCROLL
+        0x48 => 0x13,                               // Pause -> VK_PAUSE
+        0x49 => 0x2D,                               // Insert
+        0x4A => 0x24,                               // Home
+        0x4B => 0x21,                               // PageUp -> VK_PRIOR
+        0x4D => 0x23,                               // End
+        0x4E => 0x22,                               // PageDown -> VK_NEXT
+        0x4F => 0x27,                               // ArrowRight
+        0x50 => 0x25,                               // ArrowLeft
+        0x51 => 0x28,                               // ArrowDown
+        0x52 => 0x26,                               // ArrowUp
+        0x53 => 0x90,                               // NumLock
+        0x54 => 0x6F,                               // NumpadDivide
+        0x55 => 0x6A,                               // NumpadMultiply
+        0x56 => 0x6D,                               // NumpadSubtract
+        0x57 => 0x6B,                               // NumpadAdd
+        0x58 => 0x0D,                               // NumpadEnter -> VK_RETURN
+        usage @ 0x59..=0x61 => 0x61 + usage - 0x59, // Numpad1..9 -> VK_NUMPAD1..9
+        0x62 => 0x60,                               // Numpad0
+        0x63 => 0x6E,                               // NumpadDecimal
+        0x65 => 0x5D,                               // ContextMenu -> VK_APPS
+        usage @ 0x68..=0x73 => 0x7C + usage - 0x68, // F13..F24 -> VK_F13..VK_F24
+        0x7F => 0xAD,                               // AudioVolumeMute
+        0x80 => 0xAF,                               // AudioVolumeUp
+        0x81 => 0xAE,                               // AudioVolumeDown
+        0xE0 => 0xA2,                               // ControlLeft -> VK_LCONTROL
+        0xE1 => 0xA0,                               // ShiftLeft -> VK_LSHIFT
+        0xE2 => 0xA4,                               // AltLeft -> VK_LMENU
+        0xE3 => 0x5B,                               // MetaLeft -> VK_LWIN
+        0xE4 => 0xA3,                               // ControlRight -> VK_RCONTROL
+        0xE5 => 0xA1,                               // ShiftRight -> VK_RSHIFT
+        0xE6 => 0xA5,                               // AltRight -> VK_RMENU
+        0xE7 => 0x5C,                               // MetaRight -> VK_RWIN
+        0x102 => 0x5F,                              // Sleep
+        0x10B => 0xB0,                              // MediaTrackNext
+        0x10C => 0xB1,                              // MediaTrackPrevious
+        0x10D => 0xB2,                              // MediaStop
+        0x10F => 0xB3,                              // MediaPlayPause
+        0x110 => 0xB5,                              // MediaSelect -> VK_LAUNCH_MEDIA_SELECT
+        0x118 => 0xAA,                              // BrowserSearch
+        0x119 => 0xAC,                              // BrowserHome
+        0x11A => 0xA6,                              // BrowserBack
+        0x11B => 0xA7,                              // BrowserForward
+        0x11C => 0xA9,                              // BrowserStop
+        0x11D => 0xA8,                              // BrowserRefresh
+        0x11E => 0xAB,                              // BrowserFavorites (SDL AC_BOOKMARKS)
+        _ => 0,
+    }
+}
+
 /// `MapVirtualKeyW(.., MAPVK_VSC_TO_VK_EX)` distinguishes left/right modifiers, while the
 /// `wParam` of a real `WM_KEYDOWN` (what Chromium sees natively and what DOM `keyCode`
 /// reports) carries the generic VK_SHIFT/VK_CONTROL/VK_MENU.
@@ -703,6 +772,46 @@ mod tests {
         // NumLock keeps its extended code.
         assert_eq!(native_key_code(0xE045, Some(0x53), 0), 0xE045);
         assert_eq!(native_key_code(0, Some(0x53), 0x45), 0xE045);
+    }
+
+    #[test]
+    fn non_character_keys_get_their_virtual_key() {
+        let key = |usage: u32| non_character_virtual_key(SDLK_SCANCODE_MASK | usage);
+        // Previously 0 (`key="Unidentified"`, `keyCode` 0 in CEF): SDLK_CAPSLOCK, SDLK_PAUSE,
+        // ... are not UTF-16 units, so `VkKeyScanW` never saw them.
+        assert_eq!(key(0x39), 0x14); // CapsLock -> VK_CAPITAL
+        assert_eq!(key(0x46), 0x2C); // PrintScreen -> VK_SNAPSHOT
+        assert_eq!(key(0x47), 0x91); // ScrollLock -> VK_SCROLL
+        assert_eq!(key(0x48), 0x13); // Pause -> VK_PAUSE
+        assert_eq!(key(0x65), 0x5D); // ContextMenu -> VK_APPS
+        assert_eq!(key(0x68), 0x7C); // F13
+        assert_eq!(key(0x73), 0x87); // F24
+        assert_eq!(key(0x7F), 0xAD); // VK_VOLUME_MUTE
+        assert_eq!(key(0x10F), 0xB3); // VK_MEDIA_PLAY_PAUSE
+        assert_eq!(key(0x11A), 0xA6); // VK_BROWSER_BACK
+        // Unchanged from the former explicit table.
+        assert_eq!(key(0x3A), 0x70); // F1
+        assert_eq!(key(0x45), 0x7B); // F12
+        assert_eq!(key(0x4F), 0x27); // ArrowRight
+        assert_eq!(key(0x52), 0x26); // ArrowUp
+        assert_eq!(key(0x49), 0x2D); // Insert
+        assert_eq!(key(0x4B), 0x21); // PageUp
+        assert_eq!(key(0x53), 0x90); // NumLock
+        assert_eq!(key(0x58), 0x0D); // NumpadEnter -> VK_RETURN
+        assert_eq!(key(0x59), 0x61); // Numpad1
+        assert_eq!(key(0x5E), 0x66); // Numpad6
+        assert_eq!(key(0x61), 0x69); // Numpad9
+        assert_eq!(key(0x62), 0x60); // Numpad0
+        assert_eq!(key(0x63), 0x6E); // NumpadDecimal
+        assert_eq!(key(0x54), 0x6F); // NumpadDivide
+        assert_eq!(key(0xE1), 0xA0); // ShiftLeft, folded to VK_SHIFT by the caller
+        assert_eq!(key(0xE6), 0xA5); // AltRight
+        assert_eq!(key(0xE7), 0x5C); // MetaRight
+        // Unknown non-character keys and character keycodes ('a', '\r'): 0 here.
+        assert_eq!(key(0x75), 0); // Help: no verified Windows virtual key
+        assert_eq!(key(0x00), 0);
+        assert_eq!(non_character_virtual_key(0x61), 0);
+        assert_eq!(non_character_virtual_key(0x0D), 0);
     }
 
     #[test]
