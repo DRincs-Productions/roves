@@ -1004,6 +1004,29 @@ their receipts, `test key complete` and the clean close/shutdown lines; addition
 `key=Right`/`key=ArrowRight` line. Same limits as the ArrowRight gate; it also proves no
 CapsLock lock-state toggle or `getModifierState('CapsLock')` result.
 
+**Local real-GPU correctness check (2026-11-23), separate from the CI/WARP gate above.** The
+`cef-netrender-probe-windows-x64` artifact (ID 14852559736) of
+[run 45245179096](https://github.com/DRincs-Productions/roves/actions/runs/45245179096), built
+from commit `d9443fc5e0a5828cb6d1f341061412f740f77f4b`, was downloaded and run locally on
+Windows with an NVIDIA GeForce GTX 1050 (DX12, driver 32.0.15.8163), CEF 154.0.34, wgpu
+29.0.4, 1280x720, with `--roves-test-key-ms=1000 --roves-test-key=CapsLock`. Both this local
+log and the WARP log of the same run contain `producer created accelerated=true`, but that
+line is printed after building `WindowsCefConfig` with `prefer_accelerated: true`: it reports
+the requested preference, and `prefer_accelerated` itself is not evidence that CEF delivered
+an accelerated frame. The local evidence of an actual accelerated import is the adapter line
+`type=DiscreteGpu` for the GTX 1050 together with `import frame=1 ... path=dx12-shared-handle`,
+i.e. a shared-handle frame imported on the discrete adapter. The WARP run used adapter
+`Microsoft Basic Render Driver` with `type=Cpu` and has no `import frame=` lines, so it
+delivered no imported accelerated frame. The local log also showed raw=0, usage=0x39,
+windows_key_code=0x14, and native_key_code=0x003A. Both trusted DOM markers (`keydown` and
+`keyup`) had `key=CapsLock code=CapsLock keyCode=20 repeat=false trusted=true`. Exit code 0,
+clean browser/renderer/CEF shutdown, no leftover probe process;
+742 frames were presented in 14364 ms, a count that includes startup and teardown. This is a
+functional smoke test on one machine, **not a performance result** (no frame-interval,
+latency or CPU/GPU measurement, no Chrome comparison), and **not proof** of physical keyboard
+input, the Win32 -> SDL translation, or CapsLock modifier/lock-state behavior; the limits of
+the gate above still apply.
+
 ## Versions evaluated (2026-11-22)
 
 | Component | Pin | Notes |
