@@ -296,8 +296,10 @@ Interpretation limits of what is implemented:
 - `upstream-log` sees only what welding/grafting log at warn/error through `log`; CEF's
   own logging (`cef-debug.log`) and Chromium internals are not forwarded. No log line does
   not prove no failure in code that does not log.
-- The extra clock reads per redraw are not believed to change scheduling, but this is not
-  measured; the diagnostic has not been built or run yet.
+- The extra clock reads per redraw have not been measured for observer effect. The four
+  Netrender reruns in artifact run 45050607096 and the follow-up series below used the
+  diagnostic-enabled build, but none reproduced a rejection; therefore its rejection-only
+  trace path remains unverified against an actual stall.
 
 Limit: this attributes *which side did not move*, not *which GPU workload caused it*.
 welding's D3D11 copy and its event-query wait run on the same GPU as Netrender's D3D12
@@ -307,9 +309,9 @@ indicated, the next discriminator is Chromium's `gpu.capture` trace (`FpsRateLim
 work in this CEF build), or welding exposing callback timing and `capture_counter` (an
 upstream request, not filed).
 
-Reproducible next test (after the diagnostic is built by `cef-netrender-probe.yml`): same
-GTX 1050, monitor and refresh rate (record it), the same ABBA order with a fresh cache
-directory per trial, and the exact command lines saved next to the logs:
+The diagnostic is built by `cef-netrender-probe.yml`. A follow-up ABBA series on 2026-11-23
+is recorded below. If another rejected run is needed to exercise the rejection-only trace,
+repeat the same GTX 1050 setup and record the exact commands beside the logs:
 
 ```pwsh
 $dir = 'D:\roves-ci\<new run id>-cef-nr'
@@ -329,6 +331,32 @@ Pass criterion for the diagnostic (not for performance): every rejected trial ha
 `stall-trace` and `stall-mailbox` lines and falls into one row of the table above. If
 no trial is rejected, report that (2/4 Netrender rejects were seen once) and do not infer
 anything about the cause.
+
+## Follow-up sustained comparison (2026-11-23)
+
+Eight alternating trials using the diagnostic-enabled artifact from
+[CI run 45075636992](https://github.com/DRincs-Productions/roves/actions/runs/45075636992),
+commit `34cb3726e95d45381f4d66faddfc29836f7e2eb4`. Local machine: GTX 1050, driver
+`32.0.15.8163`, 1920x1080 display at 60 Hz, requested 1280x720 surface; order
+`netrender,wgpu,wgpu,netrender,netrender,wgpu,wgpu,netrender`; 10 s warmup, 30 s sample,
+500 ms import-stall limit. All eight trials completed with exit 0; no `stall-trace` or
+`stall-mailbox` was emitted. Logs and metadata are local under
+`D:\roves-ci-artifacts\cef-abba-clean-2026-11-23`; the original two 630/650 ms rejects
+remain unexplained. The diagnostics therefore show that the stall is intermittent, not its
+cause.
+
+| Composition | Healthy trials | `frame` p95 / p99 range | `present-interval` p95 / p99 range | `compose` p99 range |
+| --- | ---: | ---: | ---: | ---: |
+| Netrender | 4/4 | 16.674–16.805 / 16.828–16.936 ms | 16.671–16.910 / 16.927–17.056 ms | 1.831–2.425 ms |
+| direct wgpu | 4/4 | 16.758–16.829 / 16.866–17.004 ms | 16.766–16.840 / 16.877–17.013 ms | 0.191–0.272 ms |
+
+The wall-clock `compose` calls are shorter for the direct wgpu blit in this fixture. The
+end-to-end frame and present-call intervals are near one 60 Hz refresh in both modes, so this
+sample does not show a meaningful difference in cadence. These host timings are not GPU
+execution time, actual displayed-frame feedback, PresentMon data, input latency, or a game
+benchmark; the fixture is a simple transparent page, not the visual novel. Four trials per
+mode are also insufficient to claim broad performance parity. The standalone import timings
+include the shared-device queue wait and do not identify producer cost.
 
 ## Real-game mode (`--roves-game-dir`, opt-in, implemented; CI loading gate only, no real game run yet)
 
