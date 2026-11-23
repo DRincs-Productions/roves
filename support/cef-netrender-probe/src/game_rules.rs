@@ -776,44 +776,126 @@ mod tests {
         assert_eq!(native_key_code(0, Some(0x53), 0x45), 0xE045);
     }
 
+    /// Every mapped usage, spelled out (no ranges, so the implementation's arithmetic is not
+    /// mirrored). Each row was derived independently from the pinned sources: SDL 3.4.16
+    /// `SDL_scancode.h` usage -> HID usage (page 0x07 below 0x100; Sleep 0x010082 and the
+    /// consumer page 0x0C for the media/AC keys) -> Chromium f2700724f59f
+    /// `dom/dom_code_data.inc` DomCode -> `dom_us_layout_data.h` `kDomCodeToKeyboardCodeMap`
+    /// VKEY -> its value in `keyboard_codes_posix.h` (the Win32 VK numbering).
+    const NON_CHARACTER_VIRTUAL_KEYS: &[(u32, u32, &str)] = &[
+        (0x39, 0x14, "CAPSLOCK"),
+        (0x3A, 0x70, "F1"),
+        (0x3B, 0x71, "F2"),
+        (0x3C, 0x72, "F3"),
+        (0x3D, 0x73, "F4"),
+        (0x3E, 0x74, "F5"),
+        (0x3F, 0x75, "F6"),
+        (0x40, 0x76, "F7"),
+        (0x41, 0x77, "F8"),
+        (0x42, 0x78, "F9"),
+        (0x43, 0x79, "F10"),
+        (0x44, 0x7A, "F11"),
+        (0x45, 0x7B, "F12"),
+        (0x46, 0x2C, "PRINTSCREEN"),
+        (0x47, 0x91, "SCROLLLOCK"),
+        (0x48, 0x13, "PAUSE"),
+        (0x49, 0x2D, "INSERT"),
+        (0x4A, 0x24, "HOME"),
+        (0x4B, 0x21, "PAGEUP"),
+        (0x4D, 0x23, "END"),
+        (0x4E, 0x22, "PAGEDOWN"),
+        (0x4F, 0x27, "RIGHT"),
+        (0x50, 0x25, "LEFT"),
+        (0x51, 0x28, "DOWN"),
+        (0x52, 0x26, "UP"),
+        (0x53, 0x90, "NUMLOCKCLEAR"),
+        (0x54, 0x6F, "KP_DIVIDE"),
+        (0x55, 0x6A, "KP_MULTIPLY"),
+        (0x56, 0x6D, "KP_MINUS"),
+        (0x57, 0x6B, "KP_PLUS"),
+        (0x58, 0x0D, "KP_ENTER"),
+        (0x59, 0x61, "KP_1"),
+        (0x5A, 0x62, "KP_2"),
+        (0x5B, 0x63, "KP_3"),
+        (0x5C, 0x64, "KP_4"),
+        (0x5D, 0x65, "KP_5"),
+        (0x5E, 0x66, "KP_6"),
+        (0x5F, 0x67, "KP_7"),
+        (0x60, 0x68, "KP_8"),
+        (0x61, 0x69, "KP_9"),
+        (0x62, 0x60, "KP_0"),
+        (0x63, 0x6E, "KP_PERIOD"),
+        (0x65, 0x5D, "APPLICATION"),
+        (0x68, 0x7C, "F13"),
+        (0x69, 0x7D, "F14"),
+        (0x6A, 0x7E, "F15"),
+        (0x6B, 0x7F, "F16"),
+        (0x6C, 0x80, "F17"),
+        (0x6D, 0x81, "F18"),
+        (0x6E, 0x82, "F19"),
+        (0x6F, 0x83, "F20"),
+        (0x70, 0x84, "F21"),
+        (0x71, 0x85, "F22"),
+        (0x72, 0x86, "F23"),
+        (0x73, 0x87, "F24"),
+        (0x7F, 0xAD, "MUTE"),
+        (0x80, 0xAF, "VOLUMEUP"),
+        (0x81, 0xAE, "VOLUMEDOWN"),
+        (0x8A, 0x1C, "INTERNATIONAL4"), // Convert -> VK_CONVERT
+        (0x8B, 0x1D, "INTERNATIONAL5"), // NonConvert -> VK_NONCONVERT
+        (0xE0, 0xA2, "LCTRL"),
+        (0xE1, 0xA0, "LSHIFT"),
+        (0xE2, 0xA4, "LALT"),
+        (0xE3, 0x5B, "LGUI"),
+        (0xE4, 0xA3, "RCTRL"),
+        (0xE5, 0xA1, "RSHIFT"),
+        (0xE6, 0xA5, "RALT"),
+        (0xE7, 0x5C, "RGUI"),
+        (0x102, 0x5F, "SLEEP"),
+        (0x10B, 0xB0, "MEDIA_NEXT_TRACK"),
+        (0x10C, 0xB1, "MEDIA_PREVIOUS_TRACK"),
+        (0x10D, 0xB2, "MEDIA_STOP"),
+        (0x10F, 0xB3, "MEDIA_PLAY_PAUSE"),
+        (0x110, 0xB5, "MEDIA_SELECT"),
+        (0x118, 0xAA, "AC_SEARCH"),
+        (0x119, 0xAC, "AC_HOME"),
+        (0x11A, 0xA6, "AC_BACK"),
+        (0x11B, 0xA7, "AC_FORWARD"),
+        (0x11C, 0xA9, "AC_STOP"),
+        (0x11D, 0xA8, "AC_REFRESH"),
+        (0x11E, 0xAB, "AC_BOOKMARKS"),
+    ];
+
     #[test]
     fn non_character_keys_get_their_virtual_key() {
-        let key = |usage: u32| non_character_virtual_key(SDLK_SCANCODE_MASK | usage);
-        // Previously 0 (`key="Unidentified"`, `keyCode` 0 in CEF): SDLK_CAPSLOCK, SDLK_PAUSE,
-        // ... are not UTF-16 units, so `VkKeyScanW` never saw them.
-        assert_eq!(key(0x39), 0x14); // CapsLock -> VK_CAPITAL
-        assert_eq!(key(0x46), 0x2C); // PrintScreen -> VK_SNAPSHOT
-        assert_eq!(key(0x47), 0x91); // ScrollLock -> VK_SCROLL
-        assert_eq!(key(0x48), 0x13); // Pause -> VK_PAUSE
-        assert_eq!(key(0x65), 0x5D); // ContextMenu -> VK_APPS
-        assert_eq!(key(0x68), 0x7C); // F13
-        assert_eq!(key(0x73), 0x87); // F24
-        assert_eq!(key(0x7F), 0xAD); // VK_VOLUME_MUTE
-        assert_eq!(key(0x10F), 0xB3); // VK_MEDIA_PLAY_PAUSE
-        assert_eq!(key(0x11A), 0xA6); // VK_BROWSER_BACK
-        // Unchanged from the former explicit table.
-        assert_eq!(key(0x3A), 0x70); // F1
-        assert_eq!(key(0x45), 0x7B); // F12
-        assert_eq!(key(0x4F), 0x27); // ArrowRight
-        assert_eq!(key(0x52), 0x26); // ArrowUp
-        assert_eq!(key(0x49), 0x2D); // Insert
-        assert_eq!(key(0x4B), 0x21); // PageUp
-        assert_eq!(key(0x53), 0x90); // NumLock
-        assert_eq!(key(0x58), 0x0D); // NumpadEnter -> VK_RETURN
-        assert_eq!(key(0x59), 0x61); // Numpad1
-        assert_eq!(key(0x5E), 0x66); // Numpad6
-        assert_eq!(key(0x61), 0x69); // Numpad9
-        assert_eq!(key(0x62), 0x60); // Numpad0
-        assert_eq!(key(0x63), 0x6E); // NumpadDecimal
-        assert_eq!(key(0x54), 0x6F); // NumpadDivide
-        assert_eq!(key(0xE1), 0xA0); // ShiftLeft, folded to VK_SHIFT by the caller
-        assert_eq!(key(0xE6), 0xA5); // AltRight
-        assert_eq!(key(0xE7), 0x5C); // MetaRight
-        // Unknown non-character keys and character keycodes ('a', '\r'): 0 here.
-        assert_eq!(key(0x75), 0); // Help: no verified Windows virtual key
-        assert_eq!(key(0x00), 0);
-        assert_eq!(non_character_virtual_key(0x61), 0);
-        assert_eq!(non_character_virtual_key(0x0D), 0);
+        assert!(
+            NON_CHARACTER_VIRTUAL_KEYS
+                .windows(2)
+                .all(|w| w[0].0 < w[1].0),
+            "table rows must be unique and sorted"
+        );
+        // Every SDL scancode (`SDL_SCANCODE_COUNT` = 512): the row's VK, or 0 when unmapped
+        // (Help 0x75, KanaMode/Lang1/Lang2, IntlRo/IntlYen, NumpadComma, ...).
+        for usage in 0..0x200 {
+            let expected = NON_CHARACTER_VIRTUAL_KEYS
+                .iter()
+                .find(|row| row.0 == usage)
+                .map_or(0, |row| row.1);
+            assert_eq!(
+                non_character_virtual_key(SDLK_SCANCODE_MASK | usage),
+                expected,
+                "usage {usage:#x}"
+            );
+        }
+        // Keycodes without SDLK_SCANCODE_MASK are characters (`VkKeyScanW` path): 0 here, even
+        // when the value equals a mapped usage ('9' is CapsLock's 0x39, 'a' is Numpad9's 0x61).
+        for keycode in [0x00, 0x0D, 0x1B, 0x39, 0x61, 0x7F, 0xE1, 0x102] {
+            assert_eq!(
+                non_character_virtual_key(keycode),
+                0,
+                "keycode {keycode:#x}"
+            );
+        }
     }
 
     #[test]
