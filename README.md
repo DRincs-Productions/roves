@@ -1,5 +1,11 @@
 # Roves
 
+> **Branch `codex/cef-sdl3-wgpu-probe`:** this branch carries only the CEF + SDL3 + wgpu
+> candidate player (`support/cef-netrender-probe`, built by its own workflow; see its
+> README). The Servo + V8 engine sources, `mach` and their build workflows were removed
+> here on 2026-11-23, so the build, `mach bundle` and platform instructions below describe
+> `main` and do not apply to this branch's checkout.
+
 **Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
 web engine, repurposed as a runtime for shipping **web-based games** as real native
 applications — instead of as a browser.

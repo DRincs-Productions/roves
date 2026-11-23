@@ -19,8 +19,8 @@ use welding::{
 };
 
 use crate::game_rules::{
-    InputEventKind, SDLK_SCANCODE_MASK, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier,
-    forward_input, native_key_code, non_character_virtual_key,
+    InputEventKind, SDLK_SCANCODE_MASK, bmp_chars, fold_sided_modifier, forward_input,
+    native_key_code, non_character_virtual_key, wheel_cef_delta,
 };
 
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
@@ -102,6 +102,9 @@ pub(crate) struct Input {
     pub(crate) forwarded: u64,
     /// Codes of the last key down/up handed to welding (log evidence of the key test).
     pub(crate) last_key: Option<KeyCodes>,
+    /// `(delta_x, delta_y)` of the last wheel call handed to welding (log evidence of the
+    /// wheel test).
+    pub(crate) last_wheel: Option<(i32, i32)>,
     cursor_hidden: bool,
     active_cursor: Option<Cursor>,
 }
@@ -218,18 +221,13 @@ impl Input {
             Event::MouseWheel {
                 x, y, direction, ..
             } => {
-                let factor = if *direction == MouseWheelDirection::Flipped {
-                    -WHEEL_DELTA_PER_LINE
-                } else {
-                    WHEEL_DELTA_PER_LINE
-                };
+                let (delta_x, delta_y) =
+                    wheel_cef_delta(*x, *y, *direction == MouseWheelDirection::Flipped);
+                self.last_wheel = Some((delta_x, delta_y));
                 self.mouse(
                     producer,
                     MouseButton::Left,
-                    MouseAction::WheelScrolled {
-                        delta_x: (*x * factor).round() as i32,
-                        delta_y: (*y * factor).round() as i32,
-                    },
+                    MouseAction::WheelScrolled { delta_x, delta_y },
                 )
             },
             Event::KeyDown {

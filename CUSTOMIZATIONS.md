@@ -1,3 +1,80 @@
+## 2026-11-23 - CEF + SDL3 + wgpu candidate: persistent player saves; Servo + V8 engine removed from this branch
+
+Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs}`,
+`support/cef-netrender-probe/README.md` ("Saves and the player profile"),
+`.github/workflows/cef-netrender-probe.yml`, `.github/workflows/test.yml`,
+`rust-toolchain.toml`, `README.md`, `TODO.md`, plus the removals listed under "Branch
+isolation" below. Branch `codex/cef-sdl3-wgpu-probe` only; no
+release, no `mach build`/`mach bundle` flag, no `roves-action`/Packmaster surface change.
+
+Saves regression fixed: the packaged launch used a per-run `%TEMP%` CEF cache deleted on exit
+and a free loopback port per run, so origin-keyed storage (localStorage, IndexedDB) started
+empty on every launch. An ordinary packaged launch now uses a persistent profile root
+`%LOCALAPPDATA%\Roves\Player\<exe stem>-<FNV-1a 64 of the canonical install dir>` (or
+`--roves-cache-dir`) holding `player.lock` (`File::try_lock`, held for the run), `origin-port`
+(the first launch's port, written through a rename and reused afterwards) and `cef\` (CEF root
+cache with welding's `game-profile`). A second instance (lock held) or a stored port taken by
+another program exits with code 6 before CEF starts, with a native dialog (skipped with
+`--roves-no-error-dialog`); a damaged port file or unwritable profile exits 1; the probe never
+falls back to a new origin. `--roves-port` is refused there. New `--roves-isolated-profile`
+(packaged launch only, refused with `--roves-cache-dir`) keeps the old per-run, removed cache
+for CI/tests; `--roves-game-dir` probe mode is unchanged. The loopback server
+(`support/cef-window-probe/src/server.rs`) is unchanged. A pre-existing usage message with
+indentation spaces inside its string literal was fixed. CI: the direct-launch step passes
+`--roves-isolated-profile` and gates `profile=isolated`; new refusal cases; a new step launches
+the package twice with the default persistent profile (same origin, stored port reused,
+profile kept) and checks lock/port contention (exit 6) and a damaged port file (exit 1). No new
+dependency.
+
+Branch isolation: this branch no longer carries the Servo + V8 engine. Removed (still in git
+history and on `main`): `components/`, `ports/`, `python/`, `third_party/`, `etc/`, `tests/`,
+`mach`/`mach.bat`/`mach.ps1`, the root engine workspace `Cargo.toml`/`Cargo.lock`,
+`pyproject.toml`/`uv.lock`, `servobuild.example`, `shell.nix`; under `support/` the engine
+packaging (`android/`, `ios/`, `macos/`, `windows/`, `content-packer/`), the V8/Blitz/Deno
+implementations and tests (`blitz-v8-probe/` with its vendored Blitz forks, `deno-core-probe/`,
+`v8-smoke/`, `v8_cutover_check.py`, `roves_js/`, `task-queue-tests/`), `crown/`, and the
+servoshell/CI helpers `check_sdl3_windowing_contracts.py` (parsed `ports/servoshell` sources),
+`apt_prefetch.sh`, `xvfb_window_cycle_smoke{,_test}.sh`, `macos_input_smoke.swift`,
+`suppressed_leaks_for_asan.txt`, `gstreamer_mirror.py`. Workflows deleted because they build
+or reference removed code: `v8.yml`, `release.yml`, `android.yml`, `ios.yml`, `perf-ab.yml`,
+`blitz-probe.yml`, `deno-core-probe.yml`, `netrender-window.yml`, `gstreamer-mirror.yml`.
+`test.yml` keeps only `sdl3-gamepad-probe` (the Debug Servo + V8 package/publication jobs and
+the SDL3 windowing-contract job are gone) and now runs only on changes to that probe or the
+workflow. Kept: `cef-netrender-probe.yml`, `cef-window-probe.yml`, `netrender-proof.yml`
+(standalone crate), `validate-skills.yml`; both CEF probes, `sdl3-gamepad-probe`,
+`netrender-shared-device-proof`, `chromium-reference`, `icon.png`/`icon.svg`, `LICENSE`,
+`LICENSE_WHATWG_SPECS`, `resources/`, `test-page/`, `support/perf/`, `docs/`, `skills/`,
+the sibling-repo submodules and the root `rustfmt.toml`/`taplo.toml`. `rust-toolchain.toml`
+keeps channel 1.95.0 but drops the `llvm-tools`/`rustc-dev` components that only `crown`
+needed. README carries a branch note. Not yet run in CI; real-GPU save/load across launches
+is a manual check.
+
+## 2026-11-23 - CEF + SDL3 + wgpu candidate: directly playable Windows package (branch experiment)
+
+Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs,splash.rs,lib.rs}`,
+`support/cef-netrender-probe/README.md` ("Packaged player"),
+`.github/workflows/cef-netrender-probe.yml`, `.github/workflows/test.yml`, `TODO.md`.
+Branch `codex/cef-sdl3-wgpu-probe` only; no release, no `mach build`/`mach bundle` flag and
+no `roves-action`/Packmaster surface changes. The probe now runs the `game` directory next to
+its executable when started without `--roves-game-dir` (packaged launch: directory from
+`current_exe`, per-run CEF cache under `%TEMP%\roves-cef-player` removed on exit (superseded by the
+persistent profile, entry above), test hooks
+refused, new `--roves-no-error-dialog` for unattended runs). Every game mode shows a dark
+branded startup screen (root `icon.png` decoded/scaled/premultiplied by SDL3 3.4, also the
+SDL window icon) through the existing wgpu blit until the accepted main-frame load-end and a
+CEF frame painted after it (fresh paint requested through welding's `resize`/invalidate);
+failures show a dimmed failure screen and, in the packaged launch, a native SDL error dialog
+instead of the red/black clear colours. The fixture smoke is unchanged. The CEF workflow
+builds the pinned `DRincs-Productions/visual-novel-template` commit `e88e9ac29e73` (`npm ci`),
+assembles `play.exe` (CEF bootstrap renamed, icon set with rcedit v2.0.0 as `mach bundle
+--icon-ico` does) + `play.dll` + CEF runtime + byte-identical `game\` + provenance/dependency
+records + app-local MSVC runtime when imported, launches it directly from another working
+directory on WARP (failure path expected there) and uploads it as an artifact. `test.yml`
+skipped `ensure-test-release`, `build-and-publish` and `steam-emulator-smoke-test` only when
+`github.ref` is this branch (since replaced by their removal, entry above). No new Rust
+dependency, CEF not forked. Not yet run in CI; real-GPU release onto the game is a manual
+check.
+
 ## 2026-11-22 - CEF accelerated OSR -> wgpu-weld -> Netrender probe (Windows, experiment only)
 
 Changed: `support/cef-netrender-probe/` (new separate Cargo workspace),

@@ -381,7 +381,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   `%TEMP%` per run, made absolute) and the page gets welding's per-producer on-disk profile at
   `<cache-dir>\game-profile` (welding requires it inside the root cache). Every default run is
   therefore isolated and starts empty; reusing the same `--roves-cache-dir` **and**
-  `--roves-port` keeps `localStorage`/IndexedDB saves (storage is keyed by origin).
+  `--roves-port` keeps `localStorage`/IndexedDB saves (storage is keyed by origin). The
+  packaged launch does this automatically ("Saves and the player profile" below).
 - **Origin and security.** No script is injected, no `execute_script`, no host object or
   message bridge is exposed (welding's renderer handler only answers host-initiated
   evaluation requests, which game mode never sends); there is no Deno in this process. The
@@ -555,6 +556,41 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   frame when no frame is focused (`WebFrameWidgetImpl::HandleKeyEvent` ->
   `FocusController::FocusedOrMainFrame`), and on WARP the probe never gives focus (no
   imported frame). No gameplay, visual result or presented frame is proved.
+- **Synthetic wheel (`--roves-test-wheel-ms=<ms>`, tests only).** Game mode only, and not
+  together with `--roves-test-minimize-ms`, `--roves-test-click-ms` or `--roves-test-key-ms`
+  (one test hook per run). `<ms>` must be a whole number from 0 to 600000 (anything else is
+  a usage error). `<ms>` after the accepted load-end the probe pushes one `MouseWheel` with
+  `x=0 y=1` lines (one notch away from the user, i.e. up), `direction=Normal` and a sentinel
+  mouse id (`0x524F5645`) into the SDL event queue with `SDL_PushEvent` (sdl3 0.20
+  `EventSubsystem::push_event`). It comes back through the loop's ordinary `poll_iter` ->
+  `window_event` -> `Input` -> welding `send_mouse_input` (`MouseAction::WheelScrolled`)
+  path, the same conversion as a real wheel (`wheel_cef_delta`: lines x
+  `WHEEL_DELTA_PER_LINE` = 120, flipped direction negated), which welding hands unchanged to
+  CEF `SendMouseWheelEvent`. `Input` places the wheel at its tracked cursor (the last
+  forwarded motion, initially 0,0), not at the event's `mouse_x`/`mouse_y`. Only an event
+  carrying the sentinel id counts for the test. The page must log
+  `roves-test-wheel-received` followed by space-separated `name=value` fields from the
+  loopback origin. Required, in order: request pushed; the event forwarded with welding
+  accepting the call and exactly `delta_x=0 delta_y=120`; then one marker with `type=wheel`,
+  `trusted=true`, `deltaX=0`, a negative `deltaY` (Blink negates the CEF delta, so DOM
+  "up" is negative) and a `deltaMode` of 0, 1 or 2. Anything else fails (`FAIL test wheel
+  ...`, then close): a push error, a welding refusal, another delta or no wheel call, a second
+  synthetic wheel event, a marker before forwarding, a second marker, a marker with another
+  type, untrusted, a horizontal delta, the wrong direction or a missing/invalid
+  `deltaY`/`deltaMode`, or any step not done within 10 s of the request; an unfinished
+  sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it. Log lines:
+  `test wheel requested x=0 y=1 direction=normal window_id=<n> pushed=<bool>`,
+  `test wheel forwarded delta_x=<n> delta_y=<n> ok=<bool>` (`none` instead of the deltas when
+  no wheel call was made), `test wheel marker received delta_y=<v> delta_mode=<n>` (or
+  `unexpected="<reason>"`), `test wheel complete`. The DOM `deltaY` magnitude and
+  `deltaMode` are **reported, not checked**. **Coverage and limits:** this exercises the
+  SDL queue, the probe's SDL -> welding wheel conversion and CEF/Blink delivery of one trusted
+  DOM `wheel` event with the expected direction. It is a synthetic SDL event, not a physical
+  wheel or the Win32 `WM_MOUSEWHEEL` path SDL builds wheel events from; it proves no input
+  latency, scrolling, visible rendering or presented frame, no horizontal wheel, no
+  high-resolution/precision touchpad deltas and no parity of the delta magnitude with Chrome
+  (see the Chromium reference below: a native Chrome notch is about 100 CSS px, while this
+  test only checks the CEF API's delivered event and direction).
 - **Lifecycle.** `--roves-timeout-ms` (default 120000) bounds only the load (exit 2 if no
   accepted load-end). Afterwards the run lasts until the OS closes the window, or
   `--roves-auto-close-ms=<ms>` after the load-end (for repeatable captures). Exit 0 = loaded,
@@ -563,8 +599,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   `console level=... source=...:line message=...` (first 500, 512 characters each).
   `--roves-sustained` and `--roves-keep-open` are refused with `--roves-game-dir` (no fixture
   checks); `--roves-port`, `--roves-auto-close-ms`, `--roves-test-minimize-ms`,
-  `--roves-test-click-ms` and `--roves-test-key-ms` are refused without it (usage error,
-  exit 1, before the log opens).
+  `--roves-test-click-ms`, `--roves-test-key-ms` and `--roves-test-wheel-ms` are refused
+  without it (usage error, exit 1, before the log opens).
 - **Timings.** With `--roves-timings`, every redraw after the accepted load-end is recorded
   and a `timings phase=game ...` summary (same stages and format as above) is emitted when the
   window starts closing, before the close sequence. Resizes break the intervals but are not
@@ -582,7 +618,12 @@ directly (no `lParam` decoding; see Input above). `ui/events/blink/web_input_eve
 (~122) derives `wheel_ticks = offset / kWheelDelta` from a `ui::MouseWheelEvent` offset. CEF's
 own OSR glue that turns `SendMouseWheelEvent` deltas into that offset is not in the checkout,
 so how far one notch scrolls under CEF versus Chrome is **not verified**: the tick count and
-direction are expected to match, DOM `deltaY` magnitudes may not. For the synthetic click
+direction are expected to match, DOM `deltaY` magnitudes may not. The synthetic wheel gate
+(`--roves-test-wheel-ms`) used no further Chromium source (the support/chromium-reference
+checkout was not fetched for it): it checks the delta the probe hands to CEF
+(`delta_y=120`) and the direction of the delivered DOM event, and only reports the DOM
+`deltaY` magnitude and `deltaMode`, so it is no evidence of parity with Chrome's ~100 px
+native notch. For the synthetic click
 gate no new Chromium source was checked out (the same pinned `f2700724` sparse dirs only):
 `ui/events/blink`/`ui/events/win` build `WebMouseEvent`s from native Win32 messages in
 Chrome, a path the probe never takes, because CEF's `SendMouseClickEvent` constructs the
@@ -653,6 +694,215 @@ input-to-photon latency (no instrumented input here), and the probe always pays 
 copy, welding's copy and two CPU waits per frame that Chrome does not (see "Differences from
 Chromium's own model"). Same-target spread across trials must be smaller than the gap before
 calling a difference real; no result is claimed until such runs exist.
+
+## Packaged player (directly playable Windows folder; implemented 2026-11-23, not yet run in CI)
+
+`cef-netrender-probe.yml` also produces the artifact
+`visual-novel-template-roves-cef-windows-x64`: the same Release bundle with the unmodified
+production web build of
+[DRincs-Productions/visual-novel-template](https://github.com/DRincs-Productions/visual-novel-template)
+at commit `e88e9ac29e736e007904e0767815e21cd8725941`, laid out to be started with a double
+click. It is a workflow artifact only, never attached to a GitHub Release.
+
+```text
+visual-novel-template-roves-cef\
+  play.exe            CEF 154 bootstrap.exe (renamed with play.dll and play.exe.manifest),
+                      Windows icon = repository root icon.png
+  play.dll            this probe (Release)
+  libcef.dll, *.pak, locales\, ...   CEF runtime, as bundled by cef-rs
+  vcruntime140*.dll   only if a module imports the MSVC runtime (app-local copy)
+  game\               the template's dist\, byte for byte
+  PROVENANCE.txt      engine/template commits, pins, build commands, licenses
+  provenance\         Cargo.lock, rust-dependencies.txt (crate + license), template
+                      package-lock.json and npm ls, imports.txt, licenses\
+  SHA256SUMS.txt
+```
+
+**Packaged launch.** Without `--roves-game-dir`, if `<directory of play.exe>\game\index.html`
+exists (and neither `--roves-sustained` nor `--roves-keep-open` is given), the probe runs that
+game in game mode. The directory comes from `std::env::current_exe`, never from the working
+directory, so a shortcut or another current directory open the same game. An ordinary launch
+uses the **persistent player profile** (next section), so saves survive between launches;
+`--roves-isolated-profile` is the explicit CI/test mode with a throw-away cache. The test hooks
+(`--roves-test-*-ms`) are refused in the packaged launch (usage error, exit 1): they need an
+explicit `--roves-game-dir`. `--roves-no-error-dialog` (packaged launch only, refused
+otherwise) turns the failure dialogs off for unattended runs. Log line: `player launch
+game-dir=<dir> profile=<persistent|isolated> cache=<dir> clean-cache=<bool>
+error-dialog=<bool>`.
+
+### Saves and the player profile (fixed 2026-11-23)
+
+Regression fixed: the first packaged launch used a fresh per-run CEF cache under `%TEMP%`,
+deleted on exit, and a free loopback port per run. Page storage (`localStorage`, IndexedDB,
+Cache Storage) is keyed by origin *and* lives in the profile, so every launch started with an
+empty game: saves were lost twice over.
+
+- **Ordinary launch (default).** Profile root
+  `%LOCALAPPDATA%\Roves\Player\<exe stem>-<16 hex>`, where the hex is the 64-bit FNV-1a of the
+  lower-cased canonical install directory (`player_profile_name` in `src/game_rules.rs`,
+  unit-tested): every launch of one install finds the same profile, and two packages that both
+  ship `play.exe` never share storage. `--roves-cache-dir=<dir>` replaces the root. Contents:
+  `player.lock` (held for the whole browser-process run), `origin-port` and `cef\` (CEF's root
+  cache, with welding's per-producer `game-profile` inside). The first launch binds a free port
+  and stores it (`origin-port.tmp` then rename; `player origin-port stored port=<n>`); every
+  later launch binds the stored port, so the origin `http://127.0.0.1:<port>` and the saves stay
+  identical. Nothing is deleted on exit. Log line: `player profile root=<dir> lock=acquired
+  origin-port=<n|new>`. `--roves-port` is refused here (the profile owns the port).
+- **Contention fails cleanly (exit 6), before the loopback server and CEF start.** A second
+  copy of the same install finds the lock held (`File::try_lock`, i.e. `LockFileEx`; released
+  by the OS when the process ends, even on a crash, so no stale lock): `FAIL player profile
+  busy root=<dir> ...` and the dialog "The game is already running ...". If another program
+  holds the stored port (bind `AddrInUse`/`PermissionDenied`): `FAIL game loopback port busy
+  port=<n> ...` and a dialog asking to close that program; the probe never falls back to another
+  port, which would silently show an empty game. A damaged `origin-port` file or an unwritable
+  profile fails with exit 1 and a dialog naming the folder (`FAIL player profile root=...`).
+  With `--roves-no-error-dialog` the dialogs are replaced by `player error dialog skipped
+  (--roves-no-error-dialog)`. Windows lets a listener rebind a port at once even with
+  connections in `TIME_WAIT` (checked locally), so a quick restart is not contention.
+- **Isolated mode (`--roves-isolated-profile`, packaged launch only).** The previous behaviour,
+  now opt-in for CI and tests: CEF's root cache is a fresh `%TEMP%\roves-cef-player\run-<ms>-<pid>`
+  with a free port per run, removed after CEF shut down and the loopback server stopped, on every
+  exit path after it is created (`player cache removed dir=... attempts=<n>`; retried for 2 s
+  while child processes exit; `player cache not removed ...` otherwise). Refused with
+  `--roves-cache-dir` or outside the packaged launch (usage error, exit 1).
+- **Temporary probe mode unchanged.** `--roves-game-dir` keeps a per-run
+  `%TEMP%\roves-cef-netrender-probe\run-...` cache and a free port unless `--roves-cache-dir`
+  and `--roves-port` are given (see "Real-game mode").
+
+Limits: moving or renaming the install directory starts a new, empty profile (the old one
+stays under `%LOCALAPPDATA%`); no uninstaller removes profiles; a different program
+permanently holding the stored port makes the game refuse to start until it is closed.
+Saves surviving a real game's relaunch on real hardware are a manual check (below).
+Libraries: no new dependency. Known-folder lookup uses `%LOCALAPPDATA%` directly (a crate such
+as `directories`/`dirs` would add a dependency for one Windows-only path); locking uses the
+standard library's `File::try_lock` (stable since Rust 1.89); the 64-bit FNV-1a is a few lines
+because `std`'s `DefaultHasher` is not guaranteed stable across Rust releases.
+
+**Startup screen (every game mode, packaged or `--roves-game-dir`).** The window is created
+hidden; the official logo (root `icon.png`, embedded with `include_bytes!`) is decoded and
+halved twice to 256 px by SDL3 itself (`SDL_LoadPNG_IO`, SDL 3.4's bundled stb_image, and
+`SDL_ScaleSurface` linear; `SDL_PremultiplySurfaceAlpha`), set as the window icon
+(`SDL_SetWindowIcon`) and uploaded once as a premultiplied `Rgba8Unorm` texture. Before the CEF
+browser is created, the window is shown with a first frame: the dark background `#141418`
+with the logo centred 1:1, composed by the existing premultiplied wgpu blit (now with a
+destination offset) and presented by the existing present path. That screen stays until
+**both** the accepted main-frame load-end has been handled **and** a CEF frame painted after
+it has been imported: the gate (`StartupGate` in `src/game_rules.rs`, unit-tested) records the
+newest welding paint generation at the end of the loop turn that handled load-end and
+releases on a strictly newer one, because a frame imported in that same turn may predate the
+load. At load-end the probe calls welding's `resize` with the current size, which re-sends
+`was_resized` and `Invalidate(PET_VIEW)`, so a page that is already static still paints
+once. Only then is the composed CEF frame shown. The clear colour around the game frame (for
+example right after a resize) is the same dark colour in game mode; the fixture keeps its red
+background and visible window, unchanged. In the packaged launch, page input is forwarded only
+after the release (explicit `--roves-game-dir` keeps forwarding from load-end, as its test
+hooks expect), and `--roves-auto-close-ms` counts from the release instead of load-end. Log
+lines: `branding decoded logo=256x256 window-icon=<bool> elapsed_ms=<n>` (or
+`branding unavailable error=...`, then the screens are the plain dark background),
+`startup screen shown size=<w>x<h> window-shown=<bool> presented=<bool>`, `startup
+fresh-frame requested ok=<bool>`, `startup released generation=<n> imported=<n>
+after_load_end_ms=<n>` and the `startup milestone=startup-released` timeline entry. Note that
+`first-present` now marks the first redraw of the startup screen in game mode, not the first
+CEF frame.
+
+**Readable failure.** A main-frame load error, a rejected load-end (status or origin), a
+renderer termination (also after the release) or, in the packaged launch, no release within
+`--roves-timeout-ms` (`load-timeout` if no accepted load-end, `no-fresh-frame` if loaded but no
+newer frame, e.g. accelerated off-screen rendering unavailable) turns the screen into the
+failure screen: the same dark background with the logo at about 30 % opacity and the window
+title `Roves - the game could not start` (`startup failed reason=<token>`, then `startup
+failure screen presented reason=<token>`). The packaged launch then shows a native SDL message
+box over the window (`SDL_ShowSimpleMessageBox`, error icon) with a sentence for the player,
+the reason token and the log path, and closes with exit code 2 after it is dismissed (`startup
+failure dialog closed ok=<bool>`, or `startup failure dialog skipped
+(--roves-no-error-dialog)`). If the window itself cannot be created (for example no DX12
+adapter) the packaged launch shows the same kind of dialog without a parent window (exit 5).
+No red or black placeholder is shown on any of these paths. Text on the wgpu screen itself was
+not added: it would need a font rasterizer and text layout (for example glyphon, whose
+releases track wgpu versions independently of the wgpu 29 pin here); the native dialog gives
+readable, localisable-by-OS text with code already in the graph.
+
+**Chromium reference.** The `support/chromium-reference` submodule was empty in this
+checkout, so the pinned revision `f2700724f59fb554eb19a4f827b1d256e2a13286` was read through
+GitHub raw: `content/browser/renderer_host/render_widget_host_impl.cc` and `.h`
+(`new_content_rendering_timeout_`, `ClearDisplayedGraphics`,
+`ForceFirstFrameAfterNavigationTimeout`, `OnRenderFrameMetadataChangedAfterActivation`),
+`third_party/blink/common/widget/constants.cc` (`kNewContentRenderingDelay` = 4 s),
+`content/public/browser/web_contents_observer.h` (`DocumentOnLoadCompletedInPrimaryMainFrame`,
+`DidFinishLoad`) and `chrome/app/chrome_exe.rc` (`IDR_MAINFRAME` first icon resource).
+Chromium keeps showing the previous surface and keeps input inactive after a cross-document
+navigation until the renderer's first frame metadata for the new content arrives
+(`first_content_metadata_received_`, then `input_router()->MakeActive()`), and after 4 s
+clears to the background and releases input anyway. Roves maps the "previous surface" to its
+startup screen and holds input the same way in the packaged launch; it requires load-end in
+addition (a game's first paint is often an empty shell before its scripts finish), and it
+does not reveal an empty page after a timeout: it shows the failure screen instead, because a
+blank white or black window is exactly what the screen replaces. The Windows icon follows
+Chrome's model of an icon resource in the executable (`IDR_MAINFRAME` first), applied after
+link time because the executable is CEF's prebuilt bootstrap.exe.
+
+**Libraries evaluated.** Reused: SDL3 3.4 (already linked) for PNG decode, downscale,
+premultiply, window icon and the message box; the probe's wgpu blit for composition;
+welding's `resize` for the fresh paint (it exposes no `invalidate`); for the executable icon,
+the tool `mach bundle --icon-ico` already uses (electron/rcedit v2.0.0, MIT, SHA-256 pinned
+in the workflow) and Pillow 11.3.0 (pinned) to turn `icon.png` into a multi-size `.ico`. Not
+added: the `image` crate (decode/resize would duplicate SDL 3.4), `winresource`/`embed-resource`
+(they embed resources at link time of a Rust binary; `play.exe` is CEF's prebuilt
+bootstrap.exe), a text renderer (above). No new Rust dependency; CEF is not forked.
+
+**CI gate for the package (WARP).** After the probe steps, the workflow checks out the
+template at the pinned commit (`persist-credentials: false`), verifies `HEAD`, builds it with
+Node 22 `npm ci` + `npm run build` (the template's own `prebuild` PWA icon step runs as
+part of it; the resulting checkout changes are only recorded), converts the icon, verifies
+rcedit's SHA-256 and assembles the folder above. Gated there: the three renamed files exist and
+no `roves_cef_netrender_probe*`/`.pdb` file remains, the icon extracted from `play.exe`
+changed after rcedit, `game\` has exactly the same files and SHA-256 as `dist\`, every DLL
+imported by a top-level `.exe`/`.dll` is in the package, a Windows API set or in System32,
+except the MSVC runtime, which is copied app-local from the runner's Visual Studio
+redistributable directory when imported (delay-loaded imports are reported only), and
+`cargo tree` succeeds. A missing CEF `LICENSE.txt` is a warning. Then `play.exe` is started
+**directly**: no `--roves-game-dir`/`--roves-cache-dir`, from an unrelated working directory,
+with `--roves-isolated-profile --roves-no-error-dialog --roves-auto-close-ms=5000
+--roves-timeout-ms=60000`. Required in order: sandbox info, `player launch` with
+`<package>\game`, `profile=isolated` and `clean-cache=true`, the
+loopback origin, `branding decoded logo=256x256 window-icon=true`, `startup screen shown ...
+window-shown=true presented=true`, the producer, `load-end status=200 url=<origin>/ ok=true`,
+`startup fresh-frame requested ok=true`; then, since WARP delivers no accelerated frame, the
+failure path (`FAIL startup not released within 60000 ms (no-fresh-frame)`, `startup failed
+reason=no-fresh-frame`, `startup failure screen presented`, `startup failure dialog skipped`,
+the clean close/shutdown lines, `player cache removed`, `exit code=2`); if frames do arrive,
+the release path is required instead (`startup released`, `auto-close scheduled delay_ms=5000
+from=startup-release`, `auto-close window`, clean shutdown, `exit code=0`). Also gated: the
+expected exit code, no other `FAIL` line, no `player cache not removed`/`branding
+unavailable`/test-hook line, the cache directory gone afterwards, a `--type=renderer` child,
+no child with `--no-sandbox`, no `play.exe` left, and five refused launches (exit 1, no log):
+`--roves-no-error-dialog` and `--roves-isolated-profile` on the plain bundle, a test hook,
+`--roves-isolated-profile` with `--roves-cache-dir`, and `--roves-port` in the persistent
+packaged launch. A
+desktop capture 3 s after the main load (`startup-screen.png` in the evidence) must contain at
+least 200000 pixels of the background colour (±3), at most 20000 saturated red pixels (the
+logo has a red ring; the old red clear colour would fill the window) and at least 1000
+near-white logo pixels; an all-black capture (no visible desktop) only warns. **Not proved by
+CI:** the release onto a real game frame, gameplay, input, the failure dialog itself and the
+visual failure screen (both need a real or interactive desktop), audio, and anything on a
+real GPU.
+
+**CI gate for the persistent profile (WARP).** A second step launches the package twice with
+no profile switch (default root under the runner's `%LOCALAPPDATA%`, `--roves-timeout-ms=15000`,
+exit 2 on WARP or 0 if released). Required: `profile=persistent ... clean-cache=false`, a root
+named `play-<16 hex>` under `%LOCALAPPDATA%\Roves\Player`, `origin-port=new` and `player
+origin-port stored port=<n>` on the first launch, `origin-port=<n>` and no new store on the
+second, the **same loopback origin** in both, `origin-port` holding `<n>` and `cef\` plus
+`cef\game-profile` present after exit, no `player cache removed`. Then three refusals that must
+end before `cef initialized`: the profile lock held by the step (`FileStream.Lock`) gives exit 6
+and `FAIL player profile busy`; the stored port held by a `TcpListener` gives exit 6 and `FAIL
+game loopback port busy port=<n>`; a damaged `origin-port` gives exit 1. This proves the profile
+and origin are stable, not that a game's own save survives (that needs a frame and input).
+
+Manual check: run `play.exe` from the artifact on the GTX 1050 and confirm the startup screen,
+the release onto the template's menu, input, closing, the icon in Explorer and the taskbar;
+save in the template, close, start again and load the save; start a second copy while the first
+runs (dialog "already running", exit 6, first copy unaffected).
 
 ## Pipeline
 
@@ -725,10 +975,16 @@ pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
 exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
 `--roves-auto-close-ms=<ms>` and one of the test-only `--roves-test-minimize-ms=<ms>`,
-`--roves-test-click-ms=<ms>` or `--roves-test-key-ms=<ms>` (the latter optionally with
-`--roves-test-key=ArrowRight|CapsLock`) (opt-in
-real-game mode, above; no fixture checks). CEF
-switches such as `--log-file` pass through.
+`--roves-test-click-ms=<ms>`, `--roves-test-key-ms=<ms>` (optionally with
+`--roves-test-key=ArrowRight|CapsLock`) or `--roves-test-wheel-ms=<ms>` (opt-in
+real-game mode, above; no fixture checks), and `--roves-no-error-dialog` and
+`--roves-isolated-profile` (packaged launch only, "Packaged player" above). Without
+`--roves-game-dir`, a `game\index.html` next to the executable selects the packaged launch
+instead of the fixture; there `--roves-cache-dir` names the persistent profile root, not
+CEF's root cache. Exit codes: 0 pass, 1 usage/setup error or failed check, 2 timeout,
+incomplete run or failed startup, 3 sandbox, 4 CEF initialisation, 5 window/surface startup, 6 packaged-launch
+contention (profile in use or stored origin port taken). CEF switches such as
+`--log-file` pass through.
 
 ## Optional timings (`--roves-timings`)
 
@@ -930,7 +1186,14 @@ producer lines, close/shutdown/exit lines, at least one `--type=renderer` child,
 command line with `--no-sandbox` (sampled with `Win32_Process` while running), no process
 left. If frames were imported, exit 0 and 16 `PASS pixel` lines are required; if WARP
 delivers no accelerated frame, a notice says so and exit 2 is required (the GPU path is
-then verified only on real hardware). Netrender composition does not run in CI.
+then verified only on real hardware). Netrender composition does not run in CI. The
+workflow also triggers on the repository root `icon.png` (embedded by the startup screen),
+and its last steps build, check, run and upload the directly playable package ("Packaged
+player" above). On this branch only, the Servo + V8 Debug CI entrypoints were removed
+(2026-11-23): `test.yml` no longer has `ensure-test-release`, `build-and-publish` and
+`steam-emulator-smoke-test` (it keeps the two SDL3 checks), and `v8.yml` (roves-js/roves-v8
+runtime tests and the Debug `servoshell-v8` build) is deleted, so a push here neither
+rebuilds Servo nor overwrites the rolling `test` release. Other branches keep both files.
 
 A second step reuses the same bundle (no second build) for an opt-in `--roves-game-dir`
 **loading gate**: the step writes a two-file fixture (`index.html` loading the ES module
@@ -1031,6 +1294,34 @@ key=CapsLock ... pushed=true`, both `forwarded ... ok=true` lines, the `type=key
 their receipts, `test key complete` and the clean close/shutdown lines; additionally no
 `key=Right`/`key=ArrowRight` line. Same limits as the ArrowRight gate; it also proves no
 CapsLock lock-state toggle or `getModifierState('CapsLock')` result.
+
+A seventh step reuses the same bundle for the **synthetic wheel gate** (not yet run in CI at
+the time of writing). It first checks that `--roves-test-wheel-ms` is refused without
+`--roves-game-dir`, together with the click, key or minimize hook, above 600000 ms and when
+not a whole number (`1s`) (exit 1, no evidence log, `usage error` on stderr if captured).
+Then a fresh-cache run on a fixture whose non-passive capture `wheel` listener on `window`
+calls `preventDefault()` (so no scrolling perturbs the fixture) and logs
+`roves-test-wheel-received type=<type> deltaX=<n> deltaY=<n> deltaZ=<n> deltaMode=<n>
+wheelDeltaY=<n> trusted=<bool> cancelable=<bool> defaultPrevented=<bool> scrollY=<n>
+target=<node>`, with `--roves-compose=wgpu --roves-test-wheel-ms=1000
+--roves-auto-close-ms=5000` on WARP. Gated, each line after the previous one: `producer
+created accelerated=true background=white`, the fixture's `module-ok` marker, `test wheel
+requested x=0 y=1 direction=normal ... pushed=true`, `test wheel forwarded delta_x=0
+delta_y=120 ok=true`, the marker from `<origin>/game.js` with `type=wheel deltaX=0`, a
+negative `deltaY`, `deltaZ=0`, `deltaMode` 0-2 and `trusted=true`, `test wheel marker
+received delta_y=<negative> delta_mode=<0-2>`, `test wheel complete`, `auto-close window`,
+close, `game input forwarded=`, `browser closed`, `producer and renderer dropped`, `cef
+shutdown complete`, `game loopback stopped`, `exit code=0`; plus the accepted `load-end`
+before the request, exactly one request, one forwarded line, one DOM wheel marker and one
+receipt, process exit 0, no `FAIL`/`input rejected`/`close requested by the OS`/`popup
+refused`/`test minimize`/`test click`/`test key` line and no leftover process. The other
+synthetic steps now also fail on any `test wheel` line. The `deltaY` magnitude, `deltaMode`,
+`wheelDeltaY`, `cancelable`, `defaultPrevented`, `scrollY` and `target` are logged as
+notices, not gated. This proves that one SDL-queued wheel notch reaches welding with the
+current conversion's CEF delta and arrives in the page as exactly one trusted DOM `wheel`
+event scrolling up. It does **not** prove a physical wheel, the Win32 -> SDL translation,
+input latency, actual scrolling, visible rendering, accelerated frames, the horizontal axis,
+precision/touchpad deltas or parity of the delta magnitude with Chrome.
 
 **Local real-GPU correctness checks (2026-11-23), separate from the CI/WARP gates above.**
 The `cef-netrender-probe-windows-x64` artifact (ID 14852559736) of
@@ -1181,7 +1472,9 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   (same path, trusted DOM `key=CapsLock code=CapsLock keyCode=20`). These are WARP tests
   only: they exercise no accelerated OSR import, no physical input, and no text, wheel,
   focus, gameplay or visual behavior. The local real-GPU key checks are a separate record
-  ("Local real-GPU correctness checks" in the CI section above). Physical mouse input,
+  ("Local real-GPU correctness checks" in the CI section above). A synthetic wheel gate
+  (SDL wheel queue -> welding -> CEF/Blink DOM `wheel`, direction only) has been added to
+  the workflow but has no CI result yet. Physical mouse input,
   physical keyboard, text input, wheel, focus, gameplay and visuals remain
   **unverified**, and input has
   these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),

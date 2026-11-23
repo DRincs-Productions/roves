@@ -4,7 +4,11 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 probe
 # Windows probe (welding e991684, CEF 154, wgpu 29.0.4 and SDL3) and runs it on
 # the runner's only DX12 adapter, WARP. Accelerated frame import is also tested on
 # real GPUs using the uploaded bundle. The same bundle then runs a --roves-game-dir loading
-# gate on a minimal loopback JS fixture (no GPU frame or gameplay claim). Separate from
+# gate on a minimal loopback JS fixture (no GPU frame or gameplay claim). Finally it
+# packages the same Release bundle with the unmodified web build of
+# DRincs-Productions/visual-novel-template (pinned commit) as a directly playable Windows
+# folder (play.exe + game\, provenance, dependency check), runs it by direct launch and
+# uploads it as a workflow artifact only (no GitHub Release). Separate from
 # cef-window-probe.yml (CEF 156 baseline, unchanged). Never gates a release.
 
 on:
@@ -13,6 +17,8 @@ on:
       - 'support/cef-netrender-probe/**'
       # Compiled into the probe's opt-in game mode through `#[path]`.
       - 'support/cef-window-probe/src/server.rs'
+      # Embedded by the game-mode startup screen and used for play.exe's icon.
+      - 'icon.png'
       - '.github/workflows/cef-netrender-probe.yml'
   workflow_dispatch:
 
@@ -257,7 +263,7 @@ jobs:
           }
           if ($code -ne 0) { Write-Output "::error::game mode exit code $code (expected 0)"; $failed = $true }
           # The test-only minimize and click hooks must stay off without their flags.
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'test minimize', 'test click', 'test key')) {
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'test minimize', 'test click', 'test key', 'test wheel')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -503,7 +509,7 @@ jobs:
             if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
           }
           if ($code -ne 0) { Write-Output "::error::click run exit code $code (expected 0)"; $failed = $true }
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test key')) {
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test key', 'test wheel')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -651,7 +657,7 @@ jobs:
             if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
           }
           if ($code -ne 0) { Write-Output "::error::key run exit code $code (expected 0)"; $failed = $true }
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'type=keypress')) {
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'type=keypress', 'test wheel')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -793,7 +799,7 @@ jobs:
             if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
           }
           if ($code -ne 0) { Write-Output "::error::CapsLock run exit code $code (expected 0)"; $failed = $true }
-          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'type=keypress', 'key=Right ', 'key=ArrowRight ')) {
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'type=keypress', 'key=Right ', 'key=ArrowRight ', 'test wheel')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -805,12 +811,718 @@ jobs:
             Write-Output '::error::probe processes left running after the CapsLock run'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Synthetic wheel delivery regression (same bundle). The test-only flag
+      # --roves-test-wheel-ms=1000 makes the probe push one SDL MouseWheel (x=0 y=1 lines,
+      # normal direction, a sentinel mouse id) into the SDL queue with SDL_PushEvent 1 s after
+      # load-end; it comes back through the loop's ordinary SDL poll -> Input -> welding
+      # send_mouse_input (WheelScrolled) path, which must hand CEF delta_x=0 delta_y=120
+      # (WHEEL_DELTA_PER_LINE). The fixture's non-passive capture listener on window calls
+      # preventDefault and logs `roves-test-wheel-received type=wheel deltaX=.. deltaY=..
+      # deltaZ=.. deltaMode=.. ...`. The probe itself requires type=wheel, trusted=true,
+      # deltaX=0, deltaY<0 (up) and a deltaMode of 0-2; magnitude and deltaMode are reported,
+      # not compared with Chrome. Required, in log order: the module marker before the request,
+      # the request with pushed=true, forwarded delta_x=0 delta_y=120 ok=true, the marker,
+      # its receipt, wheel complete, auto-close and the clean close/shutdown lines; exit 0,
+      # exactly one request, one forwarded line and one DOM wheel marker, no FAIL line, no
+      # leftover process. Fresh cache, WARP. A synthetic SDL event: no physical wheel, Win32
+      # path, latency, rendering or Chrome delta parity. Negative checks first: the flag is
+      # refused without --roves-game-dir, together with the click, key or minimize hook,
+      # above 600000 ms and when not a whole number (usage error before the log opens, exit 1).
+      - name: run the probe in game mode (synthetic wheel, WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-wheel-run'
+          if (Test-Path -LiteralPath $out) {
+            Write-Output "::error::synthetic-wheel output directory already exists: $out"
+            exit 1
+          }
+          $game = Join-Path $out 'game'
+          New-Item -ItemType Directory -Force $game | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $game 'index.html') @'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>roves ci wheel fixture</title>
+          <script type="module" src="./game.js"></script>
+          '@
+          Set-Content -Encoding utf8 (Join-Path $game 'game.js') @'
+          window.addEventListener('wheel', (e) => {
+            e.preventDefault();
+            console.log(`roves-test-wheel-received type=${e.type} deltaX=${e.deltaX} deltaY=${e.deltaY} deltaZ=${e.deltaZ} deltaMode=${e.deltaMode} wheelDeltaY=${e.wheelDeltaY} trusted=${e.isTrusted} cancelable=${e.cancelable} defaultPrevented=${e.defaultPrevented} scrollY=${window.scrollY} target=${e.target.nodeName}`);
+          }, { capture: true, passive: false });
+          console.log('roves-ci-wheel-fixture module-ok');
+          '@
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping processes left by the previous step before the wheel run'
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $failed = $false
+          # Negative: refused usage (exit 1 before the evidence log is opened).
+          $refused = @(
+            @{ name = 'without game mode'; args = @('--roves-test-wheel-ms=1000') },
+            @{ name = 'with the click hook'; args = @("--roves-game-dir=$game", '--roves-test-wheel-ms=1000', '--roves-test-click-ms=1000') },
+            @{ name = 'with the key hook'; args = @("--roves-game-dir=$game", '--roves-test-wheel-ms=1000', '--roves-test-key-ms=1000') },
+            @{ name = 'with the minimize hook'; args = @("--roves-game-dir=$game", '--roves-test-wheel-ms=1000', '--roves-test-minimize-ms=1000') },
+            @{ name = 'above the 600000 ms bound'; args = @("--roves-game-dir=$game", '--roves-test-wheel-ms=600001') },
+            @{ name = 'not a whole number'; args = @("--roves-game-dir=$game", '--roves-test-wheel-ms=1s') }
+          )
+          $i = 0
+          foreach ($case in $refused) {
+            $i++
+            $negLog = Join-Path $out "refused-$i.log"
+            $negErr = Join-Path $out "refused-$i.stderr.txt"
+            $p = Start-Process -FilePath $exe -ArgumentList ($case.args + @("--roves-log=$negLog", "--roves-cache-dir=$(Join-Path $out "refused-cache-$i")")) `
+              -PassThru -RedirectStandardError $negErr
+            $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) {
+              $p | Stop-Process -Force
+              Write-Output "::error::refused wheel flag ($($case.name)): the probe did not exit"; $failed = $true; continue
+            }
+            $stderr = if (Test-Path $negErr) { (Get-Content -Raw $negErr) } else { '' }
+            Write-Output "::notice::refused wheel flag ($($case.name)): exit=$($p.ExitCode) stderr=$($stderr.Trim())"
+            if ($p.ExitCode -ne 1) { Write-Output "::error::refused wheel flag ($($case.name)): exit $($p.ExitCode) (expected 1)"; $failed = $true }
+            if (Test-Path $negLog) { Write-Output "::error::refused wheel flag ($($case.name)): the run started (log written)"; $failed = $true }
+            if ($stderr -and $stderr -notmatch 'usage error') { Write-Output "::error::refused wheel flag ($($case.name)): no usage error on stderr"; $failed = $true }
+          }
+          $log = Join-Path $out 'roves-cef-nr-wheel.log'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-test-wheel-ms=1000',
+            '--roves-auto-close-ms=5000', '--roves-timeout-ms=90000', "--roves-log=$log",
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          if (-not $proc.WaitForExit(150000)) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Test-Path $log) { Get-Content $log }
+            Write-Output '::error::the probe did not exit in time in the wheel run'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          $source = "console level=\d+ source=$o/game\.js:\d+ message="
+          $wheelMarker = "$source`"roves-test-wheel-received type=wheel deltaX=0 deltaY=-[0-9.e+-]+ deltaZ=0 deltaMode=[012] wheelDeltaY=\S+ trusted=true "
+          # Each pattern must match a line after the previous match.
+          $last = -1
+          foreach ($pattern in @(
+              'producer created accelerated=true background=white',
+              "$source`"roves-ci-wheel-fixture module-ok`"",
+              'test wheel requested x=0 y=1 direction=normal window_id=\d+ pushed=true$',
+              'test wheel forwarded delta_x=0 delta_y=120 ok=true$',
+              $wheelMarker,
+              'test wheel marker received delta_y=-[0-9.e+-]+ delta_mode=[012]$',
+              'test wheel complete$',
+              'auto-close window', 'closing imported=', 'game input forwarded=', 'browser closed',
+              'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
+              'exit code=0$')) {
+            $at = -1
+            for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+            if ($at -lt 0) { Write-Output "::error::missing or out of order: $pattern"; $failed = $true }
+            else { $last = $at }
+          }
+          # Load-end and the module marker may come in either order; both precede the request.
+          $loadEnd = $lines | Select-String -Pattern "load-end status=200 url=$o/ ok=true" | Select-Object -First 1
+          $request = $lines | Select-String -Pattern 'test wheel requested ' | Select-Object -First 1
+          if (!$loadEnd -or !$request -or $loadEnd.LineNumber -ge $request.LineNumber) {
+            Write-Output '::error::accepted load-end missing or not before the wheel request'; $failed = $true
+          }
+          foreach ($count in @(
+              @{ pattern = 'roves-test-wheel-received'; want = 1 },
+              @{ pattern = 'test wheel requested '; want = 1 },
+              @{ pattern = 'test wheel forwarded '; want = 1 },
+              @{ pattern = 'test wheel marker received '; want = 1 })) {
+            $n = @($lines | Select-String -SimpleMatch $count.pattern).Count
+            if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
+          }
+          if ($code -ne 0) { Write-Output "::error::wheel run exit code $code (expected 0)"; $failed = $true }
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'test key')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          Select-String -Path $log -Pattern 'test wheel|roves-test-wheel-received|closing imported=|game input forwarded=' |
+            ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Write-Output '::notice::wheel gate: one synthetic SDL wheel notch forwarded through welding (CEF delta_y=120) to one trusted DOM wheel event scrolling up; deltaY magnitude and deltaMode reported only (no physical wheel, Win32 path, latency, GPU frame, visual result or Chrome delta parity)'
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the wheel run'; $failed = $true
+          }
+          if ($failed) { exit 1 }
+      # ── Directly playable Windows package (README "Packaged player") ────────────────
+      # The same Release bundle plus the UNMODIFIED production web build of
+      # DRincs-Productions/visual-novel-template at a pinned commit, laid out so that a
+      # double click on play.exe opens the game (game\ is resolved next to the executable).
+      # Artifact only: nothing is attached to a GitHub Release.
+      - name: checkout visual-novel-template (pinned)
+        id: template
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: DRincs-Productions/visual-novel-template
+          ref: e88e9ac29e736e007904e0767815e21cd8725941
+          path: visual-novel-template
+          persist-credentials: false
+      - name: setup node (template build)
+        if: (success() || failure()) && steps.template.outcome == 'success'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # npm ci: exactly the template's package-lock.json, no resolution at build time. The
+      # template's own `prebuild` (PWA icon generation) is part of its build and runs as is;
+      # the produced dist/ is copied byte for byte (hash-checked below).
+      - name: build visual-novel-template (npm ci + npm run build)
+        id: template_build
+        if: (success() || failure()) && steps.template.outcome == 'success'
+        shell: bash
+        working-directory: visual-novel-template
+        run: |
+          pin=e88e9ac29e736e007904e0767815e21cd8725941
+          head="$(git rev-parse HEAD)"
+          test "$head" = "$pin" || { echo "::error::template HEAD $head is not the pin $pin"; exit 1; }
+          npm ci --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/vnt-npm-ci.log"
+          npm run build 2>&1 | tee "$RUNNER_TEMP/vnt-build.log"
+          test -f dist/index.html || { echo "::error::template build produced no dist/index.html"; exit 1; }
+          {
+            echo "template_commit=$head"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "package_lock_sha256=$(sha256sum package-lock.json | cut -d' ' -f1)"
+            echo "dist_files=$(find dist -type f | wc -l)"
+          } | tee "$RUNNER_TEMP/vnt-build-info.txt"
+          # The template's prebuild regenerates its PWA icons in the checkout; reported only.
+          git status --porcelain | tee "$RUNNER_TEMP/vnt-worktree-after-build.txt"
+          npm ls --omit=dev --all > "$RUNNER_TEMP/vnt-npm-ls.txt" 2>&1 || true
+          echo "::notice::visual-novel-template $head built with node $(node --version), npm $(npm --version): $(find dist -type f | wc -l) dist files"
+      # The official Roves icon (repository root icon.png) becomes the Windows icon resource
+      # of play.exe with the tool main's `mach bundle --icon-ico` uses (electron/rcedit
+      # v2.0.0, MIT, SHA-256 pinned). Pillow (pinned) converts the PNG to a multi-size .ico.
+      - name: setup python (icon conversion)
+        if: (success() || failure()) && steps.template_build.outcome == 'success'
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: prepare the Windows icon tooling
+        id: icon_tools
+        if: (success() || failure()) && steps.template_build.outcome == 'success'
+        shell: pwsh
+        run: |
+          $tools = Join-Path $env:RUNNER_TEMP 'roves-icon-tools'
+          if (Test-Path -LiteralPath $tools) { Write-Output "::error::$tools already exists"; exit 1 }
+          New-Item -ItemType Directory -Force $tools | Out-Null
+          python -m pip install --disable-pip-version-check --only-binary=:all: 'pillow==11.3.0'
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+          $ico = Join-Path $tools 'roves.ico'
+          python -I -c "import sys; from PIL import Image; im = Image.open(sys.argv[1]).convert('RGBA'); im.save(sys.argv[2], format='ICO', sizes=[(16,16),(24,24),(32,32),(48,48),(64,64),(128,128),(256,256)]); print(Image.__version__)" (Join-Path $env:GITHUB_WORKSPACE 'icon.png') $ico
+          if ($LASTEXITCODE -ne 0 -or -not (Test-Path $ico)) { Write-Output '::error::icon conversion failed'; exit 1 }
+          $rcedit = Join-Path $tools 'rcedit-x64.exe'
+          Invoke-WebRequest -Uri 'https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe' -OutFile $rcedit
+          $hash = (Get-FileHash -Algorithm SHA256 $rcedit).Hash.ToLowerInvariant()
+          if ($hash -ne '3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a') {
+            Write-Output "::error::rcedit-x64.exe SHA-256 $hash does not match the pin"; exit 1
+          }
+          "ico=$ico" >> $env:GITHUB_OUTPUT
+          "rcedit=$rcedit" >> $env:GITHUB_OUTPUT
+          Write-Output "::notice::icon.png -> roves.ico ($((Get-Item $ico).Length) bytes, Pillow 11.3.0); rcedit v2.0.0 sha256 $hash"
+      # Layout: play.exe (CEF 154 bootstrap.exe, renamed with its DLL and external manifest,
+      # icon patched), play.dll (the probe), the CEF runtime, game\ (unmodified dist),
+      # app-local VC++ runtime DLLs if any module imports them, PROVENANCE.txt,
+      # provenance\ (lockfiles, dependency lists, licenses, imports) and SHA256SUMS.txt.
+      - name: assemble the directly playable package
+        id: package
+        if: (success() || failure()) && steps.icon_tools.outcome == 'success'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'roves-cef-vn-package'
+          if (Test-Path -LiteralPath $root) { Write-Output "::error::$root already exists"; exit 1 }
+          $pkg = Join-Path $root 'visual-novel-template-roves-cef'
+          New-Item -ItemType Directory -Force $pkg | Out-Null
+          $bundle = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle'
+          Copy-Item -Recurse -Path (Join-Path $bundle '*') -Destination $pkg
+          Get-ChildItem -LiteralPath $pkg -Filter '*.pdb' | Remove-Item
+          $failed = $false
+          foreach ($ext in @('.exe', '.dll', '.exe.manifest')) {
+            $from = Join-Path $pkg "roves_cef_netrender_probe$ext"
+            if (-not (Test-Path -LiteralPath $from)) { Write-Output "::error::bundle lacks roves_cef_netrender_probe$ext"; $failed = $true; continue }
+            Rename-Item -LiteralPath $from -NewName "play$ext"
+          }
+          if ($failed) { exit 1 }
+          $exe = Join-Path $pkg 'play.exe'
+          Add-Type -AssemblyName System.Drawing
+          $iconBytes = {
+            param($path)
+            $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($path)
+            $ms = New-Object System.IO.MemoryStream
+            $icon.ToBitmap().Save($ms, [System.Drawing.Imaging.ImageFormat]::Png)
+            [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($ms.ToArray()))
+          }
+          $before = & $iconBytes $exe
+          & '${{ steps.icon_tools.outputs.rcedit }}' $exe --set-icon '${{ steps.icon_tools.outputs.ico }}'
+          if ($LASTEXITCODE -ne 0) { Write-Output "::error::rcedit exit $LASTEXITCODE"; exit 1 }
+          $after = & $iconBytes $exe
+          if ($before -eq $after) { Write-Output '::error::play.exe icon unchanged after rcedit'; $failed = $true }
+          else { Write-Output '::notice::play.exe icon resource replaced with the Roves icon (extracted icon hash changed)' }
+          # game\: the dist directory copied verbatim, then compared file by file.
+          $dist = (Resolve-Path 'visual-novel-template/dist').Path
+          $game = Join-Path $pkg 'game'
+          Copy-Item -Recurse -Path $dist -Destination $game
+          $hashes = {
+            param($dir)
+            Get-ChildItem -LiteralPath $dir -Recurse -File | ForEach-Object {
+              "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash)  $($_.FullName.Substring($dir.Length + 1).Replace('\', '/'))"
+            } | Sort-Object
+          }
+          $distSums = @(& $hashes $dist)
+          $gameSums = @(& $hashes $game)
+          if ($distSums.Count -eq 0 -or (Compare-Object $distSums $gameSums)) {
+            Write-Output '::error::game\ differs from the template dist/'; $failed = $true
+          } else { Write-Output "::notice::game\ is byte-identical to the template dist/ ($($gameSums.Count) files)" }
+          # Dependencies: every DLL a top-level module imports must be in the package or be a
+          # Windows system DLL; the MSVC runtime is never assumed installed and is deployed
+          # app-local from the runner's Visual Studio redistributable directory.
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $dumpbin = & $vswhere -latest -products * -find 'VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe' | Select-Object -First 1
+          if (-not $dumpbin) { Write-Output '::error::dumpbin.exe not found'; exit 1 }
+          $crtDir = & $vswhere -latest -products * -find 'VC\Redist\MSVC\**\x64\Microsoft.VC14*.CRT\vcruntime140.dll' |
+            Where-Object { $_ -match '\\MSVC\\\d+\.\d+\.\d+\\x64\\' } |
+            Sort-Object { [version]($_ -replace '^.*\\MSVC\\([\d.]+)\\.*$', '$1') } |
+            Select-Object -Last 1 | Split-Path -Parent
+          Write-Output "::notice::MSVC redistributable directory: $crtDir"
+          $vcRuntime = '^(vcruntime140(_1)?|msvcp140(_1|_2|_atomic_wait|_codecvt_ids)?|concrt140|vccorlib140)\.dll$'
+          $provenance = Join-Path $pkg 'provenance'
+          New-Item -ItemType Directory -Force $provenance | Out-Null
+          $report = New-Object System.Collections.Generic.List[string]
+          $copied = New-Object System.Collections.Generic.List[string]
+          $checked = @{}
+          do {
+            $added = $false
+            foreach ($module in @(Get-ChildItem -LiteralPath $pkg -File | Where-Object { $_.Extension -in '.exe', '.dll' })) {
+              if ($checked.ContainsKey($module.Name)) { continue }
+              $checked[$module.Name] = $true
+              # Delay-loaded imports are listed separately: reported, never required.
+              $delay = $false
+              $imports = & $dumpbin /nologo /dependents $module.FullName | ForEach-Object {
+                if ($_ -match 'following delay load dependencies') { $delay = $true }
+                elseif ($_ -match 'following dependencies') { $delay = $false }
+                elseif ($_ -match '^\s{4}(\S+\.dll)\s*$') { [pscustomobject]@{ Name = $Matches[1]; Delay = $delay } }
+              }
+              foreach ($import in $imports) {
+                $dll = $import.Name
+                if (Test-Path -LiteralPath (Join-Path $pkg $dll)) { $where = 'package' }
+                elseif ($dll -match $vcRuntime) {
+                  $src = if ($crtDir) { Join-Path $crtDir $dll } else { $null }
+                  if ($src -and (Test-Path -LiteralPath $src)) {
+                    Copy-Item -LiteralPath $src -Destination $pkg; $copied.Add("$dll <- $src"); $where = 'package (app-local VC++ runtime)'; $added = $true
+                  } else { $where = 'MISSING (VC++ runtime not found in the VS redist)'; $failed = $true }
+                }
+                elseif ($dll -match '^(api|ext)-ms-') { $where = 'Windows API set' }
+                elseif (Test-Path -LiteralPath (Join-Path "$env:SystemRoot\System32" $dll)) { $where = 'Windows System32' }
+                elseif ($import.Delay) { $where = 'not found (delay-loaded, optional)' }
+                else { $where = 'MISSING'; $failed = $true }
+                $report.Add("$($module.Name) -> $dll$(if ($import.Delay) { ' (delay)' }) : $where")
+                if ($where -like 'MISSING*') { Write-Output "::error::$($module.Name) imports $dll : $where" }
+              }
+            }
+          } while ($added)
+          $report | Set-Content -Encoding utf8 (Join-Path $provenance 'imports.txt')
+          if ($copied.Count) { Write-Output "::notice::app-local VC++ runtime: $($copied -join '; ')" }
+          else { Write-Output '::notice::no module imports the MSVC runtime DLLs' }
+          # Provenance: lockfiles, dependency lists with licenses, upstream license files.
+          Copy-Item 'support/cef-netrender-probe/Cargo.lock' (Join-Path $provenance 'Cargo.lock')
+          Copy-Item 'visual-novel-template/package-lock.json' (Join-Path $provenance 'visual-novel-template-package-lock.json')
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'vnt-npm-ls.txt') (Join-Path $provenance 'visual-novel-template-npm-ls.txt')
+          Push-Location 'support/cef-netrender-probe'
+          cargo tree --locked --target x86_64-pc-windows-msvc -e normal --prefix none --format '{p} {l}' |
+            ForEach-Object { $_ -replace ' \(\*\)$', '' } | Sort-Object -Unique | Set-Content -Encoding utf8 (Join-Path $provenance 'rust-dependencies.txt')
+          $cargoTree = $LASTEXITCODE
+          Pop-Location
+          if ($cargoTree -ne 0) { Write-Output '::error::cargo tree failed'; $failed = $true }
+          $licenses = Join-Path $provenance 'licenses'
+          New-Item -ItemType Directory -Force $licenses | Out-Null
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'LICENSE') (Join-Path $licenses 'Roves-LICENSE.txt')
+          $cefFiles = @(Get-ChildItem -LiteralPath $env:CEF_PATH -Recurse -Depth 1 -File -Include 'LICENSE.txt', 'CREDITS.html', 'README.txt' -ErrorAction SilentlyContinue)
+          foreach ($f in $cefFiles) { Copy-Item -LiteralPath $f.FullName (Join-Path $licenses "CEF-$($f.Name)") }
+          if (-not ($cefFiles | Where-Object Name -eq 'LICENSE.txt')) {
+            Write-Output "::warning::no CEF LICENSE.txt found under $env:CEF_PATH (not copied into the package)"
+          }
+          $buildInfo = Get-Content (Join-Path $env:RUNNER_TEMP 'vnt-build-info.txt')
+          $cefVersion = (Select-String -Path (Join-Path $env:RUNNER_TEMP 'cef-nr-run\roves-cef-nr.log') -Pattern 'versions .*' -ErrorAction SilentlyContinue |
+            Select-Object -First 1).Matches.Value
+          @"
+          visual-novel-template on the Roves CEF + SDL3 + wgpu desktop candidate (Windows x64)
+          ==================================================================================
+          Experimental probe package, not a Roves release. Run play.exe (no arguments): the
+          game in the game folder next to it opens in one window. Each launch uses a fresh
+          cache that is deleted on exit, so saves do not persist between launches.
+          Requires a DirectX 12 GPU with accelerated off-screen rendering; otherwise a
+          readable error dialog explains the failure.
+
+          Engine (this package's play.exe / play.dll / CEF runtime)
+            repository   https://github.com/${{ github.repository }}
+            commit       ${{ github.sha }} (ref ${{ github.ref }})
+            workflow run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (attempt ${{ github.run_attempt }})
+            build        cargo run --locked --release --bin bundle (support/cef-netrender-probe), Rust 1.99.1
+            pins         $cefVersion
+            launcher     CEF 154 bootstrap.exe renamed play.exe; icon from the repository root
+                         icon.png (Pillow 11.3.0 -> .ico, electron/rcedit v2.0.0 sha256
+                         3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a)
+
+          Game (folder game\, unmodified production build)
+            repository   https://github.com/DRincs-Productions/visual-novel-template
+            commit       e88e9ac29e736e007904e0767815e21cd8725941
+            source       https://github.com/DRincs-Productions/visual-novel-template/tree/e88e9ac29e736e007904e0767815e21cd8725941
+            license      GPL-3.0 (package.json "license"; no LICENSE file at this commit)
+            build        npm ci && npm run build (dist/ copied byte for byte)
+            $($buildInfo -join "`n  ")
+
+          Dependencies
+            provenance\Cargo.lock, provenance\rust-dependencies.txt (crate + license)
+            provenance\visual-novel-template-package-lock.json, ...-npm-ls.txt
+            provenance\imports.txt (DLL imports of every top-level module and where each resolves)
+            provenance\licenses\ (Roves license; CEF license files when present)
+            app-local VC++ runtime: $(if ($copied.Count) { $copied -join '; ' } else { 'none needed' })
+          "@ | Set-Content -Encoding utf8 (Join-Path $pkg 'PROVENANCE.txt')
+          Push-Location $pkg
+          Get-ChildItem -Recurse -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+            "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())  $((Resolve-Path -Relative $_.FullName).Substring(2).Replace('\', '/'))"
+          } | Sort-Object { $_.Substring(66) } | Set-Content -Encoding utf8 'SHA256SUMS.txt'
+          Pop-Location
+          foreach ($required in @('play.exe', 'play.dll', 'play.exe.manifest', 'libcef.dll', 'game\index.html', 'PROVENANCE.txt', 'SHA256SUMS.txt')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $pkg $required))) { Write-Output "::error::package lacks $required"; $failed = $true }
+          }
+          if (Get-ChildItem -LiteralPath $pkg -File | Where-Object { $_.Name -like 'roves_cef_netrender_probe*' -or $_.Extension -eq '.pdb' }) {
+            Write-Output '::error::package still contains probe-named or .pdb files'; $failed = $true
+          }
+          $size = (Get-ChildItem -LiteralPath $pkg -Recurse -File | Measure-Object -Sum Length).Sum
+          Write-Output "::notice::package $pkg : $([math]::Round($size / 1MB, 1)) MiB"
+          "dir=$pkg" >> $env:GITHUB_OUTPUT
+          if ($failed) { exit 1 }
+      # Direct launch of the package: no --roves-game-dir and no --roves-cache-dir, started
+      # from an unrelated working directory, so the game folder is resolved from play.exe
+      # alone. --roves-isolated-profile is the explicit CI/test mode: a per-run cache removed
+      # on exit instead of the persistent player profile (covered by the next step).
+      # --roves-no-error-dialog keeps the unattended run from
+      # blocking on the failure dialog; --roves-auto-close-ms counts from the startup release.
+      # On WARP accelerated OSR delivers no frame, so the expected outcome there is the
+      # readable-failure path: startup screen presented, main load accepted, no fresh frame
+      # within --roves-timeout-ms, failure screen presented, exit 2, cache removed. If frames
+      # do arrive, the release path is required instead (released, auto-close, exit 0). A
+      # desktop capture taken during the startup screen must show the dark background and the
+      # logo, not the old red clear colour. Real-GPU release remains a manual check.
+      - name: run the package directly (startup screen, WARP)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $pkg = '${{ steps.package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-vn-player-run'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          $cwd = Join-Path $out 'unrelated-working-directory'
+          New-Item -ItemType Directory -Force $cwd | Out-Null
+          foreach ($name in @('roves_cef_netrender_probe', 'play')) {
+            if (Get-Process $name -ErrorAction SilentlyContinue) {
+              Write-Output "::notice::stopping $name processes left by a previous step"
+              Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+              Start-Sleep -Seconds 2
+            }
+          }
+          $exe = Join-Path $pkg 'play.exe'
+          $failed = $false
+          # Negative: the packaged-only and test-only switches are refused where they do not
+          # apply (usage error, exit 1, no log). The plain bundle has no game\ next to it.
+          $refused = @(
+            @{ name = 'no-error-dialog without the packaged game'; exe = (Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'); args = @('--roves-no-error-dialog') },
+            @{ name = 'a test hook in the packaged launch'; exe = $exe; args = @('--roves-test-click-ms=1000') },
+            @{ name = 'isolated-profile without the packaged game'; exe = (Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'); args = @('--roves-isolated-profile') },
+            # Every case also gets --roves-cache-dir (below): isolated mode refuses it.
+            @{ name = 'isolated-profile with an explicit cache dir'; exe = $exe; args = @('--roves-isolated-profile') },
+            @{ name = 'a fixed port in the persistent packaged launch'; exe = $exe; args = @('--roves-port=47810') }
+          )
+          $i = 0
+          foreach ($case in $refused) {
+            $i++
+            $negLog = Join-Path $out "refused-$i.log"
+            $negErr = Join-Path $out "refused-$i.stderr.txt"
+            $p = Start-Process -FilePath $case.exe -ArgumentList ($case.args + @("--roves-log=$negLog", "--roves-cache-dir=$(Join-Path $out "refused-cache-$i")")) `
+              -WorkingDirectory $cwd -PassThru -RedirectStandardError $negErr
+            $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) { $p | Stop-Process -Force; Write-Output "::error::refused ($($case.name)): did not exit"; $failed = $true; continue }
+            $stderr = if (Test-Path $negErr) { (Get-Content -Raw $negErr) } else { '' }
+            Write-Output "::notice::refused ($($case.name)): exit=$($p.ExitCode) stderr=$("$stderr".Trim())"
+            if ($p.ExitCode -ne 1) { Write-Output "::error::refused ($($case.name)): exit $($p.ExitCode) (expected 1)"; $failed = $true }
+            if (Test-Path $negLog) { Write-Output "::error::refused ($($case.name)): the run started (log written)"; $failed = $true }
+          }
+          $log = Join-Path $out 'roves-cef-player.log'
+          $arguments = @(
+            '--roves-isolated-profile', '--roves-no-error-dialog', '--roves-auto-close-ms=5000',
+            '--roves-timeout-ms=60000', "--roves-log=$log", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $cwd -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+          # PowerShell 7 forwards System.Drawing types to System.Drawing.Common/.Primitives:
+          # reference the assemblies that actually define them.
+          $drawing = @([System.Drawing.Bitmap].Assembly.Location, [System.Drawing.Rectangle].Assembly.Location) | Select-Object -Unique
+          Add-Type -ReferencedAssemblies $drawing -TypeDefinition @'
+          using System.Drawing; using System.Drawing.Imaging; using System.Runtime.InteropServices;
+          public static class RovesCapture {
+            // [dark (#141418 +-3), red (r>200, g<60, b<60), near-white (all > 230),
+            //  black (all < 4), total] pixel counts.
+            public static int[] Count(Bitmap bmp) {
+              var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
+              var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
+              var bytes = new byte[data.Stride * data.Height];
+              Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
+              bmp.UnlockBits(data);
+              int dark = 0, red = 0, white = 0, black = 0;
+              for (int y = 0; y < bmp.Height; y++) for (int x = 0; x < bmp.Width; x++) {
+                int o = y * data.Stride + x * 4; int b = bytes[o], g = bytes[o + 1], r = bytes[o + 2];
+                if (System.Math.Abs(r - 20) <= 3 && System.Math.Abs(g - 20) <= 3 && System.Math.Abs(b - 24) <= 3) dark++;
+                if (r > 200 && g < 60 && b < 60) red++;
+                if (r > 230 && g > 230 && b > 230) white++;
+                if (r < 4 && g < 4 && b < 4) black++;
+              }
+              return new[] { dark, red, white, black, bmp.Width * bmp.Height };
+            }
+          }
+          '@
+          $children = @{}
+          $captured = $null
+          $loadedAt = $null
+          $deadline = (Get-Date).AddSeconds(150)
+          while (-not $proc.HasExited -and (Get-Date) -lt $deadline) {
+            Get-CimInstance Win32_Process -Filter "Name='play.exe'" -ErrorAction SilentlyContinue |
+              ForEach-Object { if ($_.CommandLine) { $children[$_.ProcessId] = $_.CommandLine } }
+            if (-not $loadedAt -and (Test-Path $log) -and (Select-String -Path $log -Pattern 'startup fresh-frame requested' -Quiet)) { $loadedAt = Get-Date }
+            # Startup screen capture 3 s after the main load, while the startup screen is up
+            # (WARP: until the 60 s timeout). Skipped if the game was released meanwhile.
+            if ($loadedAt -and -not $captured -and ((Get-Date) - $loadedAt).TotalSeconds -ge 3 -and
+                -not (Select-String -Path $log -Pattern 'startup released|startup failed' -Quiet)) {
+              try {
+                $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+                $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+                $g = [System.Drawing.Graphics]::FromImage($bmp)
+                $g.CopyFromScreen($screen.Left, $screen.Top, 0, 0, $bmp.Size)
+                $g.Dispose()
+                $bmp.Save((Join-Path $out 'startup-screen.png'), [System.Drawing.Imaging.ImageFormat]::Png)
+                $captured = [RovesCapture]::Count($bmp)
+                $bmp.Dispose()
+              } catch { $captured = @(); Write-Output "::warning::desktop capture failed: $_" }
+            }
+            Start-Sleep -Milliseconds 300
+          }
+          if (-not $proc.HasExited) {
+            Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Test-Path $log) { Get-Content $log }
+            Write-Output '::error::the packaged game did not exit in time'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          $children.Values | Set-Content (Join-Path $out 'process-command-lines.txt')
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' | Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          $cache = ($lines | Select-String -Pattern 'player launch game-dir=.* profile=isolated cache=(.+) clean-cache=true error-dialog=false$' | Select-Object -First 1).Matches.Groups[1].Value
+          $released = [bool]($lines | Select-String -Pattern '^roves-cef-nr startup released ' -Quiet)
+          $common = @(
+            'sandbox-info present=true',
+            "player launch game-dir=$([regex]::Escape((Join-Path $pkg 'game'))) profile=isolated cache=.+ clean-cache=true error-dialog=false$",
+            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ',
+            'startup screen shown size=\d+x\d+ window-shown=true presented=true$',
+            'producer created accelerated=true background=white',
+            "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')
+          $tail = if ($released) {
+            @('startup released generation=\d+ ', 'auto-close scheduled delay_ms=5000 from=startup-release',
+              'auto-close window', 'closing imported=', 'browser closed', 'cef shutdown complete',
+              'game loopback stopped', 'player cache removed dir=', 'exit code=0$')
+          } else {
+            @('FAIL startup not released within 60000 ms \(no-fresh-frame\)', 'startup failed reason=no-fresh-frame$',
+              'startup failure screen presented reason=no-fresh-frame$', 'startup failure dialog skipped',
+              'closing imported=', 'browser closed', 'cef shutdown complete', 'game loopback stopped',
+              'player cache removed dir=', 'exit code=2$')
+          }
+          $last = -1
+          foreach ($pattern in ($common + $tail)) {
+            $at = -1
+            for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+            if ($at -lt 0) { Write-Output "::error::missing or out of order: $pattern"; $failed = $true } else { $last = $at }
+          }
+          $expectedCode = if ($released) { 0 } else { 2 }
+          if ($code -ne $expectedCode) { Write-Output "::error::exit code $code (expected $expectedCode)"; $failed = $true }
+          $allowedFail = 'FAIL startup not released within'
+          foreach ($hit in @($lines | Select-String -Pattern ' FAIL ' | Where-Object { $released -or $_.Line -notmatch $allowedFail })) {
+            Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true
+          }
+          foreach ($pattern in @('close requested by the OS', 'popup refused', 'player cache not removed', 'branding unavailable', 'test (click|key|wheel|minimize)')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          if (-not $cache) { Write-Output '::error::player cache path not logged'; $failed = $true }
+          elseif (Test-Path -LiteralPath $cache) { Write-Output "::error::player cache left behind: $cache"; $failed = $true }
+          if (Test-Path -LiteralPath (Join-Path $cwd 'debug.log')) { Write-Output '::notice::CEF wrote debug.log into the working directory' }
+          $types = $children.Values | ForEach-Object { if ($_ -match '--type=([\w-]+)') { $Matches[1] } } | Sort-Object -Unique
+          Write-Output "::notice::package CEF child types seen: $($types -join ', ')"
+          if (-not ($types -contains 'renderer')) { Write-Output '::error::no renderer child observed'; $failed = $true }
+          if ($children.Values | Where-Object { $_ -match '--no-sandbox' }) { Write-Output '::error::a CEF child process was launched with --no-sandbox'; $failed = $true }
+          if ($null -eq $captured) {
+            if (-not $released) { Write-Output '::error::no startup-screen capture was taken' ; $failed = $true }
+          } elseif ($captured.Count -eq 5 -and $captured[3] -gt 0.9 * $captured[4]) {
+            Write-Output "::warning::desktop capture is black ($($captured[3]) of $($captured[4]) pixels): no visible desktop on this runner, startup screen not checked"
+          } elseif ($captured.Count -eq 5) {
+            Write-Output "::notice::startup-screen capture: dark=$($captured[0]) red=$($captured[1]) near-white=$($captured[2]) black=$($captured[3]) of $($captured[4]) pixels"
+            if ($captured[0] -lt 200000) { Write-Output '::error::startup screen: too few dark background pixels'; $failed = $true }
+            if ($captured[1] -gt 20000) { Write-Output '::error::startup screen: red clear colour visible'; $failed = $true }
+            if ($captured[2] -lt 1000) { Write-Output '::error::startup screen: no logo highlights'; $failed = $true }
+          }
+          $console = @($lines | Select-String -Pattern '^roves-cef-nr console level=').Count
+          Select-String -Path $log -Pattern 'startup|title |import frame=|closing imported=|player ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Write-Output "::notice::packaged launch: released=$released exit=$code console_lines=$console (WARP: failure path expected; real-GPU release is a manual check)"
+          Start-Sleep -Seconds 3
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
+      # Ordinary launch (no --roves-isolated-profile): the persistent profile under
+      # %LOCALAPPDATA%\Roves\Player\play-<hash> and its stored origin port. Two sequential
+      # launches must reuse the same profile and the same loopback origin (origin-keyed
+      # storage, so saves, survive); a lock held by another process and a stored port taken
+      # by another program must each end the run cleanly with exit 6 before CEF starts; a
+      # damaged port file must fail with exit 1 instead of choosing a new origin. On WARP each
+      # full launch ends on the no-fresh-frame path (exit 2); a released launch (exit 0) is
+      # accepted too. Saves written by a real game across launches remain a manual GPU check.
+      - name: run the package twice with the persistent profile, then under contention
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $pkg = '${{ steps.package.outputs.dir }}'
+          $exe = Join-Path $pkg 'play.exe'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-vn-player-profile'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          $cwd = Join-Path $out 'unrelated-working-directory'
+          New-Item -ItemType Directory -Force $cwd | Out-Null
+          if (Get-Process play -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping play processes left by a previous step'
+            Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $failed = $false
+          function Invoke-Player([string]$name, [int]$seconds) {
+            $log = Join-Path $out "$name.log"
+            $arguments = @('--roves-no-error-dialog', '--roves-auto-close-ms=3000', '--roves-timeout-ms=15000',
+              "--roves-log=$log", "--log-file=$(Join-Path $out "$name-cef-debug.log")")
+            $p = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $cwd -PassThru
+            $null = $p.Handle
+            if (-not $p.WaitForExit($seconds * 1000)) {
+              Get-Process play -ErrorAction SilentlyContinue | Stop-Process -Force
+              return @{ code = -1; lines = @(); log = $log }
+            }
+            Start-Sleep -Seconds 2
+            $lines = if (Test-Path $log) { @(Get-Content $log) } else { @() }
+            $lines | ForEach-Object { Write-Host "  [$name] $_" }
+            return @{ code = $p.ExitCode; lines = $lines; log = $log }
+          }
+          function Find-Line($run, [string]$pattern) { $run.lines | Select-String -Pattern $pattern | Select-Object -First 1 }
+          $runs = @()
+          foreach ($name in @('first', 'second')) {
+            $run = Invoke-Player $name 120
+            $runs += $run
+            if ($run.code -notin @(0, 2)) { Write-Output "::error::$name persistent launch: exit $($run.code) (expected 0 or 2)"; $failed = $true }
+            foreach ($pattern in @('player launch game-dir=.* profile=persistent cache=.+ clean-cache=false error-dialog=false$',
+                'player profile root=.+ lock=acquired origin-port=', 'game loopback origin=http://127\.0\.0\.1:\d+ ',
+                'cef initialized', 'cef shutdown complete', 'game loopback stopped')) {
+              if (-not (Find-Line $run $pattern)) { Write-Output "::error::$name persistent launch: missing $pattern"; $failed = $true }
+            }
+            foreach ($pattern in @('player cache removed', 'player cache not removed', 'FAIL player', 'FAIL game loopback')) {
+              $hit = Find-Line $run $pattern
+              if ($hit) { Write-Output "::error::$name persistent launch: unexpected $($hit.Line)"; $failed = $true }
+            }
+          }
+          $root = (Find-Line $runs[0] 'player profile root=(.+) lock=acquired').Matches.Groups[1].Value
+          $originPattern = 'game loopback origin=(http://127\.0\.0\.1:(\d+)) '
+          $first = (Find-Line $runs[0] $originPattern).Matches | Select-Object -First 1
+          $second = (Find-Line $runs[1] $originPattern).Matches | Select-Object -First 1
+          $expectedRoot = Join-Path $env:LOCALAPPDATA 'Roves\Player'
+          if (-not $root -or -not $root.StartsWith($expectedRoot, [System.StringComparison]::OrdinalIgnoreCase) -or
+              (Split-Path -Leaf $root) -notmatch '^play-[0-9a-f]{16}$') {
+            Write-Output "::error::persistent profile root '$root' is not $expectedRoot\play-<16 hex>"; $failed = $true
+          }
+          if (-not (Find-Line $runs[0] 'lock=acquired origin-port=new$')) { Write-Output '::error::first launch did not start a new profile'; $failed = $true }
+          if (-not $first -or -not $second) { Write-Output '::error::loopback origin missing'; $failed = $true }
+          else {
+            $port = $first.Groups[2].Value
+            Write-Output "::notice::persistent origins: first=$($first.Groups[1].Value) second=$($second.Groups[1].Value)"
+            if ($first.Groups[1].Value -ne $second.Groups[1].Value) { Write-Output '::error::the loopback origin changed between launches (saves would be lost)'; $failed = $true }
+            if (-not (Find-Line $runs[0] "player origin-port stored port=$port$")) { Write-Output '::error::first launch did not store its origin port'; $failed = $true }
+            if (-not (Find-Line $runs[1] "lock=acquired origin-port=$port$")) { Write-Output '::error::second launch did not reuse the stored origin port'; $failed = $true }
+            if (Find-Line $runs[1] 'player origin-port stored') { Write-Output '::error::second launch rewrote the origin port'; $failed = $true }
+          }
+          if ($root) {
+            $stored = if (Test-Path -LiteralPath (Join-Path $root 'origin-port')) { (Get-Content -Raw (Join-Path $root 'origin-port')).Trim() } else { '' }
+            if (-not $first -or $stored -ne $first.Groups[2].Value) { Write-Output "::error::origin-port file holds '$stored'"; $failed = $true }
+            foreach ($dir in @('cef', 'cef\game-profile')) {
+              if (-not (Test-Path -LiteralPath (Join-Path $root $dir) -PathType Container)) { Write-Output "::error::profile lacks $dir after exit"; $failed = $true }
+            }
+            Get-ChildItem -LiteralPath $root -Force | ForEach-Object { Write-Output "::notice::profile entry $($_.Name)" }
+          }
+          # Contention cases: each must exit before CEF starts (no 'cef initialized').
+          function Test-Refusal([string]$name, [int]$expected, [string[]]$patterns) {
+            $run = Invoke-Player $name 60
+            Write-Host "::notice::$name : exit=$($run.code)"
+            $ok = $true
+            if ($run.code -ne $expected) { Write-Host "::error::$name : exit $($run.code) (expected $expected)"; $ok = $false }
+            foreach ($pattern in $patterns) { if (-not (Find-Line $run $pattern)) { Write-Host "::error::$name : missing $pattern"; $ok = $false } }
+            foreach ($pattern in @('cef initialized', 'producer created')) {
+              if (Find-Line $run $pattern) { Write-Host "::error::$name : CEF started ($pattern)"; $ok = $false }
+            }
+            return $ok
+          }
+          if ($root -and $first) {
+            $port = [int]$first.Groups[2].Value
+            $fs = [System.IO.File]::Open((Join-Path $root 'player.lock'), 'OpenOrCreate', 'ReadWrite', 'ReadWrite')
+            $fs.Lock(0, 1)
+            try {
+              if (-not (Test-Refusal 'busy-profile' 6 @('FAIL player profile busy root=', 'player error dialog skipped', 'exit code=6$'))) { $failed = $true }
+            } finally { $fs.Unlock(0, 1); $fs.Dispose() }
+            $listener = [System.Net.Sockets.TcpListener]::new([System.Net.IPAddress]::Loopback, $port)
+            $listener.Start()
+            try {
+              if (-not (Test-Refusal 'busy-port' 6 @("FAIL game loopback port busy port=$port ", 'player error dialog skipped', 'exit code=6$'))) { $failed = $true }
+            } finally { $listener.Stop() }
+            $portFile = Join-Path $root 'origin-port'
+            Set-Content -LiteralPath $portFile -Value 'not-a-port' -NoNewline
+            if (-not (Test-Refusal 'damaged-port-file' 1 @('FAIL player profile root=.+ is damaged', 'player error dialog skipped', 'exit code=1$'))) { $failed = $true }
+            Set-Content -LiteralPath $portFile -Value "$port" -NoNewline
+          } else { Write-Output '::error::contention cases skipped: no profile root/origin'; $failed = $true }
+          Start-Sleep -Seconds 2
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
+          if ($failed) { exit 1 }
+      - name: upload the playable package
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-novel-template-roves-cef-windows-x64
+          path: ${{ runner.temp }}/roves-cef-vn-package
+          retention-days: 14
+          if-no-files-found: error
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cef-netrender-probe-evidence
           path: |
+            ${{ runner.temp }}/cef-vn-player-run/roves-cef-player.log
+            ${{ runner.temp }}/cef-vn-player-run/cef-debug.log
+            ${{ runner.temp }}/cef-vn-player-run/process-command-lines.txt
+            ${{ runner.temp }}/cef-vn-player-run/startup-screen.png
+            ${{ runner.temp }}/cef-vn-player-run/refused-*.stderr.txt
+            ${{ runner.temp }}/vnt-npm-ci.log
+            ${{ runner.temp }}/vnt-build.log
+            ${{ runner.temp }}/vnt-build-info.txt
+            ${{ runner.temp }}/vnt-worktree-after-build.txt
             ${{ runner.temp }}/cef-nr-run/roves-cef-nr.log
             ${{ runner.temp }}/cef-nr-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-run/process-command-lines.txt
@@ -828,6 +1540,9 @@ jobs:
             ${{ runner.temp }}/cef-nr-capslock-run/roves-cef-nr-capslock.log
             ${{ runner.temp }}/cef-nr-capslock-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-capslock-run/refused-*.stderr.txt
+            ${{ runner.temp }}/cef-nr-wheel-run/roves-cef-nr-wheel.log
+            ${{ runner.temp }}/cef-nr-wheel-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-wheel-run/refused-*.stderr.txt
             ${{ runner.temp }}/cef-nr-build.log
             ${{ runner.temp }}/cef-nr-duplicates.txt
           retention-days: 14

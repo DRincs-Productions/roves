@@ -9,6 +9,8 @@ mod game;
 #[cfg(windows)]
 mod game_rules;
 #[cfg(windows)]
+mod splash;
+#[cfg(windows)]
 mod stall;
 #[cfg(windows)]
 mod timings;

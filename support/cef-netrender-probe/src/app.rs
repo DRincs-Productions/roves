@@ -4,7 +4,7 @@
 use std::{
     fs::File,
     io::Write as _,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex, OnceLock,
         atomic::{AtomicU32, Ordering},
@@ -15,10 +15,14 @@ use std::{
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
     ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
-    MinimizeCycle, Startup, Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT,
-    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TestKey, is_click_marker, key_marker, load_status_ok,
-    on_origin, parse_test_key_delay, suspension_change,
+    MinimizeCycle, PLAYER_CEF_DIR, PLAYER_GAME_DIR, PLAYER_LOCK_FILE, PLAYER_ORIGIN_PORT_FILE,
+    Startup, StartupFailure, StartupGate, Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT,
+    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TEST_WHEEL_LINES, TEST_WHEEL_MOUSE_ID, TestKey,
+    WheelAction, WheelInput, WheelMarker, WheelTest, is_click_marker, key_marker, load_status_ok,
+    on_origin, origin_port, parse_origin_port, parse_test_key_delay, parse_test_wheel_delay,
+    player_profile_name, suspension_change, wheel_marker,
 };
+use crate::splash::{Branding, LOGO_PX, SPLASH_BACKGROUND};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
@@ -27,7 +31,7 @@ use sdl3::{
     EventSubsystem, VideoSubsystem,
     event::{Event, WindowEvent},
     keyboard::{Keycode, Mod, Scancode},
-    mouse::MouseButton as SdlButton,
+    mouse::{MouseButton as SdlButton, MouseWheelDirection},
     video::{Window, WindowFlags},
 };
 use welding::{
@@ -99,7 +103,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     // timeline. Excludes OS process creation and CEF child-process startup.
     let mut startup = Startup::new(Instant::now());
 
-    let options = match Options::parse() {
+    let mut options = match Options::parse() {
         Ok(options) => options,
         Err(error) => {
             eprintln!("roves-cef-nr usage error: {error}");
@@ -121,6 +125,83 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     if options.sustained {
         UpstreamLog::install(log.clone());
     }
+    if options.player {
+        log.line(format_args!(
+            "player launch game-dir={} profile={} cache={} clean-cache={} error-dialog={}",
+            options
+                .game
+                .as_ref()
+                .map_or_else(String::new, |g| g.dir.display().to_string()),
+            if options.player_profile.is_some() {
+                "persistent"
+            } else {
+                "isolated"
+            },
+            options.cache_dir.display(),
+            options.clean_cache,
+            options.error_dialog
+        ));
+    }
+    // Player, persistent profile: one browser process per profile (the lock lives until this
+    // function returns, after CEF shut down), then the stored origin port. A busy profile or
+    // a damaged port file ends the run before the loopback server and CEF start.
+    let profile = match options.player_profile.as_deref() {
+        Some(root) => match PlayerProfile::open(root) {
+            Ok(profile) => {
+                log.line(format_args!(
+                    "player profile root={} lock=acquired origin-port={}",
+                    root.display(),
+                    profile
+                        .stored_port
+                        .map_or_else(|| "new".to_owned(), |port| port.to_string())
+                ));
+                if let Some(game) = options.game.as_mut() {
+                    game.port = profile.stored_port.unwrap_or(0);
+                }
+                Some(profile)
+            },
+            Err(ProfileError::Busy) => {
+                log.line(format_args!(
+                    "FAIL player profile busy root={} (another instance of this game is running)",
+                    root.display()
+                ));
+                player_error_dialog(
+                    &options,
+                    &log,
+                    "The game is already running. Close the other game window first: two \
+                     copies cannot share the same saves.",
+                );
+                log.line(format_args!("exit code={EXIT_CONTENTION}"));
+                return EXIT_CONTENTION;
+            },
+            Err(ProfileError::Failed(error)) => {
+                log.line(format_args!(
+                    "FAIL player profile root={}: {error}",
+                    root.display()
+                ));
+                player_error_dialog(
+                    &options,
+                    &log,
+                    &format!(
+                        "The game could not open its save folder.\n\nDetails: {error}\n\
+                         Folder: {}",
+                        root.display()
+                    ),
+                );
+                log.line(format_args!("exit code=1"));
+                return 1;
+            },
+        },
+        None => None,
+    };
+    // Player, isolated profile only: the run's own cache, removed on every exit path after
+    // CEF shut down.
+    let player_cache = options.clean_cache.then(|| options.cache_dir.clone());
+    let cleanup = |log: &Log| {
+        if let Some(dir) = player_cache.as_deref() {
+            remove_player_cache(log, dir);
+        }
+    };
     startup_line(&log, &mut startup, Milestone::OptionsLogReady);
 
     // Game mode: bind the loopback origin before CEF starts (the window probe's order).
@@ -134,11 +215,64 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                     crate::game::profile_dir(&options.cache_dir).display(),
                     std::process::id()
                 ));
+                // Persistent profile, first launch: keep this origin for every later launch.
+                if let Some(profile) = profile.as_ref().filter(|p| p.stored_port.is_none()) {
+                    let stored = origin_port(&server.origin)
+                        .ok_or_else(|| format!("unexpected origin {}", server.origin))
+                        .and_then(|port| profile.store_port(port).map(|()| port));
+                    match stored {
+                        Ok(port) => log.line(format_args!("player origin-port stored port={port}")),
+                        Err(error) => {
+                            log.line(format_args!("FAIL player origin-port not stored: {error}"));
+                            stop_server(&log, Some(server));
+                            player_error_dialog(
+                                &options,
+                                &log,
+                                &format!(
+                                    "The game could not write to its save folder.\n\n\
+                                     Details: {error}\nFolder: {}",
+                                    profile.root.display()
+                                ),
+                            );
+                            log.line(format_args!("exit code=1"));
+                            return 1;
+                        },
+                    }
+                }
                 startup_line(&log, &mut startup, Milestone::LoopbackReady);
                 Some(server)
             },
             Err(error) => {
+                // Persistent profile: the stored port is the saves' origin; another port
+                // would silently show the player an empty game, so a taken port ends the run.
+                let taken = matches!(
+                    error.kind(),
+                    std::io::ErrorKind::AddrInUse | std::io::ErrorKind::PermissionDenied
+                );
+                if profile.is_some() && taken {
+                    log.line(format_args!(
+                        "FAIL game loopback port busy port={} error={error}",
+                        game.port
+                    ));
+                    player_error_dialog(
+                        &options,
+                        &log,
+                        &format!(
+                            "The game could not start: another program is using its local \
+                             port {}. Close that program and start the game again.",
+                            game.port
+                        ),
+                    );
+                    log.line(format_args!("exit code={EXIT_CONTENTION}"));
+                    return EXIT_CONTENTION;
+                }
                 log.line(format_args!("FAIL game loopback server: {error}"));
+                player_error_dialog(
+                    &options,
+                    &log,
+                    &format!("The game could not start its local file server.\n\nDetails: {error}"),
+                );
+                cleanup(&log);
                 return 1;
             },
         },
@@ -152,6 +286,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         Err(error) => {
             log.line(format_args!("cef initialize failed: {error}"));
             stop_server(&log, server);
+            cleanup(&log);
             return 4;
         },
     };
@@ -161,12 +296,13 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     ));
     startup_line(&log, &mut startup, Milestone::CefInitialized);
 
-    let pushes_events = options.test_click.is_some() || options.test_key.is_some();
+    let pushes_events =
+        options.test_click.is_some() || options.test_key.is_some() || options.test_wheel.is_some();
     let sdl = match sdl3::init().and_then(|sdl| {
         let video = sdl.video()?;
         let events = sdl.event_pump()?;
-        // `--roves-test-click-ms`/`--roves-test-key-ms` only: pushes the synthetic events
-        // into the SDL queue.
+        // `--roves-test-click-ms`/`--roves-test-key-ms`/`--roves-test-wheel-ms` only: pushes
+        // the synthetic events into the SDL queue.
         let sender = pushes_events.then(|| sdl.event()).transpose()?;
         Ok((video, events, sdl.mouse(), sender))
     }) {
@@ -175,12 +311,14 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
             log.line(format_args!("SDL3 startup failed: {error}"));
             drop(runtime);
             stop_server(&log, server);
+            cleanup(&log);
             return 1;
         },
     };
     let (video, mut events, mouse, event_sender) = sdl;
     startup_line(&log, &mut startup, Milestone::SdlReady);
-    let phase = if options.game.is_some() {
+    let game_mode = options.game.is_some();
+    let phase = if game_mode {
         Phase::Game
     } else {
         Phase::Initial
@@ -188,6 +326,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
     let minimize_cycle = options.test_minimize.map(|_| MinimizeCycle::Waiting);
     let click_test = options.test_click.map(|_| ClickTest::Waiting);
     let key_test = options.test_key.map(|_| KeyTest::Waiting);
+    let wheel_test = options.test_wheel.map(|_| WheelTest::Waiting);
     let mut probe = Probe {
         timings: (options.timings || options.sustained).then(Timings::default),
         phase_since: None,
@@ -206,7 +345,12 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         minimize_cycle,
         click_test,
         key_test,
+        wheel_test,
         event_sender,
+        gate: game_mode.then_some(StartupGate::Loading),
+        failure_reported: false,
+        failure_presented: false,
+        released_at: None,
         failures: 0,
         checks: 0,
         exit_code: None,
@@ -241,14 +385,33 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                 } else {
                     probe.redraw(&mouse);
                 }
+                probe.report_startup_failure();
             }
         },
         Err(error) => {
             probe.fail(format_args!("startup: {error}"));
             probe.exit_code = Some(5);
+            // Player: no window to show a failure screen in; the reason still reaches the
+            // player instead of a silent exit.
+            if probe.options.player && probe.options.error_dialog {
+                let shown = sdl3::messagebox::show_simple_message_box(
+                    sdl3::messagebox::MessageBoxFlag::ERROR,
+                    "Roves - the game could not start",
+                    &format!(
+                        "The game window could not be created ({error}). Update the graphics \
+                         driver; a DirectX 12 graphics adapter is required."
+                    ),
+                    None,
+                );
+                probe.log.line(format_args!(
+                    "startup failure dialog closed ok={}",
+                    shown.is_ok()
+                ));
+            }
         },
     }
     let code = probe.finish();
+    cleanup(&log);
     log.line(format_args!("exit code={code}"));
     code
 }
@@ -314,6 +477,190 @@ struct Options {
     /// `--roves-test-key=ArrowRight|CapsLock` (only with `--roves-test-key-ms`; default
     /// ArrowRight): the key of the synthetic press.
     test_key_name: TestKey,
+    /// `--roves-test-wheel-ms` (game mode, tests only, at most 600000): this long after
+    /// load-end, push one synthetic wheel notch into the SDL queue and require it to be
+    /// forwarded through welding with the expected CEF delta and exactly one expected page
+    /// wheel marker (README "Real-game mode").
+    test_wheel: Option<Duration>,
+    /// Packaged launch (README "Packaged player"): no `--roves-game-dir`, and the game build
+    /// is the `game` directory next to the executable. A failed startup ends the run.
+    player: bool,
+    /// Player, ordinary launch (README "Saves and the player profile"): the persistent
+    /// profile root holding the lock, the stored origin port and CEF's root cache
+    /// (`cache_dir` = `<root>\cef`). Default `%LOCALAPPDATA%\Roves\Player\<name>`,
+    /// `--roves-cache-dir` replaces the root. `None` outside the player and with
+    /// `--roves-isolated-profile`.
+    player_profile: Option<PathBuf>,
+    /// Player with `--roves-isolated-profile` only (CI and tests): the run's own cache
+    /// directory, removed after CEF shut down; nothing persists.
+    clean_cache: bool,
+    /// Player only: show the failure in a native dialog (`--roves-no-error-dialog` turns it
+    /// off for unattended runs; the failure screen and log stay).
+    error_dialog: bool,
+}
+
+/// A fresh per-run directory `%TEMP%\<root>\run-<unix ms>-<pid>` (absolute).
+fn run_cache_dir(root: &str) -> PathBuf {
+    std::env::temp_dir().join(root).join(format!(
+        "run-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_millis()),
+        std::process::id()
+    ))
+}
+
+/// Packaged launch with `--roves-isolated-profile` (CI and tests): CEF's root cache (and the
+/// game profile inside it) for this run only, removed after shutdown (`remove_player_cache`).
+/// Nothing persists between launches.
+fn player_cache_dir() -> PathBuf {
+    run_cache_dir("roves-cef-player")
+}
+
+/// Exit code of a packaged launch that found its persistent profile in use by another
+/// instance, or the profile's stored origin port taken by another program.
+const EXIT_CONTENTION: i32 = 6;
+
+/// Default persistent profile root of the packaged launch:
+/// `%LOCALAPPDATA%\Roves\Player\<exe stem>-<hash of the install directory>`.
+fn default_player_profile_root(exe: &Path) -> Result<PathBuf, String> {
+    let local = std::env::var_os("LOCALAPPDATA")
+        .filter(|v| !v.is_empty())
+        .ok_or("LOCALAPPDATA is not set: pass --roves-cache-dir=<profile root>")?;
+    let install = exe
+        .parent()
+        .ok_or("the executable has no parent directory")?;
+    let install = std::fs::canonicalize(install)
+        .map_err(|e| format!("install directory {}: {e}", install.display()))?;
+    let stem = exe
+        .file_stem()
+        .map(|s| s.to_string_lossy())
+        .unwrap_or_default();
+    Ok(PathBuf::from(local)
+        .join("Roves")
+        .join("Player")
+        .join(player_profile_name(&stem, &install.to_string_lossy())))
+}
+
+/// Packaged launch, persistent profile: the held profile lock and the stored origin port.
+/// The lock (`LockFileEx` through `File::try_lock`) is released when the file is dropped or
+/// the process ends, including a crash, so a stale lock never blocks the next launch.
+struct PlayerProfile {
+    root: PathBuf,
+    _lock: File,
+    /// `None` on the first launch: the port the OS picks is stored after the bind.
+    stored_port: Option<u16>,
+}
+
+enum ProfileError {
+    /// Another process holds the profile lock.
+    Busy,
+    Failed(String),
+}
+
+impl PlayerProfile {
+    fn open(root: &Path) -> Result<Self, ProfileError> {
+        let failed = |what: &str, e: std::io::Error| ProfileError::Failed(format!("{what}: {e}"));
+        std::fs::create_dir_all(root).map_err(|e| failed("create the profile directory", e))?;
+        let lock = std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(root.join(PLAYER_LOCK_FILE))
+            .map_err(|e| failed("open the profile lock", e))?;
+        match lock.try_lock() {
+            Ok(()) => {},
+            Err(std::fs::TryLockError::WouldBlock) => return Err(ProfileError::Busy),
+            Err(std::fs::TryLockError::Error(e)) => return Err(failed("lock the profile", e)),
+        }
+        let port_file = root.join(PLAYER_ORIGIN_PORT_FILE);
+        let stored_port = match std::fs::read_to_string(&port_file) {
+            Ok(text) => Some(parse_origin_port(&text).ok_or_else(|| {
+                ProfileError::Failed(format!(
+                    "{} is damaged (expected a port number); the saves belong to that port",
+                    port_file.display()
+                ))
+            })?),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+            Err(e) => return Err(failed("read the origin port", e)),
+        };
+        Ok(PlayerProfile {
+            root: root.to_path_buf(),
+            _lock: lock,
+            stored_port,
+        })
+    }
+
+    /// Writes the origin port through a temporary file and a rename (replaces atomically),
+    /// so an interrupted first launch never leaves a partial port file.
+    fn store_port(&self, port: u16) -> Result<(), String> {
+        let target = self.root.join(PLAYER_ORIGIN_PORT_FILE);
+        let temporary = self.root.join(format!("{PLAYER_ORIGIN_PORT_FILE}.tmp"));
+        std::fs::write(&temporary, format!("{port}\n"))
+            .and_then(|()| std::fs::rename(&temporary, &target))
+            .map_err(|e| format!("{}: {e}", target.display()))
+    }
+}
+
+/// Player only, before the window exists: the reason in a native SDL message box without a
+/// parent window (`--roves-no-error-dialog` skips it; the log line stays).
+fn player_error_dialog(options: &Options, log: &Log, message: &str) {
+    if !options.player {
+        return;
+    }
+    if !options.error_dialog {
+        log.line(format_args!(
+            "player error dialog skipped (--roves-no-error-dialog)"
+        ));
+        return;
+    }
+    let shown = sdl3::messagebox::show_simple_message_box(
+        sdl3::messagebox::MessageBoxFlag::ERROR,
+        "Roves - the game could not start",
+        message,
+        None,
+    );
+    log.line(format_args!(
+        "player error dialog closed ok={}",
+        shown.is_ok()
+    ));
+}
+
+/// Packaged launch with `--roves-isolated-profile` only: removes the run's own cache after
+/// CEF shut down and the loopback server stopped. Retried briefly: CEF child processes may still hold files while they exit.
+fn remove_player_cache(log: &Log, dir: &std::path::Path) {
+    let mut last = None;
+    for attempt in 0..20 {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        match std::fs::remove_dir_all(dir) {
+            Ok(()) => {
+                log.line(format_args!(
+                    "player cache removed dir={} attempts={}",
+                    dir.display(),
+                    attempt + 1
+                ));
+                return;
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                log.line(format_args!(
+                    "player cache removed dir={} attempts={} (absent)",
+                    dir.display(),
+                    attempt + 1
+                ));
+                return;
+            },
+            Err(error) => last = Some(error),
+        }
+    }
+    if let Some(error) = last {
+        log.line(format_args!(
+            "player cache not removed dir={} error={error}",
+            dir.display()
+        ));
+    }
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -327,15 +674,7 @@ impl Options {
     fn parse() -> Result<Self, String> {
         let mut options = Options {
             log: None,
-            cache_dir: std::env::temp_dir()
-                .join("roves-cef-netrender-probe")
-                .join(format!(
-                    "run-{}-{}",
-                    std::time::SystemTime::now()
-                        .duration_since(std::time::UNIX_EPOCH)
-                        .map_or(0, |elapsed| elapsed.as_millis()),
-                    std::process::id()
-                )),
+            cache_dir: run_cache_dir("roves-cef-netrender-probe"),
             timeout: Duration::from_secs(120),
             keep_open: false,
             timings: false,
@@ -348,10 +687,18 @@ impl Options {
             test_click: None,
             test_key: None,
             test_key_name: TestKey::default(),
+            test_wheel: None,
+            player: false,
+            player_profile: None,
+            clean_cache: false,
+            error_dialog: true,
         };
         let mut game_dir = None;
         let mut test_key_name = None;
         let mut port = None;
+        let mut cache_dir_given = false;
+        let mut no_error_dialog = false;
+        let mut isolated_profile = false;
         for arg in std::env::args().skip(1) {
             let Some(rest) = arg.strip_prefix("--roves-") else {
                 continue; // CEF/Chromium switches are CEF's business.
@@ -359,7 +706,12 @@ impl Options {
             let (name, value) = rest.split_once('=').unwrap_or((rest, ""));
             match name {
                 "log" => options.log = Some(value.into()),
-                "cache-dir" => options.cache_dir = value.into(),
+                "cache-dir" => {
+                    options.cache_dir = value.into();
+                    cache_dir_given = true;
+                },
+                "no-error-dialog" => no_error_dialog = true,
+                "isolated-profile" => isolated_profile = true,
                 "compose" if value == "wgpu" => {},
                 "timeout-ms" => options.timeout = parse_ms(name, value)?,
                 "keep-open" => options.keep_open = true,
@@ -380,6 +732,7 @@ impl Options {
                 "test-click-ms" => options.test_click = Some(parse_ms(name, value)?),
                 "test-key-ms" => options.test_key = Some(parse_test_key_delay(value)?),
                 "test-key" => test_key_name = Some(TestKey::parse(value)?),
+                "test-wheel-ms" => options.test_wheel = Some(parse_test_wheel_delay(value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
         }
@@ -396,16 +749,82 @@ impl Options {
             options.test_minimize.is_some(),
             options.test_click.is_some(),
             options.test_key.is_some(),
+            options.test_wheel.is_some(),
         ];
         if hooks.into_iter().filter(|on| *on).count() > 1 {
             return Err(
                 "one test hook per run: keep only one of --roves-test-minimize-ms, \
-                        --roves-test-click-ms and --roves-test-key-ms"
+                        --roves-test-click-ms, --roves-test-key-ms and --roves-test-wheel-ms"
                     .into(),
             );
         }
         if options.sample.is_zero() {
             return Err("--roves-sample-ms must be > 0".into());
+        }
+        // Packaged launch: resolved from the executable, never from the working directory,
+        // so a double click, a shortcut or another current directory open the same game.
+        let exe = std::env::current_exe().ok();
+        if game_dir.is_none()
+            && !options.sustained
+            && !options.keep_open
+            && let Some(dir) = exe
+                .as_deref()
+                .and_then(|exe| exe.parent().map(|p| p.join(PLAYER_GAME_DIR)))
+                .filter(|dir| dir.join("index.html").is_file())
+        {
+            game_dir = Some(dir.to_string_lossy().into_owned());
+            options.player = true;
+        }
+        if options.player
+            && (options.test_minimize.is_some()
+                || options.test_click.is_some()
+                || options.test_key.is_some()
+                || options.test_wheel.is_some())
+        {
+            return Err(
+                "the --roves-test-*-ms hooks need an explicit --roves-game-dir \
+                        (not the packaged launch)"
+                    .into(),
+            );
+        }
+        if isolated_profile {
+            if !options.player {
+                return Err(
+                    "--roves-isolated-profile needs the packaged game directory \
+                            (game\\index.html next to the executable)"
+                        .into(),
+                );
+            }
+            if cache_dir_given {
+                return Err("--roves-isolated-profile uses its own per-run cache: \
+                            drop --roves-cache-dir"
+                    .into());
+            }
+            options.cache_dir = player_cache_dir();
+            options.clean_cache = true;
+        } else if options.player {
+            // Ordinary launch: the persistent profile and its stored origin keep the saves.
+            if port.is_some() {
+                return Err("the packaged launch keeps its origin port in the profile: \
+                            drop --roves-port (or add --roves-isolated-profile)"
+                    .into());
+            }
+            let root = if cache_dir_given {
+                std::path::absolute(&options.cache_dir)
+                    .map_err(|e| format!("--roves-cache-dir: {e}"))?
+            } else {
+                default_player_profile_root(exe.as_deref().ok_or("executable path unknown")?)?
+            };
+            options.cache_dir = root.join(PLAYER_CEF_DIR);
+            options.player_profile = Some(root);
+        }
+        if no_error_dialog {
+            if !options.player {
+                return Err("--roves-no-error-dialog needs the packaged game directory \
+                            (game\\index.html next to the executable)"
+                    .into());
+            }
+            options.error_dialog = false;
         }
         match game_dir {
             Some(dir) => {
@@ -423,11 +842,13 @@ impl Options {
                 || options.auto_close.is_some()
                 || options.test_minimize.is_some()
                 || options.test_click.is_some()
-                || options.test_key.is_some() =>
+                || options.test_key.is_some()
+                || options.test_wheel.is_some() =>
             {
                 return Err(
                     "--roves-port, --roves-auto-close-ms, --roves-test-minimize-ms, \
-                            --roves-test-click-ms and --roves-test-key-ms need --roves-game-dir"
+                            --roves-test-click-ms, --roves-test-key-ms and \
+                            --roves-test-wheel-ms need --roves-game-dir"
                         .into(),
                 );
             },
@@ -569,9 +990,21 @@ struct Probe {
     click_test: Option<ClickTest>,
     /// `--roves-test-key-ms` only: the synthetic key sequence.
     key_test: Option<KeyTest>,
-    /// `--roves-test-click-ms`/`--roves-test-key-ms` only: the SDL event subsystem the
-    /// synthetic events are pushed through.
+    /// `--roves-test-wheel-ms` only: the synthetic wheel sequence.
+    wheel_test: Option<WheelTest>,
+    /// `--roves-test-click-ms`/`--roves-test-key-ms`/`--roves-test-wheel-ms` only: the SDL
+    /// event subsystem the synthetic events are pushed through.
     event_sender: Option<EventSubsystem>,
+    /// Game mode: startup screen until the game's first fresh frame (README "Packaged
+    /// player"). `None` keeps the fixture path unchanged.
+    gate: Option<StartupGate>,
+    /// Player only: the failure screen was presented (or the window is suspended) and the
+    /// failure was reported; the run is closing.
+    failure_reported: bool,
+    /// Game mode: the failure screen has been presented at least once.
+    failure_presented: bool,
+    /// Game mode: when the startup screen gave way to the game.
+    released_at: Option<Instant>,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -603,6 +1036,61 @@ struct State {
     resumed_at: Option<Instant>,
     /// Resume instant until the first producer frame is imported after it.
     resumed_import_at: Option<Instant>,
+    /// Clear colour of the composed target: red in the fixture smoke (its pixel checks rely
+    /// on it), the dark startup-screen colour in game mode.
+    background: wgpu::Color,
+    /// Game mode only: the startup/failure screen logo textures.
+    splash: Option<Splash>,
+}
+
+/// Game mode: the branded logo uploaded once (premultiplied `Rgba8Unorm`, `LOGO_PX`
+/// square) for the startup and failure screens. `None` textures: decoding failed, the
+/// screens are the plain dark background.
+struct Splash {
+    logo: Option<wgpu::TextureView>,
+    failed: Option<wgpu::TextureView>,
+}
+
+impl Splash {
+    fn new(host: &HostWgpuContext, branding: Option<&Branding>) -> Self {
+        let upload = |label, rgba: &[u8]| {
+            let size = wgpu::Extent3d {
+                width: LOGO_PX,
+                height: LOGO_PX,
+                depth_or_array_layers: 1,
+            };
+            let texture = host.device.create_texture(&wgpu::TextureDescriptor {
+                label: Some(label),
+                size,
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: COMPOSED_FORMAT,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            host.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d::ZERO,
+                    aspect: wgpu::TextureAspect::All,
+                },
+                rgba,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(4 * LOGO_PX),
+                    rows_per_image: Some(LOGO_PX),
+                },
+                size,
+            );
+            texture.create_view(&wgpu::TextureViewDescriptor::default())
+        };
+        Splash {
+            logo: branding.map(|b| upload("roves startup logo", &b.logo)),
+            failed: branding.map(|b| upload("roves failure logo", &b.failed)),
+        }
+    }
 }
 
 impl Probe {
@@ -612,8 +1100,13 @@ impl Probe {
     }
 
     fn start(&mut self, video: &VideoSubsystem) -> Result<State, String> {
+        let game = self.options.game.is_some();
         let mut builder = video.window(
-            "Roves CEF + SDL3 probe",
+            if game {
+                "Roves"
+            } else {
+                "Roves CEF + SDL3 probe"
+            },
             INITIAL_SIZE.width,
             INITIAL_SIZE.height,
         );
@@ -621,8 +1114,34 @@ impl Probe {
         if !self.options.sustained {
             builder.resizable();
         }
-        let window = builder.build().map_err(|e| format!("window: {e}"))?;
-        if self.options.game.is_some() {
+        // Game mode: hidden until the startup screen can be presented, so the OS never shows
+        // an empty window first. The fixture keeps its visible window unchanged.
+        if game {
+            builder.hidden();
+        }
+        let mut window = builder.build().map_err(|e| format!("window: {e}"))?;
+        let branding = if game {
+            let started = Instant::now();
+            match crate::splash::decode() {
+                Ok(branding) => {
+                    let icon = window.set_icon(&branding.icon);
+                    self.log.line(format_args!(
+                        "branding decoded logo={LOGO_PX}x{LOGO_PX} window-icon={icon} elapsed_ms={}",
+                        started.elapsed().as_millis()
+                    ));
+                    Some(branding)
+                },
+                Err(error) => {
+                    // Not fatal: the screens fall back to the plain dark background.
+                    self.log
+                        .line(format_args!("branding unavailable error={error}"));
+                    None
+                },
+            }
+        } else {
+            None
+        };
+        if game {
             video.text_input().start(&window);
         }
         let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
@@ -695,9 +1214,35 @@ impl Probe {
         ));
 
         let blit = Blit::new(&host.device, format);
+        let background = if game {
+            let [r, g, b, a] = SPLASH_BACKGROUND.map(f64::from);
+            wgpu::Color { r, g, b, a }
+        } else {
+            let [r, g, b, a] = BACKGROUND.map(f64::from);
+            wgpu::Color { r, g, b, a }
+        };
+        let splash = game.then(|| Splash::new(&host, branding.as_ref()));
+        drop(branding);
+        // Game mode: the first startup-screen frame, then the window appears, before the CEF
+        // browser is even created.
+        let mut composed_target = None;
+        if let Some(splash) = splash.as_ref() {
+            let visible = window.show();
+            let shown = composed_target_of(
+                &host,
+                &mut composed_target,
+                (surface_config.width, surface_config.height),
+            );
+            let commands = splash_commands(&host, &blit, &shown, background, splash, false);
+            host.queue.submit([commands]);
+            let presented = present_to(&surface, &surface_config, &host, &blit, &shown, None, None);
+            self.log.line(format_args!(
+                "startup screen shown size={}x{} window-shown={visible} presented={presented}",
+                surface_config.width, surface_config.height
+            ));
+        }
         let runtime = self.runtime.take().ok_or("CEF runtime already consumed")?;
         let game_origin = self.server.as_ref().map(|server| server.origin.clone());
-        let game = game_origin.is_some();
         let url = match game_origin {
             Some(origin) => format!("{origin}/"),
             None => format!(
@@ -732,7 +1277,7 @@ impl Probe {
         Ok(State {
             producer,
             frame: None,
-            composed_target: None,
+            composed_target,
             blit,
             surface,
             surface_config,
@@ -748,6 +1293,8 @@ impl Probe {
             suspended_ticks: 0,
             resumed_at: None,
             resumed_import_at: None,
+            background,
+            splash,
         })
     }
 
@@ -836,8 +1383,47 @@ impl Probe {
             Ok(None) => {},
             Err(error) => self.log.line(format_args!("acquire_frame error: {error}")),
         }
+        // Game mode: the startup screen gives way on the first frame painted after load-end.
+        if let Some(gate) = self.gate.as_mut() {
+            if let Some(generation) = self.last_generation.filter(|_| fresh)
+                && gate.imported(generation)
+            {
+                self.log.line(format_args!(
+                    "startup released generation={generation} imported={} after_load_end_ms={}",
+                    s.imported,
+                    self.game_loaded_at.map_or(0, |at| at.elapsed().as_millis())
+                ));
+                startup_line(&self.log, &mut self.startup, Milestone::StartupReleased);
+                self.released_at = Some(Instant::now());
+                if let Some(delay) = self.options.auto_close
+                    && self.options.player
+                {
+                    self.log.line(format_args!(
+                        "auto-close scheduled delay_ms={} from=startup-release",
+                        delay.as_millis()
+                    ));
+                }
+            }
+            gate.end_turn(self.last_generation);
+        }
 
-        let composed = compose(s, timings.as_deref_mut());
+        let composed = match (self.gate, s.splash.as_ref()) {
+            (Some(gate), Some(splash)) if !gate.released() => {
+                let size = (s.surface_config.width, s.surface_config.height);
+                let target = composed_target_of(&s.host, &mut s.composed_target, size);
+                let commands = splash_commands(
+                    &s.host,
+                    &s.blit,
+                    &target,
+                    s.background,
+                    splash,
+                    gate.failure().is_some(),
+                );
+                s.host.queue.submit([commands]);
+                Some(target)
+            },
+            _ => compose(s, timings.as_deref_mut()),
+        };
         mark(&mut marks, Step::Compose);
         let sampling = self.phase == Phase::Sampling;
         let Some(composed) = composed else {
@@ -851,6 +1437,15 @@ impl Probe {
             s.presented += 1;
             if s.presented == 1 {
                 startup_line(&self.log, &mut self.startup, Milestone::FirstPresent);
+            }
+            if let Some(failure) = self.gate.and_then(StartupGate::failure)
+                && !self.failure_presented
+            {
+                self.failure_presented = true;
+                self.log.line(format_args!(
+                    "startup failure screen presented reason={}",
+                    failure.token()
+                ));
             }
             if let (Some(t), Some(frame_start)) = (timings, frame_start) {
                 let now = t.lap(Stage::Frame, frame_start);
@@ -952,9 +1547,27 @@ impl Probe {
                 self.exit_code.get_or_insert(2);
                 self.close();
             },
+            // Packaged player: --roves-timeout-ms bounds the whole startup screen (load-end and
+            // the first fresh frame); the failure screen and dialog then end the run.
+            Phase::Game
+                if self.options.player
+                    && timed_out
+                    && self.gate.and_then(StartupGate::timed_out).is_some() =>
+            {
+                let failure = self
+                    .gate
+                    .and_then(StartupGate::timed_out)
+                    .expect("checked in the guard");
+                self.fail(format_args!(
+                    "startup not released within {} ms ({})",
+                    self.options.timeout.as_millis(),
+                    failure.token()
+                ));
+                self.fail_startup(failure);
+            },
             // Game: --roves-timeout-ms bounds only the load; afterwards the player (or
             // --roves-auto-close-ms) decides when to close.
-            Phase::Game if self.game_loaded_at.is_none() && timed_out => {
+            Phase::Game if !self.options.player && self.game_loaded_at.is_none() && timed_out => {
                 self.fail(format_args!(
                     "timeout: the game did not finish loading in {} ms",
                     self.options.timeout.as_millis()
@@ -971,12 +1584,21 @@ impl Probe {
             Phase::Game if self.key_test.is_some_and(|k| !k.finished()) => {
                 self.step_key_test();
             },
-            // With a --roves-test-*-ms hook, only once the test sequence has finished.
+            Phase::Game if self.wheel_test.is_some_and(|w| !w.finished()) => {
+                self.step_wheel_test();
+            },
+            // With a --roves-test-*-ms hook, only once the test sequence has finished. Counted
+            // from load-end, or in the packaged player from the startup release (the game on
+            // screen), so an unreleased startup still ends in its failure path.
             Phase::Game
                 if self
                     .options
                     .auto_close
-                    .zip(self.game_loaded_at)
+                    .zip(if self.options.player {
+                        self.released_at
+                    } else {
+                        self.game_loaded_at
+                    })
                     .is_some_and(|(delay, at)| at.elapsed() >= delay) =>
             {
                 self.log.line(format_args!("auto-close window"));
@@ -1220,6 +1842,137 @@ impl Probe {
         }
     }
 
+    /// `--roves-test-wheel-ms` only: requests the synthetic wheel notch once due and times out
+    /// the pending steps. One `MouseWheel` (`TEST_WHEEL_LINES`, normal direction, stamped with
+    /// `TEST_WHEEL_MOUSE_ID`) is pushed into the SDL queue and comes back through the loop's
+    /// ordinary `poll_iter` -> `window_event` -> `Input` -> welding `send_mouse_input`
+    /// (`WheelScrolled`) path on a later turn. `Input` places the wheel at its tracked cursor
+    /// (the last forwarded motion, initially 0,0), not at the event's `mouse_x`/`mouse_y`.
+    fn step_wheel_test(&mut self) {
+        let (Some(mut wheel), Some(delay), Some(loaded)) = (
+            self.wheel_test,
+            self.options.test_wheel,
+            self.game_loaded_at,
+        ) else {
+            return;
+        };
+        let action = wheel.tick(Instant::now(), loaded.elapsed() >= delay);
+        self.wheel_test = Some(wheel);
+        match action {
+            WheelAction::Push => {
+                let s = self.state.as_ref().expect("state");
+                let window_id = s.window.id();
+                let (x, y) = TEST_WHEEL_LINES;
+                let event = Event::MouseWheel {
+                    timestamp: 0,
+                    window_id,
+                    which: TEST_WHEEL_MOUSE_ID,
+                    x,
+                    y,
+                    direction: MouseWheelDirection::Normal,
+                    mouse_x: 0.0,
+                    mouse_y: 0.0,
+                    integer_x: x as i32,
+                    integer_y: y as i32,
+                };
+                let pushed = match self.event_sender.as_ref() {
+                    Some(events) => events.push_event(event).map_err(|e| e.to_string()),
+                    None => Err("no SDL event subsystem".into()),
+                };
+                self.log.line(format_args!(
+                    "test wheel requested x={x} y={y} direction=normal window_id={window_id} pushed={}",
+                    pushed.is_ok()
+                ));
+                if let Err(error) = pushed {
+                    self.wheel_test = Some(WheelTest::Failed);
+                    self.fail(format_args!("test wheel: SDL_PushEvent failed: {error}"));
+                    self.close();
+                }
+            },
+            WheelAction::Fail(what) => {
+                self.fail(format_args!("test wheel: {what}"));
+                self.close();
+            },
+            WheelAction::None | WheelAction::Complete => {},
+        }
+    }
+
+    /// `--roves-test-wheel-ms` only: applies a test wheel action that came from an input or
+    /// console event.
+    fn wheel_test_action(&mut self, action: WheelAction) {
+        match action {
+            WheelAction::Complete => self.log.line(format_args!("test wheel complete")),
+            WheelAction::Fail(what) => {
+                self.fail(format_args!("test wheel: {what}"));
+                self.close();
+            },
+            WheelAction::None | WheelAction::Push => {},
+        }
+    }
+
+    /// Game mode: the startup screen turns into the failure screen (dimmed logo, title). The
+    /// player run then reports it once presented (`report_startup_failure`).
+    fn fail_startup(&mut self, failure: StartupFailure) {
+        if !self.gate.as_mut().is_some_and(|gate| gate.fail(failure)) {
+            return;
+        }
+        self.log
+            .line(format_args!("startup failed reason={}", failure.token()));
+        if let Some(s) = self.state.as_mut() {
+            let _ = s.window.set_title("Roves - the game could not start");
+        }
+    }
+
+    /// Player only, once per run after each loop turn: when startup failed and the failure
+    /// screen was presented (or the window is minimized/hidden, so nothing can be presented),
+    /// shows the reason in a native SDL message box over the window unless
+    /// `--roves-no-error-dialog`, then closes with exit code 2. A failure while the run is
+    /// already closing only sets the exit code.
+    fn report_startup_failure(&mut self) {
+        if self.failure_reported || !self.options.player {
+            return;
+        }
+        let Some(failure) = self.gate.and_then(StartupGate::failure) else {
+            return;
+        };
+        let closing = self.phase == Phase::Closing;
+        if !(closing || self.failure_presented || self.suspended()) {
+            return;
+        }
+        self.failure_reported = true;
+        self.exit_code.get_or_insert(2);
+        if closing {
+            return;
+        }
+        if self.options.error_dialog {
+            let message = format!(
+                "{}\n\nDetails: {} (log: {})",
+                failure.message(),
+                failure.token(),
+                self.options
+                    .log
+                    .as_ref()
+                    .map_or_else(|| "not written".to_owned(), |p| p.display().to_string())
+            );
+            let window = self.state.as_ref().map(|s| &s.window);
+            let shown = sdl3::messagebox::show_simple_message_box(
+                sdl3::messagebox::MessageBoxFlag::ERROR,
+                "Roves - the game could not start",
+                &message,
+                window,
+            );
+            self.log.line(format_args!(
+                "startup failure dialog closed ok={}",
+                shown.is_ok()
+            ));
+        } else {
+            self.log.line(format_args!(
+                "startup failure dialog skipped (--roves-no-error-dialog)"
+            ));
+        }
+        self.close();
+    }
+
     /// Suspends frame work while the window is minimized or hidden and resumes it once it is
     /// neither. Decided from the window flags, so a `Shown` that arrives while the window is
     /// still minimized does not resume. Occlusion alone does not suspend.
@@ -1292,6 +2045,8 @@ impl Probe {
         let mut left_origin = None;
         let mut click_actions = Vec::new();
         let mut key_actions = Vec::new();
+        let mut wheel_actions = Vec::new();
+        let mut startup_failures = Vec::new();
         for event in events {
             if let CefSurfaceEvent::Navigation(event) = event {
                 match &event {
@@ -1305,11 +2060,29 @@ impl Probe {
                             self.log
                                 .line(format_args!("FAIL game load-end not accepted"));
                             self.failures += 1;
+                            startup_failures.push(StartupFailure::LoadRejected);
                         } else if self.game_loaded_at.is_none() {
                             s.load_ended = true;
                             self.game_loaded_at = Some(Instant::now());
                             startup_line(&self.log, &mut self.startup, Milestone::LoadEnd);
-                            if let Some(delay) = self.options.auto_close {
+                            // A frame painted after load-end releases the startup screen.
+                            // welding's resize re-sends the current size with an invalidate
+                            // (`was_resized` + `Invalidate(PET_VIEW)`), so a page that is
+                            // already static still paints once.
+                            if self.gate.as_mut().is_some_and(StartupGate::load_end) {
+                                let size = PhysicalSize::new(
+                                    s.surface_config.width,
+                                    s.surface_config.height,
+                                );
+                                let requested = s.producer.resize(size);
+                                self.log.line(format_args!(
+                                    "startup fresh-frame requested ok={}",
+                                    requested.is_ok()
+                                ));
+                            }
+                            if let Some(delay) = self.options.auto_close
+                                && !self.options.player
+                            {
                                 self.log.line(format_args!(
                                     "auto-close scheduled delay_ms={}",
                                     delay.as_millis()
@@ -1372,6 +2145,24 @@ impl Probe {
                                 .line(format_args!("test key marker received kind={marker:?}"));
                             key_actions.push(key.marker(marker));
                         }
+                        // `--roves-test-wheel-ms` only: the fixture's wheel marker.
+                        if let Some(wheel) = self.wheel_test.as_mut()
+                            && let Some(marker) = wheel_marker(message)
+                            && on_origin(origin.as_deref().unwrap_or_default(), source)
+                        {
+                            match marker {
+                                WheelMarker::Expected {
+                                    delta_y,
+                                    delta_mode,
+                                } => self.log.line(format_args!(
+                                    "test wheel marker received delta_y={delta_y} delta_mode={delta_mode}"
+                                )),
+                                WheelMarker::Unexpected(why) => self
+                                    .log
+                                    .line(format_args!("test wheel marker received unexpected={why:?}")),
+                            }
+                            wheel_actions.push(wheel.marker(marker));
+                        }
                     },
                     NavigationEvent::TitleChanged { title } if origin.is_some() => {
                         self.log.line(format_args!("title {title}"));
@@ -1385,6 +2176,7 @@ impl Probe {
                         self.log
                             .line(format_args!("FAIL load-error {error_code} {error_text}"));
                         self.failures += 1;
+                        startup_failures.push(StartupFailure::LoadError);
                     },
                     NavigationEvent::TitleChanged { title } => {
                         self.log.line(format_args!("title {title}"));
@@ -1393,16 +2185,23 @@ impl Probe {
                         self.log
                             .line(format_args!("FAIL renderer terminated {status:?}"));
                         self.failures += 1;
+                        startup_failures.push(StartupFailure::RendererTerminated);
                     },
                     _ => {},
                 }
             }
+        }
+        for failure in startup_failures {
+            self.fail_startup(failure);
         }
         for action in click_actions {
             self.click_test_action(action);
         }
         for action in key_actions {
             self.key_test_action(action);
+        }
+        for action in wheel_actions {
+            self.wheel_test_action(action);
         }
         if let Some(url) = left_origin {
             self.fail(format_args!(
@@ -1841,6 +2640,13 @@ impl Probe {
                     .line(format_args!("FAIL test key incomplete state={key:?}"));
                 self.failures += 1;
             }
+            if let Some(wheel) = self.wheel_test
+                && !wheel.finished()
+            {
+                self.log
+                    .line(format_args!("FAIL test wheel incomplete state={wheel:?}"));
+                self.failures += 1;
+            }
             if self.game_loaded_at.is_none() {
                 self.log
                     .line(format_args!("FAIL the game never finished loading"));
@@ -1911,17 +2717,30 @@ impl Probe {
             },
             _ => None,
         };
+        // `--roves-test-wheel-ms` only: the pushed wheel event, recognized by its mouse id.
+        let synthetic_wheel = self.wheel_test.is_some()
+            && matches!(&event, Event::MouseWheel { which, .. } if *which == TEST_WHEEL_MOUSE_ID);
         let mut click_forwarded = None;
         let mut key_forwarded = None;
         let mut key_codes = None;
+        let mut wheel_forwarded = None;
         // Set when the accepted game load-end was handled; the test hooks only push after it.
-        let game_loaded = self.game_loaded_at.is_some();
+        // Packaged player: page input starts with the game on screen (startup released), as
+        // Chromium holds input until the first frame of new content.
+        let game_loaded = if self.options.player {
+            self.gate.is_some_and(StartupGate::released)
+        } else {
+            self.game_loaded_at.is_some()
+        };
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
         {
             let forwarded = input.forwarded;
             if synthetic_key.is_some() {
                 input.last_key = None;
+            }
+            if synthetic_wheel {
+                input.last_wheel = None;
             }
             if let Some(line) = input.window_event(&mut s.producer, &s.window, &event, game_loaded)
             {
@@ -1931,6 +2750,24 @@ impl Probe {
             key_forwarded = synthetic_key.map(|down| (down, input.forwarded > forwarded));
             if key_forwarded.is_some() {
                 key_codes = input.last_key.take();
+            }
+            if synthetic_wheel {
+                wheel_forwarded = Some(WheelInput {
+                    ok: input.forwarded > forwarded,
+                    delta: input.last_wheel.take(),
+                });
+            }
+        }
+        if let Some(input) = wheel_forwarded {
+            let delta = input.delta.map_or_else(
+                || "none".to_owned(),
+                |(x, y)| format!("delta_x={x} delta_y={y}"),
+            );
+            self.log
+                .line(format_args!("test wheel forwarded {delta} ok={}", input.ok));
+            if let Some(wheel) = self.wheel_test.as_mut() {
+                let action = wheel.input(input);
+                self.wheel_test_action(action);
             }
         }
         if let Some((down, ok)) = key_forwarded {
@@ -2026,12 +2863,34 @@ fn pixel_size(window: &Window) -> PhysicalSize<u32> {
 /// is nothing to present yet.
 fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Texture> {
     let start = now_if(&timings);
-    let (w, h) = (s.surface_config.width, s.surface_config.height);
-    let target = &mut s.composed_target;
-    let target = match target {
+    let size = (s.surface_config.width, s.surface_config.height);
+    let target = composed_target_of(&s.host, &mut s.composed_target, size);
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+    let source = s.frame.as_ref().map(|f| (&f.view, f.size));
+    let commands = s.blit.encode(
+        &s.host,
+        &view,
+        wgpu::LoadOp::Clear(s.background),
+        source.map(|(view, size)| (view, size.width, size.height)),
+        (0, 0),
+        true,
+    );
+    let submit = lap(&mut timings, Stage::Compose, start);
+    s.host.queue.submit([commands]);
+    lap(&mut timings, Stage::ComposeSubmit, submit);
+    Some(target)
+}
+
+/// The composed target of `(width, height)`, recreated when the size changed.
+fn composed_target_of(
+    host: &HostWgpuContext,
+    slot: &mut Option<wgpu::Texture>,
+    (w, h): (u32, u32),
+) -> wgpu::Texture {
+    match slot {
         Some(t) if t.width() == w && t.height() == h => t.clone(),
         _ => {
-            let texture = s.host.device.create_texture(&wgpu::TextureDescriptor {
+            let texture = host.device.create_texture(&wgpu::TextureDescriptor {
                 label: Some("roves composed frame (wgpu mode)"),
                 size: wgpu::Extent3d {
                     width: w,
@@ -2047,42 +2906,77 @@ fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Tex
                     | wgpu::TextureUsages::COPY_SRC,
                 view_formats: &[],
             });
-            *target = Some(texture.clone());
+            *slot = Some(texture.clone());
             texture
         },
-    };
+    }
+}
+
+/// Game mode: the startup (or, with `failed`, failure) screen into `target`: the dark
+/// background with the logo centred 1:1 when it fits, through the same premultiplied blit
+/// as the CEF frame. No CEF frame is drawn.
+fn splash_commands(
+    host: &HostWgpuContext,
+    blit: &Blit,
+    target: &wgpu::Texture,
+    background: wgpu::Color,
+    splash: &Splash,
+    failed: bool,
+) -> wgpu::CommandBuffer {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let [r, g, b, a] = BACKGROUND.map(f64::from);
-    let source = s.frame.as_ref().map(|f| (&f.view, f.size));
-    let commands = s.blit.encode(
-        &s.host,
+    let (w, h) = (target.width(), target.height());
+    let logo = if failed {
+        splash.failed.as_ref()
+    } else {
+        splash.logo.as_ref()
+    }
+    .filter(|_| w >= LOGO_PX && h >= LOGO_PX);
+    blit.encode(
+        host,
         &view,
-        wgpu::LoadOp::Clear(wgpu::Color { r, g, b, a }),
-        source.map(|(view, size)| (view, size.width, size.height)),
+        wgpu::LoadOp::Clear(background),
+        logo.map(|view| (view, LOGO_PX, LOGO_PX)),
+        ((w - LOGO_PX.min(w)) / 2, (h - LOGO_PX.min(h)) / 2),
         true,
-    );
-    let submit = lap(&mut timings, Stage::Compose, start);
-    s.host.queue.submit([commands]);
-    lap(&mut timings, Stage::ComposeSubmit, submit);
-    Some(target)
+    )
 }
 
 /// GPU blit of the composed frame onto the window surface.
 fn present(
     s: &mut State,
     composed: &wgpu::Texture,
+    timings: Option<&mut Timings>,
+    marks: Option<&mut Marks>,
+) -> bool {
+    present_to(
+        &s.surface,
+        &s.surface_config,
+        &s.host,
+        &s.blit,
+        composed,
+        timings,
+        marks,
+    )
+}
+
+fn present_to(
+    surface: &wgpu::Surface<'static>,
+    surface_config: &wgpu::SurfaceConfiguration,
+    host: &HostWgpuContext,
+    blit: &Blit,
+    composed: &wgpu::Texture,
     mut timings: Option<&mut Timings>,
     mut marks: Option<&mut Marks>,
 ) -> bool {
     let start = now_if(&timings);
-    let current = s.surface.get_current_texture();
+    let current = surface.get_current_texture();
     // Failed or outdated acquisitions are sampled too: they cost the frame.
     let since = lap(&mut timings, Stage::Acquire, start);
     mark_ref(&mut marks, Step::SurfaceAcquire);
     let output = match current {
         wgpu::CurrentSurfaceTexture::Success(t) | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
         wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-            s.surface.configure(&s.host.device, &s.surface_config);
+            surface.configure(&host.device, surface_config);
             return false;
         },
         _ => return false,
@@ -2091,15 +2985,16 @@ fn present(
         .texture
         .create_view(&wgpu::TextureViewDescriptor::default());
     let source = composed.create_view(&wgpu::TextureViewDescriptor::default());
-    let commands = s.blit.encode(
-        &s.host,
+    let commands = blit.encode(
+        host,
         &target,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
         Some((&source, composed.width(), composed.height())),
+        (0, 0),
         false,
     );
     let since = lap(&mut timings, Stage::PresentEncode, since);
-    s.host.queue.submit([commands]);
+    host.queue.submit([commands]);
     let since = lap(&mut timings, Stage::Submit, since);
     mark_ref(&mut marks, Step::Submit);
     output.present();
@@ -2191,14 +3086,15 @@ impl Blit {
         }
     }
 
-    /// Encodes one render pass on `target`: `load`, then `source` drawn 1:1 from the top-left
-    /// corner (with premultiplied blending when `over`). The caller submits it.
+    /// Encodes one render pass on `target`: `load`, then `source` drawn 1:1 with its top-left
+    /// corner at `at` (with premultiplied blending when `over`). The caller submits it.
     fn encode(
         &self,
         host: &HostWgpuContext,
         target: &wgpu::TextureView,
         load: wgpu::LoadOp<wgpu::Color>,
         source: Option<(&wgpu::TextureView, u32, u32)>,
+        at: (u32, u32),
         over: bool,
     ) -> wgpu::CommandBuffer {
         let pipeline = if over { &self.over } else { &self.present };
@@ -2237,12 +3133,15 @@ impl Blit {
                 })],
                 ..Default::default()
             });
-            if let (Some((_, w, h)), Some(bind_group)) = (source, bind_group.as_ref()) {
-                let tw = target.texture().width();
-                let th = target.texture().height();
+            let tw = target.texture().width();
+            let th = target.texture().height();
+            if let (Some((_, w, h)), Some(bind_group)) = (source, bind_group.as_ref())
+                && at.0 < tw
+                && at.1 < th
+            {
                 // Viewport = source size, clipped to the target: texel-exact, never scaled.
-                pass.set_viewport(0.0, 0.0, w as f32, h as f32, 0.0, 1.0);
-                pass.set_scissor_rect(0, 0, w.min(tw), h.min(th));
+                pass.set_viewport(at.0 as f32, at.1 as f32, w as f32, h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(at.0, at.1, w.min(tw - at.0), h.min(th - at.1));
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..3, 0..1);

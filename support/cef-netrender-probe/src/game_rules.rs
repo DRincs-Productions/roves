@@ -1,5 +1,5 @@
 //! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
-//! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click and key sequences (std only,
+//! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click, key and wheel sequences (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF 154 on Windows (`CefBrowserPlatformDelegateNativeWin::TranslateUiKeyEvent`, CEF commit
@@ -160,6 +160,19 @@ pub(crate) fn bmp_chars(text: &str) -> impl Iterator<Item = char> + '_ {
 /// per notch (`web_input_event_builders_win.cc`), i.e. 100 px, so DOM `deltaY` magnitudes
 /// differ from Chrome; only the direction and tick count are expected to match.
 pub(crate) const WHEEL_DELTA_PER_LINE: f32 = 120.0;
+
+/// The `(delta_x, delta_y)` handed to welding's `MouseAction::WheelScrolled` (and from there
+/// unchanged to CEF `SendMouseWheelEvent`) for an SDL wheel event of `x`/`y` lines;
+/// `flipped`: SDL reports `MouseWheelDirection::Flipped` (natural scrolling), whose values
+/// are negated back to the normal direction.
+pub(crate) fn wheel_cef_delta(x: f32, y: f32, flipped: bool) -> (i32, i32) {
+    let factor = if flipped {
+        -WHEEL_DELTA_PER_LINE
+    } else {
+        WHEEL_DELTA_PER_LINE
+    };
+    ((x * factor).round() as i32, (y * factor).round() as i32)
+}
 
 /// What an SDL event is for the game-mode input path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -423,12 +436,18 @@ pub(crate) const TEST_KEY_MARKER: &str = "roves-test-key-received";
 /// Parses the `--roves-test-key-ms` delay: a whole number of milliseconds, at most
 /// `TEST_KEY_MAX_DELAY_MS`.
 pub(crate) fn parse_test_key_delay(value: &str) -> Result<std::time::Duration, String> {
+    parse_bounded_test_delay("test-key-ms", value)
+}
+
+/// Parses the delay of a bounded test hook (`--roves-<name>=<ms>`): a whole number of
+/// milliseconds, at most `TEST_KEY_MAX_DELAY_MS`.
+fn parse_bounded_test_delay(name: &str, value: &str) -> Result<std::time::Duration, String> {
     let ms = value
         .parse::<u64>()
-        .map_err(|e| format!("--roves-test-key-ms={value}: {e}"))?;
+        .map_err(|e| format!("--roves-{name}={value}: {e}"))?;
     if ms > TEST_KEY_MAX_DELAY_MS {
         return Err(format!(
-            "--roves-test-key-ms={value}: must be <= {TEST_KEY_MAX_DELAY_MS}"
+            "--roves-{name}={value}: must be <= {TEST_KEY_MAX_DELAY_MS}"
         ));
     }
     Ok(std::time::Duration::from_millis(ms))
@@ -618,6 +637,184 @@ impl KeyTest {
     }
 }
 
+/// `--roves-test-wheel-ms` only: SDL mouse id stamped on the pushed wheel event, so the probe
+/// attributes exactly that event to the test (never a physical mouse).
+pub(crate) const TEST_WHEEL_MOUSE_ID: u32 = 0x524F_5645;
+/// `--roves-test-wheel-ms` only: the pushed SDL wheel amount `(x, y)` in lines, normal
+/// direction: one notch away from the user (scroll up).
+pub(crate) const TEST_WHEEL_LINES: (f32, f32) = (0.0, 1.0);
+/// `--roves-test-wheel-ms` only: the `(delta_x, delta_y)` the current conversion
+/// (`wheel_cef_delta`) must hand to welding/CEF for `TEST_WHEEL_LINES`.
+pub(crate) const TEST_WHEEL_CEF_DELTA: (i32, i32) = (0, 120);
+/// `--roves-test-wheel-ms` only: the console message prefix the fixture's wheel listener
+/// logs, followed by space-separated `name=value` fields. Accepted only from a source on the
+/// game's loopback origin.
+pub(crate) const TEST_WHEEL_MARKER: &str = "roves-test-wheel-received";
+
+/// Parses the `--roves-test-wheel-ms` delay: a whole number of milliseconds, at most
+/// `TEST_KEY_MAX_DELAY_MS`.
+pub(crate) fn parse_test_wheel_delay(value: &str) -> Result<std::time::Duration, String> {
+    parse_bounded_test_delay("test-wheel-ms", value)
+}
+
+/// A fixture wheel marker, checked against the pushed event.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) enum WheelMarker {
+    /// A trusted DOM `wheel` with the expected direction: `deltaX` 0 and `deltaY` < 0 (Blink
+    /// negates the CEF delta, so a positive CEF `delta_y` scrolls up). The magnitude and
+    /// `deltaMode` are reported, not checked.
+    Expected { delta_y: f64, delta_mode: u32 },
+    /// The marker word with a wrong or missing field (always a failure).
+    Unexpected(&'static str),
+}
+
+/// Classifies a console message as a wheel marker (`None`: not one). Fields:
+/// `type=wheel deltaX=<n> deltaY=<n> deltaMode=<0|1|2> trusted=true`, others ignored.
+pub(crate) fn wheel_marker(message: &str) -> Option<WheelMarker> {
+    let rest = message.strip_prefix(TEST_WHEEL_MARKER)?;
+    if !(rest.is_empty() || rest.starts_with(' ')) {
+        return None;
+    }
+    let field = |name: &str| {
+        rest.split(' ')
+            .filter_map(|word| word.split_once('='))
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| value)
+    };
+    let number = |name: &str| {
+        field(name)
+            .and_then(|v| v.parse::<f64>().ok())
+            .filter(|v| v.is_finite())
+    };
+    Some(if field("type") != Some("wheel") {
+        WheelMarker::Unexpected("wheel marker with an unexpected event type")
+    } else if field("trusted") != Some("true") {
+        WheelMarker::Unexpected("wheel marker for an untrusted event")
+    } else if number("deltaX") != Some(0.0) {
+        WheelMarker::Unexpected("wheel marker with a horizontal delta")
+    } else {
+        let delta_mode = field("deltaMode").and_then(|v| v.parse::<u32>().ok());
+        match (number("deltaY"), delta_mode) {
+            (Some(delta_y), Some(delta_mode @ 0..=2)) if delta_y < 0.0 => WheelMarker::Expected {
+                delta_y,
+                delta_mode,
+            },
+            (Some(_), Some(0..=2)) => {
+                WheelMarker::Unexpected("wheel marker with the wrong vertical direction")
+            },
+            _ => WheelMarker::Unexpected("wheel marker without a valid deltaY/deltaMode"),
+        }
+    })
+}
+
+/// The synthetic wheel event of the test after it went through the input path: `ok` is
+/// whether welding accepted it, `delta` what the probe handed to welding (`None`: no wheel
+/// call was made).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WheelInput {
+    pub(crate) ok: bool,
+    pub(crate) delta: Option<(i32, i32)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WheelAction {
+    None,
+    /// Push the synthetic wheel event into the SDL queue.
+    Push,
+    Complete,
+    Fail(&'static str),
+}
+
+/// `--roves-test-wheel-ms` (test only, game mode): one synthetic wheel notch after the game's
+/// load-end, observed in order: requested (pushed into the SDL queue), forwarded through
+/// welding with `TEST_WHEEL_CEF_DELTA`, then exactly one expected page marker. Each pending
+/// state carries the request instant; everything must happen within
+/// `TEST_TRANSITION_TIMEOUT` of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WheelTest {
+    /// Waiting for load-end + the requested delay.
+    Waiting,
+    Requested(std::time::Instant),
+    Forwarded(std::time::Instant),
+    Done,
+    Failed,
+}
+
+impl WheelTest {
+    /// Per deadline turn. `due`: load-end + delay has passed.
+    pub(crate) fn tick(&mut self, now: std::time::Instant, due: bool) -> WheelAction {
+        let (next, action) = match *self {
+            WheelTest::Waiting if due => (WheelTest::Requested(now), WheelAction::Push),
+            WheelTest::Requested(at) | WheelTest::Forwarded(at)
+                if now - at > TEST_TRANSITION_TIMEOUT =>
+            {
+                (
+                    WheelTest::Failed,
+                    WheelAction::Fail(match *self {
+                        WheelTest::Requested(_) => "synthetic wheel event never forwarded",
+                        _ => "wheel marker never received",
+                    }),
+                )
+            },
+            state => (state, WheelAction::None),
+        };
+        *self = next;
+        action
+    }
+
+    /// The synthetic wheel event came back from the SDL queue through the input path.
+    pub(crate) fn input(&mut self, input: WheelInput) -> WheelAction {
+        let (next, action) = match (*self, input) {
+            (WheelTest::Failed, _) => (WheelTest::Failed, WheelAction::None),
+            (WheelTest::Requested(_), WheelInput { ok: false, .. }) => (
+                WheelTest::Failed,
+                WheelAction::Fail("welding refused the synthetic wheel event"),
+            ),
+            (WheelTest::Requested(at), WheelInput { ok: true, delta })
+                if delta == Some(TEST_WHEEL_CEF_DELTA) =>
+            {
+                (WheelTest::Forwarded(at), WheelAction::None)
+            },
+            (WheelTest::Requested(_), _) => (
+                WheelTest::Failed,
+                WheelAction::Fail("synthetic wheel event forwarded with an unexpected CEF delta"),
+            ),
+            _ => (
+                WheelTest::Failed,
+                WheelAction::Fail("unexpected synthetic wheel event"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// The page logged a wheel marker.
+    pub(crate) fn marker(&mut self, marker: WheelMarker) -> WheelAction {
+        let (next, action) = match (*self, marker) {
+            (WheelTest::Failed, _) => (WheelTest::Failed, WheelAction::None),
+            (_, WheelMarker::Unexpected(why)) => (WheelTest::Failed, WheelAction::Fail(why)),
+            (WheelTest::Forwarded(_), WheelMarker::Expected { .. }) => {
+                (WheelTest::Done, WheelAction::Complete)
+            },
+            (WheelTest::Done, _) => (
+                WheelTest::Failed,
+                WheelAction::Fail("wheel marker received more than once"),
+            ),
+            _ => (
+                WheelTest::Failed,
+                WheelAction::Fail("wheel marker before the wheel event was forwarded"),
+            ),
+        };
+        *self = next;
+        action
+    }
+
+    /// Done or failed: `--roves-auto-close-ms` may close the window.
+    pub(crate) fn finished(self) -> bool {
+        matches!(self, WheelTest::Done | WheelTest::Failed)
+    }
+}
+
 /// One startup milestone of the browser process (every mode; `LoopbackReady` in game mode
 /// only). Logged as `startup milestone=<name> elapsed_ms=<n>`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -631,6 +828,8 @@ pub(crate) enum Milestone {
     LoadEnd,
     FirstImport,
     FirstPresent,
+    /// Game mode: the startup screen gave way to the game (`StartupGate::Released`).
+    StartupReleased,
 }
 
 impl Milestone {
@@ -645,6 +844,199 @@ impl Milestone {
             Milestone::LoadEnd => "load-end",
             Milestone::FirstImport => "first-import",
             Milestone::FirstPresent => "first-present",
+            Milestone::StartupReleased => "startup-released",
+        }
+    }
+}
+
+/// Packaged launch: the game build directory next to the executable, used when the probe
+/// starts without `--roves-game-dir` and `<exe dir>\game\index.html` exists.
+pub(crate) const PLAYER_GAME_DIR: &str = "game";
+
+/// Packaged launch, persistent profile (README "Saves and the player profile"): files of the
+/// profile root. The lock is held for the whole browser-process run (one instance per
+/// profile); the origin port file keeps the loopback origin, and so the origin-keyed page
+/// storage, identical across launches; CEF's root cache (with welding's `game-profile`) is
+/// the `cef` subdirectory.
+pub(crate) const PLAYER_LOCK_FILE: &str = "player.lock";
+pub(crate) const PLAYER_ORIGIN_PORT_FILE: &str = "origin-port";
+pub(crate) const PLAYER_CEF_DIR: &str = "cef";
+
+/// Name of the default persistent profile directory (under `%LOCALAPPDATA%\Roves\Player`):
+/// the executable stem (ASCII letters, digits, `-` and `_` kept, other characters replaced by
+/// `_`, at most 32, `game` when empty) and the 64-bit FNV-1a of the lower-cased canonical
+/// install directory. Every launch of one install finds the same profile; two packages
+/// that both ship a `play.exe` never share storage. Moving or renaming the install directory
+/// starts a new profile (documented limitation).
+pub(crate) fn player_profile_name(exe_stem: &str, install_dir: &str) -> String {
+    let mut stem: String = exe_stem
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(32)
+        .collect();
+    if stem.is_empty() {
+        stem.push_str("game");
+    }
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for byte in install_dir.to_lowercase().bytes() {
+        hash ^= u64::from(byte);
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{stem}-{hash:016x}")
+}
+
+/// The stored origin port: decimal 1..=65535, surrounding whitespace allowed. `None` for any
+/// other content (a damaged file is reported, never silently replaced by a new origin).
+pub(crate) fn parse_origin_port(text: &str) -> Option<u16> {
+    let text = text.trim();
+    if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    text.parse::<u16>().ok().filter(|port| *port != 0)
+}
+
+/// Port of a loopback origin `http://127.0.0.1:<port>` (no trailing slash).
+pub(crate) fn origin_port(origin: &str) -> Option<u16> {
+    origin
+        .strip_prefix("http://127.0.0.1:")
+        .and_then(parse_origin_port)
+}
+
+/// Why the startup screen did not give way to the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartupFailure {
+    /// The main-frame load-end had a non-accepted status or left the loopback origin.
+    LoadRejected,
+    /// CEF reported a main-frame load error.
+    LoadError,
+    /// The renderer process ended (before or after the release).
+    RendererTerminated,
+    /// No accepted main-frame load-end within `--roves-timeout-ms`.
+    LoadTimeout,
+    /// Loaded, but no CEF frame painted after the load arrived within `--roves-timeout-ms`
+    /// (for example accelerated off-screen rendering unavailable on the adapter).
+    NoFreshFrame,
+}
+
+impl StartupFailure {
+    /// Log token (`startup failed reason=<token>`).
+    pub(crate) fn token(self) -> &'static str {
+        match self {
+            StartupFailure::LoadRejected => "load-rejected",
+            StartupFailure::LoadError => "load-error",
+            StartupFailure::RendererTerminated => "renderer-terminated",
+            StartupFailure::LoadTimeout => "load-timeout",
+            StartupFailure::NoFreshFrame => "no-fresh-frame",
+        }
+    }
+
+    /// The sentence shown to the player in the error dialog.
+    pub(crate) fn message(self) -> &'static str {
+        match self {
+            StartupFailure::LoadRejected | StartupFailure::LoadError => {
+                "The game files could not be loaded. Check that the \"game\" folder next to \
+                 the program is complete, then start the game again."
+            },
+            StartupFailure::RendererTerminated => {
+                "The game stopped unexpectedly. Start the game again; if it keeps happening, \
+                 update the graphics driver."
+            },
+            StartupFailure::LoadTimeout => "The game took too long to load. Start the game again.",
+            StartupFailure::NoFreshFrame => {
+                "The game loaded but could not be displayed: this graphics adapter or driver \
+                 does not support the accelerated rendering the game needs. Update the \
+                 graphics driver or use another GPU."
+            },
+        }
+    }
+}
+
+/// Game-mode startup screen. The branded screen stays up until the accepted main-frame
+/// load-end has been handled AND a CEF frame painted after it has been imported, as
+/// Chromium keeps the previous surface and holds input until the first frame of the new
+/// content (`RenderWidgetHostImpl::OnRenderFrameMetadataChangedAfterActivation`). A frame
+/// imported in the same loop turn as the load-end may predate it, so the gate records the
+/// newest generation at the end of that turn and requires a strictly newer one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StartupGate {
+    /// Waiting for the accepted main-frame load-end.
+    Loading,
+    /// Load-end handled in the current turn; the baseline is taken at its end.
+    LoadEnded,
+    /// Waiting for a frame newer than this generation (`None`: none imported yet).
+    WaitingFrame(Option<u64>),
+    Released,
+    Failed(StartupFailure),
+}
+
+impl StartupGate {
+    /// The accepted main-frame load-end. `true` when it moved the gate.
+    pub(crate) fn load_end(&mut self) -> bool {
+        if *self != StartupGate::Loading {
+            return false;
+        }
+        *self = StartupGate::LoadEnded;
+        true
+    }
+
+    /// A producer frame of welding paint `generation` was imported. `true` on release.
+    pub(crate) fn imported(&mut self, generation: u64) -> bool {
+        match *self {
+            StartupGate::WaitingFrame(baseline) if baseline.is_none_or(|b| generation > b) => {
+                *self = StartupGate::Released;
+                true
+            },
+            _ => false,
+        }
+    }
+
+    /// End of a loop turn; `newest` is the generation of the newest imported frame so far.
+    pub(crate) fn end_turn(&mut self, newest: Option<u64>) {
+        if *self == StartupGate::LoadEnded {
+            *self = StartupGate::WaitingFrame(newest);
+        }
+    }
+
+    /// Records a failure. Only the first one counts; a renderer that ends after the release
+    /// still replaces the game with the failure screen. `true` when it moved the gate.
+    pub(crate) fn fail(&mut self, failure: StartupFailure) -> bool {
+        let applies = match *self {
+            StartupGate::Failed(_) => false,
+            StartupGate::Released => failure == StartupFailure::RendererTerminated,
+            _ => true,
+        };
+        if applies {
+            *self = StartupGate::Failed(failure);
+        }
+        applies
+    }
+
+    /// The failure a passed startup deadline means in the current state (`None`: released or
+    /// already failed).
+    pub(crate) fn timed_out(self) -> Option<StartupFailure> {
+        match self {
+            StartupGate::Loading => Some(StartupFailure::LoadTimeout),
+            StartupGate::LoadEnded | StartupGate::WaitingFrame(_) => {
+                Some(StartupFailure::NoFreshFrame)
+            },
+            StartupGate::Released | StartupGate::Failed(_) => None,
+        }
+    }
+
+    pub(crate) fn released(self) -> bool {
+        self == StartupGate::Released
+    }
+
+    pub(crate) fn failure(self) -> Option<StartupFailure> {
+        match self {
+            StartupGate::Failed(failure) => Some(failure),
+            _ => None,
         }
     }
 }
@@ -1319,6 +1711,181 @@ mod tests {
     }
 
     #[test]
+    fn wheel_conversion_gives_the_expected_cef_delta() {
+        // The test notch, through the same conversion the input path uses.
+        let (x, y) = TEST_WHEEL_LINES;
+        assert_eq!(wheel_cef_delta(x, y, false), TEST_WHEEL_CEF_DELTA);
+        assert_eq!(TEST_WHEEL_CEF_DELTA, (0, 120));
+        // Flipped (natural scrolling) values are negated back; fractions round.
+        assert_eq!(wheel_cef_delta(0.0, -1.0, true), (0, 120));
+        assert_eq!(wheel_cef_delta(-1.0, 0.0, false), (-120, 0));
+        assert_eq!(wheel_cef_delta(0.0, 0.5, false), (0, 60));
+        assert_eq!(wheel_cef_delta(0.0, -2.0, false), (0, -240));
+    }
+
+    #[test]
+    fn test_wheel_delay_is_bounded() {
+        assert_eq!(parse_test_wheel_delay("0"), Ok(ms(0)));
+        assert_eq!(parse_test_wheel_delay("1000"), Ok(ms(1000)));
+        assert_eq!(
+            parse_test_wheel_delay("600000"),
+            Ok(ms(TEST_KEY_MAX_DELAY_MS))
+        );
+        for bad in ["600001", "", "-1", "1.5", "1s"] {
+            let error = parse_test_wheel_delay(bad).expect_err(bad);
+            assert!(error.starts_with("--roves-test-wheel-ms="), "{error}");
+        }
+        // The key flag keeps its own name in the message.
+        assert!(
+            parse_test_key_delay("x")
+                .unwrap_err()
+                .starts_with("--roves-test-key-ms=")
+        );
+    }
+
+    #[test]
+    fn wheel_markers_are_classified() {
+        let good = "roves-test-wheel-received type=wheel deltaX=0 deltaY=-120 deltaZ=0 \
+                    deltaMode=0 wheelDeltaY=120 trusted=true cancelable=true \
+                    defaultPrevented=true";
+        assert_eq!(
+            wheel_marker(good),
+            Some(WheelMarker::Expected {
+                delta_y: -120.0,
+                delta_mode: 0
+            })
+        );
+        // Magnitude and deltaMode are reported, not checked (only direction).
+        assert_eq!(
+            wheel_marker(
+                "roves-test-wheel-received type=wheel deltaX=-0 deltaY=-3 deltaMode=1 trusted=true"
+            ),
+            Some(WheelMarker::Expected {
+                delta_y: -3.0,
+                delta_mode: 1
+            })
+        );
+        let unexpected = |m: &str| matches!(wheel_marker(m), Some(WheelMarker::Unexpected(_)));
+        let base = "roves-test-wheel-received";
+        for bad in [
+            "",
+            " type=mousewheel deltaX=0 deltaY=-120 deltaMode=0 trusted=true",
+            " type=wheel deltaX=0 deltaY=-120 deltaMode=0 trusted=false",
+            " type=wheel deltaX=0 deltaY=-120 deltaMode=0",
+            " type=wheel deltaX=5 deltaY=-120 deltaMode=0 trusted=true",
+            " type=wheel deltaY=-120 deltaMode=0 trusted=true",
+            " type=wheel deltaX=0 deltaY=120 deltaMode=0 trusted=true",
+            " type=wheel deltaX=0 deltaY=0 deltaMode=0 trusted=true",
+            " type=wheel deltaX=0 deltaY=NaN deltaMode=0 trusted=true",
+            " type=wheel deltaX=0 deltaY=-120 deltaMode=3 trusted=true",
+            " type=wheel deltaX=0 deltaY=-120 trusted=true",
+        ] {
+            assert!(unexpected(&format!("{base}{bad}")), "{bad:?}");
+        }
+        assert_eq!(wheel_marker("roves-test-wheel-receivedx type=wheel"), None);
+        assert_eq!(wheel_marker("x roves-test-wheel-received type=wheel"), None);
+        assert_eq!(wheel_marker("roves-test-key-received type=keydown"), None);
+    }
+
+    const WHEEL_OK: WheelInput = WheelInput {
+        ok: true,
+        delta: Some(TEST_WHEEL_CEF_DELTA),
+    };
+    const WHEEL_DOM: WheelMarker = WheelMarker::Expected {
+        delta_y: -120.0,
+        delta_mode: 0,
+    };
+
+    #[test]
+    fn wheel_test_runs_in_order() {
+        let t0 = std::time::Instant::now();
+        let mut wheel = WheelTest::Waiting;
+        assert_eq!(wheel.tick(t0, false), WheelAction::None);
+        assert_eq!(wheel.tick(t0, true), WheelAction::Push);
+        // Pushed once only.
+        assert_eq!(wheel.tick(t0 + ms(1), true), WheelAction::None);
+        assert_eq!(wheel.input(WHEEL_OK), WheelAction::None);
+        assert!(!wheel.finished());
+        assert_eq!(wheel.tick(t0 + ms(50), true), WheelAction::None);
+        assert_eq!(wheel.marker(WHEEL_DOM), WheelAction::Complete);
+        assert!(wheel.finished());
+        // Done is terminal for ticks (no timeout).
+        assert_eq!(
+            wheel.tick(t0 + TEST_TRANSITION_TIMEOUT * 2, true),
+            WheelAction::None
+        );
+        assert_eq!(wheel, WheelTest::Done);
+    }
+
+    #[test]
+    fn wheel_test_fails_on_refusal_delta_order_or_timeout() {
+        let t0 = std::time::Instant::now();
+        let late = t0 + TEST_TRANSITION_TIMEOUT + ms(1);
+        let requested = || {
+            let mut wheel = WheelTest::Waiting;
+            wheel.tick(t0, true);
+            wheel
+        };
+        let forwarded = || {
+            let mut wheel = requested();
+            wheel.input(WHEEL_OK);
+            wheel
+        };
+        let fails = |action: WheelAction| matches!(action, WheelAction::Fail(_));
+
+        // welding refuses the call; no wheel call; another delta (flipped sign, wrong axis).
+        let mut wheel = requested();
+        assert!(fails(wheel.input(WheelInput {
+            ok: false,
+            delta: Some(TEST_WHEEL_CEF_DELTA)
+        })));
+        assert!(wheel.finished());
+        for delta in [None, Some((0, -120)), Some((120, 0)), Some((0, 360))] {
+            assert!(
+                fails(requested().input(WheelInput { ok: true, delta })),
+                "{delta:?}"
+            );
+        }
+
+        // Synthetic events out of order: before the request, a second one after forwarding,
+        // one after completion.
+        assert!(fails(WheelTest::Waiting.input(WHEEL_OK)));
+        assert!(fails(forwarded().input(WHEEL_OK)));
+        let mut wheel = forwarded();
+        wheel.marker(WHEEL_DOM);
+        assert!(fails(wheel.input(WHEEL_OK)));
+
+        // DOM markers: before the request or forwarding, twice, unexpected fields.
+        assert!(fails(WheelTest::Waiting.marker(WHEEL_DOM)));
+        assert!(fails(requested().marker(WHEEL_DOM)));
+        let mut wheel = forwarded();
+        assert_eq!(wheel.marker(WHEEL_DOM), WheelAction::Complete);
+        assert!(fails(wheel.marker(WHEEL_DOM)));
+        assert!(fails(
+            forwarded().marker(WheelMarker::Unexpected("wrong direction"))
+        ));
+        let mut wheel = forwarded();
+        wheel.marker(WHEEL_DOM);
+        assert!(fails(wheel.marker(WheelMarker::Unexpected("extra"))));
+
+        // Each pending state times out relative to the request.
+        let mut wheel = requested();
+        assert_eq!(
+            wheel.tick(t0 + TEST_TRANSITION_TIMEOUT, true),
+            WheelAction::None
+        );
+        assert!(fails(wheel.tick(late, true)));
+        let mut wheel = forwarded();
+        assert!(fails(wheel.tick(late, true)));
+        assert_eq!(wheel, WheelTest::Failed);
+
+        // Failed is terminal and silent.
+        assert_eq!(wheel.input(WHEEL_OK), WheelAction::None);
+        assert_eq!(wheel.marker(WHEEL_DOM), WheelAction::None);
+        assert_eq!(wheel.tick(late, true), WheelAction::None);
+    }
+
+    #[test]
     fn startup_milestones_report_once_relative_to_entry() {
         let t0 = std::time::Instant::now();
         let mut startup = Startup::new(t0);
@@ -1351,6 +1918,7 @@ mod tests {
             Milestone::LoadEnd,
             Milestone::FirstImport,
             Milestone::FirstPresent,
+            Milestone::StartupReleased,
         ];
         let mut fresh = Startup::new(t0);
         for (i, m) in all.iter().enumerate() {
@@ -1358,5 +1926,114 @@ mod tests {
             assert!(all[..i].iter().all(|other| other.name() != m.name()));
         }
         assert_eq!(Milestone::FirstPresent.name(), "first-present");
+        assert_eq!(Milestone::StartupReleased.name(), "startup-released");
+    }
+
+    #[test]
+    fn startup_gate_needs_load_end_then_a_newer_frame() {
+        let mut gate = StartupGate::Loading;
+        // Frames before load-end never release.
+        assert!(!gate.imported(1));
+        gate.end_turn(Some(1));
+        assert_eq!(gate, StartupGate::Loading);
+        assert_eq!(gate.timed_out(), Some(StartupFailure::LoadTimeout));
+        // Load-end turn: the frame imported in the same turn (generation 2) may predate it.
+        assert!(gate.load_end());
+        assert!(!gate.load_end());
+        assert!(!gate.imported(2));
+        gate.end_turn(Some(2));
+        assert_eq!(gate, StartupGate::WaitingFrame(Some(2)));
+        assert_eq!(gate.timed_out(), Some(StartupFailure::NoFreshFrame));
+        // The same generation imported again is not fresh; a newer one releases.
+        assert!(!gate.imported(2));
+        assert!(gate.imported(3));
+        assert!(gate.released());
+        assert_eq!(gate.timed_out(), None);
+        assert!(!gate.imported(4));
+        gate.end_turn(Some(4));
+        assert!(gate.released());
+    }
+
+    #[test]
+    fn startup_gate_without_earlier_frames_releases_on_the_first_import() {
+        let mut gate = StartupGate::Loading;
+        assert!(gate.load_end());
+        gate.end_turn(None);
+        assert_eq!(gate, StartupGate::WaitingFrame(None));
+        assert!(gate.imported(1));
+    }
+
+    #[test]
+    fn startup_gate_failures() {
+        let mut gate = StartupGate::Loading;
+        assert!(gate.fail(StartupFailure::LoadError));
+        assert_eq!(gate.failure(), Some(StartupFailure::LoadError));
+        // The first failure stays; nothing releases a failed gate.
+        assert!(!gate.fail(StartupFailure::LoadTimeout));
+        assert!(!gate.load_end());
+        gate.end_turn(Some(9));
+        assert!(!gate.imported(10));
+        assert_eq!(gate.timed_out(), None);
+        assert_eq!(gate.failure(), Some(StartupFailure::LoadError));
+
+        // After the release only a renderer termination replaces the game.
+        let mut released = StartupGate::Released;
+        assert!(!released.fail(StartupFailure::LoadError));
+        assert!(!released.fail(StartupFailure::NoFreshFrame));
+        assert!(released.released());
+        assert!(released.fail(StartupFailure::RendererTerminated));
+        assert_eq!(released.failure(), Some(StartupFailure::RendererTerminated));
+    }
+
+    #[test]
+    fn startup_failure_texts_are_distinct() {
+        let all = [
+            StartupFailure::LoadRejected,
+            StartupFailure::LoadError,
+            StartupFailure::RendererTerminated,
+            StartupFailure::LoadTimeout,
+            StartupFailure::NoFreshFrame,
+        ];
+        for (i, f) in all.iter().enumerate() {
+            assert!(!f.message().is_empty());
+            assert!(all[..i].iter().all(|other| other.token() != f.token()));
+        }
+        assert_eq!(StartupFailure::NoFreshFrame.token(), "no-fresh-frame");
+    }
+
+    #[test]
+    fn player_profile_name_is_stable_and_install_specific() {
+        let a = player_profile_name("play", r"\\?\C:\Games\Visual Novel");
+        // Same install, any case: same profile.
+        assert_eq!(a, player_profile_name("play", r"\\?\c:\games\visual novel"));
+        assert!(a.starts_with("play-") && a.len() == "play-".len() + 16);
+        // Another install of a package with the same executable name: another profile.
+        assert_ne!(a, player_profile_name("play", r"\\?\C:\Games\Other Novel"));
+        // FNV-1a 64 reference value: the empty input hashes to the offset basis.
+        assert_eq!(player_profile_name("play", ""), "play-cbf29ce484222325");
+        assert_eq!(
+            player_profile_name("", "x"),
+            player_profile_name("game", "x")
+        );
+        assert!(player_profile_name("my game.é/..", "x").starts_with("my_game_____-"));
+        assert_eq!(
+            player_profile_name(&"a".repeat(40), "x")
+                .split('-')
+                .next()
+                .map(str::len),
+            Some(32)
+        );
+    }
+
+    #[test]
+    fn origin_port_file_and_origin_parsing() {
+        assert_eq!(parse_origin_port("47810"), Some(47810));
+        assert_eq!(parse_origin_port(" 47810\r\n"), Some(47810));
+        for bad in ["", "0", "65536", "-1", "+5", "47810x", "4 7810", "0x10"] {
+            assert_eq!(parse_origin_port(bad), None, "{bad:?}");
+        }
+        assert_eq!(origin_port("http://127.0.0.1:51234"), Some(51234));
+        assert_eq!(origin_port("http://127.0.0.1:51234/"), None);
+        assert_eq!(origin_port("http://localhost:51234"), None);
     }
 }
