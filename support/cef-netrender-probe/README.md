@@ -1145,10 +1145,15 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   remains with the performance flow.
 - The fixture smoke exercises no input. Real-game mode forwards mouse, wheel, keyboard,
   focus, visibility, scale factor and cursor shape. The ordinary CI game smoke covers only
-  loading and lifecycle on WARP. A synthetic SDL click gate is present in CI but **has not
-  run yet** (awaiting CI); it covers only the SDL event queue -> welding -> CEF/Blink DOM
-  click path. A synthetic SDL key gate (one ArrowRight down/up -> trusted DOM
-  `keydown`/`keyup`) is also present in CI and **has not run yet**. Physical mouse input,
+  loading and lifecycle on WARP. The synthetic CI input gates passed on Windows/WARP in
+  [run 45245179096](https://github.com/DRincs-Productions/roves/actions/runs/45245179096)
+  (commit `d9443fc5e0a5828cb6d1f341061412f740f77f4b`): the SDL click gate (SDL event queue
+  -> welding -> CEF/Blink DOM click path), the ArrowRight key gate (SDL keydown/up -> welding
+  -> CEF, trusted DOM `key=ArrowRight code=ArrowRight keyCode=39`) and the CapsLock key gate
+  (same path, trusted DOM `key=CapsLock code=CapsLock keyCode=20`). These are WARP tests
+  only: they exercise no accelerated OSR import, no physical input, and no text, wheel,
+  focus, gameplay or visual behavior. The local real-GPU key checks are a separate record
+  ("Local real-GPU correctness checks" in the CI section above). Physical mouse input,
   physical keyboard, text input, wheel, focus, gameplay and visuals remain
   **unverified**, and input has
   these known gaps (welding e991684 API or scope): no IME (composition events, CJK input),
