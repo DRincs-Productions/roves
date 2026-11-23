@@ -140,7 +140,50 @@ What this shows, and only this:
   procedure's rule (a gap smaller than the same-mode spread is not a difference) cannot be
   applied, so **no composition comparison is claimed**.
 
-## Attributing the warmup stalls (diagnostic implemented, not yet run)
+## Cross-branch ABBA series (2026-11-23)
+
+To compare the current SDL3/WGPU route with the separate Netrender route, I ran one continuous
+`N W W N N W W N` sequence on the GTX 1050. Each run used a fresh CEF cache, 10 s warmup,
+30 s sample and the same 1280x720 surface. The desktop was 1920x1080 at 60 Hz; the adapter was
+NVIDIA GeForce GTX 1050, DX12, driver 32.0.15.8163. All eight runs exited 0, reported
+`sustained result=healthy`, and passed the initial pixel checks.
+
+The builds are from separate branches: Netrender artifact [run 45050607096](https://github.com/DRincs-Productions/roves/actions/runs/45050607096),
+commit `4f238099634cb6860e4681bc1408c4da5c1ac8b2`, uses the Netrender composition and winit;
+the SDL3/WGPU artifact [run 45075636992](https://github.com/DRincs-Productions/roves/actions/runs/45075636992),
+commit `34cb3726e95d45381f4d66faddfc29836f7e2eb4`, uses SDL3 and a plain wgpu blit. Both use
+CEF 154.0.34, welding `e991684`, wgpu 29.0.4, the same physical adapter and display. These
+measurements compare the two branch configurations; they do not isolate compositor cost from
+the different window/event-loop implementations.
+
+Each table entry is the median of the four per-run percentiles; the range is the minimum and
+maximum across those four runs. Durations are wall-clock microseconds measured on the host
+thread, not GPU execution time.
+
+| Mode | Present interval p95 / p99 | Frame p95 / p99 | Compose p50 / p95 | Acquire p50 / p95 | Import interval p95 |
+| --- | --- | --- | --- | --- | --- |
+| Netrender + winit | 16808 (16771–16910) / 16997 (16927–17056) | 16705 (16674–16805) / 16891 (16828–16936) | 1016 (992–1127) / 1711 (1319–1931) | 13493 (13160–13529) / 15123 (15052–15151) | 33522 (33506–33614) |
+| wgpu blit + SDL3 | 16794 (16766–16840) / 16953 (16877–17013) | 16784 (16758–16829) / 16945 (16866–17004) | 99 (88–116) / 164 (155–194) | 14329 (14152–14496) / 16111 (16085–16121) | 33711 (33557–34593) |
+
+Both routes presented about 1801 frames in each 30 s sample. Median presentation cadence and
+its tails are close at 60 Hz; the per-run spreads overlap. Netrender's measured host-side
+`compose` duration is higher, while `acquire` occupies most of each frame in both builds.
+This does not establish that either route is faster overall: the builds differ in their window
+loops, the experiment is a static CEF fixture rather than a game, and it records no CPU/GPU
+utilization, PresentMon data or input latency. A clean component comparison would need both
+composers under the same window/event loop and build.
+
+One first attempt at the eighth run ended during warmup without an exit/result line and is
+excluded; it was repeated as the final Netrender trial above. The eight reported runs were then
+completed as a continuous sequence.
+
+## Attributing the warmup stalls (diagnostic implemented; not reproduced on 2026-11-23)
+
+Four further Netrender trials with the diagnostic-enabled artifact from run 45050607096 each
+completed healthy. None emitted `stall-trace` or `stall-mailbox`. These reruns did not reproduce
+the 630/650 ms warmup stalls from run 45042438963, so those earlier failures remain
+unattributed. The trace implementation is ready for the next rejected run; its absence from
+healthy runs provides no evidence about the cause of the historical stalls.
 
 Goal: tell, for a rejected Netrender trial, whether the 630/650 ms gap happened because
 **the producer did not deliver** (no frame reached welding's mailbox) or because **the host
@@ -303,8 +346,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   axum + tower-http `ServeDir`, bound to `127.0.0.1` only, `..` rejected, MIME and Range from
   the library) serves the directory, bound before CEF starts. Port 0 (default) gives each run
   its own origin; `--roves-port=<n>` fixes it. The producer opens `http://127.0.0.1:<port>/`
-  with an opaque white background (Chrome's default; the fixture stays transparent) and
-  `--roves-compose` selects Netrender or the wgpu blit as before. The directory must contain
+  with an opaque white background (Chrome's default; the fixture stays transparent) and is
+  composed by the wgpu blit (this branch has no other composition). The directory must contain
   `index.html`. The server stops after `cef::shutdown`.
 - **Profile.** CEF's root cache is `--roves-cache-dir` (default: a fresh directory under
   `%TEMP%` per run, made absolute) and the page gets welding's per-producer on-disk profile at
@@ -327,10 +370,29 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   to DIP): cursor moves, left/middle/right buttons with held-button modifiers, wheel
   (`LineDelta` x 120 = `WHEEL_DELTA` per notch, `PixelDelta` as is), Shift/Ctrl/Alt/Meta.
   Keyboard: `RawKeyDown`, one `Char` per typed BMP character (`wParam` = the character), and
-  `KeyUp`; `windows_key_code` from `MapVirtualKeyW(scancode, MAPVK_VSC_TO_VK_EX)` with
-  left/right modifiers folded to VK_SHIFT/VK_CONTROL/VK_MENU (what a real `WM_KEYDOWN`
-  carries), `native_key_code` = the Win32 `lParam` built from winit's extended scancode, so
-  Chromium fills `KeyboardEvent.code`. Focus is given to the browser after the first imported
+  `KeyUp`; `windows_key_code` is the virtual key of the SDL keycode (an explicit table for
+  non-character and keypad keys, `VkKeyScanW` for characters) with left/right modifiers
+  folded to VK_SHIFT/VK_CONTROL/VK_MENU (what a real `WM_KEYDOWN` carries). `native_key_code`
+  is a **Windows scan code**, not an `lParam`: CEF 154
+  (`CefBrowserPlatformDelegateNativeWin::TranslateUiKeyEvent`, CEF commit 14c5a089e845,
+  `libcef/browser/native/browser_platform_delegate_native_win.cc`) passes it unchanged to
+  `ui::KeycodeConverter::NativeKeycodeToDomCode`, an exact lookup in the Windows column of
+  Chromium's `dom_code_data.inc`: make code with `0xE0` in the high byte for extended keys
+  (ArrowRight `E04D`, Numpad6 `004D`, PrintScreen `E037`, Help `E03B`, Pause `0045`). A value
+  matching no entry leaves `KeyboardEvent.code` empty (CI run 45075636992 on `34cb3726e95`:
+  the former `lParam` value gave `key=ArrowRight keyCode=39 code=""`). Sources, in order:
+  Pause is always `0045` (SDL 3.4.16's Windows backend rewrites it to `E046`/`E145`);
+  otherwise SDL's `SDL_KeyboardEvent.raw`, which that backend fills with exactly this form, is
+  used unchanged (welding forwards it to CEF unchanged too). Only when `raw` is 0 (no scan
+  code, e.g. an event pushed into the queue) the code falls back to
+  `MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX)` and, if Windows returned no prefix, adds `0xE0`
+  for a fixed list of SDL scancodes validated against Chromium's table (Insert..ArrowUp,
+  NumLock, NumpadDivide, NumpadEnter, ContextMenu, MetaLeft/Right, ControlRight, AltRight).
+  The fallback is limited: Windows maps VK_RIGHT to the keypad's `4D`, so the prefix comes
+  from the SDL scancode; keys whose virtual key maps to a different low byte cannot be
+  rebuilt (VK_HELP gives `0063`, not `E03B`; PrintScreen likewise) and keep whatever Windows
+  returns, 0 = `code` empty. `Char` events carry `native_key_code` 0 (SDL text has no scan
+  code; the former 1 was Escape's). Focus is given to the browser after the first imported
   frame and on every `Focused(true)`; `Occluded` maps to `set_visible`; `ScaleFactorChanged` to
   `set_scale_factor`; the page's cursor shape is applied to the window (hidden for `none`).
   Resize is the probe's existing path (surface reconfigure + `producer.resize`). User input
@@ -414,8 +476,10 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   the SDL event queue with `SDL_PushEvent` (sdl3 0.20 `EventSubsystem::push_event`, whose
   `to_ll`/`from_ll` round-trip key events). They come back through the loop's ordinary
   `poll_iter` -> `window_event` -> `Input` -> welding `send_keyboard_input` path, the same
-  translation as a real key (`RawKeyDown`/`KeyUp`, VK_RIGHT, `native_key_code` from
-  `MapVirtualKeyW` = extended scan code `E0 4D`); only events carrying the sentinel id count
+  translation as a real key (`RawKeyDown`/`KeyUp`, VK_RIGHT). The pushed events have `raw` 0,
+  so `native_key_code` takes the fallback: `MapVirtualKeyW` gives `4D` (Numpad6) and the SDL
+  scancode `Right` restores `E04D`; physical keys use SDL's `raw` instead. Only events
+  carrying the sentinel id count
   for the test. The page must log `roves-test-key-received type=keydown ...` and then
   `roves-test-key-received type=keyup ...` from the loopback origin. Required, in order:
   request pushed, key down forwarded, key up forwarded (welding accepted each call), the
@@ -425,7 +489,9 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   (for example `keypress`), or any step not done within 10 s of the request; an unfinished
   sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it. Log lines:
   `test key requested key=Right window_id=<n> pushed=<bool>`,
-  `test key forwarded event=down|up ok=<bool>`, `test key marker received kind=Down|Up`,
+  `test key codes event=down|up raw=<hex> usage=<hex> windows_key_code=<hex>
+  native_key_code=<hex>` (diagnostic, not gated), `test key forwarded event=down|up ok=<bool>`,
+  `test key marker received kind=Down|Up`,
   `test key complete`. The DOM fields (`key`, `code`, `keyCode`, `repeat`, `isTrusted`) are
   asserted by the CI fixture, not by the probe. **Coverage and limits:** this exercises the
   SDL queue, the probe's SDL -> welding key translation and CEF/Blink delivery of one trusted
@@ -456,8 +522,9 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
 Chromium reference consulted (pinned `f2700724f59f`, sparse dirs `ui/events/blink` and
 `ui/events/win` added to the main checkout for this): `ui/events/win/events_win_utils.cc`
 `GetScanCodeFromLParam`/`GetLParamFromScanCode` (~486-504: scan code in `lParam` bits 16-23,
-extended flag bit 24 <-> `0xE0xx`), from which Chromium derives the DOM `code`; hence the
-`lParam` layout of `native_key_code`. `ui/events/blink/web_input_event_builders_win.cc`
+extended flag bit 24 <-> `0xE0xx`): the scan-code form of the Windows column in
+`ui/events/keycodes/dom/dom_code_data.inc`, which CEF 154 looks `native_key_code` up in
+directly (no `lParam` decoding; see Input above). `ui/events/blink/web_input_event_builders_win.cc`
 (~297-345): native Chrome scrolls `WHEEL_DELTA` notches x lines-per-notch (default 3) x
 `kScrollbarPixelsPerLine = 100/3` px, i.e. 100 px per notch; `ui/events/blink/web_input_event.cc`
 (~122) derives `wheel_ticks = offset / kWheelDelta` from a `ui::MouseWheelEvent` offset. CEF's
@@ -476,14 +543,15 @@ construction.
 # 1. Build the game once, unmodified (example: a Vite template; any directory with index.html).
 cd D:\games\pixi-vn-react-template; npm ci; npm run build   # -> dist\index.html
 
-# 2. Run it from the probe bundle (artifact cef-netrender-probe-windows-x64 of a CI run
-#    that includes this mode). Netrender composition needs a real GPU (not WARP).
-$dir = 'D:\roves-ci\<run id>-cef-nr'
+# 2. Run it from the probe bundle (artifact cef-netrender-probe-windows-x64 of a CI run of
+#    this branch). Accelerated frames need a real GPU (WARP gets none). There is no
+#    composition switch here: --roves-compose=netrender belongs to codex/cef-netrender-probe.
+$dir = 'D:\roves-ci\<run id>-cef-sdl3'
 $exe = "$dir\bundle\roves_cef_netrender_probe.exe"
-& $exe --roves-game-dir=D:\games\pixi-vn-react-template\dist --roves-compose=netrender `
-  "--roves-log=$dir\game-netrender.log" --roves-timings
-# Same with --roves-compose=wgpu. Play normally (click, type, scroll, resize), close the window.
-# Keep saves across runs: add "--roves-cache-dir=$dir\game-cache" --roves-port=47810 to both.
+& $exe --roves-game-dir=D:\games\pixi-vn-react-template\dist `
+  "--roves-log=$dir\game.log" --roves-timings
+# Play normally (click, type, scroll, resize), close the window.
+# Keep saves across runs: add "--roves-cache-dir=$dir\game-cache" --roves-port=47810.
 ```
 
 Read the log for `game loopback origin=... browser_pid=<pid>`, `load-end ... ok=true`,
@@ -495,8 +563,8 @@ not prove the page rendered or reacted.
 
 Same machine, monitor, refresh rate (record it), window size (1280x720 client area at
 scale 1, or record what was used), game build, scene and input script; plugged in, nothing
-else running, window visible and unobstructed; alternate the three targets (e.g. probe
-Netrender, probe wgpu, Chrome, then reverse) at least twice. Use one PresentMon release for
+else running, window visible and unobstructed; alternate the targets (probe, Chrome, then
+reverse; the Netrender target exists only on `codex/cef-netrender-probe`) at least twice. Use one PresentMon release for
 everything and confirm its flags with `PresentMon.exe --help` (the names below are those of
 the PresentMon 2.x console tool):
 
@@ -507,7 +575,7 @@ $out = 'D:\roves-ci\presentmon'
 
 # Probe: fixed port so the scene URL is identical; close 70 s after load-end.
 Start-Process $exe -ArgumentList "--roves-game-dir=$game","--roves-port=47810",
-  "--roves-compose=netrender","--roves-auto-close-ms=70000","--roves-log=$out\probe-nr.log"
+  "--roves-auto-close-ms=70000","--roves-log=$out\probe-nr.log"
 & $pm --process_name roves_cef_netrender_probe.exe --delay 10 --timed 60 `
   --terminate_after_timed --output_file "$out\probe-nr.csv"
 
@@ -596,7 +664,8 @@ Exit codes: 0 both checks passed; 1 a pixel/resize/close failure or usage error;
 expected; 3 no sandbox; 4 `cef initialize` failed; 5 window/wgpu/Netrender/producer startup
 failed. `FAIL ...` lines name each failure.
 
-Options: `--roves-log=<file>`, `--roves-compose=netrender|wgpu`,
+Options: `--roves-log=<file>` (on this branch `--roves-compose=wgpu` is only tolerated as a
+no-op for older command lines; any other value is an unknown option),
 `--roves-cache-dir=<dir>` (default a per-run directory under `%TEMP%`),
 `--roves-timeout-ms=<ms>` (default 120000), `--roves-keep-open` (one check, then the
 window stays until the OS closes it), `--roves-timings` (below; off by default, CI does not
@@ -755,6 +824,9 @@ in sustained mode warmup and resize are excluded too, as described here.
 
 ### Comparing the compositions with alternating trials
 
+Historical (`codex/cef-netrender-probe` only): this branch has one composition, so the
+alternation below needs that branch's bundle.
+
 Run on the same machine, same monitor and refresh rate, plugged in, nothing else running,
 the window visible and unobstructed (an occluded window changes swap-chain throttling).
 Alternate the modes so that drift (thermals, background activity, driver clocks) affects
@@ -787,9 +859,10 @@ cd support/cef-netrender-probe
 cargo +1.99.1 check --locked --features dox --all-targets   # no CEF download
 ```
 
-A real GPU run uses the `cef-netrender-probe-windows-x64` artifact:
-`roves_cef_netrender_probe.exe --roves-log=probe.log` (Netrender composition) and
-`--roves-compose=wgpu`; `--roves-timings` adds smoke-phase stage summaries and
+A real GPU run uses the `cef-netrender-probe-windows-x64` artifact of this branch:
+`roves_cef_netrender_probe.exe --roves-log=probe.log` (SDL3 window, wgpu composition; there
+is no `--roves-compose` choice, that switch belongs to the separate `codex/cef-netrender-probe`
+branch); `--roves-timings` adds smoke-phase stage summaries and
 `--roves-sustained` the steady-state comparison (alternating trials, above). Building it
 locally needs MSVC, CMake and
 `cargo run --locked --release --bin bundle -- <dir> --release` (downloads CEF 154).

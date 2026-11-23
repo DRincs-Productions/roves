@@ -2,11 +2,15 @@
 //! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click and key sequences (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
-//! CEF on Windows rebuilds a Win32 key message from `cef_key_event_t`: `windows_key_code` is
-//! the message's virtual key and `native_key_code` its `lParam`, from which Chromium takes the
-//! scan code that becomes `KeyboardEvent.code` (`ui/events/win/events_win_utils.cc`,
-//! `GetScanCodeFromLParam`, pinned reference f2700724f59f). A zero `native_key_code` leaves
-//! `KeyboardEvent.code` empty, which breaks games that bind keys by `code`.
+//! CEF 154 on Windows (`CefBrowserPlatformDelegateNativeWin::TranslateUiKeyEvent`, CEF commit
+//! 14c5a089e845) takes the DOM `code` from `cef_key_event_t.native_key_code` with
+//! `ui::KeycodeConverter::NativeKeycodeToDomCode(native_key_code)`: an exact lookup in the
+//! Windows column of Chromium's `ui/events/keycodes/dom/dom_code_data.inc` (pinned reference
+//! f2700724f59f). That column holds scan codes in the form `GetScanCodeFromLParam`
+//! (`ui/events/win/events_win_utils.cc`) produces: the make code, with `0xE0` in the high
+//! byte for extended keys (ArrowRight `0xE04D`, Numpad6 `0x004D`). A Win32 `lParam` (repeat
+//! count, scan code in bits 16-23, state bits) matches no entry, so `KeyboardEvent.code`
+//! stays empty; a missing `0xE0` turns ArrowRight into Numpad6.
 
 /// Whether a main-frame URL stays on the game's loopback origin. `origin` has no trailing
 /// slash; `http://127.0.0.1:1234` must not match `http://127.0.0.1:12345/`, nor
@@ -22,37 +26,42 @@ pub(crate) fn load_status_ok(status: i32) -> bool {
     (200..300).contains(&status) || status == 304
 }
 
-/// winit 0.30's Windows scancode is "a 16bit extended scancode": the make code in the low
-/// byte, `0xE0`/`0xE1` in the high byte for extended keys. This is the inverse of Chromium's
-/// `GetScanCodeFromLParam` (same as its `GetLParamFromScanCode`): scan code in bits 16-23,
-/// extended flag in bit 24.
-pub(crate) fn scancode_lparam_bits(scancode: u32) -> u32 {
-    let mut lparam = (scancode & 0x00FF) << 16;
-    if scancode & 0xE000 == 0xE000 {
-        lparam |= 1 << 24;
-    }
-    lparam
+/// SDL scancodes are USB HID keyboard-page usages. These are the keys whose Windows scan code
+/// in Chromium's table carries the `0xE0` prefix and whose low byte `MapVirtualKeyW(..,
+/// MAPVK_VK_TO_VSC_EX)` reproduces, but not always with the prefix: the navigation cluster
+/// and arrows (0x49-0x52) share their virtual keys with the NumLock-off keypad, so Windows
+/// returns the keypad scan code (VK_RIGHT -> `0x4D`, i.e. Numpad6); NumpadEnter shares
+/// VK_RETURN. Also NumLock, NumpadDivide, ContextMenu, MetaLeft, ControlRight, AltRight and
+/// MetaRight. PrintScreen (`0xE037`) is left out: its virtual key maps to a different low byte.
+pub(crate) fn extended_usage(usage: u32) -> bool {
+    matches!(usage, 0x49..=0x54 | 0x58 | 0x65 | 0xE3 | 0xE4 | 0xE6 | 0xE7)
 }
 
-/// Which Win32 key message a CEF key event stands for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum KeyMessage {
-    /// `WM_KEYDOWN` (and the `WM_CHAR` it produces); `repeat` sets the previous-state bit.
-    Down { repeat: bool },
-    /// `WM_KEYUP`: previous-state and transition bits set.
-    Up,
-}
+/// USB HID usage of the Pause key; SDL's Windows backend rewrites its scan code.
+const USAGE_PAUSE: u32 = 0x48;
 
-/// Full `lParam` as Windows would deliver it: repeat count 1, scan code and extended flag,
-/// bit 30 (previous key state) for auto-repeats and key-ups, bit 31 (transition) for key-ups.
-pub(crate) fn native_key_code(scancode: Option<u32>, message: KeyMessage) -> i32 {
-    let mut lparam = 1 | scancode.map_or(0, scancode_lparam_bits);
-    match message {
-        KeyMessage::Down { repeat: true } => lparam |= 1 << 30,
-        KeyMessage::Down { repeat: false } => {},
-        KeyMessage::Up => lparam |= (1 << 30) | (1 << 31),
+/// `cef_key_event_t.native_key_code` for a key down/up on Windows: the scan code in Chromium's
+/// `GetScanCodeFromLParam` form (see the module comment), 0 when unknown (`code` empty).
+///
+/// `raw` is SDL's `SDL_KeyboardEvent.raw`, which SDL's Windows backend fills with exactly that
+/// form (`WindowsScanCodeToSDLScanCode`: make code, `0xE0` high byte when the message has
+/// `KF_EXTENDED`), so a real key uses it unchanged. The one exception is Pause, which SDL
+/// rewrites to `0xE046` (`0xE145` on the raw-input path) while Windows and Chromium use
+/// `0x0045`. `raw` is 0 when SDL had no scan code (or for a pushed event); then the scan code
+/// comes from `mapped` (`MapVirtualKeyW(vk, MAPVK_VK_TO_VSC_EX)`) with the `0xE0` prefix
+/// restored from the layout-independent SDL scancode `usage` (`extended_usage`).
+pub(crate) fn native_key_code(raw: u16, usage: Option<u32>, mapped: u32) -> i32 {
+    if usage == Some(USAGE_PAUSE) {
+        return 0x0045;
     }
-    lparam as i32
+    if raw != 0 {
+        return i32::from(raw);
+    }
+    let mut scan = mapped & 0xFFFF;
+    if scan != 0 && scan & 0xFF00 == 0 && usage.is_some_and(extended_usage) {
+        scan |= 0xE000;
+    }
+    scan as i32
 }
 
 /// `MapVirtualKeyW(.., MAPVK_VSC_TO_VK_EX)` distinguishes left/right modifiers, while the
@@ -603,40 +612,97 @@ mod tests {
         assert!(forward_input(InputEventKind::Window, true));
     }
 
-    #[test]
-    fn plain_scancode_goes_to_bits_16_to_23() {
-        // 'A' make code 0x1E.
-        assert_eq!(scancode_lparam_bits(0x1E), 0x001E_0000);
-    }
+    // SDL scancodes (USB HID usages) used below.
+    const KEY_A: u32 = 0x04;
+    const RIGHT: u32 = 0x4F;
+    const KP_ENTER: u32 = 0x58;
+    const KP_6: u32 = 0x5E;
+    const RCTRL: u32 = 0xE4;
 
-    #[test]
-    fn extended_scancode_sets_bit_24() {
-        // Right arrow: E0 4D.
-        assert_eq!(scancode_lparam_bits(0xE04D), 0x014D_0000);
-        // Round trip through Chromium's GetScanCodeFromLParam.
-        let lparam = scancode_lparam_bits(0xE04D);
-        let mut back = (lparam >> 16) & 0xFF;
-        if lparam & (1 << 24) != 0 {
-            back |= 0xE000;
+    /// Chromium's `GetScanCodeFromLParam` (`ui/events/win/events_win_utils.cc`), to check that
+    /// a real key message and the probe's value agree.
+    fn chromium_scan_code_from_lparam(l_param: u32) -> u32 {
+        let mut scan_code = (l_param >> 16) & 0x00FF;
+        if l_param & (1 << 24) != 0 {
+            scan_code |= 0xE000;
         }
-        assert_eq!(back, 0xE04D);
+        scan_code
     }
 
     #[test]
-    fn key_messages_set_win32_state_bits() {
-        assert_eq!(
-            native_key_code(Some(0x1E), KeyMessage::Down { repeat: false }),
-            0x001E_0001
-        );
-        assert_eq!(
-            native_key_code(Some(0x1E), KeyMessage::Down { repeat: true }),
-            0x401E_0001
-        );
-        assert_eq!(
-            native_key_code(Some(0x1E), KeyMessage::Up) as u32,
-            0xC01E_0001
-        );
-        assert_eq!(native_key_code(None, KeyMessage::Down { repeat: false }), 1);
+    fn real_keys_use_sdl_raw_scan_code_unchanged() {
+        // SDL's Windows `raw` = what Chromium derives from the same WM_KEYDOWN lParam.
+        for (l_param, usage, raw) in [
+            (0x014D_0001u32, RIGHT, 0xE04Du16), // ArrowRight: extended E0 4D
+            (0x004D_0001, KP_6, 0x004D),        // Numpad6 (NumLock on or off)
+            (0x001E_0001, KEY_A, 0x001E),       // KeyA
+            (0x011C_0001, KP_ENTER, 0xE01C),    // NumpadEnter
+            (0x011D_0001, RCTRL, 0xE01D),       // ControlRight
+        ] {
+            let native = native_key_code(raw, Some(usage), 0);
+            assert_eq!(native as u32, chromium_scan_code_from_lparam(l_param));
+        }
+        // `mapped` is ignored when SDL had a scan code (VK_RIGHT maps to 0x4D).
+        assert_eq!(native_key_code(0xE04D, Some(RIGHT), 0x4D), 0xE04D);
+        assert_eq!(native_key_code(0x004D, Some(KP_6), 0x4D), 0x004D);
+    }
+
+    #[test]
+    fn native_key_code_is_never_an_lparam() {
+        // The old value (lParam 0x004D0001 / 0xC04D0001) matched no Chromium table entry.
+        for raw in [0u16, 0x1E, 0xE04D] {
+            for mapped in [0u32, 0x4D, 0xE04D] {
+                let native = native_key_code(raw, Some(RIGHT), mapped) as u32;
+                assert_eq!(native & 0xFFFF_0000, 0, "{native:#x}");
+            }
+        }
+    }
+
+    #[test]
+    fn missing_raw_restores_the_extended_prefix_from_the_sdl_scancode() {
+        // MapVirtualKeyW(VK_RIGHT, MAPVK_VK_TO_VSC_EX) = 0x4D (the CI runner and a local
+        // P/Invoke): ArrowRight must still be E04D, the keypad key keeps 0x4D.
+        assert_eq!(native_key_code(0, Some(RIGHT), 0x4D), 0xE04D);
+        assert_eq!(native_key_code(0, Some(KP_6), 0x4D), 0x004D);
+        // Already prefixed by Windows: unchanged.
+        assert_eq!(native_key_code(0, Some(RIGHT), 0xE04D), 0xE04D);
+        assert_eq!(native_key_code(0, Some(RCTRL), 0xE01D), 0xE01D);
+        // VK_RETURN maps to 0x1C: Enter vs NumpadEnter by the SDL scancode.
+        assert_eq!(native_key_code(0, Some(0x28), 0x1C), 0x001C);
+        assert_eq!(native_key_code(0, Some(KP_ENTER), 0x1C), 0xE01C);
+        // Ordinary keys untouched; nothing known: 0 (DomCode NONE, not a wrong key).
+        assert_eq!(native_key_code(0, Some(KEY_A), 0x1E), 0x001E);
+        assert_eq!(native_key_code(0, None, 0x1E), 0x001E);
+        assert_eq!(native_key_code(0, Some(RIGHT), 0), 0);
+        assert_eq!(native_key_code(0, None, 0), 0);
+    }
+
+    #[test]
+    fn extended_usages_match_chromium_windows_column() {
+        // Usages whose `dom_code_data.inc` Windows scan code is 0xE0xx (PrintScreen excluded).
+        for usage in [
+            0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52, 0x53, 0x54, 0x58, 0x65,
+            0xE3, 0xE4, 0xE6, 0xE7,
+        ] {
+            assert!(extended_usage(usage), "{usage:#x}");
+        }
+        // Keypad digits/operators, Enter, letters, left modifiers: not extended.
+        for usage in [
+            0x04, 0x28, 0x46, 0x48, 0x55, 0x56, 0x57, 0x59, 0x5E, 0x62, 0x63, 0xE0, 0xE1, 0xE2,
+        ] {
+            assert!(!extended_usage(usage), "{usage:#x}");
+        }
+    }
+
+    #[test]
+    fn pause_uses_the_windows_scan_code() {
+        // SDL rewrites Pause to 0xE046 (WM_KEYDOWN) or 0xE145 (raw input); Chromium: 0x0045.
+        assert_eq!(native_key_code(0xE046, Some(0x48), 0), 0x0045);
+        assert_eq!(native_key_code(0xE145, Some(0x48), 0), 0x0045);
+        assert_eq!(native_key_code(0, Some(0x48), 0), 0x0045);
+        // NumLock keeps its extended code.
+        assert_eq!(native_key_code(0xE045, Some(0x53), 0), 0xE045);
+        assert_eq!(native_key_code(0, Some(0x53), 0x45), 0xE045);
     }
 
     #[test]

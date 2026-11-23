@@ -19,8 +19,8 @@ use welding::{
 };
 
 use crate::game_rules::{
-    InputEventKind, KeyMessage, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier,
-    forward_input, native_key_code,
+    InputEventKind, WHEEL_DELTA_PER_LINE, bmp_chars, fold_sided_modifier, forward_input,
+    native_key_code,
 };
 
 /// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
@@ -100,8 +100,31 @@ pub(crate) struct Input {
     /// yet). Only the first is logged.
     pub(crate) discarded: u32,
     pub(crate) forwarded: u64,
+    /// Codes of the last key down/up handed to welding (log evidence of the key test).
+    pub(crate) last_key: Option<KeyCodes>,
     cursor_hidden: bool,
     active_cursor: Option<Cursor>,
+}
+
+/// What one SDL key down/up became for CEF.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct KeyCodes {
+    /// `SDL_KeyboardEvent.raw` (Windows scan code; 0 when SDL had none, e.g. a pushed event).
+    pub(crate) raw: u16,
+    /// SDL scancode (USB HID usage; 0 when unknown).
+    pub(crate) usage: u32,
+    pub(crate) windows_key_code: i32,
+    pub(crate) native_key_code: i32,
+}
+
+impl std::fmt::Display for KeyCodes {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "raw={:#06X} usage={:#04X} windows_key_code={:#04X} native_key_code={:#06X}",
+            self.raw, self.usage, self.windows_key_code, self.native_key_code
+        )
+    }
 }
 
 impl Input {
@@ -211,14 +234,16 @@ impl Input {
             },
             Event::KeyDown {
                 keycode,
+                scancode,
                 keymod,
-                repeat,
+                raw,
                 ..
             }
             | Event::KeyUp {
                 keycode,
+                scancode,
                 keymod,
-                repeat,
+                raw,
                 ..
             } => {
                 self.modifiers.shift = keymod.intersects(Mod::LSHIFTMOD | Mod::RSHIFTMOD);
@@ -226,22 +251,25 @@ impl Input {
                 self.modifiers.alt = keymod.intersects(Mod::LALTMOD | Mod::RALTMOD);
                 self.modifiers.meta = keymod.intersects(Mod::LGUIMOD | Mod::RGUIMOD);
                 let vk = keycode.map_or(0, virtual_key);
-                let down = matches!(event, Event::KeyDown { .. });
-                let message = if down {
-                    KeyMessage::Down { repeat: *repeat }
-                } else {
-                    KeyMessage::Up
-                };
-                let kind = if down {
+                let kind = if matches!(event, Event::KeyDown { .. }) {
                     KeyEventKind::RawKeyDown
                 } else {
                     KeyEventKind::KeyUp
                 };
-                let scan = windows_scancode(vk);
+                // SDL scancodes are USB HID usages (non-negative).
+                let usage = scancode.map(|s| s.to_i32() as u32);
+                let windows_key_code = fold_sided_modifier(vk as u32) as i32;
+                let native_key_code = native_key_code(*raw, usage, mapped_scan_code(vk));
+                self.last_key = Some(KeyCodes {
+                    raw: *raw,
+                    usage: usage.unwrap_or(0),
+                    windows_key_code,
+                    native_key_code,
+                });
                 producer.send_keyboard_input(KeyEvent {
                     kind,
-                    windows_key_code: fold_sided_modifier(vk as u32) as i32,
-                    native_key_code: native_key_code(scan, message),
+                    windows_key_code,
+                    native_key_code,
                     character: None,
                     modifiers: self.modifiers,
                 })
@@ -252,7 +280,9 @@ impl Input {
                     result = producer.send_keyboard_input(KeyEvent {
                         kind: KeyEventKind::Char,
                         windows_key_code: ch as i32,
-                        native_key_code: 1,
+                        // No scan code for SDL text: 0 is DomCode NONE (`code` empty). The
+                        // former 1 was Escape's Windows scan code in Chromium's table.
+                        native_key_code: 0,
                         character: Some(ch),
                         modifiers: self.modifiers,
                     });
@@ -338,17 +368,39 @@ fn user_input_name(event: &Event) -> Option<&'static str> {
     })
 }
 
-fn windows_scancode(vk: i32) -> Option<u32> {
+/// The scan code Windows associates with a virtual key (0 when none); only the fallback of
+/// `native_key_code` when SDL reports no raw scan code. For VK_RIGHT and the other keys that
+/// share a virtual key with the NumLock-off keypad it returns the keypad code (no `0xE0`).
+fn mapped_scan_code(vk: i32) -> u32 {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::{MAPVK_VK_TO_VSC_EX, MapVirtualKeyW};
+    if vk <= 0 {
+        return 0;
+    }
     // SAFETY: value-in/value-out Windows keyboard mapping.
-    let scan = unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) };
-    (scan != 0).then_some(scan)
+    unsafe { MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC_EX) }
 }
 
 fn virtual_key(key: Keycode) -> i32 {
     use windows_sys::Win32::UI::Input::KeyboardAndMouse::VkKeyScanW;
     match key {
         Keycode::Return | Keycode::KpEnter => 0x0D,
+        // SDL keypad keycodes (0x4000_00xx) are no UTF-16 unit for `VkKeyScanW`.
+        Keycode::Kp0 => 0x60,
+        Keycode::Kp1 => 0x61,
+        Keycode::Kp2 => 0x62,
+        Keycode::Kp3 => 0x63,
+        Keycode::Kp4 => 0x64,
+        Keycode::Kp5 => 0x65,
+        Keycode::Kp6 => 0x66,
+        Keycode::Kp7 => 0x67,
+        Keycode::Kp8 => 0x68,
+        Keycode::Kp9 => 0x69,
+        Keycode::KpMultiply => 0x6A,
+        Keycode::KpPlus => 0x6B,
+        Keycode::KpMinus => 0x6D,
+        Keycode::KpPeriod => 0x6E,
+        Keycode::KpDivide => 0x6F,
+        Keycode::NumLockClear => 0x90,
         Keycode::Escape => 0x1B,
         Keycode::Backspace => 0x08,
         Keycode::Tab => 0x09,

@@ -1112,7 +1112,9 @@ impl Probe {
     /// `TEST_KEY_KEYBOARD_ID`, no modifiers, not a repeat) and come back through the loop's
     /// ordinary `poll_iter` -> `window_event` -> `Input` -> welding `send_keyboard_input` path
     /// on a later turn. SDL produces no `TextInput` for a pushed key event; ArrowRight has no
-    /// character anyway.
+    /// character anyway. `raw` stays 0 (SDL's own value for an event without a scan code), so
+    /// the run exercises the `MapVirtualKeyW` fallback of `native_key_code`, the path where
+    /// Windows drops the `0xE0` of ArrowRight; real keys carry SDL's scan code in `raw`.
     fn step_key_test(&mut self) {
         let (Some(mut key), Some(delay), Some(loaded)) =
             (self.key_test, self.options.test_key, self.game_loaded_at)
@@ -1890,24 +1892,34 @@ impl Probe {
         };
         let mut click_forwarded = None;
         let mut key_forwarded = None;
+        let mut key_codes = None;
         // Set when the accepted game load-end was handled; the test hooks only push after it.
         let game_loaded = self.game_loaded_at.is_some();
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
         {
             let forwarded = input.forwarded;
+            if synthetic_key.is_some() {
+                input.last_key = None;
+            }
             if let Some(line) = input.window_event(&mut s.producer, &s.window, &event, game_loaded)
             {
                 self.log.line(format_args!("{line}"));
             }
             click_forwarded = synthetic.map(|down| (down, input.forwarded > forwarded));
             key_forwarded = synthetic_key.map(|down| (down, input.forwarded > forwarded));
+            if key_forwarded.is_some() {
+                key_codes = input.last_key.take();
+            }
         }
         if let Some((down, ok)) = key_forwarded {
-            self.log.line(format_args!(
-                "test key forwarded event={} ok={ok}",
-                if down { "down" } else { "up" }
-            ));
+            let event = if down { "down" } else { "up" };
+            // Separate line: the CI gate anchors `test key forwarded ... ok=true$`.
+            let codes = key_codes.map_or_else(|| "none".to_owned(), |c| c.to_string());
+            self.log
+                .line(format_args!("test key codes event={event} {codes}"));
+            self.log
+                .line(format_args!("test key forwarded event={event} ok={ok}"));
             let input = if down {
                 KeyInput::Down { ok }
             } else {
