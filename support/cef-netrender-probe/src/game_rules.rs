@@ -434,6 +434,38 @@ pub(crate) fn parse_test_key_delay(value: &str) -> Result<std::time::Duration, S
     Ok(std::time::Duration::from_millis(ms))
 }
 
+/// `--roves-test-key=<name>` (only with `--roves-test-key-ms`): which key the synthetic press
+/// uses. Two fixed regression keys, not a general key-injection API; ArrowRight is the default.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum TestKey {
+    /// SDL `Right`: an extended (`0xE0`) navigation key.
+    #[default]
+    ArrowRight,
+    /// SDL `CapsLock`: a non-character key that needs the explicit VK_CAPITAL mapping.
+    CapsLock,
+}
+
+impl TestKey {
+    /// Parses the `--roves-test-key` value (the DOM `code` of the key, exact case).
+    pub(crate) fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            "ArrowRight" => Ok(TestKey::ArrowRight),
+            "CapsLock" => Ok(TestKey::CapsLock),
+            _ => Err(format!(
+                "--roves-test-key={value}: must be ArrowRight or CapsLock"
+            )),
+        }
+    }
+
+    /// SDL's name of the pushed keycode/scancode, as logged by `test key requested key=`.
+    pub(crate) fn sdl_name(self) -> &'static str {
+        match self {
+            TestKey::ArrowRight => "Right",
+            TestKey::CapsLock => "CapsLock",
+        }
+    }
+}
+
 /// A fixture key marker: which DOM event type it reports.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum KeyMarker {
@@ -1128,6 +1160,22 @@ mod tests {
         );
         assert_eq!(click.marker(), ClickAction::None);
         assert_eq!(click.tick(late, true), ClickAction::None);
+    }
+
+    #[test]
+    fn test_key_selector_accepts_only_the_regression_keys() {
+        assert_eq!(TestKey::default(), TestKey::ArrowRight);
+        assert_eq!(TestKey::parse("ArrowRight"), Ok(TestKey::ArrowRight));
+        assert_eq!(TestKey::parse("CapsLock"), Ok(TestKey::CapsLock));
+        assert_eq!(TestKey::ArrowRight.sdl_name(), "Right");
+        assert_eq!(TestKey::CapsLock.sdl_name(), "CapsLock");
+        // The pushed CapsLock (raw 0) resolves like a physical one: VK_CAPITAL, and
+        // `MapVirtualKeyW`'s 0x3A without an 0xE0 prefix (Chromium dom_code_data.inc 0x003a).
+        assert_eq!(non_character_virtual_key(SDLK_SCANCODE_MASK | 0x39), 0x14);
+        assert_eq!(native_key_code(0, Some(0x39), 0x3A), 0x3A);
+        for bad in ["", "capslock", "Right", "KeyA", "ArrowLeft", " CapsLock"] {
+            assert!(TestKey::parse(bad).is_err(), "{bad:?} accepted");
+        }
     }
 
     #[test]

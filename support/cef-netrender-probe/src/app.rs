@@ -16,7 +16,7 @@ use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
     ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
     MinimizeCycle, Startup, Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT,
-    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, is_click_marker, key_marker, load_status_ok,
+    TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TestKey, is_click_marker, key_marker, load_status_ok,
     on_origin, parse_test_key_delay, suspension_change,
 };
 use crate::stall::{Marks, Poll, Ring, Step};
@@ -307,10 +307,13 @@ struct Options {
     /// and the page's click marker (README "Real-game mode").
     test_click: Option<Duration>,
     /// `--roves-test-key-ms` (game mode, tests only, at most 600000): this long after
-    /// load-end, push one synthetic ArrowRight key down + up into the SDL queue and require it
-    /// to be forwarded through welding and the page's keydown then keyup markers (README
-    /// "Real-game mode").
+    /// load-end, push one synthetic key down + up (`test_key_name`) into the SDL queue and
+    /// require it to be forwarded through welding and the page's keydown then keyup markers
+    /// (README "Real-game mode").
     test_key: Option<Duration>,
+    /// `--roves-test-key=ArrowRight|CapsLock` (only with `--roves-test-key-ms`; default
+    /// ArrowRight): the key of the synthetic press.
+    test_key_name: TestKey,
 }
 
 fn parse_ms(name: &str, value: &str) -> Result<Duration, String> {
@@ -344,8 +347,10 @@ impl Options {
             test_minimize: None,
             test_click: None,
             test_key: None,
+            test_key_name: TestKey::default(),
         };
         let mut game_dir = None;
+        let mut test_key_name = None;
         let mut port = None;
         for arg in std::env::args().skip(1) {
             let Some(rest) = arg.strip_prefix("--roves-") else {
@@ -374,8 +379,15 @@ impl Options {
                 "test-minimize-ms" => options.test_minimize = Some(parse_ms(name, value)?),
                 "test-click-ms" => options.test_click = Some(parse_ms(name, value)?),
                 "test-key-ms" => options.test_key = Some(parse_test_key_delay(value)?),
+                "test-key" => test_key_name = Some(TestKey::parse(value)?),
                 _ => return Err(format!("unknown option --roves-{name}")),
             }
+        }
+        if let Some(key) = test_key_name {
+            if options.test_key.is_none() {
+                return Err("--roves-test-key needs --roves-test-key-ms".into());
+            }
+            options.test_key_name = key;
         }
         if options.sustained && options.keep_open {
             return Err("--roves-sustained closes after its sample: drop --roves-keep-open".into());
@@ -1107,14 +1119,17 @@ impl Probe {
         }
     }
 
-    /// `--roves-test-key-ms` only: requests the synthetic ArrowRight press once due and times
-    /// out the pending steps. The key events are pushed into the SDL queue (stamped with
-    /// `TEST_KEY_KEYBOARD_ID`, no modifiers, not a repeat) and come back through the loop's
-    /// ordinary `poll_iter` -> `window_event` -> `Input` -> welding `send_keyboard_input` path
-    /// on a later turn. SDL produces no `TextInput` for a pushed key event; ArrowRight has no
-    /// character anyway. `raw` stays 0 (SDL's own value for an event without a scan code), so
-    /// the run exercises the `MapVirtualKeyW` fallback of `native_key_code`, the path where
-    /// Windows drops the `0xE0` of ArrowRight; real keys carry SDL's scan code in `raw`.
+    /// `--roves-test-key-ms` only: requests the synthetic press of `--roves-test-key`
+    /// (ArrowRight by default, or CapsLock) once due and times out the pending steps. The key
+    /// events carry the matching SDL keycode and scancode, are pushed into the SDL queue
+    /// (stamped with `TEST_KEY_KEYBOARD_ID`, no modifiers, not a repeat) and come back through
+    /// the loop's ordinary `poll_iter` -> `window_event` -> `Input` -> welding
+    /// `send_keyboard_input` path on a later turn. SDL produces no `TextInput` for a pushed key
+    /// event; neither key has a character anyway. `raw` stays 0 (SDL's own value for an event
+    /// without a scan code), so the run exercises the `MapVirtualKeyW` fallback of
+    /// `native_key_code` (for ArrowRight the path where Windows drops the `0xE0`) and, for
+    /// CapsLock, the `non_character_virtual_key` VK_CAPITAL entry; real keys carry SDL's scan
+    /// code in `raw`.
     fn step_key_test(&mut self) {
         let (Some(mut key), Some(delay), Some(loaded)) =
             (self.key_test, self.options.test_key, self.game_loaded_at)
@@ -1127,11 +1142,16 @@ impl Probe {
             KeyAction::Push => {
                 let s = self.state.as_ref().expect("state");
                 let window_id = s.window.id();
+                let test_key = self.options.test_key_name;
+                let (sdl_keycode, sdl_scancode) = match test_key {
+                    TestKey::ArrowRight => (Keycode::Right, Scancode::Right),
+                    TestKey::CapsLock => (Keycode::CapsLock, Scancode::CapsLock),
+                };
                 let event = |down: bool| {
                     let (timestamp, keycode, scancode, keymod, repeat, which, raw) = (
                         0,
-                        Some(Keycode::Right),
-                        Some(Scancode::Right),
+                        Some(sdl_keycode),
+                        Some(sdl_scancode),
                         Mod::empty(),
                         false,
                         TEST_KEY_KEYBOARD_ID,
@@ -1169,7 +1189,8 @@ impl Probe {
                     None => Err("no SDL event subsystem".into()),
                 };
                 self.log.line(format_args!(
-                    "test key requested key=Right window_id={window_id} pushed={}",
+                    "test key requested key={} window_id={window_id} pushed={}",
+                    test_key.sdl_name(),
                     pushed.is_ok()
                 ));
                 if let Err(error) = pushed {

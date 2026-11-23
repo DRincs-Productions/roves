@@ -663,6 +663,148 @@ jobs:
             Write-Output '::error::probe processes left running after the key run'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Synthetic CapsLock regression (same bundle, same fixture as the ArrowRight step, which
+      # stays the default). --roves-test-key=CapsLock (only with --roves-test-key-ms) pushes SDL
+      # keycode/scancode CapsLock with raw=0, so the non-character VK_CAPITAL mapping and the
+      # MapVirtualKeyW scan-code fallback (0x3A) are both exercised. Required, in log order:
+      # module marker, request key=CapsLock pushed=true, down and up forwarded ok=true, the
+      # keydown marker with key=CapsLock code=CapsLock keyCode=20 repeat=false trusted=true,
+      # its receipt, the matching keyup marker, its receipt, key complete, auto-close and the
+      # clean close/shutdown lines; exit 0, exactly one keydown and one keyup marker, no
+      # keypress, no FAIL line, no leftover process. Negative checks first: --roves-test-key is
+      # refused without --roves-test-key-ms and for any other value (usage error, exit 1,
+      # before the log opens). Synthetic SDL event only: no physical keyboard, lock-state
+      # toggle, modifier, text input/IME or focus is proved.
+      - name: run the probe in game mode (synthetic CapsLock key, WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-capslock-run'
+          if (Test-Path -LiteralPath $out) {
+            Write-Output "::error::synthetic-CapsLock output directory already exists: $out"
+            exit 1
+          }
+          $game = Join-Path $out 'game'
+          New-Item -ItemType Directory -Force $game | Out-Null
+          Set-Content -Encoding utf8 (Join-Path $game 'index.html') @'
+          <!doctype html>
+          <meta charset="utf-8">
+          <title>roves ci key fixture</title>
+          <script type="module" src="./game.js"></script>
+          '@
+          Set-Content -Encoding utf8 (Join-Path $game 'game.js') @'
+          const report = (e) => {
+            console.log(`roves-test-key-received type=${e.type} key=${e.key} code=${e.code} keyCode=${e.keyCode} repeat=${e.repeat} trusted=${e.isTrusted} target=${e.target.nodeName}`);
+          };
+          for (const type of ['keydown', 'keypress', 'keyup']) {
+            window.addEventListener(type, report, true);
+          }
+          console.log('roves-ci-key-fixture module-ok');
+          '@
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::notice::stopping processes left by the previous step before the CapsLock run'
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $failed = $false
+          # Negative: refused usage (exit 1 before the evidence log is opened).
+          $refused = @(
+            @{ name = 'without --roves-test-key-ms'; args = @("--roves-game-dir=$game", '--roves-test-key=CapsLock') },
+            @{ name = 'unsupported key'; args = @("--roves-game-dir=$game", '--roves-test-key-ms=1000', '--roves-test-key=KeyA') },
+            @{ name = 'wrong case'; args = @("--roves-game-dir=$game", '--roves-test-key-ms=1000', '--roves-test-key=capslock') }
+          )
+          $i = 0
+          foreach ($case in $refused) {
+            $i++
+            $negLog = Join-Path $out "refused-$i.log"
+            $negErr = Join-Path $out "refused-$i.stderr.txt"
+            $p = Start-Process -FilePath $exe -ArgumentList ($case.args + @("--roves-log=$negLog", "--roves-cache-dir=$(Join-Path $out "refused-cache-$i")")) `
+              -PassThru -RedirectStandardError $negErr
+            $null = $p.Handle
+            if (-not $p.WaitForExit(60000)) {
+              $p | Stop-Process -Force
+              Write-Output "::error::refused key selector ($($case.name)): the probe did not exit"; $failed = $true; continue
+            }
+            $stderr = if (Test-Path $negErr) { (Get-Content -Raw $negErr) } else { '' }
+            Write-Output "::notice::refused key selector ($($case.name)): exit=$($p.ExitCode) stderr=$($stderr.Trim())"
+            if ($p.ExitCode -ne 1) { Write-Output "::error::refused key selector ($($case.name)): exit $($p.ExitCode) (expected 1)"; $failed = $true }
+            if (Test-Path $negLog) { Write-Output "::error::refused key selector ($($case.name)): the run started (log written)"; $failed = $true }
+            if ($stderr -and $stderr -notmatch 'usage error') { Write-Output "::error::refused key selector ($($case.name)): no usage error on stderr"; $failed = $true }
+          }
+          $log = Join-Path $out 'roves-cef-nr-capslock.log'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-test-key-ms=1000',
+            '--roves-test-key=CapsLock',
+            '--roves-auto-close-ms=5000', '--roves-timeout-ms=90000', "--roves-log=$log",
+            "--roves-cache-dir=$(Join-Path $out 'cache')", "--log-file=$(Join-Path $out 'cef-debug.log')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle  # keep the handle so ExitCode is available after exit
+          if (-not $proc.WaitForExit(150000)) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            if (Test-Path $log) { Get-Content $log }
+            Write-Output '::error::the probe did not exit in time in the CapsLock run'
+            exit 1
+          }
+          $code = $proc.ExitCode
+          Get-Content $log
+          $lines = @(Get-Content $log)
+          $origin = ($lines | Select-String -Pattern 'game loopback origin=(http://127\.0\.0\.1:\d+) ' |
+            Select-Object -First 1).Matches.Groups[1].Value
+          if (-not $origin) { Write-Output '::error::missing evidence: game loopback origin'; exit 1 }
+          $o = [regex]::Escape($origin)
+          $source = "console level=\d+ source=$o/game\.js:\d+ message="
+          $keyFields = 'key=CapsLock code=CapsLock keyCode=20 repeat=false trusted=true '
+          # Each pattern must match a line after the previous match.
+          $last = -1
+          foreach ($pattern in @(
+              'producer created accelerated=true background=white',
+              "$source`"roves-ci-key-fixture module-ok`"",
+              'test key requested key=CapsLock window_id=\d+ pushed=true$',
+              'test key forwarded event=down ok=true$',
+              'test key forwarded event=up ok=true$',
+              "$source`"roves-test-key-received type=keydown $keyFields",
+              'test key marker received kind=Down$',
+              "$source`"roves-test-key-received type=keyup $keyFields",
+              'test key marker received kind=Up$', 'test key complete$',
+              'auto-close window', 'closing imported=', 'game input forwarded=', 'browser closed',
+              'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
+              'exit code=0$')) {
+            $at = -1
+            for ($j = $last + 1; $j -lt $lines.Count; $j++) { if ($lines[$j] -match $pattern) { $at = $j; break } }
+            if ($at -lt 0) { Write-Output "::error::missing or out of order: $pattern"; $failed = $true }
+            else { $last = $at }
+          }
+          # Load-end and the module marker may come in either order; both precede the request.
+          $loadEnd = $lines | Select-String -Pattern "load-end status=200 url=$o/ ok=true" | Select-Object -First 1
+          $request = $lines | Select-String -Pattern 'test key requested ' | Select-Object -First 1
+          if (!$loadEnd -or !$request -or $loadEnd.LineNumber -ge $request.LineNumber) {
+            Write-Output '::error::accepted load-end missing or not before the key request'; $failed = $true
+          }
+          foreach ($count in @(
+              @{ pattern = 'roves-test-key-received'; want = 2 },
+              @{ pattern = 'roves-test-key-received type=keydown '; want = 1 },
+              @{ pattern = 'roves-test-key-received type=keyup '; want = 1 },
+              @{ pattern = 'test key requested '; want = 1 },
+              @{ pattern = 'test key forwarded event=down'; want = 1 },
+              @{ pattern = 'test key forwarded event=up'; want = 1 })) {
+            $n = @($lines | Select-String -SimpleMatch $count.pattern).Count
+            if ($n -ne $count.want) { Write-Output "::error::expected $($count.want) '$($count.pattern)' line(s), got $n"; $failed = $true }
+          }
+          if ($code -ne 0) { Write-Output "::error::CapsLock run exit code $code (expected 0)"; $failed = $true }
+          foreach ($pattern in @(' FAIL ', 'close requested by the OS', 'popup refused', 'input rejected', 'test minimize', 'test click', 'type=keypress', 'key=Right ', 'key=ArrowRight ')) {
+            $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
+            if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
+          }
+          Select-String -Path $log -Pattern 'test key|roves-test-key-received|closing imported=|game input forwarded=' |
+            ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          Write-Output '::notice::CapsLock gate: one synthetic SDL CapsLock press forwarded through welding to trusted DOM keydown/keyup (no physical keyboard, lock-state toggle, modifier, text input/IME, focus, GPU frame or visual verification)'
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the CapsLock run'; $failed = $true
+          }
+          if ($failed) { exit 1 }
       - name: upload evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -683,6 +825,9 @@ jobs:
             ${{ runner.temp }}/cef-nr-key-run/roves-cef-nr-key.log
             ${{ runner.temp }}/cef-nr-key-run/cef-debug.log
             ${{ runner.temp }}/cef-nr-key-run/refused-*.stderr.txt
+            ${{ runner.temp }}/cef-nr-capslock-run/roves-cef-nr-capslock.log
+            ${{ runner.temp }}/cef-nr-capslock-run/cef-debug.log
+            ${{ runner.temp }}/cef-nr-capslock-run/refused-*.stderr.txt
             ${{ runner.temp }}/cef-nr-build.log
             ${{ runner.temp }}/cef-nr-duplicates.txt
           retention-days: 14

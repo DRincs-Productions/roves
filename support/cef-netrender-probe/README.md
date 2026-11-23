@@ -502,8 +502,16 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   push error, a welding refusal, up before down, extra synthetic events, a marker before the
   key was forwarded, keyup before keydown, a repeated marker, a marker with any other `type=`
   (for example `keypress`), or any step not done within 10 s of the request; an unfinished
-  sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it. Log lines:
-  `test key requested key=Right window_id=<n> pushed=<bool>`,
+  sequence at exit is also a `FAIL`. `--roves-auto-close-ms` waits for it.
+  `--roves-test-key=ArrowRight|CapsLock` (exact case, only together with
+  `--roves-test-key-ms`, otherwise a usage error; default `ArrowRight`) selects the key: two
+  fixed regression keys, not a general key-injection API. `CapsLock` pushes SDL keycode and
+  scancode `CapsLock` with `raw` 0, the same way: `non_character_virtual_key` gives
+  VK_CAPITAL (`0x14`) and `MapVirtualKeyW` gives scan code `3A` with no `0xE0` prefix, which
+  Chromium f2700724 maps to DOM `code` `CapsLock` (`ui/events/keycodes/dom/dom_code_data.inc`
+  Windows column `0x003a`) and `key` `CapsLock` (`ui/events/keycodes/platform_key_map_win.cc`
+  `{VKEY_CAPITAL, DomKey::CAPS_LOCK}`), `keyCode` 20. Log lines:
+  `test key requested key=Right|CapsLock window_id=<n> pushed=<bool>` (the SDL key name),
   `test key codes event=down|up raw=<hex> usage=<hex> windows_key_code=<hex>
   native_key_code=<hex>` (diagnostic, not gated), `test key forwarded event=down|up ok=<bool>`,
   `test key marker received kind=Down|Up`,
@@ -512,7 +520,8 @@ What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
   SDL queue, the probe's SDL -> welding key translation and CEF/Blink delivery of one trusted
   `keydown`/`keyup` pair. It is a synthetic SDL event, not a physical keyboard or the Win32
   message path SDL builds key events from. It proves no text input, `Char`/`keypress`, IME,
-  modifier, auto-repeat or other-layout behaviour. Nor does it prove browser focus: Chromium
+  modifier, lock-state toggle (the CapsLock press sends no modifier flags and the probe
+  tracks no lock state), auto-repeat or other-layout behaviour. Nor does it prove browser focus: Chromium
   f2700724 forwards key events without a focus check
   (`RenderWidgetHostImpl::ForwardKeyboardEventWithCommands`) and Blink falls back to the main
   frame when no frame is focused (`WebFrameWidgetImpl::HandleKeyEvent` ->
@@ -688,7 +697,8 @@ pass it), `--roves-sustained` with `--roves-warmup-ms=<ms>` (default 10000) and
 `--roves-sample-ms=<ms>` (default 30000) (below; off by default, CI does not pass it,
 exclusive with `--roves-keep-open`), `--roves-game-dir=<dir>` with `--roves-port=<n>` and
 `--roves-auto-close-ms=<ms>` and one of the test-only `--roves-test-minimize-ms=<ms>`,
-`--roves-test-click-ms=<ms>` or `--roves-test-key-ms=<ms>` (opt-in
+`--roves-test-click-ms=<ms>` or `--roves-test-key-ms=<ms>` (the latter optionally with
+`--roves-test-key=ArrowRight|CapsLock`) (opt-in
 real-game mode, above; no fixture checks). CEF
 switches such as `--log-file` pass through.
 
@@ -981,6 +991,18 @@ one trusted `keydown` followed by one trusted `keyup` with the expected `key`, `
 input/`Char` events, IME, modifiers, auto-repeat, other keyboard layouts, browser focus (the
 probe never sets it on WARP; see the flag's limits above), gameplay, accelerated frames or any
 visual result.
+
+A sixth step, separate so the ArrowRight step stays as it is, repeats the key gate for the **synthetic CapsLock
+regression** (the non-character VK_CAPITAL mapping). It first checks that `--roves-test-key`
+is refused without `--roves-test-key-ms`, with `KeyA` and with `capslock` (exit 1, no
+evidence log, `usage error` on stderr if captured). Then a fresh-cache run on the same
+fixture with `--roves-test-key-ms=1000 --roves-test-key=CapsLock` gates, in order and with
+the same counts, exit code and forbidden lines as the ArrowRight step: `test key requested
+key=CapsLock ... pushed=true`, both `forwarded ... ok=true` lines, the `type=keydown` and
+`type=keyup` markers with `key=CapsLock code=CapsLock keyCode=20 repeat=false trusted=true`,
+their receipts, `test key complete` and the clean close/shutdown lines; additionally no
+`key=Right`/`key=ArrowRight` line. Same limits as the ArrowRight gate; it also proves no
+CapsLock lock-state toggle or `getModifierState('CapsLock')` result.
 
 ## Versions evaluated (2026-11-22)
 
