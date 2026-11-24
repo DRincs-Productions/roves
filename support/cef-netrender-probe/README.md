@@ -782,10 +782,23 @@ because `std`'s `DefaultHasher` is not guaranteed stable across Rust releases.
 hidden; the official logo (root `icon.png`, embedded with `include_bytes!`) is decoded and
 halved twice to 256 px by SDL3 itself (`SDL_LoadPNG_IO`, SDL 3.4's bundled stb_image, and
 `SDL_ScaleSurface` linear; `SDL_PremultiplySurfaceAlpha`), set as the window icon
-(`SDL_SetWindowIcon`) and uploaded once as a premultiplied `Rgba8Unorm` texture. Before the CEF
-browser is created, the window is shown with a first frame: the dark background `#141418`
-with the logo centred 1:1, composed by the existing premultiplied wgpu blit (now with a
-destination offset) and presented by the existing present path. That screen stays until
+(`SDL_SetWindowIcon`) and uploaded once as a premultiplied `Rgba8Unorm` texture. The
+"Roves" wordmark is drawn once by SDL3 as well: `SDL_RenderDebugText` (SDL's built-in 8x8
+font) on a software renderer over a transparent RGBA32 surface, integer scale 6 (240x48 px,
+`#F2F2F5`, nearest so the glyphs stay sharp), premultiplied and uploaded the same way. Before
+the CEF browser is created, the window is shown with a first frame: the dark background
+`#141418` with a centred column of the logo, the wordmark (both 1:1) and an indeterminate
+loading bar (240x6 px track `#34343C` with a `#F2F2F5` segment a third as wide that sweeps
+left to right, eased, every 1.4 s, clipped to the track), composed by the existing
+premultiplied wgpu blit (now several draws per pass, each with a destination offset; the bar
+is two 1x1 textures stretched to rectangles) and presented by the existing present path. The
+bar animates from the screen's first frame because the loop already recomposes and presents
+the startup screen every turn (vsync-paced); it shows activity only and claims no progress
+fraction. Layout and animation are pure functions (`splash_layout`, `splash_indicator` in
+`src/game_rules.rs`, unit-tested): sizes are physical pixels, the column is re-centred on
+every frame (so resizes and DPI changes follow the surface size), and while it does not fit
+the logo is dropped first, then the wordmark, so nothing is drawn outside the target. That
+screen stays until
 **both** the accepted main-frame load-end has been handled **and** a CEF frame painted after
 it has been imported: the gate (`StartupGate` in `src/game_rules.rs`, unit-tested) records the
 newest welding paint generation at the end of the loop turn that handled load-end and
@@ -798,7 +811,9 @@ background and visible window, unchanged. In the packaged launch, page input is 
 after the release (explicit `--roves-game-dir` keeps forwarding from load-end, as its test
 hooks expect), and `--roves-auto-close-ms` counts from the release instead of load-end. Log
 lines: `branding decoded logo=256x256 window-icon=<bool> elapsed_ms=<n>` (or
-`branding unavailable error=...`, then the screens are the plain dark background),
+`branding unavailable error=...`, then the screens omit the logo), `wordmark rendered
+size=240x48` (or `wordmark unavailable error=...`, also when SDL drew no opaque pixel; then
+the screens omit the wordmark; the bar needs no decoding and is always drawn),
 `startup screen shown size=<w>x<h> window-shown=<bool> presented=<bool>`, `startup
 fresh-frame requested ok=<bool>`, `startup released generation=<n> imported=<n>
 after_load_end_ms=<n>` and the `startup milestone=startup-released` timeline entry. Note that
@@ -809,7 +824,8 @@ CEF frame.
 renderer termination (also after the release) or, in the packaged launch, no release within
 `--roves-timeout-ms` (`load-timeout` if no accepted load-end, `no-fresh-frame` if loaded but no
 newer frame, e.g. accelerated off-screen rendering unavailable) turns the screen into the
-failure screen: the same dark background with the logo at about 30 % opacity and the window
+failure screen: the same dark background with the logo and wordmark at about 30 % opacity,
+no loading bar (nothing is loading any more), and the window
 title `Roves - the game could not start` (`startup failed reason=<token>`, then `startup
 failure screen presented reason=<token>`). The packaged launch then shows a native SDL message
 box over the window (`SDL_ShowSimpleMessageBox`, error icon) with a sentence for the player,
@@ -817,10 +833,12 @@ the reason token and the log path, and closes with exit code 2 after it is dismi
 failure dialog closed ok=<bool>`, or `startup failure dialog skipped
 (--roves-no-error-dialog)`). If the window itself cannot be created (for example no DX12
 adapter) the packaged launch shows the same kind of dialog without a parent window (exit 5).
-No red or black placeholder is shown on any of these paths. Text on the wgpu screen itself was
-not added: it would need a font rasterizer and text layout (for example glyphon, whose
-releases track wgpu versions independently of the wgpu 29 pin here); the native dialog gives
-readable, localisable-by-OS text with code already in the graph.
+No red or black placeholder is shown on any of these paths. Beyond the fixed ASCII wordmark,
+no text is drawn on the wgpu screen: sentences would need a real font rasterizer and text
+layout (for example glyphon, whose releases track wgpu versions independently of the wgpu 29
+pin here, or SDL3_ttf plus a bundled font); the native dialog gives readable,
+localisable-by-OS text with code already in the graph. The wordmark's look is SDL's 8x8
+pixel font, a deliberate trade-off for no new dependency or font file.
 
 **Chromium reference.** The `support/chromium-reference` submodule was empty in this
 checkout, so the pinned revision `f2700724f59fb554eb19a4f827b1d256e2a13286` was read through
@@ -842,7 +860,10 @@ Chrome's model of an icon resource in the executable (`IDR_MAINFRAME` first), ap
 link time because the executable is CEF's prebuilt bootstrap.exe.
 
 **Libraries evaluated.** Reused: SDL3 3.4 (already linked) for PNG decode, downscale,
-premultiply, window icon and the message box; the probe's wgpu blit for composition;
+premultiply, window icon, the wordmark (`SDL_CreateSoftwareRenderer` + `SDL_RenderDebugText`)
+and the message box; the probe's wgpu blit for composition, the wordmark and the loading bar
+(no new pipeline or shader); not added for the wordmark: SDL3_ttf (a second native library
+and a font file to ship) and glyphon (above);
 welding's `resize` for the fresh paint (it exposes no `invalidate`); for the executable icon,
 the tool `mach bundle --icon-ico` already uses (electron/rcedit v2.0.0, MIT, SHA-256 pinned
 in the workflow) and Pillow 11.3.0 (pinned) to turn `icon.png` into a multi-size `.ico`. Not
@@ -865,7 +886,8 @@ redistributable directory when imported (delay-loaded imports are reported only)
 with `--roves-isolated-profile --roves-no-error-dialog --roves-auto-close-ms=5000
 --roves-timeout-ms=60000`. Required in order: sandbox info, `player launch` with
 `<package>\game`, `profile=isolated` and `clean-cache=true`, the
-loopback origin, `branding decoded logo=256x256 window-icon=true`, `startup screen shown ...
+loopback origin, `branding decoded logo=256x256 window-icon=true`, `wordmark rendered
+size=240x48`, `startup screen shown ...
 window-shown=true presented=true`, the producer, `load-end status=200 url=<origin>/ ok=true`,
 `startup fresh-frame requested ok=true`; then, since WARP delivers no accelerated frame, the
 failure path (`FAIL startup not released within 60000 ms (no-fresh-frame)`, `startup failed
@@ -874,16 +896,18 @@ the clean close/shutdown lines, `player cache removed`, `exit code=2`); if frame
 the release path is required instead (`startup released`, `auto-close scheduled delay_ms=5000
 from=startup-release`, `auto-close window`, clean shutdown, `exit code=0`). Also gated: the
 expected exit code, no other `FAIL` line, no `player cache not removed`/`branding
-unavailable`/test-hook line, the cache directory gone afterwards, a `--type=renderer` child,
+unavailable`/`wordmark unavailable`/test-hook line, the cache directory gone afterwards, a `--type=renderer` child,
 no child with `--no-sandbox`, no `play.exe` left, and five refused launches (exit 1, no log):
 `--roves-no-error-dialog` and `--roves-isolated-profile` on the plain bundle, a test hook,
 `--roves-isolated-profile` with `--roves-cache-dir`, and `--roves-port` in the persistent
 packaged launch. A
 desktop capture 3 s after the main load (`startup-screen.png` in the evidence) must contain at
 least 200000 pixels of the background colour (±3), at most 20000 saturated red pixels (the
-logo has a red ring; the old red clear colour would fill the window) and at least 1000
-near-white logo pixels; an all-black capture (no visible desktop) only warns. **Not proved by
-CI:** the release onto a real game frame, gameplay, input, the failure dialog itself and the
+logo has a red ring; the old red clear colour would fill the window), at least 1000
+near-white logo/wordmark pixels and at least 500 loading-bar track pixels (`#34343C` ±3; the
+track is 1440 px, of which the segment covers at most 480); an all-black capture (no visible
+desktop) only warns. **Not proved by CI:** the bar's motion (one capture), the release onto a
+real game frame, gameplay, input, the failure dialog itself and the
 visual failure screen (both need a real or interactive desktop), audio, and anything on a
 real GPU.
 
@@ -899,7 +923,8 @@ and `FAIL player profile busy`; the stored port held by a `TcpListener` gives ex
 game loopback port busy port=<n>`; a damaged `origin-port` gives exit 1. This proves the profile
 and origin are stable, not that a game's own save survives (that needs a frame and input).
 
-Manual check: run `play.exe` from the artifact on the GTX 1050 and confirm the startup screen,
+Manual check: run `play.exe` from the artifact on the GTX 1050 and confirm the startup screen
+(logo, readable wordmark, a smoothly moving bar, also after a resize and on a 150 % display),
 the release onto the template's menu, input, closing, the icon in Explorer and the taskbar;
 save in the template, close, start again and load the save; start a second copy while the first
 runs (dialog "already running", exit 6, first copy unaffected).

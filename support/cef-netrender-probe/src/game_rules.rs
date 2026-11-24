@@ -1,5 +1,5 @@
 //! Pure helpers of the `--roves-game-dir` mode: origin policy, keyboard translation, the
-//! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click, key and wheel sequences (std only,
+//! input-readiness gate, the minimized/hidden suspension predicate and the test-only minimize, click, key and wheel sequences, the startup-screen layout and loading-bar animation (std only,
 //! unit-tested stand-alone: `rustc --edition 2024 --test src/game_rules.rs`).
 //!
 //! CEF 154 on Windows (`CefBrowserPlatformDelegateNativeWin::TranslateUiKeyEvent`, CEF commit
@@ -1041,6 +1041,60 @@ impl StartupGate {
     }
 }
 
+/// Startup screen: top-left corners of a column of `items` (`(width, height)` in physical
+/// pixels, top to bottom, `None` = not drawn) centred in a `w` x `h` target, `gap` pixels
+/// apart. While the column does not fit, its leading item is dropped (logo first, then the
+/// wordmark), so a small window keeps the loading bar; nothing is scaled or drawn outside
+/// the target. Recomputed every frame, so resizes and DPI changes re-centre it.
+pub(crate) fn splash_layout<const N: usize>(
+    w: u32,
+    h: u32,
+    items: [Option<(u32, u32)>; N],
+    gap: u32,
+) -> [Option<(u32, u32)>; N] {
+    let mut out = [None; N];
+    for first in 0..N {
+        let present = || items[first..].iter().flatten();
+        let count = present().count() as u32;
+        if count == 0 {
+            break;
+        }
+        let width = present().map(|&(iw, _)| iw).max().unwrap_or(0);
+        let height = present().map(|&(_, ih)| ih).sum::<u32>() + gap * (count - 1);
+        if width <= w && height <= h {
+            let mut y = (h - height) / 2;
+            for (slot, item) in out[first..].iter_mut().zip(&items[first..]) {
+                if let Some((iw, ih)) = *item {
+                    *slot = Some(((w - iw) / 2, y));
+                    y += ih + gap;
+                }
+            }
+            break;
+        }
+    }
+    out
+}
+
+/// One sweep of the indeterminate loading bar, in milliseconds.
+pub(crate) const SPLASH_BAR_PERIOD_MS: u128 = 1400;
+
+/// Indeterminate loading bar: `(offset, width)` of the moving segment inside a `track`
+/// pixels wide track, `elapsed_ms` after the startup screen appeared, or `None` while it is
+/// outside the track. A segment a third of the track wide sweeps (eased in and out) from
+/// fully left of the track to fully right of it once per period, clipped to the track. It
+/// signals activity, not progress: no fraction of the load is known or claimed.
+pub(crate) fn splash_indicator(track: u32, elapsed_ms: u128) -> Option<(u32, u32)> {
+    let segment = f64::from((track / 3).max(1));
+    let t = (elapsed_ms % SPLASH_BAR_PERIOD_MS) as f64 / SPLASH_BAR_PERIOD_MS as f64;
+    let eased = t * t * (3.0 - 2.0 * t);
+    let start = -segment + (f64::from(track) + segment) * eased;
+    let (from, to) = (
+        start.round().max(0.0),
+        (start + segment).round().min(f64::from(track)),
+    );
+    (to > from).then_some((from as u32, (to - from) as u32))
+}
+
 /// Startup timeline: milliseconds since entry to the main probe run (after CEF subprocess
 /// dispatch), each milestone reported at most once.
 #[derive(Clone, Copy, Debug)]
@@ -1071,6 +1125,107 @@ impl Startup {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Logo, wordmark and bar as in `src/splash.rs` (`LOGO_PX`, `WORDMARK_SIZE`, `BAR_SIZE`,
+    // `SPLASH_GAP`).
+    const LOGO: Option<(u32, u32)> = Some((256, 256));
+    const WORDMARK: Option<(u32, u32)> = Some((240, 48));
+    const BAR: Option<(u32, u32)> = Some((240, 6));
+
+    #[test]
+    fn splash_layout_centres_the_column() {
+        assert_eq!(
+            splash_layout(800, 600, [LOGO, WORDMARK, BAR], 24),
+            [Some((272, 121)), Some((280, 401)), Some((280, 473))]
+        );
+        // HiDPI-sized target: same physical sizes, re-centred.
+        assert_eq!(
+            splash_layout(1600, 1200, [LOGO, WORDMARK, BAR], 24),
+            [Some((672, 421)), Some((680, 701)), Some((680, 773))]
+        );
+        // Logo unavailable (branding decode failed): wordmark and bar only.
+        assert_eq!(
+            splash_layout(800, 600, [None, WORDMARK, BAR], 24),
+            [None, Some((280, 261)), Some((280, 333))]
+        );
+        // Failure screen: no bar.
+        assert_eq!(
+            splash_layout(800, 600, [LOGO, WORDMARK, None], 24),
+            [Some((272, 136)), Some((280, 416)), None]
+        );
+    }
+
+    #[test]
+    fn splash_layout_drops_leading_items_that_do_not_fit() {
+        // Too short for the logo: wordmark and bar.
+        assert_eq!(
+            splash_layout(300, 200, [LOGO, WORDMARK, BAR], 24),
+            [None, Some((30, 61)), Some((30, 133))]
+        );
+        // Only the bar fits.
+        assert_eq!(
+            splash_layout(250, 40, [LOGO, WORDMARK, BAR], 24),
+            [None, None, Some((5, 17))]
+        );
+        // Too narrow for everything; empty and degenerate targets.
+        assert_eq!(
+            splash_layout(200, 600, [LOGO, WORDMARK, BAR], 24),
+            [None; 3]
+        );
+        assert_eq!(splash_layout(0, 0, [LOGO, WORDMARK, BAR], 24), [None; 3]);
+        assert_eq!(splash_layout(800, 600, [None, None, None], 24), [None; 3]);
+        // Every placed item lies inside the target.
+        for (w, h) in [
+            (256, 358),
+            (257, 359),
+            (241, 79),
+            (240, 6),
+            (1, 1),
+            (4000, 9),
+        ] {
+            let items = [LOGO, WORDMARK, BAR];
+            for (placed, item) in splash_layout(w, h, items, 24).iter().zip(items) {
+                if let (Some((x, y)), Some((iw, ih))) = (placed, item) {
+                    assert!(x + iw <= w && y + ih <= h, "{w}x{h}: {x},{y} {iw}x{ih}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn splash_indicator_sweeps_inside_the_track() {
+        // Starts and ends outside the track; mid-period it is fully inside and centred.
+        assert_eq!(splash_indicator(240, 0), None);
+        assert_eq!(
+            splash_indicator(240, SPLASH_BAR_PERIOD_MS / 2),
+            Some((80, 80))
+        );
+        // Periodic.
+        assert_eq!(
+            splash_indicator(240, 5 * SPLASH_BAR_PERIOD_MS + 300),
+            splash_indicator(240, 300)
+        );
+        let mut entered_clipped = false;
+        let mut last_end = 0;
+        for ms in 0..SPLASH_BAR_PERIOD_MS {
+            if let Some((x, w)) = splash_indicator(240, ms) {
+                assert!(w > 0 && w <= 80 && x + w <= 240, "{ms} ms: {x}+{w}");
+                entered_clipped |= x == 0 && w < 80;
+                // Left to right within one period.
+                assert!(x + w >= last_end, "{ms} ms moved back");
+                last_end = x + w;
+            }
+        }
+        assert!(entered_clipped);
+        // Degenerate tracks never escape them.
+        for track in [0, 1, 2] {
+            for ms in (0..SPLASH_BAR_PERIOD_MS).step_by(10) {
+                if let Some((x, w)) = splash_indicator(track, ms) {
+                    assert!(x + w <= track);
+                }
+            }
+        }
+    }
 
     #[test]
     fn origin_check_is_exact() {

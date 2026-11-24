@@ -1157,8 +1157,10 @@ jobs:
           visual-novel-template on the Roves CEF + SDL3 + wgpu desktop candidate (Windows x64)
           ==================================================================================
           Experimental probe package, not a Roves release. Run play.exe (no arguments): the
-          game in the game folder next to it opens in one window. Each launch uses a fresh
-          cache that is deleted on exit, so saves do not persist between launches.
+          game in the game folder next to it opens in one window. Saves persist between
+          launches in a per-install profile under %LOCALAPPDATA%\Roves\Player\ (moving or
+          renaming this folder starts a new, empty profile). Only the test switch
+          --roves-isolated-profile uses a throw-away cache deleted on exit.
           Requires a DirectX 12 GPU with accelerated off-screen rendering; otherwise a
           readable error dialog explains the failure.
 
@@ -1271,22 +1273,23 @@ jobs:
           using System.Drawing; using System.Drawing.Imaging; using System.Runtime.InteropServices;
           public static class RovesCapture {
             // [dark (#141418 +-3), red (r>200, g<60, b<60), near-white (all > 230),
-            //  black (all < 4), total] pixel counts.
+            //  black (all < 4), total, loading-bar track (#34343C +-3)] pixel counts.
             public static int[] Count(Bitmap bmp) {
               var rect = new Rectangle(0, 0, bmp.Width, bmp.Height);
               var data = bmp.LockBits(rect, ImageLockMode.ReadOnly, PixelFormat.Format32bppArgb);
               var bytes = new byte[data.Stride * data.Height];
               Marshal.Copy(data.Scan0, bytes, 0, bytes.Length);
               bmp.UnlockBits(data);
-              int dark = 0, red = 0, white = 0, black = 0;
+              int dark = 0, red = 0, white = 0, black = 0, track = 0;
               for (int y = 0; y < bmp.Height; y++) for (int x = 0; x < bmp.Width; x++) {
                 int o = y * data.Stride + x * 4; int b = bytes[o], g = bytes[o + 1], r = bytes[o + 2];
                 if (System.Math.Abs(r - 20) <= 3 && System.Math.Abs(g - 20) <= 3 && System.Math.Abs(b - 24) <= 3) dark++;
                 if (r > 200 && g < 60 && b < 60) red++;
                 if (r > 230 && g > 230 && b > 230) white++;
                 if (r < 4 && g < 4 && b < 4) black++;
+                if (System.Math.Abs(r - 52) <= 3 && System.Math.Abs(g - 52) <= 3 && System.Math.Abs(b - 60) <= 3) track++;
               }
-              return new[] { dark, red, white, black, bmp.Width * bmp.Height };
+              return new[] { dark, red, white, black, bmp.Width * bmp.Height, track };
             }
           }
           '@
@@ -1333,7 +1336,7 @@ jobs:
           $common = @(
             'sandbox-info present=true',
             "player launch game-dir=$([regex]::Escape((Join-Path $pkg 'game'))) profile=isolated cache=.+ clean-cache=true error-dialog=false$",
-            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ',
+            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ', 'wordmark rendered size=240x48$',
             'startup screen shown size=\d+x\d+ window-shown=true presented=true$',
             'producer created accelerated=true background=white',
             "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')
@@ -1359,7 +1362,7 @@ jobs:
           foreach ($hit in @($lines | Select-String -Pattern ' FAIL ' | Where-Object { $released -or $_.Line -notmatch $allowedFail })) {
             Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true
           }
-          foreach ($pattern in @('close requested by the OS', 'popup refused', 'player cache not removed', 'branding unavailable', 'test (click|key|wheel|minimize)')) {
+          foreach ($pattern in @('close requested by the OS', 'popup refused', 'player cache not removed', 'branding unavailable', 'wordmark unavailable', 'test (click|key|wheel|minimize)')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
@@ -1372,13 +1375,14 @@ jobs:
           if ($children.Values | Where-Object { $_ -match '--no-sandbox' }) { Write-Output '::error::a CEF child process was launched with --no-sandbox'; $failed = $true }
           if ($null -eq $captured) {
             if (-not $released) { Write-Output '::error::no startup-screen capture was taken' ; $failed = $true }
-          } elseif ($captured.Count -eq 5 -and $captured[3] -gt 0.9 * $captured[4]) {
+          } elseif ($captured.Count -eq 6 -and $captured[3] -gt 0.9 * $captured[4]) {
             Write-Output "::warning::desktop capture is black ($($captured[3]) of $($captured[4]) pixels): no visible desktop on this runner, startup screen not checked"
-          } elseif ($captured.Count -eq 5) {
-            Write-Output "::notice::startup-screen capture: dark=$($captured[0]) red=$($captured[1]) near-white=$($captured[2]) black=$($captured[3]) of $($captured[4]) pixels"
+          } elseif ($captured.Count -eq 6) {
+            Write-Output "::notice::startup-screen capture: dark=$($captured[0]) red=$($captured[1]) near-white=$($captured[2]) bar-track=$($captured[5]) black=$($captured[3]) of $($captured[4]) pixels"
             if ($captured[0] -lt 200000) { Write-Output '::error::startup screen: too few dark background pixels'; $failed = $true }
             if ($captured[1] -gt 20000) { Write-Output '::error::startup screen: red clear colour visible'; $failed = $true }
             if ($captured[2] -lt 1000) { Write-Output '::error::startup screen: no logo highlights'; $failed = $true }
+            if ($captured[5] -lt 500) { Write-Output '::error::startup screen: no loading-bar track'; $failed = $true }
           }
           $console = @($lines | Select-String -Pattern '^roves-cef-nr console level=').Count
           Select-String -Path $log -Pattern 'startup|title |import frame=|closing imported=|player ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }

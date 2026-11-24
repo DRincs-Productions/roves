@@ -20,9 +20,12 @@ use crate::game_rules::{
     TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TEST_WHEEL_LINES, TEST_WHEEL_MOUSE_ID, TestKey,
     WheelAction, WheelInput, WheelMarker, WheelTest, is_click_marker, key_marker, load_status_ok,
     on_origin, origin_port, parse_origin_port, parse_test_key_delay, parse_test_wheel_delay,
-    player_profile_name, suspension_change, wheel_marker,
+    player_profile_name, splash_indicator, splash_layout, suspension_change, wheel_marker,
 };
-use crate::splash::{Branding, LOGO_PX, SPLASH_BACKGROUND};
+use crate::splash::{
+    BAR_INDICATOR, BAR_SIZE, BAR_TRACK, Branding, LOGO_PX, SPLASH_BACKGROUND, SPLASH_GAP,
+    WORDMARK_SIZE, Wordmark,
+};
 use crate::stall::{Marks, Poll, Ring, Step};
 use crate::timings::{Stage, Timings};
 use base64::Engine as _;
@@ -1043,20 +1046,31 @@ struct State {
     splash: Option<Splash>,
 }
 
-/// Game mode: the branded logo uploaded once (premultiplied `Rgba8Unorm`, `LOGO_PX`
-/// square) for the startup and failure screens. `None` textures: decoding failed, the
-/// screens are the plain dark background.
+/// Game mode: the startup/failure screen textures, uploaded once (premultiplied
+/// `Rgba8Unorm`): the `LOGO_PX` logo, the `WORDMARK_SIZE` wordmark and two 1x1 colours for
+/// the loading bar. `None` logo/wordmark: its decoding failed and the screens omit it (the
+/// bar needs no decoding).
 struct Splash {
     logo: Option<wgpu::TextureView>,
     failed: Option<wgpu::TextureView>,
+    wordmark: Option<wgpu::TextureView>,
+    wordmark_failed: Option<wgpu::TextureView>,
+    track: wgpu::TextureView,
+    indicator: wgpu::TextureView,
+    /// Origin of the loading-bar animation: when the startup screen was first composed.
+    started: Instant,
 }
 
 impl Splash {
-    fn new(host: &HostWgpuContext, branding: Option<&Branding>) -> Self {
-        let upload = |label, rgba: &[u8]| {
+    fn new(
+        host: &HostWgpuContext,
+        branding: Option<&Branding>,
+        wordmark: Option<&Wordmark>,
+    ) -> Self {
+        let upload = |label, (width, height): (u32, u32), rgba: &[u8]| {
             let size = wgpu::Extent3d {
-                width: LOGO_PX,
-                height: LOGO_PX,
+                width,
+                height,
                 depth_or_array_layers: 1,
             };
             let texture = host.device.create_texture(&wgpu::TextureDescriptor {
@@ -1079,16 +1093,23 @@ impl Splash {
                 rgba,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(4 * LOGO_PX),
-                    rows_per_image: Some(LOGO_PX),
+                    bytes_per_row: Some(4 * width),
+                    rows_per_image: Some(height),
                 },
                 size,
             );
             texture.create_view(&wgpu::TextureViewDescriptor::default())
         };
+        let logo = (LOGO_PX, LOGO_PX);
         Splash {
-            logo: branding.map(|b| upload("roves startup logo", &b.logo)),
-            failed: branding.map(|b| upload("roves failure logo", &b.failed)),
+            logo: branding.map(|b| upload("roves startup logo", logo, &b.logo)),
+            failed: branding.map(|b| upload("roves failure logo", logo, &b.failed)),
+            wordmark: wordmark.map(|w| upload("roves startup wordmark", WORDMARK_SIZE, &w.rgba)),
+            wordmark_failed: wordmark
+                .map(|w| upload("roves failure wordmark", WORDMARK_SIZE, &w.failed)),
+            track: upload("roves loading-bar track", (1, 1), &BAR_TRACK),
+            indicator: upload("roves loading-bar indicator", (1, 1), &BAR_INDICATOR),
+            started: Instant::now(),
         }
     }
 }
@@ -1135,6 +1156,24 @@ impl Probe {
                     // Not fatal: the screens fall back to the plain dark background.
                     self.log
                         .line(format_args!("branding unavailable error={error}"));
+                    None
+                },
+            }
+        } else {
+            None
+        };
+        let wordmark = if game {
+            match crate::splash::wordmark() {
+                Ok(wordmark) => {
+                    let (w, h) = WORDMARK_SIZE;
+                    self.log
+                        .line(format_args!("wordmark rendered size={w}x{h}"));
+                    Some(wordmark)
+                },
+                Err(error) => {
+                    // Not fatal: the screens omit the wordmark.
+                    self.log
+                        .line(format_args!("wordmark unavailable error={error}"));
                     None
                 },
             }
@@ -1221,8 +1260,8 @@ impl Probe {
             let [r, g, b, a] = BACKGROUND.map(f64::from);
             wgpu::Color { r, g, b, a }
         };
-        let splash = game.then(|| Splash::new(&host, branding.as_ref()));
-        drop(branding);
+        let splash = game.then(|| Splash::new(&host, branding.as_ref(), wordmark.as_ref()));
+        drop((branding, wordmark));
         // Game mode: the first startup-screen frame, then the window appears, before the CEF
         // browser is even created.
         let mut composed_target = None;
@@ -2866,13 +2905,16 @@ fn compose(s: &mut State, mut timings: Option<&mut Timings>) -> Option<wgpu::Tex
     let size = (s.surface_config.width, s.surface_config.height);
     let target = composed_target_of(&s.host, &mut s.composed_target, size);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let source = s.frame.as_ref().map(|f| (&f.view, f.size));
+    let source = s.frame.as_ref().map(|f| BlitSource {
+        view: &f.view,
+        size: (f.size.width, f.size.height),
+        at: (0, 0),
+    });
     let commands = s.blit.encode(
         &s.host,
         &view,
         wgpu::LoadOp::Clear(s.background),
-        source.map(|(view, size)| (view, size.width, size.height)),
-        (0, 0),
+        source.as_slice(),
         true,
     );
     let submit = lap(&mut timings, Stage::Compose, start);
@@ -2913,8 +2955,11 @@ fn composed_target_of(
 }
 
 /// Game mode: the startup (or, with `failed`, failure) screen into `target`: the dark
-/// background with the logo centred 1:1 when it fits, through the same premultiplied blit
-/// as the CEF frame. No CEF frame is drawn.
+/// background with a centred column of the logo, the "Roves" wordmark (both 1:1) and, on
+/// the startup screen only, the indeterminate loading bar animated from `splash.started`,
+/// through the same premultiplied blit as the CEF frame (`splash_layout` drops what does not
+/// fit). The failure screen shows the dimmed logo and wordmark and no bar. No CEF frame is
+/// drawn.
 fn splash_commands(
     host: &HostWgpuContext,
     blit: &Blit,
@@ -2924,21 +2969,52 @@ fn splash_commands(
     failed: bool,
 ) -> wgpu::CommandBuffer {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
-    let (w, h) = (target.width(), target.height());
-    let logo = if failed {
-        splash.failed.as_ref()
+    let (logo, wordmark) = if failed {
+        (splash.failed.as_ref(), splash.wordmark_failed.as_ref())
     } else {
-        splash.logo.as_ref()
+        (splash.logo.as_ref(), splash.wordmark.as_ref())
+    };
+    let [logo_at, wordmark_at, bar_at] = splash_layout(
+        target.width(),
+        target.height(),
+        [
+            logo.map(|_| (LOGO_PX, LOGO_PX)),
+            wordmark.map(|_| WORDMARK_SIZE),
+            (!failed).then_some(BAR_SIZE),
+        ],
+        SPLASH_GAP,
+    );
+    let mut sources = Vec::with_capacity(4);
+    if let (Some(view), Some(at)) = (logo, logo_at) {
+        sources.push(BlitSource {
+            view,
+            size: (LOGO_PX, LOGO_PX),
+            at,
+        });
     }
-    .filter(|_| w >= LOGO_PX && h >= LOGO_PX);
-    blit.encode(
-        host,
-        &view,
-        wgpu::LoadOp::Clear(background),
-        logo.map(|view| (view, LOGO_PX, LOGO_PX)),
-        ((w - LOGO_PX.min(w)) / 2, (h - LOGO_PX.min(h)) / 2),
-        true,
-    )
+    if let (Some(view), Some(at)) = (wordmark, wordmark_at) {
+        sources.push(BlitSource {
+            view,
+            size: WORDMARK_SIZE,
+            at,
+        });
+    }
+    if let Some((x, y)) = bar_at {
+        sources.push(BlitSource {
+            view: &splash.track,
+            size: BAR_SIZE,
+            at: (x, y),
+        });
+        let elapsed = splash.started.elapsed().as_millis();
+        if let Some((offset, width)) = splash_indicator(BAR_SIZE.0, elapsed) {
+            sources.push(BlitSource {
+                view: &splash.indicator,
+                size: (width, BAR_SIZE.1),
+                at: (x + offset, y),
+            });
+        }
+    }
+    blit.encode(host, &view, wgpu::LoadOp::Clear(background), &sources, true)
 }
 
 /// GPU blit of the composed frame onto the window surface.
@@ -2989,8 +3065,11 @@ fn present_to(
         host,
         &target,
         wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-        Some((&source, composed.width(), composed.height())),
-        (0, 0),
+        &[BlitSource {
+            view: &source,
+            size: (composed.width(), composed.height()),
+            at: (0, 0),
+        }],
         false,
     );
     let since = lap(&mut timings, Stage::PresentEncode, since);
@@ -3086,34 +3165,38 @@ impl Blit {
         }
     }
 
-    /// Encodes one render pass on `target`: `load`, then `source` drawn 1:1 with its top-left
-    /// corner at `at` (with premultiplied blending when `over`). The caller submits it.
+    /// Encodes one render pass on `target`: `load`, then each source drawn in order at its
+    /// `(width, height)` with its top-left corner at `at` (with premultiplied blending when
+    /// `over`). A source whose size equals its texture is copied 1:1; the startup screen's
+    /// 1x1 loading-bar textures are stretched to a flat rectangle. The caller submits it.
     fn encode(
         &self,
         host: &HostWgpuContext,
         target: &wgpu::TextureView,
         load: wgpu::LoadOp<wgpu::Color>,
-        source: Option<(&wgpu::TextureView, u32, u32)>,
-        at: (u32, u32),
+        sources: &[BlitSource<'_>],
         over: bool,
     ) -> wgpu::CommandBuffer {
         let pipeline = if over { &self.over } else { &self.present };
-        let bind_group = source.map(|(view, _, _)| {
-            host.device.create_bind_group(&wgpu::BindGroupDescriptor {
-                label: Some("roves blit"),
-                layout: &pipeline.get_bind_group_layout(0),
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&self.sampler),
-                    },
-                ],
+        let bind_groups: Vec<_> = sources
+            .iter()
+            .map(|source| {
+                host.device.create_bind_group(&wgpu::BindGroupDescriptor {
+                    label: Some("roves blit"),
+                    layout: &pipeline.get_bind_group_layout(0),
+                    entries: &[
+                        wgpu::BindGroupEntry {
+                            binding: 0,
+                            resource: wgpu::BindingResource::TextureView(source.view),
+                        },
+                        wgpu::BindGroupEntry {
+                            binding: 1,
+                            resource: wgpu::BindingResource::Sampler(&self.sampler),
+                        },
+                    ],
+                })
             })
-        });
+            .collect();
         let mut encoder = host
             .device
             .create_command_encoder(&wgpu::CommandEncoderDescriptor {
@@ -3135,20 +3218,30 @@ impl Blit {
             });
             let tw = target.texture().width();
             let th = target.texture().height();
-            if let (Some((_, w, h)), Some(bind_group)) = (source, bind_group.as_ref())
-                && at.0 < tw
-                && at.1 < th
-            {
-                // Viewport = source size, clipped to the target: texel-exact, never scaled.
-                pass.set_viewport(at.0 as f32, at.1 as f32, w as f32, h as f32, 0.0, 1.0);
-                pass.set_scissor_rect(at.0, at.1, w.min(tw - at.0), h.min(th - at.1));
-                pass.set_pipeline(pipeline);
+            pass.set_pipeline(pipeline);
+            for (source, bind_group) in sources.iter().zip(&bind_groups) {
+                let ((w, h), (x, y)) = (source.size, source.at);
+                if x >= tw || y >= th || w == 0 || h == 0 {
+                    continue;
+                }
+                // Viewport = source size, clipped to the target: texel-exact (never scaled)
+                // whenever the size is the texture's own.
+                pass.set_viewport(x as f32, y as f32, w as f32, h as f32, 0.0, 1.0);
+                pass.set_scissor_rect(x, y, w.min(tw - x), h.min(th - y));
                 pass.set_bind_group(0, bind_group, &[]);
                 pass.draw(0..3, 0..1);
             }
         }
         encoder.finish()
     }
+}
+
+/// One `Blit::encode` draw: `view` sampled over a `size` rectangle whose top-left corner
+/// is `at` in the target.
+struct BlitSource<'a> {
+    view: &'a wgpu::TextureView,
+    size: (u32, u32),
+    at: (u32, u32),
 }
 
 /// Verification-only readback of single texels (never on the presentation path).

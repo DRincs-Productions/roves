@@ -4,7 +4,9 @@
 > candidate player (`support/cef-netrender-probe`, built by its own workflow; see its
 > README). The Servo + V8 engine sources, `mach` and their build workflows were removed
 > here on 2026-11-23, so the build, `mach bundle` and platform instructions below describe
-> `main` and do not apply to this branch's checkout.
+> `main` and do not apply to this branch's checkout. Its packaged Windows player opens on a
+> native startup screen (logo, "Roves" wordmark, animated loading bar) until the game has
+> loaded and painted, and keeps saves between launches.
 
 **Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
 web engine, repurposed as a runtime for shipping **web-based games** as real native

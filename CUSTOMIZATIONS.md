@@ -1,3 +1,25 @@
+## 2026-11-24 - CEF + SDL3 + wgpu candidate: startup-screen wordmark and loading bar
+
+Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs,splash.rs}`,
+`support/cef-netrender-probe/README.md` ("Packaged player"),
+`.github/workflows/cef-netrender-probe.yml`, `TODO.md`. Branch `codex/cef-sdl3-wgpu-probe`
+only; no release, no `mach build`/`mach bundle` flag, no `roves-action`/Packmaster surface
+change. The native startup screen now shows, under the logo, a "Roves" wordmark drawn once by
+SDL3 (`SDL_RenderDebugText`, SDL's built-in 8x8 font on a software renderer, integer scale 6,
+240x48 px) and an indeterminate loading bar (240x6 px track, a segment a third as wide sweeping
+every 1.4 s, eased, clipped to the track; activity only, no progress claimed). Everything goes
+through the existing premultiplied wgpu blit, which now encodes several draws per pass (the bar
+is two 1x1 textures stretched to rectangles); no new shader, pipeline or dependency. Layout
+(`splash_layout`: centred column re-computed per frame from the surface size, dropping the
+logo then the wordmark when they do not fit) and animation (`splash_indicator`) are pure
+functions with stand-alone unit tests. The failure screen shows the dimmed logo and wordmark
+and no bar. Readiness gate, timeout/failure paths, resize/DPI handling and the fixture smoke
+are unchanged. CI: the packaged-launch gate requires `wordmark rendered size=240x48`, forbids
+`wordmark unavailable` and counts loading-bar track pixels in the startup-screen capture.
+Also fixed the generated `PROVENANCE.txt`, which still claimed every launch used a fresh cache
+deleted on exit (saves now persist in the per-install profile; only
+`--roves-isolated-profile` is throw-away). Not yet run in CI or on a real GPU.
+
 ## 2026-11-23 - CEF + SDL3 + wgpu candidate: persistent player saves; Servo + V8 engine removed from this branch
 
 Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs}`,
