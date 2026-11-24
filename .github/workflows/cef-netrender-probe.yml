@@ -23,10 +23,12 @@ on:
   workflow_dispatch:
     inputs:
       enable-mcp:
-        # Optional local MCP development bridge (README "Local MCP bridge"). Off by default:
-        # push runs and default dispatches never build the MCP-enabled package. The plain
-        # package is always checked to run with the bridge off.
-        description: 'Also assemble the MCP-enabled development package and run the MCP smokes'
+        # Optional local MCP development bridge (README "Local MCP bridge"). Off by default.
+        # Every run (push or dispatch) assembles the MCP-enabled package in its own temporary
+        # folder only to run the MCP fixture gate; the plain package stays bridge-off and is
+        # checked for that. This input adds the packaged-launch MCP smoke and uploads the
+        # MCP-enabled package; without it no MCP-enabled artifact is published.
+        description: 'Also run the packaged MCP smoke and upload the MCP-enabled development package'
         type: boolean
         default: false
 
@@ -1561,13 +1563,15 @@ jobs:
           Start-Sleep -Seconds 2
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }
-      # Optional local MCP bridge (enable-mcp, default false; README "Local MCP bridge").
+      # Local MCP bridge (README "Local MCP bridge"). Assembled on every run for the fixture
+      # gate below, in its own temporary folder: the plain package uploaded to users is not
+      # touched and keeps the bridge off. Uploaded only with enable-mcp (default false).
       # The MCP-enabled package is the plain package plus mcp\ (server.mjs, its locked npm
       # dependencies, README) and the marker mcp\enabled that turns the bridge on in play.exe.
       # The same play.exe/play.dll as the plain package: the bridge is a runtime switch.
-      - name: assemble the MCP-enabled package (enable-mcp)
+      - name: assemble the MCP-enabled package (fixture gate)
         id: mcp_package
-        if: (success() || failure()) && steps.package.outcome == 'success' && inputs.enable-mcp
+        if: (success() || failure()) && steps.package.outcome == 'success'
         shell: pwsh
         run: |
           $failed = $false
@@ -1602,7 +1606,7 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Output '::error::MCP server list-only smoke failed'; $failed = $true }
           @"
 
-          MCP-enabled development package (enable-mcp=true; never ship to players)
+          MCP-enabled development package (never ship to players)
             mcp\enabled turns on the local MCP bridge of play.exe for every launch. mcp\server.mjs
             is the stdio MCP server (Node.js 20+; @modelcontextprotocol/server 2.4.0, zod 4.4.3,
             Apache-2.0/MIT, provenance\mcp-package-lock.json, provenance\mcp-npm-ls.txt); see
@@ -1630,7 +1634,7 @@ jobs:
       # global in the page), a trusted DOM click, ArrowRight keydown/keyup, typed text through
       # keypress, out-of-window click and unlisted key refused, exit 0 after auto-close, the
       # session record removed, the token absent from the game log, no FAIL line.
-      - name: MCP smoke on the fixture (enable-mcp, WARP)
+      - name: MCP smoke on the fixture (WARP)
         if: (success() || failure()) && steps.mcp_package.outcome == 'success'
         shell: pwsh
         run: |
@@ -1657,7 +1661,7 @@ jobs:
       # game's origin; click forwarded if the startup screen was released, otherwise refused
       # as not ready (WARP: no accelerated frame, exit 2); session record removed after exit.
       - name: MCP smoke on the packaged launch (enable-mcp, WARP)
-        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && inputs.enable-mcp
         shell: pwsh
         run: |
           $pkg = '${{ steps.mcp_package.outputs.dir }}'
@@ -1677,15 +1681,15 @@ jobs:
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
           if ($code -ne 0) { Write-Output "::error::MCP package smoke failed (exit $code)"; exit 1 }
       - name: upload the MCP-enabled package (enable-mcp)
-        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && inputs.enable-mcp
         uses: actions/upload-artifact@v4
         with:
           name: visual-novel-template-roves-cef-mcp-windows-x64
           path: ${{ runner.temp }}/roves-cef-vn-mcp-package
           retention-days: 7
           if-no-files-found: error
-      - name: upload MCP evidence (enable-mcp)
-        if: always() && inputs.enable-mcp
+      - name: upload MCP evidence
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: cef-netrender-probe-mcp-evidence

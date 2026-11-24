@@ -1030,14 +1030,19 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   `state` (host-side: origin, last on-origin URL, title, `loaded`, `startup`
   `none|loading|released|failed`, `input_ready`, window size in points and pixels, scale,
   suspension, imported/presented frames, input counters, console count and last 50 lines; no
-  page script); `evaluate` (`{"expression"}` up to 16 KiB; CDP `Runtime.evaluate` with
-  `returnByValue`, `awaitPromise: false`, `userGesture: false`, a 1000 ms script `timeout`
-  and `allowUnsafeEvalBlockedByCSP: false`, sent through welding's in-process
-  `send_devtools_message` = `CefBrowserHost::SendDevToolsMessage`; the reply is matched by id
-  in welding's bounded DevTools queue, drained every loop turn while the bridge is on;
-  Promises, non-JSON values and results over 64 KiB are errors; 5 s without a reply is an
-  error); `click` (`{"x","y"}` window points = SDL logical coordinates, CSS pixels at page
-  zoom 1; left down + up), `press_key` (`{"key"}`, a fixed list: ArrowLeft/Right/Up/Down,
+  page script); `evaluate` (`{"expression"}` up to 16 KiB; CDP `Runtime.evaluate` by
+  reference in a per-call `objectGroup`, `awaitPromise: false`, `userGesture: false`, a
+  1000 ms script `timeout` and `allowUnsafeEvalBlockedByCSP: false`, sent through welding's
+  in-process `send_devtools_message` = `CefBrowserHost::SendDevToolsMessage`; the reply is
+  matched by id in welding's bounded DevTools queue, drained every loop turn while the bridge
+  is on; a result with `subtype: "promise"` is refused, any other object or function is then
+  fetched by value with `Runtime.callFunctionOn` (`function () { return this; }`,
+  `returnByValue`) on the same reference, and the group is released with
+  `Runtime.releaseObjectGroup` when the call ends; exceptions, non-JSON values and results
+  over 64 KiB are errors; 5 s without a reply for the whole call is an error; only a
+  top-level Promise is detected, one nested in a returned object is serialized as `{}`);
+  `click` (`{"x","y"}` window points = SDL logical coordinates, CSS pixels at page zoom 1;
+  left down + up), `press_key` (`{"key"}`, a fixed list: ArrowLeft/Right/Up/Down,
   Enter, Escape, Space, Tab, Backspace, Delete, Home, End, PageUp, PageDown; down + up, no
   `Char`) and `type_text` (`{"text"}`, 1..256 printable characters, one `Char` each). The
   three input requests build ordinary SDL events (device id `0x524F4D43`, never pushed into
@@ -1045,6 +1050,13 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   as real input, counted in `game input forwarded=...`; they are refused with "input is not
   ready" exactly when real input would be discarded (before the accepted load-end; in the
   packaged launch, before the startup screen is released).
+- **Why `evaluate` is by reference.** A single `returnByValue` evaluation cannot refuse a
+  Promise: V8's inspector serializes a by-value object as plain JSON without its `subtype`
+  (`ObjectMirror::buildRemoteObject`, `WrapMode::kJson`, `src/inspector/value-mirror.cc`), so
+  `Promise.resolve(42)` arrived as `{"type":"object","value":{}}` and passed as `{}` (local
+  GTX 1050 fixture smoke of `9d691517300`, `smoke.mjs` Promise assertion). A thrown value is
+  wrapped by reference in either mode (`InjectedScript::wrapEvaluateResult`) and is reported
+  from `exceptionDetails.exception.description`, so exceptions were never affected.
 - **Server** (`mcp/server.mjs`, Node.js 20+, the official MCP TypeScript SDK
   `@modelcontextprotocol/server` 2.4.0 and zod 4.4.3, the same pins and lockfile the retired
   Blitz dev-mcp used, commit `d587feb97f6`). Stdio MCP tools `get_state`, `evaluate_script`,
@@ -1078,8 +1090,10 @@ the game), so it keeps Chromium's port-less idea (no socket) but replaces "inher
 with a per-session token over a local named pipe, and it uses CEF's in-process
 `SendDevToolsMessage` (the `AttachClient` path of `content/public/browser/devtools_agent_host.h`
 ~120/172) instead of either switch, so CEF never exposes the whole browser target. The
-`Runtime.evaluate` options are CDP's documented parameters; V8's inspector sources were not
-checked out (not part of this sparse checkout).
+`Runtime.evaluate` options are CDP's documented parameters. The result shape was then checked
+in V8's inspector sources as vendored by the `v8` crate 152.2.0 (`src/inspector/value-mirror.cc`
+`toProtocolValue`/`ObjectMirror`/`SymbolMirror`, `injected-script.cc` `wrapEvaluateResult`,
+`v8-runtime-agent-impl.cc` wrap modes), not CEF 154's own V8 build.
 
 **Libraries evaluated.** Reused: welding's DevTools channel (`devtools_protocol`,
 `send_devtools_message`, `poll_devtools_message`) instead of an own observer; the probe's
@@ -1097,9 +1111,12 @@ CEF fork, no new Cargo crate (one lock line: `serde_json` as a direct dependency
 
 **Verification.** Local: `rustc --edition 2024 --test src/mcp_rules.rs` (7 tests), `cargo
 check/clippy --features dox --all-targets`, `node mcp/smoke.mjs list-only mcp/server.mjs`, and
-the server against a scripted fake pipe (discovery, token, errors). CI (`enable-mcp=true` on a
-manual dispatch only): see "CI (`cef-netrender-probe.yml`...)", MCP steps. **Not verified
-yet:** any run of the bridge inside the real game process (the CI steps have not run),
+the server against a scripted fake pipe (discovery, token, errors). CI (fixture gate on every
+run; packaged smoke and MCP package upload with `enable-mcp=true` only): see "CI
+(`cef-netrender-probe.yml`...)", MCP steps. One local GTX 1050 fixture smoke of
+`9d691517300` inside the real game process reached Ready and refused unauthenticated
+connections, then failed the Promise refusal (fixed since by the by-reference evaluation;
+not rerun). **Not verified yet:** a full passing run of the bridge in the real game process,
 typed text without browser focus on WARP, any real-GPU or real-game session.
 
 **Limitations.** Windows only; Node.js 20+ needed by the server; one request in flight per
@@ -1578,17 +1595,21 @@ is not a frame-pacing figure), and **not proof** of physical keyboard input, the
 translation, or CapsLock modifier/lock-state behavior; the limits of the gates above still
 apply.
 
-### MCP steps (`enable-mcp`, manual dispatch only, default false)
+### MCP steps (fixture gate on every run; `enable-mcp` manual input, default false)
 
-Always (every run): the plain package's direct launch must log no `mcp` line and the package
-must have no `mcp\` folder (bridge off by default). Only with `enable-mcp=true`: (1) `rustc
+Always (every run, pushes included): the plain package's direct launch must log no `mcp`
+line and the package must have no `mcp\` folder (bridge off by default); steps (1) and (2)
+below run in their own temporary folder and never change the uploaded plain package. Only
+with `enable-mcp=true`: step (3) and the upload of the MCP-enabled package. (1) `rustc
 --test src/mcp_rules.rs`; the MCP-enabled package = the plain package (same `play.dll`) plus
 `mcp\` (server, `npm ci --omit=dev` dependencies, README, marker `enabled`), provenance and
 `SHA256SUMS.txt` regenerated; `smoke.mjs list-only` on the packaged server. (2) Fixture smoke
 (`mcp/fixture`, CSP `script-src 'self'`, launched from the MCP package with
 `--roves-game-dir --roves-mcp`, WARP): session record published at launch with the expected
 shape, two unauthenticated connections answered with nothing, discovery by PID, state,
-`40 + 2` = 42, `undefined` = null, an exception and a Promise refused, `eval` inside an
+`40 + 2` = 42, `undefined` = null, an exception refused, `Promise.resolve(42)` and an async
+call refused as Promises while `({})` = `{}` and a nested object come back by value, a
+`Symbol` refused as not JSON-serializable, `eval` inside an
 evaluation still an `EvalError` (page CSP kept), no bridge global in the page, a trusted DOM
 click at (100, 60), ArrowRight keydown/keyup (`key`/`code` ArrowRight, trusted), typed text
 `roves` seen by a `keypress` listener, out-of-window click, unlisted key and control
@@ -1597,8 +1618,10 @@ characters refused, exit 0 after auto-close, record removed, token absent from t
 directly (marker on, `--roves-isolated-profile --roves-no-error-dialog`), discovered
 without a PID; state and evaluation on the package origin; `click` forwarded if the startup
 screen was released, otherwise refused as not ready (WARP, exit 2); record removed. Artifacts:
-`visual-novel-template-roves-cef-mcp-windows-x64`, `cef-netrender-probe-mcp-evidence`.
-These steps have **not run yet**.
+`cef-netrender-probe-mcp-evidence` (every run) and, with `enable-mcp=true` only,
+`visual-novel-template-roves-cef-mcp-windows-x64`. These CI steps have **not run yet**; a
+local GTX 1050 fixture smoke of `9d691517300` reached Ready and the authentication refusals
+but failed the Promise refusal (fixed since, see "Requests" above; not rerun).
 
 ## Versions evaluated (2026-11-22)
 

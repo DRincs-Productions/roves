@@ -5,7 +5,8 @@
 //   node smoke.mjs package <server.mjs> <package dir> <output dir>
 //
 // fixture: --roves-game-dir=<fixture> --roves-mcp; discovery by PID, authentication refusal,
-//          state, evaluation (values, errors, Promise refusal, page CSP kept), click, key and
+//          state, evaluation (values, objects by value, errors, Promise refusal distinct
+//          from a plain {}, non-JSON symbol refused, page CSP kept), click, key and
 //          text delivered to the page, clean exit and session removal.
 // package: the package's play.exe launched directly (the package marker turns MCP on);
 //          discovery without a PID, state and evaluation on the packaged game; interaction
@@ -207,6 +208,17 @@ async function fixture([exe, fixtureDir, out]) {
     assert.ok(!thrown.ok && /fixture exception/.test(thrown.text), thrown.text);
     const promise = await evaluate("Promise.resolve(42)");
     assert.ok(!promise.ok && /Promise/.test(promise.text), promise.text);
+    // A by-value Promise and a plain empty object have the same JSON ({}): the refusal must
+    // come from the Promise's type, not from the value's shape.
+    const asyncCall = await evaluate("(async () => 42)()");
+    assert.ok(!asyncCall.ok && /Promise/.test(asyncCall.text), asyncCall.text);
+    const empty = await evaluate("({})");
+    assert.ok(empty.ok, empty.text);
+    assert.deepEqual(empty.value, {});
+    assert.deepEqual((await evaluate("({ list: [1, 'two', null], flag: true })")).value,
+      { list: [1, "two", null], flag: true });
+    const symbol = await evaluate("Symbol('roves')");
+    assert.ok(!symbol.ok && /JSON-serializable/.test(symbol.text), symbol.text);
     // The page's CSP (script-src 'self') still blocks eval inside an evaluation.
     assert.equal((await evaluate(
       "(() => { try { eval('1'); return 'allowed'; } catch (e) { return e.name; } })()")).value, "EvalError");

@@ -1,3 +1,19 @@
+## 2026-11-24 - CEF + SDL3 + wgpu candidate: MCP Promise refusal fixed, fixture gate on push
+
+Changed: `support/cef-netrender-probe/src/mcp.rs`, `support/cef-netrender-probe/mcp/smoke.mjs`,
+`support/cef-netrender-probe/README.md`, `.github/workflows/cef-netrender-probe.yml`. A local
+GTX 1050 fixture smoke of `9d691517300` showed `evaluate_script("Promise.resolve(42)")`
+returning `{}`: with `returnByValue` V8's inspector serializes objects as plain JSON without
+`subtype` (`value-mirror.cc`, `WrapMode::kJson`), so the Promise check never matched.
+`evaluate` now runs `Runtime.evaluate` by reference in a per-call object group, refuses
+`subtype: "promise"`, fetches other objects/functions by value with `Runtime.callFunctionOn`
+on the same reference and releases the group at the end (also on timeout). Exceptions were
+not affected (always reported through `exceptionDetails`). The smoke additionally requires an
+async call refused, `({})` and a nested object returned by value and a `Symbol` refused. CI:
+the MCP-enabled package is assembled in its own temporary folder and the fixture smoke runs
+on every run, pushes included; the packaged-launch smoke and the MCP-enabled package upload
+still need `enable-mcp` (default false). The plain user artifact is unchanged and bridge-off.
+
 ## 2026-11-24 - CEF + SDL3 + wgpu candidate: optional local MCP bridge (off by default)
 
 Changed: `support/cef-netrender-probe/src/{app.rs,lib.rs,mcp.rs,mcp_rules.rs}`,

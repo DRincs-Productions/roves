@@ -87,9 +87,21 @@ struct Request {
     reply: oneshot::Sender<String>,
 }
 
+/// Which CDP reply a pending evaluation waits for.
+#[derive(Clone, Copy)]
+enum Stage {
+    /// `Runtime.evaluate` by reference: tells a Promise from other objects.
+    Evaluate,
+    /// `Runtime.callFunctionOn` returning the evaluated object by value.
+    ByValue,
+}
+
 struct Pending {
     reply: Reply,
     deadline: Instant,
+    stage: Stage,
+    /// Object group holding this evaluation's remote objects; released when it ends.
+    group: String,
 }
 
 /// Main-loop side of the bridge. Dropping it removes the session record, so discovery stops
@@ -356,47 +368,83 @@ impl Bridge {
         calls
     }
 
-    /// Starts `Runtime.evaluate` in the page's main world. By value, synchronous only
+    /// Sends one CDP command of the bridge and returns its message id.
+    fn send_cdp(
+        &mut self,
+        producer: &mut WindowsCefProducer,
+        method: &str,
+        params: Value,
+    ) -> Result<i64, String> {
+        let id = self.next_id;
+        self.next_id += 1;
+        let message = json!({ "id": id, "method": method, "params": params });
+        producer
+            .send_devtools_message(&message.to_string())
+            .map(|()| id)
+            .map_err(|error| format!("evaluate: {error}"))
+    }
+
+    /// Ends an evaluation: answers it and releases its object group (the reply to the
+    /// release carries no pending id and is dropped by `poll_devtools`).
+    fn finish(
+        &mut self,
+        producer: &mut WindowsCefProducer,
+        pending: Pending,
+        result: Result<Value, String>,
+    ) {
+        pending.reply.send(result);
+        let _ = self.send_cdp(
+            producer,
+            "Runtime.releaseObjectGroup",
+            json!({ "objectGroup": pending.group }),
+        );
+    }
+
+    /// Starts `Runtime.evaluate` in the page's main world: synchronous only
     /// (`awaitPromise: false`), no user gesture, and `allowUnsafeEvalBlockedByCSP: false` so
     /// `eval`/`new Function` inside the expression stay subject to the page's CSP.
+    ///
+    /// The result is requested by reference, not with `returnByValue`: V8's inspector
+    /// serializes a by-value object as plain JSON without its `subtype`, so a Promise would
+    /// arrive as `{"type":"object","value":{}}`, indistinguishable from `({})`. A reference
+    /// keeps `subtype: "promise"` for the refusal; any other object is then fetched by value
+    /// with `Runtime.callFunctionOn` on the same reference (same JSON serialization as
+    /// `returnByValue`). Each evaluation has its own object group, released at its end.
     pub(crate) fn evaluate(
         &mut self,
         producer: &mut WindowsCefProducer,
         expression: &str,
         reply: Reply,
     ) {
-        let id = self.next_id;
-        self.next_id += 1;
-        let message = json!({
-            "id": id,
-            "method": "Runtime.evaluate",
-            "params": {
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": false,
-                "userGesture": false,
-                "allowUnsafeEvalBlockedByCSP": false,
-                "timeout": SCRIPT_TIMEOUT_MS,
-            },
+        let group = format!("roves-mcp-{}", self.next_id);
+        let params = json!({
+            "expression": expression,
+            "objectGroup": group,
+            "returnByValue": false,
+            "generatePreview": false,
+            "awaitPromise": false,
+            "userGesture": false,
+            "allowUnsafeEvalBlockedByCSP": false,
+            "timeout": SCRIPT_TIMEOUT_MS,
         });
-        match producer.send_devtools_message(&message.to_string()) {
-            Ok(()) => {
-                self.pending.insert(
-                    id,
-                    Pending {
-                        reply,
-                        deadline: Instant::now() + EVALUATE_TIMEOUT,
-                    },
-                );
+        let pending = Pending {
+            reply,
+            deadline: Instant::now() + EVALUATE_TIMEOUT,
+            stage: Stage::Evaluate,
+            group,
+        };
+        match self.send_cdp(producer, "Runtime.evaluate", params) {
+            Ok(id) => {
+                self.pending.insert(id, pending);
             },
-            Err(error) => reply.send(Err(format!("evaluate: {error}"))),
+            Err(error) => self.finish(producer, pending, Err(error)),
         }
     }
 
     /// Drains welding's DevTools queue (it is bounded, so it is polled every loop turn while
-    /// the bridge is on), answers matching evaluations and expires late ones. Messages that
-    /// are not replies to the bridge are dropped: no CDP domain is enabled, so none are
-    /// expected.
+    /// the bridge is on), advances matching evaluations and expires late ones. Messages that
+    /// are not replies to a pending evaluation (events, `releaseObjectGroup` replies) are
+    /// dropped: no CDP domain is enabled, so no events are expected.
     pub(crate) fn poll_devtools(&mut self, producer: &mut WindowsCefProducer) {
         while let Some(message) = producer.poll_devtools_message() {
             let Ok(message) = serde_json::from_str::<Value>(&message) else {
@@ -409,7 +457,39 @@ impl Bridge {
             else {
                 continue;
             };
-            pending.reply.send(evaluation_result(&message));
+            match (pending.stage, evaluation_step(&message)) {
+                (Stage::Evaluate, Step::Fetch(object)) => {
+                    let params = json!({
+                        "objectId": object,
+                        "functionDeclaration": "function () { return this; }",
+                        "objectGroup": pending.group,
+                        "returnByValue": true,
+                        "awaitPromise": false,
+                        "userGesture": false,
+                    });
+                    match self.send_cdp(producer, "Runtime.callFunctionOn", params) {
+                        Ok(id) => {
+                            self.pending.insert(
+                                id,
+                                Pending {
+                                    stage: Stage::ByValue,
+                                    ..pending
+                                },
+                            );
+                        },
+                        Err(error) => self.finish(producer, pending, Err(error)),
+                    }
+                },
+                (Stage::Evaluate, Step::Done(result)) => self.finish(producer, pending, result),
+                // By value there is no reference left to fetch: a by-value object without
+                // `value` is not JSON-serializable.
+                (Stage::ByValue, Step::Fetch(_)) => self.finish(
+                    producer,
+                    pending,
+                    Err("evaluate: the result is not JSON-serializable".into()),
+                ),
+                (Stage::ByValue, Step::Done(result)) => self.finish(producer, pending, result),
+            }
         }
         let now = Instant::now();
         let expired: Vec<i64> = self
@@ -420,9 +500,11 @@ impl Bridge {
             .collect();
         for id in expired {
             if let Some(pending) = self.pending.remove(&id) {
-                pending
-                    .reply
-                    .send(Err("evaluate: no DevTools reply in time".into()));
+                self.finish(
+                    producer,
+                    pending,
+                    Err("evaluate: no DevTools reply in time".into()),
+                );
             }
         }
     }
@@ -450,30 +532,40 @@ impl Bridge {
     }
 }
 
-/// Maps a CDP `Runtime.evaluate` reply to the bridge's answer.
-fn evaluation_result(message: &Value) -> Result<Value, String> {
+/// Next step of an evaluation after one CDP reply.
+enum Step {
+    /// The bridge's answer.
+    Done(Result<Value, String>),
+    /// A non-Promise object by reference (`objectId`), to be fetched by value.
+    Fetch(String),
+}
+
+/// Maps a CDP `Runtime.evaluate` (by reference) or `Runtime.callFunctionOn` (by value) reply.
+/// Exceptions arrive in `exceptionDetails` in both modes (V8 wraps a thrown value by
+/// reference regardless of `returnByValue`).
+fn evaluation_step(message: &Value) -> Step {
     if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
-        return Err(format!("evaluate: {error}"));
+        return Step::Done(Err(format!("evaluate: {error}")));
     }
     if let Some(exception) = message.pointer("/result/exceptionDetails") {
-        return Err(exception
+        return Step::Done(Err(exception
             .pointer("/exception/description")
             .or_else(|| exception.get("text"))
             .and_then(Value::as_str)
             .map_or_else(
                 || "JavaScript exception".to_owned(),
                 |text| truncate_chars(text, 2048).to_owned(),
-            ));
+            )));
     }
-    let result = message
-        .pointer("/result/result")
-        .ok_or("evaluate: invalid DevTools reply")?;
+    let Some(result) = message.pointer("/result/result") else {
+        return Step::Done(Err("evaluate: invalid DevTools reply".into()));
+    };
     if result.get("subtype").and_then(Value::as_str) == Some("promise") {
-        return Err(
+        return Step::Done(Err(
             "evaluate: the expression returned a Promise; return a JSON value \
                     synchronously and read asynchronous results with a later call"
                 .into(),
-        );
+        ));
     }
     let value = if let Some(value) = result.get("value") {
         value.clone()
@@ -482,11 +574,20 @@ fn evaluation_result(message: &Value) -> Result<Value, String> {
         Value::String(text.to_owned())
     } else if result.get("type").and_then(Value::as_str) == Some("undefined") {
         Value::Null
+    } else if let (Some("object" | "function"), Some(object)) = (
+        result.get("type").and_then(Value::as_str),
+        result.get("objectId").and_then(Value::as_str),
+    ) {
+        // Objects and functions only: a symbol is not serializable by value either (V8
+        // refuses it in returnByValue), so it keeps the error below.
+        return Step::Fetch(object.to_owned());
     } else {
-        return Err("evaluate: the result is not JSON-serializable".into());
+        return Step::Done(Err("evaluate: the result is not JSON-serializable".into()));
     };
     if value.to_string().len() > MAX_RESULT {
-        return Err(format!("evaluate: the result exceeds {MAX_RESULT} bytes"));
+        return Step::Done(Err(format!(
+            "evaluate: the result exceeds {MAX_RESULT} bytes"
+        )));
     }
-    Ok(value)
+    Step::Done(Ok(value))
 }
