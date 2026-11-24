@@ -27,7 +27,9 @@ on:
         # Every run (push or dispatch) assembles the MCP-enabled package in its own temporary
         # folder only to run the MCP fixture gate; the plain package stays bridge-off and is
         # checked for that. This input adds the packaged-launch MCP smoke and uploads the
-        # MCP-enabled package; without it no MCP-enabled artifact is published.
+        # MCP-enabled package; without it no MCP-enabled artifact is published. Equivalent
+        # push opt-in: the marker [cef-mcp-candidate] in the head commit message of a push to
+        # codex/cef-sdl3-wgpu-probe only (job env ROVES_CEF_MCP_CANDIDATE).
         description: 'Also run the packaged MCP smoke and upload the MCP-enabled development package'
         type: boolean
         default: false
@@ -49,6 +51,12 @@ jobs:
     # rustc and nested cargo spawned by the bundle binary (cef::build_util) uses 1.99.1.
     env:
       RUSTUP_TOOLCHAIN: 1.99.1
+      # Single opt-in for the MCP-enabled development package (packaged MCP smoke + upload),
+      # used by both steps below. Two equivalent sources: the manual input enable-mcp=true
+      # (workflow_dispatch, default false), or a push to the dedicated CEF branch whose head
+      # commit message contains the marker [cef-mcp-candidate]. The marker is ignored on any
+      # other branch, on tags and on dispatch. The plain user package is never affected.
+      ROVES_CEF_MCP_CANDIDATE: ${{ (github.event_name == 'workflow_dispatch' && inputs.enable-mcp == true) || (github.event_name == 'push' && github.ref == 'refs/heads/codex/cef-sdl3-wgpu-probe' && contains(github.event.head_commit.message, '[cef-mcp-candidate]')) }}
     steps:
       - uses: actions/checkout@v4
       # welding 0.15.0 requires Rust 1.97.1; wgpu-weld e991684 pins 1.99.1 for its own CI.
@@ -1565,7 +1573,9 @@ jobs:
           if ($failed) { exit 1 }
       # Local MCP bridge (README "Local MCP bridge"). Assembled on every run for the fixture
       # gate below, in its own temporary folder: the plain package uploaded to users is not
-      # touched and keeps the bridge off. Uploaded only with enable-mcp (default false).
+      # touched and keeps the bridge off. Smoked as a package and uploaded only when
+      # ROVES_CEF_MCP_CANDIDATE is true (enable-mcp=true, or the [cef-mcp-candidate] commit
+      # marker on the dedicated branch); default false.
       # The MCP-enabled package is the plain package plus mcp\ (server.mjs, its locked npm
       # dependencies, README) and the marker mcp\enabled that turns the bridge on in play.exe.
       # The same play.exe/play.dll as the plain package: the bridge is a runtime switch.
@@ -1575,6 +1585,11 @@ jobs:
         shell: pwsh
         run: |
           $failed = $false
+          if ($env:ROVES_CEF_MCP_CANDIDATE -eq 'true') {
+            Write-Output "::notice::MCP candidate opt-in active (event=${{ github.event_name }}, ref=${{ github.ref }}): packaged MCP smoke and MCP-enabled artifact upload will run"
+          } else {
+            Write-Output '::notice::MCP candidate opt-in inactive: fixture gate only, no MCP-enabled artifact'
+          }
           # Pure bridge rules, stand-alone (std only).
           $rules = Join-Path $env:RUNNER_TEMP 'mcp-rules-tests'
           New-Item -ItemType Directory -Force $rules | Out-Null
@@ -1660,8 +1675,8 @@ jobs:
       # bridge on), discovered without a PID. Required: state and evaluation on the packaged
       # game's origin; click forwarded if the startup screen was released, otherwise refused
       # as not ready (WARP: no accelerated frame, exit 2); session record removed after exit.
-      - name: MCP smoke on the packaged launch (enable-mcp, WARP)
-        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && inputs.enable-mcp
+      - name: MCP smoke on the packaged launch (MCP candidate opt-in, WARP)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && env.ROVES_CEF_MCP_CANDIDATE == 'true'
         shell: pwsh
         run: |
           $pkg = '${{ steps.mcp_package.outputs.dir }}'
@@ -1680,8 +1695,8 @@ jobs:
           Start-Sleep -Seconds 3
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
           if ($code -ne 0) { Write-Output "::error::MCP package smoke failed (exit $code)"; exit 1 }
-      - name: upload the MCP-enabled package (enable-mcp)
-        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && inputs.enable-mcp
+      - name: upload the MCP-enabled package (MCP candidate opt-in)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success' && env.ROVES_CEF_MCP_CANDIDATE == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: visual-novel-template-roves-cef-mcp-windows-x64

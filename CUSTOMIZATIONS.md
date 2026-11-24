@@ -1,3 +1,18 @@
+## 2026-11-24 - CEF + SDL3 + wgpu candidate: MCP candidate opt-in by commit marker
+
+Changed: `.github/workflows/cef-netrender-probe.yml`, `support/cef-netrender-probe/README.md`
+("MCP steps", "Local MCP bridge" verification, static fixture CI result), `TODO.md`. A single
+job-level value `ROVES_CEF_MCP_CANDIDATE` now gates both the packaged-launch MCP smoke and the
+upload of `visual-novel-template-roves-cef-mcp-windows-x64`. It is true for a manual run with
+`enable-mcp=true` (input still defaults to false) or for a push to `codex/cef-sdl3-wgpu-probe`
+whose head commit message contains `[cef-mcp-candidate]`; the marker is ignored on any other
+branch, on tags and on manual runs. The plain package is unchanged and still checked
+bridge-off on every run. Evidence recorded: static compatibility/cache fixture green on
+`22f0c5a6914` (runs `45455778222` and `45455777871`), MCP fixture gate green on `9d9f43f5d97`
+(run `45468335122`) and in one local GTX 1050 run of the same commit. The packaged MCP smoke
+and the MCP-enabled artifact have not run yet. No release, no `mach` flag, no
+`roves-action`/Packmaster change.
+
 ## 2026-11-24 - CEF + SDL3 + wgpu candidate: MCP Promise refusal fixed, fixture gate on push
 
 Changed: `support/cef-netrender-probe/src/mcp.rs`, `support/cef-netrender-probe/mcp/smoke.mjs`,

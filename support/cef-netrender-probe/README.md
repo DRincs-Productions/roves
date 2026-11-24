@@ -763,7 +763,10 @@ and `roves-static-fixture done ok=<bool> checks=9`.
   reports `check=cache-headers ok=false cache-control=null ... last-modified=true`.
 - CI: `cef-netrender-probe.yml` step "run the probe on the static compatibility fixture
   (WARP)" runs the bundled probe with `--roves-game-dir` on the fixture and requires the
-  `done ok=true` console line before auto-close, no `ok=false`, exit 0. Not run yet.
+  `done ok=true` console line before auto-close, no `ok=false`, exit 0. Passed on
+  `22f0c5a6914` together with the stage-1 probe's server tests: runs `45455778222` (this
+  workflow) and `45455777871` (`cef-window-probe.yml`), both green on WARP; no real-GPU or
+  real-game cache claim.
 
 ## Packaged player (directly playable Windows folder; implemented 2026-11-23, not yet run in CI)
 
@@ -999,7 +1002,7 @@ the release onto the template's menu, input, closing, the icon in Explorer and t
 save in the template, close, start again and load the save; start a second copy while the first
 runs (dialog "already running", exit 6, first copy unaffected).
 
-## Local MCP bridge (optional, off by default; implemented 2026-11-24, not yet run in CI)
+## Local MCP bridge (optional, off by default; implemented 2026-11-24, fixture gate passed in CI)
 
 Lets an MCP client (an AI agent, an IDE) read the state of a running game and interact with
 it, for development and playtests only. Game mode only (packaged launch or
@@ -1112,12 +1115,14 @@ CEF fork, no new Cargo crate (one lock line: `serde_json` as a direct dependency
 **Verification.** Local: `rustc --edition 2024 --test src/mcp_rules.rs` (7 tests), `cargo
 check/clippy --features dox --all-targets`, `node mcp/smoke.mjs list-only mcp/server.mjs`, and
 the server against a scripted fake pipe (discovery, token, errors). CI (fixture gate on every
-run; packaged smoke and MCP package upload with `enable-mcp=true` only): see "CI
-(`cef-netrender-probe.yml`...)", MCP steps. One local GTX 1050 fixture smoke of
-`9d691517300` inside the real game process reached Ready and refused unauthenticated
-connections, then failed the Promise refusal (fixed since by the by-reference evaluation;
-not rerun). **Not verified yet:** a full passing run of the bridge in the real game process,
-typed text without browser focus on WARP, any real-GPU or real-game session.
+run; packaged smoke and MCP package upload only with the MCP candidate opt-in,
+`enable-mcp=true` or the `[cef-mcp-candidate]` commit marker): see "CI
+(`cef-netrender-probe.yml`...)", MCP steps. On `9d9f43f5d97` the fixture smoke passed in CI
+(run `45468335122`, WARP) and in one local run on a GTX 1050: evaluation (values, exception,
+Promise refusal), trusted click, ArrowRight key, typed text, exit 0. (An earlier local run of
+`9d691517300` failed the Promise refusal, fixed in `9d9f43f5d97`.) **Not verified yet:** the
+packaged-launch MCP smoke and the MCP-enabled artifact (no candidate run yet), any session on
+a real game.
 
 **Limitations.** Windows only; Node.js 20+ needed by the server; one request in flight per
 connection; `evaluate` is synchronous only and reads the main frame's main world; `click` is
@@ -1595,12 +1600,28 @@ is not a frame-pacing figure), and **not proof** of physical keyboard input, the
 translation, or CapsLock modifier/lock-state behavior; the limits of the gates above still
 apply.
 
-### MCP steps (fixture gate on every run; `enable-mcp` manual input, default false)
+### MCP steps (fixture gate on every run; MCP candidate opt-in, default off)
 
 Always (every run, pushes included): the plain package's direct launch must log no `mcp`
 line and the package must have no `mcp\` folder (bridge off by default); steps (1) and (2)
 below run in their own temporary folder and never change the uploaded plain package. Only
-with `enable-mcp=true`: step (3) and the upload of the MCP-enabled package. (1) `rustc
+with the MCP candidate opt-in: step (3) and the upload of the MCP-enabled package.
+
+**MCP candidate opt-in.** One job-level value, `ROVES_CEF_MCP_CANDIDATE`, gates both step (3)
+and the upload; the assembly step logs a notice saying whether it is active. It is `true`
+when either:
+
+- the workflow is dispatched manually with `enable-mcp=true` (Actions -> "CEF -> wgpu-weld ->
+  wgpu + SDL3 probe" -> Run workflow on `codex/cef-sdl3-wgpu-probe`; the input defaults to
+  false), or
+- a push to `codex/cef-sdl3-wgpu-probe` has `[cef-mcp-candidate]` in the message of its
+  **head** commit (only the last commit of the push is read). The push must touch one of the
+  workflow's `paths`, otherwise the workflow does not run; with no code change, an empty
+  commit does not trigger it, so touch the workflow or the probe deliberately or use the
+  manual input. The marker is ignored on every other branch, on tags and on manual runs.
+
+Without either, no MCP-enabled artifact is produced and the plain package remains the only
+playable upload. The plain package never changes with the opt-in. (1) `rustc
 --test src/mcp_rules.rs`; the MCP-enabled package = the plain package (same `play.dll`) plus
 `mcp\` (server, `npm ci --omit=dev` dependencies, README, marker `enabled`), provenance and
 `SHA256SUMS.txt` regenerated; `smoke.mjs list-only` on the packaged server. (2) Fixture smoke
@@ -1618,10 +1639,9 @@ characters refused, exit 0 after auto-close, record removed, token absent from t
 directly (marker on, `--roves-isolated-profile --roves-no-error-dialog`), discovered
 without a PID; state and evaluation on the package origin; `click` forwarded if the startup
 screen was released, otherwise refused as not ready (WARP, exit 2); record removed. Artifacts:
-`cef-netrender-probe-mcp-evidence` (every run) and, with `enable-mcp=true` only,
-`visual-novel-template-roves-cef-mcp-windows-x64`. These CI steps have **not run yet**; a
-local GTX 1050 fixture smoke of `9d691517300` reached Ready and the authentication refusals
-but failed the Promise refusal (fixed since, see "Requests" above; not rerun).
+`cef-netrender-probe-mcp-evidence` (every run) and, with the MCP candidate opt-in only,
+`visual-novel-template-roves-cef-mcp-windows-x64`. Steps (1) and (2) passed on `9d9f43f5d97`
+(run `45468335122`); step (3) and the MCP-enabled upload have not run yet.
 
 ## Versions evaluated (2026-11-22)
 
