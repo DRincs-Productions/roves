@@ -55,6 +55,9 @@ log = "0.4"
 axum = { version = "0.8.9", default-features = false, features = ["http1", "tokio"] }
 tower-http = { version = "0.7.1", default-features = false, features = ["fs"] }
 tokio = { version = "1.47", default-features = false, features = ["rt", "net", "sync"] }
+# `ServiceExt::oneshot` lets the cache-policy wrapper call ServeDir (twice for a failed
+# If-Range); already in the graph through axum.
+tower = { version = "0.5", default-features = false, features = ["util"] }
 
 [target.'cfg(windows)'.dependencies]
 # Already in the graph (0.61.2): `MapVirtualKeyW` gives the layout-aware virtual key of a

@@ -370,9 +370,10 @@ before exit 1.
 What it does (`src/game.rs`, `src/game_rules.rs`, hooks in `src/app.rs`):
 
 - **Loading.** The stage-1 window probe's loopback server
-  (`support/cef-window-probe/src/server.rs`, compiled here with `#[path]`, unchanged:
+  (`support/cef-window-probe/src/server.rs`, compiled here with `#[path]`:
   axum + tower-http `ServeDir`, bound to `127.0.0.1` only, `..` rejected, MIME and Range from
-  the library) serves the directory, bound before CEF starts. Port 0 (default) gives each run
+  the library, plus the conservative cache policy in "Loopback cache policy" below) serves the
+  directory, bound before CEF starts. Port 0 (default) gives each run
   its own origin; `--roves-port=<n>` fixes it. The producer opens `http://127.0.0.1:<port>/`
   with an opaque white background (Chrome's default; the fixture stays transparent) and is
   composed by the wgpu blit (this branch has no other composition). The directory must contain
@@ -694,6 +695,75 @@ input-to-photon latency (no instrumented input here), and the probe always pays 
 copy, welding's copy and two CPU waits per frame that Chrome does not (see "Differences from
 Chromium's own model"). Same-target spread across trials must be smaller than the gap before
 calling a difference real; no result is claimed until such runs exist.
+
+## Loopback cache policy and static compatibility fixture (2026-11-24)
+
+**Problem fixed.** `ServeDir` sent `Last-Modified` and an ETag but no `Cache-Control`. For such
+a 200/206 Chromium computes a heuristic freshness of `(Date - Last-Modified) / 10` and reuses
+the stored copy *without contacting the server* while it is fresh. With the packaged player's
+persistent profile and fixed origin, a file built 30 days before a launch stayed fresh for
+3 days, so a package updated in that window could run old scripts against new ones. Second
+gap: `ServeDir` ignores `If-Range`, which Chromium's partial (media) cache sends to fetch a
+missing range of an entry it already holds; a stale validator still got a `206`, letting the
+cache stitch old and new bytes. Negative repro on the previous server (same fixture, raw
+HTTP): no `cache-control`, `last-modified` present, `Range` + foreign `If-Range` -> `206`.
+
+**Policy** (`support/cef-window-probe/src/server.rs`, shared by both probes; still a thin
+wrapper that calls `ServeDir` through `tower::ServiceExt::oneshot`):
+
+- Every response (also 304/404/206) has `Cache-Control: no-cache`: Chromium stores it but
+  always revalidates first (`HasCacheRestriction` -> zero freshness).
+- `Last-Modified` is removed and `If-Modified-Since`/`If-Unmodified-Since` are ignored. The
+  only validator is `ServeDir`'s strong ETag (size + nanosecond mtime) prefixed with a token
+  unique to the server instance (`"r<nanos>-<pid>:<servedir tag>"`). Inside one launch a
+  revalidation yields `304`; a tag from another launch never matches (`If-None-Match` -> full
+  `200`, `If-Match` -> `412`), so a package replaced between launches is never confirmed, even
+  when a changed file kept its size and mtime (normalised archive timestamps). Within one
+  launch the residual case is a file rewritten in place with identical size and nanosecond
+  mtime.
+- `If-Range`: a strong tag of this instance is checked by `ServeDir` as `If-Match`; a match
+  keeps the `206`, a `412` (or a date, weak or foreign validator) is answered with the full
+  `200`.
+- **No path is fresh or `immutable`; there is no opt-in.** Evaluated and not enabled: a
+  freshness lifetime can only be safe across package updates if the URL itself is bound to
+  the bytes, because a fresh entry is never re-asked. Lists in a build manifest (for example
+  Vite's `.vite/manifest.json`) do not prove that: file names are configurable and Rollup's
+  `[hash]` is not a digest of the final bytes, so the server cannot verify it; a pattern such
+  as `-[hash].js` is a heuristic. The only verifiable rule found (the file name embeds the
+  file's full SHA-256, checked by the server before granting `immutable`) needs a hashing
+  dependency and matches no mainstream bundler's output, and there is no measurement showing
+  that loopback `304`s cost anything. Revisit only with such a measurement.
+- Cost: a new launch re-reads each requested file once into the HTTP cache (`200` instead of
+  `304`), which can also make V8 drop a code cache tied to the earlier response. Not measured;
+  no prefetch or other optimisation was added.
+
+**Chromium reference** (pinned `f2700724f59fb554eb19a4f827b1d256e2a13286`; the submodule was
+empty, so files were read through GitHub raw): `net/http/http_response_headers.cc`
+(`GetFreshnessLifetimes` heuristic `/ 10`, `HasCacheRestriction`, `immutable` only parsed to
+override `Pragma`; crbug 41253661: it does not override `LOAD_VALIDATE_CACHE`),
+`net/http/http_cache_transaction.cc` (`ConditionalizeRequest`: ETag preferred, `If-Range` for
+uncached ranges of a partial entry, a `206` to `If-Range` treated as "another range" of the same
+object). `v8_code_cache.cc` and `preload_helper.cc` could not be fetched (HTTP 429) and were
+not consulted.
+
+**Fixture** `support/cef-window-probe/fixtures/static-compat` (no framework, no build step):
+`index.html` with `<link rel=modulepreload>`, `rel=preload as=style`, `rel=preload as=fetch
+crossorigin` for a 39-byte `tiny.wasm`, a module `main.js` and `range.txt`. It logs one
+`roves-static-fixture check=<name> ok=<bool>` line per check (modulepreload load + import,
+style preload + applied, wasm preload + `instantiateStreaming`, cache headers, each preload
+fetched once by Resource Timing, `content-type` of JS/CSS/WASM, `Range: bytes=4-9` -> `206`)
+and `roves-static-fixture done ok=<bool> checks=9`.
+
+- Rust tests in `server.rs` (`#[cfg(test)]`, raw HTTP/1.1 over loopback against the fixture):
+  MIME types, headers, 304 only for the same instance, Range/`If-Range`, foreign `If-Match`.
+  Run locally (4/4 passed) through a throw-away crate that includes `server.rs` with `#[path]`
+  and the same pins, so CEF is not built; `ROVES_STATIC_FIXTURE` overrides the fixture path.
+- Chrome 157 headless (CLI, not Chrome DevTools MCP, whose use was not permitted here) on the
+  new server: 9/9 checks, title `roves static fixture ok`. On the previous server the same page
+  reports `check=cache-headers ok=false cache-control=null ... last-modified=true`.
+- CI: `cef-netrender-probe.yml` step "run the probe on the static compatibility fixture
+  (WARP)" runs the bundled probe with `--roves-game-dir` on the fixture and requires the
+  `done ok=true` console line before auto-close, no `ok=false`, exit 0. Not run yet.
 
 ## Packaged player (directly playable Windows folder; implemented 2026-11-23, not yet run in CI)
 

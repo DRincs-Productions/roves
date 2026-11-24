@@ -1,0 +1,4 @@
+/* Preloaded (as=style) and applied; main.js reads the custom property back. */
+:root {
+  --roves-fixture: ok;
+}

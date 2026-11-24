@@ -116,7 +116,10 @@ bootstrap.exe must be both unsigned or signed with the same certificates.
   index, not a signature: it protects against corruption, not a compromised CDN.
 - `axum` 0.8.9 + `tower-http` 0.7.1 `ServeDir` (MIT) for the loopback file server. CEF's
   own `CefServer` would avoid the dependency but needs hand-written file serving (MIME,
-  traversal, Range); `ServeDir` already does it.
+  traversal, Range); `ServeDir` already does it. `tower` 0.5 (`util`, already in the graph
+  through axum) lets `server.rs` wrap it with the conservative cache policy (`no-cache`,
+  per-instance ETag, no `Last-Modified`, `If-Range`), documented with its fixture
+  (`fixtures/static-compat`) in `../cef-netrender-probe/README.md`, "Loopback cache policy".
 - No Deno, V8 or Netrender crate is linked in this stage.
 
 ## Known limits of stage 1

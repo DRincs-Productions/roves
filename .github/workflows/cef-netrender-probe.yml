@@ -280,6 +280,53 @@ jobs:
             Write-Output '::error::probe processes left running after the game-mode exit'; $failed = $true
           }
           if ($failed) { exit 1 }
+      # Static compatibility fixture (same bundle, no second build): the framework-free page in
+      # support/cef-window-probe/fixtures/static-compat checks, inside CEF, standard
+      # modulepreload / preload (style, fetch) consumed once, JS/CSS/WASM MIME types (module
+      # execution, WebAssembly.instantiateStreaming), Range -> 206 and the loopback cache
+      # headers (no-cache, instance ETag, no Last-Modified). Required: its summary console line
+      # `roves-static-fixture done ok=true` before auto-close, no failed check, exit 0.
+      - name: run the probe on the static compatibility fixture (WARP)
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        shell: pwsh
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'cef-nr-static-run'
+          New-Item -ItemType Directory -Force $out | Out-Null
+          $game = Join-Path $env:GITHUB_WORKSPACE 'support\cef-window-probe\fixtures\static-compat'
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Start-Sleep -Seconds 2
+          }
+          $log = Join-Path $out 'roves-cef-nr-static.log'
+          $exe = Join-Path $env:RUNNER_TEMP 'cef-nr-bundle\roves_cef_netrender_probe.exe'
+          $arguments = @(
+            "--roves-game-dir=$game", '--roves-compose=wgpu', '--roves-auto-close-ms=8000',
+            '--roves-timeout-ms=90000', "--roves-log=$log", "--roves-cache-dir=$(Join-Path $out 'cache')"
+          )
+          $proc = Start-Process -FilePath $exe -ArgumentList $arguments -PassThru
+          $null = $proc.Handle
+          if (-not $proc.WaitForExit(150000)) {
+            Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue | Stop-Process -Force
+            Write-Output '::error::the probe did not exit in time on the static fixture'
+            exit 1
+          }
+          $lines = @(Get-Content $log)
+          $lines | Select-String -Pattern 'roves-static-fixture' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          $failed = $false
+          $done = $lines | Select-String -Pattern 'message="roves-static-fixture done ok=true checks=\d+"' | Select-Object -First 1
+          $close = $lines | Select-String -Pattern 'auto-close window' | Select-Object -First 1
+          if (!$done -or !$close -or $done.LineNumber -ge $close.LineNumber) {
+            Write-Output '::error::missing `roves-static-fixture done ok=true` before auto-close'; $failed = $true
+          }
+          $bad = $lines | Select-String -Pattern 'roves-static-fixture (check=\S+|done) ok=false' | Select-Object -First 1
+          if ($bad) { Write-Output "::error::static fixture check failed: $($bad.Line)"; $failed = $true }
+          if ($proc.ExitCode -ne 0) { Write-Output "::error::static fixture exit code $($proc.ExitCode) (expected 0)"; $failed = $true }
+          if ($lines | Select-String -Pattern ' FAIL ') { Write-Output '::error::FAIL line in the static fixture log'; $failed = $true }
+          Start-Sleep -Seconds 3
+          if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
+            Write-Output '::error::probe processes left running after the static fixture'; $failed = $true
+          }
+          if ($failed) { exit 1 }
       # Minimized-window suspension regression (same bundle). The test-only flag
       # --roves-test-minimize-ms=1000 makes the probe itself call SDL_MinimizeWindow 1 s after
       # load-end, hold 1.5 s and call SDL_RestoreWindow; the window manager reports both

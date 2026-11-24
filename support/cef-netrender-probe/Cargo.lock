@@ -1643,6 +1643,7 @@ dependencies = [
  "pollster",
  "sdl3",
  "tokio",
+ "tower",
  "tower-http",
  "welding",
  "wgpu 29.0.4",

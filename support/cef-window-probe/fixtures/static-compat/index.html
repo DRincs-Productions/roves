@@ -1,0 +1,21 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>roves static fixture</title>
+<!-- Framework-free static compatibility fixture for the CEF loopback server: standard
+     modulepreload/preload, module scripts, CSS and WebAssembly MIME types, Range/206 and the
+     no-cache policy. main.js logs one `roves-static-fixture check=<name> ok=<bool>` line per
+     check and finally `roves-static-fixture done ok=<bool>`. No custom prefetch. -->
+<script>
+  // Records the preload links' load/error events before main.js runs.
+  window.rovesPreload = {};
+  window.rovesPreloadEvent = (name, event) => { window.rovesPreload[name] = event.type; };
+</script>
+<link rel="modulepreload" href="./modules/preloaded.js"
+      onload="rovesPreloadEvent('module', event)" onerror="rovesPreloadEvent('module', event)">
+<link rel="preload" href="./style.css" as="style"
+      onload="rovesPreloadEvent('style', event)" onerror="rovesPreloadEvent('style', event)">
+<link rel="preload" href="./tiny.wasm" as="fetch" crossorigin
+      onload="rovesPreloadEvent('wasm', event)" onerror="rovesPreloadEvent('wasm', event)">
+<link rel="stylesheet" href="./style.css">
+<script type="module" src="./main.js"></script>
+<p id="status">running</p>
