@@ -6,7 +6,9 @@
 > here on 2026-11-23, so the build, `mach bundle` and platform instructions below describe
 > `main` and do not apply to this branch's checkout. Its packaged Windows player opens on a
 > native startup screen (logo, "Roves" wordmark, animated loading bar) until the game has
-> loaded and painted, and keeps saves between launches.
+> loaded and painted, and keeps saves between launches. An optional, off-by-default local
+> MCP bridge lets AI agents read and drive a running game during development (`--roves-mcp`
+> or an MCP-enabled development package; see the probe README, "Local MCP bridge").
 
 **Roves** (an anagram of *Servo*) is a customized fork of the [Servo](https://servo.org/)
 web engine, repurposed as a runtime for shipping **web-based games** as real native

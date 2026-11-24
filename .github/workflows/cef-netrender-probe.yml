@@ -21,6 +21,14 @@ on:
       - 'icon.png'
       - '.github/workflows/cef-netrender-probe.yml'
   workflow_dispatch:
+    inputs:
+      enable-mcp:
+        # Optional local MCP development bridge (README "Local MCP bridge"). Off by default:
+        # push runs and default dispatches never build the MCP-enabled package. The plain
+        # package is always checked to run with the bridge off.
+        description: 'Also assemble the MCP-enabled development package and run the MCP smokes'
+        type: boolean
+        default: false
 
 concurrency:
   group: cef-netrender-probe-${{ github.ref }}
@@ -1409,10 +1417,12 @@ jobs:
           foreach ($hit in @($lines | Select-String -Pattern ' FAIL ' | Where-Object { $released -or $_.Line -notmatch $allowedFail })) {
             Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true
           }
-          foreach ($pattern in @('close requested by the OS', 'popup refused', 'player cache not removed', 'branding unavailable', 'wordmark unavailable', 'test (click|key|wheel|minimize)')) {
+          # MCP bridge off by default: no marker in the plain package, no mcp log line.
+          foreach ($pattern in @('close requested by the OS', 'popup refused', 'player cache not removed', 'branding unavailable', 'wordmark unavailable', 'test (click|key|wheel|minimize)', '^roves-cef-nr mcp ')) {
             $hit = $lines | Select-String -Pattern $pattern | Select-Object -First 1
             if ($hit) { Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true }
           }
+          if (Test-Path -LiteralPath (Join-Path $pkg 'mcp')) { Write-Output '::error::the plain package contains an mcp folder'; $failed = $true }
           if (-not $cache) { Write-Output '::error::player cache path not logged'; $failed = $true }
           elseif (Test-Path -LiteralPath $cache) { Write-Output "::error::player cache left behind: $cache"; $failed = $true }
           if (Test-Path -LiteralPath (Join-Path $cwd 'debug.log')) { Write-Output '::notice::CEF wrote debug.log into the working directory' }
@@ -1551,6 +1561,140 @@ jobs:
           Start-Sleep -Seconds 2
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }
+      # Optional local MCP bridge (enable-mcp, default false; README "Local MCP bridge").
+      # The MCP-enabled package is the plain package plus mcp\ (server.mjs, its locked npm
+      # dependencies, README) and the marker mcp\enabled that turns the bridge on in play.exe.
+      # The same play.exe/play.dll as the plain package: the bridge is a runtime switch.
+      - name: assemble the MCP-enabled package (enable-mcp)
+        id: mcp_package
+        if: (success() || failure()) && steps.package.outcome == 'success' && inputs.enable-mcp
+        shell: pwsh
+        run: |
+          $failed = $false
+          # Pure bridge rules, stand-alone (std only).
+          $rules = Join-Path $env:RUNNER_TEMP 'mcp-rules-tests'
+          New-Item -ItemType Directory -Force $rules | Out-Null
+          rustc --edition 2024 --test support/cef-netrender-probe/src/mcp_rules.rs -o (Join-Path $rules 'mcp_rules.exe')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::mcp_rules tests did not compile'; exit 1 }
+          & (Join-Path $rules 'mcp_rules.exe')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::mcp_rules tests failed'; $failed = $true }
+          $src = '${{ steps.package.outputs.dir }}'
+          $root = Join-Path $env:RUNNER_TEMP 'roves-cef-vn-mcp-package'
+          if (Test-Path -LiteralPath $root) { Write-Output "::error::$root already exists"; exit 1 }
+          New-Item -ItemType Directory -Force $root | Out-Null
+          $pkg = Join-Path $root 'visual-novel-template-roves-cef-mcp'
+          Copy-Item -Recurse -LiteralPath $src -Destination $pkg
+          $mcp = Join-Path $pkg 'mcp'
+          New-Item -ItemType Directory -Force $mcp | Out-Null
+          foreach ($file in @('server.mjs', 'package.json', 'package-lock.json', 'README.md')) {
+            Copy-Item -LiteralPath (Join-Path 'support/cef-netrender-probe/mcp' $file) -Destination $mcp
+          }
+          Push-Location $mcp
+          npm ci --omit=dev --ignore-scripts --no-audit --no-fund
+          $npm = $LASTEXITCODE
+          npm ls --omit=dev --all | Set-Content -Encoding utf8 (Join-Path $pkg 'provenance\mcp-npm-ls.txt')
+          Pop-Location
+          if ($npm -ne 0) { Write-Output "::error::npm ci for the MCP server exit $npm"; exit 1 }
+          Copy-Item -LiteralPath (Join-Path $mcp 'package-lock.json') (Join-Path $pkg 'provenance\mcp-package-lock.json')
+          New-Item -ItemType File -Path (Join-Path $mcp 'enabled') | Out-Null
+          # Discovery smoke of the packaged server without a game (tool list, clean error).
+          node support/cef-netrender-probe/mcp/smoke.mjs list-only (Join-Path $mcp 'server.mjs')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::MCP server list-only smoke failed'; $failed = $true }
+          @"
+
+          MCP-enabled development package (enable-mcp=true; never ship to players)
+            mcp\enabled turns on the local MCP bridge of play.exe for every launch. mcp\server.mjs
+            is the stdio MCP server (Node.js 20+; @modelcontextprotocol/server 2.4.0, zod 4.4.3,
+            Apache-2.0/MIT, provenance\mcp-package-lock.json, provenance\mcp-npm-ls.txt); see
+            mcp\README.md. Transport: local named pipe plus a per-session token stored under
+            %LOCALAPPDATA%\Roves\mcp; no TCP port, no remote-debugging port.
+          "@ | Add-Content -Encoding utf8 (Join-Path $pkg 'PROVENANCE.txt')
+          Push-Location $pkg
+          Get-ChildItem -Recurse -File | Where-Object Name -ne 'SHA256SUMS.txt' | ForEach-Object {
+            "$((Get-FileHash -Algorithm SHA256 -LiteralPath $_.FullName).Hash.ToLowerInvariant())  $((Resolve-Path -Relative $_.FullName).Substring(2).Replace('\', '/'))"
+          } | Sort-Object { $_.Substring(66) } | Set-Content -Encoding utf8 'SHA256SUMS.txt'
+          Pop-Location
+          foreach ($required in @('play.exe', 'play.dll', 'mcp\server.mjs', 'mcp\enabled', 'mcp\node_modules\@modelcontextprotocol\server\package.json')) {
+            if (-not (Test-Path -LiteralPath (Join-Path $pkg $required))) { Write-Output "::error::MCP package lacks $required"; $failed = $true }
+          }
+          if ((Get-FileHash (Join-Path $pkg 'play.dll')).Hash -ne (Get-FileHash (Join-Path $src 'play.dll')).Hash) {
+            Write-Output '::error::the MCP package play.dll differs from the plain package'; $failed = $true
+          }
+          "dir=$pkg" >> $env:GITHUB_OUTPUT
+          if ($failed) { exit 1 }
+      # Real interaction on a fixture: play.exe of the MCP package with an explicit
+      # --roves-game-dir (input is forwarded from load-end there, so WARP suffices) and
+      # --roves-mcp. Required (smoke.mjs fixture): session record published at launch, two
+      # unauthenticated connections answered with nothing, discovery by PID, state, evaluation
+      # (values, exception, Promise refused, eval still blocked by the page CSP, no bridge
+      # global in the page), a trusted DOM click, ArrowRight keydown/keyup, typed text through
+      # keypress, out-of-window click and unlisted key refused, exit 0 after auto-close, the
+      # session record removed, the token absent from the game log, no FAIL line.
+      - name: MCP smoke on the fixture (enable-mcp, WARP)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $pkg = '${{ steps.mcp_package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-mcp-fixture-run'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          foreach ($name in @('roves_cef_netrender_probe', 'play')) {
+            Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          Start-Sleep -Seconds 2
+          node support/cef-netrender-probe/mcp/smoke.mjs fixture (Join-Path $pkg 'mcp\server.mjs') `
+            (Join-Path $pkg 'play.exe') support/cef-netrender-probe/mcp/fixture $out
+          $code = $LASTEXITCODE
+          $log = Join-Path $out 'game.log'
+          if (Test-Path $log) {
+            Select-String -Path $log -Pattern 'mcp |load-end|exit code=' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          }
+          Start-Sleep -Seconds 3
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
+          if ($code -ne 0) { Write-Output "::error::MCP fixture smoke failed (exit $code)"; exit 1 }
+          Write-Output '::notice::MCP fixture smoke: discovery, authentication, state, evaluation, click, key and text delivered (WARP, synthetic input through the SDL -> welding path, no GPU frame claim)'
+      # Packaged launch: play.exe of the MCP package started directly (the marker turns the
+      # bridge on), discovered without a PID. Required: state and evaluation on the packaged
+      # game's origin; click forwarded if the startup screen was released, otherwise refused
+      # as not ready (WARP: no accelerated frame, exit 2); session record removed after exit.
+      - name: MCP smoke on the packaged launch (enable-mcp, WARP)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        shell: pwsh
+        run: |
+          $pkg = '${{ steps.mcp_package.outputs.dir }}'
+          $out = Join-Path $env:RUNNER_TEMP 'cef-mcp-package-run'
+          if (Test-Path -LiteralPath $out) { Write-Output "::error::$out already exists"; exit 1 }
+          foreach ($name in @('roves_cef_netrender_probe', 'play')) {
+            Get-Process $name -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+          Start-Sleep -Seconds 2
+          node support/cef-netrender-probe/mcp/smoke.mjs package (Join-Path $pkg 'mcp\server.mjs') $pkg $out
+          $code = $LASTEXITCODE
+          $log = Join-Path $out 'game.log'
+          if (Test-Path $log) {
+            Select-String -Path $log -Pattern 'mcp |player launch|startup (released|failed)|exit code=' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
+          }
+          Start-Sleep -Seconds 3
+          if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $code = 1 }
+          if ($code -ne 0) { Write-Output "::error::MCP package smoke failed (exit $code)"; exit 1 }
+      - name: upload the MCP-enabled package (enable-mcp)
+        if: (success() || failure()) && steps.mcp_package.outcome == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: visual-novel-template-roves-cef-mcp-windows-x64
+          path: ${{ runner.temp }}/roves-cef-vn-mcp-package
+          retention-days: 7
+          if-no-files-found: error
+      - name: upload MCP evidence (enable-mcp)
+        if: always() && inputs.enable-mcp
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-netrender-probe-mcp-evidence
+          path: |
+            ${{ runner.temp }}/cef-mcp-fixture-run/game.log
+            ${{ runner.temp }}/cef-mcp-fixture-run/cef-debug.log
+            ${{ runner.temp }}/cef-mcp-package-run/game.log
+          retention-days: 14
+          if-no-files-found: warn
       - name: upload the playable package
         if: (success() || failure()) && steps.package.outcome == 'success'
         uses: actions/upload-artifact@v4

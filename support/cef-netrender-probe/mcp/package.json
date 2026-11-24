@@ -1,0 +1,13 @@
+{
+  "name": "roves-cef-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/server": "2.4.0",
+    "zod": "4.4.3"
+  }
+}

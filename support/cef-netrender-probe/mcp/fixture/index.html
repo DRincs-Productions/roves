@@ -1,0 +1,15 @@
+<!doctype html>
+<meta charset="utf-8">
+<!-- The page's own CSP: eval inside an MCP evaluation must stay blocked by it. -->
+<meta http-equiv="Content-Security-Policy" content="script-src 'self'">
+<title>roves mcp fixture</title>
+<style>
+  html, body { margin: 0; }
+  #click-target { position: fixed; left: 0; top: 0; width: 200px; height: 120px;
+                  margin: 0; border: 0; padding: 0; }
+  #text-target { position: fixed; left: 0; top: 160px; width: 200px; height: 40px;
+                 margin: 0; border: 0; padding: 0; }
+</style>
+<button id="click-target" type="button">click target</button>
+<input id="text-target" type="text" autocomplete="off">
+<script type="module" src="./game.js"></script>

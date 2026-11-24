@@ -22,6 +22,8 @@ use crate::game_rules::{
     on_origin, origin_port, parse_origin_port, parse_test_key_delay, parse_test_wheel_delay,
     player_profile_name, splash_indicator, splash_layout, suspension_change, wheel_marker,
 };
+use crate::mcp::Call;
+use crate::mcp_rules::{McpKey, point_in_window};
 use crate::splash::{
     BAR_INDICATOR, BAR_SIZE, BAR_TRACK, Branding, LOGO_PX, SPLASH_BACKGROUND, SPLASH_GAP,
     WORDMARK_SIZE, Wordmark,
@@ -37,6 +39,7 @@ use sdl3::{
     mouse::{MouseButton as SdlButton, MouseWheelDirection},
     video::{Window, WindowFlags},
 };
+use serde_json::{Value, json};
 use welding::{
     CefRuntime, CefRuntimeConfig, CefSandboxMode, CefSurfaceConfig, CefSurfaceEvent,
     CefSurfaceProducer as _, CefWindowsSandboxContext, HostWgpuContext, ImportedTexture,
@@ -360,7 +363,9 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         started: Instant::now(),
         closing_since: None,
         startup,
+        mcp: None,
     };
+    probe.start_mcp();
     match probe.start(&video) {
         Ok(state) => {
             probe.state = Some(state);
@@ -388,6 +393,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
                 } else {
                     probe.redraw(&mouse);
                 }
+                probe.mcp_step();
                 probe.report_startup_failure();
             }
         },
@@ -500,7 +506,28 @@ struct Options {
     /// Player only: show the failure in a native dialog (`--roves-no-error-dialog` turns it
     /// off for unattended runs; the failure screen and log stay).
     error_dialog: bool,
+    /// Game mode only: the optional local MCP bridge (README "Local MCP bridge"). `None`
+    /// (default) opens no pipe, publishes no session and leaves the DevTools channel off.
+    mcp: Option<McpSource>,
 }
+
+/// What turned the local MCP bridge on.
+#[derive(Clone, Copy, Debug)]
+enum McpSource {
+    /// `--roves-mcp`.
+    Switch,
+    /// The package marker `mcp\enabled` next to the executable.
+    Package,
+}
+
+/// Package marker that turns the MCP bridge on for every game-mode launch of this executable
+/// (written only into MCP-enabled development packages).
+const MCP_PACKAGE_MARKER: [&str; 2] = ["mcp", "enabled"];
+
+/// Requests handled per loop turn at most (the rest wait for the next turn).
+const MCP_CALLS_PER_TURN: usize = 4;
+/// SDL device id of bridge-generated input events (they are never pushed into the SDL queue).
+const MCP_INPUT_DEVICE_ID: u32 = 0x524F_4D43;
 
 /// A fresh per-run directory `%TEMP%\<root>\run-<unix ms>-<pid>` (absolute).
 fn run_cache_dir(root: &str) -> PathBuf {
@@ -695,7 +722,9 @@ impl Options {
             player_profile: None,
             clean_cache: false,
             error_dialog: true,
+            mcp: None,
         };
+        let mut mcp_switch = false;
         let mut game_dir = None;
         let mut test_key_name = None;
         let mut port = None;
@@ -715,6 +744,7 @@ impl Options {
                 },
                 "no-error-dialog" => no_error_dialog = true,
                 "isolated-profile" => isolated_profile = true,
+                "mcp" if value.is_empty() => mcp_switch = true,
                 "compose" if value == "wgpu" => {},
                 "timeout-ms" => options.timeout = parse_ms(name, value)?,
                 "keep-open" => options.keep_open = true,
@@ -856,6 +886,23 @@ impl Options {
                 );
             },
             None => {},
+        }
+        // Local MCP bridge: game mode only, off unless asked for.
+        if options.game.is_some() {
+            let marker = exe.as_deref().and_then(Path::parent).map(|dir| {
+                MCP_PACKAGE_MARKER
+                    .iter()
+                    .fold(dir.to_path_buf(), |path, part| path.join(part))
+            });
+            options.mcp = if mcp_switch {
+                Some(McpSource::Switch)
+            } else if marker.is_some_and(|marker| marker.is_file()) {
+                Some(McpSource::Package)
+            } else {
+                None
+            };
+        } else if mcp_switch {
+            return Err("--roves-mcp needs a game (--roves-game-dir or the packaged game)".into());
         }
         Ok(options)
     }
@@ -1008,6 +1055,9 @@ struct Probe {
     failure_presented: bool,
     /// Game mode: when the startup screen gave way to the game.
     released_at: Option<Instant>,
+    /// Game mode with `Options::mcp` only: the local MCP bridge, dropped (session record
+    /// removed) when the run starts closing.
+    mcp: Option<crate::mcp::Bridge>,
 }
 
 /// How long the browser may take to close after `close()` before the probe gives up.
@@ -1303,6 +1353,9 @@ impl Probe {
                     // Game: a per-producer on-disk profile inside the run's root cache. The
                     // fixture keeps welding's isolated in-memory profile, unchanged.
                     user_data_dir: game.then(|| crate::game::profile_dir(&self.options.cache_dir)),
+                    // Local MCP bridge only: welding's in-process DevTools channel
+                    // (`SendDevToolsMessage` + a message observer; no port, no domain enabled).
+                    devtools_protocol: game && self.mcp.is_some(),
                     ..Default::default()
                 },
             },
@@ -2101,6 +2154,9 @@ impl Probe {
                             self.failures += 1;
                             startup_failures.push(StartupFailure::LoadRejected);
                         } else if self.game_loaded_at.is_none() {
+                            if let Some(mcp) = self.mcp.as_mut() {
+                                mcp.url.get_or_insert_with(|| url.clone());
+                            }
                             s.load_ended = true;
                             self.game_loaded_at = Some(Instant::now());
                             startup_line(&self.log, &mut self.startup, Milestone::LoadEnd);
@@ -2140,6 +2196,9 @@ impl Probe {
                     NavigationEvent::AddressChanged { url } if origin.is_some() => {
                         if on_origin(origin.as_deref().unwrap_or_default(), url) {
                             self.log.line(format_args!("address {url}"));
+                            if let Some(mcp) = self.mcp.as_mut() {
+                                mcp.url = Some(url.clone());
+                            }
                         } else {
                             left_origin = Some(url.clone());
                         }
@@ -2166,6 +2225,9 @@ impl Probe {
                     } if origin.is_some() => {
                         if let Some(text) = self.console.line(*level, message, source, *line) {
                             self.log.line(format_args!("{text}"));
+                        }
+                        if let Some(mcp) = self.mcp.as_mut() {
+                            mcp.console(level, message, source, *line);
                         }
                         // `--roves-test-click-ms` only: the fixture's click marker.
                         if let Some(click) = self.click_test.as_mut()
@@ -2205,6 +2267,9 @@ impl Probe {
                     },
                     NavigationEvent::TitleChanged { title } if origin.is_some() => {
                         self.log.line(format_args!("title {title}"));
+                        if let Some(mcp) = self.mcp.as_mut() {
+                            mcp.title = Some(title.clone());
+                        }
                         let _ = s.window.set_title(title);
                     },
                     NavigationEvent::LoadError {
@@ -2612,6 +2677,7 @@ impl Probe {
         }
         self.phase = Phase::Closing;
         self.closing_since = Some(Instant::now());
+        self.stop_mcp();
         if let Some(s) = self.state.as_mut() {
             self.log.line(format_args!(
                 "closing imported={} presented={} elapsed_ms={}",
@@ -2633,6 +2699,7 @@ impl Probe {
     }
 
     fn finish(&mut self) -> i32 {
+        self.stop_mcp();
         if let Some(s) = self.state.take() {
             // Drain the shared queue before dropping the device's last owners.
             let _ = s.host.device.poll(wgpu::PollType::wait_indefinitely());
@@ -2734,7 +2801,269 @@ impl Probe {
         false
     }
 
+    /// Whether page input is forwarded: after the accepted load-end, and in the packaged
+    /// launch only once the startup screen gave way to the game.
+    fn input_ready(&self) -> bool {
+        if self.options.player {
+            self.gate.is_some_and(StartupGate::released)
+        } else {
+            self.game_loaded_at.is_some()
+        }
+    }
+
+    /// Game mode with `--roves-mcp` or the package marker: opens the local pipe and publishes
+    /// the session record at launch, before the window and the browser exist (early requests
+    /// wait in the queue or get "browser not ready").
+    fn start_mcp(&mut self) {
+        let Some(source) = self.options.mcp else {
+            return;
+        };
+        let Some(origin) = self.server.as_ref().map(|server| server.origin.clone()) else {
+            return;
+        };
+        match crate::mcp::start(&origin) {
+            Ok(bridge) => {
+                // The token stays in the session record only; it is never logged.
+                self.log.line(format_args!(
+                    "mcp enabled source={source:?} pipe={} record={}",
+                    bridge.pipe,
+                    bridge.record.display()
+                ));
+                self.mcp = Some(bridge);
+            },
+            Err(error) => self.log.line(format_args!(
+                "mcp unavailable source={source:?} error={error}"
+            )),
+        }
+    }
+
+    /// Removes the session record (discovery stops finding this game); pending requests are
+    /// answered with an error by the pipe thread.
+    fn stop_mcp(&mut self) {
+        if let Some(bridge) = self.mcp.take() {
+            let calls = bridge.calls;
+            drop(bridge);
+            self.log
+                .line(format_args!("mcp session removed calls={calls}"));
+        }
+    }
+
+    /// One loop turn of the MCP bridge: DevTools replies, then a few queued requests.
+    fn mcp_step(&mut self) {
+        let Some(bridge) = self.mcp.as_mut() else {
+            return;
+        };
+        if let Some(s) = self.state.as_mut() {
+            bridge.poll_devtools(&mut s.producer);
+        }
+        for (call, reply) in bridge.take(MCP_CALLS_PER_TURN) {
+            let method = call.method();
+            let result = match call {
+                Call::State => Ok(self.mcp_state()),
+                Call::Evaluate(expression) => {
+                    if let (Some(bridge), Some(s)) = (self.mcp.as_mut(), self.state.as_mut()) {
+                        bridge.evaluate(&mut s.producer, &expression, reply);
+                        self.log
+                            .line(format_args!("mcp call method={method} queued=true"));
+                        continue;
+                    }
+                    Err("the browser is not ready yet".to_owned())
+                },
+                Call::Click { x, y } => self.mcp_click(x, y),
+                Call::PressKey(key) => self.mcp_key(key),
+                Call::TypeText(text) => self.mcp_input(&[Event::TextInput {
+                    timestamp: 0,
+                    window_id: self.state.as_ref().map_or(0, |s| s.window.id()),
+                    text,
+                }]),
+            };
+            self.log.line(format_args!(
+                "mcp call method={method} ok={}",
+                result.is_ok()
+            ));
+            reply.send(result);
+        }
+    }
+
+    /// Host-side state for `state`: no page script runs for it.
+    fn mcp_state(&self) -> Value {
+        let s = self.state.as_ref();
+        let mcp = self.mcp.as_ref();
+        let startup = match self.gate {
+            None => "none",
+            Some(gate) if gate.failure().is_some() => "failed",
+            Some(gate) if gate.released() => "released",
+            Some(_) => "loading",
+        };
+        json!({
+            "pid": std::process::id(),
+            "launch": if self.options.player { "package" } else { "game-dir" },
+            "origin": self.server.as_ref().map(|server| server.origin.clone()),
+            "url": mcp.and_then(|m| m.url.clone()),
+            "title": mcp.and_then(|m| m.title.clone()),
+            "loaded": self.game_loaded_at.is_some(),
+            "startup": startup,
+            "input_ready": self.input_ready(),
+            "window": s.map(|s| {
+                let (width, height) = s.window.size();
+                let (pixel_width, pixel_height) = s.window.size_in_pixels();
+                json!({
+                    "width": width,
+                    "height": height,
+                    "pixel_width": pixel_width,
+                    "pixel_height": pixel_height,
+                    "scale": s.window.display_scale(),
+                    "suspended": s.suspended_since.is_some(),
+                })
+            }),
+            "frames": s.map(|s| json!({ "imported": s.imported, "presented": s.presented })),
+            "input": s.and_then(|s| s.input.as_ref()).map(|input| json!({
+                "forwarded": input.forwarded,
+                "rejected": input.rejected,
+                "discarded": input.discarded,
+            })),
+            "console": {
+                "seen": self.console.seen,
+                "recent": mcp.map(crate::mcp::Bridge::recent_console),
+            },
+        })
+    }
+
+    /// `click`: left button down + up at window point (`x`, `y`) (SDL logical coordinates,
+    /// CSS pixels at page zoom 1), through the same `Input` translation as a real click.
+    fn mcp_click(&mut self, x: f64, y: f64) -> Result<Value, String> {
+        let Some(s) = self.state.as_ref() else {
+            return Err("the window is not ready yet".into());
+        };
+        let (width, height) = s.window.size();
+        if !point_in_window(x, y, width, height) {
+            return Err(format!(
+                "click: ({x}, {y}) is outside the {width}x{height} window (window points)"
+            ));
+        }
+        let window_id = s.window.id();
+        let event = |down: bool| {
+            let (timestamp, which, mouse_btn, clicks) =
+                (0, MCP_INPUT_DEVICE_ID, SdlButton::Left, 1);
+            let (x, y) = (x as f32, y as f32);
+            if down {
+                Event::MouseButtonDown {
+                    timestamp,
+                    window_id,
+                    which,
+                    mouse_btn,
+                    clicks,
+                    x,
+                    y,
+                }
+            } else {
+                Event::MouseButtonUp {
+                    timestamp,
+                    window_id,
+                    which,
+                    mouse_btn,
+                    clicks,
+                    x,
+                    y,
+                }
+            }
+        };
+        self.mcp_input(&[event(true), event(false)])
+    }
+
+    /// `press_key`: one key down + up of a fixed non-character key, through the same `Input`
+    /// translation as a physical key (no `Char`/keypress: SDL sends text separately).
+    fn mcp_key(&mut self, key: McpKey) -> Result<Value, String> {
+        let (keycode, scancode) = match key {
+            McpKey::ArrowLeft => (Keycode::Left, Scancode::Left),
+            McpKey::ArrowRight => (Keycode::Right, Scancode::Right),
+            McpKey::ArrowUp => (Keycode::Up, Scancode::Up),
+            McpKey::ArrowDown => (Keycode::Down, Scancode::Down),
+            McpKey::Enter => (Keycode::Return, Scancode::Return),
+            McpKey::Escape => (Keycode::Escape, Scancode::Escape),
+            McpKey::Space => (Keycode::Space, Scancode::Space),
+            McpKey::Tab => (Keycode::Tab, Scancode::Tab),
+            McpKey::Backspace => (Keycode::Backspace, Scancode::Backspace),
+            McpKey::Delete => (Keycode::Delete, Scancode::Delete),
+            McpKey::Home => (Keycode::Home, Scancode::Home),
+            McpKey::End => (Keycode::End, Scancode::End),
+            McpKey::PageUp => (Keycode::PageUp, Scancode::PageUp),
+            McpKey::PageDown => (Keycode::PageDown, Scancode::PageDown),
+        };
+        let window_id = self.state.as_ref().map_or(0, |s| s.window.id());
+        let event = |down: bool| {
+            let (timestamp, keycode, scancode, keymod, repeat, which, raw) = (
+                0,
+                Some(keycode),
+                Some(scancode),
+                Mod::empty(),
+                false,
+                MCP_INPUT_DEVICE_ID,
+                0,
+            );
+            if down {
+                Event::KeyDown {
+                    timestamp,
+                    window_id,
+                    keycode,
+                    scancode,
+                    keymod,
+                    repeat,
+                    which,
+                    raw,
+                }
+            } else {
+                Event::KeyUp {
+                    timestamp,
+                    window_id,
+                    keycode,
+                    scancode,
+                    keymod,
+                    repeat,
+                    which,
+                    raw,
+                }
+            }
+        };
+        self.mcp_input(&[event(true), event(false)])
+    }
+
+    /// Feeds bridge-generated SDL events to the game's `Input`, exactly as the loop feeds real
+    /// ones; refused until page input is forwarded for real input too (`input_ready`).
+    fn mcp_input(&mut self, events: &[Event]) -> Result<Value, String> {
+        if !self.input_ready() {
+            return Err(if self.options.player {
+                "input is not ready: the game is not on screen yet (startup screen not released)"
+            } else {
+                "input is not ready: the game has not finished loading"
+            }
+            .into());
+        }
+        let Some(s) = self.state.as_mut() else {
+            return Err("the window is not ready yet".into());
+        };
+        let Some(input) = s.input.as_mut() else {
+            return Err("no game input".into());
+        };
+        let mut forwarded = 0;
+        for event in events {
+            let (before, rejected) = (input.forwarded, input.rejected);
+            if let Some(line) = input.window_event(&mut s.producer, &s.window, event, true) {
+                self.log.line(format_args!("{line}"));
+            }
+            if input.rejected > rejected {
+                return Err("the browser refused the input event".into());
+            }
+            forwarded += input.forwarded - before;
+        }
+        Ok(json!({ "forwarded": forwarded }))
+    }
+
     fn window_event(&mut self, event: Event) {
+        // Set when the accepted game load-end was handled; the test hooks only push after it.
+        // Packaged player: page input starts with the game on screen (startup released), as
+        // Chromium holds input until the first frame of new content.
+        let game_loaded = self.input_ready();
         let Some(s) = self.state.as_mut() else { return };
         // `--roves-test-click-ms` only: the pushed button events, recognized by their mouse id.
         let synthetic = match &event {
@@ -2763,14 +3092,6 @@ impl Probe {
         let mut key_forwarded = None;
         let mut key_codes = None;
         let mut wheel_forwarded = None;
-        // Set when the accepted game load-end was handled; the test hooks only push after it.
-        // Packaged player: page input starts with the game on screen (startup released), as
-        // Chromium holds input until the first frame of new content.
-        let game_loaded = if self.options.player {
-            self.gate.is_some_and(StartupGate::released)
-        } else {
-            self.game_loaded_at.is_some()
-        };
         if self.phase == Phase::Game
             && let Some(input) = s.input.as_mut()
         {

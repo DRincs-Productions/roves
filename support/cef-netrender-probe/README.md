@@ -999,6 +999,128 @@ the release onto the template's menu, input, closing, the icon in Explorer and t
 save in the template, close, start again and load the save; start a second copy while the first
 runs (dialog "already running", exit 6, first copy unaffected).
 
+## Local MCP bridge (optional, off by default; implemented 2026-11-24, not yet run in CI)
+
+Lets an MCP client (an AI agent, an IDE) read the state of a running game and interact with
+it, for development and playtests only. Game mode only (packaged launch or
+`--roves-game-dir`). **Off unless** the launch has `--roves-mcp`, or the executable's folder
+contains the marker file `mcp\enabled` (written only into the MCP-enabled development
+package, below). Off means: no pipe, no session record, welding's DevTools channel not
+subscribed, and no `mcp` log line (gated in CI on the plain package). The same `play.dll`
+serves both packages; `--roves-mcp` without a game is a usage error.
+
+Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
+
+- **Transport and discovery.** At launch, before the window and the browser exist, the probe
+  opens the Windows named pipe `\\.\pipe\roves-mcp-<pid>-<128-bit random hex>` with tokio's
+  `named_pipe::ServerOptions` (`first_pipe_instance`, so an existing pipe of that name cannot
+  be squatted; `reject_remote_clients`) on its own thread, then writes the session record
+  `%LOCALAPPDATA%\Roves\mcp\<pid>.json` (`version`, `pid`, `pipe`, 256-bit `token` from
+  `BCryptGenRandom`, game `origin`) through a temporary file and a rename. The record is
+  removed when the run starts closing (and at the end of every exit path). Log lines: `mcp
+  enabled source=Switch|Package pipe=<name> record=<path>` (the token is never logged), `mcp
+  call method=<m> ok=<bool>` (or `queued=true` for `evaluate`), `mcp session removed
+  calls=<n>`, or `mcp unavailable source=... error=...` (the game still runs).
+- **Authentication.** The first line of every connection must equal the token (compared
+  without an early exit) within 5 s; otherwise the pipe closes without answering anything.
+  Then one JSON request per line (at most 20 KiB), one JSON reply per line (`{"value": ...}`
+  or `{"error": "..."}`); 8 queued requests at most, 10 s per answer, idle connections closed
+  after 120 s.
+- **Requests**, handled on the main loop (at most 4 per turn):
+  `state` (host-side: origin, last on-origin URL, title, `loaded`, `startup`
+  `none|loading|released|failed`, `input_ready`, window size in points and pixels, scale,
+  suspension, imported/presented frames, input counters, console count and last 50 lines; no
+  page script); `evaluate` (`{"expression"}` up to 16 KiB; CDP `Runtime.evaluate` with
+  `returnByValue`, `awaitPromise: false`, `userGesture: false`, a 1000 ms script `timeout`
+  and `allowUnsafeEvalBlockedByCSP: false`, sent through welding's in-process
+  `send_devtools_message` = `CefBrowserHost::SendDevToolsMessage`; the reply is matched by id
+  in welding's bounded DevTools queue, drained every loop turn while the bridge is on;
+  Promises, non-JSON values and results over 64 KiB are errors; 5 s without a reply is an
+  error); `click` (`{"x","y"}` window points = SDL logical coordinates, CSS pixels at page
+  zoom 1; left down + up), `press_key` (`{"key"}`, a fixed list: ArrowLeft/Right/Up/Down,
+  Enter, Escape, Space, Tab, Backspace, Delete, Home, End, PageUp, PageDown; down + up, no
+  `Char`) and `type_text` (`{"text"}`, 1..256 printable characters, one `Char` each). The
+  three input requests build ordinary SDL events (device id `0x524F4D43`, never pushed into
+  the SDL queue) and hand them to the game's `Input`, the same translation and welding calls
+  as real input, counted in `game input forwarded=...`; they are refused with "input is not
+  ready" exactly when real input would be discarded (before the accepted load-end; in the
+  packaged launch, before the startup screen is released).
+- **Server** (`mcp/server.mjs`, Node.js 20+, the official MCP TypeScript SDK
+  `@modelcontextprotocol/server` 2.4.0 and zod 4.4.3, the same pins and lockfile the retired
+  Blitz dev-mcp used, commit `d587feb97f6`). Stdio MCP tools `get_state`, `evaluate_script`,
+  `click`, `press_key`, `type_text`. On start it reports the running sessions on stderr; every
+  tool call rereads the records (valid shape, PID alive), so the game may start later; with
+  several games it asks for `--pid <PID>`. Consumer instructions: `mcp/README.md`.
+
+**Security model.** Same Windows user only: the record lives in the user's profile (default
+ACL: the user, SYSTEM, Administrators), the pipe accepts no remote client, and nothing works
+without the token. Any process of the same user can read the record and drive the game; such
+a process could already open or debug the game process itself, so this adds no privilege.
+No TCP listener and no `--remote-debugging-port`/`--remote-debugging-pipe` switch is used; the
+loopback HTTP server is unchanged. Nothing is injected into or exposed to the page (no
+binding, no message router, no script), the CDP session is browser-side only, and no CDP
+domain is enabled. The sandbox (bootstrap broker, sandboxed renderers) and the origin policy
+(off-origin commit = FAIL and close; popups refused) are unchanged: an expression that
+navigates away still trips the origin check. `evaluate_script` can change game state: it is
+a trusted development command. Never ship an MCP-enabled package to players.
+
+**Chromium reference** (`support/chromium-reference` at `f2700724f59f`, sparse checkout of
+the three files below for this change). `content/browser/devtools/devtools_pipe_handler.cc`
+(`DevToolsPipeHandler` constructor, ~396-412): `--remote-debugging-pipe` attaches a client to
+`DevToolsAgentHost::CreateForBrowser` over two inherited file descriptors (on Windows
+`_get_osfhandle`, ~144/228) with NUL-delimited JSON or CBOR framing and no authentication: a
+port-less transport whose access control is "only the parent process holds the handles".
+`chrome/browser/devtools/remote_debugging_server.cc` (~90/133: bound to `127.0.0.1`;
+`IsRemoteDebuggingAllowed` ~162-182: policy pref and, in Chrome branding, refusal with the
+default user-data dir): `--remote-debugging-port` has no authentication either, only the
+loopback bind. Roves needs a client that is **not** its parent (the MCP client starts after
+the game), so it keeps Chromium's port-less idea (no socket) but replaces "inherited handles"
+with a per-session token over a local named pipe, and it uses CEF's in-process
+`SendDevToolsMessage` (the `AttachClient` path of `content/public/browser/devtools_agent_host.h`
+~120/172) instead of either switch, so CEF never exposes the whole browser target. The
+`Runtime.evaluate` options are CDP's documented parameters; V8's inspector sources were not
+checked out (not part of this sparse checkout).
+
+**Libraries evaluated.** Reused: welding's DevTools channel (`devtools_protocol`,
+`send_devtools_message`, `poll_devtools_message`) instead of an own observer; the probe's
+`Input` for interaction; tokio (`named_pipe`, `io-util`, `time`, `sync`, all already
+compiled in the graph) for the pipe; serde_json (already in the graph through cef and
+welding) for JSON; windows-sys `BCryptGenRandom` (feature `Win32_Security_Cryptography`) for
+the token (`getrandom` is not in the Windows graph); the official MCP TypeScript SDK for the
+protocol. Not used: `rmcp` (Rust MCP SDK; a self-contained `.exe` would avoid Node, but it
+adds a crate graph to review and a second binary, while the TypeScript server already ran in
+this repository), CEF's `--remote-debugging-port` (unauthenticated TCP),
+`--remote-debugging-pipe` (needs the client as parent process), welding's
+`request_script_result` (renderer-side evaluation, no CSP option, no time limit), CDP
+`Input.dispatch*` (would bypass the probe's input translation that the real game uses). No
+CEF fork, no new Cargo crate (one lock line: `serde_json` as a direct dependency).
+
+**Verification.** Local: `rustc --edition 2024 --test src/mcp_rules.rs` (7 tests), `cargo
+check/clippy --features dox --all-targets`, `node mcp/smoke.mjs list-only mcp/server.mjs`, and
+the server against a scripted fake pipe (discovery, token, errors). CI (`enable-mcp=true` on a
+manual dispatch only): see "CI (`cef-netrender-probe.yml`...)", MCP steps. **Not verified
+yet:** any run of the bridge inside the real game process (the CI steps have not run),
+typed text without browser focus on WARP, any real-GPU or real-game session.
+
+**Limitations.** Windows only; Node.js 20+ needed by the server; one request in flight per
+connection; `evaluate` is synchronous only and reads the main frame's main world; `click` is
+left button only, no hover/drag/wheel; `press_key` has no modifiers and no character (use
+`type_text`); text without browser focus (WARP) may not reach an `<input>` (the CI fixture
+records `keypress`); no screenshot tool (welding's `request_snapshot_png` exists, not wired);
+records of a crashed game stay until the PID is reused or the file is removed (the server
+ignores dead PIDs).
+
+**Integration contract for `roves-action` and Packmaster (not implemented there; see
+`TODO.md`).** Input `enable-mcp` (Action) / "Enable MCP for AI assistants" (Packmaster),
+default **false**. False: the package is produced exactly as today (no `mcp\` folder). True:
+copy `support/cef-netrender-probe/mcp/{server.mjs,package.json,package-lock.json,README.md}`
+into `<package>\mcp\`, run `npm ci --omit=dev --ignore-scripts` there (Node 20+), create the
+empty file `<package>\mcp\enabled`, add `mcp-package-lock.json`/`mcp-npm-ls.txt` to the
+provenance, and document the client entry `node <package>\mcp\server.mjs`. No different
+engine binary is required. A target without this support (any non-Windows target, or a shell
+release older than the one that ships the bridge) must fail with a clear error instead of
+silently producing a package without MCP.
+
 ## Pipeline
 
 1. CEF's `bootstrap.exe` (shipped as `roves_cef_netrender_probe.exe`) initializes the
@@ -1456,6 +1578,28 @@ is not a frame-pacing figure), and **not proof** of physical keyboard input, the
 translation, or CapsLock modifier/lock-state behavior; the limits of the gates above still
 apply.
 
+### MCP steps (`enable-mcp`, manual dispatch only, default false)
+
+Always (every run): the plain package's direct launch must log no `mcp` line and the package
+must have no `mcp\` folder (bridge off by default). Only with `enable-mcp=true`: (1) `rustc
+--test src/mcp_rules.rs`; the MCP-enabled package = the plain package (same `play.dll`) plus
+`mcp\` (server, `npm ci --omit=dev` dependencies, README, marker `enabled`), provenance and
+`SHA256SUMS.txt` regenerated; `smoke.mjs list-only` on the packaged server. (2) Fixture smoke
+(`mcp/fixture`, CSP `script-src 'self'`, launched from the MCP package with
+`--roves-game-dir --roves-mcp`, WARP): session record published at launch with the expected
+shape, two unauthenticated connections answered with nothing, discovery by PID, state,
+`40 + 2` = 42, `undefined` = null, an exception and a Promise refused, `eval` inside an
+evaluation still an `EvalError` (page CSP kept), no bridge global in the page, a trusted DOM
+click at (100, 60), ArrowRight keydown/keyup (`key`/`code` ArrowRight, trusted), typed text
+`roves` seen by a `keypress` listener, out-of-window click, unlisted key and control
+characters refused, exit 0 after auto-close, record removed, token absent from the log, no
+`FAIL`, a later call reporting the game not running. (3) Packaged smoke: `play.exe` started
+directly (marker on, `--roves-isolated-profile --roves-no-error-dialog`), discovered
+without a PID; state and evaluation on the package origin; `click` forwarded if the startup
+screen was released, otherwise refused as not ready (WARP, exit 2); record removed. Artifacts:
+`visual-novel-template-roves-cef-mcp-windows-x64`, `cef-netrender-probe-mcp-evidence`.
+These steps have **not run yet**.
+
 ## Versions evaluated (2026-11-22)
 
 | Component | Pin | Notes |
@@ -1579,7 +1723,8 @@ copy and two CPU waits (below). That is the cost of keeping Chromium unmodified.
   characters (emoji) dropped, numpad keys with NumLock off may map to their NumLock-on VK,
   horizontal wheel sign not verified, no touch/pen/drag-and-drop, `<select>` popups not
   drawn (welding's `acquire_popup` is not composed), no gamepad, no audio verification, no
-  DevTools. Off-origin navigation is detected after commit, not vetoed. External links are
+  DevTools window (the optional local MCP bridge uses CDP in-process only, "Local MCP
+  bridge"). Off-origin navigation is detected after commit, not vetoed. External links are
   never opened (the engine opens them in the system browser after a real click; not here).
 - Local real-game smoke (CI artifact of commit `1565935d74a`, run 45066625026; template SHA
   `e88e9ac29e7`; Windows, GTX 1050 / DX12, 1280x720, `--roves-compose=wgpu`): main route

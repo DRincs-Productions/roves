@@ -1,3 +1,30 @@
+## 2026-11-24 - CEF + SDL3 + wgpu candidate: optional local MCP bridge (off by default)
+
+Changed: `support/cef-netrender-probe/src/{app.rs,lib.rs,mcp.rs,mcp_rules.rs}`,
+`support/cef-netrender-probe/{Cargo.toml,Cargo.lock}`, new `support/cef-netrender-probe/mcp/`
+(`server.mjs`, `smoke.mjs`, `package.json`, `package-lock.json`, `README.md`, `fixture/`),
+`support/cef-netrender-probe/README.md` ("Local MCP bridge", CI "MCP steps"),
+`.github/workflows/cef-netrender-probe.yml`, `TODO.md`, `README.md`. Branch
+`codex/cef-sdl3-wgpu-probe` only; no release, no `mach` flag, `roves-action`/Packmaster not
+changed (integration contract in the probe README). A game-mode run started with
+`--roves-mcp`, or from a folder containing `mcp\enabled`, opens a same-user local named pipe
+(tokio `named_pipe`, remote clients rejected, first instance only), publishes
+`%LOCALAPPDATA%\Roves\mcp\<pid>.json` with the pipe name and a 256-bit token, and answers
+token-authenticated JSON requests on its main loop: host state, synchronous
+`Runtime.evaluate` through welding's in-process DevTools channel
+(`CefBrowserHost::SendDevToolsMessage`, page CSP kept for `eval`, no domain enabled), and
+click/key/text through the probe's ordinary SDL -> welding input path, refused while real
+input would be discarded. No TCP listener, no remote-debugging switch, nothing exposed to the
+page, sandbox and origin policy unchanged; the record is removed on close. Off by default: no
+pipe, no record, DevTools channel unsubscribed. `mcp/server.mjs` is the stdio MCP server
+(official TypeScript SDK 2.4.0 + zod 4.4.3, the retired Blitz dev-mcp pins) with discovery on
+every call. Dependencies: `serde_json` direct (already in the graph), tokio `io-util`/`time`
+and windows-sys `Win32_Security_Cryptography` features (already compiled / one Win32 API).
+CI: workflow_dispatch input `enable-mcp` (boolean, default false) builds the MCP-enabled
+package (plain package + `mcp\`, same `play.dll`) and runs a fixture interaction smoke and a
+packaged-launch smoke on WARP; every run checks the plain package has no `mcp\` and logs no
+`mcp` line. Not yet run in CI.
+
 ## 2026-11-24 - CEF + SDL3 + wgpu candidate: startup-screen wordmark and loading bar
 
 Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs,splash.rs}`,
