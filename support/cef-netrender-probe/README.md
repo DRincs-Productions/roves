@@ -1113,9 +1113,10 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   synchronously; `isAvailable()` (Servo's `__ROVES__`, not set by this player) is unchanged.
   Delivery: only when `mcp::start` succeeded (pipe open, record written), the producer is
   created on `about:blank` instead of the game URL. Every loop turn the bridge tries CDP
-  `Page.addScriptToEvaluateOnNewDocument` (`source` only, main world, `runImmediately:
-  false`) through the same in-process DevTools channel until the browser exists; when the
-  reply carries an `identifier` (log `mcp page capability registered identifier=<id>`) the
+  `Page.enable` through the same in-process DevTools channel until the browser exists; after
+  its successful reply it sends `Page.addScriptToEvaluateOnNewDocument` (`source` only, main
+  world, `runImmediately: false`); when that reply carries an `identifier` (log `mcp page
+  capability registered identifier=<id>`) the
   host calls welding's `navigate_to_url(<origin>/)` (log `game navigation url=...`). The
   script (`mcp_rules::page_capability_script`, unit-tested) returns early unless `window.top
   === window` and `location.origin` equals the game's `http://127.0.0.1:<port>` literal, then
@@ -1137,10 +1138,19 @@ Pieces (`src/mcp.rs`, pure rules in `src/mcp_rules.rs`, stdio server in `mcp/`):
   renderer, `InspectorPageAgent::DidCreateMainWorldContext`
   (`third_party/blink/renderer/core/inspector/inspector_page_agent.cc` ~1076-1101) injects
   the stored scripts when each frame's main-world context is created, before the parser runs
-  any page script, and needs no `Page.enable` (only an attached frontend). Same-origin child
+  any page script. That probe reaches the page agent only after `Page.enable`
+  (`InspectorPageAgent::enable` ~557-564 calls `instrumenting_agents_->
+  AddInspectorPageAgent(this)`; `Restore` ~526-529 re-enables it in each new renderer), and
+  `InspectorInjectedScriptManager::InjectScripts`
+  (`inspector_injected_script_manager.cc` ~61-73) has no other caller: without `Page.enable`
+  the registration is answered with an identifier but never runs (CI run 45575923510: the
+  entry script saw no `__ROVES_MCP__` descriptor). The Page domain therefore stays enabled
+  for the MCP session; its events are drained and dropped, and since CEF installs its own
+  JavaScript dialog manager, dialogs are only reported to the session, not delegated to it
+  (`page_handler.cc` `DidRunJavaScriptDialog` ~647-671, `Enable` ~703-731). Same-origin child
   frames get the script too and return at the `window.top` check; cross-site frames are
   separate targets (no auto-attach) and never get it. Revision `f2700724f59f`, sparse
-  checkout of those two files and `content/browser/devtools/protocol/`.
+  checkout of those files and `content/browser/devtools/protocol/`.
   **Missing welding API (no upstream request opened):** welding e991684 owns the
   `CefApp`/`CefRenderProcessHandler` (`WeldApp::build` and `WeldRenderProcessHandler` in
   `welding/src/app.rs` are `pub(crate)`; the handler implements only
@@ -1163,8 +1173,9 @@ a process could already open or debug the game process itself, so this adds no p
 No TCP listener and no `--remote-debugging-port`/`--remote-debugging-pipe` switch is used; the
 loopback HTTP server is unchanged. The page receives only the read-only boolean
 `__ROVES_MCP__` (top-level document on the game origin, bridge running; see above): no
-binding, no message router, no other script, the CDP session is browser-side only, and no CDP
-domain is enabled. The sandbox (bootstrap broker, sandboxed renderers) and the origin policy
+binding, no message router, no other script, the CDP session is browser-side only, and only
+the Page domain is enabled (MCP-enabled launches only, for the document-start marker; its
+events are dropped). The sandbox (bootstrap broker, sandboxed renderers) and the origin policy
 (off-origin commit = FAIL and close; popups refused) are unchanged: an expression that
 navigates away still trips the origin check. `evaluate_script` can change game state: it is
 a trusted development command. Never ship an MCP-enabled package to players.

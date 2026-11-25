@@ -63,6 +63,18 @@ issue opened. Companion changes on separate branches, uncommitted: `roves-api`
 (Rust type-check/clippy/fmt with `dox`, `mcp_rules` tests, roves-api tests); not built or run
 in CI. No `mach` flag, no roves-action/Packmaster change.
 
+Follow-up after CI run 45575923510 (commit fa9a52ce122, Windows job red at both MCP fixture
+steps): (1) the enabled fixture's entry script saw no `__ROVES_MCP__` descriptor although
+the registration replied with an identifier. Blink injects such scripts only from
+`InspectorPageAgent::DidCreateMainWorldContext`, a probe registered by `Page.enable`
+(Chromium `f2700724f59f`, `inspector_page_agent.cc` `enable`/`Restore`,
+`inspector_injected_script_manager.cc` `InjectScripts`). `mcp.rs` now sends `Page.enable`
+first and the script only after its successful reply (same 10 s limit; any error still loads
+the game without the marker); Page events are drained and dropped. (2) The disabled smoke's
+`/ mcp /` check matched the host's own `title roves mcp fixture` line; `smoke.mjs` now checks
+only host lines starting with `roves-cef-nr mcp ` (none when off, exactly the `mcp
+unavailable` line when the bridge cannot start). Probe README updated. Local checks only.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS accelerated-OSR feasibility gate (experiment only)
 
 Added: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs,src/helper.rs,src/bundle.rs}`,

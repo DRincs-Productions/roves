@@ -12,11 +12,14 @@
 //!
 //! Page capability (`isMcpEnabled()` of `@drincs/roves-api/core`): the only thing the page
 //! sees is a read-only `window.__ROVES_MCP__ === true` in the top-level game document. Once
-//! the bridge is running, the browser starts on `about:blank`, the bridge registers a
-//! document-start script with CDP `Page.addScriptToEvaluateOnNewDocument` (stored by
-//! Chromium in the DevTools session and applied to every later document, across renderer
-//! swaps), and the host loads the game URL only after that registration settled. A refused
-//! or late registration loads the game without the marker.
+//! the bridge is running, the browser starts on `about:blank`, the bridge enables the CDP Page
+//! domain (Blink injects document-start scripts only from the enabled page agent's
+//! main-world-context probe) and registers a document-start script with
+//! `Page.addScriptToEvaluateOnNewDocument` (both stored by Chromium in the DevTools session
+//! and re-applied in every later renderer, across process swaps); the host loads the game URL
+//! only after that registration settled. A refused or late registration loads the game
+//! without the marker. Page domain events are drained and dropped; CEF keeps its own
+//! JavaScript dialog handling, so dialogs are not delegated to the bridge.
 //!
 //! Requests are newline-delimited JSON `{"method": ..., "params": {...}}`, handled on the
 //! main loop: `state` (host-side state), `evaluate` (CDP `Runtime.evaluate` through welding's
@@ -67,6 +70,17 @@ enum Capability {
         script: String,
         deadline: Option<Instant>,
     },
+    /// `Page.enable` sent as CDP message `id`. Blink injects scripts registered with
+    /// `Page.addScriptToEvaluateOnNewDocument` only from `InspectorPageAgent::
+    /// DidCreateMainWorldContext`, a probe the page agent receives only once the Page domain
+    /// is enabled; without it the registration succeeds but nothing ever runs.
+    Enabling {
+        id: i64,
+        script: String,
+        deadline: Instant,
+    },
+    /// Page domain enabled; the script is sent next turn.
+    Enabled { script: String, deadline: Instant },
     /// `Page.addScriptToEvaluateOnNewDocument` sent as CDP message `id`.
     Sent { id: i64, deadline: Instant },
     /// Reply or failure, not handed to the host yet.
@@ -488,20 +502,50 @@ impl Bridge {
         match &mut self.capability {
             Capability::Unsent { script, deadline } => {
                 let deadline = *deadline.get_or_insert(now + CAPABILITY_TIMEOUT);
+                let script = std::mem::take(script);
+                // The Page domain stays enabled for the whole session: Chromium keeps it in
+                // the DevTools session state and re-enables it in every later renderer, so
+                // the script also runs after the about:blank -> game process swap.
+                match self.send_cdp(producer, "Page.enable", json!({})) {
+                    Ok(id) => {
+                        self.capability = Capability::Enabling {
+                            id,
+                            script,
+                            deadline,
+                        };
+                    },
+                    // Typically "the browser is not ready yet": retried next turn.
+                    Err(error) if now >= deadline => {
+                        self.capability = Capability::Ready(Err(error));
+                    },
+                    Err(_) => {
+                        self.capability = Capability::Unsent {
+                            script,
+                            deadline: Some(deadline),
+                        };
+                    },
+                }
+            },
+            Capability::Enabled { script, deadline } => {
+                let deadline = *deadline;
                 let params = json!({ "source": script.as_str(), "runImmediately": false });
                 match self.send_cdp(producer, "Page.addScriptToEvaluateOnNewDocument", params) {
                     Ok(id) => self.capability = Capability::Sent { id, deadline },
-                    // Typically "the browser is not ready yet": retried next turn.
                     Err(error) if now >= deadline => {
                         self.capability = Capability::Ready(Err(error));
                     },
                     Err(_) => {},
                 }
             },
-            Capability::Sent { deadline, .. } if now >= *deadline => {
+            Capability::Enabling { deadline, .. } | Capability::Sent { deadline, .. }
+                if now >= *deadline =>
+            {
                 self.capability = Capability::Ready(Err("no DevTools reply in time".into()));
             },
-            Capability::Sent { .. } | Capability::Ready(_) | Capability::Settled => {},
+            Capability::Enabling { .. }
+            | Capability::Sent { .. }
+            | Capability::Ready(_)
+            | Capability::Settled => {},
         }
         if !matches!(self.capability, Capability::Ready(_)) {
             return None;
@@ -521,14 +565,29 @@ impl Bridge {
     }
 
     /// Drains welding's DevTools queue (it is bounded, so it is polled every loop turn while
-    /// the bridge is on), advances matching evaluations and expires late ones. Messages that
-    /// are not replies to a pending evaluation (events, `releaseObjectGroup` replies) are
-    /// dropped: no CDP domain is enabled, so no events are expected.
+    /// the bridge is on), advances the capability registration and matching evaluations and
+    /// expires late ones. Other messages (Page domain events, `releaseObjectGroup` replies)
+    /// are dropped.
     pub(crate) fn poll_devtools(&mut self, producer: &mut WindowsCefProducer) {
         while let Some(message) = producer.poll_devtools_message() {
             let Ok(message) = serde_json::from_str::<Value>(&message) else {
                 continue;
             };
+            if let Capability::Enabling { id, .. } = self.capability
+                && message.get("id").and_then(Value::as_i64) == Some(id)
+            {
+                let Capability::Enabling {
+                    script, deadline, ..
+                } = std::mem::replace(&mut self.capability, Capability::Settled)
+                else {
+                    unreachable!("checked above");
+                };
+                self.capability = match enable_reply(&message) {
+                    Ok(()) => Capability::Enabled { script, deadline },
+                    Err(error) => Capability::Ready(Err(error)),
+                };
+                continue;
+            }
             if let Capability::Sent { id, .. } = self.capability
                 && message.get("id").and_then(Value::as_i64) == Some(id)
             {
@@ -614,6 +673,18 @@ impl Bridge {
 
     pub(crate) fn recent_console(&self) -> Value {
         Value::Array(self.console.iter().cloned().collect())
+    }
+}
+
+/// Maps the CDP reply to `Page.enable`: success, or the reason the marker is unavailable.
+fn enable_reply(message: &Value) -> Result<(), String> {
+    if let Some(error) = message.pointer("/error/message").and_then(Value::as_str) {
+        return Err(format!("Page.enable: {}", truncate_chars(error, 512)));
+    }
+    if message.get("result").is_some_and(Value::is_object) {
+        Ok(())
+    } else {
+        Err("Page.enable: invalid DevTools reply".to_owned())
     }
 }
 

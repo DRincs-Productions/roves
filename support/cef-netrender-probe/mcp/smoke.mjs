@@ -404,12 +404,16 @@ async function disabled([exe, fixtureDir, out]) {
       assert.match(text, /load-end status=200 url=http:\/\/127\.0\.0\.1:\d+\/ ok=true/);
       assert.match(text, /message="roves-mcp-entry enabled=false"/);
       assert.match(text, /message="roves-mcp-frame enabled=false"/);
-      assert.ok(!/mcp (enabled|page capability|bootstrap)|game navigation/.test(text),
+      // Host lines only (`roves-cef-nr <event>`): the fixture's own title, "roves mcp
+      // fixture", is logged as `roves-cef-nr title roves mcp fixture` and is not a bridge line.
+      assert.ok(!/^roves-cef-nr (mcp (enabled|page capability|bootstrap)|game navigation)/m.test(text),
         `${name}: bridge or bootstrap lines in the game log`);
+      const bridgeLines = text.split(/\r?\n/).filter((line) => line.startsWith("roves-cef-nr mcp "));
       if (name === "off") {
-        assert.ok(!/ mcp /.test(text), "off: mcp line in the game log");
+        assert.deepEqual(bridgeLines, [], "off: mcp line in the game log");
       } else {
-        assert.match(text, /mcp unavailable source=Switch error=/);
+        assert.equal(bridgeLines.length, 1, `unavailable: ${JSON.stringify(bridgeLines)}`);
+        assert.match(bridgeLines[0], /^roves-cef-nr mcp unavailable source=Switch error=/);
       }
       log(`${name}: marker absent, game loaded directly`);
     } finally {
