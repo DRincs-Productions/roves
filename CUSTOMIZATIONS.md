@@ -75,6 +75,28 @@ the game without the marker); Page events are drained and dropped. (2) The disab
 only host lines starting with `roves-cef-nr mcp ` (none when off, exactly the `mcp
 unavailable` line when the bridge cannot start). Probe README updated. Local checks only.
 
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS packaged-game slice (experiment only)
+
+Changed: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs}`, added
+`support/cef-macos-gate/src/player.rs`, `.github/workflows/cef-macos-gate.yml`. Next step after
+the green Metal gate (run 45575923557, exit 0: accelerated IOSurface import verified on
+`macos-15`). When the `.app` contains `Contents/Resources/game/index.html`, the gate binary
+serves that unmodified static build from the shared loopback server
+(`support/cef-window-probe/src/server.rs` via `#[path]`, as the Windows player) and opens it in
+the same sandboxed accelerated OSR -> welding -> wgpu Metal -> SDL3 path: accepted main-frame
+load-end on the origin, first frame imported after it (a `WasResized` is sent at load-end),
+off-origin commits, load errors and renderer death fail; SDL quit/window close ends the loop.
+Both modes now close the browser and wait for CEF's `OnBeforeClose` (observed through welding
+e991684's literal `CEF on_before_close` debug record, its only macOS close signal; 10 s limit,
+fails otherwise) instead of the former fixed 1.5 s pump, then shut CEF down, stop the server
+and remove the cache. The workflow builds `DRincs-Productions/visual-novel-template` at the
+Windows package's pin, copies `dist/` byte for byte into the bundle and runs it with a
+test-only SDL quit 8 s after the first game frame; ordered log checks, last frame as BMP,
+no leftover processes, cache or listening port. Lockfile: axum/tower-http/tokio/tower added at
+the Windows player's versions (additions only). No input forwarding, persistent profile,
+signing or Steam yet. Windows player, Linux gate, Steamworks gate and their workflows
+unchanged; no `mach` surface change, not user-facing (no README/wiki change).
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS accelerated-OSR feasibility gate (experiment only)
 
 Added: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs,src/helper.rs,src/bundle.rs}`,

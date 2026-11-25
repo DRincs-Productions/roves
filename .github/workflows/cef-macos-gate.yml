@@ -6,13 +6,19 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 # Hard gates: compile, .app structure, Metal adapter, CEF/SDL init, sandboxed renderer
 # (--seatbelt-client), clean shutdown. The accelerated IOSurface import is gated only when
 # CEF delivers a frame (exit 0); a runner where Chromium disables GPU compositing yields
-# exit 2, reported as a notice. Separate from cef-netrender-probe.yml (Windows, unchanged).
-# Never gates a release.
+# exit 2, reported as a notice. The same .app then packages the UNMODIFIED production web
+# build of DRincs-Productions/visual-novel-template (pinned, as the Windows package) under
+# Contents/Resources/game and runs it once from the shared loopback server: accepted
+# load-end, first frame after it, test close through SDL's quit event, OnBeforeClose,
+# CEF shutdown, server stop (README "Packaged game"). Separate from cef-netrender-probe.yml
+# (Windows, unchanged). Never gates a release.
 
 on:
   push:
     paths:
       - 'support/cef-macos-gate/**'
+      # Compiled into the gate through `#[path]` (packaged-game mode).
+      - 'support/cef-window-probe/src/server.rs'
       - '.github/workflows/cef-macos-gate.yml'
   workflow_dispatch:
 
@@ -37,6 +43,7 @@ jobs:
         with:
           sparse-checkout: |
             support/cef-macos-gate
+            support/cef-window-probe/src
           sparse-checkout-cone-mode: true
       - uses: dtolnay/rust-toolchain@master
         with:
@@ -95,6 +102,7 @@ jobs:
             ${{ runner.temp }}/cef154
           key: cef-macos-gate-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('support/cef-macos-gate/Cargo.lock') }}
       - name: bundle and check the .app
+        id: bundle
         shell: bash
         run: |
           "$CARGO_TARGET_DIR/release/bundle" "$RUNNER_TEMP/gate-app"
@@ -125,10 +133,13 @@ jobs:
           if grep -q '^gate: FAIL' "$RUNNER_TEMP/gate-run.log"; then
             echo "::error::gate reported FAIL (exit $code)"; exit 1
           fi
+          need '^gate: mode=fixture'
           need '^gate: cef initialized sandbox=Sandboxed'
           need '^gate: adapter .*backend=Metal'
           need '^gate: producer created mode=AcceleratedPaint'
           need '^gate: PASS sandbox renderers='
+          need '^gate: browser closed elapsed_ms='
+          need '^gate: cef shutdown complete'
           need "^gate: shutdown complete exit=$code"
           case "$code" in
             0)
@@ -140,15 +151,124 @@ jobs:
             *)
               echo "::error::unexpected exit $code"; exit 1 ;;
           esac
+          echo "FIXTURE_CODE=$code" >> "$GITHUB_ENV"
           # No helper of this bundle may outlive the browser process.
           sleep 2
           if pgrep -fl "roves-cef-macos-gate" ; then
             echo "::error::gate processes still running after exit"; exit 1
           fi
+      # ── Packaged game (README "Packaged game") ──────────────────────────────────────
+      # Same pinned commit and build commands as the Windows package in
+      # cef-netrender-probe.yml; dist/ is copied byte for byte into the same .app.
+      - name: checkout visual-novel-template (pinned)
+        id: template
+        if: (success() || failure()) && steps.bundle.outcome == 'success'
+        uses: actions/checkout@v4
+        with:
+          repository: DRincs-Productions/visual-novel-template
+          ref: e88e9ac29e736e007904e0767815e21cd8725941
+          path: visual-novel-template
+          persist-credentials: false
+      - name: setup node (template build)
+        if: (success() || failure()) && steps.template.outcome == 'success'
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: build visual-novel-template (npm ci + npm run build)
+        id: template_build
+        if: (success() || failure()) && steps.template.outcome == 'success'
+        shell: bash
+        working-directory: visual-novel-template
+        run: |
+          pin=e88e9ac29e736e007904e0767815e21cd8725941
+          head="$(git rev-parse HEAD)"
+          test "$head" = "$pin" || { echo "::error::template HEAD $head is not the pin $pin"; exit 1; }
+          npm ci --no-audit --no-fund 2>&1 | tee "$RUNNER_TEMP/vnt-npm-ci.log"
+          test "${PIPESTATUS[0]}" = 0
+          npm run build 2>&1 | tee "$RUNNER_TEMP/vnt-build.log"
+          test "${PIPESTATUS[0]}" = 0
+          test -f dist/index.html || { echo "::error::template build produced no dist/index.html"; exit 1; }
+          {
+            echo "template_commit=$head"
+            echo "node=$(node --version)"
+            echo "npm=$(npm --version)"
+            echo "package_lock_sha256=$(shasum -a 256 package-lock.json | cut -d' ' -f1)"
+            echo "dist_files=$(find dist -type f | wc -l | tr -d ' ')"
+          } | tee "$RUNNER_TEMP/vnt-build-info.txt"
+          echo "::notice::visual-novel-template $head built with node $(node --version): $(find dist -type f | wc -l | tr -d ' ') dist files"
+      - name: package the game into the .app
+        id: package
+        if: (success() || failure()) && steps.template_build.outcome == 'success'
+        shell: bash
+        run: |
+          game="$APP/Contents/Resources/game"
+          test ! -e "$game" || { echo "::error::$game already exists"; exit 1; }
+          mkdir -p "$APP/Contents/Resources"
+          ditto visual-novel-template/dist "$game"
+          # Unmodified: identical file list and bytes.
+          diff -r visual-novel-template/dist "$game" || { echo "::error::packaged game differs from dist"; exit 1; }
+          (cd "$game" && find . -type f -print0 | sort -z | xargs -0 shasum -a 256) > "$RUNNER_TEMP/player-game-sha256.txt"
+          echo "::notice::packaged $(wc -l < "$RUNNER_TEMP/player-game-sha256.txt" | tr -d ' ') game files into Contents/Resources/game"
+      - name: run the packaged game (sandboxed, Metal, loopback)
+        if: (success() || failure()) && steps.package.outcome == 'success'
+        shell: bash
+        run: |
+          log="$RUNNER_TEMP/player-run.log"
+          set +e
+          # Test-only: close through SDL's quit event 8 s after the first game frame and
+          # write the last frame as a BMP for the artifact.
+          ROVES_GATE_TIMEOUT_SECS=60 ROVES_GATE_AUTO_CLOSE_MS=8000 \
+            ROVES_GATE_FRAME_DUMP="$RUNNER_TEMP/player-last-frame.bmp" \
+            perl -e 'alarm shift; exec @ARGV' 150 \
+            "$APP/Contents/MacOS/roves-cef-macos-gate" > "$log" 2>&1
+          code=$?
+          set -e
+          grep '^gate:' "$log" | grep -v '^gate: console ' || true
+          failed=0
+          if grep -q '^gate: FAIL' "$log"; then echo "::error::player reported FAIL (exit $code)"; failed=1; fi
+          origin="$(grep -m1 '^gate: mode=packaged-game dir=.*/Contents/Resources/game origin=' "$log" | grep -o -E 'http://127\.0\.0\.1:[0-9]+$' || true)"
+          test -n "$origin" || { echo "::error::missing: packaged-game mode line with the loopback origin"; exit 1; }
+          o="${origin//./\\.}"
+          if [ "$code" = 2 ] && [ "${FIXTURE_CODE:-}" = 2 ]; then
+            # Same runner without accelerated frames: load and close only.
+            expected=("^gate: load-end status=200 url=$o/ ok=true$" '^gate: NO_ACCELERATED_FRAME'
+              '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$'
+              '^gate: shutdown complete exit=2$')
+            echo "::notice::no accelerated frame on this runner (fixture and player exit 2): load and close verified, first frame not"
+          else
+            test "$code" = 0 || { echo "::error::player exit $code (expected 0)"; failed=1; }
+            expected=('^gate: cef initialized sandbox=Sandboxed' '^gate: adapter .*backend=Metal'
+              "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=$o/$"
+              "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
+              '^gate: fresh frame requested ok=true$'
+              '^gate: first game frame after load-end ms=[0-9]+ size=[0-9]+x[0-9]+ format=Bgra8Unorm '
+              '^gate: test auto-close scheduled delay_ms=8000$' '^gate: test auto-close pushed SDL quit$'
+              '^gate: loop end .* loaded=true game_frame=true close=quit ' '^gate: close requested source=quit$'
+              '^gate: last game frame size=' '^gate: frame dump written ' '^gate: PASS sandbox renderers='
+              '^gate: PASS packaged game loaded' '^gate: browser closed elapsed_ms='
+              '^gate: cef shutdown complete$' '^gate: loopback stopped$' '^gate: cache removed$'
+              '^gate: shutdown complete exit=0$')
+          fi
+          # In order: each pattern must match a line after the previous match.
+          last=0
+          for pattern in "${expected[@]}"; do
+            at="$(tail -n "+$((last + 1))" "$log" | grep -n -m1 -E -- "$pattern" | cut -d: -f1 || true)"
+            if [ -z "$at" ]; then echo "::error::missing or out of order: $pattern"; failed=1; else last=$((last + at)); fi
+          done
+          # No remote-debugging/DevTools endpoint: the player must not rely on one.
+          if grep -q 'DevTools listening' "$log"; then echo "::error::a DevTools endpoint was opened"; failed=1; fi
+          cache="$(sed -n 's|^gate: cef initialized sandbox=Sandboxed cache=||p' "$log" | head -1)"
+          if [ -n "$cache" ] && [ -e "$cache" ]; then echo "::error::CEF cache left behind: $cache"; failed=1; fi
+          if nc -z 127.0.0.1 "${origin##*:}" 2>/dev/null; then echo "::error::loopback port still accepting after exit"; failed=1; fi
+          grep -E '^gate: (title|load-end|first game frame|last game frame|console lines|browser closed|popup refused)' "$log" \
+            | while read -r line; do echo "::notice::$line"; done || true
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate" ; then echo "::error::player processes still running after exit"; failed=1; fi
+          test "$failed" = 0
       - name: zip the .app
         if: always() && env.APP != ''
         shell: bash
-        run: ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/roves-cef-macos-gate-arm64.zip"
+        run: ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/roves-cef-macos-arm64.zip"
       - name: upload logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -157,11 +277,19 @@ jobs:
           path: |
             ${{ runner.temp }}/gate-build.log
             ${{ runner.temp }}/gate-run.log
+            ${{ runner.temp }}/player-run.log
+            ${{ runner.temp }}/player-last-frame.bmp
+            ${{ runner.temp }}/player-game-sha256.txt
+            ${{ runner.temp }}/vnt-build-info.txt
+            ${{ runner.temp }}/vnt-npm-ci.log
+            ${{ runner.temp }}/vnt-build.log
           if-no-files-found: warn
+      # Contains the packaged game when the packaging step ran (opening the .app then plays
+      # it; without Contents/Resources/game it runs the fixture gate).
       - name: upload the .app
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: cef-macos-gate-arm64
-          path: ${{ runner.temp }}/roves-cef-macos-gate-arm64.zip
+          name: cef-macos-player-arm64
+          path: ${{ runner.temp }}/roves-cef-macos-arm64.zip
           if-no-files-found: warn

@@ -2,14 +2,28 @@
 //! welding Metal import -> wgpu 29 Metal device that also presents to an SDL3 window, with
 //! Chromium's sandbox on. No CEF windowed mode and no software (`OnPaint`) path exist here.
 //!
+//! Two modes, chosen by the bundle (README "Packaged game"):
+//! - fixture gate (no `Contents/Resources/game/index.html`): a `data:` page whose centre must
+//!   match a known colour;
+//! - packaged game (`src/player.rs`): an unmodified static game build packaged inside the
+//!   `.app`, served from the shared loopback origin; load-end, first frame after it and the
+//!   close path are checked.
+//!
 //! Exit codes (README "Verdicts"):
-//! - 0: an imported CEF frame matched the fixture colour and the renderer was sandboxed.
+//! - 0: the mode's checks passed and the renderer was sandboxed.
 //! - 2: no accelerated frame arrived before the timeout (e.g. a VM where Chromium disables
 //!   GPU compositing), but nothing failed and the renderer was sandboxed.
-//! - 1: any failure (CEF/SDL/wgpu setup, wrong pixels, wgpu error, content process death,
-//!   renderer not sandboxed or not found).
+//! - 1: any failure.
 //!
 //! Every verdict line starts with `gate:` on stdout; CI checks those lines.
+
+#[cfg(target_os = "macos")]
+mod player;
+/// The stage-1 window probe's loopback server (axum + tower-http `ServeDir` on 127.0.0.1),
+/// compiled unchanged as in the Windows player (`support/cef-netrender-probe/src/game.rs`).
+#[cfg(target_os = "macos")]
+#[path = "../../cef-window-probe/src/server.rs"]
+mod server;
 
 #[cfg(target_os = "macos")]
 fn main() {
@@ -25,6 +39,8 @@ fn main() {
 #[cfg(target_os = "macos")]
 mod gate {
     use std::{
+        collections::HashSet,
+        path::{Path, PathBuf},
         sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
@@ -52,30 +68,48 @@ mod gate {
     const TOLERANCE: u8 = 8;
     /// Centre sample: 64 x 4 bytes is exactly one `COPY_BYTES_PER_ROW_ALIGNMENT` row.
     const SAMPLE: u32 = 64;
-    const WINDOW: (u32, u32) = (640, 400);
-    const CLOSE_PUMP: Duration = Duration::from_millis(1500);
+    const FIXTURE_WINDOW: (u32, u32) = (640, 400);
+    const GAME_WINDOW: (u32, u32) = (1280, 720);
+    /// Upper bound for CEF's `OnBeforeClose` after `close()`; a run that exceeds it fails.
+    const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
+    /// Exact message of welding e991684's `LifeSpanHandler::on_before_close`
+    /// (`macos_cef/cef_backed.rs`), the only close-completion signal its macOS producer
+    /// exposes (Windows has `is_closed`). Pinned revision; README "Close".
+    const BEFORE_CLOSE_MESSAGE: &str = "CEF on_before_close";
+    const WELDING_MACOS_TARGET: &str = "welding::macos_cef";
+
+    /// Set by the logger when welding reports `OnBeforeClose`.
+    static BROWSER_CLOSED: AtomicBool = AtomicBool::new(false);
 
     struct Logger;
 
     impl log::Log for Logger {
         fn enabled(&self, metadata: &log::Metadata) -> bool {
             metadata.level() <= log::Level::Info
+                || metadata.target().starts_with(WELDING_MACOS_TARGET)
         }
         fn log(&self, record: &log::Record) {
-            if self.enabled(record.metadata()) {
+            if record.level() <= log::Level::Info {
                 println!(
                     "gate: log {} {}: {}",
                     record.level(),
                     record.target(),
                     record.args()
                 );
+            } else if record.target().starts_with(WELDING_MACOS_TARGET)
+                // `as_str` is `Some` only for a literal message: no formatting cost.
+                && record.args().as_str() == Some(BEFORE_CLOSE_MESSAGE)
+            {
+                BROWSER_CLOSED.store(true, Ordering::SeqCst);
             }
         }
         fn flush(&self) {}
     }
 
     pub fn run() -> i32 {
-        let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Info));
+        // Debug only so welding's `on_before_close` record reaches the logger; other debug
+        // records are dropped in `log` without being formatted.
+        let _ = log::set_logger(&Logger).map(|()| log::set_max_level(log::LevelFilter::Debug));
         match run_inner() {
             Ok(code) => code,
             Err(error) => {
@@ -85,20 +119,20 @@ mod gate {
         }
     }
 
+    pub(crate) fn env_u64(name: &str) -> Option<u64> {
+        std::env::var(name).ok().and_then(|v| v.parse().ok())
+    }
+
     fn run_inner() -> Result<i32, String> {
-        let timeout = Duration::from_secs(
-            std::env::var("ROVES_GATE_TIMEOUT_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(60),
-        );
+        let timeout = Duration::from_secs(env_u64("ROVES_GATE_TIMEOUT_SECS").unwrap_or(60));
         let exe = std::env::current_exe().map_err(|e| format!("current_exe: {e}"))?;
-        // <app>.app/Contents/MacOS/<exe> -> <app>.app/Contents/Frameworks
-        let frameworks = exe
+        // <app>.app/Contents/MacOS/<exe> -> <app>.app/Contents
+        let contents = exe
             .parent()
-            .and_then(|macos| macos.parent())
-            .map(|contents| contents.join("Frameworks"))
-            .ok_or("cannot resolve Contents/Frameworks")?;
+            .and_then(Path::parent)
+            .ok_or("cannot resolve Contents")?
+            .to_path_buf();
+        let frameworks = contents.join("Frameworks");
         if !frameworks
             .join("Chromium Embedded Framework.framework")
             .exists()
@@ -108,6 +142,28 @@ mod gate {
                 frameworks.display()
             ));
         }
+        // The packaged game: an unmodified static build copied into the bundle's resources.
+        let game_dir = contents.join("Resources").join("game");
+        let game = game_dir.join("index.html").is_file().then_some(game_dir);
+
+        // Packaged game: the loopback origin must be known before the browser is created,
+        // and it outlives CEF so in-flight responses finish (Windows player order).
+        let server = match game.as_deref() {
+            Some(dir) => {
+                let server = crate::server::start(dir, 0)
+                    .map_err(|e| format!("game loopback server: {e}"))?;
+                println!(
+                    "gate: mode=packaged-game dir={} origin={}",
+                    dir.display(),
+                    server.origin
+                );
+                Some(server)
+            },
+            None => {
+                println!("gate: mode=fixture");
+                None
+            },
+        };
 
         let cache =
             std::env::temp_dir().join(format!("roves-cef-macos-gate-{}", std::process::id()));
@@ -120,129 +176,403 @@ mod gate {
             .push(("use-mock-keychain".to_owned(), None));
         // CEF first, SDL second: the order of wgpu-weld's macOS demo (CEF, then the windowing
         // library that creates NSApp).
-        let runtime = CefRuntime::initialize(config).map_err(|e| format!("CEF initialize: {e}"))?;
+        let runtime = match CefRuntime::initialize(config) {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                stop_server(server);
+                return Err(format!("CEF initialize: {error}"));
+            },
+        };
         println!(
             "gate: cef initialized sandbox=Sandboxed cache={}",
             cache.display()
         );
 
         let code = {
-            let sdl = sdl3::init().map_err(|e| format!("SDL init: {e}"))?;
-            let video = sdl.video().map_err(|e| format!("SDL video: {e}"))?;
-            let mut events = sdl.event_pump().map_err(|e| format!("SDL events: {e}"))?;
-            let window = video
-                .window("Roves CEF macOS gate", WINDOW.0, WINDOW.1)
-                .high_pixel_density()
-                .build()
-                .map_err(|e| format!("SDL window: {e}"))?;
-            println!(
-                "gate: sdl window pixels={:?} scale={}",
-                window.size_in_pixels(),
-                window.display_scale()
-            );
-            let result = drive(&runtime, &window, &mut events, timeout);
-            // Close the browser and let CEF finish it before cef::shutdown (runtime drop).
-            // welding's macOS producer exposes no close-completion signal (Windows has
-            // `is_closed`), so pump for a bounded time.
-            let code = match result {
-                Ok((code, mut producer)) => {
-                    let _ = producer.close();
-                    let until = Instant::now() + CLOSE_PUMP;
-                    while Instant::now() < until {
-                        for _ in events.poll_iter() {}
-                        runtime.do_message_loop_work();
-                        std::thread::sleep(Duration::from_millis(5));
+            let result = (|| {
+                let sdl = sdl3::init().map_err(|e| format!("SDL init: {e}"))?;
+                let video = sdl.video().map_err(|e| format!("SDL video: {e}"))?;
+                let mut events = sdl.event_pump().map_err(|e| format!("SDL events: {e}"))?;
+                let (title, (w, h)) = if server.is_some() {
+                    ("Roves CEF macOS player", GAME_WINDOW)
+                } else {
+                    ("Roves CEF macOS gate", FIXTURE_WINDOW)
+                };
+                let window = video
+                    .window(title, w, h)
+                    .high_pixel_density()
+                    .build()
+                    .map_err(|e| format!("SDL window: {e}"))?;
+                println!(
+                    "gate: sdl window pixels={:?} scale={}",
+                    window.size_in_pixels(),
+                    window.display_scale()
+                );
+                let code = {
+                    let gpu = Gpu::new(&window)?;
+                    let result = match server.as_ref() {
+                        Some(server) => {
+                            let sdl_events = sdl.event().map_err(|e| format!("SDL event: {e}"))?;
+                            crate::player::drive(
+                                &runtime,
+                                &window,
+                                &mut events,
+                                &sdl_events,
+                                &gpu,
+                                &server.origin,
+                                timeout,
+                            )
+                        },
+                        None => drive_fixture(&runtime, &window, &mut events, &gpu, timeout),
+                    };
+                    drop(gpu);
+                    match result {
+                        Ok((code, producer)) => {
+                            close_browser(&runtime, &mut events, producer, code)
+                        },
+                        Err(error) => {
+                            println!("gate: FAIL {error}");
+                            1
+                        },
                     }
-                    drop(producer);
-                    code
-                },
-                Err(error) => {
-                    println!("gate: FAIL {error}");
-                    1
-                },
-            };
-            drop(window);
-            code
+                };
+                drop(window);
+                Ok::<i32, String>(code)
+            })();
+            result.unwrap_or_else(|error| {
+                println!("gate: FAIL {error}");
+                1
+            })
         };
         drop(runtime);
-        let _ = std::fs::remove_dir_all(&cache);
+        println!("gate: cef shutdown complete");
+        let code = if stop_server(server) { code } else { 1 };
+        match std::fs::remove_dir_all(&cache) {
+            Ok(()) => println!("gate: cache removed"),
+            Err(error) => println!("gate: cache not removed: {error}"),
+        }
         println!("gate: shutdown complete exit={code}");
         Ok(code)
     }
 
-    fn drive(
+    /// Stops the loopback server after CEF shut down. `false` when stopping failed.
+    fn stop_server(server: Option<crate::server::Server>) -> bool {
+        match server.map(crate::server::Server::stop) {
+            None => true,
+            Some(Ok(())) => {
+                println!("gate: loopback stopped");
+                true
+            },
+            Some(Err(error)) => {
+                println!("gate: FAIL loopback stop: {error}");
+                false
+            },
+        }
+    }
+
+    /// Closes the browser and pumps CEF until `OnBeforeClose` (Chromium closes every browser
+    /// before quitting, `chrome/browser/app_controller_mac.mm` `tryToTerminateApplication`;
+    /// CEF requires `OnBeforeClose` before `CefShutdown`). A close that does not complete
+    /// within `CLOSE_TIMEOUT` fails the run.
+    fn close_browser(
+        runtime: &CefRuntime,
+        events: &mut sdl3::EventPump,
+        mut producer: MacosCefProducer,
+        code: i32,
+    ) -> i32 {
+        let started = Instant::now();
+        if let Err(error) = producer.close() {
+            println!("gate: FAIL close: {error}");
+            return 1;
+        }
+        while !BROWSER_CLOSED.load(Ordering::SeqCst) && started.elapsed() < CLOSE_TIMEOUT {
+            for _ in events.poll_iter() {}
+            runtime.do_message_loop_work();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        drop(producer);
+        if BROWSER_CLOSED.load(Ordering::SeqCst) {
+            println!(
+                "gate: browser closed elapsed_ms={}",
+                started.elapsed().as_millis()
+            );
+            code
+        } else {
+            println!(
+                "gate: FAIL browser not closed within {} ms (no OnBeforeClose)",
+                CLOSE_TIMEOUT.as_millis()
+            );
+            1
+        }
+    }
+
+    /// wgpu Metal device presenting to the SDL3 window; welding imports into the same device.
+    pub(crate) struct Gpu {
+        surface: wgpu::Surface<'static>,
+        config: wgpu::SurfaceConfiguration,
+        blitter: wgpu::util::TextureBlitter,
+        pub(crate) host: HostWgpuContext,
+        pub(crate) failed: Arc<AtomicBool>,
+    }
+
+    impl Gpu {
+        fn new(window: &sdl3::video::Window) -> Result<Gpu, String> {
+            let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
+            // welding's macOS import is Metal only (IOSurface -> MTLTexture -> grafting).
+            instance_desc.backends = wgpu::Backends::METAL;
+            let instance = wgpu::Instance::new(instance_desc);
+            // SAFETY: SDL owns the NSWindow/NSView; `Gpu` (and so the surface) is dropped
+            // before the caller drops the window, all on the main thread.
+            let surface = unsafe {
+                let target = wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
+                    .map_err(|e| format!("SDL3 window handle: {e}"))?;
+                instance.create_surface_unsafe(target)
+            }
+            .map_err(|e| format!("surface: {e}"))?;
+            let adapter =
+                pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
+                    power_preference: wgpu::PowerPreference::HighPerformance,
+                    compatible_surface: Some(&surface),
+                    ..Default::default()
+                }))
+                .map_err(|e| format!("Metal adapter: {e}"))?;
+            let info = adapter.get_info();
+            println!(
+                "gate: adapter name={:?} backend={:?} type={:?} driver={:?}",
+                info.name, info.backend, info.device_type, info.driver
+            );
+            let (device, queue) =
+                pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                    label: Some("Roves CEF macOS gate"),
+                    ..Default::default()
+                }))
+                .map_err(|e| format!("Metal device: {e}"))?;
+            let host = HostWgpuContext::new(device, queue);
+            if host.backend != InteropBackend::Metal {
+                return Err(format!(
+                    "interop backend {:?}, expected Metal",
+                    host.backend
+                ));
+            }
+            let failed = Arc::new(AtomicBool::new(false));
+            host.device.on_uncaptured_error(Arc::new({
+                let failed = failed.clone();
+                move |error| {
+                    failed.store(true, Ordering::Relaxed);
+                    println!("gate: FAIL wgpu uncaptured error: {error}");
+                }
+            }));
+
+            let (width, height) = window.size_in_pixels();
+            let caps = surface.get_capabilities(&adapter);
+            let format = [
+                wgpu::TextureFormat::Bgra8Unorm,
+                wgpu::TextureFormat::Rgba8Unorm,
+            ]
+            .into_iter()
+            .find(|f| caps.formats.contains(f))
+            .unwrap_or(caps.formats[0]);
+            let mut config = surface
+                .get_default_config(&adapter, width.max(1), height.max(1))
+                .ok_or("surface not supported by the adapter")?;
+            config.format = format;
+            config.present_mode = wgpu::PresentMode::AutoVsync;
+            surface.configure(&host.device, &config);
+            let blitter = wgpu::util::TextureBlitter::new(&host.device, format);
+            Ok(Gpu {
+                surface,
+                config,
+                blitter,
+                host,
+                failed,
+            })
+        }
+
+        pub(crate) fn size(&self) -> PhysicalSize<u32> {
+            PhysicalSize::new(self.config.width, self.config.height)
+        }
+
+        /// Shows the latest imported frame in the SDL3 window (stretched) or black before
+        /// the first frame. Returns whether a texture was presented (vsync then paces the
+        /// loop).
+        pub(crate) fn present(&self, frame: Option<&ImportedTexture>) -> bool {
+            let output = match self.surface.get_current_texture() {
+                wgpu::CurrentSurfaceTexture::Success(t)
+                | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
+                wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+                    self.surface.configure(&self.host.device, &self.config);
+                    return false;
+                },
+                _ => return false,
+            };
+            let target = output
+                .texture
+                .create_view(&wgpu::TextureViewDescriptor::default());
+            let mut encoder =
+                self.host
+                    .device
+                    .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                        label: Some("gate present"),
+                    });
+            match frame {
+                Some(frame) => {
+                    self.blitter
+                        .copy(&self.host.device, &mut encoder, &frame.view, &target)
+                },
+                None => {
+                    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("gate clear"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: &target,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        ..Default::default()
+                    });
+                },
+            }
+            self.host.queue.submit([encoder.finish()]);
+            output.present();
+            true
+        }
+    }
+
+    /// Copies a `w` x `h` region at (`x`, `y`) of the imported texture (grafting creates it
+    /// with `COPY_SRC`) and returns it tightly packed, 4 bytes per texel.
+    pub(crate) fn read_region(
+        host: &HostWgpuContext,
+        frame: &ImportedTexture,
+        (x, y, w, h): (u32, u32, u32, u32),
+    ) -> Result<Vec<u8>, String> {
+        let row = w * 4;
+        let padded =
+            row.div_ceil(wgpu::COPY_BYTES_PER_ROW_ALIGNMENT) * wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+        let buffer = host.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("gate readback"),
+            size: u64::from(padded) * u64::from(h),
+            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+            mapped_at_creation: false,
+        });
+        let mut encoder = host
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("gate readback"),
+            });
+        encoder.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &frame.texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &buffer,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(padded),
+                    rows_per_image: Some(h),
+                },
+            },
+            wgpu::Extent3d {
+                width: w,
+                height: h,
+                depth_or_array_layers: 1,
+            },
+        );
+        host.queue.submit([encoder.finish()]);
+        let slice = buffer.slice(..);
+        let (tx, rx) = std::sync::mpsc::channel();
+        slice.map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+        host.device
+            .poll(wgpu::PollType::wait_indefinitely())
+            .map_err(|e| format!("poll: {e}"))?;
+        rx.recv()
+            .map_err(|e| format!("map callback: {e}"))?
+            .map_err(|e| format!("map: {e}"))?;
+        let pixels = slice
+            .get_mapped_range()
+            .chunks(padded as usize)
+            .flat_map(|line| &line[..row as usize])
+            .copied()
+            .collect();
+        buffer.unmap();
+        Ok(pixels)
+    }
+
+    /// The whole frame read back, tightly packed `Bgra8Unorm`.
+    pub(crate) fn frame_pixels(
+        host: &HostWgpuContext,
+        frame: &ImportedTexture,
+    ) -> Result<Vec<u8>, String> {
+        if frame.format != wgpu::TextureFormat::Bgra8Unorm {
+            return Err(format!(
+                "frame format {:?}, expected Bgra8Unorm",
+                frame.format
+            ));
+        }
+        read_region(host, frame, (0, 0, frame.size.width, frame.size.height))
+    }
+
+    pub(crate) fn distinct_colours(pixels: &[u8]) -> usize {
+        pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|px| u32::from_le_bytes(*px))
+            .collect::<HashSet<_>>()
+            .len()
+    }
+
+    /// Writes a top-down 32-bit BMP (`BI_RGB`, byte order B G R X, i.e. `Bgra8Unorm`), the
+    /// simplest lossless format every image viewer opens; evidence artifact only.
+    pub(crate) fn write_bmp(
+        path: &PathBuf,
+        width: u32,
+        height: u32,
+        bgra: &[u8],
+    ) -> std::io::Result<()> {
+        let image = u32::try_from(bgra.len()).map_err(std::io::Error::other)?;
+        let mut out = Vec::with_capacity(54 + bgra.len());
+        out.extend_from_slice(b"BM");
+        out.extend_from_slice(&(54 + image).to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&54u32.to_le_bytes());
+        out.extend_from_slice(&40u32.to_le_bytes());
+        out.extend_from_slice(&(width as i32).to_le_bytes());
+        // Negative height: rows top to bottom, as read back.
+        out.extend_from_slice(&(-(height as i32)).to_le_bytes());
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes()); // BI_RGB
+        out.extend_from_slice(&image.to_le_bytes());
+        out.extend_from_slice(&2835i32.to_le_bytes());
+        out.extend_from_slice(&2835i32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(bgra);
+        std::fs::write(path, out)
+    }
+
+    fn drive_fixture(
         runtime: &CefRuntime,
         window: &sdl3::video::Window,
         events: &mut sdl3::EventPump,
+        gpu: &Gpu,
         timeout: Duration,
     ) -> Result<(i32, MacosCefProducer), String> {
-        let mut instance_desc = wgpu::InstanceDescriptor::new_without_display_handle();
-        // welding's macOS import is Metal only (IOSurface -> MTLTexture -> grafting).
-        instance_desc.backends = wgpu::Backends::METAL;
-        let instance = wgpu::Instance::new(instance_desc);
-        // SAFETY: SDL owns the NSWindow/NSView; the surface is dropped at the end of this
-        // function, before the caller drops the window, all on the main thread.
-        let surface = unsafe {
-            let target = wgpu::SurfaceTargetUnsafe::from_display_and_window(window, window)
-                .map_err(|e| format!("SDL3 window handle: {e}"))?;
-            instance.create_surface_unsafe(target)
-        }
-        .map_err(|e| format!("surface: {e}"))?;
-        let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
-            power_preference: wgpu::PowerPreference::HighPerformance,
-            compatible_surface: Some(&surface),
-            ..Default::default()
-        }))
-        .map_err(|e| format!("Metal adapter: {e}"))?;
-        let info = adapter.get_info();
-        println!(
-            "gate: adapter name={:?} backend={:?} type={:?} driver={:?}",
-            info.name, info.backend, info.device_type, info.driver
-        );
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("Roves CEF macOS gate"),
-            ..Default::default()
-        }))
-        .map_err(|e| format!("Metal device: {e}"))?;
-        let host = HostWgpuContext::new(device, queue);
-        if host.backend != InteropBackend::Metal {
-            return Err(format!(
-                "interop backend {:?}, expected Metal",
-                host.backend
-            ));
-        }
-        let wgpu_failed = Arc::new(AtomicBool::new(false));
-        host.device.on_uncaptured_error(Arc::new({
-            let failed = wgpu_failed.clone();
-            move |error| {
-                failed.store(true, Ordering::Relaxed);
-                println!("gate: FAIL wgpu uncaptured error: {error}");
-            }
-        }));
-
-        let (width, height) = window.size_in_pixels();
-        let caps = surface.get_capabilities(&adapter);
-        let format = [
-            wgpu::TextureFormat::Bgra8Unorm,
-            wgpu::TextureFormat::Rgba8Unorm,
-        ]
-        .into_iter()
-        .find(|f| caps.formats.contains(f))
-        .unwrap_or(caps.formats[0]);
-        let mut surface_config = surface
-            .get_default_config(&adapter, width.max(1), height.max(1))
-            .ok_or("surface not supported by the adapter")?;
-        surface_config.format = format;
-        surface_config.present_mode = wgpu::PresentMode::AutoVsync;
-        surface.configure(&host.device, &surface_config);
-        let blitter = wgpu::util::TextureBlitter::new(&host.device, format);
-
+        let size = gpu.size();
         let mut producer = MacosCefProducer::new(
             runtime,
             MacosCefConfig {
                 surface: CefSurfaceConfig {
                     initial_url: FIXTURE_URL.to_owned(),
-                    initial_size: PhysicalSize::new(width, height),
+                    initial_size: size,
                     scale_factor: window.display_scale(),
                     ..Default::default()
                 },
@@ -250,8 +580,10 @@ mod gate {
         )
         .map_err(|e| format!("CEF producer: {e}"))?;
         println!(
-            "gate: producer created mode={:?} size={width}x{height}",
-            producer.surface_mode()
+            "gate: producer created mode={:?} size={}x{}",
+            producer.surface_mode(),
+            size.width,
+            size.height
         );
 
         let started = Instant::now();
@@ -284,7 +616,7 @@ mod gate {
                     _ => {},
                 }
             }
-            match producer.acquire_frame(&host) {
+            match producer.acquire_frame(&gpu.host) {
                 Ok(Some(new)) => {
                     imported += 1;
                     if imported == 1 {
@@ -296,7 +628,7 @@ mod gate {
                             started.elapsed().as_millis()
                         );
                     }
-                    match centre_matches(&host, &new) {
+                    match centre_matches(&gpu.host, &new) {
                         Ok(true) => {
                             println!(
                                 "gate: PASS pixel centre {SAMPLE}x{SAMPLE} == {EXPECTED_BGRA:?} \
@@ -318,10 +650,10 @@ mod gate {
                     failed = true;
                 },
             }
-            if !present(&surface, &surface_config, &host, &blitter, frame.as_ref()) {
+            if !gpu.present(frame.as_ref()) {
                 std::thread::sleep(Duration::from_millis(4));
             }
-            failed |= wgpu_failed.load(Ordering::Relaxed);
+            failed |= gpu.failed.load(Ordering::Relaxed);
         }
         println!(
             "gate: loop end imported={imported} matched={matched} elapsed_ms={}",
@@ -346,12 +678,11 @@ mod gate {
             2
         };
         drop(frame);
-        drop(surface);
         Ok((code, producer))
     }
 
-    /// Copies the centre `SAMPLE` x `SAMPLE` block of the imported texture (grafting creates
-    /// it with `COPY_SRC`) and compares every texel with the fixture colour.
+    /// Compares every texel of the frame's centre `SAMPLE` x `SAMPLE` block with the fixture
+    /// colour.
     fn centre_matches(host: &HostWgpuContext, frame: &ImportedTexture) -> Result<bool, String> {
         let (w, h) = (frame.size.width, frame.size.height);
         if w < SAMPLE || h < SAMPLE {
@@ -363,116 +694,16 @@ mod gate {
                 frame.format
             ));
         }
-        let row = SAMPLE * 4;
-        let buffer = host.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("gate readback"),
-            size: u64::from(row * SAMPLE),
-            usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
-            mapped_at_creation: false,
-        });
-        let mut encoder = host
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("gate readback"),
-            });
-        encoder.copy_texture_to_buffer(
-            wgpu::TexelCopyTextureInfo {
-                texture: &frame.texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d {
-                    x: (w - SAMPLE) / 2,
-                    y: (h - SAMPLE) / 2,
-                    z: 0,
-                },
-                aspect: wgpu::TextureAspect::All,
-            },
-            wgpu::TexelCopyBufferInfo {
-                buffer: &buffer,
-                layout: wgpu::TexelCopyBufferLayout {
-                    offset: 0,
-                    bytes_per_row: Some(row),
-                    rows_per_image: Some(SAMPLE),
-                },
-            },
-            wgpu::Extent3d {
-                width: SAMPLE,
-                height: SAMPLE,
-                depth_or_array_layers: 1,
-            },
-        );
-        host.queue.submit([encoder.finish()]);
-        let slice = buffer.slice(..);
-        let (tx, rx) = std::sync::mpsc::channel();
-        slice.map_async(wgpu::MapMode::Read, move |result| {
-            let _ = tx.send(result);
-        });
-        host.device
-            .poll(wgpu::PollType::wait_indefinitely())
-            .map_err(|e| format!("poll: {e}"))?;
-        rx.recv()
-            .map_err(|e| format!("map callback: {e}"))?
-            .map_err(|e| format!("map: {e}"))?;
-        let ok = slice
-            .get_mapped_range()
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .all(|px| {
-                px.iter()
-                    .zip(EXPECTED_BGRA)
-                    .all(|(&a, b)| a.abs_diff(b) <= TOLERANCE)
-            });
-        buffer.unmap();
-        Ok(ok)
-    }
-
-    /// Shows the latest imported frame in the SDL3 window (stretched) or black before the
-    /// first frame. Returns whether a texture was presented (vsync then paces the loop).
-    fn present(
-        surface: &wgpu::Surface<'_>,
-        config: &wgpu::SurfaceConfiguration,
-        host: &HostWgpuContext,
-        blitter: &wgpu::util::TextureBlitter,
-        frame: Option<&ImportedTexture>,
-    ) -> bool {
-        let output = match surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(t)
-            | wgpu::CurrentSurfaceTexture::Suboptimal(t) => t,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
-                surface.configure(&host.device, config);
-                return false;
-            },
-            _ => return false,
-        };
-        let target = output
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = host
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("gate present"),
-            });
-        match frame {
-            Some(frame) => blitter.copy(&host.device, &mut encoder, &frame.view, &target),
-            None => {
-                encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("gate clear"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: &target,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    ..Default::default()
-                });
-            },
-        }
-        host.queue.submit([encoder.finish()]);
-        output.present();
-        true
+        let pixels = read_region(
+            host,
+            frame,
+            ((w - SAMPLE) / 2, (h - SAMPLE) / 2, SAMPLE, SAMPLE),
+        )?;
+        Ok(pixels.as_chunks::<4>().0.iter().all(|px| {
+            px.iter()
+                .zip(EXPECTED_BGRA)
+                .all(|(&a, b)| a.abs_diff(b) <= TOLERANCE)
+        }))
     }
 
     /// Chromium's macOS launcher appends `--seatbelt-client=<fd>` to every child it starts
@@ -480,7 +711,7 @@ mod gate {
     /// (`content/browser/child_process_launcher_helper_mac.cc`, README "Chromium reference").
     /// Requires at least one renderer helper of this bundle, all of them with the switch and
     /// none with `--no-sandbox`; GPU and utility helpers are reported only.
-    fn renderer_sandboxed() -> bool {
+    pub(crate) fn renderer_sandboxed() -> bool {
         let output = match std::process::Command::new("/bin/ps")
             .args(["-axww", "-o", "pid=,command="])
             .output()

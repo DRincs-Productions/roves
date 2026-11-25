@@ -1,8 +1,10 @@
 # CEF accelerated OSR -> wgpu-weld -> wgpu + SDL3: macOS feasibility gate
 
-Status (2026-11-25): **implemented, type-checked locally for `aarch64-apple-darwin`; never
-compiled with CEF, never run.** Its CI (`.github/workflows/cef-macos-gate.yml`) has no
-result yet. Nothing here claims that the macOS path works.
+Status (2026-11-25): the fixture gate is **green in CI run 45575923557** (commit
+`fa9a52ce122`, `macos-15` arm64, macOS 15.8.2, Apple paravirtual GPU): exit 0, so CEF's
+accelerated IOSurface frames reached the wgpu Metal device on that runner with a sandboxed
+renderer. The **packaged-game slice** (section "Packaged game") is implemented and
+type-checked locally only; it has no CI result yet. No real Mac has run either mode.
 
 First non-Windows step of the CEF + SDL3 + wgpu player (`support/cef-netrender-probe`,
 Windows only). It answers one question with the same maintained producer and renderer as
@@ -23,9 +25,11 @@ untouched.
 | Rust | 1.99.1 (MSRV 1.97.1) | as the Windows workflow |
 
 `Cargo.lock` was seeded from `support/cef-netrender-probe/Cargo.lock`; resolving this crate
-only removed packages (axum, tokio extras, ab_glyph, ...) and added none, so every shared
+only removed packages (ab_glyph, Netrender, ...) and added none, so every shared
 package, macOS-only ones included (objc2, objc2-metal, objc2-io-surface, libloading), has the
-Windows player's version. CI repeats the Windows graph check: one wgpu 29.0.4 for the gate,
+Windows player's version. The packaged-game slice re-seeded it the same way: axum 0.8.9,
+tower-http 0.7.1, tokio and tower (the loopback server's crates) came back at the Windows
+player's versions, and the lock diff contains only additions. CI repeats the Windows graph check: one wgpu 29.0.4 for the gate,
 welding and grafting; wgpu 30.0.2 only under `cef` (`accelerated_osr`, never called).
 
 ## macOS path and exact APIs (read in welding e991684 and cef 154.5.0)
@@ -87,15 +91,74 @@ Difference from Chromium: Chromium composites and presents in its own GPU proces
 frame leaves Chromium as an IOSurface and the host presents it with wgpu, as on Windows
 (where welding copies it inside the callback instead).
 
+Added for the packaged-game slice (same revision, sparse paths added):
+
+- `content/public/browser/web_contents_observer.h:500-517`: `DidFinishLoad` fires when the
+  document's load is done in the renderer (onload dispatched), per frame; `DidFailLoad` is
+  its failure twin. CEF reports the former as `OnLoadEnd` and the latter as `OnLoadError`,
+  and welding forwards only the main frame's. The player accepts the game on the main
+  frame's load-end on the loopback origin with a 2xx/304 status and fails on a main-frame
+  load error, like the Windows player.
+- Same header, line 652 (`DidFirstVisuallyNonEmptyPaint`) and 1055
+  (`OnFirstContentfulPaintInPrimaryMainFrame`): Chromium's own "first paint" signals live
+  inside the browser and are not exposed by CEF's OSR API. The OSR counterpart used here is
+  the first `OnAcceleratedPaint` frame imported after the accepted load-end; a `WasResized`
+  at load-end makes an already static page paint once more (as the Windows player's startup
+  gate). Content is not compared with a reference: the gate records the frame's distinct
+  colours and requires the last frame before close not to be a single colour.
+- `chrome/browser/app_controller_mac.mm:938-988` (`tryToTerminateApplication`): Chrome's
+  quit path first closes every browser (`CloseAllBrowsersAndQuit`) and only then shuts down.
+  The player follows the same order: SDL quit/window close -> `close_browser(force)` ->
+  pump CEF until `OnBeforeClose` -> `cef::shutdown` -> stop the loopback server (after CEF,
+  so in-flight responses finish) -> remove the per-run cache. Unlike Chrome there is no
+  `beforeunload` confirmation (forced close), as on Windows.
+
+## Packaged game
+
+The same binary becomes a minimal player when its bundle contains
+`Contents/Resources/game/index.html` (`src/player.rs`); otherwise it runs the fixture gate.
+Opening such an `.app` plays the game: no switch, no debug server.
+
+- **Serving**: `support/cef-window-probe/src/server.rs`, compiled through `#[path]` exactly
+  as the Windows player does (axum + tower-http `ServeDir` on `127.0.0.1`, port 0 = a new
+  origin per run, `Cache-Control: no-cache`, per-instance ETags). It starts before CEF (the
+  origin is the browser's initial URL) and stops after `cef::shutdown`. The game files are
+  never modified or injected into.
+- **Load**: the main frame's `LoadEnd` must be on the origin with 2xx/304; a main-frame
+  `LoadError`, a main frame committed off the origin (welding has no pre-navigation veto, as
+  on Windows), or a renderer death fails the run. Popups are cancelled by welding and only
+  reported. Console messages are printed (first 200, then counted per level).
+- **First frame**: the first accelerated frame imported after the accepted load-end, read
+  back once for the log. `ROVES_GATE_TIMEOUT_SECS` (default 60) bounds load-end plus that
+  frame; no frame at all gives exit 2, frames only before the load-end give exit 1.
+- **Close**: SDL `Quit` (Cmd+Q, last window closed) or `WindowEvent::CloseRequested` ends
+  the loop; then `close_browser(force)` and a CEF pump until `OnBeforeClose`. welding
+  e991684's macOS producer exposes no close-completion API (Windows has `is_closed`); its
+  `LifeSpanHandler::on_before_close` logs the literal debug record `CEF on_before_close`
+  (target `welding::macos_cef::cef_backed`), which the gate's logger turns into a flag
+  (`fmt::Arguments::as_str`, no formatting of other debug records). Pinned revision: the
+  signal must be rechecked when welding is bumped. No `OnBeforeClose` within 10 s fails the
+  run. The fixture gate uses the same close (it used a fixed 1.5 s pump before).
+- **Profile**: the per-run cache under the temporary directory, removed at exit (isolated,
+  as the Windows `--roves-isolated-profile`). A persistent profile and fixed origin (saves
+  across launches) are not part of this slice.
+- **Test-only environment** (CI): `ROVES_GATE_AUTO_CLOSE_MS` pushes one SDL quit event that
+  long after the first game frame, so the ordinary close path runs unattended;
+  `ROVES_GATE_FRAME_DUMP=<file.bmp>` writes the last frame before close (32-bit top-down
+  BMP of the `Bgra8Unorm` readback).
+- **Not in this slice**: input forwarding (mouse/keyboard/IME through welding's API, and the
+  `CefDoMessageLoopWork`/`NSEvent` question in "Chromium reference"), window title from the
+  page, resize, persistent profile, signing/notarisation, Steam.
+
 ## Verdicts
 
 The main binary prints `gate:` lines on stdout and exits with:
 
-| Exit | Meaning |
-| --- | --- |
-| 0 | An imported frame's centre 64x64 block matched dodger blue `[255,144,30,255]` BGRA ±8, and the renderer was sandboxed |
-| 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before `ROVES_GATE_TIMEOUT_SECS` (default 60), nothing failed, renderer sandboxed |
-| 1 | Any `gate: FAIL`: CEF/SDL/wgpu setup, non-Metal interop, `acquire_frame` or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, renderer missing or unsandboxed |
+| Exit | Fixture gate | Packaged game |
+| --- | --- | --- |
+| 0 | An imported frame's centre 64x64 block matched dodger blue `[255,144,30,255]` BGRA ±8, renderer sandboxed, browser closed | Accepted load-end, a frame after it, close requested, last frame not a single colour, renderer sandboxed, browser closed, server stopped |
+| 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before the timeout, nothing failed | Game loaded but no accelerated frame at all before the timeout |
+| 1 | Any `gate: FAIL` (setup, non-Metal interop, `acquire_frame`/readback, wgpu error, content process terminated, no match, renderer missing or unsandboxed, no `OnBeforeClose`) | Any `gate: FAIL`, plus: load-end rejected or missing, load error, off-origin commit, close before the first game frame, server stop error |
 
 The fixture is a `data:` page (blue, plus a 1 px corner element animated with
 `requestAnimationFrame` so CEF keeps painting). The uniform colour proves the frame's
@@ -108,16 +171,36 @@ content arrived, not ordering or tearing.
 dependency graph check; `cargo build --locked --release --bins`; `target/release/bundle`
 and a structure check (main executable, framework, `libcef_sandbox.dylib`, five helpers);
 one sandboxed run with a 150 s hard stop. The run step fails on any `gate: FAIL`, a missing
-`cef initialized sandbox=Sandboxed`, Metal adapter, `mode=AcceleratedPaint`,
-`PASS sandbox` or `shutdown complete exit=<code>` line, an exit other than 0/2, or a gate
-process alive after exit. Exit 2 is a notice: GitHub's macOS runners are virtual machines
-with a paravirtual GPU, and Chromium may disable GPU compositing there (as WARP does on
-Windows). Artifacts: `cef-macos-gate-logs`, `cef-macos-gate-arm64` (zipped `.app`, unsigned
-apart from the linker's ad-hoc signature). Never gates a release.
+`mode=fixture`, `cef initialized sandbox=Sandboxed`, Metal adapter, `mode=AcceleratedPaint`,
+`PASS sandbox`, `browser closed`, `cef shutdown complete` or `shutdown complete exit=<code>`
+line, an exit other than 0/2, or a gate process alive after exit. Exit 2 is a notice:
+GitHub's macOS runners are virtual machines with a paravirtual GPU, and Chromium may disable
+GPU compositing there (as WARP does on Windows); run 45575923557 got exit 0.
+
+Packaged game, on the same `.app` (no second build): checkout of
+`DRincs-Productions/visual-novel-template` at `e88e9ac29e736e007904e0767815e21cd8725941` (the
+Windows package's pin), Node 22, `npm ci` + `npm run build`, provenance in
+`vnt-build-info.txt`; `dist/` copied with `ditto` into `Contents/Resources/game` and compared
+with `diff -r` (byte-for-byte, SHA-256 list as an artifact). One run with
+`ROVES_GATE_AUTO_CLOSE_MS=8000` and the 150 s hard stop. Required, in this order: CEF
+sandboxed, Metal adapter, producer on `<origin>/`, `load-end status=200 url=<origin>/
+ok=true`, game loaded, fresh frame requested, first game frame (`Bgra8Unorm`), auto-close
+scheduled and pushed, loop end with `loaded=true game_frame=true close=quit`, close
+requested, last game frame, frame dump, `PASS sandbox`, `PASS packaged game`, browser
+closed, CEF shutdown, loopback stopped, cache removed, exit 0. Also: no `gate: FAIL`, no
+`DevTools listening` line, cache directory gone, loopback port no longer accepting, no
+process left. If the fixture run and the player both give exit 2, only load and close are
+required (notice). Artifacts: `cef-macos-gate-logs` (both run logs, `player-last-frame.bmp`,
+template build logs and provenance, packaged-file hashes) and `cef-macos-player-arm64` (the
+zipped `.app`, with the game when packaging ran; unsigned apart from the linker's ad-hoc
+signature). Never gates a release.
 
 Local checks done on Windows (light only, as required):
 `cargo check`/`cargo clippy --target aarch64-apple-darwin --no-default-features --features dox --bins`
-(clean, 1.99.1), `cargo fmt --check`, YAML parse. They type-check the macOS code paths of
+(clean, 1.99.1), `cargo fmt --check`, YAML parse. Packaged-game slice: the same clippy with
+`-D warnings`, `cargo metadata --locked`, the CI graph check (wgpu 29 users, wgpu 30 only
+under cef), `bash -n` of every run script, and the player step's ordered log check run on a
+simulated log (passes; a removed `loopback stopped` line and a wrong exit code both fail). They type-check the macOS code paths of
 welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anything.
 
 ## Open risks and blockers (not verified)
@@ -137,8 +220,14 @@ welding, objc2 and wgpu Metal; they do not build CEF or SDL, link or run anythin
 - **IOSurface synchronisation**: zero-copy import with no fence while Chromium may recycle
   the surface (see Chromium reference). Possible tearing or stale content under load; the
   gate cannot detect it. If observed, compare with welding's Windows copy-in-callback model.
-- **Shutdown**: welding's macOS producer has no close-completion signal (Windows has
-  `is_closed`), so the gate pumps CEF for 1.5 s after `close()` before `cef::shutdown`.
+- **Shutdown**: welding's macOS producer has no close-completion API (Windows has
+  `is_closed`); the gate waits for its `CEF on_before_close` debug record (section
+  "Packaged game"). A small upstream addition (`is_closed` on `MacosCefProducer`, as on
+  Windows) would remove the log dependency; not proposed yet.
+- **Real close buttons**: CI closes through a pushed SDL quit event. The red window button
+  and Cmd+Q reach SDL as `NSEvent`s/`NSApp` delegate calls, and `CefDoMessageLoopWork` may
+  drain the `NSApplication` queue itself (Chromium reference above), so whether SDL sees
+  them is a manual check on a real Mac, not verified here.
 - **Keychain**: the gate passes `--use-mock-keychain` (unattended runs would otherwise block
   on Chromium's Safe Storage prompt). The player needs a deliberate choice before
   distribution.
