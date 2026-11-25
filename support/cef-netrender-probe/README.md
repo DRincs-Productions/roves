@@ -638,7 +638,7 @@ construction.
 cd D:\games\pixi-vn-react-template; npm ci; npm run build   # -> dist\index.html
 
 # 2. Run it from the probe bundle (artifact cef-netrender-probe-windows-x64 of a CI run of
-#    this branch). Accelerated frames need a real GPU (WARP gets none). There is no
+#    this branch). Accelerated frames need a real GPU (WARP uses software paint). There is no
 #    composition switch here: --roves-compose=netrender belongs to codex/cef-netrender-probe.
 $dir = 'D:\roves-ci\<run id>-cef-sdl3'
 $exe = "$dir\bundle\roves_cef_netrender_probe.exe"
@@ -1370,6 +1370,35 @@ engine binary is required. A target without this support (any non-Windows target
 release older than the one that ships the bridge) must fail with a clear error instead of
 silently producing a package without MCP.
 
+## Software paint (WARP and PCs without a GPU; implemented 2026-11-25, not yet run in CI)
+
+Accelerated OSR delivers no importable frame on WARP (`Microsoft Basic Render Driver`,
+`DeviceType::Cpu`: the CI runner, and what Windows uses on a PC without a GPU or driver), so
+the window stayed black and the packaged game never left its startup screen. The player now
+chooses the paint path once, before the browser exists (`game_rules::paint_path`, shared with
+the Linux gate): on a CPU adapter, or with `ROVES_FORCE_CPU_PAINT=1` (tests), it creates the
+browser with `prefer_accelerated = false`. The vendored welding (`support/vendor/wgpu-weld`,
+changes and upstream texts in its `ROVES_PATCHES.md`) then uses CEF's standard software OSR
+path: `CefWindowInfo::shared_texture_enabled = 0`, `CefRenderHandler::OnPaint` with a
+`width*height*4` BGRA buffer and pixel dirty rects, at the same `windowless_frame_rate` (60).
+Only the dirty rows are copied inside the callback; the union of the dirty rectangles is
+uploaded with `Queue::write_texture` into one persistent `Bgra8Unorm` texture (recreated on
+resize) that `acquire_frame` returns like an imported frame, so composition, the startup
+gate, checks and readback are unchanged. Chromium's own software compositor works the same
+way (`components/viz/service/display_embedder/software_output_device_win.cc`, damage rect
+per frame, reference `f2700724f59f`).
+
+Log lines: `paint path=Software("cpu-adapter") evidence=software`, `producer created
+accelerated=false background=<white|transparent> evidence=software`, `import frame=1 ...
+path=cpu-paint-upload evidence=software` (accelerated: `paint path=Accelerated
+evidence=accelerated`, `path=dx12-shared-handle`). A software frame shows the game; it is no
+evidence about the DX12 shared-handle import, which remains a real-GPU check. CI (WARP) now
+requires the software path: 16 `PASS pixel` lines in the fixture run, the template package
+released from its startup screen with a software frame (exit 0), the persistent-profile and
+host API launches exit 0. Cost: one CPU copy of the dirty rows plus one texture upload per
+painted frame (not measured; performance flow). In `--roves-sustained` the stall mailbox
+re-poll is observational and sees no DX12 frame in software mode.
+
 ## Pipeline
 
 1. CEF's `bootstrap.exe` (shipped as `roves_cef_netrender_probe.exe`) initializes the
@@ -1874,7 +1903,7 @@ screen was released, otherwise refused as not ready (WARP, exit 2); record remov
 
 | Component | Pin | Notes |
 | --- | --- | --- |
-| wgpu-weld / `welding` | git `e991684` (main, 2026-11-20, crate 0.15.0) | `default-features = false`, `wgpu-29` + `cef-runtime`. `welding/src` is unchanged since the 0.15.0 release-notes commit `5e7ce9f`; later commits change only the manifest (grafting from git main, wgpu 30.0.2) and repository tooling. Not compared byte-for-byte with the crates.io 0.15.0 package. MSRV 1.97.1; its CI toolchain 1.99.1. MPL-2.0 |
+| wgpu-weld / `welding` | `e991684` (main, 2026-11-20, crate 0.15.0), vendored since 2026-11-25 in `support/vendor/wgpu-weld` as a path dependency with the Roves CPU-paint fallback ("Software paint", `ROVES_PATCHES.md`) | `default-features = false`, `wgpu-29` + `cef-runtime` + `cpu-paint-fallback`. `welding/src` is unchanged since the 0.15.0 release-notes commit `5e7ce9f`; later commits change only the manifest (grafting from git main, wgpu 30.0.2) and repository tooling. Not compared byte-for-byte with the crates.io 0.15.0 package. MSRV 1.97.1; its CI toolchain 1.99.1. MPL-2.0 |
 | `grafting` / `grafting-frame` | git d903cfa (0.6.1 / 0.1.1) | Pinned with `cargo update --precise` to the revision wgpu-weld's own `Cargo.lock` reviewed at e991684 (grafting main is at df803e0, 0.6.3). MPL-2.0 |
 | `cef` / `cef-dll-sys` | `=154.5.0+154.0.34` (Chromium 154.0.8037.98) | sha256 `495579dc...930b` / `a52b7101...5f69`, equal to wgpu-weld's lock |
 | `wgpu` | `=29.0.4` (wgpu-core/hal/types 29.0.4, naga 29.0.4) | welding's `wgpu-29` row; Netrender d2f13ca5 |

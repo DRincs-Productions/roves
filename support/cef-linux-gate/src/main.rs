@@ -1,7 +1,10 @@
 //! Linux feasibility gate: CEF 154 accelerated OSR (`OnAcceleratedPaint`, native pixmap
 //! DMA-BUF planes) -> welding/grafting Vulkan external-memory import -> wgpu 29 Vulkan device
 //! that also presents to an SDL3 X11 window, with Chromium's sandbox on. No CEF windowed
-//! mode and no software (`OnPaint`) path exist here.
+//! mode. Where no frame can be imported (CPU Vulkan adapter such as lavapipe, no DMA-BUF
+//! import device, or `ROVES_FORCE_CPU_PAINT=1`) the browser is created in CEF's software
+//! mode instead (`OnPaint` BGRA buffer uploaded with `Queue::write_texture`, vendored welding
+//! `cpu_paint`), and every PASS line says `evidence=software` (README "Software paint").
 //!
 //! Two modes, chosen by the gate directory (README "Packaged game"):
 //! - fixture gate (no `game/index.html` next to the executable): a `data:` page whose centre
@@ -11,17 +14,14 @@
 //!   the close path are checked.
 //!
 //! Exit codes (README "Verdicts"):
-//! - 0: the mode's checks passed on an imported frame and every renderer was sandboxed. The
-//!   PASS line carries `evidence=gpu` or `evidence=software-adapter`.
-//! - 2: no accelerated frame arrived before the timeout (expected without a GPU/DRI3, e.g.
-//!   on a hosted CI runner), but nothing failed and every renderer was sandboxed.
-//! - 3: the Vulkan adapter is a CPU implementation (lavapipe) without the DMA-BUF import
-//!   extensions, so no import device exists and nothing CEF painted can be shown; CEF, the
-//!   sandbox, SDL3 presentation (black), the game load (packaged mode) and shutdown were
-//!   still checked and nothing failed. Never accepted on a real GPU; never graphics evidence.
+//! - 0: the mode's checks passed on a shown frame and every renderer was sandboxed. The
+//!   PASS line carries `evidence=gpu` (accelerated import) or `evidence=software` (CEF
+//!   software output uploaded by welding: shows the game, says nothing about GPU import).
+//! - 2: no frame arrived before the timeout, but nothing failed and every renderer was
+//!   sandboxed.
 //! - 6: packaged game only, before CEF starts: the persistent profile is held by another
 //!   instance, or its stored origin port is taken by another program.
-//! - 1: any failure (CEF/SDL/wgpu setup, DMA-BUF device on a real GPU, import error incl.
+//! - 1: any failure (CEF/SDL/wgpu setup, import error incl.
 //!   `IMPLICIT_MODIFIER`, wrong pixels, wgpu error, content process death, renderer not
 //!   sandboxed or not found, game load refused, close not completed).
 //!
@@ -171,7 +171,7 @@ mod gate {
         linux_cef::{LinuxCefConfig, LinuxCefProducer},
     };
 
-    use crate::game_rules::PLAYER_GAME_DIR;
+    use crate::game_rules::{FORCE_CPU_PAINT_ENV, PLAYER_GAME_DIR, PaintPath, paint_path};
 
     /// Deterministic page: dodger blue everywhere, plus a 1 px corner element animated with
     /// requestAnimationFrame so CEF keeps painting (accelerated OSR only paints on change).
@@ -710,16 +710,6 @@ mod gate {
         Ok(())
     }
 
-    /// Whether the host device can import CEF's DMA-BUF frames.
-    #[derive(Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum Import {
-        /// `welding::build_dmabuf_capable_device` succeeded.
-        DmaBuf,
-        /// CPU adapter without the extension set: frames are counted, never imported, and
-        /// the window only ever shows black. Never graphics evidence.
-        Unavailable,
-    }
-
     /// wgpu Vulkan device presenting to the SDL3 X11 window; welding imports into the same
     /// device when it was created with the DMA-BUF extensions.
     pub(crate) struct Gpu {
@@ -728,8 +718,9 @@ mod gate {
         blitter: wgpu::util::TextureBlitter,
         pub(crate) host: HostWgpuContext,
         pub(crate) failed: Arc<AtomicBool>,
-        pub(crate) import: Import,
-        /// `gpu` or `software-adapter`, carried by every PASS line.
+        /// Accelerated DMA-BUF import, or CEF software output when no frame can be imported.
+        pub(crate) paint: PaintPath,
+        /// `gpu` (accelerated import) or `software`, carried by every PASS line.
         pub(crate) evidence: &'static str,
     }
 
@@ -755,33 +746,47 @@ mod gate {
                 }))
                 .map_err(|e| format!("Vulkan adapter: {e}"))?;
             let info = adapter.get_info();
-            let software = info.device_type == wgpu::DeviceType::Cpu;
-            let evidence = if software { "software-adapter" } else { "gpu" };
+            let cpu_adapter = info.device_type == wgpu::DeviceType::Cpu;
             println!(
-                "gate: adapter name={:?} backend={:?} type={:?} driver={:?} driver_info={:?} \
-                 evidence={evidence}",
+                "gate: adapter name={:?} backend={:?} type={:?} driver={:?} driver_info={:?}",
                 info.name, info.backend, info.device_type, info.driver, info.driver_info
             );
             let desc = wgpu::DeviceDescriptor {
                 label: Some("Roves CEF Linux gate"),
                 ..Default::default()
             };
+            // A CPU adapter (lavapipe) or the test override goes straight to CEF's software
+            // output; otherwise the DMA-BUF import device is tried first, and CEF's software
+            // output is the fallback when it cannot be created (e.g. NVIDIA proprietary, VMs).
             // wgpu 29 has no VULKAN_EXTERNAL_MEMORY_DMA_BUF feature; grafting adds the
             // external-memory, DRM-modifier and foreign-queue extensions itself.
-            let (device, queue, import) =
-                match welding::build_dmabuf_capable_device(&adapter, &desc) {
-                    Ok((device, queue)) => {
-                        println!("gate: dmabuf device created");
-                        (device, queue, Import::DmaBuf)
-                    },
-                    Err(error) if software => {
-                        println!("gate: dmabuf device unavailable on the CPU adapter: {error}");
-                        let (device, queue) = pollster::block_on(adapter.request_device(&desc))
-                            .map_err(|e| format!("Vulkan device: {e}"))?;
-                        (device, queue, Import::Unavailable)
-                    },
-                    Err(error) => return Err(format!("dmabuf device on a GPU adapter: {error}")),
+            let force = std::env::var(FORCE_CPU_PAINT_ENV).ok();
+            let dmabuf =
+                if paint_path(cpu_adapter, true, force.as_deref()) == PaintPath::Accelerated {
+                    match welding::build_dmabuf_capable_device(&adapter, &desc) {
+                        Ok(pair) => {
+                            println!("gate: dmabuf device created");
+                            Some(pair)
+                        },
+                        Err(error) => {
+                            println!("gate: dmabuf device unavailable: {error}");
+                            None
+                        },
+                    }
+                } else {
+                    None
                 };
+            let paint = paint_path(cpu_adapter, dmabuf.is_some(), force.as_deref());
+            let evidence = match paint {
+                PaintPath::Accelerated => "gpu",
+                PaintPath::Software(_) => "software",
+            };
+            println!("gate: paint path={paint:?} evidence={evidence}");
+            let (device, queue) = match dmabuf {
+                Some(pair) => pair,
+                None => pollster::block_on(adapter.request_device(&desc))
+                    .map_err(|e| format!("Vulkan device: {e}"))?,
+            };
             let host = HostWgpuContext::new(device, queue);
             if host.backend != InteropBackend::Vulkan {
                 return Err(format!(
@@ -829,7 +834,7 @@ mod gate {
                 blitter,
                 host,
                 failed,
-                import,
+                paint,
                 evidence,
             })
         }
@@ -934,6 +939,7 @@ mod gate {
                     initial_url: FIXTURE_URL.to_owned(),
                     initial_size: size,
                     scale_factor: window.display_scale(),
+                    prefer_accelerated: gpu.paint == PaintPath::Accelerated,
                     ..Default::default()
                 },
             },
@@ -978,57 +984,41 @@ mod gate {
                     _ => {},
                 }
             }
-            match gpu.import {
-                Import::DmaBuf => match producer.acquire_frame(&gpu.host) {
-                    Ok(Some(new)) => {
-                        delivered += 1;
-                        if delivered == 1 {
-                            println!(
-                                "gate: first accelerated frame imported size={}x{} format={:?} \
-                                 elapsed_ms={}",
-                                new.size.width,
-                                new.size.height,
-                                new.format,
-                                started.elapsed().as_millis()
-                            );
-                        }
-                        match centre_matches(&gpu.host, &new) {
-                            Ok(true) => {
-                                println!(
-                                    "gate: PASS pixel centre {SAMPLE}x{SAMPLE} == rgb \
-                                     {EXPECTED_RGB:?} ±{TOLERANCE} format={:?} frame={delivered} \
-                                     evidence={evidence}",
-                                    new.format
-                                );
-                                matched = true;
-                            },
-                            Ok(false) => {},
-                            Err(error) => {
-                                println!("gate: FAIL readback: {error}");
-                                failed = true;
-                            },
-                        }
-                        frame = Some(new);
-                    },
-                    Ok(None) => {},
-                    Err(error) => {
-                        report_acquire_error(&error.to_string());
-                        failed = true;
-                    },
-                },
-                Import::Unavailable => {
-                    // Take (and drop, closing the duplicated fds) what CEF delivered so
-                    // the count is honest even though nothing can be imported.
-                    if producer.acquire_native_frame().is_some() {
-                        delivered += 1;
-                        if delivered == 1 {
-                            println!(
-                                "gate: first accelerated frame delivered (not imported: no \
-                                 dmabuf device) elapsed_ms={}",
-                                started.elapsed().as_millis()
-                            );
-                        }
+            match producer.acquire_frame(&gpu.host) {
+                Ok(Some(new)) => {
+                    delivered += 1;
+                    if delivered == 1 {
+                        println!(
+                            "gate: first frame imported size={}x{} format={:?} \
+                             evidence={evidence} elapsed_ms={}",
+                            new.size.width,
+                            new.size.height,
+                            new.format,
+                            started.elapsed().as_millis()
+                        );
                     }
+                    match centre_matches(&gpu.host, &new) {
+                        Ok(true) => {
+                            println!(
+                                "gate: PASS pixel centre {SAMPLE}x{SAMPLE} == rgb \
+                                 {EXPECTED_RGB:?} ±{TOLERANCE} format={:?} frame={delivered} \
+                                 evidence={evidence}",
+                                new.format
+                            );
+                            matched = true;
+                        },
+                        Ok(false) => {},
+                        Err(error) => {
+                            println!("gate: FAIL readback: {error}");
+                            failed = true;
+                        },
+                    }
+                    frame = Some(new);
+                },
+                Ok(None) => {},
+                Err(error) => {
+                    report_acquire_error(&error.to_string());
+                    failed = true;
                 },
             }
             if gpu.present(frame.as_ref()) {
@@ -1044,7 +1034,7 @@ mod gate {
             elapsed.as_millis(),
             f64::from(presented) / elapsed.as_secs_f64().max(0.001)
         );
-        if gpu.import == Import::DmaBuf && delivered > 0 && !matched && !failed {
+        if delivered > 0 && !matched && !failed {
             println!("gate: FAIL {delivered} frame(s) imported, none matched the fixture colour");
             failed = true;
         }
@@ -1058,16 +1048,11 @@ mod gate {
             1
         } else if matched {
             0
-        } else if gpu.import == Import::Unavailable {
-            println!(
-                "gate: NO_DMABUF_DEVICE on a CPU adapter (frames delivered={delivered}, none \
-                 importable): CEF, sandbox, SDL3/wgpu presentation verified; import needs a GPU"
-            );
-            3
         } else {
             println!(
-                "gate: NO_ACCELERATED_FRAME within {}s (no OnAcceleratedPaint; e.g. no GPU or \
-                 no DRI3/GBM device for Chromium)",
+                "gate: NO_FRAME within {}s evidence={evidence} (accelerated: no \
+                 OnAcceleratedPaint, e.g. no DRI3/GBM device for Chromium; software: no \
+                 OnPaint)",
                 timeout.as_secs()
             );
             2

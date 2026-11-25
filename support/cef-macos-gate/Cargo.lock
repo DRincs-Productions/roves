@@ -2464,7 +2464,6 @@ dependencies = [
 [[package]]
 name = "welding"
 version = "0.15.0"
-source = "git+https://github.com/merely-made/wgpu-weld?rev=e991684bab23d0eaea42d418e216317173ace2a9#e991684bab23d0eaea42d418e216317173ace2a9"
 dependencies = [
  "base64 0.22.1",
  "cef",

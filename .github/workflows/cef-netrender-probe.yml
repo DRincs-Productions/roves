@@ -1,9 +1,10 @@
 name: CEF -> wgpu-weld -> wgpu + SDL3 probe
 
 # Developer experiment only (support/cef-netrender-probe/README.md): builds the isolated
-# Windows probe (welding e991684, CEF 154, wgpu 29.0.4 and SDL3) and runs it on
-# the runner's only DX12 adapter, WARP. Accelerated frame import is also tested on
-# real GPUs using the uploaded bundle. The same bundle then runs a --roves-game-dir loading
+# Windows probe (vendored welding e991684 + Roves CPU-paint fallback, CEF 154, wgpu 29.0.4
+# and SDL3) and runs it on the runner's only DX12 adapter, WARP, where the player selects
+# CEF's software output (OnPaint uploaded with Queue::write_texture, `evidence=software`).
+# Accelerated frame import is tested on real GPUs using the uploaded bundle. The same bundle then runs a --roves-game-dir loading
 # gate on a minimal loopback JS fixture (no GPU frame or gameplay claim). Finally it
 # packages the same Release bundle with the unmodified web build of
 # DRincs-Productions/visual-novel-template (pinned commit) as a directly playable Windows
@@ -20,6 +21,8 @@ on:
       # The players' shared host API and its CEF-free unit-test crate.
       - 'support/cef-window-probe/src/host_api.rs'
       - 'support/cef-host-api-tests/**'
+      # Vendored welding (temporary fork, ROVES_PATCHES.md).
+      - 'support/vendor/wgpu-weld/**'
       # The macOS/Linux key-code rules, unit-tested in cef-host-api-tests.
       - 'support/cef-macos-gate/src/key_rules.rs'
       # Embedded by the game-mode startup screen and play.exe's fallback icon.
@@ -145,10 +148,10 @@ jobs:
           key: cef-netrender-probe-${{ runner.os }}-rust-1.99.1-${{ hashFiles('support/cef-netrender-probe/Cargo.lock') }}
       # Gated on WARP: sandbox information present, DX12 adapter, producer created, every CEF
       # child launched without --no-sandbox (command lines sampled while it runs), clean exit
-      # and no leftover process. If CEF imports frames, the pixel/alpha/resize checks are
-      # gated too; if accelerated OSR delivers nothing on WARP, that is reported as a notice
-      # (the GPU path is then verified only on real hardware) and the process must still
-      # close cleanly.
+      # and no leftover process. WARP is a CPU adapter, so the player selects CEF's software
+      # output (README "Software paint"): frames must be uploaded (`path=cpu-paint-upload
+      # evidence=software`) and the pixel/alpha/resize checks pass, exit 0. This is no
+      # evidence about the accelerated GPU import (real hardware only).
       - name: run the probe (wgpu composition, WARP)
         shell: pwsh
         run: |
@@ -179,8 +182,10 @@ jobs:
           Get-Content $log
           $failed = $false
           foreach ($pattern in @(
-              'sandbox-info present=true', 'adapter name=.* backend=Dx12', 'surface format=',
-              'producer created accelerated=true background=transparent', 'closing imported=',
+              'sandbox-info present=true', 'adapter name=.* backend=Dx12 type=Cpu ', 'surface format=',
+              'paint path=Software\("cpu-adapter"\) evidence=software$',
+              'producer created accelerated=false background=transparent evidence=software$',
+              'import frame=1 .* path=cpu-paint-upload evidence=software$', 'closing imported=',
               'browser closed', 'cef shutdown complete', "exit code=$code")) {
             if (-not (Select-String -Path $log -Pattern $pattern -Quiet)) {
               Write-Output "::error::missing evidence: $pattern"; $failed = $true
@@ -192,16 +197,13 @@ jobs:
           if ($children.Values | Where-Object { $_ -match '--no-sandbox' }) {
             Write-Output '::error::a CEF child process was launched with --no-sandbox'; $failed = $true
           }
-          $imported = Select-String -Path $log -Pattern 'import frame=' -Quiet
-          if ($imported) {
-            if ($code -ne 0) { Write-Output "::error::frames were imported but the checks failed (exit $code)"; $failed = $true }
-            if (@(Select-String -Path $log -Pattern '^roves-cef-nr PASS pixel').Count -ne 16) {
-              Write-Output '::error::expected 16 PASS pixel lines (2 checks x 4 points x composed/cef-texture)'; $failed = $true
-            }
-          } else {
-            Write-Output "::notice::accelerated OSR imported no frame on WARP (exit $code): GPU import not verifiable on this runner"
-            if ($code -ne 2) { Write-Output "::error::unexpected exit code $code without frames"; $failed = $true }
+          if ($code -ne 0) { Write-Output "::error::software-paint fixture checks failed on WARP (exit $code)"; $failed = $true }
+          if (@(Select-String -Path $log -Pattern '^roves-cef-nr PASS pixel').Count -ne 16) {
+            Write-Output '::error::expected 16 PASS pixel lines (2 checks x 4 points x composed/cef-texture)'; $failed = $true
           }
+          if (Select-String -Path $log -Pattern 'closing imported=0 ' -Quiet) { Write-Output '::error::no frame uploaded on the software path'; $failed = $true }
+          Write-Output '::notice::WARP fixture: CEF software output (OnPaint -> Queue::write_texture) shown and pixel-checked; accelerated GPU import not verifiable on this runner'
+
           Select-String -Path $log -Pattern 'FAIL|adapter name|import frame=|title ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
           Start-Sleep -Seconds 3
           if (Get-Process roves_cef_netrender_probe -ErrorAction SilentlyContinue) {
@@ -212,9 +214,10 @@ jobs:
       # two-file fixture written here (index.html + an ES module) is served by the probe's own
       # loopback server; required: navigation to the loopback root accepted, the module's
       # console marker from <origin>/game.js, auto-close, clean CEF shutdown, server stop,
-      # exit 0, sandboxed children and no leftover process. WARP delivers no accelerated frame,
-      # so imported frames are reported, never required: this proves neither GPU frames nor
-      # gameplay/input (real hardware only, README "Real-game mode"). No window automation.
+      # exit 0, sandboxed children and no leftover process. On WARP the player uses CEF's
+      # software output (`evidence=software`); imported frames are reported, never required
+      # here: this proves neither GPU frames nor gameplay/input (real hardware only, README
+      # "Real-game mode"). No window automation.
       - name: run the probe in game mode (loopback JS fixture, WARP)
         if: (success() || failure()) && steps.bundle.outcome == 'success'
         shell: pwsh
@@ -274,7 +277,7 @@ jobs:
           $last = -1
           foreach ($pattern in @(
               'sandbox-info present=true', 'adapter name=.* backend=Dx12',
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "load-end status=200 url=$o/ ok=true", 'auto-close scheduled delay_ms=5000',
               'auto-close window', 'closing imported=', 'game input forwarded=', 'browser closed',
               'producer and renderer dropped', 'cef shutdown complete', 'game loopback stopped',
@@ -423,7 +426,7 @@ jobs:
           $last = -1
           $found = @{}
           foreach ($pattern in @(
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "load-end status=200 url=$o/ ok=true", 'auto-close scheduled delay_ms=8000',
               'test minimize requested ok=true hold_ms=1500',
               'frame work suspended reason=minimized phase=Game ',
@@ -559,7 +562,7 @@ jobs:
           # Each pattern must match a line after the previous match.
           $last = -1
           foreach ($pattern in @(
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "$source`"roves-ci-click-fixture module-ok`"",
               'test click requested x=100 y=60 window_id=\d+ pushed=true$',
               'test click forwarded event=down ok=true$',
@@ -702,7 +705,7 @@ jobs:
           # Each pattern must match a line after the previous match.
           $last = -1
           foreach ($pattern in @(
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "$source`"roves-ci-key-fixture module-ok`"",
               'test key requested key=Right window_id=\d+ pushed=true$',
               'test key forwarded event=down ok=true$',
@@ -844,7 +847,7 @@ jobs:
           # Each pattern must match a line after the previous match.
           $last = -1
           foreach ($pattern in @(
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "$source`"roves-ci-key-fixture module-ok`"",
               'test key requested key=CapsLock window_id=\d+ pushed=true$',
               'test key forwarded event=down ok=true$',
@@ -991,7 +994,7 @@ jobs:
           # Each pattern must match a line after the previous match.
           $last = -1
           foreach ($pattern in @(
-              'producer created accelerated=true background=white',
+              'producer created accelerated=false background=white evidence=software$',
               "$source`"roves-ci-wheel-fixture module-ok`"",
               'test wheel requested x=0 y=1 direction=normal window_id=\d+ pushed=true$',
               'test wheel forwarded delta_x=0 delta_y=120 ok=true$',
@@ -1317,12 +1320,13 @@ jobs:
       # on exit instead of the persistent player profile (covered by the next step).
       # --roves-no-error-dialog keeps the unattended run from
       # blocking on the failure dialog; --roves-auto-close-ms counts from the startup release.
-      # On WARP accelerated OSR delivers no frame, so the expected outcome there is the
-      # readable-failure path: startup screen presented, main load accepted, no fresh frame
-      # within --roves-timeout-ms, failure screen presented, exit 2, cache removed. If frames
-      # do arrive, the release path is required instead (released, auto-close, exit 0). A
-      # desktop capture taken during the startup screen must show the dark background and the
-      # logo, not the old red clear colour. Real-GPU release remains a manual check.
+      # On WARP the player selects CEF's software output (README "Software paint"), so the
+      # release path is required: startup screen presented, main load accepted, a software
+      # frame uploaded after load-end (`evidence=software`), startup released, auto-close,
+      # exit 0, cache removed. The readable-failure path (no fresh frame, exit 2) is now an
+      # error here. A desktop capture taken during the startup screen (if it is still up 3 s
+      # after the main load) must show the dark background and the logo, not the old red
+      # clear colour. The accelerated release on a real GPU remains a manual check.
       - name: run the package directly (startup screen, WARP)
         if: (success() || failure()) && steps.package.outcome == 'success'
         shell: pwsh
@@ -1446,7 +1450,7 @@ jobs:
             # app.rs logs the window-icon decision before decoding the Roves branding.
             'game loopback origin=', $(if ('${{ steps.icon_tools.outputs.window_source }}' -eq 'project') { 'window icon source=project size=\d+x\d+ set=true$' } else { 'window icon source=roves reason=absent$' }), 'branding decoded logo=256x256 window-icon=true ', 'wordmark rendered size=196x79 font=MetalMania$',
             'startup screen shown size=\d+x\d+ window-shown=true presented=true$',
-            'producer created accelerated=true background=white',
+            'producer created accelerated=false background=white evidence=software$',
             "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')
           $tail = if ($released) {
             @('startup released generation=\d+ ', 'auto-close scheduled delay_ms=5000 from=startup-release',
@@ -1466,6 +1470,10 @@ jobs:
           }
           $expectedCode = if ($released) { 0 } else { 2 }
           if ($code -ne $expectedCode) { Write-Output "::error::exit code $code (expected $expectedCode)"; $failed = $true }
+          if (-not $released) { Write-Output '::error::startup screen not released on WARP: no software frame after load-end'; $failed = $true }
+          if (-not ($lines | Select-String -Pattern 'import frame=\d+ .* path=cpu-paint-upload evidence=software$' -Quiet)) {
+            Write-Output '::error::template package: no software frame imported on WARP'; $failed = $true
+          }
           $allowedFail = 'FAIL startup not released within'
           foreach ($hit in @($lines | Select-String -Pattern ' FAIL ' | Where-Object { $released -or $_.Line -notmatch $allowedFail })) {
             Write-Output "::error::unexpected: $($hit.Line)"; $failed = $true
@@ -1496,7 +1504,7 @@ jobs:
           }
           $console = @($lines | Select-String -Pattern '^roves-cef-nr console level=').Count
           Select-String -Path $log -Pattern 'startup|title |import frame=|closing imported=|player ' | ForEach-Object { Write-Output "::notice::$($_.Line)" }
-          Write-Output "::notice::packaged launch: released=$released exit=$code console_lines=$console (WARP: failure path expected; real-GPU release is a manual check)"
+          Write-Output "::notice::packaged launch: released=$released exit=$code console_lines=$console (WARP: software paint; accelerated release on a real GPU is a manual check)"
           Start-Sleep -Seconds 3
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }
@@ -1506,8 +1514,8 @@ jobs:
       # storage, so saves, survive); a lock held by another process and a stored port taken
       # by another program must each end the run cleanly with exit 6 before CEF starts; a
       # damaged port file must fail with exit 1 instead of choosing a new origin. On WARP each
-      # full launch ends on the no-fresh-frame path (exit 2); a released launch (exit 0) is
-      # accepted too. Saves written by a real game across launches remain a manual GPU check.
+      # full launch shows software frames (README "Software paint"), releases and auto-closes
+      # (exit 0). Saves written by a real game across launches remain a manual GPU check.
       - name: run the package twice with the persistent profile, then under contention
         if: (success() || failure()) && steps.package.outcome == 'success'
         shell: pwsh
@@ -1544,7 +1552,7 @@ jobs:
           foreach ($name in @('first', 'second')) {
             $run = Invoke-Player $name 120
             $runs += $run
-            if ($run.code -notin @(0, 2)) { Write-Output "::error::$name persistent launch: exit $($run.code) (expected 0 or 2)"; $failed = $true }
+            if ($run.code -ne 0) { Write-Output "::error::$name persistent launch: exit $($run.code) (expected 0)"; $failed = $true }
             foreach ($pattern in @('player launch game-dir=.* profile=persistent cache=.+ clean-cache=false error-dialog=false$',
                 'player profile root=.+ lock=acquired origin-port=', 'game loopback origin=http://127\.0\.0\.1:\d+ ',
                 'cef initialized', 'cef shutdown complete', 'game loopback stopped')) {
@@ -1620,9 +1628,9 @@ jobs:
       # (a new process) reads the save back and closes itself; launch 3 stays open while the
       # runner calls the routes: the game's own request shape answers 200, a foreign Host
       # (DNS rebinding), a missing X-Roves-Api header and a CORS preflight answer 403 without
-      # any CORS header. On WARP accelerated OSR delivers no frame at all, so launch 3 (open past
-      # --roves-timeout-ms) ends on the no-fresh-frame path (exit 2); that path is accepted only
-      # with the WARP adapter and zero imported frames, any other FAIL or exit 2 is an error.
+      # any CORS header. On WARP the player uses CEF's software output, so every launch must
+      # exit 0 without any FAIL, WARP launches must report `evidence=software`, and launch 3
+      # must release its startup screen (auto-close counts from the release).
       - name: host API in the packaged player (saves across restarts, exit, refusals, WARP)
         if: (success() || failure()) && steps.package.outcome == 'success'
         shell: pwsh
@@ -1658,25 +1666,17 @@ jobs:
             $run.lines = if (Test-Path $run.log) { @(Get-Content $run.log) } else { @() }
             $run.lines | ForEach-Object { Write-Host "  [$($run.name)] $_" }
             Write-Output "::notice::$($run.name): exit=$($run.code)"
-            if ($run.code -notin @(0, 2)) { Write-Output "::error::$($run.name): exit $($run.code) (expected 0 or 2)"; $script:failed = $true }
-            # A launch that stays open past --roves-timeout-ms (launch 3) may end on the
-            # no-fresh-frame path only where accelerated OSR delivers no frame at all: WARP
-            # adapter, zero frames imported, exit 2. A launch that imported any frame must
-            # release the startup screen (a static first screen is repainted on load-end).
+            if ($run.code -ne 0) { Write-Output "::error::$($run.name): exit $($run.code) (expected 0)"; $script:failed = $true }
             $warp = [bool]($run.lines | Select-String -Pattern 'adapter name="Microsoft Basic Render Driver" .* type=Cpu ' -Quiet)
-            $noFrame = [bool]($run.lines | Select-String -Pattern 'closing imported=0 ' -Quiet)
+            $software = [bool]($run.lines | Select-String -Pattern 'producer created accelerated=false background=white evidence=software$' -Quiet)
             $released = [bool]($run.lines | Select-String -Pattern '^roves-cef-nr startup released generation=\d+ ' -Quiet)
-            $warpPath = $warp -and $noFrame -and -not $released -and $run.code -eq 2
             foreach ($hit in @($run.lines | Select-String -Pattern ' FAIL ')) {
-              if (-not ($warpPath -and $hit.Line -match 'FAIL startup not released within \d+ ms \(no-fresh-frame\)$')) {
-                Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true
-              }
+              Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true
             }
-            if ($run.code -eq 2 -and -not $warpPath) { Write-Output "::error::$($run.name): exit 2 outside the WARP no-frame path (warp=$warp no-frame=$noFrame released=$released)"; $script:failed = $true }
-            if (-not $noFrame -and ($run.lines -match 'startup failed reason=no-fresh-frame$')) { Write-Output "::error::$($run.name): frames imported but the startup screen was not released"; $script:failed = $true }
+            if ($warp -and -not $software) { Write-Output "::error::$($run.name): WARP launch without the software paint path"; $script:failed = $true }
             $hit = $run.lines | Select-String -Pattern 'roves-host-api (error|marker missing|saves unavailable)|violates the following Content Security Policy' | Select-Object -First 1
             if ($hit) { Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true }
-            Write-Output "::notice::$($run.name): released=$released warp=$warp no-frame=$noFrame (no WARP frame: startup release on a real GPU is a manual check)"
+            Write-Output "::notice::$($run.name): released=$released warp=$warp software=$software (accelerated release on a real GPU is a manual check)"
           }
           function Require($run, [string[]]$patterns) {
             foreach ($pattern in $patterns) {
@@ -1726,7 +1726,7 @@ jobs:
             }
           }
           Wait-Player $third 120
-          Require $third @('roves-host-api phase=3 read=hello-roves staying')
+          Require $third @('roves-host-api phase=3 read=hello-roves staying', '^roves-cef-nr startup released generation=\d+ ')
           if (Get-Process play -ErrorAction SilentlyContinue) { Write-Output '::error::play.exe processes left running'; $failed = $true }
           if ($failed) { exit 1 }
       # `steam` feature (README "Steam"): the same player built with --features steam into its
@@ -1839,7 +1839,7 @@ jobs:
             if ($hit) { Write-Output "::error::steam emulation run: $($hit.Line)"; $failed = $true }
           }
           foreach ($pattern in @('steam initialized app_id=480$',
-              'roves-host-api steam available=true app_id=480 unlock=true unlocked=true set=true stat=3 store=true$',
+              'roves-host-api steam available=true app_id=480 unlock=true unlocked=true set=true stat=3 store=true"$',
               'close requested by the game command=exit', 'steam shutdown complete', 'cef shutdown complete')) {
             if (-not ($lines | Select-String -Pattern $pattern)) { Write-Output "::error::steam emulation run: missing $pattern"; $failed = $true }
           }
@@ -1987,8 +1987,8 @@ jobs:
           Write-Output '::notice::MCP disabled smoke: marker absent with the bridge off and with the bridge unavailable (WARP)'
       # Packaged launch: play.exe of the MCP package started directly (the marker turns the
       # bridge on), discovered without a PID. Required: state and evaluation on the packaged
-      # game's origin; click forwarded if the startup screen was released, otherwise refused
-      # as not ready (WARP: no accelerated frame, exit 2); session record removed after exit.
+      # game's origin; click forwarded if the startup screen was released (WARP: software
+      # paint), otherwise refused as not ready; session record removed after exit.
       - name: MCP smoke on the packaged launch (MCP candidate opt-in, WARP)
         if: (success() || failure()) && steps.mcp_package.outcome == 'success' && env.ROVES_CEF_MCP_CANDIDATE == 'true'
         shell: pwsh

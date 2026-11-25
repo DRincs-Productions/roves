@@ -4,6 +4,9 @@ Status (2026-11-25): **fixture gate green in CI run 45618535853** (commit `292f1
 `ubuntu-24.04`, Xvfb, Mesa lavapipe): exit 3 under both layer-1 variants (setuid and user
 namespace), i.e. build, flat layout, sandboxed renderers, SDL3 X11 + Vulkan presentation and
 shutdown verified, **no DMA-BUF import device, so no CEF frame was imported or shown**.
+**Software paint (below, not yet in CI):** where no frame can be imported the gate now uses
+CEF's software output instead, so lavapipe is expected to pass with exit 0 and
+`evidence=software`; exit 3 no longer exists.
 **Packaged-game slice (below): implemented, type-checked locally only, not yet in CI.**
 Nothing here claims that the Linux path shows CEF frames, and no CI result from a hosted
 runner can claim it works on a GPU (see "GPU evidence versus CI").
@@ -12,14 +15,27 @@ Linux twin of `support/cef-macos-gate`, for the CEF + SDL3 + wgpu player
 (`support/cef-netrender-probe`, Windows only). Same question with the same maintained
 producer and renderer: does CEF's **accelerated off-screen** frame reach a wgpu device that
 also presents to an **SDL3** window on Linux, with **Chromium's sandbox on**? There is no
-CEF windowed mode and no software (`OnPaint`) path. The Windows player, the macOS gate,
-their lockfiles and workflows are untouched.
+CEF windowed mode. When no frame can be imported, the browser uses CEF's software output
+instead (see "Software paint").
+
+## Software paint
+
+A CPU Vulkan adapter (lavapipe/llvmpipe), a GPU without a DMA-BUF import device (NVIDIA
+proprietary, many VMs: `build_dmabuf_capable_device` fails) or `ROVES_FORCE_CPU_PAINT=1`
+select CEF's standard software OSR path before the browser exists
+(`game_rules::paint_path`, shared with the Windows player): `shared_texture_enabled = 0`,
+`OnPaint` BGRA buffer, uploaded by the vendored welding (`support/vendor/wgpu-weld`,
+`ROVES_PATCHES.md`) with `Queue::write_texture` into a texture presented like an imported
+frame. Logged as `gate: paint path=Software("<reason>") evidence=software`,
+`producer created mode=CpuPaint`; every PASS line then says `evidence=software`. That shows
+the game and is checked by readback, but says nothing about the DMA-BUF import. A DMA-BUF
+device that cannot be created on a GPU adapter is no longer a failure.
 
 ## Pins (same graph as the Windows player and the macOS gate)
 
 | Component | Pin | Notes |
 | --- | --- | --- |
-| `welding` (merely-made/wgpu-weld) | git `e991684`, crate 0.15.0 | `default-features = false`, `wgpu-29` + `cef-runtime`. MPL-2.0 |
+| `welding` (merely-made/wgpu-weld) | `e991684`, crate 0.15.0, vendored in `support/vendor/wgpu-weld` (path dependency, Roves CPU-paint fallback) | `default-features = false`, `wgpu-29` + `cef-runtime` + `cpu-paint-fallback`. MPL-2.0 |
 | `grafting` | git `d903cfa` | via the lockfile |
 | `cef` / `cef-dll-sys` | `=154.5.0+154.0.34` | CEF 154.0.34, Chromium 154.0.8037.98; features `build-util` + `sandbox` |
 | `wgpu` | `=29.0.4` | features `std`, `vulkan`, `wgsl` |
@@ -200,14 +216,11 @@ build instead of the fixture (`src/player.rs`), the Linux counterpart of the mac
   (welding has no pre-navigation veto, so it fails the run), no load error, no content
   process death, sandboxed renderers, the close path (SDL quit or window close request ->
   `close()` -> `OnBeforeClose` -> `cef::shutdown` -> server stop), no leftover processes.
-- **With a DMA-BUF import device**: the first frame imported after the load-end
-  (`gate: first game frame after load-end`; a `WasResized` at load-end asks a static page to
-  paint again) and a last frame with more than one colour; `ROVES_GATE_FRAME_DUMP=<file.bmp>`
-  writes it. Exit 0, `gate: PASS packaged game ... evidence=gpu|software-adapter`.
-- **Without one** (CPU Vulkan adapter, the hosted runner): CEF's frames are only counted
-  (`delivered_after_load=`) and dropped, the window stays black, and the run ends with **exit 3
-  `NO_DMABUF_DEVICE ... game graphics NOT verified`**. There is no PASS line, no frame
-  readback and no BMP in that case; CI fails if one appears.
+- The first frame imported after the load-end (`gate: first game frame after load-end`; a
+  `WasResized` at load-end asks a static page to paint again) and a last frame with more than
+  one colour; `ROVES_GATE_FRAME_DUMP=<file.bmp>` writes it. Exit 0,
+  `gate: PASS packaged game ... evidence=gpu|software`: `gpu` with a DMA-BUF import device,
+  `software` on CEF's software output (the hosted runner's lavapipe, see "Software paint").
 - Console messages are logged (first 200, 300 characters each) and counted by level; popups
   are refused by welding and reported. No remote-debugging endpoint is opened and **no
   Steam code exists** (later slice). The host API, the `window.__ROVES__` marker, input,
@@ -240,15 +253,13 @@ The binary prints `gate:` lines on stdout (the last is `gate: exit code=<N>`) an
 
 | Exit | Meaning |
 | --- | --- |
-| 0 | An imported frame's centre 64x64 block matched dodger blue (`[30,144,255]` in the frame's channel order, ±8) and every renderer was sandboxed. The PASS line carries `evidence=gpu` or `evidence=software-adapter` |
-| 2 | `NO_ACCELERATED_FRAME`: no `OnAcceleratedPaint` before `ROVES_GATE_TIMEOUT_SECS` (default 60), nothing failed, renderers sandboxed |
-| 3 | `NO_DMABUF_DEVICE`: the Vulkan adapter is a CPU implementation without the import extensions; a plain device presents instead, delivered frames are counted and dropped; nothing failed, renderers sandboxed. Never returned for a GPU adapter |
+| 0 | A shown frame's centre 64x64 block matched dodger blue (`[30,144,255]` in the frame's channel order, ±8) and every renderer was sandboxed. The PASS line carries `evidence=gpu` (DMA-BUF import) or `evidence=software` (CEF software output) |
+| 2 | `NO_FRAME`: no frame before `ROVES_GATE_TIMEOUT_SECS` (default 60), nothing failed, renderers sandboxed. CI treats it as an error on a CPU adapter |
 | 6 | Packaged game, ordinary launch, before CEF starts: profile held by another instance, or stored origin port taken |
-| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, DMA-BUF device on a GPU adapter, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed, unidentified sandboxed subprocess, browser not closed within 10 s; packaged game: load-end refused or missing, main frame off the origin, load error, last frame single-coloured, damaged `origin-port`, loopback stop failure |
+| 1 | Any `gate: FAIL`: running as root, missing CEF files, CEF/SDL/wgpu setup, non-Vulkan interop, `acquire_frame` (incl. `IMPLICIT_MODIFIER`) or readback error, wgpu uncaptured error, content process terminated, frames imported but none matched, nothing presented, renderer missing or unsandboxed, unidentified sandboxed subprocess, browser not closed within 10 s; packaged game: load-end refused or missing, main frame off the origin, load error, last frame single-coloured, damaged `origin-port`, loopback stop failure |
 
 Packaged game: 0 = load-end, imported first frame after it, multi-colour last frame, close,
-sandbox; 2 = loaded but no accelerated frame with an import device; 3 = CPU adapter without
-import device: load, sandbox and close verified, **game graphics not verified**.
+sandbox (`evidence=gpu|software`); 2 = loaded but no frame.
 
 The fixture is the macOS gate's `data:` page (blue, plus a 1 px corner element animated with
 `requestAnimationFrame` so CEF keeps painting). It proves the frame's content arrived, not
@@ -258,8 +269,8 @@ ordering, tearing or synchronisation.
 
 | Source | What it can prove |
 | --- | --- |
-| Hosted CI (`ubuntu-24.04`, Xvfb, no `/dev/dri`, Mesa lavapipe) | Build, flat layout, `$ORIGIN`, CEF init with the sandbox, sandboxed renderers under **both** layer-1 variants, SDL3 X11 window + Vulkan presentation on a CPU adapter, shutdown without leftovers. Exit 2 or 3 expected. Not GPU evidence of any kind |
-| Exit 0 with `evidence=software-adapter` | Only that CEF frames reached a CPU Vulkan device; reported as software evidence |
+| Hosted CI (`ubuntu-24.04`, Xvfb, no `/dev/dri`, Mesa lavapipe) | Build, flat layout, `$ORIGIN`, CEF init with the sandbox, sandboxed renderers under **both** layer-1 variants, SDL3 X11 window + Vulkan presentation on a CPU adapter, shutdown without leftovers, and CEF's software output shown and read back (exit 0, `evidence=software` required). Not GPU evidence of any kind |
+| Exit 0 with `evidence=software` | CEF's software frames shown through wgpu; says nothing about the DMA-BUF import |
 | Exit 0 with `evidence=gpu` on a real Linux desktop (X11 or Xwayland, Mesa, DRI3) | The accelerated DMA-BUF -> Vulkan path on that GPU/driver. Record GPU, driver, kernel, session type and modifier |
 
 Nobody has run it on a GPU yet. Expected per wgpu-weld's own receipts: Intel/Mesa should be
@@ -278,10 +289,11 @@ cargo/CEF cache, dependency graph check, `cargo build --locked --release --bins`
 `chrome-sandbox` made root 4755. Two runs under `xvfb-run` with a 150 s hard stop: setuid
 layer 1 (`apparmor_restrict_unprivileged_userns=1`) and user-namespace layer 1 (`=0`). Each
 fails on any `gate: FAIL`, a missing `mode=fixture`, `cef initialized sandbox=Sandboxed
-ozone=x11`, `sdl video driver=x11`, Vulkan adapter, `mode=AcceleratedPaint`, `presented=` > 0,
-`PASS sandbox`, `browser closed`, `cef shutdown complete`, the expected layer-1 line or
-`shutdown complete exit=<code>`, an exit other than 0/2/3 (3 only with a `Cpu` adapter), or a
-gate process alive after exit.
+ozone=x11`, `sdl video driver=x11`, Vulkan adapter, `mode=AcceleratedPaint|CpuPaint`,
+`presented=` > 0, `PASS sandbox`, `browser closed`, `cef shutdown complete`, the expected
+layer-1 line or `shutdown complete exit=<code>`, an exit other than 0/2, or a gate process
+alive after exit. With a `Cpu` adapter it also requires `paint path=Software("cpu-adapter")
+evidence=software`, `mode=CpuPaint`, exit 0 and a `PASS pixel ... evidence=software` line.
 
 Packaged game (same job): `DRincs-Productions/visual-novel-template` at `e88e9ac29e73`
 (same pin and `npm ci` + `npm run build` as the Windows and macOS packages), `dist/` copied
@@ -289,15 +301,14 @@ byte for byte into `game/` (checked with `diff -r`, SHA-256 list in the logs); t
 runs use the setuid layer 1 (Ubuntu's default).
 
 1. `--roves-isolated-profile` with `ROVES_GATE_AUTO_CLOSE_MS=8000`: the exit must equal the
-   setuid fixture's (same adapter) and the lines for that exit must appear in order. Exit 3:
-   `type=Cpu`, `dmabuf device unavailable`, `producer created ... url=<origin>/
-   profile=.../game-profile`, `load-end status=200 url=<origin>/ ok=true`, `game loaded`,
-   `fresh frame requested ok=true`, `test auto-close scheduled delay_ms=8000 anchor=load-end`,
-   `pushed SDL quit`, `loop end imported=0 ... loaded=true game_frame=false close=quit`,
-   `close requested source=quit`, `PASS sandbox`, `NO_DMABUF_DEVICE packaged game ... game
-   graphics NOT verified`, `browser closed`, `cef shutdown complete`, `loopback stopped`,
-   `cache removed`, `shutdown complete exit=3`, `exit code=3`; and no frame-shown line at all.
-   Exit 0 additionally needs the first and last game frame, the BMP and the PASS line. Always:
+   setuid fixture's (same adapter, so 0 with `evidence=software` on lavapipe) and the lines
+   for that exit must appear in order: `producer created mode=AcceleratedPaint|CpuPaint ...
+   url=<origin>/ profile=.../game-profile`, `load-end status=200 url=<origin>/ ok=true`,
+   `game loaded`, `fresh frame requested ok=true`, the first game frame after load-end,
+   `test auto-close scheduled delay_ms=8000 anchor=first-frame`, `pushed SDL quit`, the last
+   game frame, the BMP, `PASS sandbox`, `PASS packaged game ... evidence=gpu|software`,
+   `browser closed`, `cef shutdown complete`, `loopback stopped`, `cache removed`,
+   `shutdown complete exit=0`, `exit code=0`. Always:
    no `DevTools listening`, no persistent-profile line, no cache left, loopback port closed,
    no process left.
 2. With `XDG_CONFIG_HOME` set to a fresh directory and from an unrelated working directory:

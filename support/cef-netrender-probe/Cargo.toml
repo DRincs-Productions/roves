@@ -42,7 +42,7 @@ dox = ["cef/dox"]
 steam = ["dep:steamworks"]
 
 [dependencies]
-welding = { git = "https://github.com/merely-made/wgpu-weld", rev = "e991684bab23d0eaea42d418e216317173ace2a9", default-features = false, features = ["wgpu-29", "cef-runtime"] }
+welding = { path = "../vendor/wgpu-weld/welding", default-features = false, features = ["wgpu-29", "cef-runtime", "cpu-paint-fallback"] }
 cef = { version = "=154.5.0", default-features = false, features = ["build-util", "sandbox"] }
 wgpu = { version = "=29.0.4", default-features = false, features = ["std", "dx12", "wgsl"] }
 pollster = "0.4"

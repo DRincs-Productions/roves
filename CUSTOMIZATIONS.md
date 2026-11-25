@@ -1,3 +1,25 @@
+## 2026-11-25 - CEF players: software OSR fallback (`OnPaint`) in a vendored welding
+
+Added: `support/vendor/wgpu-weld/` (welding 0.15.0 from merely-made/wgpu-weld `e991684`,
+licenses, `ROVES_PATCHES.md`), `welding/src/cpu_paint.rs`. Changed: the vendored
+`welding/src/{lib,surface}.rs`, `native_frame/mod.rs`, `{windows,linux,macos}_cef/{mod,cef_backed}.rs`;
+the three players' `Cargo.toml/lock` (git dependency -> path dependency with
+`cpu-paint-fallback`; the lockfiles only lose welding's `source` line);
+`support/cef-netrender-probe/src/{app,game_rules}.rs`; `support/cef-linux-gate/src/{main,player}.rs`;
+the three CEF workflows (paths, sparse checkouts, expectations); player READMEs; `TODO.md`.
+Why: accelerated OSR yields no importable frame on Windows WARP (also used on PCs without a
+GPU) or on Linux without a DMA-BUF import device, so the game window stayed black and the
+startup screen never released. welding declared a CPU fallback but no producer implemented it.
+The fork implements CEF's standard software path: `shared_texture_enabled = 0`, `OnPaint` BGRA
+buffer, only the dirty rows copied, the dirty union uploaded with `Queue::write_texture` into a
+persistent texture handed out as a normal `ImportedTexture`. The players choose it up front
+(`game_rules::paint_path`: CPU adapter, Linux import device unavailable, or
+`ROVES_FORCE_CPU_PAINT=1`) and label it `evidence=software`. CI now requires software frames
+on WARP (pixel checks, template startup release, host API exit 0) and exit 0 with
+`evidence=software` on lavapipe; the Linux exit 3 `NO_DMABUF_DEVICE` path and the Windows
+WARP no-frame acceptance are gone (`NO_ACCELERATED_FRAME` is now `NO_FRAME`). The fork is
+temporary: upstream issue/PR texts and removal criteria are in `ROVES_PATCHES.md`.
+
 ## 2026-11-25 - CEF player host API CI step: WARP no-frame path, CSP-clean fixture
 
 Changed: `.github/workflows/cef-netrender-probe.yml` (host API and Steam emulator steps),

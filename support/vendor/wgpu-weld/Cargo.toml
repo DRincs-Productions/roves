@@ -1,0 +1,31 @@
+# Vendored workspace root of merely-made/wgpu-weld at e991684 (see ROVES_PATCHES.md).
+# Only the `welding` member is kept; the demo-weld-* members are not vendored. This root
+# exists so `welding/Cargo.toml` can keep its upstream `workspace = true` inheritance
+# unchanged: the values below are upstream's, verbatim.
+#
+# The Roves CEF players depend on `welding` by path; this directory is never built on its
+# own and has no Cargo.lock (each player's lock pins the graph).
+[workspace]
+members = ["welding"]
+resolver = "3"
+
+[workspace.package]
+rust-version = "1.97.1"
+edition = "2024"
+license = "MPL-2.0"
+repository = "https://github.com/merely-made/wgpu-weld"
+version = "0.1.0"
+
+[workspace.dependencies]
+wgpu = "30.0.2"
+winit = "0.30.13"
+raw-window-handle = "0.6.2"
+dpi = "0.1.2"
+cef = "154.5.0"
+
+[workspace.lints.clippy]
+missing_errors_doc = "warn"
+missing_panics_doc = "warn"
+missing_safety_doc = "warn"
+undocumented_unsafe_blocks = "warn"
+too_many_lines = "warn"

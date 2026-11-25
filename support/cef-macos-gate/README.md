@@ -19,7 +19,7 @@ untouched.
 
 | Component | Pin | Notes |
 | --- | --- | --- |
-| `welding` (merely-made/wgpu-weld) | git `e991684`, crate 0.15.0 | `default-features = false`, `wgpu-29` + `cef-runtime`. MPL-2.0 |
+| `welding` (merely-made/wgpu-weld) | `e991684`, crate 0.15.0, vendored in `support/vendor/wgpu-weld` (path dependency; Roves CPU-paint fallback, `ROVES_PATCHES.md`) | `default-features = false`, `wgpu-29` + `cef-runtime` + `cpu-paint-fallback`. The gate keeps `prefer_accelerated = true` (Metal always imports IOSurfaces), so its behaviour is unchanged; the software `OnPaint` path is compiled in but not selected here. MPL-2.0 |
 | `grafting` | git `d903cfa` | via the lockfile, as on Windows |
 | `cef` / `cef-dll-sys` | `=154.5.0+154.0.34` | CEF 154.0.34, Chromium 154.0.8037.98; features `build-util` + `sandbox` |
 | `wgpu` | `=29.0.4` | features `std`, `metal`, `wgsl` |

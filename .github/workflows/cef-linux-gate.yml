@@ -1,15 +1,16 @@
 name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 
 # Developer experiment only (support/cef-linux-gate/README.md). Builds the Linux gate (same
-# pins as the Windows player and the macOS gate: welding e991684 wgpu-29 row, CEF 154.0.34,
+# pins as the Windows player and the macOS gate: vendored welding e991684 wgpu-29 row, CEF 154.0.34,
 # wgpu 29.0.4, SDL3 0.20) on x86_64 and runs it twice under Xvfb with Chromium's sandbox on:
 # once with the setuid layer 1 (chrome-sandbox root 4755, user namespaces restricted) and once
 # with the user-namespace layer 1. Hard gates: compile, $ORIGIN run path, flat CEF layout,
 # Vulkan adapter, CEF/SDL3 (X11) init, SDL3 presentation, sandboxed renderers (seccomp-BPF,
 # NoNewPrivs, PID namespace, no --no-sandbox), clean shutdown, no leftover process.
-# Hosted runners have no GPU and no /dev/dri: Vulkan is Mesa lavapipe (CPU) and Chromium has
-# no DRI3/GBM device, so exit 2 (no accelerated frame) or 3 (no DMA-BUF import device on the
-# CPU adapter) are notices, never GPU evidence. Separate from cef-netrender-probe.yml
+# Hosted runners have no GPU and no /dev/dri: Vulkan is Mesa lavapipe (CPU), so the gate
+# selects CEF's software output (OnPaint uploaded by the vendored welding, README "Software
+# paint") and must pass with `evidence=software` (exit 0, fixture colour read back); that is
+# never GPU-import evidence. Exit 2 (no frame) is an error on a CPU adapter. Separate from cef-netrender-probe.yml
 # (Windows) and cef-macos-gate.yml (macOS), both unchanged. Never gates a release.
 # The same gate directory then packages the UNMODIFIED production web build of
 # DRincs-Productions/visual-novel-template (same pin and commands as the Windows and macOS
@@ -17,14 +18,16 @@ name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
 # (Ubuntu's default): accepted load-end, test close through SDL's quit event, OnBeforeClose,
 # CEF shutdown, server stop; first with --roves-isolated-profile, then twice with the
 # persistent per-install profile (same origin across launches) and under contention (README
-# "Packaged game", "Saves and the player profile"). On the hosted runner the Vulkan adapter is
-# lavapipe without DMA-BUF import: the packaged run then ends with exit 3 and says that the
-# game's graphics were NOT verified; only a run with an import device can show game frames.
+# "Packaged game", "Saves and the player profile"). On the hosted runner (lavapipe) the game
+# frames are CEF's software output: the packaged run must show and read back a multi-colour
+# game frame with `evidence=software` (exit 0); GPU import needs a real GPU.
 
 on:
   push:
     paths:
       - 'support/cef-linux-gate/**'
+      # Vendored welding (temporary fork, ROVES_PATCHES.md).
+      - 'support/vendor/wgpu-weld/**'
       # Compiled into the gate through `#[path]` (packaged-game mode).
       - 'support/cef-window-probe/src/server.rs'
       - 'support/cef-window-probe/src/host_api.rs'
@@ -70,6 +73,7 @@ jobs:
         with:
           sparse-checkout: |
             support/cef-linux-gate
+            support/vendor/wgpu-weld
             support/cef-window-probe/src
             support/cef-netrender-probe/src
             support/cef-macos-gate/src
@@ -209,7 +213,15 @@ jobs:
           need '^gate: cef initialized sandbox=Sandboxed ozone=x11'
           need '^gate: sdl video driver=x11'
           need '^gate: adapter .*backend=Vulkan'
-          need '^gate: producer created mode=AcceleratedPaint'
+          need '^gate: producer created mode=\(AcceleratedPaint\|CpuPaint\)'
+          cpu=0
+          if grep -q '^gate: adapter .*type=Cpu' "$log"; then
+            cpu=1
+            # A CPU adapter (lavapipe) must take CEF's software output and show the fixture.
+            need '^gate: paint path=Software("cpu-adapter") evidence=software$'
+            need '^gate: producer created mode=CpuPaint'
+            test "$code" = 0 || fail "software paint on the CPU adapter did not pass (exit $code)"
+          fi
           need '^gate: loop end .*presented=[1-9]'
           need '^gate: PASS sandbox renderers='
           need '^gate: browser closed elapsed_ms='
@@ -224,15 +236,12 @@ jobs:
               if grep -q '^gate: PASS pixel .*evidence=gpu' "$log"; then
                 echo "::notice::[$layer] accelerated DMA-BUF -> Vulkan import verified on a GPU adapter (exit 0)"
               else
-                echo "::notice::[$layer] DMA-BUF import matched on a CPU Vulkan adapter (exit 0): software evidence only, not GPU evidence"
+                need '^gate: PASS pixel .*evidence=software'
+                echo "::notice::[$layer] CEF software output (OnPaint -> Queue::write_texture) shown and colour-checked (exit 0, cpu=$cpu): software evidence only, not GPU-import evidence"
               fi ;;
             2)
-              need '^gate: NO_ACCELERATED_FRAME'
-              echo "::notice::[$layer] no OnAcceleratedPaint on this runner (exit 2): build, sandbox, SDL3/Vulkan presentation and shutdown verified; the DMA-BUF import needs a real GPU with DRI3" ;;
-            3)
-              need '^gate: NO_DMABUF_DEVICE'
-              need '^gate: adapter .*type=Cpu'
-              echo "::notice::[$layer] CPU Vulkan adapter without DMA-BUF import extensions (exit 3): build, sandbox, SDL3/Vulkan presentation and shutdown verified; the import needs a real GPU" ;;
+              need '^gate: NO_FRAME'
+              echo "::notice::[$layer] no frame on this runner (exit 2): build, sandbox, SDL3/Vulkan presentation and shutdown verified" ;;
             124|137)
               fail "hard timeout (exit $code)" ;;
             *)
@@ -334,7 +343,7 @@ jobs:
             || { echo "::error::player exit $code, expected the setuid fixture's exit $expected_code (same adapter)"; failed=1; }
           common=('^gate: player profile=isolated cache=' '^gate: cef initialized sandbox=Sandboxed ozone=x11 cache='
             '^gate: sdl video driver=x11$' '^gate: adapter .*backend=Vulkan'
-            "^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank profile=.*/game-profile elapsed_ms="
+            "^gate: producer created mode=(AcceleratedPaint|CpuPaint) size=[0-9]+x[0-9]+ url=about:blank profile=.*/game-profile elapsed_ms="
             '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$"
             "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms=' '^gate: fresh frame requested ok=true$')
           tail_ok=('^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$'
@@ -346,30 +355,16 @@ jobs:
                 '^gate: test auto-close scheduled delay_ms=8000 anchor=first-frame$' '^gate: test auto-close pushed SDL quit$'
                 '^gate: loop end .* presented=[1-9][0-9]* loaded=true game_frame=true close=quit ' '^gate: close requested source=quit$'
                 '^gate: last game frame size=' '^gate: frame dump written ' '^gate: PASS sandbox renderers='
-                '^gate: PASS packaged game loaded, first frame shown, close requested evidence=(gpu|software-adapter)$'
+                '^gate: PASS packaged game loaded, first frame shown, close requested evidence=(gpu|software)$'
                 "${tail_ok[@]}")
               if grep -q '^gate: PASS packaged game .*evidence=gpu$' "$log"; then
                 echo "::notice::packaged game frames imported and shown on a GPU adapter (exit 0)"
               else
-                echo "::notice::packaged game frames imported on a CPU Vulkan adapter (exit 0): software evidence only, not GPU evidence"
+                echo "::notice::packaged game frames shown from CEF's software output (exit 0, evidence=software): game graphics verified by readback, not GPU-import evidence"
               fi ;;
             2)
-              expected=("${common[@]:0:4}" '^gate: dmabuf device created$' "${common[@]:4}" '^gate: PASS sandbox renderers='
-                '^gate: NO_ACCELERATED_FRAME' "${tail_ok[@]}")
-              echo "::notice::no accelerated frame on this runner (exit 2): loopback load, sandbox and close verified; game graphics NOT verified" ;;
-            3)
-              expected=("${common[@]:0:3}" '^gate: adapter .*backend=Vulkan .*type=Cpu'
-                '^gate: dmabuf device unavailable on the CPU adapter' "${common[@]:4}"
-                '^gate: test auto-close scheduled delay_ms=8000 anchor=load-end$' '^gate: test auto-close pushed SDL quit$'
-                '^gate: loop end imported=0 .* presented=[1-9][0-9]* loaded=true game_frame=false close=quit '
-                '^gate: close requested source=quit$' '^gate: PASS sandbox renderers='
-                '^gate: NO_DMABUF_DEVICE packaged game loaded on a CPU adapter .*game graphics NOT verified$'
-                "${tail_ok[@]}")
-              if grep -q -E '^gate: (PASS packaged game|first game frame after load-end|last game frame|frame dump written)' "$log"; then
-                echo "::error::a frame was reported shown without a DMA-BUF import device"; failed=1
-              fi
-              after="$(sed -n 's/^gate: loop end .* delivered_after_load=\([0-9]*\) .*/\1/p' "$log" | head -1)"
-              echo "::notice::packaged game on a CPU Vulkan adapter without DMA-BUF import (exit 3): loopback load, sandbox and close verified; accelerated frames delivered after load-end=${after:-?}, none imported or shown; game graphics NOT verified" ;;
+              expected=("${common[@]}" '^gate: PASS sandbox renderers=' '^gate: NO_FRAME' "${tail_ok[@]}")
+              echo "::notice::no frame on this runner (exit 2): loopback load, sandbox and close verified; game graphics NOT verified" ;;
             *)
               expected=("${common[@]}" "${tail_ok[@]}")
               echo "::error::unexpected player exit $code"; failed=1 ;;
@@ -388,7 +383,7 @@ jobs:
           cache="$(sed -n 's|^gate: cef initialized sandbox=Sandboxed ozone=x11 cache=||p' "$log" | head -1)"
           if [ -n "$cache" ] && [ -e "$cache" ]; then echo "::error::CEF cache left behind: $cache"; failed=1; fi
           if (exec 3<>"/dev/tcp/127.0.0.1/${origin##*:}") 2>/dev/null; then echo "::error::loopback port still accepting after exit"; failed=1; fi
-          grep -E '^gate: (adapter|title|load-end|first (game|accelerated) frame|last game frame|console lines|browser closed|popup refused|NO_|PASS)' "$log" \
+          grep -E '^gate: (adapter|paint path|title|load-end|first (game|accelerated) frame|last game frame|console lines|browser closed|popup refused|NO_|PASS)' "$log" \
             | while read -r line; do echo "::notice::$line"; done || true
           sleep 2
           if pgrep -fl "roves-cef-linux-gate" ; then echo "::error::player processes still running after exit"; failed=1; fi
@@ -444,7 +439,7 @@ jobs:
             ordered "$log" "$name" '^gate: player profile root=.+ lock=acquired origin-port=(new|[0-9]+)$' \
               '^gate: mode=packaged-game dir=.*/game origin=http://127\.0\.0\.1:[0-9]+$' \
               '^gate: player profile=persistent cache=.+/cef$' '^gate: cef initialized sandbox=Sandboxed ozone=x11 cache=.+/cef$' \
-              '^gate: producer created mode=AcceleratedPaint .* profile=.+/cef/game-profile elapsed_ms=' \
+              '^gate: producer created mode=(AcceleratedPaint|CpuPaint) .* profile=.+/cef/game-profile elapsed_ms=' \
               '^gate: load-end status=(200|304) url=http://127\.0\.0\.1:[0-9]+/ ok=true$' \
               '^gate: browser closed elapsed_ms=' '^gate: cef shutdown complete$' '^gate: loopback stopped$' \
               '^gate: player profile kept root=' "^gate: shutdown complete exit=$code$" "^gate: exit code=$code$"
@@ -589,7 +584,7 @@ jobs:
             test "$got" = "$2" || { echo "::error::$got lines match $1 (expected $2)"; failed=1; }
           }
           ordered startup '^gate: window icon source=project size=1024x1024 set=true$' \
-            '^gate: producer created mode=AcceleratedPaint size=[0-9]+x[0-9]+ url=about:blank profile=.+/cef/game-profile elapsed_ms=' \
+            '^gate: producer created mode=(AcceleratedPaint|CpuPaint) size=[0-9]+x[0-9]+ url=about:blank profile=.+/cef/game-profile elapsed_ms=' \
             '^gate: page markers registered identifier=.+ mcp=false$' "^gate: game navigation url=$o/$" \
             "^gate: load-end status=200 url=$o/ ok=true$" '^gate: game loaded elapsed_ms='
           ordered marker "${src}roves-ci-marker available=true\"$" \

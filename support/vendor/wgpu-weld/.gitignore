@@ -1,0 +1,2 @@
+# Never built on its own: the players own the lockfile (ROVES_PATCHES.md).
+/Cargo.lock

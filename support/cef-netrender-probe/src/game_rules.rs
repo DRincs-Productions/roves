@@ -192,6 +192,45 @@ pub(crate) fn forward_input(kind: InputEventKind, game_loaded: bool) -> bool {
     game_loaded || kind == InputEventKind::Window
 }
 
+/// Environment override for tests: `1` forces CEF's software paint path on any adapter.
+pub(crate) const FORCE_CPU_PAINT_ENV: &str = "ROVES_FORCE_CPU_PAINT";
+
+/// How the player asks CEF for frames (README "Software paint").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PaintPath {
+    /// `OnAcceleratedPaint`: a shared GPU texture imported into wgpu.
+    Accelerated,
+    /// CEF's software output (`OnPaint` BGRA buffer, uploaded with `Queue::write_texture`),
+    /// with the reason it was chosen: `forced`, `cpu-adapter` or `no-import-device`.
+    Software(&'static str),
+}
+
+impl PaintPath {
+    /// The `evidence=` label of the player logs.
+    pub(crate) fn evidence(self) -> &'static str {
+        match self {
+            PaintPath::Accelerated => "accelerated",
+            PaintPath::Software(_) => "software",
+        }
+    }
+}
+
+/// Chosen once, before the browser exists: CEF cannot switch a browser between the two paths,
+/// and accelerated OSR on a CPU adapter (WARP, lavapipe/llvmpipe) or without an import device
+/// delivers no importable frame at all, so the window would stay black. `force` is the value
+/// of [`FORCE_CPU_PAINT_ENV`]; only `1` forces.
+pub(crate) fn paint_path(cpu_adapter: bool, import_device: bool, force: Option<&str>) -> PaintPath {
+    if force.map(str::trim) == Some("1") {
+        PaintPath::Software("forced")
+    } else if cpu_adapter {
+        PaintPath::Software("cpu-adapter")
+    } else if !import_device {
+        PaintPath::Software("no-import-device")
+    } else {
+        PaintPath::Accelerated
+    }
+}
+
 /// A frame-work suspension change decided from the SDL window flags (every mode).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Suspension {
@@ -2179,6 +2218,43 @@ mod tests {
                 .map(str::len),
             Some(32)
         );
+    }
+
+    #[test]
+    fn paint_path_prefers_accelerated_and_falls_back_to_software() {
+        assert_eq!(paint_path(false, true, None), PaintPath::Accelerated);
+        assert_eq!(
+            paint_path(true, true, None),
+            PaintPath::Software("cpu-adapter")
+        );
+        assert_eq!(
+            paint_path(false, false, None),
+            PaintPath::Software("no-import-device")
+        );
+        assert_eq!(
+            paint_path(false, true, Some("1")),
+            PaintPath::Software("forced")
+        );
+        assert_eq!(
+            paint_path(
+                true,
+                false,
+                Some(
+                    " 1
+"
+                )
+            ),
+            PaintPath::Software("forced")
+        );
+        for other in ["", "0", "true", "yes"] {
+            assert_eq!(
+                paint_path(false, true, Some(other)),
+                PaintPath::Accelerated,
+                "{other:?}"
+            );
+        }
+        assert_eq!(PaintPath::Accelerated.evidence(), "accelerated");
+        assert_eq!(PaintPath::Software("forced").evidence(), "software");
     }
 
     #[test]

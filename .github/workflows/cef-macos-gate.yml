@@ -1,7 +1,7 @@
 name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
 
 # Developer experiment only (support/cef-macos-gate/README.md). Builds and bundles the macOS
-# gate (same pins as the Windows player: welding e991684 wgpu-29 row, CEF 154.0.34,
+# gate (same pins as the Windows player: vendored welding e991684 wgpu-29 row, CEF 154.0.34,
 # wgpu 29.0.4, SDL3 0.20) on Apple silicon and runs it once with Chromium's sandbox on.
 # Hard gates: compile, .app structure, Metal adapter, CEF/SDL init, sandboxed renderer
 # (--seatbelt-client), clean shutdown. The accelerated IOSurface import is gated only when
@@ -19,6 +19,8 @@ on:
   push:
     paths:
       - 'support/cef-macos-gate/**'
+      # Vendored welding (temporary fork, ROVES_PATCHES.md).
+      - 'support/vendor/wgpu-weld/**'
       # Compiled into the gate through `#[path]` (packaged-game mode).
       - 'support/cef-window-probe/src/server.rs'
       - 'support/cef-window-probe/src/host_api.rs'
@@ -56,6 +58,7 @@ jobs:
         with:
           sparse-checkout: |
             support/cef-macos-gate
+            support/vendor/wgpu-weld
             support/cef-window-probe/src
             support/cef-netrender-probe/src
           sparse-checkout-cone-mode: true

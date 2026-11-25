@@ -15,14 +15,14 @@ use std::{
 use crate::game::host_api::SteamHandle;
 use crate::game::{Console, GameOptions, Input, Server};
 use crate::game_rules::{
-    ClickAction, ClickInput, ClickTest, CycleAction, KeyAction, KeyInput, KeyTest, Milestone,
-    MinimizeCycle, PLAYER_CEF_DIR, PLAYER_GAME_DIR, PLAYER_LOCK_FILE, PLAYER_ORIGIN_PORT_FILE,
-    PLAYER_SAVES_DIR, Startup, StartupFailure, StartupGate, Suspension, TEST_CLICK_MOUSE_ID,
-    TEST_CLICK_POINT, TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD, TEST_WHEEL_LINES,
-    TEST_WHEEL_MOUSE_ID, TestKey, WheelAction, WheelInput, WheelMarker, WheelTest, is_click_marker,
-    key_marker, load_status_ok, on_origin, origin_port, parse_origin_port, parse_test_key_delay,
-    parse_test_wheel_delay, player_profile_name, splash_indicator, splash_layout,
-    suspension_change, wheel_marker,
+    ClickAction, ClickInput, ClickTest, CycleAction, FORCE_CPU_PAINT_ENV, KeyAction, KeyInput,
+    KeyTest, Milestone, MinimizeCycle, PLAYER_CEF_DIR, PLAYER_GAME_DIR, PLAYER_LOCK_FILE,
+    PLAYER_ORIGIN_PORT_FILE, PLAYER_SAVES_DIR, PaintPath, Startup, StartupFailure, StartupGate,
+    Suspension, TEST_CLICK_MOUSE_ID, TEST_CLICK_POINT, TEST_KEY_KEYBOARD_ID, TEST_MINIMIZE_HOLD,
+    TEST_WHEEL_LINES, TEST_WHEEL_MOUSE_ID, TestKey, WheelAction, WheelInput, WheelMarker,
+    WheelTest, is_click_marker, key_marker, load_status_ok, on_origin, origin_port, paint_path,
+    parse_origin_port, parse_test_key_delay, parse_test_wheel_delay, player_profile_name,
+    splash_indicator, splash_layout, suspension_change, wheel_marker,
 };
 use crate::mcp::Call;
 use crate::mcp_rules::{McpKey, point_in_window};
@@ -1202,6 +1202,8 @@ struct State {
     imported_at_size: u32,
     presented: u32,
     load_ended: bool,
+    /// Accelerated (shared texture import) or CEF software output (README "Software paint").
+    paint: PaintPath,
     /// Game mode only: SDL3 -> welding input forwarding.
     input: Option<Input>,
     /// Set while the window is minimized or hidden: no frame import, compose or present.
@@ -1414,6 +1416,18 @@ impl Probe {
         if host.backend != InteropBackend::Dx12 {
             return Err(format!("interop backend {:?}, expected Dx12", host.backend));
         }
+        // WARP (`DeviceType::Cpu`, also what Windows uses without a GPU) delivers no
+        // accelerated OSR frame: CEF's software output is the only path that shows the game.
+        let force = std::env::var(FORCE_CPU_PAINT_ENV).ok();
+        let paint = paint_path(
+            info.device_type == wgpu::DeviceType::Cpu,
+            true,
+            force.as_deref(),
+        );
+        self.log.line(format_args!(
+            "paint path={paint:?} evidence={}",
+            paint.evidence()
+        ));
         host.device.on_uncaptured_error(Arc::new({
             let log = self.log.clone();
             move |error| log.line(format_args!("FAIL wgpu uncaptured error: {error}"))
@@ -1511,7 +1525,7 @@ impl Probe {
                     // Fixture: transparent, uncovered page pixels arrive with premultiplied
                     // alpha 0. Game: opaque white where the page paints nothing, as in Chrome.
                     background_color: game.then_some([255, 255, 255]),
-                    prefer_accelerated: true,
+                    prefer_accelerated: paint == PaintPath::Accelerated,
                     // Game: a per-producer on-disk profile inside the run's root cache. The
                     // fixture keeps welding's isolated in-memory profile, unchanged.
                     user_data_dir: game.then(|| crate::game::profile_dir(&self.options.cache_dir)),
@@ -1525,8 +1539,10 @@ impl Probe {
         )
         .map_err(|e| format!("WindowsCefProducer: {e}"))?;
         self.log.line(format_args!(
-            "producer created accelerated=true background={}",
-            if game { "white" } else { "transparent" }
+            "producer created accelerated={} background={} evidence={}",
+            paint == PaintPath::Accelerated,
+            if game { "white" } else { "transparent" },
+            paint.evidence()
         ));
         Ok(State {
             producer,
@@ -1542,6 +1558,7 @@ impl Probe {
             imported_at_size: 0,
             presented: 0,
             load_ended: false,
+            paint,
             input: game.then(Input::new),
             suspended_since: None,
             suspended_ticks: 0,
@@ -1623,13 +1640,18 @@ impl Probe {
                 }
                 if s.imported == 1 || s.imported_at_size == 1 {
                     self.log.line(format_args!(
-                        "import frame={} size={}x{} format={:?} generation={} usage={:?} path=dx12-shared-handle",
+                        "import frame={} size={}x{} format={:?} generation={} usage={:?} path={} evidence={}",
                         s.imported,
                         size.0,
                         size.1,
                         frame.format,
                         frame.generation,
-                        frame.texture.usage()
+                        frame.texture.usage(),
+                        match s.paint {
+                            PaintPath::Accelerated => "dx12-shared-handle",
+                            PaintPath::Software(_) => "cpu-paint-upload",
+                        },
+                        s.paint.evidence()
                     ));
                 }
                 s.frame = Some(frame);
