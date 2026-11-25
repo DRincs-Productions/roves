@@ -1,0 +1,236 @@
+name: CEF -> wgpu-weld -> wgpu + SDL3 Linux feasibility gate
+
+# Developer experiment only (support/cef-linux-gate/README.md). Builds the Linux gate (same
+# pins as the Windows player and the macOS gate: welding e991684 wgpu-29 row, CEF 154.0.34,
+# wgpu 29.0.4, SDL3 0.20) on x86_64 and runs it twice under Xvfb with Chromium's sandbox on:
+# once with the setuid layer 1 (chrome-sandbox root 4755, user namespaces restricted) and once
+# with the user-namespace layer 1. Hard gates: compile, $ORIGIN run path, flat CEF layout,
+# Vulkan adapter, CEF/SDL3 (X11) init, SDL3 presentation, sandboxed renderers (seccomp-BPF,
+# NoNewPrivs, PID namespace, no --no-sandbox), clean shutdown, no leftover process.
+# Hosted runners have no GPU and no /dev/dri: Vulkan is Mesa lavapipe (CPU) and Chromium has
+# no DRI3/GBM device, so exit 2 (no accelerated frame) or 3 (no DMA-BUF import device on the
+# CPU adapter) are notices, never GPU evidence. Separate from cef-netrender-probe.yml
+# (Windows) and cef-macos-gate.yml (macOS), both unchanged. Never gates a release.
+
+on:
+  push:
+    paths:
+      - 'support/cef-linux-gate/**'
+      - '.github/workflows/cef-linux-gate.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cef-linux-gate-${{ github.ref }}
+  # A cancelled run is not a verified one (AGENTS.md CI rules): queue instead of cancelling.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  linux-x64:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    env:
+      # The repository root rust-toolchain.toml pins the engine toolchain; welding needs
+      # 1.97.1+ and wgpu-weld e991684 uses 1.99.1, as the Windows player does.
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            support/cef-linux-gate
+          sparse-checkout-cone-mode: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: system packages
+        shell: bash
+        run: |
+          sudo apt-get update -q
+          # Build: cef-dll-sys (CMake + Ninja for libcef_dll_wrapper), SDL3 from source with
+          # its X11 and Wayland backends (Wayland is built so the gap is a runtime one).
+          # Run: CEF 154 runtime libraries, Xvfb, Mesa Vulkan drivers (lavapipe on runners).
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxfixes-dev libxi-dev \
+            libxss-dev libxtst-dev libxkbcommon-dev libwayland-dev wayland-protocols \
+            libdrm-dev libgbm-dev libegl-dev libdbus-1-dev libudev-dev \
+            libnss3 libatk1.0-0t64 libatk-bridge2.0-0t64 libcups2t64 libxcomposite1 \
+            libxdamage1 libgbm1 libasound2t64 libpango-1.0-0 libcairo2 libxshmfence1 \
+            xvfb xauth mesa-vulkan-drivers vulkan-tools util-linux
+      - name: toolchain and host
+        shell: bash
+        run: |
+          case "$(rustc --version)" in
+            "rustc 1.99.1 "*) ;;
+            *) echo "::error::expected rustc 1.99.1, got $(rustc --version)"; exit 1 ;;
+          esac
+          dri="$(ls /dev/dri 2>/dev/null | tr '\n' ' ')"
+          echo "::notice::$(rustc --version) / $(. /etc/os-release; echo "$PRETTY_NAME") $(uname -r) / cmake $(cmake --version | head -1) / ninja $(ninja --version) / /dev/dri: ${dri:-none}"
+          vulkaninfo --summary 2>/dev/null | grep -E 'deviceName|deviceType|driverName' || echo "::warning::vulkaninfo found no device"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/gate-target" >> "$GITHUB_ENV"
+          # CEF 154 distribution; also read at run time by the bundle binary.
+          echo "CEF_PATH=$RUNNER_TEMP/cef154" >> "$GITHUB_ENV"
+      - name: restore cargo and CEF cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}/cef154
+          key: cef-linux-gate-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('support/cef-linux-gate/Cargo.lock') }}
+      - name: dependency graph evidence
+        shell: bash
+        working-directory: support/cef-linux-gate
+        run: |
+          tree() { cargo tree --locked --target x86_64-unknown-linux-gnu -e normal --prefix depth --depth 1 "$@"; }
+          users29="$(tree -i wgpu@29.0.4 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 29.0.4 used by: $users29"
+          for crate in grafting roves_cef_linux_gate welding; do
+            echo " $users29" | grep -q " $crate " || { echo "::error::$crate is not on wgpu 29.0.4"; exit 1; }
+          done
+          # wgpu 30 may appear only under cef (accelerated_osr importer, never called).
+          users30="$(tree -i wgpu@30.0.2 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 30.0.2 used by: $users30"
+          test "$users30" = "cef " || { echo "::error::wgpu 30 reached by something other than cef"; exit 1; }
+      - name: build (release)
+        shell: bash
+        working-directory: support/cef-linux-gate
+        run: |
+          cargo build --locked --release --bins 2>&1 | tee "$RUNNER_TEMP/gate-build.log"
+          test "${PIPESTATUS[0]}" = 0
+      - name: save cargo and CEF cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}/cef154
+          key: cef-linux-gate-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('support/cef-linux-gate/Cargo.lock') }}
+      - name: bundle and check the layout
+        shell: bash
+        run: |
+          out="$RUNNER_TEMP/gate-app"
+          "$CARGO_TARGET_DIR/release/bundle" "$out"
+          gate="$out/roves-cef-linux-gate"
+          test -x "$gate"
+          for f in libcef.so chrome-sandbox icudtl.dat resources.pak v8_context_snapshot.bin locales/en-US.pak; do
+            test -e "$out/$f" || { echo "::error::missing $f"; exit 1; }
+          done
+          # The zygote may be started through the setuid chrome-sandbox, which drops
+          # LD_LIBRARY_PATH: libcef must resolve through the binary's own run path.
+          readelf -d "$gate" | grep -E 'RUNPATH|RPATH' | grep -q '\$ORIGIN' \
+            || { echo "::error::no \$ORIGIN run path"; exit 1; }
+          ldd "$gate" | grep -q "libcef.so => $out/libcef.so" \
+            || { ldd "$gate"; echo "::error::libcef.so not resolved next to the gate"; exit 1; }
+          if ldd "$gate" | grep -q 'not found'; then ldd "$gate"; echo "::error::unresolved libraries"; exit 1; fi
+          # Chromium's setuid layer 1 requires chrome-sandbox owned by root with mode 4755
+          # (sandbox/linux/suid/client/setuid_sandbox_host.cc). This is root-only packaging,
+          # done here on purpose; the gate itself never runs as root.
+          sudo chown root:root "$out/chrome-sandbox"
+          sudo chmod 4755 "$out/chrome-sandbox"
+          stat -c '%U %a %n' "$out/chrome-sandbox"
+          file "$gate"
+          echo "GATE=$gate" >> "$GITHUB_ENV"
+          echo "GATE_DIR=$out" >> "$GITHUB_ENV"
+      - name: write the run script
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/run-gate.sh" <<'EOF'
+          #!/usr/bin/env bash
+          # Usage: run-gate.sh <setuid|namespace>. Runs the gate once under Xvfb and checks its
+          # verdict lines; the layer-1 expectation is enforced through the AppArmor sysctl.
+          set -uo pipefail
+          layer="$1"
+          log="$RUNNER_TEMP/gate-run-$layer.log"
+          key=/proc/sys/kernel/apparmor_restrict_unprivileged_userns
+          if [ -e "$key" ]; then
+            case "$layer" in
+              setuid) sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=1 ;;
+              namespace) sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 ;;
+            esac
+          else
+            echo "::warning::$key absent: layer-1 selection not enforced for the $layer run"
+          fi
+          # Hard stop above the gate's own 60 s timeout plus close.
+          ROVES_GATE_TIMEOUT_SECS=60 timeout -k 10 150 \
+            xvfb-run -a -s "-screen 0 1280x800x24" "$GATE" > "$log" 2>&1
+          code=$?
+          grep '^gate:' "$log" || true
+          fail() { echo "::error::[$layer] $1"; exit 1; }
+          need() { grep -q "$1" "$log" || fail "missing: $1"; }
+          if grep -q '^gate: FAIL' "$log"; then
+            grep '^gate: FAIL' "$log" | grep -q 'IMPLICIT_MODIFIER' \
+              && echo "::error::[$layer] CEF gave an implicit DRM modifier; the wgpu-29 row cannot import it"
+            fail "gate reported FAIL (exit $code)"
+          fi
+          need '^gate: cef initialized sandbox=Sandboxed ozone=x11'
+          need '^gate: sdl video driver=x11'
+          need '^gate: adapter .*backend=Vulkan'
+          need '^gate: producer created mode=AcceleratedPaint'
+          need '^gate: loop end .*presented=[1-9]'
+          need '^gate: PASS sandbox renderers='
+          need "^gate: shutdown complete exit=$code"
+          if [ -e "$key" ]; then
+            need "^gate: host userns-probe=.* sandbox-layer1-expected=$layer"
+          fi
+          case "$code" in
+            0)
+              need '^gate: PASS pixel centre'
+              if grep -q '^gate: PASS pixel .*evidence=gpu' "$log"; then
+                echo "::notice::[$layer] accelerated DMA-BUF -> Vulkan import verified on a GPU adapter (exit 0)"
+              else
+                echo "::notice::[$layer] DMA-BUF import matched on a CPU Vulkan adapter (exit 0): software evidence only, not GPU evidence"
+              fi ;;
+            2)
+              need '^gate: NO_ACCELERATED_FRAME'
+              echo "::notice::[$layer] no OnAcceleratedPaint on this runner (exit 2): build, sandbox, SDL3/Vulkan presentation and shutdown verified; the DMA-BUF import needs a real GPU with DRI3" ;;
+            3)
+              need '^gate: NO_DMABUF_DEVICE'
+              need '^gate: adapter .*type=Cpu'
+              echo "::notice::[$layer] CPU Vulkan adapter without DMA-BUF import extensions (exit 3): build, sandbox, SDL3/Vulkan presentation and shutdown verified; the import needs a real GPU" ;;
+            124|137)
+              fail "hard timeout (exit $code)" ;;
+            *)
+              fail "unexpected exit $code" ;;
+          esac
+          # No process of this gate may outlive the browser process.
+          sleep 2
+          if pgrep -fl "roves-cef-linux-gate" ; then
+            fail "gate processes still running after exit"
+          fi
+          EOF
+          chmod +x "$RUNNER_TEMP/run-gate.sh"
+      - name: run the gate (sandboxed, setuid layer 1, X11)
+        shell: bash
+        run: '"$RUNNER_TEMP/run-gate.sh" setuid'
+      - name: run the gate (sandboxed, user-namespace layer 1, X11)
+        shell: bash
+        run: '"$RUNNER_TEMP/run-gate.sh" namespace'
+      - name: archive the gate directory
+        if: always() && env.GATE_DIR != ''
+        shell: bash
+        # tar keeps the modes; extracting as a normal user drops the root owner and the setuid
+        # bit of chrome-sandbox, which must be re-applied (README "Running elsewhere").
+        run: tar -C "$GATE_DIR/.." -czf "$RUNNER_TEMP/roves-cef-linux-gate-x64.tar.gz" "$(basename "$GATE_DIR")"
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-linux-gate-logs
+          path: |
+            ${{ runner.temp }}/gate-build.log
+            ${{ runner.temp }}/gate-run-*.log
+          if-no-files-found: warn
+      - name: upload the gate directory
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-linux-gate-x64
+          path: ${{ runner.temp }}/roves-cef-linux-gate-x64.tar.gz
+          if-no-files-found: warn

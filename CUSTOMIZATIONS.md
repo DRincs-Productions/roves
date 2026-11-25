@@ -1,3 +1,25 @@
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: Linux accelerated-OSR feasibility gate (experiment only)
+
+Added: `support/cef-linux-gate/{Cargo.toml,Cargo.lock,build.rs,README.md,src/main.rs,src/bundle.rs}`,
+`.github/workflows/cef-linux-gate.yml`. Linux twin of the macOS gate on the same pins and
+lockfile (welding e991684 `wgpu-29` + `cef-runtime`, cef =154.5.0, wgpu =29.0.4 with
+`vulkan`, sdl3 0.20; only the root package differs). Path: CEF `OnAcceleratedPaint` DMA-BUF
+planes -> `welding::build_dmabuf_capable_device` + grafting Vulkan import -> wgpu Vulkan
+device presenting to an SDL3 X11 window; Chromium kept on `--ozone-platform=x11` (DRI3/GBM
+native pixmaps). Chromium sandbox always on; renderers must show seccomp-BPF, NoNewPrivs and
+a nested PID namespace in `/proc/<pid>/status` and no `--no-sandbox`. `build.rs` adds an
+`$ORIGIN` run path because the setuid `chrome-sandbox` drops `LD_LIBRARY_PATH`. The workflow
+builds on `ubuntu-24.04`, lays out the flat CEF directory (cef's `build_util::linux::bundle`),
+makes `chrome-sandbox` root 4755 and runs the gate under Xvfb twice (setuid and
+user-namespace layer 1, selected through the AppArmor userns sysctl). Exits: 0 pixel match
+(tagged `evidence=gpu|software-adapter`), 2 no accelerated frame, 3 CPU Vulkan adapter
+without DMA-BUF import device, 1 failure (`IMPLICIT_MODIFIER` for CEF's
+`DRM_FORMAT_MOD_INVALID`, which welding refuses on the wgpu-29 row). Hosted runners have no
+GPU, so CI results are never GPU evidence. Wayland and the Steam Linux Runtime are
+documented gaps. The Windows player, the macOS gate and their workflows are unchanged. No
+`mach` build/bundle surface changed (no roves-action/Packmaster sync needed); not
+user-facing, so no README/wiki change.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: `isMcpEnabled()` page capability
 
 Changed: `support/cef-netrender-probe/src/{app.rs,mcp.rs,mcp_rules.rs}`,

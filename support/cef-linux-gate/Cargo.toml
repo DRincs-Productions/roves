@@ -1,0 +1,52 @@
+# Linux feasibility gate for the CEF accelerated off-screen path: CEF 154 OnAcceleratedPaint
+# native pixmap (DMA-BUF planes) -> welding (Vulkan external-memory import through grafting)
+# -> wgpu 29 Vulkan -> SDL3 X11 window.
+# Separate Cargo workspace: not part of the Windows player (support/cef-netrender-probe), of
+# the macOS gate (support/cef-macos-gate), of their CI, or of any shipped target. See README.md.
+#
+# Pins are the Windows player's and the macOS gate's, unchanged, so a pass here says something
+# about the same graph: welding e991684 (`wgpu-29` + `cef-runtime`), grafting d903cfa
+# (Cargo.lock), cef =154.5.0 (CEF 154.0.34, Chromium 154.0.8037.98), wgpu =29.0.4, sdl3 0.20.
+# Cargo.lock was seeded from support/cef-macos-gate/Cargo.lock (itself seeded from the
+# Windows player's), so every shared package resolves to the same version.
+[package]
+name = "roves_cef_linux_gate"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+license = "MPL-2.0"
+build = "build.rs"
+
+[workspace]
+
+# Linux CEF re-executes this binary for every subprocess (zygote, renderer, GPU, utility),
+# so there is no separate helper executable.
+[[bin]]
+name = "roves-cef-linux-gate"
+path = "src/main.rs"
+
+# Assembles the flat CEF directory from the already built release binary; not part of the
+# gate itself.
+[[bin]]
+name = "bundle"
+path = "src/bundle.rs"
+
+[features]
+default = ["bundled-sdl"]
+# SDL3 built from source and linked statically, as in the Windows player.
+bundled-sdl = ["sdl3/build-from-source-static"]
+# Local type-check only, e.g. from Windows:
+#   cargo check --target x86_64-unknown-linux-gnu --no-default-features --features dox --bins
+# cef-dll-sys skips the CEF download and the libcef_dll_wrapper build; without
+# `bundled-sdl` no C toolchain for the target is needed. Never used for a runnable build.
+dox = ["cef/dox"]
+
+[dependencies]
+welding = { git = "https://github.com/merely-made/wgpu-weld", rev = "e991684bab23d0eaea42d418e216317173ace2a9", default-features = false, features = ["wgpu-29", "cef-runtime"] }
+cef = { version = "=154.5.0", default-features = false, features = ["build-util", "sandbox"] }
+wgpu = { version = "=29.0.4", default-features = false, features = ["std", "vulkan", "wgsl"] }
+sdl3 = { version = "0.20", default-features = false, features = ["raw-window-handle"] }
+pollster = "0.4"
+dpi = "0.1"
+log = "0.4"
