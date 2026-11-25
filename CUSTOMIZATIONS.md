@@ -1,3 +1,16 @@
+## 2026-11-25 - CEF players: static first screens release the startup screen
+
+Changed: `support/cef-netrender-probe/src/{app.rs,game_rules.rs}`,
+`support/cef-{macos,linux}-gate/src/player.rs`, `support/cef-macos-gate/player-fixture/`,
+`.github/workflows/cef-netrender-probe.yml`. With software frames on WARP (CI run 45675943169)
+a static page painted only before its load-end, so the "frame newer than load-end" rule kept
+the startup screen up until the timeout. As in Chromium's paint holding, which ends on its
+new-content rendering timeout, the players now release 1 s after load-end on a frame the game
+document already painted (`startup released ... settled=true`; gates: `first game frame
+settled`); about:blank frames never count. The gates' CI fixture moves its CSS to a file
+(the page's CSP refused the inline style, so the click target was not under the synthetic
+click), and the Windows direct-package run auto-closes after 20 s so WMI sees the renderer.
+
 ## 2026-11-25 - CEF players: software OSR fallback (`OnPaint`) in a vendored welding
 
 Added: `support/vendor/wgpu-weld/` (welding 0.15.0 from merely-made/wgpu-weld `e991684`,

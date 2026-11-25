@@ -57,6 +57,11 @@ use crate::{
 };
 
 /// Console lines printed before only counting them.
+/// A static first screen paints before its load-end and never again, so no frame can follow
+/// the load-end. Chromium's paint holding also ends on a timeout (`RenderWidgetHostImpl`
+/// new-content rendering timeout, 4 s): after this delay the frame the game document already
+/// painted counts as its first frame (same rule as the Windows player's startup gate).
+const SETTLE_AFTER_LOAD_END: Duration = Duration::from_secs(1);
 const CONSOLE_LOG_CAP: u32 = 200;
 /// Longest console message kept per line (characters).
 const CONSOLE_MESSAGE_MAX: usize = 300;
@@ -149,6 +154,9 @@ pub(crate) fn drive(
     let mut presented = 0u32;
     let mut loaded_at: Option<Instant> = None;
     let mut first_game_frame: Option<Instant> = None;
+    // A frame imported after the game's own load-start (not the about:blank bootstrap).
+    let mut game_started = false;
+    let mut game_painted = false;
     let mut close_at: Option<Instant> = None;
     let mut close_pushed = false;
     let mut close_source: Option<&'static str> = None;
@@ -215,7 +223,10 @@ pub(crate) fn drive(
                 continue;
             }
             match event {
-                NavigationEvent::LoadStart { url } => println!("gate: load-start url={url}"),
+                NavigationEvent::LoadStart { url } => {
+                    game_started = true;
+                    println!("gate: load-start url={url}");
+                },
                 NavigationEvent::LoadEnd { url, http_status } => {
                     let ok = load_status_ok(http_status) && on_origin(origin, &url);
                     println!("gate: load-end status={http_status} url={url} ok={ok}");
@@ -299,6 +310,7 @@ pub(crate) fn drive(
         match producer.acquire_frame(&gpu.host) {
             Ok(Some(new)) => {
                 imported += 1;
+                game_painted |= game_started;
                 if imported == 1 {
                     println!(
                         "gate: first frame imported size={}x{} format={:?} evidence={} \
@@ -342,6 +354,18 @@ pub(crate) fn drive(
                 report_acquire_error(&error.to_string());
                 failed = true;
             },
+        }
+        if first_game_frame.is_none()
+            && game_painted
+            && loaded_at.is_some_and(|at| at.elapsed() >= SETTLE_AFTER_LOAD_END)
+            && let Some(current) = frame.as_ref()
+        {
+            first_game_frame = Some(Instant::now());
+            println!(
+                "gate: first game frame settled (no paint after load-end) generation={}",
+                current.generation
+            );
+            schedule_close(auto_close, anchor, &mut close_at);
         }
         session.per_turn(&mut producer, mouse, sdl_events, window);
         if gpu.present(frame.as_ref()) {

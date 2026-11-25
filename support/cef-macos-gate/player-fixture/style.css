@@ -1,0 +1,6 @@
+/* External: the page's CSP (default-src 'self') refuses inline styles. */
+html, body { margin: 0; background: #204060; color: #fff; font: 20px sans-serif; }
+/* The gates' synthetic click lands at SDL window point 100,60 (game_rules TEST_CLICK_POINT). */
+#click-target { position: fixed; left: 0; top: 0; width: 200px; height: 120px;
+                margin: 0; border: 0; padding: 0; }
+#status { position: fixed; left: 0; top: 140px; }

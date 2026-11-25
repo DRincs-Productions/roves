@@ -1371,7 +1371,7 @@ jobs:
           }
           $log = Join-Path $out 'roves-cef-player.log'
           $arguments = @(
-            '--roves-isolated-profile', '--roves-no-error-dialog', '--roves-auto-close-ms=5000',
+            '--roves-isolated-profile', '--roves-no-error-dialog', '--roves-auto-close-ms=20000',
             '--roves-timeout-ms=60000', "--roves-log=$log", "--log-file=$(Join-Path $out 'cef-debug.log')"
           )
           $proc = Start-Process -FilePath $exe -ArgumentList $arguments -WorkingDirectory $cwd -PassThru
@@ -1404,6 +1404,8 @@ jobs:
             }
           }
           '@
+          # 20 s auto-close: with software frames on WARP the game releases in about a second,
+          # and a 5 s run gave WMI too few samples to see the sandboxed renderer (run 45675943169).
           $children = @{}
           $captured = $null
           $loadedAt = $null
@@ -1453,7 +1455,7 @@ jobs:
             'producer created accelerated=false background=white evidence=software$',
             "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')
           $tail = if ($released) {
-            @('startup released generation=\d+ ', 'auto-close scheduled delay_ms=5000 from=startup-release',
+            @('startup released generation=\d+ ', 'auto-close scheduled delay_ms=20000 from=startup-release',
               'auto-close window', 'closing imported=', 'browser closed', 'cef shutdown complete',
               'game loopback stopped', 'player cache removed dir=', 'exit code=0$')
           } else {

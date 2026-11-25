@@ -55,6 +55,11 @@ const INITIAL_SIZE: PhysicalSize<u32> = PhysicalSize::new(1280, 720);
 const RESIZED_SIZE: PhysicalSize<u32> = PhysicalSize::new(960, 540);
 /// Composed (Netrender master / plain-wgpu target) format: Netrender's master is a storage
 /// texture, which rules out BGRA without an extra feature.
+/// A static first screen paints before its load-end and never again, so no frame can be
+/// newer than the load-end. Chromium's paint holding also ends on a timeout
+/// (`RenderWidgetHostImpl` new-content rendering timeout, 4 s); after this delay the startup
+/// screen gives way to a frame the game document already painted.
+const STARTUP_SETTLE_AFTER_LOAD_END: Duration = Duration::from_secs(1);
 const COMPOSED_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 /// Imported frames of the expected size required before a check (the page must have painted
 /// its content, not only the initial transparent frame).
@@ -348,6 +353,7 @@ pub(crate) unsafe fn run(instance: *mut std::ffi::c_void, sandbox_info: *mut u8)
         phase_since: None,
         last_import: None,
         last_generation: None,
+        game_start_generation: None,
         stall: options.sustained.then(Box::<Ring>::default),
         sustained_done: false,
         options,
@@ -1107,6 +1113,9 @@ struct Probe {
     last_import: Option<Instant>,
     /// welding paint generation of the last imported frame (any phase).
     last_generation: Option<u64>,
+    /// Newest paint generation when the game's own navigation started (`Some(None)`: no frame
+    /// yet then; `None`: not started). Frames newer than it belong to the game document.
+    game_start_generation: Option<Option<u64>>,
     /// `--roves-sustained` only: redraw ring of warmup and sample, printed on rejection.
     stall: Option<Box<Ring>>,
     /// The sustained sample completed and was healthy.
@@ -1661,11 +1670,23 @@ impl Probe {
         }
         // Game mode: the startup screen gives way on the first frame painted after load-end.
         if let Some(gate) = self.gate.as_mut() {
-            if let Some(generation) = self.last_generation.filter(|_| fresh)
-                && gate.imported(generation)
-            {
+            let settle_due = self
+                .game_loaded_at
+                .is_some_and(|at| at.elapsed() >= STARTUP_SETTLE_AFTER_LOAD_END);
+            let game_painted = match (self.last_generation, self.game_start_generation) {
+                (Some(newest), Some(start)) => start.is_none_or(|b| newest > b),
+                _ => false,
+            };
+            let released = match self.last_generation {
+                Some(generation) if fresh && gate.imported(generation) => Some((generation, false)),
+                Some(generation) if settle_due && gate.settle(game_painted) => {
+                    Some((generation, true))
+                },
+                _ => None,
+            };
+            if let Some((generation, settled)) = released {
                 self.log.line(format_args!(
-                    "startup released generation={generation} imported={} after_load_end_ms={}",
+                    "startup released generation={generation} imported={} after_load_end_ms={}                      settled={settled}",
                     s.imported,
                     self.game_loaded_at.map_or(0, |at| at.elapsed().as_millis())
                 ));
@@ -2396,6 +2417,8 @@ impl Probe {
                     },
                     NavigationEvent::LoadStart { url } if origin.is_some() => {
                         self.log.line(format_args!("load-start url={url}"));
+                        self.game_start_generation
+                            .get_or_insert(self.last_generation);
                         startup_line(&self.log, &mut self.startup, Milestone::LoadStart);
                     },
                     // Fixture: no per-event line, only the first startup milestone.

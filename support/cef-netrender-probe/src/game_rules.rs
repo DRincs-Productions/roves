@@ -1036,6 +1036,17 @@ impl StartupGate {
         }
     }
 
+    /// The settle delay after load-end passed without a newer frame: release on the frame the
+    /// game document already painted (`game_painted`), as a static page paints only before its
+    /// load-end. `true` on release.
+    pub(crate) fn settle(&mut self, game_painted: bool) -> bool {
+        if game_painted && matches!(*self, StartupGate::WaitingFrame(Some(_))) {
+            *self = StartupGate::Released;
+            return true;
+        }
+        false
+    }
+
     /// End of a loop turn; `newest` is the generation of the newest imported frame so far.
     pub(crate) fn end_turn(&mut self, newest: Option<u64>) {
         if *self == StartupGate::LoadEnded {
@@ -2156,6 +2167,23 @@ mod tests {
         gate.end_turn(None);
         assert_eq!(gate, StartupGate::WaitingFrame(None));
         assert!(gate.imported(1));
+    }
+
+    #[test]
+    fn startup_gate_settles_on_a_frame_the_game_already_painted() {
+        let mut gate = StartupGate::Loading;
+        assert!(!gate.settle(true));
+        assert!(gate.load_end());
+        gate.end_turn(Some(4));
+        // Only about:blank painted: nothing of the game to show yet.
+        assert!(!gate.settle(false));
+        assert!(gate.settle(true));
+        assert!(gate.released());
+        // Nothing imported at all: no frame to release on.
+        let mut empty = StartupGate::Loading;
+        assert!(empty.load_end());
+        empty.end_turn(None);
+        assert!(!empty.settle(true));
     }
 
     #[test]
