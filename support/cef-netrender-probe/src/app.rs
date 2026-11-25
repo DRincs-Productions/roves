@@ -1193,9 +1193,32 @@ impl Probe {
         let mut window = builder.build().map_err(|e| format!("window: {e}"))?;
         let branding = if game {
             let started = Instant::now();
+            // Window icon: the project's `icon.png` next to the executable when valid, the
+            // Roves logo otherwise (README "Project icon"). The screens keep the Roves logo.
+            let exe = std::env::current_exe().ok();
+            let project = match crate::splash::project_icon(exe.as_deref()) {
+                crate::splash::ProjectIcon::Found { icon, source_px } => {
+                    let set = window.set_icon(&icon);
+                    self.log.line(format_args!(
+                        "window icon source=project size={source_px}x{source_px} set={set}"
+                    ));
+                    set
+                },
+                crate::splash::ProjectIcon::Absent => {
+                    self.log
+                        .line(format_args!("window icon source=roves reason=absent"));
+                    false
+                },
+                crate::splash::ProjectIcon::Invalid(error) => {
+                    self.log.line(format_args!(
+                        "window icon source=roves reason=invalid error={error}"
+                    ));
+                    false
+                },
+            };
             match crate::splash::decode() {
                 Ok(branding) => {
-                    let icon = window.set_icon(&branding.icon);
+                    let icon = project || window.set_icon(&branding.icon);
                     self.log.line(format_args!(
                         "branding decoded logo={LOGO_PX}x{LOGO_PX} window-icon={icon} elapsed_ms={}",
                         started.elapsed().as_millis()
@@ -1216,8 +1239,9 @@ impl Probe {
             match crate::splash::wordmark() {
                 Ok(wordmark) => {
                     let (w, h) = WORDMARK_SIZE;
-                    self.log
-                        .line(format_args!("wordmark rendered size={w}x{h}"));
+                    self.log.line(format_args!(
+                        "wordmark rendered size={w}x{h} font=MetalMania"
+                    ));
                     Some(wordmark)
                 },
                 Err(error) => {

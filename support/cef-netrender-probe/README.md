@@ -780,8 +780,10 @@ click. It is a workflow artifact only, never attached to a GitHub Release.
 ```text
 visual-novel-template-roves-cef\
   play.exe            CEF 154 bootstrap.exe (renamed with play.dll and play.exe.manifest),
-                      Windows icon = repository root icon.png
+                      Windows icon = the game's icon, else the Roves icon ("Project icon")
   play.dll            this probe (Release)
+  icon.png            the game's window icon, only when the game has one ("Project icon")
+  roves.ico           the official Roves icon, the fallback for tools that replace game\
   libcef.dll, *.pak, locales\, ...   CEF runtime, as bundled by cef-rs
   vcruntime140*.dll   only if a module imports the MSVC runtime (app-local copy)
   game\               the template's dist\, byte for byte
@@ -802,6 +804,40 @@ explicit `--roves-game-dir`. `--roves-no-error-dialog` (packaged launch only, re
 otherwise) turns the failure dialogs off for unattended runs. Log line: `player launch
 game-dir=<dir> profile=<persistent|isolated> cache=<dir> clean-cache=<bool>
 error-dialog=<bool>`.
+
+### Project icon (implemented 2026-11-25, not yet run in CI)
+
+The game's own icon comes first in both places Windows shows one; the official Roves icon is
+the fallback. The startup and failure screens always show the Roves logo and wordmark.
+
+- **Window (title bar, taskbar while running).** At startup in game mode the probe looks for
+  `icon.png` next to `play.exe` (`std::env::current_exe`). A valid one (at most 8 MiB, PNG
+  signature with `IHDR` first, square, 16..=2048 px, decoded by SDL3 with the header's size)
+  is downscaled by halvings to at most 256 px and set with `SDL_SetWindowIcon`; otherwise the
+  embedded Roves logo is set as before. Pure rules in `src/icon_rules.rs` (unit-tested
+  stand-alone in CI). Log: `window icon source=project size=<n>x<n> set=<bool>` or `window
+  icon source=roves reason=<absent|invalid> [error=...]`, then the unchanged `branding decoded
+  ... window-icon=<bool>`.
+- **`play.exe` (Explorer, shortcuts, taskbar pin).** Its icon resource is patched after link
+  time with electron/rcedit, as before, with the ICO chosen by
+  `packaging/project_icon.py` (Pillow 11.3.0 pinned, contract tests in
+  `packaging/test_project_icon.py`, run in CI before packaging).
+
+Source order (first valid wins; PNG and ICO resolved independently): window PNG =
+`--icon-png`, then `<game>/icon.png`, then the largest frame of the project ICO;
+`play.exe` = `--icon-ico`, then an ICO generated from the resolved PNG (16..256 px frames),
+then `<game>/icon.ico`, `<game>/favicon.ico`, then the Roves `roves.ico`. An explicit file
+that breaks the rules fails the packaging; a file found in the game folder that breaks them is
+a warning and the next source is tried. The package ships `roves.ico` so consumers that
+replace `game\` (roves-action `cef-windows`, Roves Packmaster) re-run the same contract from
+the base instead of inheriting the sample game's icon. Those consumers carry an identical copy
+of the script (roves-action) or the same rules in Rust (Packmaster); keep the three in step.
+
+Libraries: SDL3 (already linked) decodes and scales the PNG at runtime, as for the logo;
+Pillow and rcedit were already pinned in the workflow. Not added: the `image` or `ico` crates
+in the player (SDL3 covers the runtime PNG path; the ICO only exists at packaging time).
+Real-hardware check pending: title bar/taskbar/Explorer icon of a packaged game with and
+without its own icon, also at 150 %.
 
 ### Saves and the player profile (fixed 2026-11-23)
 
@@ -855,13 +891,16 @@ because `std`'s `DefaultHasher` is not guaranteed stable across Rust releases.
 hidden; the official logo (root `icon.png`, embedded with `include_bytes!`) is decoded and
 halved twice to 256 px by SDL3 itself (`SDL_LoadPNG_IO`, SDL 3.4's bundled stb_image, and
 `SDL_ScaleSurface` linear; `SDL_PremultiplySurfaceAlpha`), set as the window icon
-(`SDL_SetWindowIcon`) and uploaded once as a premultiplied `Rgba8Unorm` texture. The
-"Roves" wordmark is drawn once by SDL3 as well: `SDL_RenderDebugText` (SDL's built-in 8x8
-font) on a software renderer over a transparent RGBA32 surface, integer scale 6 (240x48 px,
-`#F2F2F5`, nearest so the glyphs stay sharp), premultiplied and uploaded the same way. Before
+(`SDL_SetWindowIcon`, unless the game ships its own icon, "Project icon") and uploaded once as a premultiplied `Rgba8Unorm` texture. The
+"Roves" wordmark uses the official font Metal Mania (`resources/fonts/MetalMania-Regular.ttf`,
+SIL OFL 1.1, license copied to `provenance\licenses\`): `build.rs` rasterizes it at 112 px
+with ab_glyph (a build-dependency only) into an 8-bit coverage bitmap (196x79 px, tight
+bounds, kerning applied) embedded in `play.dll`; at runtime it is tinted `#F2F2F5`,
+premultiplied and uploaded the same way. No font file and no rasterizer ship in the player.
+A sparse checkout must include `resources/fonts` or the build stops with a clear error. Before
 the CEF browser is created, the window is shown with a first frame: the dark background
 `#141418` with a centred column of the logo, the wordmark (both 1:1) and an indeterminate
-loading bar (240x6 px track `#34343C` with a `#F2F2F5` segment a third as wide that sweeps
+loading bar (196x6 px track, as wide as the wordmark, `#34343C` with a `#F2F2F5` segment a third as wide that sweeps
 left to right, eased, every 1.4 s, clipped to the track), composed by the existing
 premultiplied wgpu blit (now several draws per pass, each with a destination offset; the bar
 is two 1x1 textures stretched to rectangles) and presented by the existing present path. The
@@ -885,7 +924,8 @@ after the release (explicit `--roves-game-dir` keeps forwarding from load-end, a
 hooks expect), and `--roves-auto-close-ms` counts from the release instead of load-end. Log
 lines: `branding decoded logo=256x256 window-icon=<bool> elapsed_ms=<n>` (or
 `branding unavailable error=...`, then the screens omit the logo), `wordmark rendered
-size=240x48` (or `wordmark unavailable error=...`, also when SDL drew no opaque pixel; then
+size=196x79 font=MetalMania` (or `wordmark unavailable error=...`, also when the embedded
+bitmap has no opaque pixel; then
 the screens omit the wordmark; the bar needs no decoding and is always drawn),
 `startup screen shown size=<w>x<h> window-shown=<bool> presented=<bool>`, `startup
 fresh-frame requested ok=<bool>`, `startup released generation=<n> imported=<n>
@@ -906,12 +946,12 @@ the reason token and the log path, and closes with exit code 2 after it is dismi
 failure dialog closed ok=<bool>`, or `startup failure dialog skipped
 (--roves-no-error-dialog)`). If the window itself cannot be created (for example no DX12
 adapter) the packaged launch shows the same kind of dialog without a parent window (exit 5).
-No red or black placeholder is shown on any of these paths. Beyond the fixed ASCII wordmark,
+No red or black placeholder is shown on any of these paths. Beyond the pre-rasterized wordmark,
 no text is drawn on the wgpu screen: sentences would need a real font rasterizer and text
 layout (for example glyphon, whose releases track wgpu versions independently of the wgpu 29
 pin here, or SDL3_ttf plus a bundled font); the native dialog gives readable,
-localisable-by-OS text with code already in the graph. The wordmark's look is SDL's 8x8
-pixel font, a deliberate trade-off for no new dependency or font file.
+localisable-by-OS text with code already in the graph. The wordmark is fixed at build
+time, so it needs neither of those.
 
 **Chromium reference.** The `support/chromium-reference` submodule was empty in this
 checkout, so the pinned revision `f2700724f59fb554eb19a4f827b1d256e2a13286` was read through
@@ -933,16 +973,16 @@ Chrome's model of an icon resource in the executable (`IDR_MAINFRAME` first), ap
 link time because the executable is CEF's prebuilt bootstrap.exe.
 
 **Libraries evaluated.** Reused: SDL3 3.4 (already linked) for PNG decode, downscale,
-premultiply, window icon, the wordmark (`SDL_CreateSoftwareRenderer` + `SDL_RenderDebugText`)
-and the message box; the probe's wgpu blit for composition, the wordmark and the loading bar
+premultiply, window icon and the message box; ab_glyph 0.2.32 (Apache-2.0, pure Rust,
+build-dependency only) to rasterize the Metal Mania wordmark at build time; the probe's wgpu blit for composition, the wordmark and the loading bar
 (no new pipeline or shader); not added for the wordmark: SDL3_ttf (a second native library
-and a font file to ship) and glyphon (above);
+and a font file to ship), glyphon (above) and a runtime rasterizer (the text never changes);
 welding's `resize` for the fresh paint (it exposes no `invalidate`); for the executable icon,
 the tool `mach bundle --icon-ico` already uses (electron/rcedit v2.0.0, MIT, SHA-256 pinned
 in the workflow) and Pillow 11.3.0 (pinned) to turn `icon.png` into a multi-size `.ico`. Not
 added: the `image` crate (decode/resize would duplicate SDL 3.4), `winresource`/`embed-resource`
 (they embed resources at link time of a Rust binary; `play.exe` is CEF's prebuilt
-bootstrap.exe), a text renderer (above). No new Rust dependency; CEF is not forked.
+bootstrap.exe), a text renderer (above). No new runtime Rust dependency; CEF is not forked.
 
 **CI gate for the package (WARP).** After the probe steps, the workflow checks out the
 template at the pinned commit (`persist-credentials: false`), verifies `HEAD`, builds it with
@@ -959,8 +999,9 @@ redistributable directory when imported (delay-loaded imports are reported only)
 with `--roves-isolated-profile --roves-no-error-dialog --roves-auto-close-ms=5000
 --roves-timeout-ms=60000`. Required in order: sandbox info, `player launch` with
 `<package>\game`, `profile=isolated` and `clean-cache=true`, the
-loopback origin, `branding decoded logo=256x256 window-icon=true`, `wordmark rendered
-size=240x48`, `startup screen shown ...
+loopback origin, `branding decoded logo=256x256 window-icon=true`, `window icon source=project size=<n>x<n>
+set=true` when the packaging resolved a project window icon (otherwise `window icon
+source=roves reason=absent`), `wordmark rendered size=196x79 font=MetalMania`, `startup screen shown ...
 window-shown=true presented=true`, the producer, `load-end status=200 url=<origin>/ ok=true`,
 `startup fresh-frame requested ok=true`; then, since WARP delivers no accelerated frame, the
 failure path (`FAIL startup not released within 60000 ms (no-fresh-frame)`, `startup failed

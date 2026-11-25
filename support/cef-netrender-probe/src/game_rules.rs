@@ -1126,8 +1126,8 @@ impl Startup {
 mod tests {
     use super::*;
 
-    // Logo, wordmark and bar as in `src/splash.rs` (`LOGO_PX`, `WORDMARK_SIZE`, `BAR_SIZE`,
-    // `SPLASH_GAP`).
+    // Representative logo, wordmark and bar sizes (`src/splash.rs` has the real `LOGO_PX`,
+    // build-generated `WORDMARK_SIZE` and `BAR_SIZE`); the layout rules do not depend on them.
     const LOGO: Option<(u32, u32)> = Some((256, 256));
     const WORDMARK: Option<(u32, u32)> = Some((240, 48));
     const BAR: Option<(u32, u32)> = Some((240, 6));

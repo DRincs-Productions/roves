@@ -17,8 +17,10 @@ on:
       - 'support/cef-netrender-probe/**'
       # Compiled into the probe's opt-in game mode through `#[path]`.
       - 'support/cef-window-probe/src/server.rs'
-      # Embedded by the game-mode startup screen and used for play.exe's icon.
+      # Embedded by the game-mode startup screen and play.exe's fallback icon.
       - 'icon.png'
+      # Rasterized at build time (build.rs) into the startup-screen wordmark.
+      - 'resources/fonts/MetalMania-Regular.ttf'
       - '.github/workflows/cef-netrender-probe.yml'
   workflow_dispatch:
     inputs:
@@ -1064,9 +1066,13 @@ jobs:
           git status --porcelain | tee "$RUNNER_TEMP/vnt-worktree-after-build.txt"
           npm ls --omit=dev --all > "$RUNNER_TEMP/vnt-npm-ls.txt" 2>&1 || true
           echo "::notice::visual-novel-template $head built with node $(node --version), npm $(npm --version): $(find dist -type f | wc -l) dist files"
-      # The official Roves icon (repository root icon.png) becomes the Windows icon resource
-      # of play.exe with the tool main's `mach bundle --icon-ico` uses (electron/rcedit
-      # v2.0.0, MIT, SHA-256 pinned). Pillow (pinned) converts the PNG to a multi-size .ico.
+      # Project icon contract (README "Project icon"): packaging/project_icon.py resolves the
+      # game's own icon (dist icon.png, icon.ico or favicon.ico) for the window (icon.png next
+      # to play.exe) and for play.exe's Windows icon resource, with the official Roves icon
+      # (repository root icon.png -> roves.ico) as the fallback. rcedit is the tool main's
+      # `mach bundle --icon-ico` uses (electron/rcedit v2.0.0, MIT, SHA-256 pinned); Pillow
+      # (pinned) converts and validates. roves.ico ships in the package so consumers that
+      # replace the game can fall back to the Roves icon.
       - name: setup python (icon conversion)
         if: (success() || failure()) && steps.template_build.outcome == 'success'
         uses: actions/setup-python@v5
@@ -1091,11 +1097,25 @@ jobs:
           if ($hash -ne '3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a') {
             Write-Output "::error::rcedit-x64.exe SHA-256 $hash does not match the pin"; exit 1
           }
+          $packaging = Join-Path $env:GITHUB_WORKSPACE 'support/cef-netrender-probe/packaging'
+          python -I (Join-Path $packaging 'test_project_icon.py')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::project icon contract tests failed'; exit 1 }
+          $resolved = Join-Path $tools 'project-icon'
+          python -I (Join-Path $packaging 'project_icon.py') --content (Join-Path $env:GITHUB_WORKSPACE 'visual-novel-template/dist') --fallback-ico $ico --out $resolved
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::project icon resolution failed'; exit 1 }
+          $result = @{}
+          Get-Content (Join-Path $resolved 'result.env') | ForEach-Object { $k, $v = $_ -split '=', 2; $result[$k] = $v }
           "ico=$ico" >> $env:GITHUB_OUTPUT
           "rcedit=$rcedit" >> $env:GITHUB_OUTPUT
+          "play_ico=$(Join-Path $resolved 'play.ico')" >> $env:GITHUB_OUTPUT
+          "window_png=$(if ($result.window_source -eq 'project') { Join-Path $resolved 'icon.png' })" >> $env:GITHUB_OUTPUT
+          "exe_source=$($result.exe_source)" >> $env:GITHUB_OUTPUT
+          "window_source=$($result.window_source)" >> $env:GITHUB_OUTPUT
+          "summary=window $($result.window_source) ($($result.window_detail)); play.exe $($result.exe_source) ($($result.exe_detail))" >> $env:GITHUB_OUTPUT
           Write-Output "::notice::icon.png -> roves.ico ($((Get-Item $ico).Length) bytes, Pillow 11.3.0); rcedit v2.0.0 sha256 $hash"
       # Layout: play.exe (CEF 154 bootstrap.exe, renamed with its DLL and external manifest,
-      # icon patched), play.dll (the probe), the CEF runtime, game\ (unmodified dist),
+      # icon patched), play.dll (the probe), icon.png (the game's window icon, when it has
+      # one), roves.ico (the Roves fallback icon for consumers), the CEF runtime, game\ (unmodified dist),
       # app-local VC++ runtime DLLs if any module imports them, PROVENANCE.txt,
       # provenance\ (lockfiles, dependency lists, licenses, imports) and SHA256SUMS.txt.
       - name: assemble the directly playable package
@@ -1127,11 +1147,15 @@ jobs:
             [System.BitConverter]::ToString([System.Security.Cryptography.SHA256]::Create().ComputeHash($ms.ToArray()))
           }
           $before = & $iconBytes $exe
-          & '${{ steps.icon_tools.outputs.rcedit }}' $exe --set-icon '${{ steps.icon_tools.outputs.ico }}'
+          & '${{ steps.icon_tools.outputs.rcedit }}' $exe --set-icon '${{ steps.icon_tools.outputs.play_ico }}'
           if ($LASTEXITCODE -ne 0) { Write-Output "::error::rcedit exit $LASTEXITCODE"; exit 1 }
           $after = & $iconBytes $exe
           if ($before -eq $after) { Write-Output '::error::play.exe icon unchanged after rcedit'; $failed = $true }
-          else { Write-Output '::notice::play.exe icon resource replaced with the Roves icon (extracted icon hash changed)' }
+          else { Write-Output '::notice::play.exe icon resource replaced (${{ steps.icon_tools.outputs.exe_source }} icon; extracted icon hash changed)' }
+          Copy-Item -LiteralPath '${{ steps.icon_tools.outputs.ico }}' -Destination (Join-Path $pkg 'roves.ico')
+          $windowPng = '${{ steps.icon_tools.outputs.window_png }}'
+          if ($windowPng) { Copy-Item -LiteralPath $windowPng -Destination (Join-Path $pkg 'icon.png') }
+          Write-Output '::notice::project icon: ${{ steps.icon_tools.outputs.summary }}'
           # game\: the dist directory copied verbatim, then compared file by file.
           $dist = (Resolve-Path 'visual-novel-template/dist').Path
           $game = Join-Path $pkg 'game'
@@ -1210,6 +1234,8 @@ jobs:
           $licenses = Join-Path $provenance 'licenses'
           New-Item -ItemType Directory -Force $licenses | Out-Null
           Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'LICENSE') (Join-Path $licenses 'Roves-LICENSE.txt')
+          # The startup wordmark embeds glyphs rasterized from this font (build.rs).
+          Copy-Item (Join-Path $env:GITHUB_WORKSPACE 'resources/fonts/MetalMania-OFL.txt') (Join-Path $licenses 'MetalMania-OFL.txt')
           $cefFiles = @(Get-ChildItem -LiteralPath $env:CEF_PATH -Recurse -Depth 1 -File -Include 'LICENSE.txt', 'CREDITS.html', 'README.txt' -ErrorAction SilentlyContinue)
           foreach ($f in $cefFiles) { Copy-Item -LiteralPath $f.FullName (Join-Path $licenses "CEF-$($f.Name)") }
           if (-not ($cefFiles | Where-Object Name -eq 'LICENSE.txt')) {
@@ -1235,9 +1261,13 @@ jobs:
             workflow run ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} (attempt ${{ github.run_attempt }})
             build        cargo run --locked --release --bin bundle (support/cef-netrender-probe), Rust 1.99.1
             pins         $cefVersion
-            launcher     CEF 154 bootstrap.exe renamed play.exe; icon from the repository root
-                         icon.png (Pillow 11.3.0 -> .ico, electron/rcedit v2.0.0 sha256
+            launcher     CEF 154 bootstrap.exe renamed play.exe; icons by the project icon
+                         contract: ${{ steps.icon_tools.outputs.summary }}; Roves fallback
+                         roves.ico from the repository root icon.png (Pillow 11.3.0, electron/
+                         rcedit v2.0.0 sha256
                          3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a)
+            wordmark     startup-screen glyphs rasterized at build time from Metal Mania
+                         (resources/fonts/MetalMania-Regular.ttf, SIL OFL 1.1)
 
           Game (folder game\, unmodified production build)
             repository   https://github.com/DRincs-Productions/visual-novel-template
@@ -1251,7 +1281,7 @@ jobs:
             provenance\Cargo.lock, provenance\rust-dependencies.txt (crate + license)
             provenance\visual-novel-template-package-lock.json, ...-npm-ls.txt
             provenance\imports.txt (DLL imports of every top-level module and where each resolves)
-            provenance\licenses\ (Roves license; CEF license files when present)
+            provenance\licenses\ (Roves license; Metal Mania OFL; CEF license files when present)
             app-local VC++ runtime: $(if ($copied.Count) { $copied -join '; ' } else { 'none needed' })
           "@ | Set-Content -Encoding utf8 (Join-Path $pkg 'PROVENANCE.txt')
           Push-Location $pkg
@@ -1401,7 +1431,7 @@ jobs:
           $common = @(
             'sandbox-info present=true',
             "player launch game-dir=$([regex]::Escape((Join-Path $pkg 'game'))) profile=isolated cache=.+ clean-cache=true error-dialog=false$",
-            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ', 'wordmark rendered size=240x48$',
+            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ', $(if ('${{ steps.icon_tools.outputs.window_source }}' -eq 'project') { 'window icon source=project size=\d+x\d+ set=true$' } else { 'window icon source=roves reason=absent$' }), 'wordmark rendered size=196x79 font=MetalMania$',
             'startup screen shown size=\d+x\d+ window-shown=true presented=true$',
             'producer created accelerated=true background=white',
             "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')
@@ -1597,6 +1627,11 @@ jobs:
           if ($LASTEXITCODE -ne 0) { Write-Output '::error::mcp_rules tests did not compile'; exit 1 }
           & (Join-Path $rules 'mcp_rules.exe')
           if ($LASTEXITCODE -ne 0) { Write-Output '::error::mcp_rules tests failed'; $failed = $true }
+          # Project window icon rules (README "Project icon"), stand-alone (std only).
+          rustc --edition 2024 --test support/cef-netrender-probe/src/icon_rules.rs -o (Join-Path $rules 'icon_rules.exe')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::icon_rules tests did not compile'; exit 1 }
+          & (Join-Path $rules 'icon_rules.exe')
+          if ($LASTEXITCODE -ne 0) { Write-Output '::error::icon_rules tests failed'; $failed = $true }
           $src = '${{ steps.package.outputs.dir }}'
           $root = Join-Path $env:RUNNER_TEMP 'roves-cef-vn-mcp-package'
           if (Test-Path -LiteralPath $root) { Write-Output "::error::$root already exists"; exit 1 }

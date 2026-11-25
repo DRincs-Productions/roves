@@ -1,16 +1,20 @@
 //! Game-mode branding: the official Roves logo (repository root `icon.png`, embedded at
 //! build time) decoded and downscaled by SDL3 itself (`SDL_LoadPNG_IO`, SDL's bundled
 //! stb_image, and `SDL_ScaleSurface`), no extra image crate. It becomes the window icon
-//! (`SDL_SetWindowIcon`) and the logo texture of the dark startup/failure screen. The
-//! "Roves" wordmark under it is drawn by SDL3 too (`SDL_RenderDebugText`, SDL's built-in 8x8
-//! font, on a software renderer), and the indeterminate loading bar is two flat colours. The
-//! existing wgpu blit composes and presents all of them (README "Packaged player").
+//! (`SDL_SetWindowIcon`, unless the game ships its own icon, below) and the logo texture of
+//! the dark startup/failure screen. The "Roves" wordmark under it is the official MetalMania
+//! font rasterized at build time (`build.rs`, ab_glyph) into an embedded coverage bitmap, and
+//! the indeterminate loading bar is two flat colours. The existing wgpu blit composes and
+//! presents all of them (README "Packaged player").
+//!
+//! The window icon follows the project icon contract (README "Project icon"): a valid
+//! `icon.png` next to `play.exe` (the game's own icon, copied there by the packaging tools)
+//! replaces the Roves logo in the title bar and taskbar; the startup and failure screens
+//! keep the Roves logo either way.
 
-use sdl3::{
-    iostream::IOStream,
-    pixels::{Color, PixelFormat},
-    surface::Surface,
-};
+use std::path::Path;
+
+use sdl3::{iostream::IOStream, pixels::PixelFormat, surface::Surface};
 
 const ICON_PNG: &[u8] = include_bytes!("../../../icon.png");
 /// Logo edge in physical pixels: the 1024 px source halved twice (each halving with linear
@@ -22,18 +26,12 @@ pub(crate) const SPLASH_BACKGROUND: [f32; 4] = [20.0 / 255.0, 20.0 / 255.0, 24.0
 /// Opacity of the logo and wordmark on the failure screen (out of 255).
 const FAILED_LOGO_ALPHA: u32 = 80;
 
-/// The wordmark text and its integer scale of SDL's 8x8 debug font (nearest, so the glyphs
-/// stay sharp; SDL marks its debug-font atlas `SDL_SCALEMODE_PIXELART`).
-const WORDMARK: &str = "Roves";
-const WORDMARK_SCALE: u32 = 6;
-const GLYPH_PX: u32 = sdl3::sys::render::SDL_DEBUG_TEXT_FONT_CHARACTER_SIZE as u32;
-/// Wordmark texture size in physical pixels (240 x 48).
-pub(crate) const WORDMARK_SIZE: (u32, u32) = (
-    WORDMARK.len() as u32 * GLYPH_PX * WORDMARK_SCALE,
-    GLYPH_PX * WORDMARK_SCALE,
-);
+// The "Roves" wordmark in the official MetalMania font, rasterized by build.rs into 8-bit
+// coverage (`WORDMARK_SIZE`, row-major); no font or rasterizer at runtime.
+include!(concat!(env!("OUT_DIR"), "/wordmark.rs"));
+const WORDMARK_ALPHA: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/wordmark.alpha"));
 /// Wordmark colour, the near-white of the logo (#F2F2F5).
-const WORDMARK_COLOR: Color = Color::RGBA(242, 242, 245, 255);
+const WORDMARK_COLOR: [u8; 3] = [242, 242, 245];
 /// Loading-bar size in physical pixels, as wide as the wordmark.
 pub(crate) const BAR_SIZE: (u32, u32) = (WORDMARK_SIZE.0, 6);
 /// Loading-bar track (#34343C) and moving segment (#F2F2F5), opaque premultiplied RGBA8.
@@ -70,9 +68,8 @@ pub(crate) fn decode() -> Result<Branding, String> {
             surface.height()
         ));
     }
-    while surface.width() > LOGO_PX {
-        let next = (surface.width() / 2).max(LOGO_PX);
-        surface = scale(&surface, next)?;
+    for edge in crate::icon_rules::downscale_steps(surface.width()) {
+        surface = scale(&surface, edge)?;
     }
     let icon = surface
         .convert_format(PixelFormat::RGBA32)
@@ -82,32 +79,88 @@ pub(crate) fn decode() -> Result<Branding, String> {
     Ok(Branding { icon, logo, failed })
 }
 
-/// Draws `WORDMARK` with SDL3's built-in debug font on a software renderer over a
-/// transparent RGBA32 surface, scaled by `WORDMARK_SCALE`.
+/// Where the window icon comes from.
+pub(crate) enum ProjectIcon {
+    /// A valid project `icon.png`, downscaled to at most `WINDOW_ICON_PX`, straight alpha.
+    Found {
+        icon: Surface<'static>,
+        source_px: u32,
+    },
+    /// No `icon.png` next to the executable: the Roves logo stays.
+    Absent,
+    /// An `icon.png` that breaks the contract: the Roves logo stays, the reason is logged.
+    Invalid(String),
+}
+
+/// The project icon next to `exe` (`play.exe`), decoded by SDL3 like the Roves logo after
+/// the header checks of `icon_rules` (size, PNG signature, square bounds).
+pub(crate) fn project_icon(exe: Option<&Path>) -> ProjectIcon {
+    use crate::icon_rules::{MAX_ICON_BYTES, PROJECT_ICON_FILE, check_png, downscale_steps};
+    let Some(path) = exe
+        .and_then(Path::parent)
+        .map(|dir| dir.join(PROJECT_ICON_FILE))
+    else {
+        return ProjectIcon::Absent;
+    };
+    let metadata = match std::fs::metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return ProjectIcon::Absent,
+        Err(error) => return ProjectIcon::Invalid(format!("metadata: {error}")),
+    };
+    if !metadata.is_file() {
+        return ProjectIcon::Invalid("not a regular file".into());
+    }
+    if metadata.len() > MAX_ICON_BYTES {
+        return ProjectIcon::Invalid(format!(
+            "{} bytes exceeds the {MAX_ICON_BYTES}-byte limit",
+            metadata.len()
+        ));
+    }
+    let decoded = std::fs::read(&path)
+        .map_err(|e| format!("read: {e}"))
+        .and_then(|bytes| {
+            let (edge, _) = check_png(&bytes)?;
+            let mut stream = IOStream::from_bytes(&bytes).map_err(|e| format!("stream: {e}"))?;
+            let mut surface = Surface::load_png_io(&mut stream)
+                .and_then(|s| s.convert_format(PixelFormat::RGBA32))
+                .map_err(|e| format!("decode: {e}"))?;
+            if (surface.width(), surface.height()) != (edge, edge) {
+                return Err(format!(
+                    "decoded {}x{} differs from the {edge}x{edge} header",
+                    surface.width(),
+                    surface.height()
+                ));
+            }
+            for step in downscale_steps(edge) {
+                surface = scale(&surface, step)?;
+            }
+            Ok((surface, edge))
+        });
+    match decoded {
+        Ok((icon, source_px)) => ProjectIcon::Found { icon, source_px },
+        Err(error) => ProjectIcon::Invalid(error),
+    }
+}
+
+/// The build-time MetalMania coverage tinted `WORDMARK_COLOR`, premultiplied RGBA8.
 pub(crate) fn wordmark() -> Result<Wordmark, String> {
     let (width, height) = WORDMARK_SIZE;
-    let surface = Surface::new(width, height, PixelFormat::RGBA32)
-        .map_err(|e| format!("wordmark surface: {e}"))?;
-    let mut canvas = surface
-        .into_canvas()
-        .map_err(|e| format!("wordmark software renderer: {e}"))?;
-    canvas.set_draw_color(Color::RGBA(0, 0, 0, 0));
-    canvas.clear();
-    canvas
-        .set_scale(WORDMARK_SCALE as f32, WORDMARK_SCALE as f32)
-        .map_err(|e| format!("wordmark scale: {e}"))?;
-    canvas.set_draw_color(WORDMARK_COLOR);
-    canvas
-        .draw_debug_text(WORDMARK, (0.0, 0.0))
-        .map_err(|e| format!("wordmark text: {e}"))?;
-    // SAFETY: the renderer is alive (owned by `canvas`); flushing executes the queued draw
-    // into the surface. A software renderer without a window cannot `present`.
-    if !unsafe { sdl3::sys::render::SDL_FlushRenderer(canvas.raw()) } {
-        return Err(format!("wordmark flush: {}", sdl3::get_error()));
+    if WORDMARK_ALPHA.len() != (width * height) as usize {
+        return Err(format!(
+            "wordmark bitmap is {} bytes, expected {width}x{height}",
+            WORDMARK_ALPHA.len()
+        ));
     }
-    let rgba = premultiplied_rgba(canvas.into_surface())?;
-    if !rgba.as_chunks::<4>().0.iter().any(|texel| texel[3] == 255) {
-        return Err("wordmark rendered no opaque pixel".into());
+    let rgba: Vec<u8> = WORDMARK_ALPHA
+        .iter()
+        .flat_map(|&a| {
+            let [r, g, b] =
+                WORDMARK_COLOR.map(|c| ((u32::from(c) * u32::from(a) + 127) / 255) as u8);
+            [r, g, b, a]
+        })
+        .collect();
+    if !WORDMARK_ALPHA.contains(&255) {
+        return Err("wordmark bitmap has no opaque pixel".into());
     }
     let failed = dimmed(&rgba);
     Ok(Wordmark { rgba, failed })

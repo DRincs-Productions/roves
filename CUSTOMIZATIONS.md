@@ -1,3 +1,20 @@
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: project icon first, Metal Mania wordmark
+
+Changed: `support/cef-netrender-probe/src/{app.rs,lib.rs,splash.rs,icon_rules.rs,game_rules.rs}`,
+`support/cef-netrender-probe/{build.rs,Cargo.toml,Cargo.lock,README.md}`,
+`support/cef-netrender-probe/packaging/{project_icon.py,test_project_icon.py}`,
+`.github/workflows/cef-netrender-probe.yml`. The game's own icon now comes first: the player
+sets a valid `icon.png` next to `play.exe` as the SDL window icon (Roves logo otherwise; rules
+in `icon_rules.rs`), and the workflow resolves the game's icon (`icon.png`, `icon.ico`,
+`favicon.ico`, explicit overrides) for `play.exe`'s rcedit-patched resource through
+`project_icon.py`, with the official Roves icon as the fallback. The package also ships
+`roves.ico` so roves-action `cef-windows` and Packmaster can re-run the same contract after
+replacing `game\`. The startup wordmark replaces SDL's 8x8 debug font with the official Metal
+Mania font (`resources/fonts`), rasterized at build time by `build.rs` with ab_glyph
+(build-dependency only) into an embedded 196x79 coverage bitmap; the loading bar follows its
+width; the OFL license is copied into the package provenance. Not yet run in CI or on real
+hardware.
+
 ## 2026-11-24 - CEF + SDL3 + wgpu candidate: MCP candidate opt-in by commit marker
 
 Changed: `.github/workflows/cef-netrender-probe.yml`, `support/cef-netrender-probe/README.md`

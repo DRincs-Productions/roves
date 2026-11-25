@@ -63,6 +63,12 @@ serde_json = "1"
 # If-Range); already in the graph through axum.
 tower = { version = "0.5", default-features = false, features = ["util"] }
 
+[build-dependencies]
+# build.rs only: rasterizes the startup wordmark with the official MetalMania font
+# (resources/fonts, SIL OFL 1.1) into an embedded alpha bitmap. Pure Rust (ttf-parser +
+# ab_glyph_rasterizer), Apache-2.0; nothing of it is linked into the player.
+ab_glyph = "0.2.32"
+
 [target.'cfg(windows)'.dependencies]
 # Already in the graph (0.61.2): `MapVirtualKeyW` gives the layout-aware virtual key of a
 # winit scancode for CEF's `windows_key_code` (game-mode keyboard input).
