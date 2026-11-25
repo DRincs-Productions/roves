@@ -1620,7 +1620,9 @@ jobs:
       # (a new process) reads the save back and closes itself; launch 3 stays open while the
       # runner calls the routes: the game's own request shape answers 200, a foreign Host
       # (DNS rebinding), a missing X-Roves-Api header and a CORS preflight answer 403 without
-      # any CORS header. On WARP a launch may end on the no-fresh-frame path (exit 2).
+      # any CORS header. On WARP accelerated OSR delivers no frame at all, so launch 3 (open past
+      # --roves-timeout-ms) ends on the no-fresh-frame path (exit 2); that path is accepted only
+      # with the WARP adapter and zero imported frames, any other FAIL or exit 2 is an error.
       - name: host API in the packaged player (saves across restarts, exit, refusals, WARP)
         if: (success() || failure()) && steps.package.outcome == 'success'
         shell: pwsh
@@ -1657,10 +1659,24 @@ jobs:
             $run.lines | ForEach-Object { Write-Host "  [$($run.name)] $_" }
             Write-Output "::notice::$($run.name): exit=$($run.code)"
             if ($run.code -notin @(0, 2)) { Write-Output "::error::$($run.name): exit $($run.code) (expected 0 or 2)"; $script:failed = $true }
-            foreach ($bad in @(' FAIL ', 'roves-host-api (error|marker missing|saves unavailable)')) {
-              $hit = $run.lines | Select-String -Pattern $bad | Select-Object -First 1
-              if ($hit) { Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true }
+            # A launch that stays open past --roves-timeout-ms (launch 3) may end on the
+            # no-fresh-frame path only where accelerated OSR delivers no frame at all: WARP
+            # adapter, zero frames imported, exit 2. A launch that imported any frame must
+            # release the startup screen (a static first screen is repainted on load-end).
+            $warp = [bool]($run.lines | Select-String -Pattern 'adapter name="Microsoft Basic Render Driver" .* type=Cpu ' -Quiet)
+            $noFrame = [bool]($run.lines | Select-String -Pattern 'closing imported=0 ' -Quiet)
+            $released = [bool]($run.lines | Select-String -Pattern '^roves-cef-nr startup released generation=\d+ ' -Quiet)
+            $warpPath = $warp -and $noFrame -and -not $released -and $run.code -eq 2
+            foreach ($hit in @($run.lines | Select-String -Pattern ' FAIL ')) {
+              if (-not ($warpPath -and $hit.Line -match 'FAIL startup not released within \d+ ms \(no-fresh-frame\)$')) {
+                Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true
+              }
             }
+            if ($run.code -eq 2 -and -not $warpPath) { Write-Output "::error::$($run.name): exit 2 outside the WARP no-frame path (warp=$warp no-frame=$noFrame released=$released)"; $script:failed = $true }
+            if (-not $noFrame -and ($run.lines -match 'startup failed reason=no-fresh-frame$')) { Write-Output "::error::$($run.name): frames imported but the startup screen was not released"; $script:failed = $true }
+            $hit = $run.lines | Select-String -Pattern 'roves-host-api (error|marker missing|saves unavailable)|violates the following Content Security Policy' | Select-Object -First 1
+            if ($hit) { Write-Output "::error::$($run.name): $($hit.Line)"; $script:failed = $true }
+            Write-Output "::notice::$($run.name): released=$released warp=$warp no-frame=$noFrame (no WARP frame: startup release on a real GPU is a manual check)"
           }
           function Require($run, [string[]]$patterns) {
             foreach ($pattern in $patterns) {
@@ -1818,7 +1834,7 @@ jobs:
           $lines = if (Test-Path -LiteralPath $log) { @(Get-Content -LiteralPath $log) } else { @() }
           $lines | ForEach-Object { Write-Host "  [steam-emulation] $_" }
           if ($code -notin @(0, 2)) { Write-Output "::error::steam emulation run: exit $code (expected 0 or 2)"; $failed = $true }
-          foreach ($bad in @(' FAIL ', 'roves-host-api (error|marker missing)', 'steam unavailable')) {
+          foreach ($bad in @(' FAIL ', 'roves-host-api (error|marker missing)', 'steam unavailable', 'violates the following Content Security Policy')) {
             $hit = $lines | Select-String -Pattern $bad | Select-Object -First 1
             if ($hit) { Write-Output "::error::steam emulation run: $($hit.Line)"; $failed = $true }
           }

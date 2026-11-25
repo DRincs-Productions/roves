@@ -1,3 +1,20 @@
+## 2026-11-25 - CEF player host API CI step: WARP no-frame path, CSP-clean fixture
+
+Changed: `.github/workflows/cef-netrender-probe.yml` (host API and Steam emulator steps),
+`support/cef-netrender-probe/host-api-fixture/{index.html,style.css}`,
+`support/cef-netrender-probe/README.md`. The host API step failed on launch 3 with
+`FAIL startup not released within 60000 ms (no-fresh-frame)`. Cause: on the WARP runner
+accelerated OSR delivers no frame at all (`closing imported=0` in every launch of the run,
+including the animated visual-novel template, whose step already expects the failure path
+on WARP); launches 1 and 2 close themselves before the timeout, launch 3 stays open and
+reaches it, and the step treated every ` FAIL ` line as an error. Not a static-page bug in
+the startup gate: the load-end `Invalidate(PET_VIEW)` asks Chromium's frame-sink capturer for
+a refresh frame (`kRefreshDemand`, no damage needed). The step now accepts the
+`no-fresh-frame` path only with the WARP adapter, zero imported frames and exit 2, and fails a
+launch that imported frames without releasing the startup screen. The fixture's inline
+`style` attribute violated its own CSP (`default-src 'self'`) and is now `style.css`; a CSP
+violation console line fails both fixture steps. No player code change.
+
 ## 2026-11-25 - CEF macOS/Linux players: host API marker, input, resizable window, icon, audio check
 
 Added: `support/cef-netrender-probe/src/{input,keys,window_icon}.rs`,

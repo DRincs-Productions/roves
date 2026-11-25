@@ -110,3 +110,6 @@ about.toml
 deny.toml
 servo-tidy.toml
 .python-version
+
+# Cargo build output of every support crate
+target/

@@ -1094,7 +1094,17 @@ never served from the game files.
   their `dox` type-check feature does not provide. CI also runs the packaged player on
   `host-api-fixture/` three times with one persistent profile (write + `exit`, read back after
   a restart + `exit`, then `curl` refusals for a foreign Host, a missing header, a foreign
-  Origin and a preflight).
+  Origin and a preflight). The fixture is a static page (style in `style.css`, as its CSP
+  `default-src 'self'` refuses inline styles; a CSP violation fails the step). On WARP no
+  accelerated frame arrives at all, so launch 3, which stays open past `--roves-timeout-ms`,
+  ends on the `no-fresh-frame` path (exit 2); the step accepts that only with the WARP
+  adapter and `closing imported=0`, and fails a launch that imported frames without
+  releasing the startup screen. A static first screen does not need an animation to release
+  it: on load-end the player calls welding's `resize` at the same size, whose
+  `Invalidate(PET_VIEW)` makes CEF request a refresh frame from Chromium's frame-sink video
+  capturer (`FrameSinkVideoCapturerImpl::RequestRefreshFrame` -> `kRefreshDemand`, which
+  captures the current surface without new damage). Release of a static page on a real GPU
+  is a manual check (CI has no GPU).
 
 ## Steam (`steam` feature, off by default; implemented 2026-11-25, not yet run in CI)
 
