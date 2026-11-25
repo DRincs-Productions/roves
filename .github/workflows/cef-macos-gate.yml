@@ -1,0 +1,167 @@
+name: CEF -> wgpu-weld -> wgpu + SDL3 macOS feasibility gate
+
+# Developer experiment only (support/cef-macos-gate/README.md). Builds and bundles the macOS
+# gate (same pins as the Windows player: welding e991684 wgpu-29 row, CEF 154.0.34,
+# wgpu 29.0.4, SDL3 0.20) on Apple silicon and runs it once with Chromium's sandbox on.
+# Hard gates: compile, .app structure, Metal adapter, CEF/SDL init, sandboxed renderer
+# (--seatbelt-client), clean shutdown. The accelerated IOSurface import is gated only when
+# CEF delivers a frame (exit 0); a runner where Chromium disables GPU compositing yields
+# exit 2, reported as a notice. Separate from cef-netrender-probe.yml (Windows, unchanged).
+# Never gates a release.
+
+on:
+  push:
+    paths:
+      - 'support/cef-macos-gate/**'
+      - '.github/workflows/cef-macos-gate.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: cef-macos-gate-${{ github.ref }}
+  # A cancelled run is not a verified one (AGENTS.md CI rules): queue instead of cancelling.
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  macos-arm64:
+    runs-on: macos-15
+    timeout-minutes: 75
+    env:
+      # The repository root rust-toolchain.toml pins the engine toolchain; welding needs
+      # 1.97.1+ and wgpu-weld e991684 uses 1.99.1, as the Windows player does.
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            support/cef-macos-gate
+          sparse-checkout-cone-mode: true
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: 1.99.1
+      - name: toolchain and host
+        shell: bash
+        run: |
+          case "$(rustc --version)" in
+            "rustc 1.99.1 "*) ;;
+            *) echo "::error::expected rustc 1.99.1, got $(rustc --version)"; exit 1 ;;
+          esac
+          # cef-dll-sys builds libcef_dll_wrapper with CMake's Ninja generator.
+          command -v ninja >/dev/null || brew install ninja
+          echo "::notice::$(rustc --version) / $(sw_vers -productVersion) $(uname -m) / cmake $(cmake --version | head -1) / ninja $(ninja --version)"
+          echo "CARGO_TARGET_DIR=$RUNNER_TEMP/gate-target" >> "$GITHUB_ENV"
+          # CEF 154 distribution; also read at run time by the bundle binary.
+          echo "CEF_PATH=$RUNNER_TEMP/cef154" >> "$GITHUB_ENV"
+      - name: restore cargo and CEF cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}/cef154
+          key: cef-macos-gate-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('support/cef-macos-gate/Cargo.lock') }}
+      - name: dependency graph evidence
+        shell: bash
+        working-directory: support/cef-macos-gate
+        run: |
+          tree() { cargo tree --locked --target aarch64-apple-darwin -e normal --prefix depth --depth 1 "$@"; }
+          users29="$(tree -i wgpu@29.0.4 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 29.0.4 used by: $users29"
+          for crate in grafting roves_cef_macos_gate welding; do
+            echo " $users29" | grep -q " $crate " || { echo "::error::$crate is not on wgpu 29.0.4"; exit 1; }
+          done
+          # wgpu 30 may appear only under cef (accelerated_osr importer, never called).
+          users30="$(tree -i wgpu@30.0.2 | grep '^1' | cut -d' ' -f1 | sed 's/^1//' | sort | tr '\n' ' ')"
+          echo "::notice::wgpu 30.0.2 used by: $users30"
+          test "$users30" = "cef " || { echo "::error::wgpu 30 reached by something other than cef"; exit 1; }
+      - name: build (release)
+        shell: bash
+        working-directory: support/cef-macos-gate
+        run: |
+          cargo build --locked --release --bins 2>&1 | tee "$RUNNER_TEMP/gate-build.log"
+          test "${PIPESTATUS[0]}" = 0
+      - name: save cargo and CEF cache
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry/index
+            ~/.cargo/registry/cache
+            ~/.cargo/git/db
+            ${{ runner.temp }}/cef154
+          key: cef-macos-gate-${{ runner.os }}-${{ runner.arch }}-rust-1.99.1-${{ hashFiles('support/cef-macos-gate/Cargo.lock') }}
+      - name: bundle and check the .app
+        shell: bash
+        run: |
+          "$CARGO_TARGET_DIR/release/bundle" "$RUNNER_TEMP/gate-app"
+          app="$RUNNER_TEMP/gate-app/roves-cef-macos-gate.app"
+          fw="$app/Contents/Frameworks/Chromium Embedded Framework.framework"
+          test -x "$app/Contents/MacOS/roves-cef-macos-gate"
+          test -f "$fw/Chromium Embedded Framework"
+          # Loaded by welding in every helper before CEF (CefSandboxMode::Sandboxed).
+          test -f "$fw/Libraries/libcef_sandbox.dylib"
+          for helper in "" " (GPU)" " (Renderer)" " (Plugin)" " (Alerts)"; do
+            name="roves-cef-macos-gate Helper$helper"
+            test -x "$app/Contents/Frameworks/$name.app/Contents/MacOS/$name" \
+              || { echo "::error::missing helper $name"; exit 1; }
+          done
+          file "$app/Contents/MacOS/roves-cef-macos-gate"
+          echo "APP=$app" >> "$GITHUB_ENV"
+      - name: run the gate (sandboxed, Metal)
+        shell: bash
+        run: |
+          set +e
+          # Hard stop above the gate's own 60 s timeout plus close (macOS has no GNU timeout).
+          ROVES_GATE_TIMEOUT_SECS=60 perl -e 'alarm shift; exec @ARGV' 150 \
+            "$APP/Contents/MacOS/roves-cef-macos-gate" > "$RUNNER_TEMP/gate-run.log" 2>&1
+          code=$?
+          set -e
+          grep '^gate:' "$RUNNER_TEMP/gate-run.log" || true
+          need() { grep -q "$1" "$RUNNER_TEMP/gate-run.log" || { echo "::error::missing: $1"; exit 1; }; }
+          if grep -q '^gate: FAIL' "$RUNNER_TEMP/gate-run.log"; then
+            echo "::error::gate reported FAIL (exit $code)"; exit 1
+          fi
+          need '^gate: cef initialized sandbox=Sandboxed'
+          need '^gate: adapter .*backend=Metal'
+          need '^gate: producer created mode=AcceleratedPaint'
+          need '^gate: PASS sandbox renderers='
+          need "^gate: shutdown complete exit=$code"
+          case "$code" in
+            0)
+              need '^gate: PASS pixel centre'
+              echo "::notice::accelerated IOSurface -> Metal import verified on this runner (exit 0)" ;;
+            2)
+              need '^gate: NO_ACCELERATED_FRAME'
+              echo "::notice::no OnAcceleratedPaint frame on this runner (exit 2): compile, bundle, sandbox and shutdown verified; the import path needs a real Mac" ;;
+            *)
+              echo "::error::unexpected exit $code"; exit 1 ;;
+          esac
+          # No helper of this bundle may outlive the browser process.
+          sleep 2
+          if pgrep -fl "roves-cef-macos-gate" ; then
+            echo "::error::gate processes still running after exit"; exit 1
+          fi
+      - name: zip the .app
+        if: always() && env.APP != ''
+        shell: bash
+        run: ditto -c -k --keepParent "$APP" "$RUNNER_TEMP/roves-cef-macos-gate-arm64.zip"
+      - name: upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-macos-gate-logs
+          path: |
+            ${{ runner.temp }}/gate-build.log
+            ${{ runner.temp }}/gate-run.log
+          if-no-files-found: warn
+      - name: upload the .app
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cef-macos-gate-arm64
+          path: ${{ runner.temp }}/roves-cef-macos-gate-arm64.zip
+          if-no-files-found: warn

@@ -999,9 +999,10 @@ redistributable directory when imported (delay-loaded imports are reported only)
 with `--roves-isolated-profile --roves-no-error-dialog --roves-auto-close-ms=5000
 --roves-timeout-ms=60000`. Required in order: sandbox info, `player launch` with
 `<package>\game`, `profile=isolated` and `clean-cache=true`, the
-loopback origin, `branding decoded logo=256x256 window-icon=true`, `window icon source=project size=<n>x<n>
+loopback origin, `window icon source=project size=<n>x<n>
 set=true` when the packaging resolved a project window icon (otherwise `window icon
-source=roves reason=absent`), `wordmark rendered size=196x79 font=MetalMania`, `startup screen shown ...
+source=roves reason=absent`; logged before the branding is decoded),
+`branding decoded logo=256x256 window-icon=true`, `wordmark rendered size=196x79 font=MetalMania`, `startup screen shown ...
 window-shown=true presented=true`, the producer, `load-end status=200 url=<origin>/ ok=true`,
 `startup fresh-frame requested ok=true`; then, since WARP delivers no accelerated frame, the
 failure path (`FAIL startup not released within 60000 ms (no-fresh-frame)`, `startup failed

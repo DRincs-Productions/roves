@@ -1431,7 +1431,8 @@ jobs:
           $common = @(
             'sandbox-info present=true',
             "player launch game-dir=$([regex]::Escape((Join-Path $pkg 'game'))) profile=isolated cache=.+ clean-cache=true error-dialog=false$",
-            'game loopback origin=', 'branding decoded logo=256x256 window-icon=true ', $(if ('${{ steps.icon_tools.outputs.window_source }}' -eq 'project') { 'window icon source=project size=\d+x\d+ set=true$' } else { 'window icon source=roves reason=absent$' }), 'wordmark rendered size=196x79 font=MetalMania$',
+            # app.rs logs the window-icon decision before decoding the Roves branding.
+            'game loopback origin=', $(if ('${{ steps.icon_tools.outputs.window_source }}' -eq 'project') { 'window icon source=project size=\d+x\d+ set=true$' } else { 'window icon source=roves reason=absent$' }), 'branding decoded logo=256x256 window-icon=true ', 'wordmark rendered size=196x79 font=MetalMania$',
             'startup screen shown size=\d+x\d+ window-shown=true presented=true$',
             'producer created accelerated=true background=white',
             "load-end status=200 url=$o/ ok=true", 'startup fresh-frame requested ok=true$')

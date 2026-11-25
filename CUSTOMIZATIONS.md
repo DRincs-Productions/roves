@@ -1,3 +1,20 @@
+## 2026-11-25 - CEF + SDL3 + wgpu candidate: macOS accelerated-OSR feasibility gate (experiment only)
+
+Added: `support/cef-macos-gate/{Cargo.toml,Cargo.lock,README.md,src/main.rs,src/helper.rs,src/bundle.rs}`,
+`.github/workflows/cef-macos-gate.yml`. A separate Cargo workspace on the Windows player's
+exact pins (welding e991684 `wgpu-29` + `cef-runtime`, cef =154.5.0, wgpu =29.0.4 with
+`metal`, sdl3 0.20; lockfile seeded from the player's, packages only removed) that checks
+the first non-Windows path: CEF `OnAcceleratedPaint` IOSurface -> welding/grafting Metal
+import -> wgpu Metal device presenting to an SDL3 window, Chromium sandbox always on
+(helpers enter `libcef_sandbox.dylib` through welding; renderers must carry
+`--seatbelt-client=`). No CEF windowed mode and no software path. The workflow builds,
+bundles (cef's `build_util::mac::bundle`) and runs it once on `macos-15`; exit 2 (no
+accelerated frame on a VM) is a notice, every other failure is an error. Findings recorded in
+the gate README: welding e991684's `cpu-paint-fallback` has no `OnPaint` producer, macOS
+IOSurface import is unsynchronised, no macOS close-completion signal. The Windows player,
+its lockfile and `cef-netrender-probe.yml` are unchanged. No `mach` build/bundle surface
+changed (no roves-action/Packmaster sync needed); not user-facing, so no README/wiki change.
+
 ## 2026-11-25 - CEF + SDL3 + wgpu candidate: project icon first, Metal Mania wordmark
 
 Changed: `support/cef-netrender-probe/src/{app.rs,lib.rs,splash.rs,icon_rules.rs,game_rules.rs}`,
